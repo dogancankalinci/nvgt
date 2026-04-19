@@ -678,16 +678,17 @@ int CompileScript(asIScriptEngine *engine, const string &scriptFile) {
 				if (fname.size() >= 4 && fname.compare(0, 4, "iap_") == 0)
 					iap_names.insert(fname);
 			}
-			for (asUINT si = 0; si < mod->GetSectionCount() && !g_script_uses_iap; si++) {
-				const char* section_name = mod->GetSectionName(si);
-				if (!section_name) continue;
+			for (asUINT si = 0; si < builder.GetSectionCount() && !g_script_uses_iap; si++) {
+				std::string section_name = builder.GetSectionName(si);
+				if (section_name.empty()) continue;
 				std::ifstream sf(section_name);
 				std::string src((std::istreambuf_iterator<char>(sf)), std::istreambuf_iterator<char>());
 				const char* p = src.c_str();
 				asUINT rem = (asUINT)src.size();
 				while (rem > 0 && !g_script_uses_iap) {
-					asETokenClass tc;
-					asUINT tlen = asGetTokenLength(p, rem, &tc);
+					asUINT tlen = 0;
+					asETokenClass tc = engine->ParseToken(p, rem, &tlen);
+					if (tlen == 0) break;
 					if (tc == asTC_IDENTIFIER && tlen >= 4 && p[0] == 'i' && p[1] == 'a' && p[2] == 'p' && p[3] == '_')
 						if (iap_names.count(std::string(p, tlen)))
 							g_script_uses_iap = true;
