@@ -910,8 +910,7 @@ protected:
 	}
 	void open_output_stream(const Path& output_path) override {
 		// bytecode.bin is a standalone file, not appended to a stub — open fresh.
-		fs.open(outpath.toString(), std::ios::out | std::ios::trunc);
-		stub_size = 0;
+		fs.open(output_path.toString(), std::ios::out | std::ios::trunc);
 	}
 	void finalize_output_stream() override {
 		// bytecode.bin starts at offset 0, write 0 as the data location marker.

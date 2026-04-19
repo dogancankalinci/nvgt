@@ -22,7 +22,7 @@
 	#include <windows.h>
 #else
 	typedef asBYTE BYTE;
-	typedef asDWORD DWORD;
+	typedef unsigned int DWORD;
 #endif
 
 // Exports for Caturria's Monocypher chacha20 asset encrypting iostream implementation
