@@ -132,7 +132,7 @@ public class BillingManager implements PurchasesUpdatedListener {
 		if (sInstance == null) {
 			synchronized (sInstanceLock) {
 				if (sInstance == null) {
-					Activity activity = SDL.getActivity();
+					Activity activity = (Activity) SDL.getContext();
 					if (activity == null)
 						throw new IllegalStateException("SDL activity not available");
 					sInstance = new BillingManager(activity);
@@ -424,7 +424,7 @@ public class BillingManager implements PurchasesUpdatedListener {
 	 */
 	public static boolean purchaseProduct(String productId) {
 		BillingManager mgr      = getInstance();
-		Activity       activity = SDL.getActivity();
+		Activity       activity = (Activity) SDL.getContext();
 		if (activity == null) {
 			mgr.reportError("SDL activity not available");
 			return false;
