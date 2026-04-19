@@ -16,7 +16,7 @@
 //   1. Fake billing service (no/low root): Intercepts the IInAppBillingService
 //      AIDL and returns fabricated Purchase objects.  Defeated here by verifying
 //      each purchase's RSA signature (SHA1withRSA) against your app's Google Play
-//      public key ÔÇö the attacker cannot forge a signature without Google's private key.
+//      public key - the attacker cannot forge a signature without Google's private key.
 //
 //   2. APK patching (requires root): Rewrites app bytecode to skip checks.
 //      Client-side code cannot fully stop this; only server-side purchase
@@ -26,7 +26,7 @@
 // key found in Play Console ÔåÆ Your app ÔåÆ Monetize ÔåÆ Monetization setup ÔåÆ Licensing.
 //
 // NVGT - NonVisual Gaming Toolkit
-// Copyright (c) 2022-2025 Sam Tupy ÔÇö https://nvgt.dev
+// Copyright (c) 2022-2025 Sam Tupy - https://nvgt.dev
 
 package com.samtupy.nvgt;
 
@@ -47,7 +47,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public class BillingManager implements PurchasesUpdatedListener {
 
-	// Purchase state constants ÔÇö must match iap_purchase_state in iap.h
+	// Purchase state constants - must match iap_purchase_state in iap.h
 	private static final int STATE_SUCCESS   = 0;
 	private static final int STATE_CANCELLED = 1;
 	private static final int STATE_FAILED    = 2;
@@ -294,7 +294,7 @@ public class BillingManager implements PurchasesUpdatedListener {
 	 */
 	private static String fraudCheck(Purchase purchase) {
 		if (!verifyPurchaseSignature(purchase))
-			return "Purchase signature invalid ÔÇö possible fraud (Lucky Patcher?)";
+			return "Purchase signature invalid - possible fraud (Lucky Patcher?)";
 		return null; // passed
 	}
 
@@ -440,7 +440,7 @@ public class BillingManager implements PurchasesUpdatedListener {
 			}
 		}
 		if (details == null) {
-			mgr.reportError("Product not in cache: " + productId + " ÔÇö call iap_query_products first");
+			mgr.reportError("Product not in cache: " + productId + " - call iap_query_products first");
 			return false;
 		}
 
