@@ -55,6 +55,7 @@ public final class DialogUtils {
 				)
 				.create();
 			dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
+			dialog.setCanceledOnTouchOutside(false);
 			dialog.show();
 			edit.setOnEditorActionListener((v, actionId, event) -> {
 				if (actionId == EditorInfo.IME_ACTION_DONE) {
