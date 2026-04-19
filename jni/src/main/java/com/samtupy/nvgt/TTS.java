@@ -133,7 +133,7 @@ public class TTS {
 						tts.setLanguage(Locale.getDefault());
 					} catch (Exception e) {}
 					tts.setPitch(1.0f);
-					tts.setSpeechRate(1.0f);
+					//tts.setSpeechRate(1.0f);
 					AudioAttributes audioAttributes = new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build();
 					tts.setAudioAttributes(audioAttributes);
 					initializeVoices();
