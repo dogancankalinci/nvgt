@@ -109,16 +109,21 @@ jobs:
       run: echo "ANDROID_NDK_HOME=${{steps.setup-ndk.outputs.ndk-path}}" >> $GITHUB_ENV
     - uses: actions/cache@v4
       with:
-        path: droidev
+        path: |
+          droidev
+          droidev_arm32
         key: droidev-${{ hashFiles('.github/workflows/release.yml', 'vcpkg/ports/**', 'vcpkg/triplets/**', 'vcpkg/*.json', '.git/modules/vcpkg/bin/HEAD') }}
       id: cache
     - name: build dependencies
       if: ${{ steps.cache.outputs.cache-hit != 'true' }}
-      run: python3 vcpkg/build_dependencies.py --archive arm64-android
+      run: |
+        python3 vcpkg/build_dependencies.py --archive arm64-android
+        python3 vcpkg/build_dependencies.py --archive armv7-android
     - name: publish dependencies
       if: ${{ steps.cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' && github.event.repository.fork == false }}
       run: |
         curl -u "${{secrets.CIFTP}}" -s -T droidev.zip ftp://nvgt.dev
+        curl -u "${{secrets.CIFTP}}" -s -T droidev_arm32.zip ftp://nvgt.dev
         curl -H "X-Auth: ${{secrets.CIPHP}}" -s "https://nvgt.dev/ci/devlibs_update.php"
     - name: keystore_official
       if: github.event.repository.fork == false
@@ -138,7 +143,7 @@ jobs:
     - name: build
       run: |
         cd jni
-        ./gradlew assembleRunnerRelease AssembleStubRelease --no-daemon -Pandroid.injected.signing.store.file=android.keystore -Pandroid.injected.signing.store.password=${{env.ANDROID_RUNNER_KEYSTORE_PW}} -Pandroid.injected.signing.key.alias=app -Pandroid.injected.signing.key.password="${{env.ANDROID_RUNNER_KEYSTORE_PW}}"
+        ./gradlew assembleRunnerRelease assembleStubRelease assembleStubIapRelease --no-daemon -Pandroid.injected.signing.store.file=android.keystore -Pandroid.injected.signing.store.password=${{env.ANDROID_RUNNER_KEYSTORE_PW}} -Pandroid.injected.signing.key.alias=app -Pandroid.injected.signing.key.password="${{env.ANDROID_RUNNER_KEYSTORE_PW}}"
         mv build/outputs/apk/runner/release/nvgt-runner-release.apk ../release/nvgt.apk
         cd ..
     - uses: actions/upload-artifact@v4

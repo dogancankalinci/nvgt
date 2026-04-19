@@ -39,6 +39,7 @@ def build(triplet = "", do_archive = False, out_dir = ""):
 	if "-windows" in triplet: dev_basename = "windev"
 	elif "-osx" in triplet: dev_basename = "macosdev"
 	elif "-linux" in triplet: dev_basename = "lindev"
+	elif "armv7-android" in triplet: dev_basename = "droidev_arm32"
 	elif "-android" in triplet: dev_basename = "droidev"
 	elif "-ios" in triplet: dev_basename = "iosdev"
 	if not out_dir: out_dir = repo_path / dev_basename

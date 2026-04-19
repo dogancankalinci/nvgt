@@ -1,5 +1,11 @@
 LOCAL_PATH := $(call my-dir)
+ifeq ($(TARGET_ARCH_ABI),armeabi-v7a)
+LIBPATH := ../droidev_arm32/lib
+INCLUDEPATH := ../droidev_arm32/include
+else
 LIBPATH := ../droidev/lib
+INCLUDEPATH := ../droidev/include
+endif
 ifneq ($(wildcard Custom.mk),)
 include Custom.mk
 endif
@@ -137,7 +143,7 @@ LOCAL_SRC_FILES_COMMON := \
     $(wildcard $(LOCAL_PATH)/../ASAddon/src/*.cpp)\
     ../dep/cmp.c ../dep/entities.cpp ../dep/ma_reverb_node.c ../dep/micropather.cpp ../dep/miniaudio_libopus.c ../dep/miniaudio_libvorbis.c ../dep/miniaudio_phonon.c ../dep/miniaudio_wdl_resampler.cpp ../dep/monocypher.c ../dep/resample.cpp ../dep/rng_get_bytes.c ../dep/singleheader.cpp ../dep/sonic.c ../dep/tonar.c ../dep/uncompr.c\
     $(wildcard $(LOCAL_PATH)/../src/*.cpp))
-LOCAL_C_INCLUDES_COMMON := $(LOCAL_PATH)/../droidev/include $(LOCAL_PATH)/../ASAddon/include $(LOCAL_PATH)/../dep
+LOCAL_C_INCLUDES_COMMON := $(LOCAL_PATH)/$(INCLUDEPATH) $(LOCAL_PATH)/../ASAddon/include $(LOCAL_PATH)/../dep
 LOCAL_CXXFLAGS_COMMON := -DPOCO_STATIC -DNVGT_BUILDING -DAS_USE_STLNAMES=1 -std=c++20 -fms-extensions -ffunction-sections -O2 -fpermissive -O2 -Wno-narrowing -Wno-int-to-pointer-cast -Wno-delete-incomplete -Wno-unused-result -Wno-deprecated-array-compare -Wno-implicit-const-int-float-conversion -Wno-deprecated-enum-enum-conversion -Wno-absolute-value
 LOCAL_LDFLAGS_COMMON = -Wl,--no-fatal-warnings -Wl,--no-undefined -Wl,--gc-sections
 LOCAL_SHARED_LIBRARIES_COMMON := SDL3 phonon
@@ -148,6 +154,7 @@ LOCAL_CPP_FEATURES_COMMON := rtti exceptions
 # A default invocation to ndk-build will cause both runner and stubs to build, call ndk-build BUILD_STUB=0 to disable the stub, for example. Used mostly by gradle.
 BUILD_RUNNER := 1
 BUILD_STUB := 1
+BUILD_STUB_IAP := 1
 
 ifeq ($(BUILD_RUNNER), 1)
 # NVGT runner
@@ -155,7 +162,7 @@ include $(CLEAR_VARS)
 LOCAL_MODULE := main
 LOCAL_SRC_FILES := $(LOCAL_SRC_FILES_COMMON)
 LOCAL_C_INCLUDES := $(LOCAL_C_INCLUDES_COMMON)
-LOCAL_CXXFLAGS := $(LOCAL_CXXFLAGS_COMMON)
+LOCAL_CXXFLAGS := $(LOCAL_CXXFLAGS_COMMON) -DNVGT_NO_IAP
 LOCAL_SHARED_LIBRARIES := $(LOCAL_SHARED_LIBRARIES_COMMON)
 LOCAL_STATIC_LIBRARIES := $(LOCAL_STATIC_LIBRARIES_COMMON)
 LOCAL_LDLIBS := $(LOCAL_LDLIBS_COMMON)
@@ -169,9 +176,28 @@ include $(BUILD_SHARED_LIBRARY)
 endif
 
 ifeq ($(BUILD_STUB), 1)
-# NVGT stub
+# NVGT stub (no IAP)
 include $(CLEAR_VARS)
 LOCAL_MODULE := game
+LOCAL_SRC_FILES := $(LOCAL_SRC_FILES_COMMON)
+LOCAL_C_INCLUDES := $(LOCAL_C_INCLUDES_COMMON)
+LOCAL_CXXFLAGS := $(LOCAL_CXXFLAGS_COMMON) -DNVGT_STUB -DNVGT_NO_IAP
+LOCAL_SHARED_LIBRARIES := $(LOCAL_SHARED_LIBRARIES_COMMON)
+LOCAL_STATIC_LIBRARIES := $(LOCAL_STATIC_LIBRARIES_COMMON)
+LOCAL_LDLIBS := $(LOCAL_LDLIBS_COMMON)
+LOCAL_CPP_FEATURES := $(LOCAL_CPP_FEATURES_COMMON)
+LOCAL_DISABLE_FATAL_LINKER_WARNINGS := true
+LOCAL_LDFLAGS := $(LOCAL_LDFLAGS_COMMON)
+ifneq ($(wildcard Custom.mk),)
+include Custom.mk
+endif
+include $(BUILD_SHARED_LIBRARY)
+endif
+
+ifeq ($(BUILD_STUB_IAP), 1)
+# NVGT IAP stub (includes Google Play Billing via JNI)
+include $(CLEAR_VARS)
+LOCAL_MODULE := game_iap
 LOCAL_SRC_FILES := $(LOCAL_SRC_FILES_COMMON)
 LOCAL_C_INCLUDES := $(LOCAL_C_INCLUDES_COMMON)
 LOCAL_CXXFLAGS := $(LOCAL_CXXFLAGS_COMMON) -DNVGT_STUB

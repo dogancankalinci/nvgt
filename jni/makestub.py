@@ -13,9 +13,12 @@ if len(sys.argv) < 3:
 variant = sys.argv[1]
 variant_cap = variant[0].upper()+ variant[1:]
 build_dir = sys.argv[2]
+is_iap = "Iap" in variant_cap
+is_debug = not variant.endswith("Release")
 shutil.make_archive(os.path.join(build_dir, "tmp", "res"), "zip", os.path.join(build_dir, "intermediates", "merged_res", variant))
 if not os.path.isdir(os.path.join(os.path.dirname(__file__), "..", "release", "stub")): os.mkdir(os.path.join(os.path.dirname(__file__), "..", "release", "stub"))
-zip_out = zipfile.ZipFile(os.path.join(os.path.dirname(__file__), "..", "release", "stub", "nvgt_android" + ("_debug" if not variant.endswith("Release") else "") + ".bin"), "w", zipfile.ZIP_DEFLATED)
+stub_filename = "nvgt_android" + ("_debug" if is_debug else "") + ("_iap" if is_iap else "") + ".bin"
+zip_out = zipfile.ZipFile(os.path.join(os.path.dirname(__file__), "..", "release", "stub", stub_filename), "w", zipfile.ZIP_DEFLATED)
 zip_out.write(os.path.join(build_dir, "tmp", "res.zip"), "res.zip")
 if os.path.isfile(os.path.join("build", "intermediates", "dex", variant, "mergeDex" + variant_cap, "classes.dex")):
 	zip_out.write(os.path.join("build", "intermediates", "dex", variant, "mergeDex" + variant_cap, "classes.dex"),"classes.dex")

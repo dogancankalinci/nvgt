@@ -32,7 +32,7 @@ android {
 		externalNativeBuild {
 			ndkBuild {
 				arguments "APP_PLATFORM=android-28", "-j8"
-				abiFilters 'arm64-v8a' // 'armeabi-v7a', 
+				abiFilters 'arm64-v8a', 'armeabi-v7a'
 			}
 		}
 	}
@@ -50,7 +50,7 @@ android {
 			versionName file("../version").getText().trim()
 			externalNativeBuild {
 				ndkBuild {
-					arguments "BUILD_RUNNER=1", "BUILD_STUB=0"
+					arguments "BUILD_RUNNER=1", "BUILD_STUB=0", "BUILD_STUB_IAP=0"
 				}
 			}
 		}
@@ -59,7 +59,16 @@ android {
 			applicationId "com.samtupy.nvgt.stub"
 			externalNativeBuild {
 				ndkBuild {
-					arguments "BUILD_RUNNER=0", "BUILD_STUB=1"
+					arguments "BUILD_RUNNER=0", "BUILD_STUB=1", "BUILD_STUB_IAP=0"
+				}
+			}
+		}
+		stubIap {
+			dimension "version"
+			applicationId "com.samtupy.nvgt.stub"
+			externalNativeBuild {
+				ndkBuild {
+					arguments "BUILD_RUNNER=0", "BUILD_STUB=0", "BUILD_STUB_IAP=1"
 				}
 			}
 		}
@@ -74,11 +83,17 @@ android {
 			jniLibs.srcDirs = ['libs/stub']
 			assets.srcDirs = []
 		}
+		stubIap {
+			java.srcDirs += ['src/iap/java']
+			jniLibs.srcDirs = ['libs/stub_iap']
+			assets.srcDirs = []
+		}
 	}
 	applicationVariants.all { variant ->
-		if (variant.productFlavors[0].name == "stub") {
+		def flavorName = variant.productFlavors[0].name
+		if (flavorName == "stub" || flavorName == "stubIap") {
 			variant.getAssembleProvider().configure() {
-				it.doLast { 
+				it.doLast {
 					variant.outputs.each { output ->
 						File apk = output.outputFile
 						exec {
@@ -104,4 +119,8 @@ android {
 	lint {
 		abortOnError false
 	}
+}
+
+dependencies {
+	stubIapImplementation 'com.android.billingclient:billing:7.+'
 }

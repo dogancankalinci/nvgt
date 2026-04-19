@@ -110,6 +110,7 @@
 	#endif
 	#ifdef have_android_stubs
 		source: "release\stub\nvgt_android.bin"; DestDir: "{app}\stub"; components: stubs\android
+		source: "release\stub\nvgt_android_iap.bin"; DestDir: "{app}\stub"; components: stubs\android
 	#endif
 	#ifdef have_ios_stubs
 		source: "release\stub\nvgt_ios*.bin"; DestDir: "{app}\stub"; components: stubs\ios
@@ -146,10 +147,14 @@
 		root: HKA; subkey: "software\classes\NVGTScript\shell\compile\shell\linux_release\command"; ValueType: string; ValueName: ""; ValueData: "{app}\nvgtw.exe -plinux -c ""%L"""; components: associate
 	#endif
 	#ifdef have_android_stubs
-		root: HKA; subkey: "software\classes\NVGTScript\shell\compile\shell\android_debug"; ValueType: string; ValueName: ""; ValueData: "Android (Debug)"; components: associate
-		root: HKA; subkey: "software\classes\NVGTScript\shell\compile\shell\android_debug\command"; ValueType: string; ValueName: ""; ValueData: "{app}\nvgtw.exe -pandroid -C ""%L"""; components: associate
-		root: HKA; subkey: "software\classes\NVGTScript\shell\compile\shell\android_release"; ValueType: string; ValueName: ""; ValueData: "Android (Release)"; components: associate
-		root: HKA; subkey: "software\classes\NVGTScript\shell\compile\shell\android_release\command"; ValueType: string; ValueName: ""; ValueData: "{app}\nvgtw.exe -pandroid -c ""%L"""; components: associate
+		root: HKA; subkey: "software\classes\NVGTScript\shell\compile\shell\android_apk_debug"; ValueType: string; ValueName: ""; ValueData: "Android APK (Debug)"; components: associate
+		root: HKA; subkey: "software\classes\NVGTScript\shell\compile\shell\android_apk_debug\command"; ValueType: string; ValueName: ""; ValueData: "{app}\nvgtw.exe -pandroid -C ""%L"""; components: associate
+		root: HKA; subkey: "software\classes\NVGTScript\shell\compile\shell\android_apk_release"; ValueType: string; ValueName: ""; ValueData: "Android APK (Release)"; components: associate
+		root: HKA; subkey: "software\classes\NVGTScript\shell\compile\shell\android_apk_release\command"; ValueType: string; ValueName: ""; ValueData: "{app}\nvgtw.exe -pandroid -c ""%L"""; components: associate
+		root: HKA; subkey: "software\classes\NVGTScript\shell\compile\shell\android_aab_debug"; ValueType: string; ValueName: ""; ValueData: "Android AAB (Debug)"; components: associate
+		root: HKA; subkey: "software\classes\NVGTScript\shell\compile\shell\android_aab_debug\command"; ValueType: string; ValueName: ""; ValueData: "{app}\nvgtw.exe -pandroid -C -s build.android_format=aab ""%L"""; components: associate
+		root: HKA; subkey: "software\classes\NVGTScript\shell\compile\shell\android_aab_release"; ValueType: string; ValueName: ""; ValueData: "Android AAB (Release)"; components: associate
+		root: HKA; subkey: "software\classes\NVGTScript\shell\compile\shell\android_aab_release\command"; ValueType: string; ValueName: ""; ValueData: "{app}\nvgtw.exe -pandroid -c -s build.android_format=aab ""%L"""; components: associate
 	#endif
 	#ifdef have_ios_stubs
 		root: HKA; subkey: "software\classes\NVGTScript\shell\compile\shell\ios_debug"; ValueType: string; ValueName: ""; ValueData: "iOS (Debug)"; components: associate

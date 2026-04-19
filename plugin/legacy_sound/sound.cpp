@@ -56,6 +56,12 @@
 using namespace std;
 using namespace fast_float;
 
+static inline float ff(const std::string& s) noexcept {
+	float v = 0.0f;
+	from_chars(s.data(), s.data() + s.size(), v);
+	return v;
+}
+
 static asIScriptEngine* g_ScriptEngine;
 static BOOL sound_initialized = FALSE;
 static legacy_mixer* output;
@@ -1617,73 +1623,73 @@ int legacy_mixer::set_fx(const std::string& fx, int idx) {
 	// effects
 	if(args[0]=="i3DL2reverb"&&args.size()>12) {
 		e.type=BASS_FX_DX8_I3DL2REVERB;
-		BASS_DX8_I3DL2REVERB settings= {strtol(args[1].c_str(), NULL, 10), strtol(args[2].c_str(), NULL, 10), strtof(args[3].c_str(), NULL), strtof(args[4].c_str(), NULL), strtof(args[5].c_str(), NULL), strtol(args[6].c_str(), NULL, 10), strtof(args[7].c_str(), NULL), strtol(args[8].c_str(), NULL, 10), strtof(args[9].c_str(), NULL), strtof(args[10].c_str(), NULL), strtof(args[11].c_str(), NULL), strtof(args[12].c_str(), NULL)};
+		BASS_DX8_I3DL2REVERB settings= {strtol(args[1].c_str(), NULL, 10), strtol(args[2].c_str(), NULL, 10), ff(args[3]), ff(args[4]), ff(args[5]), strtol(args[6].c_str(), NULL, 10), ff(args[7]), strtol(args[8].c_str(), NULL, 10), ff(args[9]), ff(args[10]), ff(args[11]), ff(args[12])};
 		memcpy(&effect_settings, &settings, sizeof(BASS_DX8_I3DL2REVERB));
 	} else if(args[0]=="reverb"&&args.size()>4) {
 		e.type=BASS_FX_DX8_REVERB;
-		BASS_DX8_REVERB settings= {strtof(args[1].c_str(), NULL), strtof(args[2].c_str(), NULL), strtof(args[3].c_str(), NULL), strtof(args[4].c_str(), NULL)};
+		BASS_DX8_REVERB settings= {ff(args[1]), ff(args[2]), ff(args[3]), ff(args[4])};
 		memcpy(&effect_settings, &settings, sizeof(BASS_DX8_REVERB));
 	} else if(args[0]=="rotate"&&args.size()>1) {
 		e.type=BASS_FX_BFX_ROTATE;
-		BASS_BFX_ROTATE settings= {strtof(args[1].c_str(), NULL), -1};
+		BASS_BFX_ROTATE settings= {ff(args[1]), -1};
 		memcpy(&effect_settings, &settings, sizeof(BASS_BFX_ROTATE));
 	} else if(args[0]=="volume"&&args.size()>1) {
-		float volume=strtof(args[1].c_str(), NULL);
+		float volume=ff(args[1]);
 		float amp=pow(10.0f, (volume*100.0-100)/20.0);
 		e.type=BASS_FX_BFX_VOLUME;
 		BASS_BFX_VOLUME settings= {-1, amp};
 		memcpy(&effect_settings, &settings, sizeof(BASS_BFX_VOLUME));
 	} else if(args[0]=="lvolume"&&args.size()>1) {
 		e.type=BASS_FX_BFX_VOLUME;
-		BASS_BFX_VOLUME settings= {-1, strtof(args[1].c_str(), NULL)};
+		BASS_BFX_VOLUME settings= {-1, ff(args[1])};
 		memcpy(&effect_settings, &settings, sizeof(BASS_BFX_VOLUME));
 	} else if(args[0]=="highpass"&&args.size()>3) {
 		e.type=BASS_FX_BFX_BQF;
-		BASS_BFX_BQF settings= {BASS_BFX_BQF_HIGHPASS, strtof(args[1].c_str(), NULL), 0, strtof(args[2].c_str(), NULL), strtof(args[3].c_str(), NULL), 0, -1};
+		BASS_BFX_BQF settings= {BASS_BFX_BQF_HIGHPASS, ff(args[1]), 0, ff(args[2]), ff(args[3]), 0, -1};
 		memcpy(&effect_settings, &settings, sizeof(BASS_BFX_BQF));
 	} else if(args[0]=="lowpass"&&args.size()>3) {
 		e.type=BASS_FX_BFX_BQF;
-		BASS_BFX_BQF settings= {BASS_BFX_BQF_LOWPASS, strtof(args[1].c_str(), NULL), 0, strtof(args[2].c_str(), NULL), strtof(args[3].c_str(), NULL), 0, -1};
+		BASS_BFX_BQF settings= {BASS_BFX_BQF_LOWPASS, ff(args[1]), 0, ff(args[2]), ff(args[3]), 0, -1};
 		memcpy(&effect_settings, &settings, sizeof(BASS_BFX_BQF));
 	} else if(args[0]=="bandpass"&&args.size()>3) {
 		e.type=BASS_FX_BFX_BQF;
-		BASS_BFX_BQF settings= {BASS_BFX_BQF_BANDPASS, strtof(args[1].c_str(), NULL), 0, strtof(args[2].c_str(), NULL), strtof(args[3].c_str(), NULL), 0, -1};
+		BASS_BFX_BQF settings= {BASS_BFX_BQF_BANDPASS, ff(args[1]), 0, ff(args[2]), ff(args[3]), 0, -1};
 		memcpy(&effect_settings, &settings, sizeof(BASS_BFX_BQF));
 	} else if(args[0]=="damp"&&args.size()>5) {
 		e.type=BASS_FX_BFX_DAMP;
-		BASS_BFX_DAMP settings= {strtof(args[1].c_str(), NULL), strtof(args[2].c_str(), NULL), strtof(args[3].c_str(), NULL), strtof(args[4].c_str(), NULL), strtof(args[5].c_str(), NULL), -1};
+		BASS_BFX_DAMP settings= {ff(args[1]), ff(args[2]), ff(args[3]), ff(args[4]), ff(args[5]), -1};
 		memcpy(&effect_settings, &settings, sizeof(BASS_BFX_DAMP));
 	} else if(args[0]=="autowah"&&args.size()>6) {
 		e.type=BASS_FX_BFX_AUTOWAH;
-		BASS_BFX_AUTOWAH settings= {strtof(args[1].c_str(), NULL), strtof(args[2].c_str(), NULL), strtof(args[3].c_str(), NULL), strtof(args[4].c_str(), NULL), strtof(args[5].c_str(), NULL), strtof(args[6].c_str(), NULL), -1};
+		BASS_BFX_AUTOWAH settings= {ff(args[1]), ff(args[2]), ff(args[3]), ff(args[4]), ff(args[5]), ff(args[6]), -1};
 		memcpy(&effect_settings, &settings, sizeof(BASS_BFX_AUTOWAH));
 	} else if(args[0]=="phaser"&&args.size()>6) {
 		e.type=BASS_FX_BFX_PHASER;
-		BASS_BFX_PHASER settings= {strtof(args[1].c_str(), NULL), strtof(args[2].c_str(), NULL), strtof(args[3].c_str(), NULL), strtof(args[4].c_str(), NULL), strtof(args[5].c_str(), NULL), strtof(args[6].c_str(), NULL), -1};
+		BASS_BFX_PHASER settings= {ff(args[1]), ff(args[2]), ff(args[3]), ff(args[4]), ff(args[5]), ff(args[6]), -1};
 		memcpy(&effect_settings, &settings, sizeof(BASS_BFX_PHASER));
 	} else if(args[0]=="chorus"&&args.size()>6) {
 		e.type=BASS_FX_BFX_CHORUS;
-		BASS_BFX_CHORUS settings= {strtof(args[1].c_str(), NULL), strtof(args[2].c_str(), NULL), strtof(args[3].c_str(), NULL), strtof(args[4].c_str(), NULL), strtof(args[5].c_str(), NULL), strtof(args[6].c_str(), NULL), -1};
+		BASS_BFX_CHORUS settings= {ff(args[1]), ff(args[2]), ff(args[3]), ff(args[4]), ff(args[5]), ff(args[6]), -1};
 		memcpy(&effect_settings, &settings, sizeof(BASS_BFX_CHORUS));
 	} else if(args[0]=="distortion"&&args.size()>5) {
 		e.type=BASS_FX_BFX_DISTORTION;
-		BASS_BFX_DISTORTION settings= {strtof(args[1].c_str(), NULL), strtof(args[2].c_str(), NULL), strtof(args[3].c_str(), NULL), strtof(args[4].c_str(), NULL), strtof(args[5].c_str(), NULL), -1};
+		BASS_BFX_DISTORTION settings= {ff(args[1]), ff(args[2]), ff(args[3]), ff(args[4]), ff(args[5]), -1};
 		memcpy(&effect_settings, &settings, sizeof(BASS_BFX_DISTORTION));
 	} else if(args[0]=="compressor2"&&args.size()>5) {
 		e.type=BASS_FX_BFX_COMPRESSOR2;
-		BASS_BFX_COMPRESSOR2 settings= {strtof(args[1].c_str(), NULL), strtof(args[2].c_str(), NULL), strtof(args[3].c_str(), NULL), strtof(args[4].c_str(), NULL), strtof(args[5].c_str(), NULL), -1};
+		BASS_BFX_COMPRESSOR2 settings= {ff(args[1]), ff(args[2]), ff(args[3]), ff(args[4]), ff(args[5]), -1};
 		memcpy(&effect_settings, &settings, sizeof(BASS_BFX_COMPRESSOR2));
 	} else if(args[0]=="echo4"&&args.size()>5) {
 		e.type=BASS_FX_BFX_ECHO4;
-		BASS_BFX_ECHO4 settings= {strtof(args[1].c_str(), NULL), strtof(args[2].c_str(), NULL), strtof(args[3].c_str(), NULL), strtof(args[4].c_str(), NULL), args[5]=="1", -1};
+		BASS_BFX_ECHO4 settings= {ff(args[1]), ff(args[2]), ff(args[3]), ff(args[4]), args[5]=="1", -1};
 		memcpy(&effect_settings, &settings, sizeof(BASS_BFX_ECHO4));
 	} else if(args[0]=="pitchshift"&&args.size()>1) {
 		e.type=BASS_FX_BFX_PITCHSHIFT;
-		BASS_BFX_PITCHSHIFT settings= {strtof(args[1].c_str(), NULL), (args.size()>2? strtof(args[2].c_str(), NULL) : 0.0f), 2048, 16, -1};
+		BASS_BFX_PITCHSHIFT settings= {ff(args[1]), (args.size()>2? ff(args[2]) : 0.0f), 2048, 16, -1};
 		memcpy(&effect_settings, &settings, sizeof(BASS_BFX_PITCHSHIFT));
 	} else if(args[0]=="freeverb"&&args.size()>5) {
 		e.type=BASS_FX_BFX_FREEVERB;
-		BASS_BFX_FREEVERB settings= {strtof(args[1].c_str(), NULL), strtof(args[2].c_str(), NULL), strtof(args[3].c_str(), NULL), strtof(args[4].c_str(), NULL), strtof(args[5].c_str(), NULL), (DWORD)(args.size()>6&&args[6]=="1"? BASS_BFX_FREEVERB_MODE_FREEZE : 0), -1};
+		BASS_BFX_FREEVERB settings= {ff(args[1]), ff(args[2]), ff(args[3]), ff(args[4]), ff(args[5]), (DWORD)(args.size()>6&&args[6]=="1"? BASS_BFX_FREEVERB_MODE_FREEZE : 0), -1};
 		memcpy(&effect_settings, &settings, sizeof(BASS_BFX_FREEVERB));
 	} else
 		return -1;

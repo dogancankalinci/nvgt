@@ -6,6 +6,9 @@ import android.content.DialogInterface;
 import android.graphics.Typeface;
 import android.text.method.ScrollingMovementMethod;
 import android.view.ViewGroup;
+import android.view.WindowManager;
+import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.*;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
@@ -35,7 +38,8 @@ public final class DialogUtils {
 			edit.setSingleLine(true);
 			edit.setText(initial);
 			edit.setSelection(initial.length());
-			new AlertDialog.Builder(activity)
+			edit.setImeOptions(EditorInfo.IME_ACTION_DONE);
+			AlertDialog dialog = new AlertDialog.Builder(activity)
 				.setTitle(caption)
 				.setMessage(prompt)
 				.setView(edit)
@@ -49,7 +53,16 @@ public final class DialogUtils {
 				.setOnCancelListener(dlg ->
 					result.complete("\u00FF")
 				)
-				.show();
+				.create();
+			dialog.getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
+			dialog.show();
+			edit.setOnEditorActionListener((v, actionId, event) -> {
+				if (actionId == EditorInfo.IME_ACTION_DONE) {
+					dialog.getButton(DialogInterface.BUTTON_POSITIVE).performClick();
+					return true;
+				}
+				return false;
+			});
 		});
 		return result;
 	}

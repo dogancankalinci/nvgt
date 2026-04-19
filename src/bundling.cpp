@@ -175,6 +175,25 @@ static void archive_write_dir(struct archive* a, const string& disk_dir, const s
 		}
 	}
 }
+// Write a single file on disk into an open libarchive write handle under a custom archive path.
+static void archive_write_single_file(struct archive* a, const string& disk_path, const string& arc_path) {
+	File f(disk_path);
+	if (!f.exists() || !f.isFile()) return;
+	struct archive_entry* e = archive_entry_new();
+	archive_entry_set_pathname(e, arc_path.c_str());
+	archive_entry_set_filetype(e, AE_IFREG);
+	archive_entry_set_perm(e, 0644);
+	archive_entry_set_size(e, (la_int64_t)f.getSize());
+	archive_write_header(a, e);
+	archive_entry_free(e);
+	FileInputStream fis(disk_path);
+	char buf[65536];
+	while (fis.good()) {
+		fis.read(buf, sizeof(buf));
+		la_ssize_t n = fis.gcount();
+		if (n > 0) archive_write_data(a, buf, n);
+	}
+}
 // Thread-safe message box for use from the compilation worker thread. Dispatches message_box() onto the main thread via SDL_RunOnMainThread and blocks until the result is available. Returns -1 without showing anything for multi-button dialogs when quiet mode is active or a console is available, since the user cannot answer interactive questions in those conditions. Single-button alerts in console mode are printed to stdout.
 struct bundler_msgbox_args { const string& title; const string& text; const vector<string>& buttons; int result; };
 static void bundler_msgbox_callback(void* userdata) {
@@ -246,7 +265,7 @@ public:
 		stubpath.pushDirectory("stub");
 		xplatform_correct_path_to_stubs(stubpath);
 		alter_stub_path(stubpath);
-		stubpath = format("%snvgt_%s%s.bin", stubpath.toString(), platform, (stub != "" ? string("_") + stub : ""));
+		stubpath = format("%snvgt_%s%s%s.bin", stubpath.toString(), platform, (stub != "" ? string("_") + stub : ""), (g_script_uses_iap ? "_iap" : ""));
 		string outpath_str = config.getString("build.output_basename", format("%s", Path(input_file).setExtension("").makeAbsolute().toString()));
 		replaceInPlace(outpath_str, "$platform"s, platform);
 		if (DirectoryExists(outpath_str)) File(outpath_str).remove(true); // Though some platforms must do indipendantly after extra modification, we still attempt to clean previous builds for generic outputs here so that a linux build won't output overtop a windows one leaving both an elf and an executable binary in the same place, for example.
@@ -723,7 +742,8 @@ protected:
 };
 class nvgt_compilation_output_android : public nvgt_compilation_output_impl {
 	TemporaryFile workplace;
-	Path final_output_path, android_jar, apksigner_jar;
+	Path final_output_path, android_jar, apksigner_jar, bundletool_jar;
+	bool is_aab = false;
 	int do_install; // 0 no, 1 ask, 2 always.
 	unsigned int install_transport_id; // ADB transport ID of device to install to.
 	string install_device_name; // Used for UI display to report device installed to.
@@ -731,6 +751,17 @@ class nvgt_compilation_output_android : public nvgt_compilation_output_impl {
 	using nvgt_compilation_output_impl::nvgt_compilation_output_impl;
 	string exe(const std::string& path) {
 		return Environment::isWindows()? path + ".exe" : path;
+	}
+	string get_keytool_password() const {
+		size_t sep = sign_password.find(':');
+		return sep == string::npos ? sign_password : sign_password.substr(sep + 1);
+	}
+	void ensure_android_keystore() {
+		if (sign_cert.empty() || sign_password.empty() || File(sign_cert).exists()) return;
+		set_status("creating signature keystore...");
+		string sout, serr;
+		if (!system_command(exe("keytool"), {"-genkey", "-keyalg", "RSA", "-keysize", "2048", "-v", "-keystore", sign_cert, "-dname", config.getString("build.android_signature_info", "cn=NVGT"), "-storepass", get_keytool_password(), "-validity", "10000", "-alias", "game"}, sout, serr))
+			throw Exception(format("Failed to run keytool, %s%s", sout, serr));
 	}
 	bool android_sdk_tools_exist(const std::string& path) {
 		// This will also set the path to android.jar and apksigner.jar if build tools are found.
@@ -848,20 +879,48 @@ class nvgt_compilation_output_android : public nvgt_compilation_output_impl {
 	}
 protected:
 	void alter_output_path(Path& output_path) override {
+		is_aab = config.getString("build.android_format", "apk") == "aab";
 		final_output_path = output_path;
-		final_output_path.setExtension("apk");
+		final_output_path.setExtension(is_aab ? "aab" : "apk");
 		output_path = workplace.path();
-		output_path.append("lib/arm64-v8a/libgame.so"); // As soon as we compile for multiple architectures on android we'll change to writing bytecode as some sort of Android app asset rather than part of libgame.so.
+		output_path.append("assets/bytecode.bin");
 	}
 	void copy_stub(const Path& stubpath, const Path& outpath) override {
 		find_android_sdk_tools();
 		workplace.createDirectories();
 		libarchive_extract(stubpath.toString(), workplace.path());
+		File(Path(workplace.path()).append("assets")).createDirectories();
+		// Rename libgame_iap.so → libgame.so (IAP stub uses a different module name during NDK build to avoid conflicts).
+		for (const string& abi : {"arm64-v8a", "armeabi-v7a"}) {
+			File iap_lib(Path(workplace.path()).append(format("lib/%s/libgame_iap.so", abi)));
+			if (iap_lib.exists())
+				iap_lib.renameTo(Path(workplace.path()).append(format("lib/%s/libgame.so", abi)).toString());
+		}
+		if (is_aab) {
+			// Locate bundletool.jar — check NVGT's android-tools dir first, then config.
+			Path tools_dir = config.getString("application.dir");
+			tools_dir.append("android-tools/bundletool.jar");
+			if (File(tools_dir).exists()) bundletool_jar = tools_dir;
+			else {
+				string cfg_path = config.getString("build.android_bundletool_jar", "");
+				if (!cfg_path.empty() && File(cfg_path).exists()) bundletool_jar = cfg_path;
+				else throw Exception("bundletool.jar not found. Place it in android-tools/bundletool.jar or set build.android_bundletool_jar in your config.");
+			}
+		}
+	}
+	void open_output_stream(const Path& output_path) override {
+		// bytecode.bin is a standalone file, not appended to a stub — open fresh.
+		fs.open(outpath.toString(), std::ios::out | std::ios::trunc);
+		stub_size = 0;
+	}
+	void finalize_output_stream() override {
+		// bytecode.bin starts at offset 0, write 0 as the data location marker.
+		BinaryWriter(fs) << int(0);
 	}
 	void finalize_product(Path& output_path) override {
 		output_path = final_output_path;
 		bundle_assets(Path(workplace.path()).append("assets"), Path(workplace.path()).append("assets"));
-		// Here we take the stub components and turn it all into a .apk with the bytecode now embedded. First lets replace the app label.
+		// Prepare app label, package ID, and manifest substitution — common for both APK and AAB.
 		string product_name = config.getString("build.product_name", Path(get_input_file()).getBaseName());
 		config.setString("build.product_name", product_name);
 		string product_identifier = config.getString("build.product_identifier", make_product_id());
@@ -874,52 +933,106 @@ protected:
 		FileOutputStream output_manifest(Path(workplace.path()).append("AndroidManifest.xml").toString());
 		output_manifest.write(manifest.c_str(), manifest.size());
 		output_manifest.close();
-		// Next, run aapt2 to link our modified AndroidManifest.xml and the flat resource files provided by the stub into the beginnings of our APK.
-		set_status("creating APK structure...");
 		string sout, serr;
-		vector<string> aapt2args = {"link", "-I", android_jar.toString(), "--manifest", "AndroidManifest.xml", "--rename-manifest-package", product_identifier, "", "--rename-resources-package", product_identifier, "--version-code", config.getString("build.product_version_code", format("%u", uint32_t(Timestamp().epochTime()) / 60)), "--version-name", config.getString("build.product_version", "1.0"), "res.zip", "-o", "tmp.apk"};
-		if (config.getString("build.android_manifest", "").empty()) aapt2args.push_back("--replace-version");
-		if (!system_command(exe("aapt2"), aapt2args, workplace.path(), sout, serr)) throw Exception(format("Failed to run aapt2, %s%s", sout, serr));
-		// The initial versions of AndroidManifest.xml and res.zip are no longer needed, get rid of them.
-		File(Path(workplace.path()).append("AndroidManifest.xml")).remove();
-		File(Path(workplace.path()).append("res.zip")).remove();
-		// Now extract the partial APK that aapt2 created on top of our work directory. Aapt2 does have an option to output to a directory as aposed to a zip file which would make this unneeded, but it's broken in versions of the android toolset before a certain point in time that is far too recent for us to safely use the option, especially considering that it breaks on my dev machine.
-		string tmp_apk_path = Path(workplace.path()).append("tmp.apk").toString();
-		libarchive_extract(tmp_apk_path, workplace.path());
-		File(tmp_apk_path).remove();
-		// OK! At this point, we have the final contents of our APK file, though extracted and lacking a signature. Lets zip it up, though we can't place the temporary zip file in the directory we want to zip up so we'll need a temporary file.
-		set_status("packaging APK...");
-		TemporaryFile zip_out_location;
-		set<string> apk_store_arcs = {"resources.arsc"};
-		for (const game_asset& g : g_game_assets)
-			if (g.flags & GAME_ASSET_UNCOMPRESSED) apk_store_arcs.insert("assets/" + g.bundled_path);
-		struct archive* apk_arc = archive_write_new();
-		archive_write_set_format_zip(apk_arc);
-		archive_write_zip_set_compression_deflate(apk_arc);
-		archive_write_open_filename(apk_arc, zip_out_location.path().c_str());
-		archive_write_dir(apk_arc, workplace.path(), "", {}, apk_store_arcs, true);
-		archive_write_close(apk_arc);
-		archive_write_free(apk_arc);
-		// Now we need to align the zip file we just created using the Android sdk's zipalign tool, this will also be responsible for creating our final actual output file as it's the last operation that cannot be performed in place.
-		set_status("aligning APK...");
-		sout = serr = "";
-		if (!system_command(exe("zipalign"), {"-f", "-p", "16", zip_out_location.path(), output_path.toString()}, sout, serr)) throw Exception(format("failed to run zipalign on %s", zip_out_location.path()));
-		// If the correct information is provided, lets try to sign the app.
-		if (!sign_cert.empty() && !sign_password.empty()) {
-			if (!File(sign_cert).exists()) {
-				// Attempt to create a keystore at the given path with the given password.
-				set_status("creating signature keystore...");
-				sout = serr = "";
-				if (!system_command(exe("keytool"), {"-genkey", "-keyalg", "RSA", "-keysize", "2048", "-v", "-keystore", sign_cert, "-dname", config.getString("build.android_signature_info", "cn=NVGT"), "-storepass", sign_password.substr(sign_password.find(":") + 1), "-validity", "10000", "-alias", "game"}, sout, serr)) throw Exception(format("Failed to run keytool, %s%s", sout, serr));
+		string version_code = config.getString("build.product_version_code", format("%u", uint32_t(Timestamp().epochTime()) / 60));
+		string version_name = config.getString("build.product_version", "1.0");
+		bool custom_manifest = !config.getString("build.android_manifest", "").empty();
+		if (is_aab) {
+			// --- Android App Bundle (AAB) path ---
+			// 1. Run aapt2 link with --proto-format to create proto-format APK (contains resources.pb).
+			set_status("creating AAB resources...");
+			vector<string> aapt2args = {"link", "--proto-format", "-I", android_jar.toString(), "--manifest", "AndroidManifest.xml", "--rename-manifest-package", product_identifier, "--rename-resources-package", product_identifier, "--version-code", version_code, "--version-name", version_name, "res.zip", "-o", "proto.apk"};
+			if (!custom_manifest) aapt2args.push_back("--replace-version");
+			if (!system_command(exe("aapt2"), aapt2args, workplace.path(), sout, serr)) throw Exception(format("Failed to run aapt2 for AAB, %s%s", sout, serr));
+			File(Path(workplace.path()).append("AndroidManifest.xml")).remove();
+			File(Path(workplace.path()).append("res.zip")).remove();
+			// 2. Extract proto.apk to get resources.pb and the proto-format manifest.
+			string proto_dir = Path(workplace.path()).append("proto_extracted").toString();
+			File(proto_dir).createDirectories();
+			libarchive_extract(Path(workplace.path()).append("proto.apk").toString(), proto_dir);
+			File(Path(workplace.path()).append("proto.apk")).remove();
+			// 3. Build the base module zip in the format bundletool expects.
+			set_status("packaging AAB module...");
+			TemporaryFile base_zip_location;
+			struct archive* base_arc = archive_write_new();
+			archive_write_set_format_zip(base_arc);
+			archive_write_zip_set_compression_deflate(base_arc);
+			archive_write_open_filename(base_arc, base_zip_location.path().c_str());
+			// manifest/ and resources.pb from the proto-format APK extraction.
+			archive_write_single_file(base_arc, Path(proto_dir).append("AndroidManifest.xml").toString(), "manifest/AndroidManifest.xml");
+			archive_write_single_file(base_arc, Path(proto_dir).append("resources.pb").toString(), "resources.pb");
+			// dex/ — collect all classes*.dex from workplace root.
+			{
+				vector<File> root_entries;
+				File(workplace.path()).list(root_entries);
+				for (const File& f : root_entries) {
+					string fname = Path(f.path()).makeFile().getFileName();
+					if (fname.rfind("classes", 0) == 0 && fname.size() > 4 && fname.substr(fname.size()-4) == ".dex")
+						archive_write_single_file(base_arc, f.path(), "dex/" + fname);
+				}
 			}
-			set_status("signing APK...");
+			// native/ — native libs go under native/lib/{abi}/ in AAB format.
+			for (const string& abi : {"arm64-v8a", "armeabi-v7a"}) {
+				File lib_file(Path(workplace.path()).append(format("lib/%s/libgame.so", abi)));
+				if (lib_file.exists())
+					archive_write_single_file(base_arc, lib_file.path(), format("native/lib/%s/libgame.so", abi));
+				File main_file(Path(workplace.path()).append(format("lib/%s/libmain.so", abi)));
+				if (main_file.exists())
+					archive_write_single_file(base_arc, main_file.path(), format("native/lib/%s/libmain.so", abi));
+			}
+			// assets/ — game assets including bytecode.bin.
+			archive_write_dir(base_arc, Path(workplace.path()).append("assets").toString(), "assets", {}, {}, true);
+			archive_write_close(base_arc);
+			archive_write_free(base_arc);
+			// 4. Run bundletool to produce the final AAB.
+			set_status("building AAB...");
 			sout = serr = "";
-			if (!system_command(exe("java"), {"-jar", apksigner_jar.toString(), "sign", "-ks", sign_cert, "--ks-pass", sign_password, "--key-pass", sign_password, output_path.toString()}, sout, serr)) throw Exception(format("Failed to run apksigner, %s%s", sout, serr));
+			if (!system_command(exe("java"), {"-jar", bundletool_jar.toString(), "build-bundle", "--modules=" + base_zip_location.path(), "--output=" + output_path.toString()}, sout, serr))
+				throw Exception(format("Failed to run bundletool, %s%s", sout, serr));
+			if (!sign_cert.empty() && !sign_password.empty()) {
+				ensure_android_keystore();
+				set_status("signing AAB...");
+				sout = serr = "";
+				if (!system_command(exe("jarsigner"), {"-keystore", sign_cert, "-storepass", get_keytool_password(), "-keypass", get_keytool_password(), output_path.toString(), "game"}, sout, serr))
+					throw Exception(format("Failed to run jarsigner, %s%s", sout, serr));
+			}
+		} else {
+			// --- APK path ---
+			set_status("creating APK structure...");
+			vector<string> aapt2args = {"link", "-I", android_jar.toString(), "--manifest", "AndroidManifest.xml", "--rename-manifest-package", product_identifier, "--rename-resources-package", product_identifier, "--version-code", version_code, "--version-name", version_name, "res.zip", "-o", "tmp.apk"};
+			if (!custom_manifest) aapt2args.push_back("--replace-version");
+			if (!system_command(exe("aapt2"), aapt2args, workplace.path(), sout, serr)) throw Exception(format("Failed to run aapt2, %s%s", sout, serr));
+			File(Path(workplace.path()).append("AndroidManifest.xml")).remove();
+			File(Path(workplace.path()).append("res.zip")).remove();
+			string tmp_apk_path = Path(workplace.path()).append("tmp.apk").toString();
+			libarchive_extract(tmp_apk_path, workplace.path());
+			File(tmp_apk_path).remove();
+			set_status("packaging APK...");
+			TemporaryFile zip_out_location;
+			set<string> apk_store_arcs = {"resources.arsc"};
+			for (const game_asset& g : g_game_assets)
+				if (g.flags & GAME_ASSET_UNCOMPRESSED) apk_store_arcs.insert("assets/" + g.bundled_path);
+			struct archive* apk_arc = archive_write_new();
+			archive_write_set_format_zip(apk_arc);
+			archive_write_zip_set_compression_deflate(apk_arc);
+			archive_write_open_filename(apk_arc, zip_out_location.path().c_str());
+			archive_write_dir(apk_arc, workplace.path(), "", {}, apk_store_arcs, true);
+			archive_write_close(apk_arc);
+			archive_write_free(apk_arc);
+			set_status("aligning APK...");
+			sout = serr = "";
+			if (!system_command(exe("zipalign"), {"-f", "-p", "16", zip_out_location.path(), output_path.toString()}, sout, serr)) throw Exception(format("failed to run zipalign on %s", zip_out_location.path()));
+			if (!sign_cert.empty() && !sign_password.empty()) {
+				ensure_android_keystore();
+				set_status("signing APK...");
+				sout = serr = "";
+				if (!system_command(exe("java"), {"-jar", apksigner_jar.toString(), "sign", "-ks", sign_cert, "--ks-pass", sign_password, "--key-pass", sign_password, output_path.toString()}, sout, serr)) throw Exception(format("Failed to run apksigner, %s%s", sout, serr));
+			}
 		}
 	}
 	void finalize() override {
 		nvgt_compilation_output_impl::finalize(); // packages APK and shows success message
-		if (!do_install || !get_install_device()) return;
+		if (is_aab || !do_install || !get_install_device()) return;
 		set_status("installing APK...");
 		Clock install_clock;
 		string sout, serr;

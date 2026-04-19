@@ -16,8 +16,11 @@
 #include "UI.h"
 #include "network.h"
 #include <exception>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <unordered_map>
+#include <vector>
 #include <angelscript.h>
 #include <Poco/DateTime.h>
 #include <Poco/Environment.h>
@@ -31,6 +34,7 @@
 #include <Poco/String.h>
 #include <Poco/Thread.h>
 #include <Poco/Timestamp.h>
+#include <sstream>
 #include <Poco/UnbufferedStreamBuf.h>
 #include <Poco/zlib.h>
 #include <Poco/Util/Application.h>
@@ -44,6 +48,9 @@
 #include "events.h"
 #include "graphics.h"
 #include "hash.h"
+#ifndef NVGT_NO_IAP
+#include "iap.h"
+#endif
 #include "input.h"
 #include "internet.h"
 #include "library.h"
@@ -124,6 +131,7 @@ int g_retcode = 0;
 bool g_initialising_globals = true;
 bool g_shutting_down = false;
 std::string g_stub = "";
+bool g_script_uses_iap = false;
 std::string g_scriptpath = "";
 std::string g_platform = "auto";
 bool g_make_console = false;
@@ -558,6 +566,12 @@ int ConfigureEngine(asIScriptEngine *engine) {
 	engine->BeginConfigGroup("unsorted");
 	RegisterUnsorted(engine);
 	engine->EndConfigGroup();
+	engine->SetDefaultAccessMask(NVGT_SUBSYSTEM_GENERAL);
+	#ifndef NVGT_NO_IAP
+	engine->BeginConfigGroup("iap");
+	RegisterIAP(engine);
+	engine->EndConfigGroup();
+	#endif
 	engine->SetDefaultAccessMask(NVGT_SUBSYSTEM_UNCLASSIFIED);
 	g_ctxMgr->RegisterThreadSupport(engine);
 	g_ctxMgr->RegisterCoRoutineSupport(engine);
@@ -653,6 +667,35 @@ int CompileScript(asIScriptEngine *engine, const string &scriptFile) {
 		// Do not let the script compile if it contains no entry point.
 		if (!mod)
 			return -1;
+		// Detect IAP usage by tokenizing every compiled section with AngelScript's own tokenizer.
+		// This correctly skips comments and string literals, and matches only actual identifiers
+		// against the exact set of global functions registered under the "iap" config group.
+		{
+			std::set<std::string> iap_names;
+			for (asUINT fi = 0; fi < (asUINT)engine->GetGlobalFunctionCount(); fi++) {
+				asIScriptFunction* f = engine->GetGlobalFunctionByIndex(fi);
+				std::string fname = f->GetName();
+				if (fname.size() >= 4 && fname.compare(0, 4, "iap_") == 0)
+					iap_names.insert(fname);
+			}
+			for (asUINT si = 0; si < mod->GetSectionCount() && !g_script_uses_iap; si++) {
+				const char* section_name = mod->GetSectionName(si);
+				if (!section_name) continue;
+				std::ifstream sf(section_name);
+				std::string src((std::istreambuf_iterator<char>(sf)), std::istreambuf_iterator<char>());
+				const char* p = src.c_str();
+				asUINT rem = (asUINT)src.size();
+				while (rem > 0 && !g_script_uses_iap) {
+					asETokenClass tc;
+					asUINT tlen = asGetTokenLength(p, rem, &tc);
+					if (tc == asTC_IDENTIFIER && tlen >= 4 && p[0] == 'i' && p[1] == 'a' && p[2] == 'p' && p[3] == '_')
+						if (iap_names.count(std::string(p, tlen)))
+							g_script_uses_iap = true;
+					p += tlen;
+					rem -= tlen;
+				}
+			}
+		}
 		asIScriptFunction *func = mod->GetFunctionByDecl("int main()");
 		if (!func)
 			func = mod->GetFunctionByDecl("void main()");
@@ -783,6 +826,30 @@ int LoadCompiledScript(asIScriptEngine *engine, unsigned char* code, asUINT size
 	return 0;
 }
 int LoadCompiledExecutable(asIScriptEngine *engine) {
+	#ifdef __ANDROID__
+	// On Android, bytecode is stored as assets/bytecode.bin inside the APK — use SDL to read it.
+	SDL_IOStream* sdl_io = SDL_IOFromFile("bytecode.bin", "rb");
+	if (!sdl_io) return -1;
+	Sint64 sdl_size = SDL_GetIOSize(sdl_io);
+	if (sdl_size < 4) { SDL_CloseIO(sdl_io); return -1; }
+	std::string sdl_content(sdl_size, '\0');
+	SDL_ReadIO(sdl_io, &sdl_content[0], sdl_size);
+	SDL_CloseIO(sdl_io);
+	std::istringstream fs(sdl_content, std::ios::binary);
+	BinaryReader br(fs);
+	UInt32 data_location, code_size;
+	fs.seekg(-4, std::ios::end);
+	br >> data_location;
+	fs.seekg(data_location);
+	if (!load_embedded_packs(br)) return -1;
+	br.read7BitEncoded(code_size);
+	code_size ^= NVGT_BYTECODE_NUMBER_XOR;
+	unsigned char* code = (unsigned char*)malloc(code_size);
+	br.readRaw((char*)code, code_size);
+	int r = LoadCompiledScript(engine, code, code_size);
+	free(code);
+	return r;
+	#else
 	FileInputStream fs(get_data_location());
 	BinaryReader br(fs);
 	UInt32 data_location, code_size;
@@ -822,6 +889,7 @@ int LoadCompiledExecutable(asIScriptEngine *engine) {
 	int r = LoadCompiledScript(engine, code, code_size);
 	free(code);
 	return r;
+	#endif // __ANDROID__
 }
 #endif
 int ExecuteScript(asIScriptEngine *engine, const string &scriptFile) {

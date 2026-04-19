@@ -49,6 +49,7 @@ if env["NVGT_TARGET"] == "windows":
 	env.Append(CCFLAGS = ["/EHsc", "/J", "/utf-8", "/Gy", "/std:c++20", "/GF", "/Zc:inline", "/bigobj", "/permissive-", "/W3" if ARGUMENTS.get("warnings", "0") == "1" else "", "/WX" if ARGUMENTS.get("warnings_as_errors", "0") == "1" else ""] + deb_rel_flags)
 	env.Append(LINKFLAGS = ["/NOEXP", "/NOIMPLIB"], no_import_lib = 1)
 	env.Append(LIBS = ["Kernel32", "User32", "imm32", "OneCoreUAP", "dinput8", "dxguid", "gdi32", "winspool", "shell32", "iphlpapi", "ole32", "oleaut32", "delayimp", "uuid", "comdlg32", "advapi32", "netapi32", "winmm", "version", "crypt32", "normaliz", "wldap32", "ws2_32", "ntdll"])
+	env.Append(CPPDEFINES = ["NVGT_NO_IAP"])
 else:
 	env.Append(CXXFLAGS = ["-fms-extensions", "-std=c++20", "-fpermissive", "-O0" if ARGUMENTS.get("debug", 0) == "1" else "-O3", "-Wno-narrowing", "-Wno-int-to-pointer-cast", "-Wno-delete-incomplete", "-Wno-unused-result", "-g" if ARGUMENTS.get("debug", 0) == "1" else "", "-Wall" if ARGUMENTS.get("warnings", "0") == "1" else "", "-Wextra" if ARGUMENTS.get("warnings", "0") == "1" else "", "-Werror" if ARGUMENTS.get("warnings_as_errors", "0") == "1" else ""], LIBS = ["m"])
 if env["NVGT_TARGET"] == "macos":
@@ -64,6 +65,7 @@ elif env["NVGT_TARGET"] == "linux":
 	# enable the gold linker, strip the resulting binaries, and add /usr/local/lib to the libpath because it seems we aren't finding libraries unless we do manually.
 	env.Append(CPPPATH = ["lindev/include", "/usr/local/include"], LIBPATH = ["lindev/lib", "/usr/local/lib", "/usr/lib/x86_64-linux-gnu"], LINKFLAGS = ["-fuse-ld=gold", "-g" if ARGUMENTS.get("debug", 0) == "1" else "-s"])
 	env.Append(LIBS = ["asound"])
+	env.Append(CPPDEFINES = ["NVGT_NO_IAP"])
 env.Append(CPPDEFINES = ["POCO_STATIC", "POCO_NO_AUTOMATIC_LIBS", "UNIVERSAL_SPEECH_STATIC", "DEBUG" if ARGUMENTS.get("debug", "0") == "1" else "NDEBUG", "UNICODE"])
 env.Append(CPPPATH = ["#ASAddon/include", "#dep"], LIBPATH = ["#build/lib"])
 
@@ -118,10 +120,12 @@ elif env["NVGT_TARGET"] in ("macos", "ios"):
 	# We must link Apple frameworks here rather than above in the system libraries section to insure that they don't get linked with random plugins.
 	env.Append(FRAMEWORKS = ["AudioToolbox", "AVFoundation", "CoreAudio", "CoreFoundation", "CoreHaptics", "CoreMedia", "CoreVideo", "GameController", "IOKit", "Metal", "QuartzCore"])
 	if env["NVGT_TARGET"] == "macos":
+		env.Append(CPPDEFINES = ["NVGT_NO_IAP"])
 		env.Append(FRAMEWORKS = ["AppKit", "Carbon", "Cocoa", "ForceFeedback", "UniformTypeIdentifiers"])
 		env.Append(LINKFLAGS = ["-Wl,-rpath,'@loader_path',-rpath,'@loader_path/lib',-rpath,'@loader_path/../Frameworks',-dead_strip_dylibs", "-mmacosx-version-min=14.0"])
 	else:
-		env.Append(FRAMEWORKS = ["CoreBluetooth", "CoreGraphics", "CoreMotion", "Foundation", "OpenGLES", "UIKit"])
+		sources.append("iap_apple.mm")
+		env.Append(FRAMEWORKS = ["CoreBluetooth", "CoreGraphics", "CoreMotion", "Foundation", "OpenGLES", "StoreKit", "UIKit"])
 		env.Append(CCFLAGS = ["-miphoneos-version-min=16.0"], LINKFLAGS = ["-miphoneos-version-min=16.0"])
 	env.Append(LIBS = ["objc"])
 elif env["NVGT_TARGET"] == "linux":
@@ -171,32 +175,65 @@ def fix_stub(target, source, env):
 
 if ARGUMENTS.get("no_stubs", "0") == "0":
 	stub_platform = env["NVGT_TARGET"] if env["NVGT_TARGET"] != "macos" else "mac"
-	VariantDir("build/obj_stub", "src", duplicate = 0)
 	stub_env.Append(CPPDEFINES = ["NVGT_STUB"])
 	if env["NVGT_TARGET"] == "windows": stub_env.Append(LINKFLAGS = ["/subsystem:windows"])
 	if ARGUMENTS.get("stub_obfuscation", "0") == "1": stub_env["CPPDEFINES"].remove("NO_OBFUSCATE")
-	stub_objects = stub_env.Object([os.path.join("build/obj_stub", s) for s in sources]) + extra_objects
-	if ARGUMENTS.get("debug", "0") == "1": stub_env["PDB"] = f"#build/debug/nvgt_{stub_platform}.pdb"
-	stub = stub_env.Program(f"release/stub/nvgt_{stub_platform}", stub_objects)
-	stub_env.AddPostAction(stub, fix_stub)
-	if env["NVGT_TARGET"] == "windows":
-		env.Install("c:/nvgt/stub", stub)
-		if "upx" in env:
-			stub_u = stub_env.UPX(f"release/stub/nvgt_{stub_platform}_upx.bin", stub)
-			stub_env.AddPostAction(stub_u, fix_stub)
-			env.Install("c:/nvgt/stub", stub_u)
-	stublibs = list(stub_env["LIBS"])
-	if "angelscript" in stublibs:
-		stublibs[stublibs.index("angelscript")] = "angelscript_nc"
-		if ARGUMENTS.get("debug", "0") == "1": stub_env["PDB"] = f"#build/debug/nvgt_{stub_platform}_nc.pdb"
-		stub_nc = stub_env.Program(f"release/stub/nvgt_{stub_platform}_nc", stub_objects, LIBS = stublibs)
-		stub_env.AddPostAction(stub_nc, fix_stub)
+	if env["NVGT_TARGET"] in ("macos", "ios"):
+		# Apple platforms: produce separate IAP and non-IAP stub variants.
+		# IAP stub: full sources including iap_apple.mm, StoreKit linked.
+		VariantDir("build/obj_stub_iap", "src", duplicate = 0)
+		stub_iap_env = stub_env.Clone()
+		stub_iap_sources = list(sources)
+		if env["NVGT_TARGET"] == "macos":
+			stub_iap_sources.append("iap_apple.mm")
+			stub_iap_env["CPPDEFINES"] = [d for d in stub_iap_env.get("CPPDEFINES", []) if d != "NVGT_NO_IAP"]
+			stub_iap_env.Append(FRAMEWORKS = ["StoreKit"])
+		stub_iap_objects = stub_iap_env.Object([os.path.join("build/obj_stub_iap", s) for s in stub_iap_sources]) + extra_objects
+		stub_iap = stub_iap_env.Program(f"release/stub/nvgt_{stub_platform}_iap", stub_iap_objects)
+		stub_iap_env.AddPostAction(stub_iap, fix_stub)
+		stublibs_iap = list(stub_iap_env["LIBS"])
+		if "angelscript" in stublibs_iap:
+			stublibs_iap[stublibs_iap.index("angelscript")] = "angelscript_nc"
+			stub_nc_iap = stub_iap_env.Program(f"release/stub/nvgt_{stub_platform}_nc_iap", stub_iap_objects, LIBS = stublibs_iap)
+			stub_iap_env.AddPostAction(stub_nc_iap, fix_stub)
+		# Non-IAP stub: exclude iap_apple.mm, remove StoreKit, define NVGT_NO_IAP.
+		sources_no_iap = [s for s in sources if s != "iap_apple.mm"]
+		VariantDir("build/obj_stub", "src", duplicate = 0)
+		no_iap_stub_env = stub_env.Clone()
+		no_iap_stub_env.Append(CPPDEFINES = ["NVGT_NO_IAP"])
+		no_iap_stub_env["FRAMEWORKS"] = [f for f in no_iap_stub_env.get("FRAMEWORKS", []) if f != "StoreKit"]
+		stub_objects = no_iap_stub_env.Object([os.path.join("build/obj_stub", s) for s in sources_no_iap]) + extra_objects
+		stub = no_iap_stub_env.Program(f"release/stub/nvgt_{stub_platform}", stub_objects)
+		no_iap_stub_env.AddPostAction(stub, fix_stub)
+		stublibs = list(no_iap_stub_env["LIBS"])
+		if "angelscript" in stublibs:
+			stublibs[stublibs.index("angelscript")] = "angelscript_nc"
+			stub_nc = no_iap_stub_env.Program(f"release/stub/nvgt_{stub_platform}_nc", stub_objects, LIBS = stublibs)
+			no_iap_stub_env.AddPostAction(stub_nc, fix_stub)
+	else:
+		VariantDir("build/obj_stub", "src", duplicate = 0)
+		stub_objects = stub_env.Object([os.path.join("build/obj_stub", s) for s in sources]) + extra_objects
+		if ARGUMENTS.get("debug", "0") == "1": stub_env["PDB"] = f"#build/debug/nvgt_{stub_platform}.pdb"
+		stub = stub_env.Program(f"release/stub/nvgt_{stub_platform}", stub_objects)
+		stub_env.AddPostAction(stub, fix_stub)
 		if env["NVGT_TARGET"] == "windows":
-			env.Install("c:/nvgt/stub", stub_nc)
+			env.Install("c:/nvgt/stub", stub)
 			if "upx" in env:
-				stub_nc_u = stub_env.UPX(f"release/stub/nvgt_{stub_platform}_nc_upx.bin", stub_nc)
-				stub_env.AddPostAction(stub_nc_u, fix_stub)
-				env.Install("c:/nvgt/stub", stub_nc_u)
+				stub_u = stub_env.UPX(f"release/stub/nvgt_{stub_platform}_upx.bin", stub)
+				stub_env.AddPostAction(stub_u, fix_stub)
+				env.Install("c:/nvgt/stub", stub_u)
+		stublibs = list(stub_env["LIBS"])
+		if "angelscript" in stublibs:
+			stublibs[stublibs.index("angelscript")] = "angelscript_nc"
+			if ARGUMENTS.get("debug", "0") == "1": stub_env["PDB"] = f"#build/debug/nvgt_{stub_platform}_nc.pdb"
+			stub_nc = stub_env.Program(f"release/stub/nvgt_{stub_platform}_nc", stub_objects, LIBS = stublibs)
+			stub_env.AddPostAction(stub_nc, fix_stub)
+			if env["NVGT_TARGET"] == "windows":
+				env.Install("c:/nvgt/stub", stub_nc)
+				if "upx" in env:
+					stub_nc_u = stub_env.UPX(f"release/stub/nvgt_{stub_platform}_nc_upx.bin", stub_nc)
+					stub_env.AddPostAction(stub_nc_u, fix_stub)
+					env.Install("c:/nvgt/stub", stub_nc_u)
 
 if ARGUMENTS.get("copylibs", "1") == "1":
 	env["NVGT_OSDEV_COPY_LIBS"](env)
