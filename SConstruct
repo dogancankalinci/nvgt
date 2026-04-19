@@ -82,6 +82,8 @@ if  ARGUMENTS.get("no_plugins", "0") == "0":
 				static_plugins.append(l.strip())
 	except FileNotFoundError: pass
 	plugin_env = env.Clone()
+	env["CPPDEFINES"] = list(env["CPPDEFINES"])
+	plugin_env["CPPDEFINES"] = list(plugin_env["CPPDEFINES"])
 	# Then loop through all known plugins and build them.
 	for s in Glob("plugin/*/_SConscript") + Glob("plugin/*/SConscript") + Glob("extra/plugin/integrated/*/_SConscript") + Glob("extra/plugin/integrated/*/SConscript"):
 		plugname = str(s).split(os.path.sep)[-2]
