@@ -42,6 +42,9 @@
 #include <miniaudio_libvorbis.h>
 #include <miniaudio_libopus.h>
 #include <iostream>
+#import <AVFoundation/AVFoundation.h>
+#import <Foundation/Foundation.h>
+
 using namespace std;
 
 class sound_impl;
@@ -759,7 +762,7 @@ class audio_decoder_impl : public audio_data_source_impl, public virtual audio_d
 		return cfg;
 	}
 public:
-	audio_decoder_impl(audio_engine* e) : audio_data_source_impl(nullptr, e), decoder(nullptr), datastream_ref(nullptr) {}
+	audio_decoder_impl(audio_engine* e) : audio_data_source_impl(e), decoder(nullptr), datastream_ref(nullptr) {}
 	~audio_decoder_impl() { close(); }
 	virtual bool open(const std::string& filename, const pack_interface* pack_file, unsigned int sample_rate, unsigned int channels) override {
 		if (decoder && !close()) return false;
@@ -1876,6 +1879,18 @@ public:
 		device_config.capture.pDeviceID = (device >= 0 && device < g_sound_input_devices.size()) ? &g_sound_input_devices[device_index].id : nullptr;
 		if ((g_soundsystem_last_error = ma_device_init(nullptr, &device_config, &*capture_device)) != MA_SUCCESS) throw std::runtime_error("failed to initialize capture device");
 		if ((g_soundsystem_last_error = ma_device_start(&*capture_device)) != MA_SUCCESS) audio_node_impl::set_state(ma_node_state_stopped);
+    AVAudioSession *audioSession = [AVAudioSession sharedInstance];
+    NSError *audioSessionError = nil;
+    [audioSession setCategory:AVAudioSessionCategoryPlayAndRecord
+                                 withOptions:AVAudioSessionCategoryOptionDefaultToSpeaker|AVAudioSessionCategoryOptionMixWithOthers
+                                       error:&audioSessionError];
+    [audioSession setActive:YES error:&audioSessionError];
+
+[[AVAudioSession sharedInstance] requestRecordPermission:^(BOOL granted) {
+    if (granted) {
+    } else {
+    }
+}];
 	}
 	~microphone_impl() {
 		if (capture_device) ma_device_uninit(&*capture_device);
