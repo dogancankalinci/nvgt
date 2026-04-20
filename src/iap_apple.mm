@@ -390,9 +390,9 @@ static bool receipt_contains(const std::vector<iap_receipt_entry>& entries,
 @property (nonatomic, strong) NSMutableDictionary<NSString*, SKProduct*>* productMap;
 @property (nonatomic, strong) SKReceiptRefreshRequest* receiptRefreshRequest;
 // Purchased/Restored transactions held back while a receipt refresh is in progress.
-// They are NOT finished yet so StoreKit will re-deliver them after the observer
-// is re-attached on refresh success.  On refresh failure they are explicitly failed
-// and finished so the queue is not permanently blocked.
+// They are NOT finished so StoreKit keeps them in its queue.  requestDidFinish:
+// loads the refreshed receipt and validates+finishes each one directly.
+// request:didFailWithError: fails and finishes them so the queue is never blocked.
 @property (nonatomic, strong) NSMutableArray<SKPaymentTransaction*>* pendingReceiptTransactions;
 @end
 
