@@ -261,6 +261,12 @@ unsigned short getCpuHash() {
 #include "hash.h"
 #include "misc_functions.h"
 #include <sstream>
+#ifdef __ANDROID__
+#include "android.h"
+#endif
+#if defined(TARGET_OS_IOS) && TARGET_OS_IOS
+#include "apple.h"
+#endif
 
 std::string generateHash(const std::string& bytes) {
 	static char chars[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
@@ -281,6 +287,11 @@ static std::string cachedIdentifier = "";
 std::string generate_system_fingerprint_legacy1(const std::string& identifier) {
 	if (cachedHash != nullptr && cachedIdentifier == identifier)
 		return *cachedHash;
+#if defined(__ANDROID__)
+	return generateHash(sha256(android_get_device_id() + identifier, true));
+#elif defined(TARGET_OS_IOS) && TARGET_OS_IOS
+	return generateHash(sha256(apple_get_identifier_for_vendor() + identifier, true));
+#else
 	std::stringstream stream;
 	unsigned short mac1;
 	unsigned short mac2;
@@ -291,8 +302,14 @@ std::string generate_system_fingerprint_legacy1(const std::string& identifier) {
 	stream << getVolumeHash();
 	stream << identifier;
 	return generateHash(sha256(stream.str(), true));
+#endif
 }
 std::string generate_system_fingerprint(const std::string& identifier = "") {
+#if defined(__ANDROID__)
+	return generateHash(sha256(android_get_device_id() + identifier, true));
+#elif defined(TARGET_OS_IOS) && TARGET_OS_IOS
+	return generateHash(sha256(apple_get_identifier_for_vendor() + identifier, true));
+#else
 	std::stringstream stream;
 	stream << SDL_GetSystemRAM();
 	stream << Poco::Path::expand(std::string(_O("%NUMBER_OF_PROCESSORS% %PROCESSOR_ARCHITECTURE% %PROCESSOR_IDENTIFIER% %PROCESSOR_LEVEL% %PROCESSOR_REVISION%")));
@@ -300,6 +317,7 @@ std::string generate_system_fingerprint(const std::string& identifier = "") {
 	stream << getVolumeHash();
 	stream << identifier;
 	return generateHash(sha256(stream.str(), true));
+#endif
 }
 
 void RegisterSystemFingerprintFunction(asIScriptEngine* engine) {

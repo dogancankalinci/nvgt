@@ -95,6 +95,27 @@ inline std::string from_jstring(JNIEnv* env, jstring jstr) {
 	return result;
 }
 
+std::string android_get_device_id() {
+	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
+	if (!env) return "";
+	LocalRef<jobject> activity(env, (jobject)SDL_GetAndroidActivity());
+	if (!activity.get()) return "";
+	LocalRef<jclass> activityClass(env, env->GetObjectClass(activity.get()));
+	if (!activityClass.get()) return "";
+	jmethodID midGetCR = env->GetMethodID(activityClass.get(), "getContentResolver", "()Landroid/content/ContentResolver;");
+	if (!midGetCR) return "";
+	LocalRef<jobject> cr(env, env->CallObjectMethod(activity.get(), midGetCR));
+	if (!cr.get()) return "";
+	LocalRef<jclass> settingsClass(env, env->FindClass("android/provider/Settings$Secure"));
+	if (!settingsClass.get()) return "";
+	jmethodID midGetStr = env->GetStaticMethodID(settingsClass.get(), "getString", "(Landroid/content/ContentResolver;Ljava/lang/String;)Ljava/lang/String;");
+	if (!midGetStr) return "";
+	LocalRef<jstring> key(env, env->NewStringUTF("android_id"));
+	LocalRef<jstring> jresult(env, (jstring)env->CallStaticObjectMethod(settingsClass.get(), midGetStr, cr.get(), key.get()));
+	if (env->ExceptionCheck()) { env->ExceptionClear(); return ""; }
+	return from_jstring(env, jresult.get());
+}
+
 bool android_is_screen_reader_active() {
 	android_setup_jni();
 	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();

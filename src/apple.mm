@@ -402,6 +402,14 @@ void voice_over_speech_shutdown() {
 	speech_new_event.set();
 }
 
+std::string apple_get_identifier_for_vendor() {
+#if TARGET_OS_IOS
+	NSUUID* uuid = [UIDevice currentDevice].identifierForVendor;
+	if (uuid) return [uuid.UUIDString UTF8String];
+#endif
+	return "";
+}
+
 bool screen_reader_load() { return true; }
 void screen_reader_unload() { voice_over_speech_shutdown(); }
 std::string screen_reader_detect() { return voice_over_is_running() ? "VoiceOver" : ""; }
