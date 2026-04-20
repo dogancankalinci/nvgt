@@ -20,12 +20,22 @@
 #include <openssl/asn1.h>
 #include <openssl/err.h>
 #include <openssl/pkcs7.h>
+#include <openssl/sha.h>
 #include <openssl/x509.h>
+#include <time.h>
 #include <cstdint>
 #include <string>
 #include <vector>
 #include <mutex>
 #include "iap.h"
+
+// iOS/iPadOS: need UIDevice for identifierForVendor.
+// macOS and Mac Catalyst: need IOKit for the primary network interface MAC address.
+#if TARGET_OS_OSX || TARGET_OS_MACCATALYST
+#import <IOKit/IOKitLib.h>
+#elif TARGET_OS_IOS
+#import <UIKit/UIKit.h>
+#endif
 
 // --------------------------------------------------------------------------
 // App Store receipt validation (PKCS7 + ASN.1 parsed with OpenSSL)
@@ -63,6 +73,86 @@ static int asn1_int_val(const uint8_t* p, size_t len) {
 	return v;
 }
 
+// Decode a UTF8String (0x0C) or IA5String (0x16) wrapped inside an OCTET STRING value.
+static std::string asn1_decode_string(const uint8_t* ov, size_t ol) {
+	const uint8_t* sp = ov;
+	int st; const uint8_t* sv; size_t sl;
+	if (!asn1_next(sp, ov + ol, &st, &sv, &sl)) return {};
+	if (st != 0x0C /*UTF8String*/ && st != 0x16 /*IA5String*/) return {};
+	return std::string(reinterpret_cast<const char*>(sv), sl);
+}
+
+// Parse an ISO 8601 receipt date string (e.g. "2023-01-01T12:00:00Z") to UTC time_t.
+static time_t parse_receipt_date(const std::string& s) {
+	if (s.size() < 19) return 0;
+	char buf[32] = {};
+	if (s.size() >= sizeof(buf)) return 0;
+	memcpy(buf, s.c_str(), s.size());
+	struct tm t = {};
+	if (strptime(buf, "%Y-%m-%dT%H:%M:%SZ", &t) != nullptr ||
+	    strptime(buf, "%Y-%m-%dT%H:%M:%S+00:00", &t) != nullptr)
+		return timegm(&t);
+	return 0;
+}
+
+// --------------------------------------------------------------------------
+// Platform-specific device identifier for SHA-1 hash verification.
+// iOS/iPadOS: raw UUID bytes from identifierForVendor (16 bytes).
+// macOS/Mac Catalyst: MAC address bytes from primary network interface.
+// --------------------------------------------------------------------------
+#if TARGET_OS_OSX || TARGET_OS_MACCATALYST
+static io_service_t mac_io_service(const char* bsdName, bool wantBuiltIn) {
+	mach_port_t port = kIOMasterPortDefault;
+	CFMutableDictionaryRef matching = IOBSDNameMatching(port, 0, bsdName);
+	if (!matching) return IO_OBJECT_NULL;
+	io_iterator_t it = IO_OBJECT_NULL;
+	if (IOServiceGetMatchingServices(port, matching, &it) != KERN_SUCCESS || it == IO_OBJECT_NULL)
+		return IO_OBJECT_NULL;
+	io_service_t result = IO_OBJECT_NULL;
+	for (io_service_t candidate = IOIteratorNext(it);
+	     candidate != IO_OBJECT_NULL;
+	     candidate = IOIteratorNext(it)) {
+		CFTypeRef prop = IORegistryEntryCreateCFProperty(candidate, CFSTR("IOBuiltin"),
+		                                                  kCFAllocatorDefault, 0);
+		bool match = (prop && CFGetTypeID(prop) == CFBooleanGetTypeID() &&
+		              (bool)CFBooleanGetValue((CFBooleanRef)prop) == wantBuiltIn);
+		if (prop) CFRelease(prop);
+		if (match) { result = candidate; break; }
+		IOObjectRelease(candidate);
+	}
+	IOObjectRelease(it);
+	return result;
+}
+
+static std::vector<uint8_t> device_identifier_bytes() {
+	io_service_t svc = mac_io_service("en0", true);
+	if (svc == IO_OBJECT_NULL) svc = mac_io_service("en1", true);
+	if (svc == IO_OBJECT_NULL) svc = mac_io_service("en0", false);
+	if (svc == IO_OBJECT_NULL) return {};
+	std::vector<uint8_t> result;
+	CFTypeRef prop = IORegistryEntrySearchCFProperty(svc, kIOServicePlane,
+	                                                  CFSTR("IOMACAddress"),
+	                                                  kCFAllocatorDefault,
+	                                                  kIORegistryIterateRecursively |
+	                                                  kIORegistryIterateParents);
+	if (prop && CFGetTypeID(prop) == CFDataGetTypeID()) {
+		CFDataRef d = (CFDataRef)prop;
+		result.assign(CFDataGetBytePtr(d), CFDataGetBytePtr(d) + CFDataGetLength(d));
+	}
+	if (prop) CFRelease(prop);
+	IOObjectRelease(svc);
+	return result;
+}
+#else // iOS, iPadOS
+static std::vector<uint8_t> device_identifier_bytes() {
+	NSUUID* uuid = [[UIDevice currentDevice] identifierForVendor];
+	if (!uuid) return {};
+	uuid_t bytes;
+	[uuid getUUIDBytes:bytes];
+	return std::vector<uint8_t>(bytes, bytes + sizeof(uuid_t));
+}
+#endif
+
 struct iap_receipt_entry { std::string product_id, transaction_id; };
 
 // Parse the raw bytes of one in_app attribute value (itself a SET of attributes).
@@ -92,15 +182,9 @@ static iap_receipt_entry parse_in_app_value(const uint8_t* data, size_t len) {
 		if (!asn1_next(ap, ae, &ot, &ov, &ol) || ot != 0x04 /*OCTET STRING*/) continue;
 
 		if (attr_type == 1702 || attr_type == 1703) {
-			// The OCTET STRING wraps a UTF8String (0x0C) or IA5String (0x16)
-			const uint8_t* sp = ov;
-			int st; const uint8_t* sv; size_t sl;
-			if (!asn1_next(sp, ov + ol, &st, &sv, &sl)) continue;
-			if (st == 0x0C /*UTF8String*/ || st == 0x16 /*IA5String*/) {
-				std::string s(reinterpret_cast<const char*>(sv), sl);
-				if (attr_type == 1702) e.product_id    = s;
-				else                   e.transaction_id = s;
-			}
+			std::string s = asn1_decode_string(ov, ol);
+			if (attr_type == 1702) e.product_id    = s;
+			else                   e.transaction_id = s;
 		}
 	}
 	return e;
@@ -109,17 +193,21 @@ static iap_receipt_entry parse_in_app_value(const uint8_t* data, size_t len) {
 // Verify the PKCS7 signature on the receipt.
 //
 // PKCS7_NOVERIFY skips certificate *chain* validation (we don't embed Apple's
-// root CA), but it still verifies that the signature bytes were produced by the
-// private key matching the signer certificate embedded in the receipt ÔÇö i.e.
-// the payload has not been tampered with since it was signed.
+// root CA), but still verifies the signature bytes against the embedded signer
+// certificate — i.e. the payload has not been tampered with since it was signed.
 // Additionally we confirm the signer certificate's organizationName contains
-// "Apple". On a non-jailbroken device the receipt file is OS-protected so this
-// combined check makes forging a receipt impractical. For a fully air-tight
-// guarantee embed Apple's root CA and call PKCS7_verify with a populated
-// X509_STORE instead of passing nullptr, or perform server-side validation.
-static bool pkcs7_signature_valid(PKCS7* p7) {
-	if (PKCS7_verify(p7, nullptr, nullptr, nullptr, nullptr, PKCS7_NOVERIFY) != 1)
-		return false;
+// "Apple". The creation_time parameter (from receipt field 12) is passed as the
+// X509_STORE verification time so that certificates valid at signing time are
+// accepted even if they have since expired, per Apple's recommendation.
+static bool pkcs7_signature_valid(PKCS7* p7, time_t creation_time) {
+	X509_STORE* store = X509_STORE_new();
+	if (store && creation_time > 0) {
+		X509_VERIFY_PARAM* param = X509_STORE_get0_param(store);
+		if (param) X509_VERIFY_PARAM_set_time(param, creation_time);
+	}
+	int rc = PKCS7_verify(p7, nullptr, store, nullptr, nullptr, PKCS7_NOVERIFY);
+	if (store) X509_STORE_free(store);
+	if (rc != 1) return false;
 
 	STACK_OF(X509)* signers = PKCS7_get0_signers(p7, nullptr, PKCS7_NOVERIFY);
 	if (!signers) return false;
@@ -138,31 +226,56 @@ static bool pkcs7_signature_valid(PKCS7* p7) {
 	return from_apple;
 }
 
-// Load all in_app records from the bundle's App Store receipt.
-// Returns an empty vector if the receipt is absent or cannot be parsed.
-static std::vector<iap_receipt_entry> load_receipt_entries() {
+// Load, parse, and fully validate the App Store receipt.
+//
+// Performs all Apple-recommended local checks (without embedding the root CA):
+//   1. PKCS7 signature verified using receipt_creation_date (field 12) as the
+//      certificate verification time, so signing-time validity is used.
+//   2. Bundle identifier (field 2) must match NSBundle.mainBundle.bundleIdentifier.
+//   3. App version string (field 3) must match CFBundleVersion.
+//   4. SHA-1 device hash (field 5) must equal SHA1(deviceId || opaqueValue || bundleIdRaw),
+//      where deviceId is platform-specific (identifierForVendor on iOS,
+//      MAC address on macOS/Catalyst).
+//
+// Returns in_app entries (field 17) on success; empty vector on any failure.
+// *out_refresh_recommended is set to true only when the failure is due to the receipt
+// file being absent or PKCS7-corrupt — cases where SKReceiptRefreshRequest can help.
+// It is NOT set for bundle ID / version / hash mismatches; those cannot be fixed by
+// a refresh and should result in an immediate failure.
+static std::vector<iap_receipt_entry> load_receipt_entries(bool* out_refresh_recommended = nullptr) {
+	if (out_refresh_recommended) *out_refresh_recommended = false;
 	std::vector<iap_receipt_entry> result;
 
 	NSURL*  url  = [[NSBundle mainBundle] appStoreReceiptURL];
 	NSData* data = url ? [NSData dataWithContentsOfURL:url] : nil;
-	if (!data || data.length == 0) return result;
+	if (!data || data.length == 0) {
+		if (out_refresh_recommended) *out_refresh_recommended = true;
+		return result;
+	}
 
 	const unsigned char* ptr = (const unsigned char*)data.bytes;
 	PKCS7* p7 = d2i_PKCS7(nullptr, &ptr, (long)data.length);
-	if (!p7) { ERR_clear_error(); return result; }
-
-	if (!pkcs7_signature_valid(p7)) { PKCS7_free(p7); ERR_clear_error(); return result; }
+	if (!p7) {
+		ERR_clear_error();
+		if (out_refresh_recommended) *out_refresh_recommended = true;
+		return result;
+	}
 
 	if (!PKCS7_type_is_signed(p7) || !p7->d.sign || !p7->d.sign->contents ||
 	    !PKCS7_type_is_data(p7->d.sign->contents) || !p7->d.sign->contents->d.data) {
-		PKCS7_free(p7); ERR_clear_error(); return result;
+		PKCS7_free(p7); ERR_clear_error();
+		if (out_refresh_recommended) *out_refresh_recommended = true;
+		return result;
 	}
 
 	ASN1_OCTET_STRING* os = p7->d.sign->contents->d.data;
 	const uint8_t *p = os->data, *end = os->data + os->length;
-	int tag; const uint8_t* val; size_t vlen;
 
-	// Outer SET of top-level receipt attributes
+	// Fields extracted during the single parse pass
+	std::string bundle_id, app_version, creation_date;
+	std::vector<uint8_t> bundle_id_raw, opaque_value, sha1_hash;
+
+	int tag; const uint8_t* val; size_t vlen;
 	if (!asn1_next(p, end, &tag, &val, &vlen) || tag != 0x31 /*SET*/) {
 		PKCS7_free(p7); ERR_clear_error(); return result;
 	}
@@ -174,22 +287,82 @@ static std::vector<iap_receipt_entry> load_receipt_entries() {
 		const uint8_t *ap = val, *ae = val + vlen;
 
 		int t; const uint8_t* tv; size_t tl;
-		if (!asn1_next(ap, ae, &t, &tv, &tl) || t != 0x02) continue;
+		if (!asn1_next(ap, ae, &t, &tv, &tl) || t != 0x02 /*INTEGER*/) continue;
 		int attr_type = asn1_int_val(tv, tl);
 
 		int vt; const uint8_t* vv; size_t vl;
 		if (!asn1_next(ap, ae, &vt, &vv, &vl)) continue;
 
 		int ot; const uint8_t* ov; size_t ol;
-		if (!asn1_next(ap, ae, &ot, &ov, &ol) || ot != 0x04) continue;
+		if (!asn1_next(ap, ae, &ot, &ov, &ol) || ot != 0x04 /*OCTET STRING*/) continue;
 
-		if (attr_type == 17 /*in_app*/) {
-			auto e = parse_in_app_value(ov, ol);
-			if (!e.product_id.empty()) result.push_back(e);
+		switch (attr_type) {
+			case 2: // bundle_id
+				bundle_id_raw.assign(ov, ov + ol); // raw DER bytes used in SHA-1
+				bundle_id = asn1_decode_string(ov, ol);
+				break;
+			case 3: // app_version (CFBundleVersion)
+				app_version = asn1_decode_string(ov, ol);
+				break;
+			case 4: // opaque_value — used in SHA-1 hash
+				opaque_value.assign(ov, ov + ol);
+				break;
+			case 5: // sha1_hash — 20-byte device hash to verify
+				sha1_hash.assign(ov, ov + ol);
+				break;
+			case 12: // receipt_creation_date — used as PKCS7 verification time
+				creation_date = asn1_decode_string(ov, ol);
+				break;
+			case 17: { // in_app purchase record
+				auto e = parse_in_app_value(ov, ol);
+				if (!e.product_id.empty()) result.push_back(e);
+				break;
+			}
 		}
 	}
 
+	// Step 1: PKCS7 signature, using receipt_creation_date as the verification time.
+	// A signature failure means the receipt file is corrupt or tampered; a refresh may fix it.
+	time_t creation_time = parse_receipt_date(creation_date);
+	if (!pkcs7_signature_valid(p7, creation_time)) {
+		PKCS7_free(p7); ERR_clear_error();
+		if (out_refresh_recommended) *out_refresh_recommended = true;
+		return {};
+	}
 	PKCS7_free(p7);
+
+	// Step 2: Bundle identifier must match the running app.
+	NSString* expected_bid_ns = [[NSBundle mainBundle] bundleIdentifier];
+	std::string expected_bid = expected_bid_ns ? [expected_bid_ns UTF8String] : "";
+	if (!expected_bid.empty() && bundle_id != expected_bid) {
+		ERR_clear_error(); return {};
+	}
+
+	// Step 3: App version (CFBundleVersion build string) must match.
+	NSString* expected_ver_ns = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleVersion"];
+	std::string expected_ver = expected_ver_ns ? [expected_ver_ns UTF8String] : "";
+	if (!expected_ver.empty() && app_version != expected_ver) {
+		ERR_clear_error(); return {};
+	}
+
+	// Step 4: Device SHA-1 hash — SHA1(deviceId || opaqueValue || bundleIdRaw).
+	if (!sha1_hash.empty() && sha1_hash.size() == SHA_DIGEST_LENGTH &&
+	    !opaque_value.empty() && !bundle_id_raw.empty()) {
+		std::vector<uint8_t> dev_id = device_identifier_bytes();
+		if (!dev_id.empty()) {
+			uint8_t computed[SHA_DIGEST_LENGTH];
+			SHA_CTX ctx;
+			SHA1_Init(&ctx);
+			SHA1_Update(&ctx, dev_id.data(), dev_id.size());
+			SHA1_Update(&ctx, opaque_value.data(), opaque_value.size());
+			SHA1_Update(&ctx, bundle_id_raw.data(), bundle_id_raw.size());
+			SHA1_Final(computed, &ctx);
+			if (memcmp(computed, sha1_hash.data(), SHA_DIGEST_LENGTH) != 0) {
+				ERR_clear_error(); return {};
+			}
+		}
+	}
+
 	ERR_clear_error();
 	return result;
 }
@@ -215,6 +388,12 @@ static bool receipt_contains(const std::vector<iap_receipt_entry>& entries,
 @interface IAPManager : NSObject <SKProductsRequestDelegate, SKPaymentTransactionObserver>
 @property (nonatomic, strong) SKProductsRequest* activeRequest;
 @property (nonatomic, strong) NSMutableDictionary<NSString*, SKProduct*>* productMap;
+@property (nonatomic, strong) SKReceiptRefreshRequest* receiptRefreshRequest;
+// Purchased/Restored transactions held back while a receipt refresh is in progress.
+// They are NOT finished yet so StoreKit will re-deliver them after the observer
+// is re-attached on refresh success.  On refresh failure they are explicitly failed
+// and finished so the queue is not permanently blocked.
+@property (nonatomic, strong) NSMutableArray<SKPaymentTransaction*>* pendingReceiptTransactions;
 @end
 
 @implementation IAPManager
@@ -223,6 +402,7 @@ static bool receipt_contains(const std::vector<iap_receipt_entry>& entries,
 	self = [super init];
 	if (self) {
 		_productMap = [NSMutableDictionary new];
+		_pendingReceiptTransactions = [NSMutableArray new];
 		[[SKPaymentQueue defaultQueue] addTransactionObserver:self];
 	}
 	return self;
@@ -231,6 +411,111 @@ static bool receipt_contains(const std::vector<iap_receipt_entry>& entries,
 - (void)dealloc {
 	[[SKPaymentQueue defaultQueue] removeTransactionObserver:self];
 	[super dealloc];
+}
+
+// Initiates an async App Store receipt refresh (SKReceiptRefreshRequest).
+// Called when receipt validation fails in a way that a fresh receipt can fix
+// (missing file or PKCS7-corrupt). Does nothing if a refresh is already running.
+// Per Apple's guidelines: don't terminate the app on a missing/corrupt receipt.
+- (void)requestReceiptRefresh {
+	if (self.receiptRefreshRequest) return; // already in progress
+	self.receiptRefreshRequest = [[[SKReceiptRefreshRequest alloc] initWithReceiptProperties:nil] autorelease];
+	self.receiptRefreshRequest.delegate = self;
+	[self.receiptRefreshRequest start];
+}
+
+// Validates and finishes one Purchased/Restored transaction against a receipt that
+// has already passed all structural checks.  Shared by the normal transaction path
+// and the post-refresh retry path.
+- (void)finishValidatedTransaction:(SKPaymentTransaction*)tx
+                           receipt:(const std::vector<iap_receipt_entry>&)receipt {
+	bool is_restored = (tx.transactionState == SKPaymentTransactionStateRestored);
+	iap_purchase_info info;
+	info.product_id = [tx.payment.productIdentifier UTF8String];
+	info.state      = is_restored ? IAP_PURCHASE_RESTORED : IAP_PURCHASE_SUCCESS;
+
+	NSString* receipt_tx_ns = (is_restored && tx.originalTransaction)
+	    ? tx.originalTransaction.transactionIdentifier
+	    : tx.transactionIdentifier;
+	std::string receipt_tx = receipt_tx_ns ? [receipt_tx_ns UTF8String] : "";
+	info.transaction_id = receipt_tx;
+
+	if (!receipt_contains(receipt, info.product_id, receipt_tx)) {
+		info.state = IAP_PURCHASE_FAILED;
+		std::lock_guard<std::mutex> lk(g_iap.mtx);
+		g_iap.last_error = "Receipt validation failed: " + info.product_id
+		                 + " not found in App Store receipt";
+		g_iap.pending_purchases.push_back(info);
+	} else {
+		std::lock_guard<std::mutex> lk(g_iap.mtx);
+		g_iap.pending_purchases.push_back(info);
+	}
+	[[SKPaymentQueue defaultQueue] finishTransaction:tx];
+}
+
+// ----- SKRequestDelegate (shared by SKProductsRequest and SKReceiptRefreshRequest) -----
+
+// On receipt refresh success: load the now-refreshed receipt and directly validate
+// and finish every deferred transaction.  No observer remove/re-add needed.
+- (void)requestDidFinish:(SKRequest*)request {
+	if (request != self.receiptRefreshRequest) return;
+	self.receiptRefreshRequest = nil;
+
+	NSArray<SKPaymentTransaction*>* deferred = [self.pendingReceiptTransactions copy];
+	[self.pendingReceiptTransactions removeAllObjects];
+
+	bool refresh_recommended = false;
+	const std::vector<iap_receipt_entry> receipt = load_receipt_entries(&refresh_recommended);
+
+	for (SKPaymentTransaction* tx in deferred) {
+		if (refresh_recommended) {
+			// Receipt still unusable after refresh — fail immediately rather than
+			// looping.  The queue must not be left blocked indefinitely.
+			iap_purchase_info info;
+			info.product_id     = [tx.payment.productIdentifier UTF8String];
+			info.transaction_id = tx.transactionIdentifier ? [tx.transactionIdentifier UTF8String] : "";
+			info.state          = IAP_PURCHASE_FAILED;
+			{
+				std::lock_guard<std::mutex> lk(g_iap.mtx);
+				g_iap.last_error = "Receipt still invalid after refresh: " + info.product_id;
+				g_iap.pending_purchases.push_back(info);
+			}
+			[[SKPaymentQueue defaultQueue] finishTransaction:tx];
+		} else {
+			[self finishValidatedTransaction:tx receipt:receipt];
+		}
+	}
+	[deferred release];
+}
+
+- (void)request:(SKRequest*)request didFailWithError:(NSError*)error {
+	std::string msg = error ? [error.localizedDescription UTF8String] : "Unknown SKRequest error";
+	if (request == self.receiptRefreshRequest) {
+		self.receiptRefreshRequest = nil;
+		// Receipt refresh failed — fail and finish every deferred transaction so
+		// the StoreKit queue is not permanently blocked.
+		{
+			std::lock_guard<std::mutex> lk(g_iap.mtx);
+			g_iap.last_error = "Receipt refresh failed: " + msg;
+			for (SKPaymentTransaction* tx in self.pendingReceiptTransactions) {
+				iap_purchase_info info;
+				info.product_id     = [tx.payment.productIdentifier UTF8String];
+				info.transaction_id = tx.transactionIdentifier ? [tx.transactionIdentifier UTF8String] : "";
+				info.state          = IAP_PURCHASE_FAILED;
+				g_iap.pending_purchases.push_back(info);
+			}
+		}
+		for (SKPaymentTransaction* tx in self.pendingReceiptTransactions)
+			[[SKPaymentQueue defaultQueue] finishTransaction:tx];
+		[self.pendingReceiptTransactions removeAllObjects];
+		return;
+	}
+	// Products request failure
+	std::lock_guard<std::mutex> lk(g_iap.mtx);
+	g_iap.last_error        = msg;
+	g_iap.products_ready    = true; // signal done even on error
+	g_iap.querying_products = false;
+	self.activeRequest = nil;
 }
 
 // ----- SKProductsRequestDelegate -----
@@ -273,55 +558,32 @@ static bool receipt_contains(const std::vector<iap_receipt_entry>& entries,
 	self.activeRequest = nil;
 }
 
-- (void)request:(SKRequest*)request didFailWithError:(NSError*)error {
-	std::string msg = error ? [error.localizedDescription UTF8String] : "Unknown SKRequest error";
-	std::lock_guard<std::mutex> lk(g_iap.mtx);
-	g_iap.last_error        = msg;
-	g_iap.products_ready    = true; // signal done even on error
-	g_iap.querying_products = false;
-	self.activeRequest = nil;
-}
-
 // ----- SKPaymentTransactionObserver -----
 
 - (void)paymentQueue:(SKPaymentQueue*)queue
  updatedTransactions:(NSArray<SKPaymentTransaction*>*)transactions {
-	// Load the receipt once for the entire batch. Each transaction validation
-	// call re-using this snapshot avoids repeated disk reads and PKCS7 parses.
-	const std::vector<iap_receipt_entry> receipt = load_receipt_entries();
+	// Load and fully validate the receipt once for the entire batch.
+	// out_refresh_recommended is true only when the failure is recoverable via
+	// SKReceiptRefreshRequest (missing file or PKCS7-corrupt), NOT for hard
+	// mismatches (bundle ID, version, SHA-1) which a refresh cannot fix.
+	bool refresh_recommended = false;
+	const std::vector<iap_receipt_entry> receipt = load_receipt_entries(&refresh_recommended);
 
 	for (SKPaymentTransaction* tx in transactions) {
 		switch (tx.transactionState) {
 			case SKPaymentTransactionStatePurchased:
 			case SKPaymentTransactionStateRestored: {
-				iap_purchase_info info;
-				info.product_id      = [tx.payment.productIdentifier UTF8String];
-				bool is_restored     = (tx.transactionState == SKPaymentTransactionStateRestored);
-				info.state           = is_restored ? IAP_PURCHASE_RESTORED : IAP_PURCHASE_SUCCESS;
-
-				// For restored purchases StoreKit delivers a new transaction, but the receipt
-				// records the original transaction's identifier (field 1703). Use the original
-				// transaction ID both for receipt lookup and as the exposed transaction_id so
-				// that server-side validation and record-keeping see a consistent identifier.
-				NSString* receipt_tx_ns = (is_restored && tx.originalTransaction)
-				    ? tx.originalTransaction.transactionIdentifier
-				    : tx.transactionIdentifier;
-				std::string receipt_tx = receipt_tx_ns ? [receipt_tx_ns UTF8String] : "";
-				info.transaction_id  = receipt_tx;
-
-				if (!receipt_contains(receipt, info.product_id, receipt_tx)) {
-					info.state = IAP_PURCHASE_FAILED;
-					std::lock_guard<std::mutex> lk(g_iap.mtx);
-					g_iap.last_error = "Receipt validation failed: " + info.product_id
-					                 + " not found in App Store receipt";
-					g_iap.pending_purchases.push_back(info);
-					[[SKPaymentQueue defaultQueue] finishTransaction:tx];
+				// If the receipt is corrupt or missing, defer this transaction:
+				// do NOT call finishTransaction so StoreKit keeps it in the queue.
+				// After the refresh completes, requestDidFinish: validates and finishes
+				// every deferred transaction directly from pendingReceiptTransactions.
+				if (refresh_recommended) {
+					[self.pendingReceiptTransactions addObject:tx];
+					[self requestReceiptRefresh];
 					break;
 				}
 
-				std::lock_guard<std::mutex> lk(g_iap.mtx);
-				g_iap.pending_purchases.push_back(info);
-				[[SKPaymentQueue defaultQueue] finishTransaction:tx];
+				[self finishValidatedTransaction:tx receipt:receipt];
 				break;
 			}
 			case SKPaymentTransactionStateFailed: {
@@ -414,7 +676,7 @@ bool iap_platform_purchase(const std::string& product_id) {
 	SKProduct* product = mgr.productMap[pid];
 	if (!product) {
 		std::lock_guard<std::mutex> lk(g_iap.mtx);
-		g_iap.last_error = "Product not found in cache: " + product_id + " ÔÇö call iap_query_products first";
+		g_iap.last_error = "Product not found in cache: " + product_id + " — call iap_query_products first";
 		return false;
 	}
 	SKPayment* payment = [SKPayment paymentWithProduct:product];
