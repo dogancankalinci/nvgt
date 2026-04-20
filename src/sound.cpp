@@ -42,9 +42,13 @@
 #include <miniaudio_libvorbis.h>
 #include <miniaudio_libopus.h>
 #include <iostream>
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
+#if !TARGET_OS_IPHONE
 #import <AVFoundation/AVFoundation.h>
 #import <Foundation/Foundation.h>
-
+#endif
 using namespace std;
 
 class sound_impl;
@@ -1879,6 +1883,7 @@ public:
 		device_config.capture.pDeviceID = (device >= 0 && device < g_sound_input_devices.size()) ? &g_sound_input_devices[device_index].id : nullptr;
 		if ((g_soundsystem_last_error = ma_device_init(nullptr, &device_config, &*capture_device)) != MA_SUCCESS) throw std::runtime_error("failed to initialize capture device");
 		if ((g_soundsystem_last_error = ma_device_start(&*capture_device)) != MA_SUCCESS) audio_node_impl::set_state(ma_node_state_stopped);
+#if !TARGET_OS_IPHONE
     AVAudioSession *audioSession = [AVAudioSession sharedInstance];
     NSError *audioSessionError = nil;
     [audioSession setCategory:AVAudioSessionCategoryPlayAndRecord
@@ -1891,6 +1896,7 @@ public:
     } else {
     }
 }];
+#endif
 	}
 	~microphone_impl() {
 		if (capture_device) ma_device_uninit(&*capture_device);
