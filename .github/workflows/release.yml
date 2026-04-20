@@ -208,6 +208,12 @@ jobs:
         cp linux_release/stub/* release/stub
         cp -r mac_release/lib release/lib_mac
         cp mac_release/stub/* release/stub
+        cp release/stub/nvgt_windows.bin release/stub/nvgt_windows_iap.bin
+        cp release/stub/nvgt_windows_nc.bin release/stub/nvgt_windows_nc_iap.bin
+        cp release/stub/nvgt_windows_nc_upx.bin release/stub/nvgt_windows_nc_upx_iap.bin
+        cp release/stub/nvgt_windows_upx.bin release/stub/nvgt_windows_upx_iap.bin
+        cp release/stub/nvgt_linux.bin release/stub/nvgt_linux_iap.bin
+        cp release/stub/nvgt_linux_nc.bin release/stub/nvgt_linux_nc_iap.bin
         cd install
         iscc nvgt.iss
         cd ..
@@ -264,6 +270,12 @@ jobs:
         cp linux_release/stub/* release/stub
         cp -r windows_release/lib release/lib_windows
         cp windows_release/stub/* release/stub
+        cp release/stub/nvgt_windows.bin release/stub/nvgt_windows_iap.bin
+        cp release/stub/nvgt_windows_nc.bin release/stub/nvgt_windows_nc_iap.bin
+        cp release/stub/nvgt_windows_nc_upx.bin release/stub/nvgt_windows_nc_upx_iap.bin
+        cp release/stub/nvgt_windows_upx.bin release/stub/nvgt_windows_upx_iap.bin
+        cp release/stub/nvgt_linux.bin release/stub/nvgt_linux_iap.bin
+        cp release/stub/nvgt_linux_nc.bin release/stub/nvgt_linux_nc_iap.bin
         cd install
         python3 make_macos_app.py ../release no_dmg
         cd ..
@@ -317,6 +329,12 @@ jobs:
         cp mac_release/stub/* release/stub
         cp -r windows_release/lib release/lib_windows
         cp windows_release/stub/* release/stub
+        cp release/stub/nvgt_windows.bin release/stub/nvgt_windows_iap.bin
+        cp release/stub/nvgt_windows_nc.bin release/stub/nvgt_windows_nc_iap.bin
+        cp release/stub/nvgt_windows_nc_upx.bin release/stub/nvgt_windows_nc_upx_iap.bin
+        cp release/stub/nvgt_windows_upx.bin release/stub/nvgt_windows_upx_iap.bin
+        cp release/stub/nvgt_linux.bin release/stub/nvgt_linux_iap.bin
+        cp release/stub/nvgt_linux_nc.bin release/stub/nvgt_linux_nc_iap.bin
         cd release
         tar -czf "../nvgt_$nvgt_version.tar.gz" *
         cd ..

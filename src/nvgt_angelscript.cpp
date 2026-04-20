@@ -567,11 +567,9 @@ int ConfigureEngine(asIScriptEngine *engine) {
 	RegisterUnsorted(engine);
 	engine->EndConfigGroup();
 	engine->SetDefaultAccessMask(NVGT_SUBSYSTEM_GENERAL);
-	#ifndef NVGT_NO_IAP
 	engine->BeginConfigGroup("iap");
 	RegisterIAP(engine);
 	engine->EndConfigGroup();
-	#endif
 	engine->SetDefaultAccessMask(NVGT_SUBSYSTEM_UNCLASSIFIED);
 	g_ctxMgr->RegisterThreadSupport(engine);
 	g_ctxMgr->RegisterCoRoutineSupport(engine);
