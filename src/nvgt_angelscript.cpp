@@ -48,9 +48,7 @@
 #include "events.h"
 #include "graphics.h"
 #include "hash.h"
-#ifndef NVGT_NO_IAP
 #include "iap.h"
-#endif
 #include "input.h"
 #include "internet.h"
 #include "library.h"
