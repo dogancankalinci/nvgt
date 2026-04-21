@@ -975,10 +975,10 @@ protected:
 						archive_write_single_file(base_arc, f.path(), "dex/" + fname);
 				}
 			}
-			// native/ — copy all .so files from lib/ under native/lib/{abi}/ as AAB format requires.
+			// lib/ — native libs go under lib/{abi}/ in AAB base module format.
 			File lib_dir(Path(workplace.path()).append("lib"));
 			if (lib_dir.exists())
-				archive_write_dir(base_arc, lib_dir.path(), "native/lib", {}, {}, true);
+				archive_write_dir(base_arc, lib_dir.path(), "lib", {}, {}, true);
 			// assets/ — game assets including bytecode.bin.
 			archive_write_dir(base_arc, Path(workplace.path()).append("assets").toString(), "assets", {}, {}, true);
 			archive_write_close(base_arc);
