@@ -1,4 +1,4 @@
-/* input.cpp - human input handling code, or in otherwords an SDL2 wrapper
+/* input.cpp - human input handling code, or in otherwords an SDL3 wrapper
  *
  * NVGT - NonVisual Gaming Toolkit
  * Copyright (c) 2022-2025 Sam Tupy
