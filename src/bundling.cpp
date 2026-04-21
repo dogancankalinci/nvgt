@@ -951,15 +951,20 @@ protected:
 			libarchive_extract(Path(workplace.path()).append("proto.apk").toString(), proto_dir);
 			File(Path(workplace.path()).append("proto.apk")).remove();
 			// 3. Build the base module zip in the format bundletool expects.
+			// The file must be named base.zip because bundletool derives the module name from the zip filename.
 			set_status("packaging AAB module...");
-			TemporaryFile base_zip_location;
+			string base_zip_path = Path(workplace.path()).append("base.zip").toString();
 			struct archive* base_arc = archive_write_new();
 			archive_write_set_format_zip(base_arc);
 			archive_write_zip_set_compression_deflate(base_arc);
-			archive_write_open_filename(base_arc, base_zip_location.path().c_str());
+			archive_write_open_filename(base_arc, base_zip_path.c_str());
 			// manifest/ and resources.pb from the proto-format APK extraction.
 			archive_write_single_file(base_arc, Path(proto_dir).append("AndroidManifest.xml").toString(), "manifest/AndroidManifest.xml");
 			archive_write_single_file(base_arc, Path(proto_dir).append("resources.pb").toString(), "resources.pb");
+			// res/ — compiled resource files (e.g. icons) from proto-format APK.
+			File proto_res(Path(proto_dir).append("res"));
+			if (proto_res.exists())
+				archive_write_dir(base_arc, proto_res.path(), "res", {}, {}, true);
 			// dex/ — collect all classes*.dex from workplace root.
 			{
 				vector<File> root_entries;
@@ -970,15 +975,10 @@ protected:
 						archive_write_single_file(base_arc, f.path(), "dex/" + fname);
 				}
 			}
-			// native/ — native libs go under native/lib/{abi}/ in AAB format.
-			for (const string& abi : {"arm64-v8a", "armeabi-v7a"}) {
-				File lib_file(Path(workplace.path()).append(format("lib/%s/libgame.so", abi)));
-				if (lib_file.exists())
-					archive_write_single_file(base_arc, lib_file.path(), format("native/lib/%s/libgame.so", abi));
-				File main_file(Path(workplace.path()).append(format("lib/%s/libmain.so", abi)));
-				if (main_file.exists())
-					archive_write_single_file(base_arc, main_file.path(), format("native/lib/%s/libmain.so", abi));
-			}
+			// native/ — copy all .so files from lib/ under native/lib/{abi}/ as AAB format requires.
+			File lib_dir(Path(workplace.path()).append("lib"));
+			if (lib_dir.exists())
+				archive_write_dir(base_arc, lib_dir.path(), "native/lib", {}, {}, true);
 			// assets/ — game assets including bytecode.bin.
 			archive_write_dir(base_arc, Path(workplace.path()).append("assets").toString(), "assets", {}, {}, true);
 			archive_write_close(base_arc);
@@ -986,7 +986,7 @@ protected:
 			// 4. Run bundletool to produce the final AAB.
 			set_status("building AAB...");
 			sout = serr = "";
-			if (!system_command(exe("java"), {"-jar", bundletool_jar.toString(), "build-bundle", "--modules=" + base_zip_location.path(), "--output=" + output_path.toString()}, sout, serr))
+			if (!system_command(exe("java"), {"-jar", bundletool_jar.toString(), "build-bundle", "--modules=" + base_zip_path, "--output=" + output_path.toString()}, sout, serr))
 				throw Exception(format("Failed to run bundletool, %s%s", sout, serr));
 			if (!sign_cert.empty() && !sign_password.empty()) {
 				ensure_android_keystore();
