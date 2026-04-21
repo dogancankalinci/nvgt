@@ -2,7 +2,7 @@
 # This means you can encrypt data in Python, pass it to NVGT for decryption, and vice versa, especially if you wish to use a bridge between the two.
 # Written by Tunmi for
 # NVGT - NonVisual Gaming Toolkit (https://nvgt.dev)
-# Copyright (c) 2022-2025 Sam Tupy
+# Copyright (c) 2022-2026 Sam Tupy
 # license: zlib
 
 

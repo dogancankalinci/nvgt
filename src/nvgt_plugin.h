@@ -3,7 +3,7 @@
  * To export new functions from NVGT, increment NVGT_PLUGIN_API_VERSION and add to the NVGT_PLUGIN_FUNCTIONS macro before rebuilding the engine.
  *
  * NVGT - NonVisual Gaming Toolkit
- * Copyright (c) 2022-2025 Sam Tupy
+ * Copyright (c) 2022-2026 Sam Tupy
  * https://nvgt.dev
  * This software is provided "as-is", without any express or implied warranty. In no event will the authors be held liable for any damages arising from the use of this software.
  * Permission is granted to anyone to use this software for any purpose, including commercial applications, and to alter it and redistribute it freely, subject to the following restrictions:

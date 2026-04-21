@@ -1,7 +1,7 @@
 # License agreement
 NVGT - NonVisual Gaming Toolkit
 
-Copyright (c) 2022-2025 Sam Tupy
+Copyright (c) 2022-2026 Sam Tupy
 
 [nvgt.dev](https://nvgt.dev)
 

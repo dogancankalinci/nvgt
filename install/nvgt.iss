@@ -1,7 +1,7 @@
 ; NVGT InnoSetup installation utility written by Ethin Probst
  ;
  ; NVGT - NonVisual Gaming Toolkit
- ; Copyright (c) 2022-2025 Sam Tupy and the NVGT developers
+ ; Copyright (c) 2022-2026 Sam Tupy and the NVGT developers
  ; [nvgt.dev](https://nvgt.dev)
  ;
  ; This software is provided "as-is", without any express or implied warranty. In no event will the authors be held liable for any damages arising from the use of this software.

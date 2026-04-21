@@ -1,6 +1,6 @@
 # Build script for NVGT using the scons build system.
 # NVGT - NonVisual Gaming Toolkit (https://nvgt.dev)
-# Copyright (c) 2022-2025 Sam Tupy
+# Copyright (c) 2022-2026 Sam Tupy
 # license: zlib
 
 import os, multiprocessing, tempfile

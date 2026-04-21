@@ -3,7 +3,7 @@
  * You should only use this plugin if you cannot upgrade to the new miniaudio based sound system NVGT now offers in it's core. This legacy sound system is now unsupported and contains known bugs that will very likely not be patched unless by a contributor.
  *
  * NVGT - NonVisual Gaming Toolkit
- * Copyright (c) 2022-2025 Sam Tupy
+ * Copyright (c) 2022-2026 Sam Tupy
  * https://nvgt.dev
  * This software is provided "as-is", without any express or implied warranty. In no event will the authors be held liable for any damages arising from the use of this software.
  * Permission is granted to anyone to use this software for any purpose, including commercial applications, and to alter it and redistribute it freely, subject to the following restrictions:

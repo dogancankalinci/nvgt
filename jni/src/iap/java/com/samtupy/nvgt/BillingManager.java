@@ -26,7 +26,7 @@
 // key found in Play Console ÔåÆ Your app ÔåÆ Monetize ÔåÆ Monetization setup ÔåÆ Licensing.
 //
 // NVGT - NonVisual Gaming Toolkit
-// Copyright (c) 2022-2025 Sam Tupy - https://nvgt.dev
+// Copyright (c) 2022-2026 Sam Tupy - https://nvgt.dev
 
 package com.samtupy.nvgt;
 
