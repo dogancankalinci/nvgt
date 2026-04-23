@@ -290,9 +290,11 @@ float pathfinder::LeastCostEstimate(void* nodeStart, void* nodeEnd) {
 	float x = end_x - start_x;
 	float y = end_y - start_y;
 	float z = end_z - start_z;
-	float d = get_difficulty(end_x, end_y, end_z, end_x, end_y, end_z);
-	if (d > 9)
-		return FLT_MAX;
+	// Do not call get_difficulty here: LeastCostEstimate is a heuristic for A* and must return a
+	// lower-bound estimate, never FLT_MAX for a reachable goal.  Legacy BGT callbacks return 10
+	// for any non-adjacent or same-point query, which would make this always return FLT_MAX and
+	// cause an infinite loop.  Euclidean/Manhattan distance is always admissible (each step costs
+	// >= 1.0) and the pre-search check in find() already rejects a truly impassable destination.
 	if (allow_diagonals)
 		return hypot(x, y, z);
 	else

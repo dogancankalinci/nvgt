@@ -24,6 +24,7 @@
 #include <Poco/Thread.h>
 #include <Poco/ThreadPool.h>
 #include <SDL3/SDL_init.h>
+#include <SDL3/SDL_timer.h>
 #include <angelscript.h>
 #include <scriptdictionary.h>
 #include <scripthelper.h>
@@ -392,6 +393,17 @@ template <class T> void RegisterMutexType(asIScriptEngine* engine, const std::st
 	engine->RegisterObjectMethod(format("%s_lock", type).c_str(), _O("void unlock()"), asMETHOD(ScopedLockWithUnlock<T>, unlock), asCALL_THISCALL);
 }
 
+// Poco::Thread::trySleep requires the calling thread to be a Poco-managed thread; on Android (and
+// any other context where a thread is not created via Poco::Thread) Thread::current() returns null
+// and trySleep throws NullPointerException.  Fall back to SDL_DelayNS for non-Poco threads so that
+// thread_sleep works reliably from async<> callbacks on all platforms.
+static bool nvgt_thread_sleep(unsigned int ms) {
+	if (Thread::current())
+		return Thread::trySleep(ms);
+	SDL_DelayNS((Uint64)ms * 1000000ULL);
+	return true;
+}
+
 void RegisterThreading(asIScriptEngine* engine) {
 	engine->RegisterEnum("thread_priority");
 	engine->RegisterEnumValue("thread_priority", "THREAD_PRIORITY_LOWEST", Thread::Priority::PRIO_LOWEST);
@@ -403,7 +415,7 @@ void RegisterThreading(asIScriptEngine* engine) {
 	engine->RegisterGlobalFunction("bool get_thread_is_main() property", asFUNCTION(SDL_IsMainThread), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("uint thread_current_id()"), asFUNCTION(Thread::currentOsTid), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("void thread_yield()"), asFUNCTION(Thread::yield), asCALL_CDECL);
-	engine->RegisterGlobalFunction(_O("bool thread_sleep(uint ms)"), asFUNCTION(Thread::trySleep), asCALL_CDECL);
+	engine->RegisterGlobalFunction(_O("bool thread_sleep(uint ms)"), asFUNCTION(nvgt_thread_sleep), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("thread@+ get_thread_current() property"), asFUNCTION(Thread::current), asCALL_CDECL);
 	engine->RegisterFuncdef(_O("void thread_callback(dictionary@ args)"));
 	engine->RegisterObjectBehaviour(_O("thread"), asBEHAVE_FACTORY, _O("thread@ t()"), asFUNCTION(angelscript_refcounted_factory<Thread>), asCALL_CDECL);

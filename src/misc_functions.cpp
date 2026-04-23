@@ -94,11 +94,14 @@ float fRound(float n, int p) {
 }
 double Round(double n, int p) {
 	int P = pow(10, abs(p));
+	double result;
 	if (p > 0)
-		return round(n * P) / P;
+		result = round(n * P) / P;
 	else if (p < 0)
-		return round(n / P) * P;
-	return round(n);
+		result = round(n / P) * P;
+	else
+		result = round(n);
+	return result == 0.0 ? 0.0 : result;
 }
 enum process_flags {
 	PROCESS_PIPE_STDIN = 1,        // connect stdin to a writable datastream

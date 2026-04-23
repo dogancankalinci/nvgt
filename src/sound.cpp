@@ -1138,6 +1138,7 @@ public:
 			parent_mixer = nullptr;
 		}
 		if (mix) {
+			mix->duplicate();
 			parent_mixer = mix;
 			node_chain->set_endpoint(mix);
 			return node_chain->get_endpoint() == mix;
