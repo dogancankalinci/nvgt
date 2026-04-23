@@ -327,15 +327,17 @@ void physics_shape_destroy(CollisionShape* shape) {
 // Half-edge structure helper functions
 CScriptArray* face_get_vertices(const HalfEdgeStructure::Face& f) {
 	CScriptArray* array = CScriptArray::Create(get_array_type("array<uint>"), f.faceVertices.size());
-	memcpy(array->GetBuffer(), &f.faceVertices[0], f.faceVertices.size() * sizeof(uint32));
+	if (f.faceVertices.size())
+		memcpy(array->GetBuffer(), &f.faceVertices[0], f.faceVertices.size() * sizeof(uint32));
 	return array;
 }
 
 void face_set_vertices(HalfEdgeStructure::Face& f, CScriptArray* array) {
 	f.faceVertices.clear();
-	f.faceVertices.resize(array->GetSize());
-	if (array->GetSize())
-		memcpy(f.faceVertices.data(), array->GetBuffer(), array->GetSize() * sizeof(uint32));
+	if (!array->GetSize()) return;
+	const uint32* vertices = static_cast<const uint32*>(array->GetBuffer());
+	for (asUINT i = 0; i < array->GetSize(); i++)
+		f.faceVertices.add(vertices[i]);
 }
 
 struct ManagedTriangleData {
