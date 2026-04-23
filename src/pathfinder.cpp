@@ -102,8 +102,7 @@ bool pathfinder::get_gc_flag() {
 void pathfinder::set_callback_function(asIScriptFunction* func) {
 	if (callback)
 		callback->Release();
-	if (func)
-		callback = func;
+	callback = func;
 	callback_mode = CALLBACK_SIMPLE;
 }
 void pathfinder::set_callback_function_ex(asIScriptFunction* func) {
@@ -135,9 +134,11 @@ float pathfinder::get_difficulty(void* state, void* parent_state) {
 	return get_difficulty(x, y, z, parent_x, parent_y, parent_z);
 }
 float pathfinder::get_difficulty(int x, int y, int z, int parent_x, int parent_y, int parent_z) {
+	int _ds = desperation_factor;
+	if (_ds < 0 || _ds > 10) _ds = 0;
 	hashpoint pt(x, y, z);
-	hashpoint_float_map::iterator n = difficulty_cache[desperation_factor].find(pt);
-	if (n != difficulty_cache[desperation_factor].end())
+	hashpoint_float_map::iterator n = difficulty_cache[_ds].find(pt);
+	if (n != difficulty_cache[_ds].end())
 		return n->second;
 	if (abort)
 		return FLT_MAX;
@@ -190,11 +191,11 @@ float pathfinder::get_difficulty(int x, int y, int z, int parent_x, int parent_y
 	}
 	int v = ctx->GetReturnDWord();
 	if (v < 10)
-		v -= desperation_factor;
+		v -= _ds;
 	if (v < 0)
 		v = 0;
 	float val = (v < 10 ? v : FLT_MAX);
-	difficulty_cache[desperation_factor][pt] = val;
+	difficulty_cache[_ds][pt] = val;
 	if (new_context)
 		g_ScriptEngine->ReturnContext(ctx);
 	else
@@ -236,8 +237,11 @@ CScriptArray* pathfinder::find(int start_x, int start_y, int start_z, int end_x,
 	if (data)
 		data->AddRef();
 	// Only perform this fast-fail optimization if callback is "simple", otherwise it will just produce false positives.
-	if (callback_mode == CALLBACK_SIMPLE && (get_difficulty(start_x, start_y, start_z, start_x, start_y, start_z) > 9 || get_difficulty(end_x, end_y, end_z, end_x, end_y, end_z) > 9))
+	if (callback_mode == CALLBACK_SIMPLE && (get_difficulty(start_x, start_y, start_z, start_x, start_y, start_z) > 9 || get_difficulty(end_x, end_y, end_z, end_x, end_y, end_z) > 9)) {
+		if (data) data->Release();
+		callback_data = NULL;
 		return array;
+	}
 	void* start = encode_state(start_x, start_y, start_z, desperation_factor);
 	this->start_x = start_x;
 	this->start_y = start_y;

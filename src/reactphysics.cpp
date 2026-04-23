@@ -333,8 +333,9 @@ CScriptArray* face_get_vertices(const HalfEdgeStructure::Face& f) {
 
 void face_set_vertices(HalfEdgeStructure::Face& f, CScriptArray* array) {
 	f.faceVertices.clear();
-	f.faceVertices.reserve(array->GetSize());
-	memcpy(&f.faceVertices[0], array->GetBuffer(), array->GetSize() * sizeof(uint32));
+	f.faceVertices.resize(array->GetSize());
+	if (array->GetSize())
+		memcpy(f.faceVertices.data(), array->GetBuffer(), array->GetSize() * sizeof(uint32));
 }
 
 struct ManagedTriangleData {

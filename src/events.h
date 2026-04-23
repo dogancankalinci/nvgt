@@ -27,6 +27,8 @@ class engine_event_listener {
 public:
 	engine_event_listener(asIScriptObject* obj, const engine_event* parent);
 	engine_event_listener(asIScriptFunction* func);
+	engine_event_listener(const engine_event_listener& other);
+	engine_event_listener& operator=(const engine_event_listener& other);
 	~engine_event_listener();
 	template<typename... Args> bool fire(Args&&... args);
 	bool good() const;

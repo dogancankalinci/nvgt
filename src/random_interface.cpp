@@ -83,7 +83,7 @@ public:
 		ctx->Prepare(next64Func);
 		ctx->SetObject(scriptObj);
 		ctx->Execute();
-		return ctx->GetReturnDWord();
+		return ctx->GetReturnQWord();
 	}
 
 	int32 range(int32 min, int32 max) override {
@@ -100,10 +100,10 @@ public:
 		if (!range64Func || !ctx) return min;
 		ctx->Prepare(range64Func);
 		ctx->SetObject(scriptObj);
-		ctx->SetArgDWord(0, min);
-		ctx->SetArgDWord(1, max);
+		ctx->SetArgQWord(0, min);
+		ctx->SetArgQWord(1, max);
 		ctx->Execute();
-		return ctx->GetReturnDWord();
+		return ctx->GetReturnQWord();
 	}
 
 	void seed(uint32 s) override {
@@ -262,11 +262,11 @@ bool random_pcg::set_state(const std::string& state) {
 }
 
 void random_pcg::add_ref() {
-	++ref_count;
+	asAtomicInc(ref_count);
 }
 
 void random_pcg::release() {
-	if (--ref_count == 0)
+	if (asAtomicDec(ref_count) < 1)
 		delete this;
 }
 
@@ -321,11 +321,11 @@ bool random_well::set_state(const std::string& state) {
 }
 
 void random_well::add_ref() {
-	++ref_count;
+	asAtomicInc(ref_count);
 }
 
 void random_well::release() {
-	if (--ref_count == 0)
+	if (asAtomicDec(ref_count) < 1)
 		delete this;
 }
 
@@ -380,11 +380,11 @@ bool random_gamerand::set_state(const std::string& state) {
 }
 
 void random_gamerand::add_ref() {
-	++ref_count;
+	asAtomicInc(ref_count);
 }
 
 void random_gamerand::release() {
-	if (--ref_count == 0)
+	if (asAtomicDec(ref_count) < 1)
 		delete this;
 }
 
@@ -455,11 +455,11 @@ bool random_xorshift::set_state(const std::string& state) {
 }
 
 void random_xorshift::add_ref() {
-	++ref_count;
+	asAtomicInc(ref_count);
 }
 
 void random_xorshift::release() {
-	if (--ref_count == 0)
+	if (asAtomicDec(ref_count) < 1)
 		delete this;
 }
 

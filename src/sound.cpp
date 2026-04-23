@@ -284,11 +284,13 @@ class audio_engine_impl final : public audio_node_impl, public virtual audio_eng
 		if (engine->script_data_callback) {
 			asIScriptContext* ctx = g_ScriptEngine->RequestContext();
 			if (!ctx || ctx->Prepare(engine->script_data_callback) < 0) {
+				if (ctx) g_ScriptEngine->ReturnContext(ctx);
 				engine->release();
 				return; // Todo: Maybe find a way to log error state here?
 			}
 			script_memory_buffer buf(g_ScriptEngine->GetTypeInfoByDecl("memory_buffer<float>"), pOutput, pDevice->playback.channels * frames_read); // Todo: Support all data formats.
 			if (ctx->SetArgObject(0, engine) < 0 || ctx->SetArgObject(1, &buf) < 0 || ctx->SetArgQWord(2, frames_read) < 0) {
+				g_ScriptEngine->ReturnContext(ctx);
 				engine->release();
 				return;
 			}
@@ -366,6 +368,8 @@ public:
 		}
 		if ((g_soundsystem_last_error = ma_engine_init(&cfg, &*engine)) != MA_SUCCESS) {
 			engine.reset();
+			if (resource_manager) { ma_resource_manager_uninit(&*resource_manager); resource_manager.reset(); }
+			if (device) { ma_device_uninit(&*device); device.reset(); }
 			throw runtime_error(Poco::format("failed to initialize sound engine %d", int(g_soundsystem_last_error)));
 		}
 		node = (ma_node_base*)&*engine;
@@ -430,8 +434,11 @@ public:
 		cfg.pUserData = old_dev->pUserData;
 		ma_device_stop(old_dev);
 		ma_device_uninit(old_dev);
-		if ((g_soundsystem_last_error = ma_device_init(&g_sound_context, &cfg, old_dev)) != MA_SUCCESS)
+		if ((g_soundsystem_last_error = ma_device_init(&g_sound_context, &cfg, old_dev)) != MA_SUCCESS) {
+			engine.reset();
+			device.reset();
 			return false;
+		}
 		return (g_soundsystem_last_error = ma_engine_start(&*engine)) == MA_SUCCESS;
 	}
 	bool read(void *buffer, unsigned long long frame_count, unsigned long long *frames_read) override { return engine ? (g_soundsystem_last_error = ma_engine_read_pcm_frames(&*engine, buffer, frame_count, frames_read)) == MA_SUCCESS : false; }

@@ -33,7 +33,17 @@ engine_event_listener::engine_event_listener(asIScriptFunction* func) : obj(null
 		func->Release();
 	}
 }
-engine_event_listener::~engine_event_listener() {}
+engine_event_listener::engine_event_listener(const engine_event_listener& other) : obj(other.obj ? new CScriptWeakRef(*other.obj) : nullptr), func(other.func), is_object(other.is_object) {}
+engine_event_listener& engine_event_listener::operator=(const engine_event_listener& other) {
+	if (this != &other) {
+		delete obj;
+		obj = other.obj ? new CScriptWeakRef(*other.obj) : nullptr;
+		func = other.func;
+		is_object = other.is_object;
+	}
+	return *this;
+}
+engine_event_listener::~engine_event_listener() { delete obj; }
 bool engine_event_listener::good() const {
 	if (!obj && !func) return false;
 	else if (!obj) return true; // Static functions are always available.
@@ -43,7 +53,10 @@ bool engine_event_listener::good() const {
 	return true;
 }
 bool engine_event_listener::operator==(const engine_event_listener& other) const {
-	return obj == other.obj && func == other.func;
+	if (func != other.func) return false;
+	if (!obj && !other.obj) return true;
+	if (!obj || !other.obj) return false;
+	return *obj == *other.obj;
 }
 
 std::unordered_set<std::string> g_engine_event_registered_types;

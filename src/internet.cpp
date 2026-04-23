@@ -159,13 +159,14 @@ CScriptArray* host_entry_get_addresses(const HostEntry& e) { return vector_to_sc
 // In NVGT we tend to overuse std::string, make sure sockets can handle this datatype. We should try to register versions of SendBytes and ReceiveBytes that works with a lower level datatype when possible especially because of the unnecessary memory usage incurred with std::string in this case.
 template <class T> int socket_send_bytes(T& sock, const string& data, int flags) { return sock.sendBytes(data.data(), data.size(), flags); }
 template <class T> string socket_receive_bytes(T& sock, int length, int flags) {
-	if (!length) return 0;
+	if (length <= 0) return std::string();
 	string result(length, 0); // ooouuuch this initialization to null chars hurts and is a waste, find a way to fix it!
 	int recv_len = sock.receiveBytes(result.data(), length, flags);
 	result.resize(recv_len);
 	return result;
 }
 template <class T> string socket_receive_bytes_buf(T& sock, int flags, const Timespan& timeout) {
+	if (!sock.poll(timeout, Socket::SELECT_READ)) return std::string();
 	Buffer<char> buf(0);
 	sock.receiveBytes(buf, flags);
 	return string(buf.begin(), buf.end());
@@ -643,16 +644,17 @@ public:
 		string download_buffer(1024 * 32, '\0'); // Should the user be able to configure this, larger buffer = faster download?
 		while (tries && !tryWait(_retry_delay)) {
 			tries--;
+			bool locked = false;
 			try {
 				string path = _url.getPathAndQuery();
 				if (path.empty()) path = "/";
-				lock();
+				lock(); locked = true;
 				HTTPRequest req(_request);
 				req.setHost(_url.getHost());
 				req.setURI(path);
-				unlock();
+				unlock(); locked = false;
 				if (req.getContentType() == HTTPMessage::UNKNOWN_CONTENT_TYPE) req.setContentType("application/x-www-form-urlencoded");
-				lock();
+				lock(); locked = true;
 				HTTPResponse tmp_response = _response;
 				if (!_session) _session = _url.getScheme() == "http"? new HTTPClientSession(_url.getHost(), _url.getPort()) : new HTTPSClientSession(_url.getHost(), _url.getPort());
 				if (authorize) _creds.authenticate(req, tmp_response);
@@ -660,11 +662,11 @@ public:
 				_session->setTimeout(_connect_timeout * 1000, _send_timeout * 1000, _receive_timeout * 1000);
 				_session->setKeepAliveTimeout(_keepalive_timeout * 1000);
 				std::ostream& ostr = _session->sendRequest(req);
-				unlock();;
+				unlock(); locked = false;
 				if (tryWait(0)) break;
 				ostr << _request_body;
 				std::istream& istr = _session->receiveResponse(tmp_response);
-				lock();
+				lock(); locked = true;
 				_response = tmp_response;
 				bool moved = (_response.getStatus() == HTTPResponse::HTTP_MOVED_PERMANENTLY || _response.getStatus() == HTTPResponse::HTTP_FOUND || _response.getStatus() == HTTPResponse::HTTP_SEE_OTHER || _response.getStatus() == HTTPResponse::HTTP_TEMPORARY_REDIRECT);
 				if (moved) {
@@ -672,16 +674,16 @@ public:
 					authorize = false;
 					delete _session;
 					_session = nullptr;
-					unlock();
+					unlock(); locked = false;
 					continue;
 				} else if (_response.getStatus() == HTTPResponse::HTTP_UNAUTHORIZED && !authorize && !_creds.empty()) {
-					unlock();
+					unlock(); locked = false;
 					authorize = true;
 					NullOutputStream null;
 					StreamCopier::copyStream(istr, null);
 					continue;
 				}
-				unlock();
+				unlock(); locked = false;
 				while (istr.good() && !tryWait(0)) {
 					istr.read(download_buffer.data(), download_buffer.size());
 					streamsize count = istr.gcount();
@@ -693,7 +695,7 @@ public:
 			} catch(Exception& e) {
 				if (_session) delete _session;
 				_session = nullptr;
-				unlock();
+				if (locked) unlock();
 				return;
 			}
 		}

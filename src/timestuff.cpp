@@ -270,6 +270,7 @@ asINT64 system_running_milliseconds() {
 	return GetTickCount64();
 	#else
 	FILE *f = fopen("/proc/uptime", "r");
+	if (!f) return 0;
 	char tmp[40];
 	if (!fgets(tmp, 40, f)) {
 		fclose(f);
