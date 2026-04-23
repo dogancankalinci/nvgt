@@ -436,7 +436,7 @@ public:
 		ma_device_uninit(old_dev);
 		if ((g_soundsystem_last_error = ma_device_init(&g_sound_context, &cfg, old_dev)) != MA_SUCCESS) {
 			engine.reset();
-			device.reset();
+			this->device.reset();
 			return false;
 		}
 		return (g_soundsystem_last_error = ma_engine_start(&*engine)) == MA_SUCCESS;
