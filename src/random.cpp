@@ -189,10 +189,10 @@ void RegisterScriptRandom(asIScriptEngine* engine) {
 	engine->RegisterGlobalFunction(_O("void set_default_random(random_generator@)"), asFUNCTION(set_default_random_script), asCALL_CDECL);
 	engine->RegisterObjectMethod(_O("array<T>"), _O("const T& random() const"), WRAP_OBJ_FIRST(random_choice), asCALL_GENERIC);
 	engine->RegisterObjectMethod(_O("array<T>"), _O("const T& random(random_interface@ rng) const"), WRAP_OBJ_FIRST(random_array_choice), asCALL_GENERIC);
-	engine->RegisterObjectMethod(_O("array<T>"), _O("const T& random(random_generator@ rng) const"), WRAP_OBJ_FIRST(random_script_array_choice), asCALL_GENERIC);
+	engine->RegisterObjectMethod(_O("array<T>"), _O("const T& random(random_generator@+ rng) const"), WRAP_OBJ_FIRST(random_script_array_choice), asCALL_GENERIC);
 	engine->RegisterObjectMethod(_O("array<T>"), _O("void shuffle()"), asFUNCTION(random_shuffle), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(_O("array<T>"), _O("void shuffle(random_interface@ rng)"), asFUNCTION(random_array_shuffle), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(_O("array<T>"), _O("void shuffle(random_generator@ rng)"), asFUNCTION(random_script_array_shuffle), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(_O("array<T>"), _O("void shuffle(random_generator@+ rng)"), asFUNCTION(random_script_array_shuffle), asCALL_CDECL_OBJFIRST);
 	// Register new random generator classes with interface inheritance
 	// PCG generator
 	engine->RegisterObjectType(_O("random_pcg"), 0, asOBJ_REF);
@@ -258,14 +258,14 @@ void RegisterScriptRandom(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod(_O("random_xorshift"), _O("string next_character(const string &in min, const string &in max)"), asMETHOD(random_xorshift, next_character), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("random_xorshift"), _O("random_interface@ opImplCast()"), asFUNCTION(random_cast_to<random_xorshift>), asCALL_CDECL_OBJFIRST);
 	// Register new array methods for the specific generator types
-	engine->RegisterObjectMethod(_O("array<T>"), _O("const T& random(random_pcg@ generator) const"), asFUNCTION(random_array_choice_wrapper), asCALL_GENERIC);
-	engine->RegisterObjectMethod(_O("array<T>"), _O("const T& random(random_well@ generator) const"), asFUNCTION(random_array_choice_wrapper), asCALL_GENERIC);
-	engine->RegisterObjectMethod(_O("array<T>"), _O("const T& random(random_gamerand@ generator) const"), asFUNCTION(random_array_choice_wrapper), asCALL_GENERIC);
-	engine->RegisterObjectMethod(_O("array<T>"), _O("const T& random(random_xorshift@ generator) const"), asFUNCTION(random_array_choice_wrapper), asCALL_GENERIC);
-	engine->RegisterObjectMethod(_O("array<T>"), _O("void shuffle(random_pcg@ generator)"), asFUNCTION(random_array_shuffle), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(_O("array<T>"), _O("void shuffle(random_well@ generator)"), asFUNCTION(random_array_shuffle), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(_O("array<T>"), _O("void shuffle(random_gamerand@ generator)"), asFUNCTION(random_array_shuffle), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(_O("array<T>"), _O("void shuffle(random_xorshift@ generator)"), asFUNCTION(random_array_shuffle), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(_O("array<T>"), _O("const T& random(random_pcg@+ generator) const"), asFUNCTION(random_array_choice_wrapper), asCALL_GENERIC);
+	engine->RegisterObjectMethod(_O("array<T>"), _O("const T& random(random_well@+ generator) const"), asFUNCTION(random_array_choice_wrapper), asCALL_GENERIC);
+	engine->RegisterObjectMethod(_O("array<T>"), _O("const T& random(random_gamerand@+ generator) const"), asFUNCTION(random_array_choice_wrapper), asCALL_GENERIC);
+	engine->RegisterObjectMethod(_O("array<T>"), _O("const T& random(random_xorshift@+ generator) const"), asFUNCTION(random_array_choice_wrapper), asCALL_GENERIC);
+	engine->RegisterObjectMethod(_O("array<T>"), _O("void shuffle(random_pcg@+ generator)"), asFUNCTION(random_array_shuffle), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(_O("array<T>"), _O("void shuffle(random_well@+ generator)"), asFUNCTION(random_array_shuffle), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(_O("array<T>"), _O("void shuffle(random_gamerand@+ generator)"), asFUNCTION(random_array_shuffle), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(_O("array<T>"), _O("void shuffle(random_xorshift@+ generator)"), asFUNCTION(random_array_shuffle), asCALL_CDECL_OBJFIRST);
 	// Keep old array methods for backward compatibility with existing generators
 	engine->RegisterObjectMethod(_O("array<T>"), _O("const T& random(const random_pcg&in generator) const"), WRAP_OBJ_FIRST(rnd_pcg_choice), asCALL_GENERIC);
 	engine->RegisterObjectMethod(_O("array<T>"), _O("const T& random(const random_well&in generator) const"), WRAP_OBJ_FIRST(rnd_well_choice), asCALL_GENERIC);

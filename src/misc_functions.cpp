@@ -467,7 +467,10 @@ CScriptArray* script_memory_buffer::to_array() const {
 }
 script_memory_buffer& script_memory_buffer::from_array(CScriptArray* array) {
 	if (!array) std::memset(ptr, 0, size * g_ScriptEngine->GetSizeOfPrimitiveType(subtypeid));
-	else std::memcpy(ptr, array->GetBuffer(), (array->GetSize() < size? array->GetSize() : size) * g_ScriptEngine->GetSizeOfPrimitiveType(subtypeid));
+	else {
+		std::memcpy(ptr, array->GetBuffer(), (array->GetSize() < size? array->GetSize() : size) * g_ScriptEngine->GetSizeOfPrimitiveType(subtypeid));
+		array->Release();
+	}
 	return *this;
 }
 int script_memory_buffer::get_element_size() const {return g_ScriptEngine->GetSizeOfPrimitiveType(subtypeid); }

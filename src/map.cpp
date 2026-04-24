@@ -404,7 +404,7 @@ void RegisterScriptMap(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod(_O("coordinate_map_area"), _O("void set(float minx, float maxx, float miny, float maxy, float minz, float maxz, float theta)"), asMETHOD(map_area, set), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("coordinate_map_area"), _O("void set_area(float minx, float maxx, float miny, float maxy, float minz, float maxz)"), asMETHOD(map_area, set_area), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("coordinate_map_area"), _O("void set_rotation(float theta)"), asMETHOD(map_area, set_rotation), asCALL_THISCALL);
-	engine->RegisterObjectMethod(_O("coordinate_map_area"), _O("bool is_in_area(float x, float y, float z, float d = 0.0, coordinate_map_filter_callback@ = null, int64 required_flags = 0, int64 excluded_flags = 0) const"), asMETHOD(map_area, is_in_area), asCALL_THISCALL);
+	engine->RegisterObjectMethod(_O("coordinate_map_area"), _O("bool is_in_area(float x, float y, float z, float d = 0.0, coordinate_map_filter_callback@+ = null, int64 required_flags = 0, int64 excluded_flags = 0) const"), asMETHOD(map_area, is_in_area), asCALL_THISCALL);
 	engine->RegisterObjectBehaviour(_O("coordinate_map"), asBEHAVE_FACTORY, _O("coordinate_map @m()"), asFUNCTION(new_coordinate_map), asCALL_CDECL);
 	engine->RegisterObjectBehaviour(_O("coordinate_map"), asBEHAVE_ADDREF, _O("void f()"), asMETHOD(coordinate_map, add_ref), asCALL_THISCALL);
 	engine->RegisterObjectBehaviour(_O("coordinate_map"), asBEHAVE_RELEASE, _O("void f()"), asMETHOD(coordinate_map, release), asCALL_THISCALL);

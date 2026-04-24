@@ -339,9 +339,13 @@ bool pack::add_file(const std::string& filename, const std::string& internal_nam
 	} catch (std::exception& e) { return false; }
 }
 bool pack::add_stream(const std::string& internal_name, datastream* ds) {
-	if (open_mode != OPEN_WRITE || !ds || !ds->get_istr())
+	if (open_mode != OPEN_WRITE || !ds || !ds->get_istr()) {
+		if (ds) ds->release();
 		return false;
-	return write->put(*ds->get_istr(), internal_name);
+	}
+	bool result = write->put(*ds->get_istr(), internal_name);
+	ds->release();
+	return result;
 }
 bool pack::add_memory(const std::string& internal_name, const std::string& data) {
 	if (open_mode != OPEN_WRITE)

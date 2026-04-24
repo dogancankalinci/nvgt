@@ -345,19 +345,26 @@ poco_shared<Dynamic::Var>* json_parse(const std::string& input) {
 }
 poco_shared<Dynamic::Var>* json_parse_datastream(datastream* input) {
 	std::istream* istr = input->get_istr();
-	if (!istr) throw InvalidArgumentException("parse_json got a bad datastream");
+	if (!istr) { input->release(); throw InvalidArgumentException("parse_json got a bad datastream"); }
 	JSON::Parser parser;
-	return new poco_shared<Dynamic::Var>(new Dynamic::Var(parser.parse(*istr)));
+	auto result = new poco_shared<Dynamic::Var>(new Dynamic::Var(parser.parse(*istr)));
+	input->release();
+	return result;
 }
 // We make a custom json_object class for a couple reasons, mostly so that we can build in poco's json querying as well as other more easily wrapped functions. We'll do very similar for arrays below, I'm not even remotely good enough at this c++ templating thing to avoid this duplicated code and I don't want to meld it all into one class.
 poco_json_object::poco_json_object(JSON::Object::Ptr o) : poco_shared<JSON::Object>(std::move(o)) {}
 poco_json_object::poco_json_object(poco_json_object* other) : poco_shared<Poco::JSON::Object>(new Poco::JSON::Object(*other->ptr)) {}
 poco_json_object& poco_json_object::operator=(poco_json_object* other) {
 	(*ptr) = *other->ptr;
+	other->release();
 	return *this;
 }
 poco_shared<Dynamic::Var>* poco_json_object::get(const std::string& key, poco_shared<Dynamic::Var>* default_value) const {
-	return ptr->has(key)? new poco_shared<Dynamic::Var>(SharedPtr<Dynamic::Var>(new Dynamic::Var(ptr->get(key)))) : default_value; // Oof, more duplication than I like probably?
+	if (ptr->has(key)) {
+		if (default_value) default_value->release();
+		return new poco_shared<Dynamic::Var>(SharedPtr<Dynamic::Var>(new Dynamic::Var(ptr->get(key))));
+	}
+	return default_value;
 }
 poco_shared<Dynamic::Var>* poco_json_object::get_indexed(const std::string& key) const {
 	return new poco_shared<Dynamic::Var>(SharedPtr<Dynamic::Var>(new Dynamic::Var(ptr->get(key)))); // Oof, more duplication than I like probably?
@@ -365,7 +372,11 @@ poco_shared<Dynamic::Var>* poco_json_object::get_indexed(const std::string& key)
 poco_shared<Dynamic::Var>* poco_json_object::query(const std::string& path, poco_shared<Dynamic::Var>* default_value) const {
 	JSON::Query q(shared); // I tried to cache the query object in the class variable above, and spent an hour or 2 figuring out that this causes a memory access violation in Poco::Dynamic::Var::Var.
 	Dynamic::Var result = q.find(path);
-	return !result.isEmpty()? new poco_shared<Dynamic::Var>(SharedPtr<Dynamic::Var>(new Dynamic::Var(result))) : default_value;
+	if (!result.isEmpty()) {
+		if (default_value) default_value->release();
+		return new poco_shared<Dynamic::Var>(SharedPtr<Dynamic::Var>(new Dynamic::Var(result)));
+	}
+	return default_value;
 }
 poco_json_array* poco_json_object::get_array(const std::string& key) const {
 	JSON::Array::Ptr obj = ptr->getArray(key);
@@ -395,8 +406,9 @@ std::string poco_json_object::stringify(unsigned int indent, int step) const {
 	return ostr.str();
 }
 void poco_json_object::stringify(datastream* ds, unsigned int indent, int step) const {
-	if (!ds || !ds->get_ostr()) throw InvalidArgumentException("stream not opened for writing");
+	if (!ds || !ds->get_ostr()) { if (ds) ds->release(); throw InvalidArgumentException("stream not opened for writing"); }
 	ptr->stringify(*ds->get_ostr(), indent, step);
+	ds->release();
 }
 CScriptArray* poco_json_object::get_keys() const {
 	asIScriptContext* ctx = asGetActiveContext();
@@ -412,6 +424,7 @@ poco_json_array::poco_json_array(JSON::Array::Ptr a) : poco_shared<JSON::Array>(
 poco_json_array::poco_json_array(poco_json_array* other) : poco_shared<Poco::JSON::Array>(new Poco::JSON::Array(*other->ptr)) {}
 poco_json_array& poco_json_array::operator=(poco_json_array* other) {
 	(*ptr) = *other->ptr;
+	other->release();
 	return *this;
 }
 poco_shared<Dynamic::Var>* poco_json_array::get(unsigned int index) const {
@@ -424,6 +437,7 @@ poco_shared<Dynamic::Var>* poco_json_array::query(const std::string& path) const
 poco_json_array& poco_json_array::extend(poco_json_array* array) {
 	if (!array) return *this;
 	for (const auto i : *array->ptr) ptr->add(i);
+	array->release();
 	return *this;
 }
 poco_json_array* poco_json_array::get_array(unsigned int index) const {
@@ -457,8 +471,9 @@ std::string poco_json_array::stringify(unsigned int indent, int step) const {
 	return ostr.str();
 }
 void poco_json_array::stringify(datastream* ds, unsigned int indent, int step) const {
-	if (!ds || !ds->get_ostr()) throw InvalidArgumentException("stream not opened for writing");
+	if (!ds || !ds->get_ostr()) { if (ds) ds->release(); throw InvalidArgumentException("stream not opened for writing"); }
 	ptr->stringify(*ds->get_ostr(), indent, step);
+	ds->release();
 }
 
 // Some functions needed to wrap poco regular expression.

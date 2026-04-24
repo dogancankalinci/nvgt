@@ -87,17 +87,19 @@ template <class T> int opCmpNoGT(const T& first, const T& second) {
 
 // We will need to wrap any functions that handle std iostreams.
 template <class T> bool message_header_write(MessageHeader* h, datastream* ds) {
-	if (!ds || !ds->get_ostr()) return false;
+	if (!ds || !ds->get_ostr()) { if (ds) ds->release(); return false; }
 	try {
 		h->write(*ds->get_ostr());
-	} catch (Exception&) { return false; }
+	} catch (Exception&) { ds->release(); return false; }
+	ds->release();
 	return true;
 }
 template <class T> bool message_header_read(MessageHeader* h, datastream* ds) {
-	if (!ds || !ds->get_istr()) return false;
+	if (!ds || !ds->get_istr()) { if (ds) ds->release(); return false; }
 	try {
 		h->read(*ds->get_istr());
-	} catch (Exception&) { return false; }
+	} catch (Exception&) { ds->release(); return false; }
+	ds->release();
 	return true;
 }
 template<class T> datastream* http_client_send_request(T* s, HTTPRequest& req, f_streamargs) {

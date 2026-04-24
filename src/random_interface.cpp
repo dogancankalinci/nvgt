@@ -188,8 +188,9 @@ void set_default_random_script(asIScriptObject* scriptObj) {
 		g_default_random->release();
 	if (g_default_script_wrapper)
 		g_default_script_wrapper->release();
-	// Create wrapper and set as default
+	// Create wrapper (AddRefs scriptObj internally); release the AS-added ref
 	g_default_script_wrapper = new script_random_wrapper(scriptObj);
+	scriptObj->Release();
 	g_default_random = g_default_script_wrapper;
 }
 
