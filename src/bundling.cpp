@@ -17,8 +17,12 @@
 // This entire module is only needed assuming that NVGT is not being compiled as a stub, and also assuming that the runner application is not being built on mobile. It's perfectly fine to just not build bundling.cpp at all as long as NVGT_STUB is defined, but lets not error or risk including code in case of inclusion into a stub so that we can laisily feed the build system a wildcard to the src directory.
 #include "xplatform.h"
 #if !defined(NVGT_STUB) && !defined(NVGT_MOBILE)
+#include <algorithm>
+#include <sstream>
+#include <utility>
 #include <Poco/BinaryReader.h>
 #include <Poco/BinaryWriter.h>
+#include <Poco/Base64Encoder.h>
 #include <Poco/Clock.h>
 #include <Poco/Environment.h>
 #include <Poco/File.h>
@@ -37,6 +41,11 @@
 #include <Poco/Util/Application.h>
 #include <archive.h>
 #include <archive_entry.h>
+#include <openssl/cms.h>
+#include <openssl/err.h>
+#include <openssl/pkcs12.h>
+#include <openssl/sha.h>
+#include <openssl/x509.h>
 #include <plist/plist.h>
 #ifdef _WIN32
 #include <vs_version.h>
@@ -194,6 +203,26 @@ static void archive_write_single_file(struct archive* a, const string& disk_path
 		if (n > 0) archive_write_data(a, buf, n);
 	}
 }
+static void collect_relative_files_recursive(const string& root_dir, const string& relative_dir, vector<string>& out_files) {
+	vector<File> entries;
+	File(relative_dir.empty() ? root_dir : Path(root_dir).append(relative_dir).toString()).list(entries);
+	for (const File& f : entries) {
+		string name = Path(f.path()).makeFile().getFileName();
+		string rel = relative_dir.empty() ? name : relative_dir + "/" + name;
+		if (f.isDirectory()) collect_relative_files_recursive(root_dir, rel, out_files);
+		else out_files.push_back(rel);
+	}
+}
+	static bool string_has_suffix(const string& value, const string& suffix) {
+		return value.size() >= suffix.size() && value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
+	}
+static string make_unique_temp_path(const string& suffix) {
+	TemporaryFile tmp;
+	string path = tmp.path() + suffix;
+	if (File(tmp.path()).exists()) File(tmp.path()).remove();
+	if (File(path).exists()) File(path).remove(true);
+	return path;
+}
 // Thread-safe message box for use from the compilation worker thread. Dispatches message_box() onto the main thread via SDL_RunOnMainThread and blocks until the result is available. Returns -1 without showing anything for multi-button dialogs when quiet mode is active or a console is available, since the user cannot answer interactive questions in those conditions. Single-button alerts in console mode are printed to stdout.
 struct bundler_msgbox_args { const string& title; const string& text; const vector<string>& buttons; int result; };
 static void bundler_msgbox_callback(void* userdata) {
@@ -265,7 +294,7 @@ public:
 		stubpath.pushDirectory("stub");
 		xplatform_correct_path_to_stubs(stubpath);
 		alter_stub_path(stubpath);
-		stubpath = format("%snvgt_%s%s%s.bin", stubpath.toString(), platform, (stub != "" ? string("_") + stub : ""), (g_script_uses_iap ? "_iap" : ""));
+		stubpath = format("%snvgt_%s%s%s.bin", stubpath.toString(), platform, (stub != "" ? string("_") + stub : ""), (g_script_uses_iap ? string("_iap") : string("")));
 		string outpath_str = config.getString("build.output_basename", format("%s", Path(input_file).setExtension("").makeAbsolute().toString()));
 		replaceInPlace(outpath_str, "$platform"s, platform);
 		if (DirectoryExists(outpath_str)) File(outpath_str).remove(true); // Though some platforms must do indipendantly after extra modification, we still attempt to clean previous builds for generic outputs here so that a linux build won't output overtop a windows one leaving both an elf and an executable binary in the same place, for example.
@@ -752,25 +781,365 @@ class nvgt_compilation_output_android : public nvgt_compilation_output_impl {
 	unsigned int install_transport_id; // ADB transport ID of device to install to.
 	string install_device_name; // Used for UI display to report device installed to.
 	string sign_cert, sign_password;
+	string java_command, keytool_command, jarsigner_command;
 	using nvgt_compilation_output_impl::nvgt_compilation_output_impl;
-	string exe(const std::string& path) {
+	string exe(const std::string& path) const {
 		return Environment::isWindows()? path + ".exe" : path;
+	}
+	static void add_tool_dir_candidates(vector<string>& dirs, const string& root) {
+		if (root.empty()) return;
+		set<string> candidates = {
+			root,
+			Path(root).append("bin").toString(),
+			Path(root).append("jre/bin").toString(),
+			Path(root).append("Contents/Home/bin").toString()
+		};
+		for (const string& candidate : candidates)
+			if (File(candidate).exists()) dirs.push_back(candidate);
+	}
+	vector<string> get_java_tool_search_dirs() const {
+		vector<string> dirs;
+		auto add_root = [&](const string& root) {
+			add_tool_dir_candidates(dirs, Path::expand(root));
+		};
+		add_root(Path(config.getString("application.dir")).append("android-tools").toString());
+		add_root(Path(config.getString("application.dir")).append("android-tools/java17").toString());
+		add_root(Path(config.getString("application.dir")).append("android-tools/jbr").toString());
+		add_root(Path(config.getString("application.dir")).append("android-tools/jdk").toString());
+		add_root(config.getString("build.android_java_home", ""));
+		add_root(Environment::get("JAVA_HOME", ""));
+		add_root(Environment::get("JDK_HOME", ""));
+		if (Environment::isWindows()) {
+			vector<string> patterns = {
+				Environment::get("ProgramFiles", "C:\\Program Files") + "\\Java\\*",
+				Environment::get("ProgramFiles(X86)", "C:\\Program Files (x86)") + "\\Java\\*",
+				Environment::get("ProgramFiles", "C:\\Program Files") + "\\Eclipse Adoptium\\*",
+				Environment::get("ProgramFiles", "C:\\Program Files") + "\\Microsoft\\jdk*",
+				Path::dataHome() + "Programs\\Eclipse Adoptium\\*",
+				Path::dataHome() + "Android\\Android Studio\\jbr"
+			};
+			for (const string& pattern : patterns) {
+				set<string> matches;
+				Glob::glob(pattern, matches);
+				for (const string& match : matches)
+					if (File(match).exists() && File(match).isDirectory()) add_root(match);
+			}
+		} else if (Environment::os() == POCO_OS_MAC_OS_X) {
+			vector<string> patterns = {
+				"/Library/Java/JavaVirtualMachines/*",
+				"/Applications/Android Studio.app/Contents/jbr",
+				Path::expand("~/Applications/Android Studio.app/Contents/jbr")
+			};
+			for (const string& pattern : patterns) {
+				set<string> matches;
+				Glob::glob(pattern, matches);
+				for (const string& match : matches)
+					if (File(match).exists() && File(match).isDirectory()) add_root(match);
+			}
+		} else {
+			vector<string> patterns = {
+				"/usr/lib/jvm/*",
+				"/usr/java/*",
+				"/opt/android-studio/jbr",
+				Path::expand("~/android-studio/jbr"),
+				"/snap/android-studio/current/android-studio/jbr"
+			};
+			for (const string& pattern : patterns) {
+				set<string> matches;
+				Glob::glob(pattern, matches);
+				for (const string& match : matches)
+					if (File(match).exists() && File(match).isDirectory()) add_root(match);
+			}
+		}
+		return dirs;
+	}
+	string resolve_java_tool(const string& tool_name) const {
+		vector<string> dirs = get_java_tool_search_dirs();
+		string tool = exe(tool_name);
+		for (const string& dir : dirs) {
+			string candidate = Path(dir).append(tool).toString();
+			if (File(candidate).exists()) return candidate;
+		}
+		string located;
+		string search_path;
+		for (const string& dir : dirs) {
+			if (!search_path.empty()) search_path += Path::pathSeparator();
+			search_path += dir;
+		}
+		Path located_path;
+		if (!search_path.empty() && Path::find(search_path + Path::pathSeparator() + Environment::get("PATH", ""), tool, located_path))
+			return located_path.toString();
+		return tool;
 	}
 	string get_keytool_password() const {
 		size_t sep = sign_password.find(':');
 		return sep == string::npos ? sign_password : sign_password.substr(sep + 1);
 	}
+	bool sign_android_aab_with_jarsigner(const string& aab_path, string& std_out, string& std_err) {
+		return system_command(jarsigner_command, {"-keystore", sign_cert, "-storepass", get_keytool_password(), "-keypass", get_keytool_password(), aab_path, "game"}, std_out, std_err);
+	}
+	bool sign_android_aab_with_java_module(const string& aab_path, string& std_out, string& std_err) {
+		Process::Args args = {
+			"-m", "jdk.jartool/sun.security.tools.jarsigner.Main",
+			"-keystore", sign_cert,
+			"-storepass", get_keytool_password(),
+			"-keypass", get_keytool_password(),
+			aab_path,
+			"game"
+		};
+		return system_command(java_command, args, std_out, std_err);
+	}
+	static string base64_encode(const unsigned char* data, size_t size) {
+		ostringstream out;
+		Base64Encoder enc(out);
+		enc.write(reinterpret_cast<const char*>(data), static_cast<std::streamsize>(size));
+		enc.close();
+		string result = out.str();
+		while (!result.empty() && (result.back() == '\n' || result.back() == '\r')) result.pop_back();
+		return result;
+	}
+	static string sha256_base64(const string& data) {
+		unsigned char digest[SHA256_DIGEST_LENGTH];
+		SHA256(reinterpret_cast<const unsigned char*>(data.data()), data.size(), digest);
+		return base64_encode(digest, sizeof(digest));
+	}
+	static string read_binary_file(const string& path) {
+		FileInputStream in(path, ios::in | ios::binary);
+		ostringstream out;
+		StreamCopier::copyStream(in, out);
+		return out.str();
+	}
+	static void write_binary_file(const string& path, const string& data) {
+		File(Path(path).parent()).createDirectories();
+		FileOutputStream out(path, ios::out | ios::binary | ios::trunc);
+		out.write(data.data(), static_cast<std::streamsize>(data.size()));
+	}
+	static string wrap_manifest_line(const string& line) {
+		string wrapped;
+		size_t pos = 0;
+		const size_t line_limit = 70; // plus CRLF => 72 bytes per line
+		while (pos < line.size()) {
+			size_t chunk = min(line_limit, line.size() - pos);
+			if (pos == 0) wrapped += line.substr(pos, chunk) + "\r\n";
+			else wrapped += " " + line.substr(pos, chunk) + "\r\n";
+			pos += chunk;
+		}
+		if (line.empty()) wrapped = "\r\n";
+		return wrapped;
+	}
+	static string make_manifest_section(const string& entry_name, const string& entry_digest_base64) {
+		string section;
+		section += wrap_manifest_line("Name: " + entry_name);
+		section += wrap_manifest_line("SHA-256-Digest: " + entry_digest_base64);
+		section += "\r\n";
+		return section;
+	}
+	static bool should_skip_jar_signature_entry(const string& entry_name) {
+		if (entry_name == "META-INF/MANIFEST.MF") return true;
+		if (entry_name.rfind("META-INF/", 0) != 0) return false;
+		string leaf = Path(entry_name).makeFile().getFileName();
+		string upper = toUpper(leaf);
+		return upper.size() > 3 && (string_has_suffix(upper, ".SF") || string_has_suffix(upper, ".RSA") || string_has_suffix(upper, ".DSA") || string_has_suffix(upper, ".EC"));
+	}
+	bool export_keystore_to_pkcs12(const string& pkcs12_path, const string& pkcs12_password, string& std_out, string& std_err) {
+		Process::Args args = {
+			"-importkeystore",
+			"-srckeystore", sign_cert,
+			"-srcstorepass", get_keytool_password(),
+			"-srcalias", "game",
+			"-destkeystore", pkcs12_path,
+			"-deststoretype", "PKCS12",
+			"-deststorepass", pkcs12_password,
+			"-destkeypass", pkcs12_password,
+			"-destalias", "game",
+			"-noprompt"
+		};
+		return system_command(keytool_command, args, std_out, std_err);
+	}
+	bool load_signing_identity(EVP_PKEY** out_key, X509** out_cert, STACK_OF(X509)** out_chain, string& std_err) {
+		*out_key = nullptr;
+		*out_cert = nullptr;
+		*out_chain = nullptr;
+		auto load_pkcs12 = [&](const string& path, const string& password) -> bool {
+			FILE* fp = fopen(path.c_str(), "rb");
+			if (!fp) {
+				std_err = format("Unable to open signing keystore %s", path);
+				return false;
+			}
+			PKCS12* p12 = d2i_PKCS12_fp(fp, nullptr);
+			fclose(fp);
+			if (!p12) return false;
+			bool ok = PKCS12_parse(p12, password.c_str(), out_key, out_cert, out_chain) == 1;
+			if (!ok) {
+				unsigned long err = ERR_get_error();
+				std_err = err ? ERR_error_string(err, nullptr) : "Unable to parse PKCS12 keystore";
+			}
+			PKCS12_free(p12);
+			return ok;
+		};
+		string password = get_keytool_password();
+		string lower_cert = toLower(sign_cert);
+		if (string_has_suffix(lower_cert, ".p12") || string_has_suffix(lower_cert, ".pfx")) return load_pkcs12(sign_cert, password);
+		if (load_pkcs12(sign_cert, password)) return true;
+		TemporaryFile tmp_pkcs12;
+		string export_out, export_err;
+		string temp_password = format("nvgt_%u", uint32_t(Timestamp().epochMicroseconds()));
+		if (!export_keystore_to_pkcs12(tmp_pkcs12.path(), temp_password, export_out, export_err)) {
+			std_err = format("Failed to export keystore to PKCS12, %s%s", export_out, export_err);
+			return false;
+		}
+		if (!load_pkcs12(tmp_pkcs12.path(), temp_password)) return false;
+		return true;
+	}
+	bool sign_android_aab_in_process(const string& aab_path, string& std_out, string& std_err) {
+		string stage = "initializing temporary directory";
+		try {
+			string extracted_dir = make_unique_temp_path(".aabdir");
+			File(extracted_dir).createDirectories();
+			stage = format("extracting AAB %s", aab_path);
+			libarchive_extract(aab_path, extracted_dir);
+			stage = "enumerating bundle entries";
+			vector<string> entry_names;
+			collect_relative_files_recursive(extracted_dir, "", entry_names);
+			sort(entry_names.begin(), entry_names.end());
+			string manifest = "Manifest-Version: 1.0\r\nCreated-By: NVGT\r\n\r\n";
+			vector<pair<string, string>> manifest_sections;
+			stage = "building manifest digests";
+			for (const string& entry_name : entry_names) {
+				if (should_skip_jar_signature_entry(entry_name)) {
+					File(Path(extracted_dir).append(entry_name)).remove();
+					continue;
+				}
+				string entry_path = Path(extracted_dir).append(entry_name).toString();
+				string data = read_binary_file(entry_path);
+				string section = make_manifest_section(entry_name, sha256_base64(data));
+				manifest += section;
+				manifest_sections.push_back({entry_name, section});
+			}
+			string sf = "Signature-Version: 1.0\r\nCreated-By: NVGT\r\n";
+			sf += wrap_manifest_line("SHA-256-Digest-Manifest: " + sha256_base64(manifest));
+			sf += "\r\n";
+			for (const auto& section : manifest_sections) {
+				sf += wrap_manifest_line("Name: " + section.first);
+				sf += wrap_manifest_line("SHA-256-Digest: " + sha256_base64(section.second));
+				sf += "\r\n";
+			}
+			EVP_PKEY* pkey = nullptr;
+			X509* cert = nullptr;
+			STACK_OF(X509)* chain = nullptr;
+			ERR_clear_error();
+			stage = format("loading signing identity from %s", sign_cert);
+			if (!load_signing_identity(&pkey, &cert, &chain, std_err)) return false;
+			stage = "generating CMS signature";
+			BIO* sf_bio = BIO_new_mem_buf(sf.data(), static_cast<int>(sf.size()));
+			CMS_ContentInfo* cms = sf_bio ? CMS_sign(cert, pkey, chain, sf_bio, CMS_BINARY | CMS_DETACHED) : nullptr;
+			if (sf_bio) BIO_free(sf_bio);
+			if (!cms) {
+				unsigned long err = ERR_get_error();
+				std_err = err ? ERR_error_string(err, nullptr) : "Unable to generate CMS signature";
+				if (chain) sk_X509_pop_free(chain, X509_free);
+				if (cert) X509_free(cert);
+				if (pkey) EVP_PKEY_free(pkey);
+				return false;
+			}
+			stage = "encoding CMS signature";
+			BIO* der_bio = BIO_new(BIO_s_mem());
+			if (!der_bio || i2d_CMS_bio(der_bio, cms) != 1) {
+				unsigned long err = ERR_get_error();
+				std_err = err ? ERR_error_string(err, nullptr) : "Unable to encode CMS signature";
+				if (der_bio) BIO_free(der_bio);
+				CMS_ContentInfo_free(cms);
+				if (chain) sk_X509_pop_free(chain, X509_free);
+				if (cert) X509_free(cert);
+				if (pkey) EVP_PKEY_free(pkey);
+				return false;
+			}
+			BUF_MEM* der_mem = nullptr;
+			BIO_get_mem_ptr(der_bio, &der_mem);
+			string sig_block = der_mem && der_mem->data && der_mem->length ? string(der_mem->data, der_mem->length) : string();
+			BIO_free(der_bio);
+			CMS_ContentInfo_free(cms);
+			if (chain) sk_X509_pop_free(chain, X509_free);
+			if (cert) X509_free(cert);
+			if (pkey) EVP_PKEY_free(pkey);
+			stage = "writing META-INF signature files";
+			write_binary_file(Path(extracted_dir).append("META-INF/MANIFEST.MF").toString(), manifest);
+			write_binary_file(Path(extracted_dir).append("META-INF/GAME.SF").toString(), sf);
+			write_binary_file(Path(extracted_dir).append("META-INF/GAME.RSA").toString(), sig_block);
+			stage = "repacking signed AAB";
+			string signed_out = make_unique_temp_path(".signed.aab");
+			struct archive* out_arc = archive_write_new();
+			archive_write_set_format_zip(out_arc);
+			archive_write_zip_set_compression_deflate(out_arc);
+			if (archive_write_open_filename(out_arc, signed_out.c_str()) != ARCHIVE_OK) {
+				string arc_err = archive_error_string(out_arc) ? archive_error_string(out_arc) : "unknown archive error";
+				archive_write_free(out_arc);
+				std_err = format("Unable to open temporary signed bundle %s: %s", signed_out, arc_err);
+				return false;
+			}
+			archive_write_dir(out_arc, extracted_dir, "", {}, {}, true);
+			archive_write_close(out_arc);
+			archive_write_free(out_arc);
+			if (!File(signed_out).exists()) {
+				std_err = format("Signed AAB temporary output was not created at %s", signed_out);
+				return false;
+			}
+			stage = format("replacing final AAB %s", aab_path);
+			if (File(aab_path).exists()) File(aab_path).remove();
+			File(signed_out).copyTo(aab_path);
+			std_out = "AAB signed with internal PKCS7 fallback";
+			std_err.clear();
+			return true;
+		} catch (const exception& e) {
+			std_err = format("%s: %s", stage, e.what());
+			return false;
+		}
+	}
+	bool sign_android_aab(const string& aab_path, string& std_out, string& std_err) {
+		string out1, err1, out2, err2, out3, err3;
+		try {
+			if (sign_android_aab_with_jarsigner(aab_path, out1, err1)) {
+				std_out = out1;
+				std_err = err1;
+				return true;
+			}
+		} catch (const exception& e) {
+			err1 = e.what();
+		}
+		try {
+			if (sign_android_aab_with_java_module(aab_path, out2, err2)) {
+				std_out = out2;
+				std_err = err2;
+				return true;
+			}
+		} catch (const exception& e) {
+			err2 = e.what();
+		}
+		try {
+			if (sign_android_aab_in_process(aab_path, out3, err3)) {
+				std_out = out3;
+				std_err = err3;
+				return true;
+			}
+		} catch (const exception& e) {
+			err3 = e.what();
+		}
+		std_out.clear();
+		std_err = format("jarsigner failed: %s%s\njava module signing failed: %s%s\ninternal signing failed: %s%s", out1, err1, out2, err2, out3, err3);
+		return false;
+	}
 	void ensure_android_keystore() {
 		if (sign_cert.empty() || sign_password.empty() || File(sign_cert).exists()) return;
 		set_status("creating signature keystore...");
 		string sout, serr;
-		if (!system_command(exe("keytool"), {"-genkey", "-keyalg", "RSA", "-keysize", "2048", "-v", "-keystore", sign_cert, "-dname", config.getString("build.android_signature_info", "cn=NVGT"), "-storepass", get_keytool_password(), "-validity", "10000", "-alias", "game"}, sout, serr))
+		if (!system_command(keytool_command, {"-genkey", "-keyalg", "RSA", "-keysize", "2048", "-v", "-keystore", sign_cert, "-dname", config.getString("build.android_signature_info", "cn=NVGT"), "-storepass", get_keytool_password(), "-validity", "10000", "-alias", "game"}, sout, serr))
 			throw Exception(format("Failed to run keytool, %s%s", sout, serr));
 	}
 	bool android_sdk_tools_exist(const std::string& path) {
 		// This will also set the path to android.jar and apksigner.jar if build tools are found.
 		Path located;
-		bool found = Path::find(path, exe("zipalign"), located) && (sign_cert.empty() && sign_password.empty() || Path::find(path, exe("java"), located)) && (!do_install || Path::find(path, exe("adb"), located)) && Path::find(path, exe("aapt2"), located);
+		bool has_java = sign_cert.empty() || sign_password.empty() || File(java_command).exists() || Path::find(path, exe("java"), located);
+		bool found = Path::find(path, exe("zipalign"), located) && has_java && (!do_install || Path::find(path, exe("adb"), located)) && Path::find(path, exe("aapt2"), located);
 		if (!found) return false;
 		// Since this particular search was last in the Path::find calls above, located now contains a path to aapt2.exe, hopefully we can locate android.jar from it.
 		located.setFileName("");
@@ -792,6 +1161,9 @@ class nvgt_compilation_output_android : public nvgt_compilation_output_impl {
 	void find_android_sdk_tools() {
 		sign_cert = config.getString("build.android_signature_cert", Path::home() + ".nvgt_android.keystore");
 		sign_password = config.getString("build.android_signature_password", "pass:android");
+		java_command = resolve_java_tool("java");
+		keytool_command = resolve_java_tool("keytool");
+		jarsigner_command = resolve_java_tool("jarsigner");
 		do_install = config.getInt("build.android_install", 1);
 		string path = Path(config.getString("application.dir")).append("android-tools").toString() + Path::pathSeparator();
 		path += Path(config.getString("application.dir")).append("android-tools/java17/bin").toString() + Path::pathSeparator();
@@ -830,7 +1202,7 @@ class nvgt_compilation_output_android : public nvgt_compilation_output_impl {
 		if (!sign_cert.empty() && !sign_password.empty()) {
 			Path tmp;
 			string java_home = Path::expand(config.getString("build.android_java_home", Environment::get("JAVA_HOME", "")));
-			if (!java_home.empty() && !Path::find(path, exe("java"), tmp)) buildtools_bin += Path(java_home).append("bin").toString() + Path::pathSeparator();
+			if (!java_home.empty() && !File(java_command).exists() && !Path::find(path, exe("java"), tmp)) buildtools_bin += Path(java_home).append("bin").toString() + Path::pathSeparator();
 		}
 		path.insert(0, buildtools_bin);
 		Environment::set("PATH", path);
@@ -990,14 +1362,14 @@ protected:
 			// 4. Run bundletool to produce the final AAB.
 			set_status("building AAB...");
 			sout = serr = "";
-			if (!system_command(exe("java"), {"-jar", bundletool_jar.toString(), "build-bundle", "--modules=" + base_zip_path, "--output=" + output_path.toString()}, sout, serr))
+			if (!system_command(java_command, {"-jar", bundletool_jar.toString(), "build-bundle", "--modules=" + base_zip_path, "--output=" + output_path.toString()}, sout, serr))
 				throw Exception(format("Failed to run bundletool, %s%s", sout, serr));
 			if (!sign_cert.empty() && !sign_password.empty()) {
 				ensure_android_keystore();
 				set_status("signing AAB...");
 				sout = serr = "";
-				if (!system_command(exe("jarsigner"), {"-keystore", sign_cert, "-storepass", get_keytool_password(), "-keypass", get_keytool_password(), output_path.toString(), "game"}, sout, serr))
-					throw Exception(format("Failed to run jarsigner, %s%s", sout, serr));
+				if (!sign_android_aab(output_path.toString(), sout, serr))
+					throw Exception(format("Failed to sign AAB, %s%s", sout, serr));
 			}
 		} else {
 			// --- APK path ---
@@ -1029,7 +1401,7 @@ protected:
 				ensure_android_keystore();
 				set_status("signing APK...");
 				sout = serr = "";
-				if (!system_command(exe("java"), {"-jar", apksigner_jar.toString(), "sign", "-ks", sign_cert, "--ks-pass", sign_password, "--key-pass", sign_password, output_path.toString()}, sout, serr)) throw Exception(format("Failed to run apksigner, %s%s", sout, serr));
+				if (!system_command(java_command, {"-jar", apksigner_jar.toString(), "sign", "-ks", sign_cert, "--ks-pass", sign_password, "--key-pass", sign_password, output_path.toString()}, sout, serr)) throw Exception(format("Failed to run apksigner, %s%s", sout, serr));
 			}
 		}
 	}
