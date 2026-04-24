@@ -482,6 +482,7 @@ public:
 	bool send_message(mail_message* msg) {
 		if (!m_session) {
 			m_last_error = "Not connected";
+			if (msg) msg->release();
 			return false;
 		}
 		if (!msg) {
@@ -494,9 +495,11 @@ public:
 				msg->finalize_html_content();
 			m_session->sendMessage(msg->get_message());
 			m_last_error.clear();
+			msg->release();
 			return true;
 		} catch (const Exception& e) {
 			m_last_error = e.displayText();
+			msg->release();
 			return false;
 		}
 	}

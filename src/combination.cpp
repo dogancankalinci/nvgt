@@ -177,12 +177,13 @@ bool combination_api::generate_permutations(int items) {
 }
 bool combination_api::next(CScriptArray* list) {
 	if (!list) return false;
-	if (!is_active()) return false;
-	if (!gen->advance()) return false;
+	if (!is_active()) { list->Release(); return false; }
+	if (!gen->advance()) { list->Release(); return false; }
 	std::vector<int>& temp = gen->data();
 	list->Resize(temp.size());
 	for (int i = 0; i < temp.size(); i++)
 		list->SetValue(i, &temp[i]);
+	list->Release();
 	return true;
 }
 bool combination_api::is_active() {
