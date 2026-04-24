@@ -50,17 +50,19 @@ CScriptArray* transform_get_opengl_matrix(const Transform& t) {
 }
 
 void transform_set_from_opengl_matrix(Transform& t, CScriptArray* matrix) {
-	if (matrix->GetSize() != 16) throw runtime_error("opengl matrix must have length of 16");
+	if (matrix->GetSize() != 16) { matrix->Release(); throw runtime_error("opengl matrix must have length of 16"); }
 	t.setFromOpenGL(reinterpret_cast<decimal*>(matrix->GetBuffer()));
+	matrix->Release();
 }
 
 bool aabb_test_collision_triangle(const AABB& aabb, CScriptArray* points) {
-	if (points->GetSize() != 3) throw runtime_error("triangle must have 3 points");
+	if (points->GetSize() != 3) { points->Release(); throw runtime_error("triangle must have 3 points"); }
 	Vector3 tri[3];
 	for (int i = 0; i < 3; i++) {
 		const Vector3& v = *static_cast<const Vector3*>(points->At(i));
 		tri[i] = Vector3(v.x, v.y, v.z);
 	}
+	points->Release();
 	return aabb.testCollisionTriangleAABB(tri);
 }
 
@@ -77,8 +79,10 @@ CollisionCallback::ContactPoint contact_pair_get_contact_point(const CollisionCa
 }
 
 AABB aabb_from_triangle(CScriptArray* points) {
-	if (points->GetSize() != 3) throw runtime_error("triangle must have 3 points");
-	return AABB::createAABBForTriangle(reinterpret_cast<const Vector3*>(points->GetBuffer()));
+	if (points->GetSize() != 3) { points->Release(); throw runtime_error("triangle must have 3 points"); }
+	AABB result = AABB::createAABBForTriangle(reinterpret_cast<const Vector3*>(points->GetBuffer()));
+	points->Release();
+	return result;
 }
 
 void simple_void_callback(asIScriptFunction* callback, const void* data) {
@@ -334,10 +338,11 @@ CScriptArray* face_get_vertices(const HalfEdgeStructure::Face& f) {
 
 void face_set_vertices(HalfEdgeStructure::Face& f, CScriptArray* array) {
 	f.faceVertices.clear();
-	if (!array->GetSize()) return;
+	if (!array->GetSize()) { array->Release(); return; }
 	const uint32* vertices = static_cast<const uint32*>(array->GetBuffer());
 	for (asUINT i = 0; i < array->GetSize(); i++)
 		f.faceVertices.add(vertices[i]);
+	array->Release();
 }
 
 struct ManagedTriangleData {
@@ -370,10 +375,14 @@ struct ManagedVertexData {
 };
 
 ManagedTriangleData* create_triangle_data(CScriptArray* verticesArray, CScriptArray* indicesArray) {
-	if (verticesArray->GetSize() % 3 != 0)
+	if (verticesArray->GetSize() % 3 != 0) {
+		verticesArray->Release(); indicesArray->Release();
 		throw std::runtime_error("Vertices array size must be multiple of 3 (x,y,z components)");
-	if (indicesArray->GetSize() % 3 != 0)
+	}
+	if (indicesArray->GetSize() % 3 != 0) {
+		verticesArray->Release(); indicesArray->Release();
 		throw std::runtime_error("Indices array size must be multiple of 3 (triangle indices)");
+	}
 	auto* managed = new ManagedTriangleData();
 	managed->vertices.resize(verticesArray->GetSize());
 	for (uint32 i = 0; i < verticesArray->GetSize(); i++)
@@ -381,27 +390,35 @@ ManagedTriangleData* create_triangle_data(CScriptArray* verticesArray, CScriptAr
 	managed->indices.resize(indicesArray->GetSize());
 	for (uint32 i = 0; i < indicesArray->GetSize(); i++)
 		managed->indices[i] = *(uint32*)indicesArray->At(i);
+	verticesArray->Release();
+	indicesArray->Release();
 	uint32 nbVertices = managed->vertices.size() / 3;
 	uint32 nbTriangles = managed->indices.size() / 3;
 	managed->array = new TriangleVertexArray(
 	    nbVertices,
 	    managed->vertices.data(),
-	    3 * sizeof(float),  // stride for 3 floats (x,y,z)
+	    3 * sizeof(float),
 	    nbTriangles,
 	    managed->indices.data(),
-	    3 * sizeof(uint32),  // stride for 3 indices
+	    3 * sizeof(uint32),
 	    TriangleVertexArray::VertexDataType::VERTEX_FLOAT_TYPE,
 	    TriangleVertexArray::IndexDataType::INDEX_INTEGER_TYPE);
 	return managed;
 }
 
 ManagedTriangleData* create_triangle_data_with_normals(CScriptArray* verticesArray, CScriptArray* normalsArray, CScriptArray* indicesArray) {
-	if (verticesArray->GetSize() % 3 != 0 || normalsArray->GetSize() % 3 != 0)
+	if (verticesArray->GetSize() % 3 != 0 || normalsArray->GetSize() % 3 != 0) {
+		verticesArray->Release(); normalsArray->Release(); indicesArray->Release();
 		throw std::runtime_error("Vertices and normals arrays size must be multiple of 3 (x,y,z components)");
-	if (verticesArray->GetSize() != normalsArray->GetSize())
+	}
+	if (verticesArray->GetSize() != normalsArray->GetSize()) {
+		verticesArray->Release(); normalsArray->Release(); indicesArray->Release();
 		throw std::runtime_error("Vertices and normals arrays must have same size");
-	if (indicesArray->GetSize() % 3 != 0)
+	}
+	if (indicesArray->GetSize() % 3 != 0) {
+		verticesArray->Release(); normalsArray->Release(); indicesArray->Release();
 		throw std::runtime_error("Indices array size must be multiple of 3 (triangle indices)");
+	}
 	auto* managed = new ManagedTriangleData();
 	managed->hasNormals = true;
 	managed->vertices.resize(verticesArray->GetSize());
@@ -413,17 +430,20 @@ ManagedTriangleData* create_triangle_data_with_normals(CScriptArray* verticesArr
 	managed->indices.resize(indicesArray->GetSize());
 	for (uint32 i = 0; i < indicesArray->GetSize(); i++)
 		managed->indices[i] = *(uint32*)indicesArray->At(i);
+	verticesArray->Release();
+	normalsArray->Release();
+	indicesArray->Release();
 	uint32 nbVertices = managed->vertices.size() / 3;
 	uint32 nbTriangles = managed->indices.size() / 3;
 	managed->array = new TriangleVertexArray(
 	    nbVertices,
 	    managed->vertices.data(),
-	    3 * sizeof(float),  // stride for 3 floats (x,y,z)
+	    3 * sizeof(float),
 	    managed->normals.data(),
-	    3 * sizeof(float),  // normals stride
+	    3 * sizeof(float),
 	    nbTriangles,
 	    managed->indices.data(),
-	    3 * sizeof(uint32),  // stride for 3 indices
+	    3 * sizeof(uint32),
 	    TriangleVertexArray::VertexDataType::VERTEX_FLOAT_TYPE,
 	    TriangleVertexArray::NormalDataType::NORMAL_FLOAT_TYPE,
 	    TriangleVertexArray::IndexDataType::INDEX_INTEGER_TYPE);
@@ -431,37 +451,47 @@ ManagedTriangleData* create_triangle_data_with_normals(CScriptArray* verticesArr
 }
 
 ManagedVertexData* create_vertex_data(CScriptArray* verticesArray) {
-	if (verticesArray->GetSize() % 3 != 0)
+	if (verticesArray->GetSize() % 3 != 0) {
+		verticesArray->Release();
 		throw std::runtime_error("Vertices array size must be multiple of 3 (x,y,z components)");
+	}
 	auto* managed = new ManagedVertexData();
 	managed->vertices.resize(verticesArray->GetSize());
 	for (uint32 i = 0; i < verticesArray->GetSize(); i++)
 		managed->vertices[i] = *(float*)verticesArray->At(i);
+	verticesArray->Release();
 	uint32 nbVertices = managed->vertices.size() / 3;
 	managed->array = new VertexArray(
 	    managed->vertices.data(),
-	    3 * sizeof(float),  // stride for 3 floats (x,y,z)
+	    3 * sizeof(float),
 	    nbVertices,
 	    VertexArray::DataType::VERTEX_FLOAT_TYPE);
 	return managed;
 }
 
 ManagedPolygonData* create_polygon_data(CScriptArray* verticesArray, CScriptArray* facesArray) {
-	if (verticesArray->GetSize() % 3 != 0)
+	if (verticesArray->GetSize() % 3 != 0) {
+		verticesArray->Release(); facesArray->Release();
 		throw std::runtime_error("Vertices array size must be multiple of 3 (x,y,z components)");
+	}
 	auto* managed = new ManagedPolygonData();
 	managed->vertices.resize(verticesArray->GetSize());
 	for (uint32 i = 0; i < verticesArray->GetSize(); i++)
 		managed->vertices[i] = *(float*)verticesArray->At(i);
+	verticesArray->Release();
 	// Process faces array (array of arrays)
 	uint32 totalIndices = 0;
 	// First pass: count total indices needed
 	for (uint32 faceIdx = 0; faceIdx < facesArray->GetSize(); faceIdx++) {
 		CScriptArray* faceIndices = (CScriptArray*)facesArray->At(faceIdx);
-		if (!faceIndices)
+		if (!faceIndices) {
+			facesArray->Release();
 			throw std::runtime_error("Face array contains null face at index " + std::to_string(faceIdx));
-		if (faceIndices->GetSize() < 3)
+		}
+		if (faceIndices->GetSize() < 3) {
+			facesArray->Release();
 			throw std::runtime_error("Face " + std::to_string(faceIdx) + " must have at least 3 vertices");
+		}
 		totalIndices += faceIndices->GetSize();
 	}
 	// Reserve space
@@ -481,14 +511,15 @@ ManagedPolygonData* create_polygon_data(CScriptArray* verticesArray, CScriptArra
 		}
 		currentIndexBase += faceIndices->GetSize();
 	}
+	facesArray->Release();
 	uint32 nbVertices = managed->vertices.size() / 3;
 	uint32 nbFaces = managed->faces.size();
 	managed->array = new PolygonVertexArray(
 	    nbVertices,
 	    managed->vertices.data(),
-	    3 * sizeof(float),  // stride for 3 floats (x,y,z)
+	    3 * sizeof(float),
 	    managed->indices.data(),
-	    sizeof(uint32),  // stride for indices
+	    sizeof(uint32),
 	    nbFaces,
 	    managed->faces.data(),
 	    PolygonVertexArray::VertexDataType::VERTEX_FLOAT_TYPE,
@@ -626,40 +657,43 @@ HeightField* create_height_field_float(int nbGridColumns, int nbGridRows, CScrip
 	if (!heightData) throw std::runtime_error("Height data array cannot be null");
 	uint32 expectedSize = nbGridColumns * nbGridRows;
 	if (heightData->GetSize() != expectedSize) {
+		heightData->Release();
 		throw std::runtime_error("Height data array size (" + std::to_string(heightData->GetSize()) + ") must match grid dimensions (" + std::to_string(expectedSize) + ")");
 	}
 	std::vector<float> heightBuffer(expectedSize);
 	for (uint32 i = 0; i < expectedSize; i++)
 		heightBuffer[i] = *(float*)heightData->At(i);
+	heightData->Release();
 	std::vector<Message> messages;
-	HeightField* heightField = g_physics.createHeightField(nbGridColumns, nbGridRows, heightBuffer.data(), HeightField::HeightDataType::HEIGHT_FLOAT_TYPE, messages, integerHeightScale);
-	// TODO: Handle messages - could expose them to script or log them
-	return heightField;
+	return g_physics.createHeightField(nbGridColumns, nbGridRows, heightBuffer.data(), HeightField::HeightDataType::HEIGHT_FLOAT_TYPE, messages, integerHeightScale);
 }
 
 HeightField* create_height_field_int(int nbGridColumns, int nbGridRows, CScriptArray* heightData, decimal integerHeightScale) {
 	if (!heightData) throw std::runtime_error("Height data array cannot be null");
 	uint32 expectedSize = nbGridColumns * nbGridRows;
 	if (heightData->GetSize() != expectedSize) {
+		heightData->Release();
 		throw std::runtime_error("Height data array size (" + std::to_string(heightData->GetSize()) + ") must match grid dimensions (" + std::to_string(expectedSize) + ")");
 	}
 	std::vector<int> heightBuffer(expectedSize);
 	for (uint32 i = 0; i < expectedSize; i++)
 		heightBuffer[i] = *(int*)heightData->At(i);
+	heightData->Release();
 	std::vector<Message> messages;
-	HeightField* heightField = g_physics.createHeightField(nbGridColumns, nbGridRows, heightBuffer.data(), HeightField::HeightDataType::HEIGHT_INT_TYPE, messages, integerHeightScale);
-	return heightField;
+	return g_physics.createHeightField(nbGridColumns, nbGridRows, heightBuffer.data(), HeightField::HeightDataType::HEIGHT_INT_TYPE, messages, integerHeightScale);
 }
 
 HeightField* create_height_field_double(int nbGridColumns, int nbGridRows, CScriptArray* heightData, decimal integerHeightScale) {
 	if (!heightData) throw std::runtime_error("Height data array cannot be null");
 	uint32 expectedSize = nbGridColumns * nbGridRows;
 	if (heightData->GetSize() != expectedSize) {
+		heightData->Release();
 		throw std::runtime_error("Height data array size (" + std::to_string(heightData->GetSize()) + ") must match grid dimensions (" + std::to_string(expectedSize) + ")");
 	}
 	std::vector<double> heightBuffer(expectedSize);
 	for (uint32 i = 0; i < expectedSize; i++)
 		heightBuffer[i] = *(double*)heightData->At(i);
+	heightData->Release();
 	std::vector<Message> messages;
 	HeightField* heightField = g_physics.createHeightField(nbGridColumns, nbGridRows, heightBuffer.data(), HeightField::HeightDataType::HEIGHT_DOUBLE_TYPE, messages, integerHeightScale);
 	return heightField;

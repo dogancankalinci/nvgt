@@ -90,6 +90,7 @@ int message_box(const std::string& title, const std::string& text, const std::ve
 int message_box_script(const std::string& title, const std::string& text, CScriptArray* buttons, unsigned int flags) {
 	std::vector<std::string> v_buttons(buttons->GetSize());
 	for (unsigned int i = 0; i < buttons->GetSize(); i++) v_buttons[i] = (*(std::string*)(buttons->At(i)));
+	buttons->Release();
 	return message_box(title, text, v_buttons, flags);
 }
 int alert(const std::string& title, const std::string& text, bool can_cancel, unsigned int flags) {
@@ -360,6 +361,7 @@ void game_window::draw_menu(CScriptArray* items, float x, float y) {
 		}
 		current_y += line_height;
 	}
+	items->Release();
 }
 
 Poco::AutoPtr<game_window> g_window;

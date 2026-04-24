@@ -702,8 +702,10 @@ public:
 		return frame_count;
 	}
 	unsigned int write_script_array(CScriptArray *frames) override {
-		if (!frames || !get_channels()) return 0;
-		return write((float*)frames->GetBuffer(), frames->GetSize() / get_channels());
+		if (!frames) return 0;
+		unsigned int result = get_channels() ? write((float*)frames->GetBuffer(), frames->GetSize() / get_channels()) : 0;
+		frames->Release();
+		return result;
 	}
 	unsigned int write_script_memory_buffer(script_memory_buffer* frames) override {
 		if (!frames || !get_channels()) return false;
@@ -911,8 +913,10 @@ public:
 		return total_written;
 	}
 	unsigned int write_script_array(CScriptArray *frames) override {
-		if (!frames || !get_channels()) return 0;
-		return write((float*)frames->GetBuffer(), frames->GetSize() / get_channels());
+		if (!frames) return 0;
+		unsigned int result = get_channels() ? write((float*)frames->GetBuffer(), frames->GetSize() / get_channels()) : 0;
+		frames->Release();
+		return result;
 	}
 	unsigned int write_script_memory_buffer(script_memory_buffer* frames) override {
 		if (!frames || !get_channels()) return false;
@@ -1615,8 +1619,10 @@ public:
 		if (!buffer)
 			return false;
 		ma_format format = ma_format_from_angelscript_type(buffer->GetElementTypeId());
-		if (format == ma_format_unknown) return false;
-		return load_pcm(buffer->GetBuffer(), buffer->GetSize() * buffer->GetElementSize(), format, samplerate, channels);
+		if (format == ma_format_unknown) { buffer->Release(); return false; }
+		bool result = load_pcm(buffer->GetBuffer(), buffer->GetSize() * buffer->GetElementSize(), format, samplerate, channels);
+		buffer->Release();
+		return result;
 	}
 	bool load_pcm_script_memory_buffer(script_memory_buffer* buffer, int samplerate, int channels) override {
 		if (!buffer)
@@ -1668,7 +1674,9 @@ public:
 			return false;
 		ma_format format = pcm_stream? ma_format_unknown : ma_format_from_angelscript_type(buffer->GetElementTypeId());
 		int nchannels = pcm_stream? ma_pcm_rb_get_channels(&*pcm_stream) : channels? channels : get_engine()->get_channels();
-		return stream_pcm(buffer->GetBuffer(), buffer->GetSize() / nchannels, format, sample_rate, channels, buffer_size);
+		bool result = stream_pcm(buffer->GetBuffer(), buffer->GetSize() / nchannels, format, sample_rate, channels, buffer_size);
+		buffer->Release();
+		return result;
 	}
 	bool stream_pcm_script_memory_buffer(script_memory_buffer* buffer, unsigned int sample_rate, unsigned int channels, unsigned int buffer_size) override {
 		if (!buffer)
@@ -2282,7 +2290,7 @@ void RegisterSoundsystemEncoders(asIScriptEngine* engine) {
 template<class T> void RegisterSoundsystemMixer(asIScriptEngine *engine, const string &type) {
 	RegisterSoundsystemAudioNode < T > (engine, type);
 	engine->RegisterObjectMethod(type.c_str(), "audio_engine@+ get_engine() const property", asFUNCTION((virtual_call < T, &T::get_engine, audio_engine * >)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "bool set_mixer(mixer@ parent_mixer)", asFUNCTION((virtual_call < T, &T::set_mixer, bool, mixer * >)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "bool set_mixer(mixer@+ parent_mixer)", asFUNCTION((virtual_call < T, &T::set_mixer, bool, mixer * >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "mixer@+ get_mixer() const", asFUNCTION((virtual_call < T, &T::get_mixer, mixer * >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "void set_3d_panner(int panner_id)", asFUNCTION((virtual_call < T, &T::set_3d_panner, void, int >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "int get_3d_panner() const property", asFUNCTION((virtual_call < T, &T::get_3d_panner, int >)), asCALL_CDECL_OBJFIRST);
@@ -2592,7 +2600,7 @@ void RegisterSoundsystem(asIScriptEngine *engine) {
 	RegisterSoundsystemMixer < mixer > (engine, "mixer");
 	engine->RegisterObjectBehaviour("mixer", asBEHAVE_FACTORY, "mixer@ m()", asFUNCTION(new_global_mixer), asCALL_CDECL);
 	RegisterSoundsystemMixer < sound > (engine, "sound");
-	engine->RegisterObjectMethod("audio_engine", "sound@ play(const string&in path, const vector&in position = vector(FLOAT_MAX, FLOAT_MAX, FLOAT_MAX), float volume = 0.0, float pan = 0.0, float pitch = 100.0, mixer@ mix = null, const pack_interface@ pack_file = sound_default_pack, bool autoplay = true)", asFUNCTION((virtual_call < audio_engine, &audio_engine::play, sound*, const string &, const reactphysics3d::Vector3&, float, float, float, mixer*, const pack_interface*, bool>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("audio_engine", "sound@ play(const string&in path, const vector&in position = vector(FLOAT_MAX, FLOAT_MAX, FLOAT_MAX), float volume = 0.0, float pan = 0.0, float pitch = 100.0, mixer@+ mix = null, const pack_interface@+ pack_file = sound_default_pack, bool autoplay = true)", asFUNCTION((virtual_call < audio_engine, &audio_engine::play, sound*, const string &, const reactphysics3d::Vector3&, float, float, float, mixer*, const pack_interface*, bool>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_engine", "mixer@ mixer()", asFUNCTION((virtual_call < audio_engine, &audio_engine::new_mixer, mixer * >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_engine", "sound@ sound()", asFUNCTION((virtual_call < audio_engine, &audio_engine::new_sound, sound * >)), asCALL_CDECL_OBJFIRST);
 	RegisterSoundsystemDataSources(engine);
@@ -2600,8 +2608,8 @@ void RegisterSoundsystem(asIScriptEngine *engine) {
 	RegisterSoundsystemEncoders(engine);
 	RegisterSoundsystemShapes(engine);
 	engine->RegisterObjectBehaviour("sound", asBEHAVE_FACTORY, "sound@ s()", asFUNCTION(new_global_sound), asCALL_CDECL);
-	engine->RegisterObjectMethod("sound", "bool load(const string&in filename, const pack_interface@ pack = sound_default_pack)", asFUNCTION((virtual_call < sound, &sound::load, bool, const string &, pack_interface * >)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("sound", "bool stream(const string&in filename, const pack_interface@ pack = sound_default_pack)", asFUNCTION((virtual_call < sound, &sound::stream, bool, const string &, pack_interface * >)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("sound", "bool load(const string&in filename, const pack_interface@+ pack = sound_default_pack)", asFUNCTION((virtual_call < sound, &sound::load, bool, const string &, pack_interface * >)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("sound", "bool stream(const string&in filename, const pack_interface@+ pack = sound_default_pack)", asFUNCTION((virtual_call < sound, &sound::stream, bool, const string &, pack_interface * >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("sound", "bool stream_url(const string&in url)", asFUNCTION((virtual_call < sound, &sound::stream_url, bool, const string&>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("sound", "bool load_memory(const string&in data)", asFUNCTION((virtual_call < sound, &sound::load_string, bool, const string & >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("sound", "bool load_pcm(const float[]@ data, int samplerate, int channels)", asFUNCTION((virtual_call < sound, &sound::load_pcm_script_array, bool, CScriptArray *, int, int >)), asCALL_CDECL_OBJFIRST);
@@ -2659,12 +2667,12 @@ void RegisterSoundsystem(asIScriptEngine *engine) {
 	engine->RegisterGlobalFunction("int get_sound_output_device() property", asFUNCTION(get_sound_output_device), asCALL_CDECL);
 	engine->RegisterGlobalProperty("mixer@ sound_default_mixer", (void*)&g_audio_mixer);
 	engine->RegisterGlobalFunction("void set_sound_output_device(int device) property", asFUNCTION(set_sound_output_device), asCALL_CDECL);
-	engine->RegisterGlobalFunction("sound@ sound_play(const string&in path, const vector&in position = vector(FLOAT_MAX, FLOAT_MAX, FLOAT_MAX), float volume = 0.0, float pan = 0.0, float pitch = 100.0, mixer@ mix = null, const pack_interface@ pack_file = sound_default_pack, bool autoplay = true)", asFUNCTION(sound_play), asCALL_CDECL);
+	engine->RegisterGlobalFunction("sound@ sound_play(const string&in path, const vector&in position = vector(FLOAT_MAX, FLOAT_MAX, FLOAT_MAX), float volume = 0.0, float pan = 0.0, float pitch = 100.0, mixer@+ mix = null, const pack_interface@+ pack_file = sound_default_pack, bool autoplay = true)", asFUNCTION(sound_play), asCALL_CDECL);
 	engine->RegisterGlobalFunction("vector sound_get_listener_position(uint listener_index = 0)", asFUNCTION(sound_get_listener_position), asCALL_CDECL);
 	engine->RegisterGlobalFunction("bool sound_set_listener_position(float x, float y, float z, uint listener_index = 0)", asFUNCTION(sound_set_listener_position), asCALL_CDECL);
 	engine->RegisterGlobalFunction("bool sound_set_listener_position(const vector&in position, uint listener_index = 0)", asFUNCTION(sound_set_listener_position_vector), asCALL_CDECL);
 	engine->RegisterGlobalFunction("void set_sound_default_decryption_key(const string& in key) property", asFUNCTION(set_default_decryption_key), asCALL_CDECL);
-	engine->RegisterGlobalFunction("void set_sound_default_pack(pack_interface@ storage) property", asFUNCTION(set_sound_default_storage), asCALL_CDECL);
+	engine->RegisterGlobalFunction("void set_sound_default_pack(pack_interface@+ storage) property", asFUNCTION(set_sound_default_storage), asCALL_CDECL);
 	engine->RegisterGlobalFunction("pack_interface@ get_sound_default_pack() property", asFUNCTION(get_sound_default_storage), asCALL_CDECL);
 	engine->RegisterGlobalFunction("void set_sound_master_volume(float db) property", asFUNCTION(set_sound_master_volume), asCALL_CDECL);
 	engine->RegisterGlobalFunction("float get_sound_master_volume() property", asFUNCTION(get_sound_master_volume), asCALL_CDECL);

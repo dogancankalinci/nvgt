@@ -574,9 +574,11 @@ public:
 				}
 			}
 			m_last_error.clear();
+			messages->Release();
 			return true;
 		} catch (const Exception& e) {
 			m_last_error = e.displayText();
+			messages->Release();
 			return false;
 		}
 	}
