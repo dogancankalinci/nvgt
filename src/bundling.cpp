@@ -501,6 +501,8 @@ protected:
 		plist_t plist_env_block = plist_new_dict();
 		plist_dict_set_item(plist_env_block, "MACOS_BUNDLED_APP", plist_new_string("1"));
 		plist_dict_set_item(plist, "LSEnvironment", plist_env_block);
+		string mic_usage = config.getString("build.NSMicrophoneUsageDescription", "");
+		if (!mic_usage.empty()) plist_dict_set_item(plist, "NSMicrophoneUsageDescription", plist_new_string(mic_usage.c_str()));
 		char* plist_xml;
 		uint32_t plist_len;
 		if (plist_to_xml(plist, &plist_xml, &plist_len) != PLIST_ERR_SUCCESS) throw Exception("Unable to create info.plist");
@@ -641,6 +643,8 @@ protected:
 		plist_array_append_item(orientations, plist_new_string("UIInterfaceOrientationLandscapeRight"));
 		plist_dict_set_item(plist, "UISupportedInterfaceOrientations", orientations);
 		plist_dict_set_item(plist, "UIApplicationSupportsIndirectInputEvents", plist_new_bool(1));
+		string mic_usage = config.getString("build.NSMicrophoneUsageDescription", "");
+		if (!mic_usage.empty()) plist_dict_set_item(plist, "NSMicrophoneUsageDescription", plist_new_string(mic_usage.c_str()));
 		char* plist_xml;
 		uint32_t plist_len;
 		if (plist_to_xml(plist, &plist_xml, &plist_len) != PLIST_ERR_SUCCESS) throw Exception("Unable to create Info.plist");
