@@ -1,10 +1,10 @@
 LOCAL_PATH := $(call my-dir)
 ifeq ($(TARGET_ARCH_ABI),armeabi-v7a)
-LIBPATH := ../droidev_arm32/lib
-INCLUDEPATH := ../droidev_arm32/include
+LIBPATH := ../droidev/armeabi-v7a/lib
+INCLUDEPATH := ../droidev/armeabi-v7a/include
 else
-LIBPATH := ../droidev/lib
-INCLUDEPATH := ../droidev/include
+LIBPATH := ../droidev/arm64-v8a/lib
+INCLUDEPATH := ../droidev/arm64-v8a/include
 endif
 ifneq ($(wildcard Custom.mk),)
 include Custom.mk

@@ -109,9 +109,7 @@ jobs:
       run: echo "ANDROID_NDK_HOME=${{steps.setup-ndk.outputs.ndk-path}}" >> $GITHUB_ENV
     - uses: actions/cache@v4
       with:
-        path: |
-          droidev
-          droidev_arm32
+        path: droidev
         key: droidev-${{ hashFiles('.github/workflows/release.yml', 'vcpkg/ports/**', 'vcpkg/triplets/**', 'vcpkg/*.json', '.git/modules/vcpkg/bin/HEAD') }}
       id: cache
     - name: build dependencies
@@ -123,7 +121,6 @@ jobs:
       if: ${{ steps.cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' && github.event.repository.fork == false }}
       run: |
         curl -u "${{secrets.CIFTP}}" -s -T droidev.zip ftp://nvgt.dev
-        curl -u "${{secrets.CIFTP}}" -s -T droidev_arm32.zip ftp://nvgt.dev
         curl -H "X-Auth: ${{secrets.CIPHP}}" -s "https://nvgt.dev/ci/devlibs_update.php"
     - name: keystore_official
       if: github.event.repository.fork == false

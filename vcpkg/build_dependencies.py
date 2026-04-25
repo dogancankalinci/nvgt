@@ -36,14 +36,19 @@ def build(triplet = "", do_archive = False, out_dir = ""):
 	try: subprocess.check_output([vcpkg_path, "install", "--triplet", triplet, "--x-manifest-root", vcpkg_path.parents[1]])
 	except subprocess.CalledProcessError as cpe: sys.exit(f"Building packages for {triplet} failed with error code {cpe.returncode}.\n{cpe.output.decode()}")
 	dev_basename = ""
+	abi_subdir = ""
 	if "-windows" in triplet: dev_basename = "windev"
 	elif "-osx" in triplet: dev_basename = "macosdev"
 	elif "-linux" in triplet: dev_basename = "lindev"
-	elif "armv7-android" in triplet: dev_basename = "droidev_arm32"
-	elif "-android" in triplet: dev_basename = "droidev"
+	elif "armv7-android" in triplet: dev_basename = "droidev"; abi_subdir = "armeabi-v7a"
+	elif "-android" in triplet: dev_basename = "droidev"; abi_subdir = "arm64-v8a"
 	elif "-ios" in triplet: dev_basename = "iosdev"
-	if not out_dir: out_dir = repo_path / dev_basename
-	else: out_dir = Path(out_dir)
+	archive_base = repo_path / dev_basename if dev_basename else None
+	if not out_dir:
+		out_dir = archive_base / abi_subdir if abi_subdir else archive_base
+	else:
+		out_dir = Path(out_dir)
+		archive_base = out_dir
 	out_dir.mkdir(parents=True, exist_ok=True)
 	if (vcpkg_installed_path / triplet / "bin").exists(): shutil.copytree(vcpkg_installed_path / triplet / "bin", out_dir / "bin", dirs_exist_ok = True)
 	if (vcpkg_installed_path / triplet / "debug" / "bin").exists(): shutil.copytree(vcpkg_installed_path / triplet / "debug" / "bin", out_dir / "debug" / "bin", dirs_exist_ok = True)
@@ -61,8 +66,8 @@ def build(triplet = "", do_archive = False, out_dir = ""):
 		shutil.rmtree(out_dir / "debug" / "lib" / "pkgconfig")
 	except FileNotFoundError: pass
 	if do_archive:
-		shutil.make_archive(out_dir, format = "zip", root_dir = out_dir)
-		with out_dir.with_suffix(".zip").open("rb") as f, out_dir.with_suffix(".zip.blake2b").open("w") as hf:
+		shutil.make_archive(archive_base, format = "zip", root_dir = archive_base)
+		with archive_base.with_suffix(".zip").open("rb") as f, archive_base.with_suffix(".zip.blake2b").open("w") as hf:
 			h = hashlib.blake2b()
 			h.update(f.read())
 			hf.write(h.hexdigest())
