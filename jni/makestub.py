@@ -14,6 +14,7 @@ variant = sys.argv[1]
 variant_cap = variant[0].upper()+ variant[1:]
 build_dir = sys.argv[2]
 apk_path = sys.argv[3]
+gradle_user_home = sys.argv[4] if len(sys.argv) >= 5 else os.environ.get("GRADLE_USER_HOME", os.path.join(os.path.expanduser("~"), ".gradle"))
 is_iap = "Iap" in variant_cap
 is_debug = not variant.endswith("Release")
 
@@ -42,20 +43,9 @@ if os.path.isdir(intermediates):
 		collect_flats(os.path.join(intermediates, subdir, variant))
 
 # AGP 8.x stores compiled AAR dependency resources (drawables etc.) in Gradle's
-# transform cache rather than build/intermediates/. Only collect flat files that
-# correspond to resources actually present in the built APK so we don't pull in
-# flat files from other Gradle projects on this machine that NVGT doesn't need.
-# Gradle <8.11 uses caches/transforms-N/, Gradle >=8.11 uses caches/{version}/transforms/.
-needed_from_cache = set()
-if os.path.isfile(apk_path):
-	with zipfile.ZipFile(apk_path, "r") as apk:
-		for entry in apk.namelist():
-			if not entry.startswith("res/"): continue
-			parts = entry[4:].split("/", 1)
-			if len(parts) == 2:
-				needed_from_cache.add(parts[0] + "_" + parts[1] + ".flat")
-
-gradle_user_home = os.environ.get("GRADLE_USER_HOME", os.path.join(os.path.expanduser("~"), ".gradle"))
+# transform cache rather than build/intermediates/. build/intermediates/ is always
+# collected first above so f not in flat_files ensures project resources win over
+# anything found here. Gradle <8.11: caches/transforms-N/, >=8.11: caches/{ver}/transforms/.
 caches_dir = os.path.join(gradle_user_home, "caches")
 transforms_roots = (
 	_glob.glob(os.path.join(caches_dir, "transforms-*")) +
@@ -67,7 +57,7 @@ for transforms_dir in transforms_roots:
 		if not entry.is_dir(): continue
 		for root, dirs, files in os.walk(os.path.join(entry.path, "transformed")):
 			for f in files:
-				if f.endswith(".flat") and f not in flat_files and f in needed_from_cache:
+				if f.endswith(".flat") and f not in flat_files:
 					flat_files[f] = os.path.join(root, f)
 
 os.makedirs(os.path.join(build_dir, "tmp"), exist_ok=True)
