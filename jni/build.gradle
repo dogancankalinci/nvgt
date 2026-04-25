@@ -97,7 +97,7 @@ android {
 					variant.outputs.each { output ->
 						File apk = output.outputFile
 						exec {
-							commandLine "python", "makestub.py", "${variant.name}", "${buildDir}"
+							commandLine "python", "makestub.py", "${variant.name}", "${buildDir}", "${apk}"
 						}
 					}
 				}

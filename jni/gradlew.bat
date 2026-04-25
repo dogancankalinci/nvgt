@@ -6,7 +6,7 @@
 @rem ##########################################################################
 
 @rem Set local scope for the variables with windows NT shell
-if "%OS%"=="Windows_NT" setlocal
+if "%OS%"=="Windows_NT" setlocal EnableDelayedExpansion
 
 @rem Add default JVM options here. You can also use JAVA_OPTS and GRADLE_OPTS to pass JVM options to this script.
 set DEFAULT_JVM_OPTS=
@@ -17,6 +17,16 @@ set APP_BASE_NAME=%~n0
 set APP_HOME=%DIRNAME%
 
 @rem Find java.exe
+if defined JAVA_HOME goto findJavaFromJavaHome
+
+@rem JAVA_HOME not set — try to locate JDK from Android SDK environment variables.
+@rem Android SDK installs its JDK alongside the SDK root (e.g. ANDROID_HOME=C:\android\sdk, JDK=C:\android\openjdk\jdk-x).
+for %%V in (ANDROID_HOME ANDROID_SDK_ROOT ANDROID_SDK_HOME) do (
+	if defined %%V (
+		for /d %%J in ("!%%V!\openjdk\jdk-*") do if exist "%%J\bin\java.exe" set JAVA_HOME=%%J
+		for /d %%J in ("!%%V!\..\openjdk\jdk-*") do if exist "%%J\bin\java.exe" set JAVA_HOME=%%J
+	)
+)
 if defined JAVA_HOME goto findJavaFromJavaHome
 
 set JAVA_EXE=java.exe

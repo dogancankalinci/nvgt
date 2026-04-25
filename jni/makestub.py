@@ -5,21 +5,81 @@
 # Copyright (c) 2022-2026 Sam Tupy
 # license: zlib
 
-import os, shutil, sys, zipfile
+import os, sys, zipfile
 
-if len(sys.argv) < 3:
-	print("makestub: needed variant name and path to build directory")
+if len(sys.argv) < 4:
+	print("makestub: needed variant name, path to build directory, and path to built APK")
 	sys.exit(1)
 variant = sys.argv[1]
 variant_cap = variant[0].upper()+ variant[1:]
 build_dir = sys.argv[2]
+apk_path = sys.argv[3]
 is_iap = "Iap" in variant_cap
 is_debug = not variant.endswith("Release")
-shutil.make_archive(os.path.join(build_dir, "tmp", "res"), "zip", os.path.join(build_dir, "intermediates", "merged_res", variant))
+
+# Collect ALL aapt2 flat resource files for this variant from build/intermediates.
+# AGP 8.x may distribute flat files across multiple subdirectories depending on
+# dependency type (e.g. AAR deps like billing→androidx.core may not land in merged_res).
+# We scan every intermediate subdirectory so nothing gets missed.
+flat_files = {}  # basename -> filesystem path; merged_res wins on duplicates
+
+def collect_flats(search_dir):
+	if not os.path.isdir(search_dir):
+		return
+	for root, dirs, files in os.walk(search_dir):
+		for f in files:
+			if f.endswith(".flat") and f not in flat_files:
+				flat_files[f] = os.path.join(root, f)
+
+# Primary source first so it wins deduplication
+collect_flats(os.path.join(build_dir, "intermediates", "merged_res", variant))
+
+intermediates = os.path.join(build_dir, "intermediates")
+if os.path.isdir(intermediates):
+	for subdir in sorted(os.listdir(intermediates)):
+		if subdir == "merged_res":
+			continue
+		collect_flats(os.path.join(intermediates, subdir, variant))
+
+os.makedirs(os.path.join(build_dir, "tmp"), exist_ok=True)
+res_zip_path = os.path.join(build_dir, "tmp", "res.zip")
+with zipfile.ZipFile(res_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+	for arc_name, fs_path in flat_files.items():
+		zf.write(fs_path, arc_name)
+
+# Collect root files — classpath resources loaded at
+# runtime via ClassLoader.getResourceAsStream(), not AssetManager.
+# Primary source: build/intermediates/merged_java_res/{variant}/out.jar produced by
+# MergeJavaResourceTask, which is exactly what AGP packages into the APK root.
+# Fallback: read directly from the built APK (strips signature files).
+SIGNATURE_ENTRIES = {"META-INF/MANIFEST.MF"}
+def is_apk_root_entry(name):
+	if name.startswith("res/") or name.startswith("lib/"): return False
+	if name in ("resources.arsc", "AndroidManifest.xml"): return False
+	if name.startswith("classes") and name.endswith(".dex"): return False
+	if name in SIGNATURE_ENTRIES: return False
+	if name.startswith("META-INF/") and (name.endswith(".SF") or name.endswith(".RSA") or name.endswith(".DSA")): return False
+	return True
+
+root_files = {}  # archive path -> bytes
+merged_java_res = os.path.join(build_dir, "intermediates", "merged_java_res", variant, "out.jar")
+if os.path.isfile(merged_java_res):
+	with zipfile.ZipFile(merged_java_res, "r") as jar:
+		for entry in jar.namelist():
+			if is_apk_root_entry(entry):
+				root_files[entry] = jar.read(entry)
+elif os.path.isfile(apk_path):
+	with zipfile.ZipFile(apk_path, "r") as apk:
+		for entry in apk.namelist():
+			if is_apk_root_entry(entry):
+				root_files[entry] = apk.read(entry)
+
 if not os.path.isdir(os.path.join(os.path.dirname(__file__), "..", "release", "stub")): os.mkdir(os.path.join(os.path.dirname(__file__), "..", "release", "stub"))
 stub_filename = "nvgt_android" + ("_debug" if is_debug else "") + ("_iap" if is_iap else "") + ".bin"
 zip_out = zipfile.ZipFile(os.path.join(os.path.dirname(__file__), "..", "release", "stub", stub_filename), "w", zipfile.ZIP_DEFLATED)
-zip_out.write(os.path.join(build_dir, "tmp", "res.zip"), "res.zip")
+zip_out.write(res_zip_path, "res.zip")
+for arc_path, data in root_files.items():
+	zip_out.writestr("root/" + arc_path, data)
 if os.path.isfile(os.path.join("build", "intermediates", "dex", variant, "mergeDex" + variant_cap, "classes.dex")):
 	zip_out.write(os.path.join("build", "intermediates", "dex", variant, "mergeDex" + variant_cap, "classes.dex"),"classes.dex")
 elif os.path.isdir(os.path.join("build", "intermediates", "dex", variant, "mergeProjectDex" + variant_cap)):
@@ -35,4 +95,4 @@ for root, dirs, files in os.walk(native_libpath):
 	for f in files:
 		zip_out.write(os.path.join(root, f), os.path.join(root[len(native_libpath)-3:], f))
 zip_out.close()
-os.remove(os.path.join(build_dir, "tmp", "res.zip"))
+os.remove(res_zip_path)

@@ -77,11 +77,31 @@ Please set the JAVA_HOME variable in your environment to match the
 location of your Java installation."
     fi
 else
-    JAVACMD="java"
-    which java >/dev/null 2>&1 || die "ERROR: JAVA_HOME is not set and no 'java' command could be found in your PATH.
+    # JAVA_HOME not set — try to locate JDK from Android SDK environment variables.
+    # Android SDK installs its JDK alongside the SDK root (e.g. ANDROID_HOME=~/android/sdk, JDK=~/android/openjdk/jdk-x).
+    for sdk_var in ANDROID_HOME ANDROID_SDK_ROOT ANDROID_SDK_HOME; do
+        sdk_root="${!sdk_var}"
+        if [ -n "$sdk_root" ]; then
+            for search_dir in "$sdk_root" "$(dirname "$sdk_root")"; do
+                for jdk_dir in "$search_dir"/openjdk/jdk-*/; do
+                    if [ -x "$jdk_dir/bin/java" ]; then
+                        JAVA_HOME="$jdk_dir"
+                        break 3
+                    fi
+                done
+            done
+        fi
+    done
+
+    if [ -n "$JAVA_HOME" ]; then
+        JAVACMD="$JAVA_HOME/bin/java"
+    else
+        JAVACMD="java"
+        which java >/dev/null 2>&1 || die "ERROR: JAVA_HOME is not set and no 'java' command could be found in your PATH.
 
 Please set the JAVA_HOME variable in your environment to match the
 location of your Java installation."
+    fi
 fi
 
 # Increase the maximum file descriptors if we can.

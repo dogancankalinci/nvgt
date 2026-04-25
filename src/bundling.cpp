@@ -809,6 +809,22 @@ class nvgt_compilation_output_android : public nvgt_compilation_output_impl {
 		add_root(config.getString("build.android_java_home", ""));
 		add_root(Environment::get("JAVA_HOME", ""));
 		add_root(Environment::get("JDK_HOME", ""));
+		// Android SDK ships its own JDK under openjdk/ but does not set JAVA_HOME.
+		// The JDK may live inside the SDK root or as a sibling directory (e.g. ANDROID_HOME=C:\android\sdk, JDK=C:\android\openjdk\jdk-x).
+		auto add_android_sdk_jdk = [&](const string& sdk_root) {
+			if (sdk_root.empty()) return;
+			auto glob_jdks = [&](const string& base) {
+				set<string> matches;
+				Glob::glob(Path(base).append("openjdk/jdk-*").toString(), matches);
+				for (const string& match : matches)
+					if (File(match).exists() && File(match).isDirectory()) add_root(match);
+			};
+			glob_jdks(sdk_root);
+			glob_jdks(Path(sdk_root).parent().toString());
+		};
+		add_android_sdk_jdk(Environment::get("ANDROID_HOME", ""));
+		add_android_sdk_jdk(Environment::get("ANDROID_SDK_ROOT", ""));
+		add_android_sdk_jdk(Environment::get("ANDROID_SDK_HOME", ""));
 		if (Environment::isWindows()) {
 			vector<string> patterns = {
 				Environment::get("ProgramFiles", "C:\\Program Files") + "\\Java\\*",
@@ -816,7 +832,8 @@ class nvgt_compilation_output_android : public nvgt_compilation_output_impl {
 				Environment::get("ProgramFiles", "C:\\Program Files") + "\\Eclipse Adoptium\\*",
 				Environment::get("ProgramFiles", "C:\\Program Files") + "\\Microsoft\\jdk*",
 				Path::dataHome() + "Programs\\Eclipse Adoptium\\*",
-				Path::dataHome() + "Android\\Android Studio\\jbr"
+				Path::dataHome() + "Android\\Android Studio\\jbr",
+				Path::dataHome() + "AppData\\Local\\Android\\Sdk\\openjdk\\jdk-*"
 			};
 			for (const string& pattern : patterns) {
 				set<string> matches;
@@ -828,7 +845,8 @@ class nvgt_compilation_output_android : public nvgt_compilation_output_impl {
 			vector<string> patterns = {
 				"/Library/Java/JavaVirtualMachines/*",
 				"/Applications/Android Studio.app/Contents/jbr",
-				Path::expand("~/Applications/Android Studio.app/Contents/jbr")
+				Path::expand("~/Applications/Android Studio.app/Contents/jbr"),
+				Path::expand("~/Library/Android/sdk/openjdk/jdk-*")
 			};
 			for (const string& pattern : patterns) {
 				set<string> matches;
@@ -842,7 +860,8 @@ class nvgt_compilation_output_android : public nvgt_compilation_output_impl {
 				"/usr/java/*",
 				"/opt/android-studio/jbr",
 				Path::expand("~/android-studio/jbr"),
-				"/snap/android-studio/current/android-studio/jbr"
+				"/snap/android-studio/current/android-studio/jbr",
+				Path::expand("~/Android/Sdk/openjdk/jdk-*")
 			};
 			for (const string& pattern : patterns) {
 				set<string> matches;
@@ -917,9 +936,10 @@ class nvgt_compilation_output_android : public nvgt_compilation_output_impl {
 	static string wrap_manifest_line(const string& line) {
 		string wrapped;
 		size_t pos = 0;
-		const size_t line_limit = 70; // plus CRLF => 72 bytes per line
 		while (pos < line.size()) {
-			size_t chunk = min(line_limit, line.size() - pos);
+			// JAR spec: max 72 bytes per line including CRLF.
+			// First line: 70 content + CRLF = 72. Continuation: 1 space + 69 content + CRLF = 72.
+			size_t chunk = min(pos == 0 ? size_t(70) : size_t(69), line.size() - pos);
 			if (pos == 0) wrapped += line.substr(pos, chunk) + "\r\n";
 			else wrapped += " " + line.substr(pos, chunk) + "\r\n";
 			pos += chunk;
@@ -1266,6 +1286,18 @@ protected:
 		workplace.createDirectories();
 		libarchive_extract(stubpath.toString(), workplace.path());
 		File(Path(workplace.path()).append("assets")).createDirectories();
+		// Move root/ contents up one level so they sit at the APK zip root.
+		// For AAB the root/ directory stays in place; bundletool expects base/root/.
+		if (!is_aab) {
+			File root_dir(Path(workplace.path()).append("root"));
+			if (root_dir.exists()) {
+				vector<File> entries;
+				root_dir.list(entries);
+				for (const File& entry : entries)
+					File(entry.path()).renameTo(Path(workplace.path()).append(Path(entry.path()).getFileName()).toString());
+				root_dir.remove();
+			}
+		}
 		// Rename libgame_iap.so → libgame.so (IAP stub uses a different module name during NDK build to avoid conflicts).
 		for (const string& abi : {"arm64-v8a", "armeabi-v7a"}) {
 			File iap_lib(Path(workplace.path()).append(format("lib/%s/libgame_iap.so", abi)));
@@ -1357,6 +1389,10 @@ protected:
 				archive_write_dir(base_arc, lib_dir.path(), "lib", {}, {}, true);
 			// assets/ — game assets including bytecode.bin.
 			archive_write_dir(base_arc, Path(workplace.path()).append("assets").toString(), "assets", {}, {}, true);
+			// root/ — ClassLoader-accessible files extracted from the stub APK.
+			File root_dir(Path(workplace.path()).append("root"));
+			if (root_dir.exists())
+				archive_write_dir(base_arc, root_dir.path(), "root", {}, {}, true);
 			archive_write_close(base_arc);
 			archive_write_free(base_arc);
 			// 4. Run bundletool to produce the final AAB.
