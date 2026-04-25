@@ -42,23 +42,25 @@ if os.path.isdir(intermediates):
 			continue
 		collect_flats(os.path.join(intermediates, subdir, variant))
 
-# AGP 8.x stores compiled AAR dependency resources (drawables etc.) in Gradle's
-# transform cache rather than build/intermediates/. build/intermediates/ is always
-# collected first above so f not in flat_files ensures project resources win over
-# anything found here. Gradle <8.11: caches/transforms-N/, >=8.11: caches/{ver}/transforms/.
-caches_dir = os.path.join(gradle_user_home, "caches")
-transforms_roots = (
-	_glob.glob(os.path.join(caches_dir, "transforms-*")) +
-	_glob.glob(os.path.join(caches_dir, "*", "transforms"))
-)
-for transforms_dir in transforms_roots:
-	if not os.path.isdir(transforms_dir): continue
-	for entry in os.scandir(transforms_dir):
-		if not entry.is_dir(): continue
-		for root, dirs, files in os.walk(os.path.join(entry.path, "transformed")):
-			for f in files:
-				if f.endswith(".flat") and f not in flat_files:
-					flat_files[f] = os.path.join(root, f)
+# AGP 8.x stores some compiled AAR dependency resources (such as billing assets
+# needed by the IAP variant) in Gradle's transform cache rather than
+# build/intermediates/. build/intermediates/ is always collected first above so
+# f not in flat_files ensures project resources win over anything found here.
+# Gradle <8.11: caches/transforms-N/, >=8.11: caches/{ver}/transforms/.
+if is_iap:
+	caches_dir = os.path.join(gradle_user_home, "caches")
+	transforms_roots = (
+		_glob.glob(os.path.join(caches_dir, "transforms-*")) +
+		_glob.glob(os.path.join(caches_dir, "*", "transforms"))
+	)
+	for transforms_dir in transforms_roots:
+		if not os.path.isdir(transforms_dir): continue
+		for entry in os.scandir(transforms_dir):
+			if not entry.is_dir(): continue
+			for root, dirs, files in os.walk(os.path.join(entry.path, "transformed")):
+				for f in files:
+					if f.endswith(".flat") and f not in flat_files:
+						flat_files[f] = os.path.join(root, f)
 
 os.makedirs(os.path.join(build_dir, "tmp"), exist_ok=True)
 res_zip_path = os.path.join(build_dir, "tmp", "res.zip")
