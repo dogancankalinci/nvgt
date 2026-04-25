@@ -43,8 +43,14 @@ if os.path.isdir(intermediates):
 
 # AGP 8.x stores compiled AAR dependency resources (drawables etc.) in Gradle's
 # transform cache rather than build/intermediates/. Search it last so build/ wins.
+# Gradle <8.11 uses caches/transforms-N/, Gradle >=8.11 uses caches/{version}/transforms/.
 gradle_user_home = os.environ.get("GRADLE_USER_HOME", os.path.join(os.path.expanduser("~"), ".gradle"))
-for transforms_dir in _glob.glob(os.path.join(gradle_user_home, "caches", "transforms-*")):
+caches_dir = os.path.join(gradle_user_home, "caches")
+transforms_roots = (
+	_glob.glob(os.path.join(caches_dir, "transforms-*")) +
+	_glob.glob(os.path.join(caches_dir, "*", "transforms"))
+)
+for transforms_dir in transforms_roots:
 	if not os.path.isdir(transforms_dir):
 		continue
 	for entry in os.scandir(transforms_dir):
