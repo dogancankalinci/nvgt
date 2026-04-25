@@ -5,7 +5,7 @@
 # Copyright (c) 2022-2026 Sam Tupy
 # license: zlib
 
-import glob as _glob, os, sys, zipfile
+import glob as _glob, os, re as _re, sys, zipfile
 
 if len(sys.argv) < 4:
 	print("makestub: needed variant name, path to build directory, and path to built APK")
@@ -46,6 +46,34 @@ if os.path.isdir(intermediates):
 # transform cache rather than build/intermediates/. build/intermediates/ is always
 # collected first above so f not in flat_files ensures project resources win over
 # anything found here. Gradle <8.11: caches/transforms-N/, >=8.11: caches/{ver}/transforms/.
+#
+# We whitelist against the variant's own APK to prevent cross-variant contamination:
+# all variants share the same transform cache in a single Gradle session, so without
+# a whitelist the non-IAP stub picks up billing/GMS resources populated by the IAP build.
+#
+# AAPT2 qualifier stripping: with minSdkVersion 28 AAPT2 drops -vN qualifiers (N<=28)
+# from APK resource paths, so APK has res/drawable/foo.xml while the cache entry is
+# drawable-v21_foo.xml.flat. flat_in_whitelist() handles both forms.
+needed_from_cache = set()
+if os.path.isfile(apk_path):
+	with zipfile.ZipFile(apk_path, "r") as apk:
+		for entry in apk.namelist():
+			if not entry.startswith("res/"): continue
+			parts = entry[4:].split("/", 1)
+			if len(parts) == 2:
+				needed_from_cache.add(parts[0] + "_" + parts[1] + ".flat")
+
+def flat_in_whitelist(f):
+	if f in needed_from_cache:
+		return True
+	try:
+		sep = f.index("_")
+	except ValueError:
+		return False
+	# Strip -vN qualifiers from the type portion and check again.
+	stripped = _re.sub(r"-v\d+", "", f[:sep]) + f[sep:]
+	return stripped != f and stripped in needed_from_cache
+
 caches_dir = os.path.join(gradle_user_home, "caches")
 transforms_roots = (
 	_glob.glob(os.path.join(caches_dir, "transforms-*")) +
@@ -57,7 +85,7 @@ for transforms_dir in transforms_roots:
 		if not entry.is_dir(): continue
 		for root, dirs, files in os.walk(os.path.join(entry.path, "transformed")):
 			for f in files:
-				if f.endswith(".flat") and f not in flat_files:
+				if f.endswith(".flat") and f not in flat_files and flat_in_whitelist(f):
 					flat_files[f] = os.path.join(root, f)
 
 os.makedirs(os.path.join(build_dir, "tmp"), exist_ok=True)
