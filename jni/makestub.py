@@ -5,7 +5,7 @@
 # Copyright (c) 2022-2026 Sam Tupy
 # license: zlib
 
-import os, sys, zipfile
+import glob as _glob, os, sys, zipfile
 
 if len(sys.argv) < 4:
 	print("makestub: needed variant name, path to build directory, and path to built APK")
@@ -40,6 +40,16 @@ if os.path.isdir(intermediates):
 		if subdir == "merged_res":
 			continue
 		collect_flats(os.path.join(intermediates, subdir, variant))
+
+# AGP 8.x stores compiled AAR dependency resources (drawables etc.) in Gradle's
+# transform cache rather than build/intermediates/. Search it last so build/ wins.
+gradle_user_home = os.environ.get("GRADLE_USER_HOME", os.path.join(os.path.expanduser("~"), ".gradle"))
+for transforms_dir in _glob.glob(os.path.join(gradle_user_home, "caches", "transforms-*")):
+	if not os.path.isdir(transforms_dir):
+		continue
+	for entry in os.scandir(transforms_dir):
+		if entry.is_dir():
+			collect_flats(os.path.join(entry.path, "transformed"))
 
 os.makedirs(os.path.join(build_dir, "tmp"), exist_ok=True)
 res_zip_path = os.path.join(build_dir, "tmp", "res.zip")
