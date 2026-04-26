@@ -2591,9 +2591,9 @@ void RegisterRedis(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("redis_client", "bool setnx(const string&in, const string&in)", asMETHOD(redis_client, setnx), asCALL_THISCALL);
 	engine->RegisterObjectMethod("redis_client", "bool setex(const string&in, int64, const string&in)", asMETHOD(redis_client, setex), asCALL_THISCALL);
 	engine->RegisterObjectMethod("redis_client", "bool psetex(const string&in, int64, const string&in)", asMETHOD(redis_client, psetex), asCALL_THISCALL);
-	engine->RegisterObjectMethod("redis_client", "array<string>@ mget(array<string>@)", asMETHOD(redis_client, mget), asCALL_THISCALL);
-	engine->RegisterObjectMethod("redis_client", "bool mset(array<string>@)", asMETHODPR(redis_client, mset, (CScriptArray*), bool), asCALL_THISCALL);
-	engine->RegisterObjectMethod("redis_client", "bool mset(dictionary@)", asMETHODPR(redis_client, mset, (CScriptDictionary*), bool), asCALL_THISCALL);
+	engine->RegisterObjectMethod("redis_client", "array<string>@ mget(array<string>@+)", asMETHOD(redis_client, mget), asCALL_THISCALL);
+	engine->RegisterObjectMethod("redis_client", "bool mset(array<string>@+)", asMETHODPR(redis_client, mset, (CScriptArray*), bool), asCALL_THISCALL);
+	engine->RegisterObjectMethod("redis_client", "bool mset(dictionary@+)", asMETHODPR(redis_client, mset, (CScriptDictionary*), bool), asCALL_THISCALL);
 	// Key operations
 	engine->RegisterObjectMethod("redis_client", "bool exists(const string&in)", asMETHOD(redis_client, exists), asCALL_THISCALL);
 	engine->RegisterObjectMethod("redis_client", "bool del(const string&in)", asMETHOD(redis_client, del), asCALL_THISCALL);
@@ -2627,7 +2627,7 @@ void RegisterRedis(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("redis_client", "bool hsetnx(const string&in, const string&in, const string&in)", asMETHOD(redis_client, hsetnx), asCALL_THISCALL);
 	// Set operations
 	engine->RegisterObjectMethod("redis_client", "int64 sadd(const string&in, const string&in)", asMETHODPR(redis_client, sadd, (const std::string&, const std::string&), int64_t), asCALL_THISCALL);
-	engine->RegisterObjectMethod("redis_client", "int64 sadd(const string&in, array<string>@)", asMETHODPR(redis_client, sadd, (const std::string&, CScriptArray*), int64_t), asCALL_THISCALL);
+	engine->RegisterObjectMethod("redis_client", "int64 sadd(const string&in, array<string>@+)", asMETHODPR(redis_client, sadd, (const std::string&, CScriptArray*), int64_t), asCALL_THISCALL);
 	engine->RegisterObjectMethod("redis_client", "int64 scard(const string&in)", asMETHOD(redis_client, scard), asCALL_THISCALL);
 	engine->RegisterObjectMethod("redis_client", "bool sismember(const string&in, const string&in)", asMETHOD(redis_client, sismember), asCALL_THISCALL);
 	engine->RegisterObjectMethod("redis_client", "array<string>@ smembers(const string&in)", asMETHOD(redis_client, smembers), asCALL_THISCALL);
@@ -2635,9 +2635,9 @@ void RegisterRedis(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("redis_client", "string spop(const string&in)", asMETHOD(redis_client, spop), asCALL_THISCALL);
 	engine->RegisterObjectMethod("redis_client", "string srandmember(const string&in)", asMETHOD(redis_client, srandmember), asCALL_THISCALL);
 	engine->RegisterObjectMethod("redis_client", "array<string>@ srandmember_count(const string&in, int64)", asMETHOD(redis_client, srandmember_count), asCALL_THISCALL);
-	engine->RegisterObjectMethod("redis_client", "array<string>@ sunion(array<string>@)", asMETHOD(redis_client, sunion), asCALL_THISCALL);
-	engine->RegisterObjectMethod("redis_client", "array<string>@ sinter(array<string>@)", asMETHOD(redis_client, sinter), asCALL_THISCALL);
-	engine->RegisterObjectMethod("redis_client", "array<string>@ sdiff(array<string>@)", asMETHOD(redis_client, sdiff), asCALL_THISCALL);
+	engine->RegisterObjectMethod("redis_client", "array<string>@ sunion(array<string>@+)", asMETHOD(redis_client, sunion), asCALL_THISCALL);
+	engine->RegisterObjectMethod("redis_client", "array<string>@ sinter(array<string>@+)", asMETHOD(redis_client, sinter), asCALL_THISCALL);
+	engine->RegisterObjectMethod("redis_client", "array<string>@ sdiff(array<string>@+)", asMETHOD(redis_client, sdiff), asCALL_THISCALL);
 	engine->RegisterObjectMethod("redis_client", "bool smove(const string&in, const string&in, const string&in)", asMETHOD(redis_client, smove), asCALL_THISCALL);
 	// Sorted set operations
 	engine->RegisterObjectMethod("redis_client", "int64 zadd(const string&in, double, const string&in)", asMETHOD(redis_client, zadd), asCALL_THISCALL);
@@ -2657,7 +2657,7 @@ void RegisterRedis(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("redis_client", "bool setbit(const string&in, int64, bool)", asMETHOD(redis_client, setbit), asCALL_THISCALL);
 	engine->RegisterObjectMethod("redis_client", "bool getbit(const string&in, int64)", asMETHOD(redis_client, getbit), asCALL_THISCALL);
 	engine->RegisterObjectMethod("redis_client", "int64 bitcount(const string&in, int64 = -1, int64 = -1)", asMETHOD(redis_client, bitcount), asCALL_THISCALL);
-	engine->RegisterObjectMethod("redis_client", "int64 bitop(const string&in, const string&in, array<string>@)", asMETHOD(redis_client, bitop), asCALL_THISCALL);
+	engine->RegisterObjectMethod("redis_client", "int64 bitop(const string&in, const string&in, array<string>@+)", asMETHOD(redis_client, bitop), asCALL_THISCALL);
 	engine->RegisterObjectMethod("redis_client", "int64 bitpos(const string&in, bool, int64 = -1, int64 = -1)", asMETHOD(redis_client, bitpos), asCALL_THISCALL);
 	// Server operations
 	engine->RegisterObjectMethod("redis_client", "string info(const string&in = \"\")", asMETHOD(redis_client, info), asCALL_THISCALL);
@@ -2676,27 +2676,27 @@ void RegisterRedis(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("redis_client", "redis_value@ exec()", asMETHOD(redis_client, exec), asCALL_THISCALL);
 	engine->RegisterObjectMethod("redis_client", "bool discard()", asMETHOD(redis_client, discard), asCALL_THISCALL);
 	engine->RegisterObjectMethod("redis_client", "bool watch(const string&in)", asMETHODPR(redis_client, watch, (const std::string&), bool), asCALL_THISCALL);
-	engine->RegisterObjectMethod("redis_client", "bool watch(array<string>@)", asMETHODPR(redis_client, watch, (CScriptArray*), bool), asCALL_THISCALL);
+	engine->RegisterObjectMethod("redis_client", "bool watch(array<string>@+)", asMETHODPR(redis_client, watch, (CScriptArray*), bool), asCALL_THISCALL);
 	engine->RegisterObjectMethod("redis_client", "bool unwatch()", asMETHOD(redis_client, unwatch), asCALL_THISCALL);
 	// Lua scripting
-	engine->RegisterObjectMethod("redis_client", "redis_value@ eval(const string&in, array<string>@ = null, array<string>@ = null)", asMETHOD(redis_client, eval), asCALL_THISCALL);
-	engine->RegisterObjectMethod("redis_client", "redis_value@ evalsha(const string&in, array<string>@ = null, array<string>@ = null)", asMETHOD(redis_client, evalsha), asCALL_THISCALL);
+	engine->RegisterObjectMethod("redis_client", "redis_value@ eval(const string&in, array<string>@+ = null, array<string>@+ = null)", asMETHOD(redis_client, eval), asCALL_THISCALL);
+	engine->RegisterObjectMethod("redis_client", "redis_value@ evalsha(const string&in, array<string>@+ = null, array<string>@+ = null)", asMETHOD(redis_client, evalsha), asCALL_THISCALL);
 	engine->RegisterObjectMethod("redis_client", "string script_load(const string&in)", asMETHOD(redis_client, script_load), asCALL_THISCALL);
 	engine->RegisterObjectMethod("redis_client", "bool script_exists(const string&in)", asMETHOD(redis_client, script_exists), asCALL_THISCALL);
 	engine->RegisterObjectMethod("redis_client", "bool script_flush()", asMETHOD(redis_client, script_flush), asCALL_THISCALL);
 	// Geospatial commands
 	engine->RegisterObjectMethod("redis_client", "int64 geoadd(const string&in, double, double, const string&in)", asMETHOD(redis_client, geoadd), asCALL_THISCALL);
-	engine->RegisterObjectMethod("redis_client", "array<array<double>@>@ geopos(const string&in, array<string>@)", asMETHOD(redis_client, geopos), asCALL_THISCALL);
+	engine->RegisterObjectMethod("redis_client", "array<array<double>@>@ geopos(const string&in, array<string>@+)", asMETHOD(redis_client, geopos), asCALL_THISCALL);
 	engine->RegisterObjectMethod("redis_client", "double geodist(const string&in, const string&in, const string&in, const string&in = \"m\")", asMETHOD(redis_client, geodist), asCALL_THISCALL);
 	engine->RegisterObjectMethod("redis_client", "array<string>@ georadius(const string&in, double, double, double, const string&in, bool = false, bool = false, bool = false, int64 = -1)", asMETHOD(redis_client, georadius), asCALL_THISCALL);
 	engine->RegisterObjectMethod("redis_client", "array<string>@ georadiusbymember(const string&in, const string&in, double, const string&in, bool = false, bool = false, bool = false, int64 = -1)", asMETHOD(redis_client, georadiusbymember), asCALL_THISCALL);
 	engine->RegisterObjectMethod("redis_client", "string geohash(const string&in, const string&in)", asMETHOD(redis_client, geohash), asCALL_THISCALL);
 	// HyperLogLog commands
 	engine->RegisterObjectMethod("redis_client", "bool pfadd(const string&in, const string&in)", asMETHODPR(redis_client, pfadd, (const std::string&, const std::string&), bool), asCALL_THISCALL);
-	engine->RegisterObjectMethod("redis_client", "bool pfadd(const string&in, array<string>@)", asMETHODPR(redis_client, pfadd, (const std::string&, CScriptArray*), bool), asCALL_THISCALL);
+	engine->RegisterObjectMethod("redis_client", "bool pfadd(const string&in, array<string>@+)", asMETHODPR(redis_client, pfadd, (const std::string&, CScriptArray*), bool), asCALL_THISCALL);
 	engine->RegisterObjectMethod("redis_client", "int64 pfcount(const string&in)", asMETHODPR(redis_client, pfcount, (const std::string&), int64_t), asCALL_THISCALL);
-	engine->RegisterObjectMethod("redis_client", "int64 pfcount(array<string>@)", asMETHODPR(redis_client, pfcount, (CScriptArray*), int64_t), asCALL_THISCALL);
-	engine->RegisterObjectMethod("redis_client", "bool pfmerge(const string&in, array<string>@)", asMETHOD(redis_client, pfmerge), asCALL_THISCALL);
+	engine->RegisterObjectMethod("redis_client", "int64 pfcount(array<string>@+)", asMETHODPR(redis_client, pfcount, (CScriptArray*), int64_t), asCALL_THISCALL);
+	engine->RegisterObjectMethod("redis_client", "bool pfmerge(const string&in, array<string>@+)", asMETHOD(redis_client, pfmerge), asCALL_THISCALL);
 	// Advanced Key Operations
 	engine->RegisterObjectMethod("redis_client", "array<string>@ scan(int64, const string&in = \"\", int64 = -1)", asMETHOD(redis_client, scan), asCALL_THISCALL);
 	engine->RegisterObjectMethod("redis_client", "string dump(const string&in)", asMETHOD(redis_client, dump), asCALL_THISCALL);
@@ -2724,10 +2724,10 @@ void RegisterRedis(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("redis_client", "array<string>@ acl_getuser(const string&in)", asMETHOD(redis_client, acl_getuser), asCALL_THISCALL);
 	// Pipelining support
 	engine->RegisterObjectMethod("redis_client", "bool pipeline_begin()", asMETHOD(redis_client, pipeline_begin), asCALL_THISCALL);
-	engine->RegisterObjectMethod("redis_client", "bool pipeline_add(array<string>@)", asMETHOD(redis_client, pipeline_add), asCALL_THISCALL);
+	engine->RegisterObjectMethod("redis_client", "bool pipeline_add(array<string>@+)", asMETHOD(redis_client, pipeline_add), asCALL_THISCALL);
 	engine->RegisterObjectMethod("redis_client", "array<redis_value@>@ pipeline_execute()", asMETHOD(redis_client, pipeline_execute), asCALL_THISCALL);
 	// Generic command execution
-	engine->RegisterObjectMethod("redis_client", "redis_value@ execute(array<string>@)", asMETHOD(redis_client, execute), asCALL_THISCALL);
+	engine->RegisterObjectMethod("redis_client", "redis_value@ execute(array<string>@+)", asMETHOD(redis_client, execute), asCALL_THISCALL);
 	engine->RegisterObjectType("blocking_redis_subscriber", 0, asOBJ_REF);
 	engine->RegisterObjectBehaviour("blocking_redis_subscriber", asBEHAVE_FACTORY, "blocking_redis_subscriber@ f()", asFUNCTION(blocking_redis_subscriber_factory), asCALL_CDECL);
 	engine->RegisterObjectBehaviour("blocking_redis_subscriber", asBEHAVE_ADDREF, "void f()", asMETHOD(blocking_redis_subscriber, add_ref), asCALL_THISCALL);
@@ -2740,7 +2740,7 @@ void RegisterRedis(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("blocking_redis_subscriber", "void set_password(const string&in) property", asMETHOD(blocking_redis_subscriber, set_password), asCALL_THISCALL);
 	engine->RegisterObjectMethod("blocking_redis_subscriber", "string get_last_error() const property", asMETHOD(blocking_redis_subscriber, get_last_error), asCALL_THISCALL);
 	engine->RegisterObjectMethod("blocking_redis_subscriber", "bool get_is_running() const property", asMETHOD(blocking_redis_subscriber, is_running), asCALL_THISCALL);
-	engine->RegisterObjectMethod("blocking_redis_subscriber", "bool subscribe(array<string>@)", asMETHOD(blocking_redis_subscriber, subscribe), asCALL_THISCALL);
+	engine->RegisterObjectMethod("blocking_redis_subscriber", "bool subscribe(array<string>@+)", asMETHOD(blocking_redis_subscriber, subscribe), asCALL_THISCALL);
 	engine->RegisterObjectMethod("blocking_redis_subscriber", "void stop()", asMETHOD(blocking_redis_subscriber, stop), asCALL_THISCALL);
 	engine->RegisterObjectMethod("blocking_redis_subscriber", "array<string>@ get_messages(const string&in)", asMETHOD(blocking_redis_subscriber, get_messages), asCALL_THISCALL);
 	engine->RegisterObjectMethod("blocking_redis_subscriber", "bool has_messages(const string&in)", asMETHOD(blocking_redis_subscriber, has_messages), asCALL_THISCALL);

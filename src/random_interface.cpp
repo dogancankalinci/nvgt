@@ -171,8 +171,6 @@ void cleanup_default_random() {
 }
 
 void set_default_random(random_interface* rng) {
-	if (rng)
-		rng->add_ref();
 	if (g_default_random && g_default_random != g_default_script_wrapper)
 		g_default_random->release();
 	if (g_default_script_wrapper && g_default_random == g_default_script_wrapper) {

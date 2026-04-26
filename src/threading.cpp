@@ -223,6 +223,10 @@ class script_runnable : public Runnable {
 	Thread* thread; // May be null if started from a ThreadPool.
 public:
 	script_runnable(asIScriptFunction* func, CScriptDictionary* args, Thread* thread = nullptr) : func(func), args(args), thread(thread) {}
+	~script_runnable() {
+		if (func) func->Release();
+		if (args) args->Release();
+	}
 	void run() {
 		int execution_result = asEXECUTION_FINISHED;
 		asIScriptContext* ctx = nullptr;
@@ -242,21 +246,28 @@ public:
 };
 
 void thread_begin(Thread* thread, asIScriptFunction* func, CScriptDictionary* args) {
-	if (!func) return;
+	if (!func) {
+		if (args) args->Release();
+		return;
+	}
 	angelscript_refcounted_duplicate<Thread>(thread);
 	thread->start(*new script_runnable(func, args, thread));
 }
 void pooled_thread_begin(ThreadPool* pool, asIScriptFunction* func, CScriptDictionary* args) {
-	if (func) pool->start(*new script_runnable(func, args));
+	if (!func) { if (args) args->Release(); return; }
+	pool->start(*new script_runnable(func, args));
 }
 void pooled_thread_begin(ThreadPool* pool, asIScriptFunction* func, CScriptDictionary* args, const std::string& name) {
-	if (func) pool->start(*new script_runnable(func, args), name);
+	if (!func) { if (args) args->Release(); return; }
+	pool->start(*new script_runnable(func, args), name);
 }
 void pooled_thread_begin(ThreadPool* pool, asIScriptFunction* func, CScriptDictionary* args, Thread::Priority priority) {
-	if (func) pool->startWithPriority(priority, *new script_runnable(func, args));
+	if (!func) { if (args) args->Release(); return; }
+	pool->startWithPriority(priority, *new script_runnable(func, args));
 }
 void pooled_thread_begin(ThreadPool* pool, asIScriptFunction* func, CScriptDictionary* args, const std::string& name, Thread::Priority priority) {
-	if (func) pool->startWithPriority(priority, *new script_runnable(func, args), name);
+	if (!func) { if (args) args->Release(); return; }
+	pool->startWithPriority(priority, *new script_runnable(func, args), name);
 }
 
 // STL atomics support (thanks @ethindp)!

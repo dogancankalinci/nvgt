@@ -559,10 +559,9 @@ system_tray_menu_item::~system_tray_menu_item() {
 void system_tray_menu_item::set_callback(asIScriptFunction* func) {
 	if (_callback) _callback->Release();
 	_callback = func;
-	if (_callback) {
-		_callback->AddRef();
+	if (_callback)
 		SDL_SetTrayEntryCallback(_entry, tray_entry_sdl_callback, this);
-	} else SDL_SetTrayEntryCallback(_entry, nullptr, nullptr);
+	else SDL_SetTrayEntryCallback(_entry, nullptr, nullptr);
 }
 void system_tray_menu_item::invoke_callback() {
 	if (!_callback || !_entry) return;
@@ -602,12 +601,14 @@ system_tray_menu_item* system_tray_menu::make_entry(int pos, const char* label, 
 system_tray_menu_item* system_tray_menu::insert_item(const std::string& label, asIScriptFunction* callback, bool disabled, int pos) {
 	system_tray_menu_item* item = make_entry(pos, label.c_str(), SDL_TRAYENTRY_BUTTON | (disabled ? SDL_TRAYENTRY_DISABLED : 0), SYSTEM_TRAY_ITEM);
 	if (item && callback) item->set_callback(callback);
+	else if (callback) callback->Release();
 	return item;
 }
 system_tray_menu_item* system_tray_menu::insert_checkbox(const std::string& label, bool checked, asIScriptFunction* callback, bool disabled, int pos) {
 	SDL_TrayEntryFlags flags = SDL_TRAYENTRY_CHECKBOX | (disabled ? SDL_TRAYENTRY_DISABLED : 0) | (checked ? SDL_TRAYENTRY_CHECKED : 0);
 	system_tray_menu_item* item = make_entry(pos, label.c_str(), flags, SYSTEM_TRAY_CHECKBOX);
 	if (item && callback) item->set_callback(callback);
+	else if (callback) callback->Release();
 	return item;
 }
 system_tray_menu_item* system_tray_menu::insert_submenu(const std::string& label, bool disabled, int pos) {

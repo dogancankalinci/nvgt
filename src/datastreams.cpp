@@ -610,21 +610,19 @@ bool connect_stream_open_argless(datastream* ds, datastream* ds_connect, f_strea
 		return false;
 	S* stream;
 	if constexpr(std::is_same<S, std::istream>::value) {
-		if (!ds_connect->get_istr())
-			return false;
+		if (!ds_connect->get_istr()) { ds_connect->release(); return false; }
 		stream = new T(*ds_connect->get_istr());
 		return ds->open(stream, nullptr, p_streamargs, ds_connect);
 	} else if constexpr(std::is_same<S, std::ostream>::value) {
-		if (!ds_connect->get_ostr())
-			return false;
+		if (!ds_connect->get_ostr()) { ds_connect->release(); return false; }
 		stream = new T(*ds_connect->get_ostr());
 		return ds->open(nullptr, stream, p_streamargs, ds_connect);
 	} else if constexpr(std::is_same<S, std::iostream>::value) {
-		if (!ds_connect->get_iostr())
-			return false;
+		if (!ds_connect->get_iostr()) { ds_connect->release(); return false; }
 		stream = new T(*ds_connect->get_iostr());
 		return ds->open(stream, stream, p_streamargs, ds_connect);
 	}
+	ds_connect->release();
 	return false;
 }
 template <class T, class S>
@@ -646,21 +644,19 @@ bool connect_stream_open(datastream* ds, datastream* ds_connect, Args... args, f
 		return false;
 	S* stream;
 	if constexpr(std::is_same<S, std::istream>::value) {
-		if (!ds_connect->get_istr())
-			return false;
+		if (!ds_connect->get_istr()) { ds_connect->release(); return false; }
 		stream = new T(*ds_connect->get_istr(), args...);
 		return ds->open(stream, nullptr, p_streamargs, ds_connect);
 	} else if constexpr(std::is_same<S, std::ostream>::value) {
-		if (!ds_connect->get_ostr())
-			return false;
+		if (!ds_connect->get_ostr()) { ds_connect->release(); return false; }
 		stream = new T(*ds_connect->get_ostr(), args...);
 		return ds->open(nullptr, stream, p_streamargs, ds_connect);
 	} else if constexpr(std::is_same<S, std::iostream>::value) {
-		if (!ds_connect->get_iostr())
-			return false;
+		if (!ds_connect->get_iostr()) { ds_connect->release(); return false; }
 		stream = new T(*ds_connect->get_iostr(), args...);
 		return ds->open(stream, stream, p_streamargs, ds_connect);
 	}
+	ds_connect->release();
 	return false;
 }
 template <class T, class S, typename... Args>
@@ -756,11 +752,15 @@ datastream* duplicating_stream_add(datastream* ds, datastream* ds_connect) {
 	if (!ds_connect)
 		return ds;
 	TeeIOS* ios = dynamic_cast<TeeIOS*>(ds->stream());
-	if (!ios)
+	if (!ios) {
+		ds_connect->release();
 		throw InvalidArgumentException("not a duplicating reader or writer");
+	}
 	std::ostream* ostr = ds_connect->get_ostr();
-	if (!ostr)
+	if (!ostr) {
+		ds_connect->release();
 		throw InvalidArgumentException("non-writer was connected to duplicator");
+	}
 	std::vector<datastream*>* streams = ds->user ? (std::vector<datastream*>*)ds->user : new std::vector<datastream*>;
 	streams->push_back(ds_connect);
 	ios->addStream(*ostr);

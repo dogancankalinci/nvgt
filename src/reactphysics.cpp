@@ -165,31 +165,37 @@ public:
 void world_raycast(PhysicsWorld& world, const Ray& ray, asIScriptFunction* callback, unsigned short bits) {
 	raycast_callback rcb(callback);
 	world.raycast(ray, &rcb, bits);
+	if (callback) callback->Release();
 }
 
 void world_test_overlap_body(PhysicsWorld& world, Body* body, asIScriptFunction* callback) {
 	overlap_callback cb(callback);
 	world.testOverlap(body, cb);
+	if (callback) callback->Release();
 }
 
 void world_test_overlap(PhysicsWorld& world, asIScriptFunction* callback) {
 	overlap_callback cb(callback);
 	world.testOverlap(cb);
+	if (callback) callback->Release();
 }
 
 void world_test_collision_bodies(PhysicsWorld& world, Body* body1, Body* body2, asIScriptFunction* callback) {
 	collision_callback cb(callback);
 	world.testCollision(body1, body2, cb);
+	if (callback) callback->Release();
 }
 
 void world_test_collision_body(PhysicsWorld& world, Body* body, asIScriptFunction* callback) {
 	collision_callback cb(callback);
 	world.testCollision(body, cb);
+	if (callback) callback->Release();
 }
 
 void world_test_collision(PhysicsWorld& world, asIScriptFunction* callback) {
 	collision_callback cb(callback);
 	world.testCollision(cb);
+	if (callback) callback->Release();
 }
 
 void world_destroy_listener(PhysicsWorld* world) {

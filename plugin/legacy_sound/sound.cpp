@@ -2029,7 +2029,7 @@ void RegisterScriptSound(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("sound", "bool stream(const string &in filename, pack@ containing_pack = sound_default_pack)", asMETHOD(legacy_sound, stream), asCALL_THISCALL);
 	engine->RegisterObjectMethod("sound", "bool push_memory(const string &in data, bool end_stream = false, int pcm_rate = 0, int pcm_channels = 0)", asMETHOD(legacy_sound, push_string), asCALL_THISCALL);
 	engine->RegisterObjectMethod("sound", "bool set_position(float listener_x, float listener_y, float listener_z, float sound_x, float sound_y, float sound_z, float rotation = 0.0, float pan_step = 1.0, float volume_step = 1.0)", asMETHOD(legacy_sound, set_position), asCALL_THISCALL);
-	engine->RegisterObjectMethod("sound", "bool set_mixer(mixer@ mixer = null)", asMETHOD(legacy_sound, set_mixer), asCALL_THISCALL);
+	engine->RegisterObjectMethod("sound", "bool set_mixer(mixer@+ mixer = null)", asMETHOD(legacy_sound, set_mixer), asCALL_THISCALL);
 	engine->RegisterObjectMethod("sound", "void set_hrtf(bool enable = true)", asMETHOD(legacy_sound, set_hrtf), asCALL_THISCALL);
 	engine->RegisterObjectMethod("sound", "void set_length(float length = 0.0)", asMETHOD(legacy_sound, set_length), asCALL_THISCALL);
 	engine->RegisterObjectMethod("sound", "bool set_fx(const string &in fx, int index = -1)", asMETHOD(legacy_sound, set_fx), asCALL_THISCALL);
@@ -2060,7 +2060,7 @@ void RegisterScriptSound(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("sound", "double get_pitch_lower_limit() const property", asMETHOD(legacy_sound, pitch_lower_limit), asCALL_THISCALL);
 	engine->RegisterObjectMethod("mixer", "bool set_fx(const string &in, int = -1)", asMETHOD(legacy_mixer, set_fx), asCALL_THISCALL);
 	engine->RegisterObjectMethod("mixer", "bool set_position(float, float, float, float, float, float, float, float, float)", asMETHOD(legacy_mixer, set_position), asCALL_THISCALL);
-	engine->RegisterObjectMethod("mixer", "bool set_mixer(mixer@ = null)", asMETHOD(legacy_mixer, set_mixer), asCALL_THISCALL);
+	engine->RegisterObjectMethod("mixer", "bool set_mixer(mixer@+ = null)", asMETHOD(legacy_mixer, set_mixer), asCALL_THISCALL);
 	engine->RegisterObjectMethod("mixer", "void set_hrtf(bool = true)", asMETHOD(legacy_mixer, set_hrtf), asCALL_THISCALL);
 	engine->RegisterObjectMethod("mixer", "bool get_sliding() const property", asMETHOD(legacy_mixer, is_sliding), asCALL_THISCALL);
 	engine->RegisterObjectMethod("mixer", "bool get_pan_sliding() const property", asMETHOD(legacy_mixer, is_pan_sliding), asCALL_THISCALL);
