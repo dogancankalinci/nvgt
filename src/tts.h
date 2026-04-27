@@ -104,6 +104,7 @@ typedef std::function<std::shared_ptr<tts_engine>()> tts_engine_factory;
 bool tts_engine_register(const std::string &name, tts_engine_factory factory);
 std::vector<std::string> tts_get_engine_names();
 std::shared_ptr<tts_engine> tts_create_engine(const std::string &name);
+void tts_set_preferred_engine(const std::string &name);
 
 struct voice_info {
 	tts_engine *engine;

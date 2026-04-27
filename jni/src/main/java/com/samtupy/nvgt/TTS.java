@@ -8,6 +8,7 @@ import android.content.IntentFilter;
 import android.media.AudioManager;
 import android.media.AudioAttributes;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.TextToSpeech.OnInitListener;
 import android.speech.tts.UtteranceProgressListener;
@@ -98,6 +99,16 @@ public class TTS {
 		}
 	}
 
+	public static String getDefaultEnginePackage() {
+		Context context = SDL.getContext();
+		try {
+			String engine = Settings.Secure.getString(context.getContentResolver(), "tts_default_engine");
+			return engine != null ? engine : "";
+		} catch (Exception e) {
+			return "";
+		}
+	}
+
 	// Then, the instantiable object that interfaces directly with the Android TextToSpeech system.
 	private TextToSpeech tts;
 	private float ttsPan = 0.0f;
@@ -132,8 +143,21 @@ public class TTS {
 					try {
 						tts.setLanguage(Locale.getDefault());
 					} catch (Exception e) {}
-					tts.setPitch(1.0f);
-					//tts.setSpeechRate(1.0f);
+					// Read system TTS rate and pitch from Android settings instead of hardcoding 1.0f
+					try {
+						int systemRate = Settings.Secure.getInt(context.getContentResolver(), "tts_default_rate", 100);
+						ttsRate = systemRate / 100.0f;
+					} catch (Exception e) {
+						ttsRate = 1.0f;
+					}
+					try {
+						int systemPitch = Settings.Secure.getInt(context.getContentResolver(), "tts_default_pitch", 100);
+						ttsPitch = systemPitch / 100.0f;
+					} catch (Exception e) {
+						ttsPitch = 1.0f;
+					}
+					tts.setSpeechRate(ttsRate);
+					tts.setPitch(ttsPitch);
 					AudioAttributes audioAttributes = new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build();
 					tts.setAudioAttributes(audioAttributes);
 					initializeVoices();
@@ -143,7 +167,7 @@ public class TTS {
 				isTTSInitializedLatch.countDown();
 			}
 		};
-		tts = enginePackage != null? new TextToSpeech(context, listener, enginePackage) : new TextToSpeech(context, listener);
+		tts = enginePackage != null ? new TextToSpeech(context, listener, enginePackage) : new TextToSpeech(context, listener);
 		try {
 			// Changed from 1000ms to 10 seconds to fix race condition on slower devices/cold starts
 			isTTSInitializedLatch.await(10, TimeUnit.SECONDS);

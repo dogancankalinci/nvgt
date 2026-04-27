@@ -30,6 +30,7 @@ static jmethodID midScreenReaderDetect = nullptr;
 static jmethodID midScreenReaderSpeak = nullptr;
 static jmethodID midScreenReaderSilence = nullptr;
 static jmethodID midTTSGetEnginePackages = nullptr;
+static jmethodID midTTSGetDefaultEnginePackage = nullptr;
 static jmethodID midGetExceptionInfo = nullptr;
 
 void android_setup_jni() {
@@ -50,6 +51,7 @@ void android_setup_jni() {
 	midScreenReaderSpeak = env->GetStaticMethodID(TTSClass, "screenReaderSpeak", "(Ljava/lang/String;Z)Z");
 	midScreenReaderSilence = env->GetStaticMethodID(TTSClass, "screenReaderSilence", "()Z");
 	midTTSGetEnginePackages = env->GetStaticMethodID(TTSClass, "getEnginePackages", "()Ljava/util/List;");
+	midTTSGetDefaultEnginePackage = env->GetStaticMethodID(TTSClass, "getDefaultEnginePackage", "()Ljava/lang/String;");
 	midGetExceptionInfo = env->GetStaticMethodID(DialogUtilsClass, "getExceptionInfo", "(Ljava/lang/Throwable;)Ljava/lang/String;");
 }
 
@@ -251,8 +253,21 @@ std::vector<std::string> android_get_tts_engine_packages() {
 	return result;
 }
 
+std::string android_get_default_tts_engine_package() {
+	try { android_setup_jni(); } catch (...) { return ""; }
+	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
+	if (!env || !midTTSGetDefaultEnginePackage) return "";
+	jstring jresult = (jstring)env->CallStaticObjectMethod(TTSClass, midTTSGetDefaultEnginePackage);
+	if (env->ExceptionCheck()) { env->ExceptionClear(); return ""; }
+	std::string result = from_jstring(env, jresult);
+	if (jresult) env->DeleteLocalRef(jresult);
+	return result;
+}
+
 void register_native_tts() {
 	std::vector<std::string> android_engines = android_get_tts_engine_packages();
+	std::string default_pkg = android_get_default_tts_engine_package();
+	if (!default_pkg.empty()) tts_set_preferred_engine(default_pkg);
 	for (const auto& engine_pkg : android_engines) tts_engine_register(engine_pkg, [engine_pkg]() -> std::shared_ptr<tts_engine> { return std::make_shared<android_tts_engine>(engine_pkg); });
 }
 

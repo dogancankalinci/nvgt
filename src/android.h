@@ -22,6 +22,7 @@ std::string android_screen_reader_detect();
 bool android_screen_reader_speak(const std::string& text, bool interrupt);
 bool android_screen_reader_silence();
 std::vector<std::string> android_get_tts_engine_packages();
+std::string android_get_default_tts_engine_package();
 std::string android_get_device_id();
 
 // New functions moved from UI.cpp

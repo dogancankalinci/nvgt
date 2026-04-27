@@ -115,6 +115,7 @@ public:
 // Engine factory registry
 static vector<string> engine_names;
 static unordered_map<string, tts_engine_factory> engine_registry;
+static string preferred_engine_name;
 bool tts_engine_register(const string &name, tts_engine_factory factory) {
 	if (engine_registry.find(name) != engine_registry.end()) return false;
 	engine_registry[name] = factory;
@@ -123,6 +124,7 @@ bool tts_engine_register(const string &name, tts_engine_factory factory) {
 }
 
 vector<string> tts_get_engine_names() { return engine_names; }
+void tts_set_preferred_engine(const string &name) { preferred_engine_name = name; }
 
 shared_ptr<tts_engine> tts_create_engine(const string &name) {
 	auto it = engine_registry.find(name);
@@ -349,11 +351,18 @@ bool tts_voice::refresh() {
 			return true;
 		}
 	} else if (!voices.empty()) {
-		tts_engine* engine = engines.size() > 1 && engines[0]->get_engine_name() == "fallback"? &*engines[1] : &*engines[0]; // Avoid selecting the fallback engine at all costs, yet it's better than nothing.
+		tts_engine* engine = nullptr;
+		if (!preferred_engine_name.empty()) {
+			for (auto& eng : engines) {
+				if (eng->get_engine_name() == preferred_engine_name) { engine = eng.get(); break; }
+			}
+		}
+		if (!engine) engine = engines.size() > 1 && engines[0]->get_engine_name() == "fallback"? &*engines[1] : &*engines[0];
 		int engine_voice_index = engine->get_current_voice();
 		for (current_voice_index = 0; engine_voice_index > -1 && current_voice_index < voices.size(); current_voice_index++) {
 			if (voices[current_voice_index].engine == engine && voices[current_voice_index].engine_voice_index == engine_voice_index) break;
 		}
+		if (current_voice_index >= static_cast<int>(voices.size())) current_voice_index = 0;
 	}
 	return !voices.empty();
 }

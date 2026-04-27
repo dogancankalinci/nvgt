@@ -44,7 +44,8 @@ public:
 	NSArray<AVSpeechSynthesisVoice *> *voices;
 	Impl() {
 		voices = [[AVSpeechSynthesisVoice speechVoices] retain];
-		currentVoice = [AVSpeechSynthesisVoice voiceWithLanguage:@"en-US"];
+		currentVoice = [AVSpeechSynthesisVoice voiceWithLanguage:[AVSpeechSynthesisVoice currentLanguageCode]];
+		if (!currentVoice && voices.count > 0) currentVoice = voices[0];
 		AVSpeechUtterance* utterance = [[AVSpeechUtterance alloc] initWithString:@""];
 		rate = utterance.rate;
 		volume = utterance.volume;
@@ -55,7 +56,8 @@ public:
 		voices = [[AVSpeechSynthesisVoice speechVoices] retain];
 		NSString *nslanguage = [NSString stringWithUTF8String:language.c_str()];
 		AVSpeechSynthesisVoice *voice = [AVSpeechSynthesisVoice voiceWithLanguage:nslanguage];
-		currentVoice = voice? voice : [AVSpeechSynthesisVoice voiceWithLanguage:@"en-US"];
+		if (!voice) voice = [AVSpeechSynthesisVoice voiceWithLanguage:[AVSpeechSynthesisVoice currentLanguageCode]];
+		currentVoice = voice? voice : (voices.count > 0? voices[0] : nil);
 		AVSpeechUtterance* utterance = [[AVSpeechUtterance alloc] init];
 		rate = utterance.rate;
 		volume = utterance.volume;
