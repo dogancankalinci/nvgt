@@ -54,9 +54,11 @@ class android_tts_engine : public tts_engine_impl {
 	jmethodID constructor, midIsActive, midIsSpeaking, midSpeak, midSilence, midGetVoice, midSetRate, midSetPitch, midSetPan, midSetVolume, midGetVoices, midSetVoice, midGetMaxSpeechInputLength, midGetPitch, midGetPan, midGetRate, midGetVolume;
 	jmethodID midSpeakPcm, midGetPcmSampleRate, midGetPcmAudioFormat, midGetPcmChannelCount;
 	jmethodID midGetVoiceCount, midGetVoiceName, midGetVoiceLanguage, midSetVoiceByIndex, midGetCurrentVoiceIndex;
+	jmethodID midGetEngineLabel;
 	JNIEnv *env;
 	jobject TTSObj;
 	std::string engine_package;
+	std::string engine_label;
 public:
 	android_tts_engine(const std::string& enginePkg = "");
 	virtual ~android_tts_engine();

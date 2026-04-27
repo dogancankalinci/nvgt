@@ -307,8 +307,13 @@ android_tts_engine::android_tts_engine(const std::string& enginePkg) : tts_engin
 	midGetVoiceLanguage = env->GetMethodID(TTSClass, "getVoiceLanguage", "(I)Ljava/lang/String;");
 	midSetVoiceByIndex = env->GetMethodID(TTSClass, "setVoiceByIndex", "(I)Z");
 	midGetCurrentVoiceIndex = env->GetMethodID(TTSClass, "getCurrentVoiceIndex", "()I");
-	if (!midIsActive || !midIsSpeaking || !midSpeak || !midSilence || !midGetVoice || !midSetRate || !midSetPitch || !midSetPan || !midSetVolume || !midGetVoices || !midSetVoice || !midGetMaxSpeechInputLength || !midGetPitch || !midGetPan || !midGetRate || !midGetVolume || !midSpeakPcm || !midGetPcmSampleRate || !midGetPcmAudioFormat || !midGetPcmChannelCount || !midGetVoiceCount || !midGetVoiceName || !midGetVoiceLanguage || !midSetVoiceByIndex || !midGetCurrentVoiceIndex) throw std::runtime_error("One or more methods on the TTS class could not be retrieved from JNI!");
+	midGetEngineLabel = env->GetMethodID(TTSClass, "getEngineLabel", "()Ljava/lang/String;");
+	if (!midIsActive || !midIsSpeaking || !midSpeak || !midSilence || !midGetVoice || !midSetRate || !midSetPitch || !midSetPan || !midSetVolume || !midGetVoices || !midSetVoice || !midGetMaxSpeechInputLength || !midGetPitch || !midGetPan || !midGetRate || !midGetVolume || !midSpeakPcm || !midGetPcmSampleRate || !midGetPcmAudioFormat || !midGetPcmChannelCount || !midGetVoiceCount || !midGetVoiceName || !midGetVoiceLanguage || !midSetVoiceByIndex || !midGetCurrentVoiceIndex || !midGetEngineLabel) throw std::runtime_error("One or more methods on the TTS class could not be retrieved from JNI!");
 	if (!env->CallBooleanMethod(TTSObj, midIsActive)) throw std::runtime_error("TTS engine could not be initialized!");
+	jstring jlabel = (jstring)env->CallObjectMethod(TTSObj, midGetEngineLabel);
+	engine_label = from_jstring(env, jlabel);
+	if (jlabel) env->DeleteLocalRef(jlabel);
+	if (engine_label.empty()) engine_label = engine_package;
 }
 
 android_tts_engine::~android_tts_engine() {
@@ -381,7 +386,7 @@ std::string android_tts_engine::get_voice_name(int index) {
 	jstring jvoiceName = (jstring)env->CallObjectMethod(TTSObj, midGetVoiceName, index);
 	std::string result = from_jstring(env, jvoiceName);
 	if (jvoiceName) env->DeleteLocalRef(jvoiceName);
-	return result;
+	return engine_label + ": " + result;
 }
 
 std::string android_tts_engine::get_voice_language(int index) {

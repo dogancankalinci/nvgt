@@ -102,8 +102,10 @@ public class TTS {
 	public static String getDefaultEnginePackage() {
 		Context context = SDL.getContext();
 		try {
-			String engine = Settings.Secure.getString(context.getContentResolver(), "tts_default_engine");
-			return engine != null ? engine : "";
+			TextToSpeech tempTts = new TextToSpeech(context, status -> {});
+			String defaultEngine = tempTts.getDefaultEngine();
+			tempTts.shutdown();
+			return defaultEngine != null ? defaultEngine : "";
 		} catch (Exception e) {
 			return "";
 		}
@@ -231,6 +233,18 @@ public class TTS {
 		return false;
 	}
 	public int getMaxSpeechInputLength() { return isActive()? tts.getMaxSpeechInputLength() : 0; }
+	public String getEngineLabel() {
+		if (!isActive()) return enginePackage != null ? enginePackage : "";
+		try {
+			List<TextToSpeech.EngineInfo> engines = tts.getEngines();
+			if (engines != null) {
+				for (TextToSpeech.EngineInfo engine : engines) {
+					if (engine.name.equals(enginePackage)) return engine.label;
+				}
+			}
+		} catch (Exception e) {}
+		return enginePackage != null ? enginePackage : "";
+	}
 	public float getRate() { return ttsRate; }
 	public float getPitch() { return ttsPitch; }
 	public float getVolume() { return ttsVolume; }
