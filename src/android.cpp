@@ -372,7 +372,7 @@ void android_tts_engine::set_volume(float volume) {
 	if (env && TTSObj) env->CallBooleanMethod(TTSObj, midSetVolume, volume);
 }
 
-bool android_tts_engine::get_rate_range(float& minimum, float& midpoint, float& maximum) { minimum = 0.25; midpoint = 1; maximum = 4; return true; }
+bool android_tts_engine::get_rate_range(float& minimum, float& midpoint, float& maximum) { minimum = 0.1; midpoint = 1; maximum = 6; return true; }
 bool android_tts_engine::get_pitch_range(float& minimum, float& midpoint, float& maximum) { minimum = 0.25; midpoint = 1; maximum = 4; return true; }
 bool android_tts_engine::get_volume_range(float& minimum, float& midpoint, float& maximum) { minimum = 0; midpoint = 0.5; maximum = 1; return true; }
 
