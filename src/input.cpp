@@ -868,7 +868,9 @@ bool StartTextInput() {
 	#if defined(TARGET_OS_IOS) && TARGET_OS_IOS
 		ios_set_direct_interaction(false);
 	#endif
-	return SDL_StartTextInput(g_window ? g_window->get_sdl_window() : nullptr);
+	SDL_PropertiesID props = SDL_CreateProperties();
+	SDL_SetNumberProperty(props, SDL_PROP_TEXTINPUT_CAPITALIZATION_NUMBER, SDL_CAPITALIZE_NONE);
+	return SDL_StartTextInputWithProperties(g_window ? g_window->get_sdl_window() : nullptr, props);
 }
 
 bool StopTextInput() {
