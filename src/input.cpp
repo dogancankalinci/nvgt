@@ -11,6 +11,9 @@
 */
 
 #include <cstring>
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_power.h>
 #include <angelscript.h>
@@ -862,11 +865,18 @@ CScriptArray* query_touch_device(uint64_t device_id) {
 }
 
 bool StartTextInput() {
+	#if defined(TARGET_OS_IOS) && TARGET_OS_IOS
+		ios_set_direct_interaction(false);
+	#endif
 	return SDL_StartTextInput(g_window ? g_window->get_sdl_window() : nullptr);
 }
 
 bool StopTextInput() {
-	return SDL_StopTextInput(g_window ? g_window->get_sdl_window() : nullptr);
+	bool result = SDL_StopTextInput(g_window ? g_window->get_sdl_window() : nullptr);
+	#if defined(TARGET_OS_IOS) && TARGET_OS_IOS
+		ios_set_direct_interaction(true);
+	#endif
+	return result;
 }
 
 bool TextInputActive() {

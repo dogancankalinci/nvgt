@@ -11,6 +11,9 @@
 */
 
 #pragma once
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
 #include <string>
 #include "tts.h"
 class asIScriptEngine;
@@ -21,6 +24,9 @@ bool voice_over_is_running();
 bool voice_over_speak(const std::string& message, bool interrupt = true);
 void voice_over_window_created(game_window* window);
 void voice_over_speech_shutdown();
+#if defined(TARGET_OS_IOS) && TARGET_OS_IOS
+void ios_set_direct_interaction(bool enabled);
+#endif
 std::string apple_input_box(const std::string& title, const std::string& message, const std::string& default_value = "", bool secure = false, bool readonly = false);
 std::string apple_get_identifier_for_vendor();
 

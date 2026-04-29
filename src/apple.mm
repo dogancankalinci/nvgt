@@ -373,6 +373,17 @@ void voice_over_window_created(game_window* window) {
 	#endif
 }
 
+void ios_set_direct_interaction(bool enabled) {
+	#if TARGET_OS_IOS
+		if (!g_window) return;
+		UIView* view = ((UIWindow*)g_window->get_native_window()).rootViewController.view;
+		if (enabled)
+			view.accessibilityTraits |= UIAccessibilityTraitAllowsDirectInteraction;
+		else
+			view.accessibilityTraits &= ~UIAccessibilityTraitAllowsDirectInteraction;
+	#endif
+}
+
 bool voice_over_is_running() {
 	#if TARGET_OS_IOS
 		return UIAccessibilityIsVoiceOverRunning();
