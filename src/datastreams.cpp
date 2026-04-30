@@ -628,8 +628,10 @@ bool connect_stream_open_argless(datastream* ds, datastream* ds_connect, f_strea
 template <class T, class S>
 datastream* connect_stream_factory_argless(datastream* ds_connect, f_streamargs) {
 	datastream* ds = new datastream();
-	if (!connect_stream_open_argless<T, S>(ds, ds_connect, p_streamargs))
+	if (!connect_stream_open_argless<T, S>(ds, ds_connect, p_streamargs)) {
+		ds->release();
 		throw InvalidArgumentException("Unable to attach given stream");
+	}
 	return ds;
 }
 template <class T, datastream_factory_type factory, class S>
@@ -662,8 +664,10 @@ bool connect_stream_open(datastream* ds, datastream* ds_connect, Args... args, f
 template <class T, class S, typename... Args>
 datastream* connect_stream_factory(datastream* ds_connect, Args... args, f_streamargs) {
 	datastream* ds = new datastream();
-	if (!connect_stream_open<T, S, Args...>(ds, ds_connect, args..., p_streamargs))
+	if (!connect_stream_open<T, S, Args...>(ds, ds_connect, args..., p_streamargs)) {
+		ds->release();
 		throw InvalidArgumentException("Unable to attach given stream");
+	}
 	return ds;
 }
 template <class T, datastream_factory_type factory, class S, typename... Args>

@@ -63,7 +63,6 @@ class passthrough_node_impl : public effect_node_impl, public virtual passthroug
 passthrough_node* passthrough_node::create(audio_engine* engine) { return new passthrough_node_impl(engine); }
 
 class audio_node_chain_impl : public passthrough_node_impl, public virtual audio_node_chain {
-	audio_node* source;
 	std::vector<audio_node*> nodes;
 	audio_node* endpoint;
 	unsigned int endpoint_input_bus_index;
@@ -71,6 +70,7 @@ public:
 	audio_node_chain_impl(audio_node* source, audio_node* endpoint, audio_engine* e) : passthrough_node_impl(e), endpoint(endpoint) {
 		if (source) source->attach_output_bus(0, this, 0);
 		if (endpoint) attach_output_bus(0, endpoint, 0);
+		if (source) source->release();
 	}
 	~audio_node_chain_impl() {
 		// We only release references, all attachments are kept in tact. Call clear(true) to detach all known nodes instead.

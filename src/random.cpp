@@ -142,7 +142,8 @@ void* rnd_xorshift_choice(CScriptArray* array, rnd_xorshift_t* r) {
 	return array->At(rnd_xorshift_range(r, 0, array->GetSize() - 1));
 }
 
-// Cast function for random generators to the base interface
+// Cast function for random generators to the base interface.
+// Return type is @, so AS expects C++ to have already AddRef'd; AS will Release when done.
 template <typename T>
 random_interface* random_cast_to(T* obj) {
 	if (!obj) return nullptr;
@@ -166,8 +167,10 @@ void RegisterScriptRandom(asIScriptEngine* engine) {
 	engine->RegisterGlobalFunction(_O("float random_float()"), asFUNCTION(random_float), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("bool random_bool(int = 50)"), asFUNCTION(random_bool), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("string random_character(const string& in, const string& in)"), asFUNCTION(random_character), asCALL_CDECL);
-	// Register the base random_interface as both a concrete type (for C++ objects) and an interface (for script inheritance)
-	engine->RegisterObjectType(_O("random_interface"), 0, asOBJ_REF | asOBJ_NOCOUNT);
+	// Register the base random_interface as a reference-counted type; subclasses implement add_ref/release via virtual dispatch.
+	engine->RegisterObjectType(_O("random_interface"), 0, asOBJ_REF);
+	engine->RegisterObjectBehaviour(_O("random_interface"), asBEHAVE_ADDREF, _O("void f()"), asMETHOD(random_interface, add_ref), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour(_O("random_interface"), asBEHAVE_RELEASE, _O("void f()"), asMETHOD(random_interface, release), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("random_interface"), _O("uint next()"), asMETHOD(random_interface, next), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("random_interface"), _O("float nextf()"), asMETHOD(random_interface, nextf), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("random_interface"), _O("int range(int min, int max)"), asMETHOD(random_interface, range), asCALL_THISCALL);
@@ -184,14 +187,14 @@ void RegisterScriptRandom(asIScriptEngine* engine) {
 	engine->RegisterInterfaceMethod(_O("random_generator"), _O("int range(int min, int max)"));
 	engine->RegisterInterfaceMethod(_O("random_generator"), _O("bool next_bool(int percent = 50)"));
 	engine->RegisterInterfaceMethod(_O("random_generator"), _O("string next_character(const string &in min, const string &in max)"));
-	engine->RegisterGlobalFunction(_O("random_interface@ get_default_random()"), asFUNCTION(get_default_random), asCALL_CDECL);
+	engine->RegisterGlobalFunction(_O("random_interface@+ get_default_random()"), asFUNCTION(get_default_random), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("void set_default_random(random_interface@)"), asFUNCTION(set_default_random), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("void set_default_random(random_generator@)"), asFUNCTION(set_default_random_script), asCALL_CDECL);
 	engine->RegisterObjectMethod(_O("array<T>"), _O("const T& random() const"), WRAP_OBJ_FIRST(random_choice), asCALL_GENERIC);
-	engine->RegisterObjectMethod(_O("array<T>"), _O("const T& random(random_interface@ rng) const"), WRAP_OBJ_FIRST(random_array_choice), asCALL_GENERIC);
+	engine->RegisterObjectMethod(_O("array<T>"), _O("const T& random(random_interface@+ rng) const"), WRAP_OBJ_FIRST(random_array_choice), asCALL_GENERIC);
 	engine->RegisterObjectMethod(_O("array<T>"), _O("const T& random(random_generator@+ rng) const"), WRAP_OBJ_FIRST(random_script_array_choice), asCALL_GENERIC);
 	engine->RegisterObjectMethod(_O("array<T>"), _O("void shuffle()"), asFUNCTION(random_shuffle), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(_O("array<T>"), _O("void shuffle(random_interface@ rng)"), asFUNCTION(random_array_shuffle), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(_O("array<T>"), _O("void shuffle(random_interface@+ rng)"), asFUNCTION(random_array_shuffle), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(_O("array<T>"), _O("void shuffle(random_generator@+ rng)"), asFUNCTION(random_script_array_shuffle), asCALL_CDECL_OBJFIRST);
 	// Register new random generator classes with interface inheritance
 	// PCG generator

@@ -1099,6 +1099,14 @@ BOOL legacy_sound::postload(const string& filename) {
 }
 
 BOOL legacy_sound::close() {
+	if (close_callback) close_callback->Release();
+	if (len_callback) len_callback->Release();
+	if (read_callback) read_callback->Release();
+	if (seek_callback) seek_callback->Release();
+	close_callback = NULL;
+	len_callback = NULL;
+	read_callback = NULL;
+	seek_callback = NULL;
 	if (channel) {
 		stop();
 		thread_mutex_lock(&close_mutex);
@@ -1138,14 +1146,6 @@ BOOL legacy_sound::close() {
 			preload_ref = NULL;
 		}
 		sound_preloads_clean();
-		if (close_callback) close_callback->Release();
-		if (len_callback) len_callback->Release();
-		if (read_callback) read_callback->Release();
-		if (seek_callback) seek_callback->Release();
-		close_callback = NULL;
-		len_callback = NULL;
-		read_callback = NULL;
-		seek_callback = NULL;
 		return TRUE;
 	}
 	return false;

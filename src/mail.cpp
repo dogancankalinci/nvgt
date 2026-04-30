@@ -560,6 +560,7 @@ public:
 	bool send_messages(CScriptArray* messages) {
 		if (!m_session) {
 			m_last_error = "Not connected";
+			if (messages) messages->Release();
 			return false;
 		}
 		if (!messages) {

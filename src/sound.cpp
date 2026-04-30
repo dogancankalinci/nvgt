@@ -639,7 +639,10 @@ public:
 	bool set_loop_point(unsigned long long start_frame, unsigned long long end_frame) override { return src? (g_soundsystem_last_error = ma_data_source_set_loop_point_in_pcm_frames(src->pDataSource, start_frame, end_frame)) == MA_SUCCESS : false; }
 	void get_loop_point(unsigned long long* start_frame, unsigned long long* end_frame) const override { if (src) ma_data_source_get_loop_point_in_pcm_frames(src->pDataSource, start_frame, end_frame); }
 	bool set_current(audio_data_source* new_current) override {
-		if (!src) return false;
+		if (!src) {
+			if (new_current) new_current->release();
+			return false;
+		}
 		if ((g_soundsystem_last_error = ma_data_source_set_current(src->pDataSource, new_current? new_current->get_ma_data_source() : nullptr)) != MA_SUCCESS) {
 			if (new_current) new_current->release();
 			return false;
@@ -650,7 +653,10 @@ public:
 	}
 	audio_data_source* get_current() const override {  return src_cur? src_cur : src? audio_data_source_get(ma_data_source_get_current(src->pDataSource), get_engine()) : nullptr; }
 	bool set_next(audio_data_source* new_next) override {
-		if (!src) return false;
+		if (!src) {
+			if (new_next) new_next->release();
+			return false;
+		}
 		if ((g_soundsystem_last_error = ma_data_source_set_next(src->pDataSource, new_next? new_next->get_ma_data_source() : nullptr)) != MA_SUCCESS) {
 			if (new_next) new_next->release();
 			return false;
@@ -1686,11 +1692,15 @@ public:
 		return stream_pcm(buffer->ptr, buffer->size / nchannels, format, sample_rate, channels, buffer_size);
 	}
 	bool open(audio_data_source* ds) override {
-		if (!ds || !ds->get_active()) return false;
+		if (!ds || !ds->get_active()) {
+			if (ds) ds->release();
+			return false;
+		}
 		if (snd) close();
 		snd = make_unique<ma_sound>();
 		if ((g_soundsystem_last_error = ma_sound_init_from_data_source(get_engine()->get_ma_engine(), ds->get_ma_data_source(), 0, nullptr, &*snd)) != MA_SUCCESS) {
 			snd.reset();
+			ds->release();
 			return false;
 		}
 		datasource = ds;
