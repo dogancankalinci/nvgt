@@ -682,6 +682,11 @@ protected:
 		plist_array_append_item(orientations, plist_new_string("UIInterfaceOrientationLandscapeRight"));
 		plist_dict_set_item(plist, "UISupportedInterfaceOrientations", orientations);
 		plist_dict_set_item(plist, "UIApplicationSupportsIndirectInputEvents", plist_new_bool(1));
+		plist_t device_family = plist_new_array();
+		plist_array_append_item(device_family, plist_new_uint(1));
+		plist_array_append_item(device_family, plist_new_uint(2));
+		plist_dict_set_item(plist, "UIDeviceFamily", device_family);
+		plist_dict_set_item(plist, "UILaunchScreen", plist_new_dict());
 		string mic_usage = config.getString("build.NSMicrophoneUsageDescription", "");
 		if (!mic_usage.empty()) plist_dict_set_item(plist, "NSMicrophoneUsageDescription", plist_new_string(mic_usage.c_str()));
 		char* plist_xml;
