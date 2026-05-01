@@ -309,6 +309,7 @@ public:
 		replaceInPlace(outpath_str, "$platform"s, platform);
 		if (DirectoryExists(outpath_str)) File(outpath_str).remove(true); // Though some platforms must do indipendantly after extra modification, we still attempt to clean previous builds for generic outputs here so that a linux build won't output overtop a windows one leaving both an elf and an executable binary in the same place, for example.
 		outpath = outpath_str;
+		if (outpath.isRelative()) outpath.makeAbsolute();
 		File(outpath.parent()).createDirectories();
 		alter_output_path(outpath);
 		string precommand = config.getString("build.precommand_" + g_platform + "_"s + (g_debug? "debug" : "release"), config.getString("build.precommand_" + g_platform, config.getString("build.precommand", "")));
