@@ -130,6 +130,7 @@ bool g_initialising_globals = true;
 bool g_shutting_down = false;
 std::string g_stub = "";
 bool g_script_uses_iap = false;
+bool g_script_uses_microphone = false;
 std::string g_scriptpath = "";
 std::string g_platform = "auto";
 bool g_make_console = false;
@@ -688,6 +689,26 @@ int CompileScript(asIScriptEngine *engine, const string &scriptFile) {
 					if (tc == asTC_IDENTIFIER && tlen >= 4 && p[0] == 'i' && p[1] == 'a' && p[2] == 'p' && p[3] == '_')
 						if (iap_names.count(std::string(p, tlen)))
 							g_script_uses_iap = true;
+					p += tlen;
+					rem -= tlen;
+				}
+			}
+		}
+		// Detect microphone usage by scanning for the "microphone" identifier in compiled sections.
+		if (engine->GetTypeInfoByName("microphone")) {
+			for (asUINT si = 0; si < builder.GetSectionCount() && !g_script_uses_microphone; si++) {
+				std::string section_name = builder.GetSectionName(si);
+				if (section_name.empty()) continue;
+				std::ifstream sf(section_name);
+				std::string src((std::istreambuf_iterator<char>(sf)), std::istreambuf_iterator<char>());
+				const char* p = src.c_str();
+				asUINT rem = (asUINT)src.size();
+				while (rem > 0 && !g_script_uses_microphone) {
+					asUINT tlen = 0;
+					asETokenClass tc = engine->ParseToken(p, rem, &tlen);
+					if (tlen == 0) break;
+					if (tc == asTC_IDENTIFIER && tlen == 10 && memcmp(p, "microphone", 10) == 0)
+						g_script_uses_microphone = true;
 					p += tlen;
 					rem -= tlen;
 				}

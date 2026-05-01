@@ -26,6 +26,7 @@ extern std::string g_scriptpath;
 extern std::string g_platform;
 extern bool g_make_console;
 extern bool g_script_uses_iap;
+extern bool g_script_uses_microphone;
 
 #if !defined(_WIN32) && !defined(__APPLE__) && !defined(TRUE)
 	typedef int BOOL;

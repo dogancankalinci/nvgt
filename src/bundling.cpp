@@ -1342,6 +1342,8 @@ protected:
 		StreamCopier::copyToString(input_manifest, manifest);
 		input_manifest.close();
 		replaceInPlace(manifest, "%APP_LABEL%"s, product_name);
+		if (g_script_uses_microphone && manifest.find("RECORD_AUDIO") == string::npos)
+			replaceInPlace(manifest, "</manifest>"s, "    <uses-permission android:name=\"android.permission.RECORD_AUDIO\"/>\n</manifest>"s);
 		FileOutputStream output_manifest(Path(workplace.path()).append("AndroidManifest.xml").toString());
 		output_manifest.write(manifest.c_str(), manifest.size());
 		output_manifest.close();
