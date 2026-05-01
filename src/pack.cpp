@@ -1,5 +1,5 @@
 /* pack.cpp - pack file implementation code
- * Class wsritten for NVGT by Caturria.
+ * Class written for NVGT by Caturria.
  *
  * NVGT - NonVisual Gaming Toolkit
  * Copyright (c) 2022-2026 Sam Tupy
