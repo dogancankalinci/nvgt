@@ -65,7 +65,7 @@ struct iap_shared_state {
 
 extern iap_shared_state g_iap;
 
-// Platform-specific functions ÔÇö defined in iap.cpp (Android + stubs) or iap_apple.mm (iOS/macOS)
+// Platform-specific functions - defined in iap.cpp (Android + stubs) or iap_apple.mm (iOS/macOS)
 void iap_platform_set_public_key(const std::string& key);
 bool iap_platform_available();
 bool iap_platform_query_products(const std::vector<std::string>& ids);
