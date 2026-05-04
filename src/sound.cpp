@@ -726,6 +726,8 @@ audio_ring_buffer* audio_ring_buffer::create(unsigned int channels, unsigned int
 class audio_decoder_impl : public audio_data_source_impl, public virtual audio_decoder {
 	unique_ptr<ma_decoder> decoder;
 	datastream* datastream_ref; // If the user opens a datastream, we must maintain a reference to it encase the user drops their handle.
+	struct ds_vfs_t { ma_vfs_callbacks cb; datastream* ds; };
+	unique_ptr<ds_vfs_t> ds_vfs;
 	static ma_result on_read_datastream(ma_decoder *pDecoder, void *pDst, size_t sizeInBytes, size_t *pBytesRead) {
 		if (pBytesRead) *pBytesRead = 0;
 		datastream* ds = static_cast<datastream*>(pDecoder->pUserData);
@@ -768,6 +770,48 @@ class audio_decoder_impl : public audio_data_source_impl, public virtual audio_d
 		*pCursor = stream->tellg();
 		return MA_SUCCESS;
 	}
+	static ma_result vfs_open(ma_vfs* v, const char*, ma_uint32, ma_vfs_file* f) {
+		*f = (ma_vfs_file)((ds_vfs_t*)v)->ds;
+		return MA_SUCCESS;
+	}
+	static ma_result vfs_close(ma_vfs*, ma_vfs_file) { return MA_SUCCESS; }
+	static ma_result vfs_read(ma_vfs*, ma_vfs_file f, void* dst, size_t bytes, size_t* read) {
+		if (read) *read = 0;
+		istream* s = ((datastream*)f)->get_istr();
+		if (!s || !s->good()) return MA_AT_END;
+		s->read((char*)dst, bytes);
+		if (read) *read = s->gcount();
+		return MA_SUCCESS;
+	}
+	static ma_result vfs_seek(ma_vfs*, ma_vfs_file f, ma_int64 offset, ma_seek_origin origin) {
+		istream* s = ((datastream*)f)->get_istr();
+		if (!s) return MA_ERROR;
+		s->clear();
+		ios_base::seekdir dir;
+		switch (origin) {
+			case ma_seek_origin_start:   dir = ios_base::beg; break;
+			case ma_seek_origin_current: dir = ios_base::cur; break;
+			case ma_seek_origin_end:     dir = ios_base::end; break;
+			default: return MA_ERROR;
+		}
+		s->seekg(offset, dir);
+		return MA_SUCCESS;
+	}
+	static ma_result vfs_tell(ma_vfs*, ma_vfs_file f, ma_int64* cursor) {
+		istream* s = ((datastream*)f)->get_istr();
+		if (!s) return MA_ERROR;
+		*cursor = (ma_int64)s->tellg();
+		return MA_SUCCESS;
+	}
+	static ma_result vfs_info(ma_vfs*, ma_vfs_file f, ma_file_info* info) {
+		istream* s = ((datastream*)f)->get_istr();
+		if (!s || !info) return MA_NOT_IMPLEMENTED;
+		streampos cur = s->tellg();
+		s->seekg(0, ios_base::end);
+		info->sizeInBytes = (ma_uint64)s->tellg();
+		s->seekg(cur, ios_base::beg);
+		return MA_SUCCESS;
+	}
 	ma_decoder_config decoder_config_init(unsigned int sample_rate, unsigned int channels) {
 		init_sound();
 		ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32, channels, sample_rate);
@@ -798,9 +842,15 @@ public:
 			return false;
 		}
 		ma_decoder_config cfg = decoder_config_init(sample_rate, channels);
-		// Note: We used to pass on_tell_datastream here until miniaudio update Jan 8 2026, if something breaks with raw decoders and end checking, look here.
-		if ((g_soundsystem_last_error = ma_decoder_init(on_read_datastream, on_seek_datastream, ds, &cfg, &*decoder)) != MA_SUCCESS) {
+		ds_vfs = make_unique<ds_vfs_t>();
+		ds_vfs->cb.onOpen  = vfs_open;  ds_vfs->cb.onOpenW = nullptr;
+		ds_vfs->cb.onClose = vfs_close; ds_vfs->cb.onRead  = vfs_read;
+		ds_vfs->cb.onWrite = nullptr;   ds_vfs->cb.onSeek  = vfs_seek;
+		ds_vfs->cb.onTell  = vfs_tell;  ds_vfs->cb.onInfo  = vfs_info;
+		ds_vfs->ds = ds;
+		if ((g_soundsystem_last_error = ma_decoder_init_vfs(ds_vfs.get(), "stream", &cfg, &*decoder)) != MA_SUCCESS) {
 			decoder.reset();
+			ds_vfs.reset();
 			ds->release();
 		} else {
 			datastream_ref = ds;
@@ -815,8 +865,9 @@ public:
 			datastream_ref->release();
 			datastream_ref = nullptr;
 		}
-		if ((g_soundsystem_last_error = ma_decoder_uninit(&*decoder)) != MA_SUCCESS ) return false;
+		if ((g_soundsystem_last_error = ma_decoder_uninit(&*decoder)) != MA_SUCCESS) return false;
 		decoder.reset();
+		ds_vfs.reset();
 		return true;
 	}
 	virtual unsigned int get_sample_rate() const override { return decoder? decoder->outputSampleRate : 0; }
