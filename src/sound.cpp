@@ -78,7 +78,16 @@ bool add_decoder(ma_decoding_backend_vtable *vtable) {
 bool init_sound() {
 	if (g_soundsystem_initialized.test())
 		return true;
-	if ((g_soundsystem_last_error = ma_context_init(nullptr, 0, nullptr, &g_sound_context)) != MA_SUCCESS)
+	ma_context_config sound_context_config = ma_context_config_init();
+	#if defined(MA_APPLE_MOBILE)
+	sound_context_config.coreaudio.sessionCategory = ma_ios_session_category_play_and_record;
+	sound_context_config.coreaudio.sessionCategoryOptions =
+		ma_ios_session_category_option_default_to_speaker |
+		ma_ios_session_category_option_allow_bluetooth |
+		ma_ios_session_category_option_allow_bluetooth_a2dp |
+		ma_ios_session_category_option_mix_with_others;
+	#endif
+	if ((g_soundsystem_last_error = ma_context_init(nullptr, 0, &sound_context_config, &g_sound_context)) != MA_SUCCESS)
 		return false;
 	g_sound_service = sound_service::make();
 	if (g_sound_service == nullptr) {
@@ -1964,7 +1973,7 @@ public:
     AVAudioSession *audioSession = [AVAudioSession sharedInstance];
     NSError *audioSessionError = nil;
     [audioSession setCategory:AVAudioSessionCategoryPlayAndRecord
-                                 withOptions:AVAudioSessionCategoryOptionDefaultToSpeaker|AVAudioSessionCategoryOptionMixWithOthers
+                                 withOptions:AVAudioSessionCategoryOptionMixWithOthers|AVAudioSessionCategoryOptionDefaultToSpeaker|AVAudioSessionCategoryOptionAllowBluetooth|AVAudioSessionCategoryOptionAllowBluetoothA2DP
                                        error:&audioSessionError];
     [audioSession setActive:YES error:&audioSessionError];
 
