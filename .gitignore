@@ -10,6 +10,7 @@
 *.o
 *.os
 *.dylib
+*.so
 __pycache__
 
 # other intermediet build
