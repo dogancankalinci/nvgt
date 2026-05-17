@@ -148,7 +148,9 @@ static void libarchive_extract(const string& arc_path, const string& dest) {
 // Recursively add all files in disk_dir to an open libarchive write handle.
 // arc_prefix: path prefix in archive (empty for root). exec_paths: archive paths that should get 0755.
 // store_paths: archive paths that should be stored without compression (zip only). zip: true if format is zip.
-static void archive_write_dir(struct archive* a, const string& disk_dir, const string& arc_prefix, const set<string>& exec_paths, const set<string>& store_paths, bool zip) {
+// no_dir_entries: when true, skip directory ZIP entries (required for Android App Bundles —
+// bundletool rejects any bundle that contains directory entries in the ZIP).
+static void archive_write_dir(struct archive* a, const string& disk_dir, const string& arc_prefix, const set<string>& exec_paths, const set<string>& store_paths, bool zip, bool no_dir_entries = false) {
 	vector<File> entries;
 	File(disk_dir).list(entries);
 	for (const File& f : entries) {
@@ -158,12 +160,14 @@ static void archive_write_dir(struct archive* a, const string& disk_dir, const s
 		archive_entry_set_pathname(e, arc.c_str());
 		archive_entry_set_mtime(e, f.getLastModified().epochTime(), 0);
 		if (f.isDirectory()) {
-			archive_entry_set_filetype(e, AE_IFDIR);
-			archive_entry_set_perm(e, 0755);
-			archive_entry_set_size(e, 0);
-			archive_write_header(a, e);
+			if (!no_dir_entries) {
+				archive_entry_set_filetype(e, AE_IFDIR);
+				archive_entry_set_perm(e, 0755);
+				archive_entry_set_size(e, 0);
+				archive_write_header(a, e);
+			}
 			archive_entry_free(e);
-			archive_write_dir(a, f.path(), arc, exec_paths, store_paths, zip);
+			archive_write_dir(a, f.path(), arc, exec_paths, store_paths, zip, no_dir_entries);
 		} else {
 			if (zip) {
 				if (store_paths.count(arc)) archive_write_zip_set_compression_store(a);
@@ -949,6 +953,55 @@ class nvgt_compilation_output_android : public nvgt_compilation_output_impl {
 		FileOutputStream out(path, ios::out | ios::binary | ios::trunc);
 		out.write(data.data(), static_cast<std::streamsize>(data.size()));
 	}
+	// Patch a signed AAB's ZIP metadata so that every byte is covered by the JAR signature.
+	// JAR/v1 signing only hashes file content, not ZIP headers. libarchive writes Unix mode bits
+	// into the central directory external-file-attributes field and timestamp/uid-gid data into
+	// local-file-header extra fields. jarsigner leaves these unprotected and warns about them;
+	// Google Play then rejects the bundle as having an "invalid signature".
+	// This function zeroes those fields AFTER signing so the content hashes remain valid.
+	static void strip_zip_posix_attrs(const string& path) {
+		string data = read_binary_file(path);
+		if (data.size() < 22) return;
+		auto u16 = [&](size_t o) -> uint16_t {
+			return (uint8_t)data[o] | ((uint8_t)data[o + 1] << 8);
+		};
+		auto u32 = [&](size_t o) -> uint32_t {
+			return (uint8_t)data[o] | ((uint8_t)data[o+1] << 8) | ((uint8_t)data[o+2] << 16) | ((uint8_t)data[o+3] << 24);
+		};
+		// Locate the End of Central Directory record.
+		size_t eocd = string::npos;
+		for (size_t i = data.size() - 22; ; --i) {
+			if (u32(i) == 0x06054b50) { eocd = i; break; }
+			if (i == 0) break;
+		}
+		if (eocd == string::npos) return;
+		uint32_t cd_off = u32(eocd + 16);
+		uint16_t cd_count = u16(eocd + 10);
+		size_t cd_pos = cd_off;
+		for (uint16_t n = 0; n < cd_count && cd_pos + 46 <= data.size(); ++n) {
+			if (u32(cd_pos) != 0x02014b50) break;
+			uint16_t fname_len = u16(cd_pos + 28);
+			uint16_t extra_len = u16(cd_pos + 30);
+			uint16_t comment_len = u16(cd_pos + 32);
+			uint32_t lfh_off = u32(cd_pos + 42);
+			// Clear the Unix platform indicator in "version made by" (high byte: 3=Unix -> 0=DOS).
+			data[cd_pos + 5] = 0;
+			// Zero external file attributes so no Unix mode bits remain.
+			data[cd_pos + 38] = data[cd_pos + 39] = data[cd_pos + 40] = data[cd_pos + 41] = 0;
+			// Zero the extra field data in the matching local file header.
+			// We keep extra_len unchanged to preserve file-data offsets; zeroed bytes become
+			// null (type 0x0000) extra-field entries that ZIP readers silently skip.
+			if (lfh_off + 30 <= data.size() && u32(lfh_off) == 0x04034b50) {
+				uint16_t lfname_len = u16(lfh_off + 26);
+				uint16_t lextra_len = u16(lfh_off + 28);
+				size_t lextra_off = lfh_off + 30 + lfname_len;
+				if (lextra_len > 0 && lextra_off + lextra_len <= data.size())
+					for (size_t b = lextra_off; b < lextra_off + lextra_len; ++b) data[b] = 0;
+			}
+			cd_pos += 46 + fname_len + extra_len + comment_len;
+		}
+		write_binary_file(path, data);
+	}
 	static string wrap_manifest_line(const string& line) {
 		string wrapped;
 		size_t pos = 0;
@@ -1113,7 +1166,7 @@ class nvgt_compilation_output_android : public nvgt_compilation_output_impl {
 				std_err = format("Unable to open temporary signed bundle %s: %s", signed_out, arc_err);
 				return false;
 			}
-			archive_write_dir(out_arc, extracted_dir, "", {}, {}, true);
+			archive_write_dir(out_arc, extracted_dir, "", {}, {}, true, true);
 			archive_write_close(out_arc);
 			archive_write_free(out_arc);
 			if (!File(signed_out).exists()) {
@@ -1422,7 +1475,7 @@ protected:
 			archive_write_single_file(aab_arc, Path(proto_dir).append("resources.pb").toString(), "base/resources.pb");
 			File proto_res(Path(proto_dir).append("res"));
 			if (proto_res.exists())
-				archive_write_dir(aab_arc, proto_res.path(), "base/res", {}, {}, true);
+				archive_write_dir(aab_arc, proto_res.path(), "base/res", {}, {}, true, true);
 			{
 				vector<File> root_entries;
 				File(workplace.path()).list(root_entries);
@@ -1434,11 +1487,11 @@ protected:
 			}
 			File lib_dir(Path(workplace.path()).append("lib"));
 			if (lib_dir.exists())
-				archive_write_dir(aab_arc, lib_dir.path(), "base/lib", {}, {}, true);
-			archive_write_dir(aab_arc, Path(workplace.path()).append("assets").toString(), "base/assets", {}, {}, true);
+				archive_write_dir(aab_arc, lib_dir.path(), "base/lib", {}, {}, true, true);
+			archive_write_dir(aab_arc, Path(workplace.path()).append("assets").toString(), "base/assets", {}, {}, true, true);
 			File root_dir(Path(workplace.path()).append("root"));
 			if (root_dir.exists())
-				archive_write_dir(aab_arc, root_dir.path(), "base/root", {}, {}, true);
+				archive_write_dir(aab_arc, root_dir.path(), "base/root", {}, {}, true, true);
 			archive_write_close(aab_arc);
 			archive_write_free(aab_arc);
 			if (!sign_cert.empty() && !sign_password.empty()) {
@@ -1447,6 +1500,7 @@ protected:
 				sout = serr = "";
 				if (!sign_android_aab(output_path.toString(), sout, serr))
 					throw Exception(format("Failed to sign AAB, %s%s", sout, serr));
+				strip_zip_posix_attrs(output_path.toString());
 			}
 		} else {
 			// --- APK path ---
