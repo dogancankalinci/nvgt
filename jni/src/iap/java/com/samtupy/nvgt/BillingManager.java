@@ -23,7 +23,7 @@
 //      verification via the Google Play Developer API can.
 //
 // To enable signature verification call setPublicKey() with the Base64 RSA public
-// key found in Play Console ÔåÆ Your app ÔåÆ Monetize ÔåÆ Monetization setup ÔåÆ Licensing.
+// key found in Play Console > Your app > Monetize > Monetization setup > Licensing.
 //
 // NVGT - NonVisual Gaming Toolkit
 // Copyright (c) 2022-2026 Sam Tupy - https://nvgt.dev
@@ -350,7 +350,7 @@ public class BillingManager implements PurchasesUpdatedListener {
 
 	/**
 	 * Sets the Base64-encoded RSA public key from Google Play Console.
-	 * Location: Play Console ÔåÆ Your app ÔåÆ Monetize ÔåÆ Monetization setup ÔåÆ Licensing.
+	 * Location: Play Console > Your app > Monetize > Monetization setup > Licensing.
 	 * Call this before any purchase; without it, signature verification is skipped.
 	 */
 	public static void setPublicKey(String key) {
