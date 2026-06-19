@@ -391,7 +391,7 @@ jobs:
     - name: publish
       run: |
         mkdir android_package
-        mv android_release/nvgt.apk android_package/nvgt_android_$nvgt_version.apk
+        mv android_release/nvgt.apk android_package/nvgt_$nvgt_version.apk
         curl -u "${{secrets.CIFTP}}" -s -T "android_package/nvgt_$nvgt_version.apk" ftp://nvgt.dev
         curl -u "${{secrets.CIFTP}}" -s -T "linux_package/nvgt_$nvgt_version.tar.gz" ftp://nvgt.dev
         curl -u "${{secrets.CIFTP}}" -s -T "mac_package/nvgt_$nvgt_version.dmg" ftp://nvgt.dev

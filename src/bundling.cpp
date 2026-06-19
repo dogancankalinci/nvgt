@@ -673,6 +673,11 @@ protected:
 		plist_dict_set_item(plist, "CFBundlePackageType", plist_new_string("APPL"));
 		plist_dict_set_item(plist, "CFBundleShortVersionString", plist_new_string(config.getString("build.product_version", "1.0").c_str()));
 		plist_dict_set_item(plist, "CFBundleVersion", plist_new_string(config.getString("build.product_version_code", "1.0").c_str()));
+		// Required by the App Store (missing -> ITMS-90360). Hardcoded to match the iOS stub's
+		// LC_BUILD_VERSION deployment target (16.0); a mismatch makes App Store reject with
+		// "bundle does not support the minimum OS version specified in the Info.plist", so this is
+		// NOT configurable unless the stubs are rebuilt with a different target.
+		plist_dict_set_item(plist, "MinimumOSVersion", plist_new_string("16.0"));
 		plist_dict_set_item(plist, "CFBundleIdentifier", plist_new_string(product_identifier.c_str()));
 		plist_dict_set_item(plist, "LSRequiresIPhoneOS", plist_new_bool(1));
 		plist_t scene_manifest = plist_new_dict();
