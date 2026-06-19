@@ -680,6 +680,12 @@ protected:
 		plist_dict_set_item(plist, "MinimumOSVersion", plist_new_string("16.0"));
 		plist_dict_set_item(plist, "CFBundleIdentifier", plist_new_string(product_identifier.c_str()));
 		plist_dict_set_item(plist, "LSRequiresIPhoneOS", plist_new_bool(1));
+		// App Store requires DTPlatformName (ITMS-90507) and, for 64-bit binaries, the arm64
+		// device capability (ITMS-90502).
+		plist_dict_set_item(plist, "DTPlatformName", plist_new_string("iphoneos"));
+		plist_t req_caps = plist_new_array();
+		plist_array_append_item(req_caps, plist_new_string("arm64"));
+		plist_dict_set_item(plist, "UIRequiredDeviceCapabilities", req_caps);
 		plist_t scene_manifest = plist_new_dict();
 		plist_dict_set_item(scene_manifest, "UIApplicationSupportsMultipleScenes", plist_new_bool(0));
 		plist_dict_set_item(scene_manifest, "UISceneConfigurations", plist_new_dict());
@@ -721,22 +727,9 @@ protected:
 				File(Path(ipa_root).append("Payload").toString()).createDirectories();
 				File(workplace.path()).copyTo(Path(ipa_root).append("Payload").toString());
 			}
-			// Write iTunesMetadata.plist to the IPA root.
-			plist_t meta = plist_new_dict();
-			plist_dict_set_item(meta, "bundleDisplayName", plist_new_string(product_name.c_str()));
-			plist_dict_set_item(meta, "bundleShortVersionString", plist_new_string(config.getString("build.product_version", "1.0").c_str()));
-			plist_dict_set_item(meta, "bundleVersion", plist_new_string(config.getString("build.product_version_code", "1.0").c_str()));
-			plist_dict_set_item(meta, "fileExtension", plist_new_string(".app"));
-			plist_dict_set_item(meta, "itemName", plist_new_string(product_name.c_str()));
-			plist_dict_set_item(meta, "product-type", plist_new_string("ios-app"));
-			plist_dict_set_item(meta, "softwareVersionBundleId", plist_new_string(product_identifier.c_str()));
-			char* meta_xml; uint32_t meta_len;
-			if (plist_to_xml(meta, &meta_xml, &meta_len) != PLIST_ERR_SUCCESS) throw Exception("Unable to create iTunesMetadata.plist");
-			plist_free(meta);
-			FileOutputStream meta_out(Path(ipa_root).append("iTunesMetadata.plist").toString());
-			meta_out.write(meta_xml, meta_len);
-			meta_out.close();
-			plist_mem_free(meta_xml);
+			// iTunesMetadata.plist intentionally NOT written: App Store / Transporter rejects it
+			// as a disallowed path (ITMS-90047). It was only useful for legacy iTunes / ad-hoc .ipa
+			// installs, which no longer apply.
 			string appbundle = Path(workplace.path()).makeFile().getFileName();
 			string ios_exec = format("Payload/%s/%s", appbundle, output_path.getFileName());
 			set<string> store_paths;
