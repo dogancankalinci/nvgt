@@ -58,7 +58,7 @@ using namespace fast_float;
 
 static inline float ff(const std::string& s) noexcept {
 	float v = 0.0f;
-	from_chars(s.data(), s.data() + s.size(), v);
+	fast_float::from_chars(s.data(), s.data() + s.size(), v);
 	return v;
 }
 
@@ -1970,10 +1970,10 @@ BOOL set_output_device(unsigned int device) {
 	return ret;
 }
 
-BOOL get_global_hrtf() {
+static BOOL get_global_hrtf() {
 	return hrtf;
 }
-BOOL set_global_hrtf(BOOL enable) {
+static BOOL set_global_hrtf(BOOL enable) {
 	init_sound();
 	if (enable && !phonon_context) {
 		IPLContextSettings phonon_context_settings{};

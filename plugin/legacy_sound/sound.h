@@ -266,8 +266,8 @@ unsigned int get_output_device();
 unsigned int get_output_device_count();
 unsigned int get_output_device_name(unsigned int device, char* buffer, unsigned int bufsize);
 BOOL set_output_device(unsigned int device);
-BOOL get_global_hrtf();
-BOOL set_global_hrtf(BOOL enable);
+static BOOL get_global_hrtf();
+static BOOL set_global_hrtf(BOOL enable);
 
 void RegisterScriptSound(asIScriptEngine* engine);
 #endif //sound_h
