@@ -65,8 +65,15 @@ public class TTS {
 		AccessibilityManager accessibilityManager = (AccessibilityManager) context.getSystemService(Context.ACCESSIBILITY_SERVICE);
 		if (accessibilityManager == null) return false;
 		if (interrupt) accessibilityManager.interrupt();
-		AccessibilityEvent e = new AccessibilityEvent();
+
+		AccessibilityEvent e;
+		if (android.os.Build.VERSION.SDK_INT >= 30) {
+			e = new AccessibilityEvent();
+		} else {
+			e = AccessibilityEvent.obtain();
+		}
 		e.setEventType(AccessibilityEvent.TYPE_ANNOUNCEMENT);
+
 		e.setPackageName(context.getPackageName());
 		e.getText().add(text + AvoidDuplicateSpeechHack);
 		AvoidDuplicateSpeechHack += " ";
