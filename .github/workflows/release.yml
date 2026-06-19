@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   mac_build:
-    runs-on: macos-14
+    runs-on: macos-26
     steps:
     - uses: actions/checkout@v5
       with:
@@ -47,6 +47,9 @@ jobs:
         curl -H "X-Auth: ${{secrets.CIPHP}}" -s "https://nvgt.dev/ci/devlibs_update.php"
     - name: build
       run: |
+        sdk=$(xcrun --sdk iphoneos --show-sdk-version)
+        echo "Xcode: $(xcodebuild -version | head -1) | iOS SDK: $sdk"
+        if [ "${sdk%%.*}" -lt 26 ]; then echo "::error::iOS SDK $sdk < 26 (App Store requires the iOS 26 SDK; ITMS-90725). Runner default Xcode too old — pin Xcode 26+ (setup-xcode) or use a newer macOS image."; exit 1; fi
         cp build/build_macos.sh .
         sudo chmod +x build_macos.sh
         ./build_macos.sh ci
