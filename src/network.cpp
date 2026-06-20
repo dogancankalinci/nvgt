@@ -47,6 +47,7 @@ void network::release() {
 }
 
 void network::destroy(bool flush) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	if (host) {
 		if (flush) {
 			for (const auto& it : peers) enet_peer_disconnect(it.second, 0);
@@ -63,6 +64,7 @@ void network::destroy(bool flush) {
 }
 
 bool network::setup_client(unsigned char max_channels, unsigned short max_peers) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	if (host) return false;
 	host = enet_host_create(IPv6enabled? ENET_ADDRESS_TYPE_ANY : ENET_ADDRESS_TYPE_IPV4, NULL, max_peers, max_channels, 0, 0);
 	if (!host) return false;
@@ -72,6 +74,7 @@ bool network::setup_client(unsigned char max_channels, unsigned short max_peers)
 }
 
 bool network::setup_server(unsigned short port, unsigned char max_channels, unsigned short max_peers) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	if (host) return false;
 	ENetAddress address;
 	enet_address_build_any(&address, IPv6enabled? ENET_ADDRESS_TYPE_IPV6 : ENET_ADDRESS_TYPE_IPV4);
@@ -83,6 +86,7 @@ bool network::setup_server(unsigned short port, unsigned char max_channels, unsi
 }
 
 bool network::setup_local_server(unsigned short port, unsigned char max_channels, unsigned short max_peers) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	if (host) return false;
 	ENetAddress address;
 	enet_address_build_loopback(&address, IPv6enabled? ENET_ADDRESS_TYPE_IPV6 : ENET_ADDRESS_TYPE_IPV4);
@@ -94,6 +98,7 @@ bool network::setup_local_server(unsigned short port, unsigned char max_channels
 }
 
 asQWORD network::connect(const std::string& hostname, unsigned short port) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	if (!host || !is_client) return 0;
 	ENetAddress addr;
 	if (enet_address_set_host(&addr, IPv6enabled? ENET_ADDRESS_TYPE_ANY : ENET_ADDRESS_TYPE_IPV4, hostname.c_str()) < 0) return false;
@@ -107,6 +112,7 @@ asQWORD network::connect(const std::string& hostname, unsigned short port) {
 }
 
 const network_event* network::request(uint32_t timeout) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	if (!host) {
 		g_enet_none_event.addRef();
 			return &g_enet_none_event;
@@ -146,6 +152,7 @@ const network_event* network::request(uint32_t timeout) {
 }
 
 std::string network::get_peer_address(asQWORD peer_id) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	ENetPeer* peer = get_peer(peer_id);
 	if (!peer) return "";
 	std::string tmp(32, '\0');
@@ -154,6 +161,7 @@ std::string network::get_peer_address(asQWORD peer_id) {
 	return tmp;
 }
 unsigned int network::get_peer_average_round_trip_time(asQWORD peer_id) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	if (!host) return -1;
 	ENetPeer* peer = get_peer(peer_id);
 	if (!peer) return -1;
@@ -161,6 +169,7 @@ unsigned int network::get_peer_average_round_trip_time(asQWORD peer_id) {
 }
 
 bool network::send(asQWORD peer_id, const std::string& message, unsigned char channel, bool reliable) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	if (!host || channel > channel_count) return false;
 	ENetPeer* peer = get_peer(peer_id);
 	if (peer_id && !peer) return false;
@@ -174,6 +183,7 @@ bool network::send(asQWORD peer_id, const std::string& message, unsigned char ch
 	return r;
 }
 bool network::send_peer(asQWORD peer, const std::string& message, unsigned char channel, bool reliable) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	if (!host || channel > channel_count) return false;
 	ENetPeer* peer_obj = reinterpret_cast<ENetPeer*>(peer);
 	if (!peer_obj) return false;
@@ -186,12 +196,14 @@ bool network::send_peer(asQWORD peer, const std::string& message, unsigned char 
 }
 
 bool network::flush() {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	if (!host) return false;
 	enet_host_flush(host);
 	return true;
 }
 
 bool network::disconnect_peer_softly(asQWORD peer_id) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	if (!host) return false;
 	ENetPeer* peer = get_peer(peer_id);
 	if (!peer) return false;
@@ -200,6 +212,7 @@ bool network::disconnect_peer_softly(asQWORD peer_id) {
 	return true;
 }
 bool network::disconnect_peer(asQWORD peer_id) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	if (!host) return false;
 	ENetPeer* peer = get_peer(peer_id);
 	if (!peer) return false;
@@ -208,6 +221,7 @@ bool network::disconnect_peer(asQWORD peer_id) {
 	return true;
 }
 bool network::disconnect_peer_forcefully(asQWORD peer_id) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	if (!host) return false;
 	ENetPeer* peer = get_peer(peer_id);
 	if (!peer) return false;
@@ -217,6 +231,7 @@ bool network::disconnect_peer_forcefully(asQWORD peer_id) {
 }
 
 CScriptArray* network::list_peers() {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	asITypeInfo* arrayType = get_array_type("uint64[]");
 	CScriptArray* array = CScriptArray::Create(arrayType);
 	if (!host) return array;
@@ -229,11 +244,13 @@ CScriptArray* network::list_peers() {
 }
 
 bool network::set_bandwidth_limits(unsigned int incoming, unsigned int outgoing) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	if (!host) return false;
 	enet_host_bandwidth_limit(host, incoming, outgoing);
 	return true;
 }
 void network::set_packet_compression(bool flag) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	if (!host) return;
 	if (flag) enet_host_compress_with_range_coder(host);
 	else enet_host_compress(host, nullptr);

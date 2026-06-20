@@ -22,6 +22,7 @@
 #include <map>
 #include <unordered_map>
 #include <string>
+#include <mutex>
 #include <angelscript.h>
 #include <scriptarray.h>
 
@@ -30,6 +31,10 @@ class network_event;
 class network {
 	int RefCount;
 	ENetHost* host;
+	// ENet is NOT thread-safe; serialize every host/peers access so e.g. a voice-capture
+	// thread calling send() can't race the main thread's request() and corrupt the heap.
+	// Recursive because send()/send_peer() call flush() while already holding the lock.
+	std::recursive_mutex mtx;
 	std::unordered_map<asQWORD, ENetPeer*> peers;
 	asQWORD next_peer;
 	unsigned char channel_count;
