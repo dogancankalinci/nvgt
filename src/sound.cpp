@@ -49,6 +49,11 @@
 #import <AVFoundation/AVFoundation.h>
 #import <Foundation/Foundation.h>
 #endif
+#if __has_include(<alsa/asoundlib.h>)
+#include <alsa/asoundlib.h>
+#define NVGT_HAS_ALSA
+void quiet_alsa_handler(const char *file, int line, const char *function, int err, const char *fmt, ...) {}
+#endif
 using namespace std;
 
 class sound_impl;
@@ -78,6 +83,9 @@ bool add_decoder(ma_decoding_backend_vtable *vtable) {
 bool init_sound() {
 	if (g_soundsystem_initialized.test())
 		return true;
+	#ifdef NVGT_HAS_ALSA
+	snd_lib_error_set_handler(quiet_alsa_handler); // Try to avoid NVGT server applications that accidentally touch the sound system from causing headless Linux servers to print audio device enumeration errors to stdout.
+	#endif
 	ma_context_config sound_context_config = ma_context_config_init();
 	#if defined(MA_APPLE_MOBILE)
 	sound_context_config.coreaudio.sessionCategory = ma_ios_session_category_play_and_record;
