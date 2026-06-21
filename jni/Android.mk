@@ -145,7 +145,9 @@ LOCAL_SRC_FILES_COMMON := \
     $(wildcard $(LOCAL_PATH)/../src/*.cpp))
 LOCAL_C_INCLUDES_COMMON := $(LOCAL_PATH)/$(INCLUDEPATH) $(LOCAL_PATH)/../ASAddon/include $(LOCAL_PATH)/../dep
 LOCAL_CXXFLAGS_COMMON := -DPOCO_STATIC -DNVGT_BUILDING -DAS_USE_STLNAMES=1 -std=c++20 -fms-extensions -ffunction-sections -O2 -fpermissive -O2 -Wno-narrowing -Wno-int-to-pointer-cast -Wno-delete-incomplete -Wno-unused-result -Wno-deprecated-array-compare -Wno-implicit-const-int-float-conversion -Wno-deprecated-enum-enum-conversion -Wno-absolute-value
-LOCAL_LDFLAGS_COMMON = -Wl,--no-fatal-warnings -Wl,--no-undefined -Wl,--gc-sections
+# -Wl,-z,max-page-size=16384 makes ELF LOAD segments 16KB-aligned -> required by Google Play's
+# 16 KB page size rule (Nov 2025) for apps targeting Android 15+. Fixes libgame.so (this module).
+LOCAL_LDFLAGS_COMMON = -Wl,--no-fatal-warnings -Wl,--no-undefined -Wl,--gc-sections -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384
 LOCAL_SHARED_LIBRARIES_COMMON := SDL3 phonon
 LOCAL_STATIC_LIBRARIES_COMMON := libPocoFoundation libPocoCrypto libPocoJSON libPocoNet libPocoNetSSL libPocoUtil libPocoXML libffi libz libangelscript libcrypto libpcre2-8 libutf8proc libexpat libenet libreactphysics3d libssl libSDL3_ttf libfreetype libbz2 libogg libvorbisfile libvorbis libopusfile libopusenc libopus libtinyexpr libtiny-aes-c
 LOCAL_LDLIBS_COMMON := -lGLESv1_CM -lGLESv2 -lOpenSLES -llog -landroid
