@@ -20,44 +20,20 @@
 
 using namespace std::string_literals;
 
-engine_event_listener::engine_event_listener(asIScriptObject* obj, const engine_event* parent) : obj(new CScriptWeakRef(obj, obj->GetObjectType()->GetModule()->GetTypeInfoByDecl(Poco::format("weakref<%s::%s>", obj->GetObjectType()->GetNamespace()? std::string(obj->GetObjectType()->GetNamespace()) : "", std::string(obj->GetObjectType()->GetName())).c_str()))), func(nullptr), is_object(true) {
+engine_event_listener::engine_event_listener(asIScriptObject* obj, const engine_event* parent) : obj(std::make_shared<CScriptWeakRef>(obj, obj->GetObjectType()->GetModule()->GetTypeInfoByDecl(Poco::format("weakref<%s::%s>", obj->GetObjectType()->GetNamespace()? std::string(obj->GetObjectType()->GetNamespace()) : "", std::string(obj->GetObjectType()->GetName())).c_str()))), func(nullptr), is_object(true) {
 	asITypeInfo* ot = obj->GetObjectType();
 	if (ot) func = ot->GetMethodByDecl(("void "s + parent->callback_declaration()).c_str());
 	if (!func && ot) func = ot->GetMethodByDecl(("bool "s + parent->callback_declaration()).c_str());
-	if (!func) {
-		obj->Release();
-		delete this->obj;
-		this->obj = nullptr;
-		throw std::runtime_error(Poco::format("engine_event_listener instanciation for %s failed, no void/bool %s method", std::string(ot? ot->GetName() : "unknown"), parent->callback_declaration()));
-	}
-	obj->Release();
+	if (!func) throw std::runtime_error(Poco::format("engine_event_listener instanciation for %s failed, no void/bool %s method", std::string(ot? ot->GetName() : "unknown"), parent->callback_declaration()));
 }
 engine_event_listener::engine_event_listener(asIScriptFunction* func) : obj(nullptr), func(func), is_object(false) {
 	if (func->GetFuncType() == asFUNC_DELEGATE) {
-		this->obj = new CScriptWeakRef(func->GetDelegateObject(), func->GetDelegateObjectType()->GetModule()->GetTypeInfoByDecl(Poco::format("weakref<%s::%s>", func->GetDelegateObjectType()->GetNamespace()? std::string(func->GetDelegateObjectType()->GetNamespace()) : "", std::string(func->GetDelegateObjectType()->GetName())).c_str()));
+		this->obj = std::make_shared<CScriptWeakRef>(func->GetDelegateObject(), func->GetDelegateObjectType()->GetModule()->GetTypeInfoByDecl(Poco::format("weakref<%s::%s>", func->GetDelegateObjectType()->GetNamespace()? std::string(func->GetDelegateObjectType()->GetNamespace()) : "", std::string(func->GetDelegateObjectType()->GetName())).c_str()));
 		this->func = func->GetDelegateFunction();
 		func->Release();
 	}
-	// For non-delegate functions: takes ownership of the AS-added reference (no extra AddRef)
 }
-engine_event_listener::engine_event_listener(const engine_event_listener& other) : obj(other.obj ? new CScriptWeakRef(*other.obj) : nullptr), func(other.func), is_object(other.is_object) {
-	if (!other.is_object && !other.obj && other.func) other.func->AddRef();
-}
-engine_event_listener& engine_event_listener::operator=(const engine_event_listener& other) {
-	if (this != &other) {
-		if (!is_object && !obj && func) func->Release();
-		delete obj;
-		obj = other.obj ? new CScriptWeakRef(*other.obj) : nullptr;
-		func = other.func;
-		is_object = other.is_object;
-		if (!other.is_object && !other.obj && other.func) other.func->AddRef();
-	}
-	return *this;
-}
-engine_event_listener::~engine_event_listener() {
-	if (!is_object && !obj && func) func->Release();
-	delete obj;
-}
+engine_event_listener::~engine_event_listener() {}
 bool engine_event_listener::good() const {
 	if (!obj && !func) return false;
 	else if (!obj) return true; // Static functions are always available.

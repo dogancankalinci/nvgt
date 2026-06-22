@@ -430,16 +430,14 @@ public:
 		return -1; // couldn't determine device?
 	}
 	bool set_device(int device) override {
-		if (!engine || flags & NO_DEVICE || device < -1 || device >= int(g_sound_output_devices.size()))
-			return false;
+		if (!engine || flags & NO_DEVICE || device < -1 || device >= int(g_sound_output_devices.size())) return false;
 		ma_device *old_dev = ma_engine_get_device(&*engine);
-		if (!old_dev || device > -1 && ma_device_id_equal(&old_dev->playback.id, &g_sound_output_devices[device].id))
-			return false;
+		if (!old_dev || device > -1 && ma_device_id_equal(&old_dev->playback.id, &g_sound_output_devices[device].id)) return false;
 		ma_engine_stop(&*engine);
 		ma_device_config cfg = ma_device_config_init(ma_device_type_playback);
-		if (device > -1)
-			cfg.playback.pDeviceID = &g_sound_output_devices[device].id;
+		if (device > -1) cfg.playback.pDeviceID = &g_sound_output_devices[device].id;
 		cfg.playback.channels = old_dev->playback.channels;
+		cfg.playback.format = ma_format_f32;
 		cfg.sampleRate = old_dev->sampleRate;
 		cfg.noClip = MA_TRUE;
 		cfg.periodSizeInFrames = SOUNDSYSTEM_FRAMESIZE;
@@ -452,9 +450,8 @@ public:
 		ma_device_stop(old_dev);
 		ma_device_uninit(old_dev);
 		if ((g_soundsystem_last_error = ma_device_init(&g_sound_context, &cfg, old_dev)) != MA_SUCCESS) {
-			engine.reset();
-			this->device.reset();
-			return false;
+			cfg.playback.pDeviceID = nullptr;
+			g_soundsystem_last_error = ma_device_init(&g_sound_context, &cfg, old_dev); // Try to at least initialize the default device so as not to leave useless engine.
 		}
 		return (g_soundsystem_last_error = ma_engine_start(&*engine)) == MA_SUCCESS;
 	}

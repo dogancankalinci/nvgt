@@ -170,7 +170,7 @@ template <class T> string socket_receive_bytes(T& sock, int length, int flags) {
 template <class T> string socket_receive_bytes_buf(T& sock, int flags, const Timespan& timeout) {
 	if (!sock.poll(timeout, Socket::SELECT_READ)) return std::string();
 	Buffer<char> buf(0);
-	sock.receiveBytes(buf, flags);
+	sock.receiveBytes(buf, flags, timeout);
 	return string(buf.begin(), buf.end());
 }
 int websocket_send_frame(WebSocket& sock, const string& data, int flags) { return sock.sendFrame(data.data(), data.size(), flags); }
@@ -646,46 +646,43 @@ public:
 		string download_buffer(1024 * 32, '\0'); // Should the user be able to configure this, larger buffer = faster download?
 		while (tries && !tryWait(_retry_delay)) {
 			tries--;
-			bool locked = false;
 			try {
 				string path = _url.getPathAndQuery();
 				if (path.empty()) path = "/";
-				lock(); locked = true;
 				HTTPRequest req(_request);
-				req.setHost(_url.getHost());
-				req.setURI(path);
-				unlock(); locked = false;
-				if (req.getContentType() == HTTPMessage::UNKNOWN_CONTENT_TYPE) req.setContentType("application/x-www-form-urlencoded");
-				lock(); locked = true;
 				HTTPResponse tmp_response = _response;
-				if (!_session) _session = _url.getScheme() == "http"? new HTTPClientSession(_url.getHost(), _url.getPort()) : new HTTPSClientSession(_url.getHost(), _url.getPort());
-				if (authorize) _creds.authenticate(req, tmp_response);
-				_session->setKeepAlive(_keepalive);
-				_session->setTimeout(_connect_timeout * 1000, _send_timeout * 1000, _receive_timeout * 1000);
-				_session->setKeepAliveTimeout(_keepalive_timeout * 1000);
+				{
+					ScopedLock lock(*this);
+					req.setHost(_url.getHost());
+					req.setURI(path);
+					if (req.getContentType() == HTTPMessage::UNKNOWN_CONTENT_TYPE) req.setContentType("application/x-www-form-urlencoded");
+					if (!_session) _session = _url.getScheme() == "http"? new HTTPClientSession(_url.getHost(), _url.getPort()) : new HTTPSClientSession(_url.getHost(), _url.getPort());
+					if (authorize) _creds.authenticate(req, tmp_response);
+					_session->setKeepAlive(_keepalive);
+					_session->setTimeout(_connect_timeout * 1000, _send_timeout * 1000, _receive_timeout * 1000);
+					_session->setKeepAliveTimeout(_keepalive_timeout * 1000);
+				}
 				std::ostream& ostr = _session->sendRequest(req);
-				unlock(); locked = false;
 				if (tryWait(0)) break;
 				ostr << _request_body;
 				std::istream& istr = _session->receiveResponse(tmp_response);
-				lock(); locked = true;
-				_response = tmp_response;
-				bool moved = (_response.getStatus() == HTTPResponse::HTTP_MOVED_PERMANENTLY || _response.getStatus() == HTTPResponse::HTTP_FOUND || _response.getStatus() == HTTPResponse::HTTP_SEE_OTHER || _response.getStatus() == HTTPResponse::HTTP_TEMPORARY_REDIRECT);
-				if (moved) {
-					_url.resolve(_response.get("Location"));
-					authorize = false;
-					delete _session;
-					_session = nullptr;
-					unlock(); locked = false;
-					continue;
-				} else if (_response.getStatus() == HTTPResponse::HTTP_UNAUTHORIZED && !authorize && !_creds.empty()) {
-					unlock(); locked = false;
-					authorize = true;
-					NullOutputStream null;
-					StreamCopier::copyStream(istr, null);
-					continue;
-				}
-				unlock(); locked = false;
+				{
+					ScopedLock lock(*this);
+					_response = tmp_response;
+					bool moved = (_response.getStatus() == HTTPResponse::HTTP_MOVED_PERMANENTLY || _response.getStatus() == HTTPResponse::HTTP_FOUND || _response.getStatus() == HTTPResponse::HTTP_SEE_OTHER || _response.getStatus() == HTTPResponse::HTTP_TEMPORARY_REDIRECT);
+					if (moved) {
+						_url.resolve(_response.get("Location"));
+						authorize = false;
+						delete _session;
+						_session = nullptr;
+						continue;
+					} else if (_response.getStatus() == HTTPResponse::HTTP_UNAUTHORIZED && !authorize && !_creds.empty()) {
+						authorize = true;
+						NullOutputStream null;
+						StreamCopier::copyStream(istr, null);
+						continue;
+					}
+				};
 				while (istr.good() && !tryWait(0)) {
 					istr.read(download_buffer.data(), download_buffer.size());
 					streamsize count = istr.gcount();
@@ -697,7 +694,6 @@ public:
 			} catch(Exception& e) {
 				if (_session) delete _session;
 				_session = nullptr;
-				if (locked) unlock();
 				return;
 			}
 		}
