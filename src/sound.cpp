@@ -49,10 +49,9 @@
 #import <AVFoundation/AVFoundation.h>
 #import <Foundation/Foundation.h>
 #endif
-#if __has_include(<alsa/asoundlib.h>)
-#include <alsa/asoundlib.h>
-#define NVGT_HAS_ALSA
-void quiet_alsa_handler(const char *file, int line, const char *function, int err, const char *fmt, ...) {}
+#ifdef __linux__
+#include <SDL3/SDL_loadso.h>
+static void quiet_alsa_handler(const char *file, int line, const char *function, int err, const char *fmt, ...) {}
 #endif
 using namespace std;
 
@@ -81,10 +80,13 @@ bool add_decoder(ma_decoding_backend_vtable *vtable) {
 	}
 }
 bool init_sound() {
-	if (g_soundsystem_initialized.test())
-		return true;
-	#ifdef NVGT_HAS_ALSA
-	snd_lib_error_set_handler(quiet_alsa_handler); // Try to avoid NVGT server applications that accidentally touch the sound system from causing headless Linux servers to print audio device enumeration errors to stdout.
+	if (g_soundsystem_initialized.test()) return true;
+	#ifdef __linux__
+	// Attempt to silence ALSA's verbose error output on headless servers; libasound may not be present so load it dynamically and ignore failure.
+	typedef int (*snd_lib_error_set_handler_t)(void (*)(const char*, int, const char*, int, const char*, ...));
+	if (SDL_SharedObject* alsa = SDL_LoadObject("libasound.so.2")) {
+		if (auto set_handler = (snd_lib_error_set_handler_t)SDL_LoadFunction(alsa, "snd_lib_error_set_handler")) set_handler(quiet_alsa_handler);
+	}
 	#endif
 	ma_context_config sound_context_config = ma_context_config_init();
 	#if defined(MA_APPLE_MOBILE)
