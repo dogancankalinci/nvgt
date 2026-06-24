@@ -21,3 +21,4 @@ class asIScriptEngine;
 void register_anticheat(asIScriptEngine* engine);
 void anticheat_check();
 void anticheat_deinit();
+bool is_vm();

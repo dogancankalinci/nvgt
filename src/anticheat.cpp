@@ -15,8 +15,20 @@
 #include <windows.h>
 #include <psapi.h>
 #include <winternl.h>
+#include <comdef.h>
+#include <Wbemidl.h>
+#elif defined(__APPLE__)
+#include <sys/sysctl.h>
+#include <unistd.h>
+#else
+#include <unistd.h>
 #endif
+#include <string>
 #include <string_view>
+#include <fstream>
+#include <algorithm>
+#include <cctype>
+#include <cstdio>
 #include <atomic>
 #include <angelscript.h>
 #include <cassert>
@@ -289,6 +301,147 @@ void handle_dll_loader_notification(ULONG reason, const PLDR_DLL_NOTIFICATION_DA
 }
 #endif
 
+// Virtual machine / analysis environment detection.
+// This mirrors the checks performed by the referenced Python "Detector.is_virtualized"
+// property (which is what the standalone is_vm() helper invokes): hardware/model
+// inspection, known guest-tool file artifacts, CPU hypervisor features and the
+// Windows Sandbox profile marker. Any single positive result reports a VM.
+namespace {
+// Case-insensitive substring search helper.
+bool icontains(const std::string& haystack, const std::string& needle) {
+	if (needle.empty()) return true;
+	auto it = std::search(haystack.begin(), haystack.end(), needle.begin(), needle.end(), [](char a, char b) {
+		return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b));
+	});
+	return it != haystack.end();
+}
+
+// Mirrors VMChecks.check_vm_hardware(): inspect the system model/hardware string for
+// known hypervisor vendor names.
+bool vm_check_hardware() {
+#ifdef _WIN32
+	// Equivalent of the Python WMI query for Win32_ComputerSystem.Model.
+	bool com_initialized = false;
+	HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+	if (SUCCEEDED(hr)) com_initialized = true;
+	else if (hr != RPC_E_CHANGED_MODE) return false; // COM unavailable; assume not a VM.
+	bool result = false;
+	IWbemLocator* locator = nullptr;
+	IWbemServices* services = nullptr;
+	IEnumWbemClassObject* enumerator = nullptr;
+	if (SUCCEEDED(CoCreateInstance(CLSID_WbemLocator, nullptr, CLSCTX_INPROC_SERVER, IID_IWbemLocator, reinterpret_cast<void**>(&locator))) && locator) {
+		if (SUCCEEDED(locator->ConnectServer(_bstr_t(L"ROOT\\CIMV2"), nullptr, nullptr, nullptr, 0, nullptr, nullptr, &services)) && services) {
+			CoSetProxyBlanket(services, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, nullptr, RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_NONE);
+			if (SUCCEEDED(services->ExecQuery(_bstr_t(L"WQL"), _bstr_t(L"SELECT Model FROM Win32_ComputerSystem"), WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY, nullptr, &enumerator)) && enumerator) {
+				IWbemClassObject* obj = nullptr;
+				ULONG returned = 0;
+				while (enumerator->Next(WBEM_INFINITE, 1, &obj, &returned) == S_OK && returned) {
+					VARIANT v;
+					VariantInit(&v);
+					if (SUCCEEDED(obj->Get(L"Model", 0, &v, nullptr, nullptr)) && v.vt == VT_BSTR && v.bstrVal) {
+						std::wstring wmodel(v.bstrVal);
+						std::string model(wmodel.begin(), wmodel.end());
+						for (const char* indicator : {"vmware", "virtualbox", "hyper-v", "kvm", "qemu"}) {
+							if (icontains(model, indicator)) { result = true; break; }
+						}
+					}
+					VariantClear(&v);
+					obj->Release();
+					if (result) break;
+				}
+				enumerator->Release();
+			}
+			services->Release();
+		}
+		locator->Release();
+	}
+	if (com_initialized) CoUninitialize();
+	return result;
+#elif defined(__APPLE__)
+	char buf[256] = {0};
+	size_t len = sizeof(buf) - 1;
+	if (sysctlbyname("hw.model", buf, &len, nullptr, 0) != 0) return false;
+	std::string model(buf);
+	return icontains(model, "VMware") || icontains(model, "VirtualBox");
+#else // Linux
+	// systemd-detect-virt is the most reliable modern method.
+	FILE* pipe = popen("systemd-detect-virt 2>/dev/null", "r");
+	if (!pipe) return false;
+	std::string output;
+	char buf[128];
+	while (fgets(buf, sizeof(buf), pipe)) output += buf;
+	int status = pclose(pipe);
+	// If the command isn't present or failed, treat as not a VM.
+	if (status != 0) return false;
+	// Trim whitespace.
+	output.erase(std::remove_if(output.begin(), output.end(), [](unsigned char c) { return std::isspace(c); }), output.end());
+	return !output.empty() && output != "none";
+#endif
+}
+
+// Mirrors VMChecks.check_vm_artifacts(): existence of known guest-tool install paths.
+bool vm_check_artifacts() {
+#ifdef _WIN32
+	const wchar_t* paths[] = {
+		L"%ProgramFiles%\\VMware\\VMware Tools",
+		L"%ProgramFiles%\\Oracle\\VirtualBox Guest Additions"
+	};
+	for (const wchar_t* raw : paths) {
+		wchar_t expanded[MAX_PATH * 2];
+		if (ExpandEnvironmentStringsW(raw, expanded, MAX_PATH * 2) && GetFileAttributesW(expanded) != INVALID_FILE_ATTRIBUTES)
+			return true;
+	}
+	return false;
+#elif defined(__APPLE__)
+	const char* paths[] = {"/Applications/VMware Fusion.app", "/Applications/VirtualBox.app"};
+	for (const char* p : paths)
+		if (access(p, F_OK) == 0) return true;
+	return false;
+#else
+	return false; // Python defines no Linux artifact paths.
+#endif
+}
+
+// Mirrors VMChecks.check_cpu_features(): CPU flags exposed by the hypervisor.
+bool vm_check_cpu_features() {
+#ifdef __APPLE__
+	char buf[1024] = {0};
+	size_t len = sizeof(buf) - 1;
+	if (sysctlbyname("machdep.cpu.features", buf, &len, nullptr, 0) != 0) return false;
+	return std::string(buf).find("VMM") != std::string::npos; // Virtual Machine Monitor flag.
+#elif !defined(_WIN32)
+	std::ifstream cpuinfo("/proc/cpuinfo");
+	if (!cpuinfo) return false;
+	std::string line;
+	while (std::getline(cpuinfo, line))
+		if (line.find("hypervisor") != std::string::npos) return true;
+	return false;
+#else
+	return false; // Python performs this check only on Linux/macOS.
+#endif
+}
+
+// Mirrors DebuggerChecks.check_sandbox_files(): the Windows Sandbox user profile marker.
+bool vm_check_sandbox_files() {
+#ifdef _WIN32
+	wchar_t profile[MAX_PATH * 2];
+	if (ExpandEnvironmentStringsW(L"%userprofile%", profile, MAX_PATH * 2)) {
+		std::wstring p(profile);
+		if (p.find(L"WDAGUtilityAccount") != std::wstring::npos) return true;
+	}
+	return false;
+#else
+	return false; // Windows-only check.
+#endif
+}
+} // namespace
+
+bool is_vm() {
+	// Equivalent of the Python is_virtualized property: True if any check matches.
+	// (check_mac_address and check_virtualbox_drivers are disabled in the reference and omitted.)
+	return vm_check_hardware() || vm_check_artifacts() || vm_check_cpu_features() || vm_check_sandbox_files();
+}
+
 void register_anticheat(asIScriptEngine* engine) {
 #ifdef _WIN32
 	mem_addr = VirtualAlloc(nullptr, 0x1000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
@@ -306,4 +459,5 @@ void register_anticheat(asIScriptEngine* engine) {
 #endif
 	engine->RegisterGlobalProperty("const atomic_flag speed_hack_detected", (void*)&speed_hack_detected);
 	engine->RegisterGlobalProperty("const atomic_flag memory_scan_detected", (void*)&memory_scan_detected);
+	engine->RegisterGlobalFunction("bool is_vm()", asFUNCTION(is_vm), asCALL_CDECL);
 }
