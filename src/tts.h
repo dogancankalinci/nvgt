@@ -107,7 +107,7 @@ std::shared_ptr<tts_engine> tts_create_engine(const std::string &name);
 void tts_set_preferred_engine(const std::string &name);
 
 struct voice_info {
-	tts_engine *engine;
+	std::string engine_name; // Which registered engine this voice belongs to; the engine object itself is created lazily (see tts_voice::active_engine).
 	int engine_voice_index;
 	std::string name;
 	std::string language;
@@ -115,7 +115,11 @@ struct voice_info {
 
 class tts_voice {
 	int RefCount;
-	std::vector<std::shared_ptr<tts_engine>> engines;
+	std::vector<std::string> engine_names; // Candidate engines this voice may draw from. Engine objects are NOT instantiated here; binding is deferred until a voice is actually selected/used.
+	std::shared_ptr<tts_engine> current_engine; // The single live (bound) engine backing the currently selected voice, or null if nothing has been used yet.
+	std::string current_engine_name;
+	enum voice_enum_state { VOICES_NONE, VOICES_DEFAULT_ONLY, VOICES_FULL }; // How much of the voice list has been built so far.
+	voice_enum_state voice_state; // Binding/enumeration is deferred: nothing until first use, then only the default engine for a plain speak(), and the full cross-engine list only when the script actually lists or selects voices.
 	std::vector<voice_info> voices;
 	int current_voice_index;
 	std::string current_language;
@@ -126,6 +130,9 @@ class tts_voice {
 	sound_queue fade_queue;
 	std::atomic_flag speaking;
 	voice_info *get_voice_info(int voice_index);
+	void ensure_default(); // Bind only the default/preferred engine and select its default voice (enough to speak); does not touch other engines.
+	void ensure_enumerated(); // Build the full flattened voice list across all engines (needed to list or select voices).
+	tts_engine *active_engine(); // Lazily (re)binds the engine for the current voice and returns it (or null on failure).
 	void *speak_to_pcm(const std::string &text, tts_audio_data** datablock); // Returns pointer to trimmed sample.
 	bool schedule(soundptr &s, bool interrupt);
 	void clear();

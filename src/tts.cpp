@@ -139,20 +139,15 @@ static void register_builtin_engines() {
 }
 
 // tts_voice implementation
-tts_voice::tts_voice(const string &engine_list) : RefCount(1), current_voice_index(-1) {
+tts_voice::tts_voice(const string &engine_list) : RefCount(1), voice_state(VOICES_NONE), current_voice_index(-1) {
 	if (engine_registry.empty()) register_builtin_engines();
 	speaking.clear();
-	vector<string> engine_names;
 	if (engine_list.empty()) engine_names = tts_get_engine_names();
 	else {
 		Poco::StringTokenizer tokens(engine_list, ",");
 		for (const string& e : tokens) engine_names.push_back(Poco::trim(e));
 	}
-	for (const string &name : engine_names) {
-		shared_ptr<tts_engine> engine = tts_create_engine(name);
-		if (engine) engines.push_back(engine);
-	}
-	refresh();
+	// Engines are bound lazily. We deliberately do NOT instantiate any engine here, nor enumerate voices yet: a tts_voice that is created but never used (e.g. a global object on a device where a screen reader handles speech instead) must never bind to any TTS engine. This is what avoids the "bind to every installed engine at startup" problem, including crashing on restricted engines like Sao Mai Myanmar TTS.
 }
 void tts_voice::AddRef() { asAtomicInc(RefCount); }
 void tts_voice::Release() { if (asAtomicDec(RefCount) < 1) delete this; }
@@ -160,17 +155,54 @@ voice_info *tts_voice::get_voice_info(int voice_index) {
 	if (voice_index < 0 || voice_index >= static_cast<int>(voices.size())) return nullptr;
 	return &voices[voice_index];
 }
-void *tts_voice::speak_to_pcm(const string &text, tts_audio_data** datablock) {
+void tts_voice::ensure_default() {
+	if (voice_state != VOICES_NONE) return;
+	// Fast path for the common case (speak with the default voice): bind ONLY the preferred/default engine and select its default voice, so we never instantiate or bind every installed engine just to start speaking. Full cross-engine enumeration is deferred until the script actually lists or selects voices.
+	string pref = preferred_engine_name;
+	if (pref.empty()) for (const string &name : engine_names) if (name != "fallback") { pref = name; break; }
+	if (pref.empty() && !engine_names.empty()) pref = engine_names.front();
+	shared_ptr<tts_engine> engine = pref.empty()? nullptr : tts_create_engine(pref);
+	if (!engine || !engine->is_available()) { refresh(); return; } // Preferred engine unavailable: fall back to a full search for anything usable.
+	voices.clear();
+	int default_voice = engine->get_current_voice();
+	int voice_count = engine->get_voice_count();
+	for (int i = 0; i < voice_count; i++) {
+		string lang = engine->get_voice_language(i);
+		if (current_language.empty() || lang == current_language) voices.emplace_back(voice_info{pref, i, engine->get_voice_name(i), lang});
+	}
+	if (voices.empty()) { refresh(); return; } // e.g. a language filter excluded everything from this engine; search the rest.
+	current_voice_index = 0;
+	for (size_t i = 0; i < voices.size(); i++) if (voices[i].engine_voice_index == default_voice) { current_voice_index = i; break; }
+	current_engine = engine;
+	current_engine_name = pref;
+	voice_state = VOICES_DEFAULT_ONLY;
+}
+void tts_voice::ensure_enumerated() { if (voice_state != VOICES_FULL) refresh(); }
+tts_engine *tts_voice::active_engine() {
 	voice_info *voice = get_voice_info(current_voice_index);
-	if (!datablock || !voice || voice->engine->get_pcm_generation_state() == PCM_UNSUPPORTED) return nullptr;
-	*datablock = voice->engine->speak_to_pcm(text);
+	if (!voice) return nullptr;
+	if (current_engine && current_engine_name == voice->engine_name) return current_engine.get();
+	// This is the ONLY place an engine is actually instantiated/bound. If the engine backing this voice can't be bound (e.g. a restricted engine), leave any previously-bound engine untouched and report failure so the caller can fall back.
+	shared_ptr<tts_engine> engine = tts_create_engine(voice->engine_name);
+	if (!engine || !engine->is_available()) return nullptr;
+	current_engine = engine;
+	current_engine_name = voice->engine_name;
+	current_engine->set_voice(voice->engine_voice_index);
+	return current_engine.get();
+}
+void *tts_voice::speak_to_pcm(const string &text, tts_audio_data** datablock) {
+	ensure_default();
+	tts_engine *engine = active_engine();
+	if (!datablock || !engine || engine->get_pcm_generation_state() == PCM_UNSUPPORTED) return nullptr;
+	*datablock = engine->speak_to_pcm(text);
 	if (!*datablock) return nullptr;
 	return tts_trim(*datablock);
 }
 bool tts_voice::speak(const string &text, bool interrupt) {
-	voice_info *voice = get_voice_info(current_voice_index);
-	if (!voice) return false;
-	if (voice->engine->get_pcm_generation_state() == PCM_PREFERRED) {
+	ensure_default();
+	tts_engine *engine = active_engine();
+	if (!engine) return false;
+	if (engine->get_pcm_generation_state() == PCM_PREFERRED) {
 		tts_audio_data* datablock = nullptr;
 		void *trimmed_data = speak_to_pcm(text, &datablock);
 		if (!trimmed_data || !datablock) return false;
@@ -182,7 +214,7 @@ bool tts_voice::speak(const string &text, bool interrupt) {
 		}
 		datablock->free();
 		return schedule(s, interrupt);
-	} else return voice->engine->speak(text, interrupt, false);
+	} else return engine->speak(text, interrupt, false);
 }
 bool tts_voice::speak_to_file(const string &filename, const string &text) {
 	tts_audio_data* datablock;
@@ -221,13 +253,14 @@ string tts_voice::speak_to_memory(const string &text) {
 	return output;
 }
 bool tts_voice::speak_wait(const string &text, bool interrupt) {
-	voice_info *voice = get_voice_info(current_voice_index);
-	if (!voice) return false;
-	if (voice->engine->get_pcm_generation_state() == PCM_PREFERRED) {
+	ensure_default();
+	tts_engine *engine = active_engine();
+	if (!engine) return false;
+	if (engine->get_pcm_generation_state() == PCM_PREFERRED) {
 		if (!speak(text, interrupt)) return false;
 		while (get_speaking()) wait(10);
 		return true;
-	} else return voice->engine->speak(text, interrupt, true);
+	} else return engine->speak(text, interrupt, true);
 }
 sound *tts_voice::speak_to_sound(const string &text) {
 	tts_audio_data* datablock;
@@ -245,50 +278,58 @@ sound *tts_voice::speak_to_sound(const string &text) {
 }
 float tts_voice::get_rate() {
 	float engine_min, engine_mid, engine_max;
-	voice_info *voice = get_voice_info(current_voice_index);
-	if (!voice || !voice->engine->get_rate_range(engine_min, engine_mid, engine_max)) return 0;
-	return fRound(range_convert_midpoint(voice->engine->get_rate(), engine_min, engine_mid, engine_max, -10.0f, 0.0f, 10.0f), 3);
+	ensure_default();
+	tts_engine *engine = active_engine();
+	if (!engine || !engine->get_rate_range(engine_min, engine_mid, engine_max)) return 0;
+	return fRound(range_convert_midpoint(engine->get_rate(), engine_min, engine_mid, engine_max, -10.0f, 0.0f, 10.0f), 3);
 }
 float tts_voice::get_pitch() {
 	float engine_min, engine_mid, engine_max;
-	voice_info *voice = get_voice_info(current_voice_index);
-	if (!voice || !voice->engine->get_pitch_range(engine_min, engine_mid, engine_max)) return 0;
-	return fRound(range_convert_midpoint(voice->engine->get_pitch(), engine_min, engine_mid, engine_max, -10.0f, 0.0f, 10.0f), 3);
+	ensure_default();
+	tts_engine *engine = active_engine();
+	if (!engine || !engine->get_pitch_range(engine_min, engine_mid, engine_max)) return 0;
+	return fRound(range_convert_midpoint(engine->get_pitch(), engine_min, engine_mid, engine_max, -10.0f, 0.0f, 10.0f), 3);
 }
 float tts_voice::get_volume() {
 	float engine_min, engine_mid, engine_max;
-	voice_info *voice = get_voice_info(current_voice_index);
-	if (!voice || !voice->engine->get_volume_range(engine_min, engine_mid, engine_max)) return 0;
-	return fRound(range_convert_midpoint(voice->engine->get_volume(), engine_min, engine_mid, engine_max, -100.0f, -50.0f, 0.0f), 3);
+	ensure_default();
+	tts_engine *engine = active_engine();
+	if (!engine || !engine->get_volume_range(engine_min, engine_mid, engine_max)) return 0;
+	return fRound(range_convert_midpoint(engine->get_volume(), engine_min, engine_mid, engine_max, -100.0f, -50.0f, 0.0f), 3);
 }
-int tts_voice::get_voice_count() { return voices.size(); }
+int tts_voice::get_voice_count() { ensure_enumerated(); return voices.size(); }
 string tts_voice::get_voice_name(int index) {
+	ensure_enumerated();
 	voice_info *voice = get_voice_info(index);
 	return voice? voice->name : "";
 }
-int tts_voice::get_current_voice() { return current_voice_index; }
+int tts_voice::get_current_voice() { ensure_enumerated(); return current_voice_index; }
 void tts_voice::set_rate(float rate) {
 	rate = clamp(rate, -10.0f, 10.0f);
 	float engine_min, engine_mid, engine_max;
-	voice_info *voice = get_voice_info(current_voice_index);
-	if (!voice || !voice->engine->get_rate_range(engine_min, engine_mid, engine_max)) return;
-	voice->engine->set_rate(range_convert_midpoint(rate, -10.0f, 0.0f, 10.0f, engine_min, engine_mid, engine_max));
+	ensure_default();
+	tts_engine *engine = active_engine();
+	if (!engine || !engine->get_rate_range(engine_min, engine_mid, engine_max)) return;
+	engine->set_rate(range_convert_midpoint(rate, -10.0f, 0.0f, 10.0f, engine_min, engine_mid, engine_max));
 }
 void tts_voice::set_pitch(float pitch) {
 	pitch = clamp(pitch, -10.0f, 10.0f);
 	float engine_min, engine_mid, engine_max;
-	voice_info *voice = get_voice_info(current_voice_index);
-	if (!voice || !voice->engine->get_pitch_range(engine_min, engine_mid, engine_max)) return;
-	voice->engine->set_pitch(range_convert_midpoint(pitch, -10.0f, 0.0f, 10.0f, engine_min, engine_mid, engine_max));
+	ensure_default();
+	tts_engine *engine = active_engine();
+	if (!engine || !engine->get_pitch_range(engine_min, engine_mid, engine_max)) return;
+	engine->set_pitch(range_convert_midpoint(pitch, -10.0f, 0.0f, 10.0f, engine_min, engine_mid, engine_max));
 }
 void tts_voice::set_volume(float volume) {
 	volume = clamp(volume, -100.0f, 0.0f);
 	float engine_min, engine_mid, engine_max;
-	voice_info *voice = get_voice_info(current_voice_index);
-	if (!voice || !voice->engine->get_volume_range(engine_min, engine_mid, engine_max)) return;
-	voice->engine->set_volume(range_convert_midpoint(volume, -100.0f, -50.0f, 0.0f, engine_min, engine_mid, engine_max));
+	ensure_default();
+	tts_engine *engine = active_engine();
+	if (!engine || !engine->get_volume_range(engine_min, engine_mid, engine_max)) return;
+	engine->set_volume(range_convert_midpoint(volume, -100.0f, -50.0f, 0.0f, engine_min, engine_mid, engine_max));
 }
 CScriptArray *tts_voice::list_voices() {
+	ensure_enumerated();
 	asIScriptContext *ctx = asGetActiveContext();
 	asIScriptEngine *engine = ctx->GetEngine();
 	asITypeInfo *arrayType = engine->GetTypeInfoByDecl("array<string>");
@@ -301,7 +342,8 @@ CScriptArray *tts_voice::list_voices() {
 	return array;
 }
 bool tts_voice::set_voice(int voice) {
-	if (voice < 0 || voice >= voices.size()) return false;
+	ensure_enumerated();
+	if (voice < 0 || voice >= static_cast<int>(voices.size())) return false;
 	voice_info *old_voice = get_voice_info(current_voice_index);
 	voice_info *new_voice = get_voice_info(voice);
 	if (!new_voice) return false;
@@ -311,8 +353,13 @@ bool tts_voice::set_voice(int voice) {
 		nvgt_pitch = get_pitch();
 		nvgt_volume = get_volume();
 	}
+	int previous_voice_index = current_voice_index;
 	current_voice_index = voice;
-	new_voice->engine->set_voice(new_voice->engine_voice_index);
+	// Binding happens here, lazily, via active_engine(). If the engine backing this voice can't be bound (e.g. a restricted Android engine like Sao Mai Myanmar TTS), stay on whatever was selected before and report failure rather than leaving the object pointing at an unusable voice.
+	if (!active_engine()) {
+		current_voice_index = previous_voice_index;
+		return false;
+	}
 	if (old_voice) {
 		set_rate(nvgt_rate);
 		set_pitch(nvgt_pitch);
@@ -321,71 +368,82 @@ bool tts_voice::set_voice(int voice) {
 	return true;
 }
 bool tts_voice::get_speaking() {
-	voice_info *voice = get_voice_info(current_voice_index);
-	if (!voice) return false;
-	if (voice->engine->get_pcm_generation_state() == PCM_PREFERRED) return speaking.test();
-	else return voice->engine->is_speaking();
+	if (!current_engine) return false; // Nothing has been bound/spoken yet.
+	if (current_engine->get_pcm_generation_state() == PCM_PREFERRED) return speaking.test();
+	else return current_engine->is_speaking();
 }
 bool tts_voice::refresh() {
-	string old_voice_name;
-	tts_engine* old_engine;
+	voice_state = VOICES_FULL;
+	string old_voice_name, old_engine_name;
 	bool had_voice = false;
-	if (current_voice_index >= 0 && current_voice_index < voices.size()) {
+	if (current_voice_index >= 0 && current_voice_index < static_cast<int>(voices.size())) {
 		old_voice_name = voices[current_voice_index].name;
-		old_engine = voices[current_voice_index].engine;
+		old_engine_name = voices[current_voice_index].engine_name;
 		had_voice = true;
 	}
 	voices.clear();
-	for (auto &engine : engines) {
-		if (!engine->is_available()) continue;
+	// Track each engine's own current/default voice index so we can preserve the platform default voice when picking an initial selection.
+	unordered_map<string, int> engine_default_voice;
+	for (const string &name : engine_names) {
+		// Reuse the already-bound engine if it's the one being enumerated; otherwise bind transiently just long enough to read its voice list, then release it when this shared_ptr goes out of scope. This keeps at most one engine bound at a time, and an engine that refuses to bind simply contributes no voices instead of taking down the whole list.
+		shared_ptr<tts_engine> engine = (current_engine && current_engine_name == name)? current_engine : tts_create_engine(name);
+		if (!engine || !engine->is_available()) continue;
+		engine_default_voice[name] = engine->get_current_voice();
 		int voice_count = engine->get_voice_count();
 		for (int i = 0; i < voice_count; i++) {
 			std::string lang = engine->get_voice_language(i);
-			if (current_language.empty() || lang == current_language) voices.emplace_back(voice_info{engine.get(), i, engine->get_voice_name(i), lang});
+			if (current_language.empty() || lang == current_language) voices.emplace_back(voice_info{name, i, engine->get_voice_name(i), lang});
 		}
 	}
-	if (had_voice && !voices.empty()) {
+	current_voice_index = -1;
+	if (had_voice) {
 		for (size_t i = 0; i < voices.size(); i++) {
-			if (voices[i].engine != old_engine || voices[i].name != old_voice_name) continue;
+			if (voices[i].engine_name != old_engine_name || voices[i].name != old_voice_name) continue;
 			current_voice_index = i;
-			return true;
+			break;
 		}
-	} else if (!voices.empty()) {
-		tts_engine* engine = nullptr;
-		if (!preferred_engine_name.empty()) {
-			for (auto& eng : engines) {
-				if (eng->get_engine_name() == preferred_engine_name) { engine = eng.get(); break; }
-			}
-		}
-		if (!engine) engine = engines.size() > 1 && engines[0]->get_engine_name() == "fallback"? &*engines[1] : &*engines[0];
-		int engine_voice_index = engine->get_current_voice();
-		for (current_voice_index = 0; engine_voice_index > -1 && current_voice_index < voices.size(); current_voice_index++) {
-			if (voices[current_voice_index].engine == engine && voices[current_voice_index].engine_voice_index == engine_voice_index) break;
-		}
-		if (current_voice_index >= static_cast<int>(voices.size())) current_voice_index = 0;
 	}
+	if (current_voice_index < 0 && !voices.empty()) {
+		// Pick an initial voice: prefer the configured/default engine, then the first non-fallback engine, then anything.
+		string chosen_engine;
+		if (!preferred_engine_name.empty()) {
+			for (const string &name : engine_names) if (name == preferred_engine_name) { chosen_engine = name; break; }
+		}
+		if (chosen_engine.empty()) for (const auto &v : voices) if (v.engine_name != "fallback") { chosen_engine = v.engine_name; break; }
+		if (chosen_engine.empty()) chosen_engine = voices.front().engine_name;
+		int target = engine_default_voice.count(chosen_engine)? engine_default_voice[chosen_engine] : -1;
+		current_voice_index = 0;
+		for (size_t i = 0; i < voices.size(); i++) {
+			if (voices[i].engine_name != chosen_engine) continue;
+			if (target < 0 || voices[i].engine_voice_index == target) { current_voice_index = i; break; }
+		}
+	}
+	// Maintain the "only the selected engine stays bound" invariant: if the live engine no longer backs the selected voice, release it (it'll be rebound lazily on next use).
+	voice_info *sel = get_voice_info(current_voice_index);
+	if (current_engine && (!sel || current_engine_name != sel->engine_name)) { current_engine.reset(); current_engine_name.clear(); }
 	return !voices.empty();
 }
 bool tts_voice::stop() {
-	voice_info *voice = get_voice_info(current_voice_index);
-	if (!voice) return false;
-	if (voice->engine->get_pcm_generation_state() == PCM_PREFERRED) {
+	if (!current_engine) return true; // Nothing bound yet, so nothing to stop.
+	if (current_engine->get_pcm_generation_state() == PCM_PREFERRED) {
 		unique_lock<mutex> lock(queue_mtx);
 		clear();
 		return true;
-	} else return voice->engine->stop();
+	} else return current_engine->stop();
 }
 string tts_voice::get_engine_name() {
+	ensure_default();
 	voice_info *voice = get_voice_info(current_voice_index);
-	return voice? voice->engine->get_engine_name() : "";
+	return voice? voice->engine_name : "";
 }
-int tts_voice::get_engine_count() { return engines.size(); }
+int tts_voice::get_engine_count() { return engine_names.size(); }
 string tts_voice::get_engine_name(int index) {
-	if (index < 0 || index >= engines.size()) return "";
-	return engines[index]->get_engine_name();
+	if (index < 0 || index >= static_cast<int>(engine_names.size())) return "";
+	return engine_names[index];
 }
 string tts_voice::get_voice_language(int index) {
-	if (index < 0 || index >= voices.size()) return "";
+	ensure_enumerated();
+	if (index < 0 || index >= static_cast<int>(voices.size())) return "";
 	return voices[index].language;
 }
 bool tts_voice::set_language(const string& language) {

@@ -119,12 +119,13 @@ public class TTS {
 	}
 
 	// Then, the instantiable object that interfaces directly with the Android TextToSpeech system.
-	private TextToSpeech tts;
+	private volatile TextToSpeech tts; // volatile: written on the constructor (game) thread, read from JNI/finalizer threads.
 	private float ttsPan = 0.0f;
 	private float ttsVolume = 1.0f;
 	private float ttsRate = 1.0f;
 	private float ttsPitch = 1.0f;
-	private boolean isTTSInitialized = false;
+	private volatile boolean isTTSInitialized = false;
+	private volatile int ttsInitStatus = TextToSpeech.ERROR; // status handed off from onInit (main thread) to the constructor via the latch.
 	private CountDownLatch isTTSInitializedLatch;
 	private String enginePackage;
 
@@ -144,43 +145,67 @@ public class TTS {
 		Context context = SDL.getContext();
 		enginePackage = enginePkg;
 		isTTSInitializedLatch = new CountDownLatch(1);
+		// IMPORTANT: onInit is dispatched on the *main* thread, while this constructor
+		// runs on the game/JNI thread. On fast devices (or when the TTS service is
+		// already bound) onInit can fire *before* the `tts = new TextToSpeech(...)`
+		// assignment below completes, so the listener must NEVER dereference `tts`
+		// (that caused the `setSpeechRate on null` NPE). The listener now only records
+		// the status and releases the latch; all engine setup that needs `tts` happens
+		// after await() on THIS thread, where `tts` is guaranteed assigned. As a bonus
+		// this moves the blocking setLanguage()/getVoices() binder calls off the main
+		// thread, eliminating the TTS-init ANRs.
 		OnInitListener listener = new OnInitListener() {
 			@Override
 			public void onInit(int status) {
-				if (status == TextToSpeech.SUCCESS) {
-					isTTSInitialized = true;
-					try {
-						tts.setLanguage(Locale.getDefault());
-					} catch (Exception e) {}
-					// Read system TTS rate and pitch from Android settings instead of hardcoding 1.0f
-					try {
-						int systemRate = Settings.Secure.getInt(context.getContentResolver(), "tts_default_rate", 100);
-						ttsRate = systemRate / 100.0f;
-					} catch (Exception e) {
-						ttsRate = 1.0f;
-					}
-					try {
-						int systemPitch = Settings.Secure.getInt(context.getContentResolver(), "tts_default_pitch", 100);
-						ttsPitch = systemPitch / 100.0f;
-					} catch (Exception e) {
-						ttsPitch = 1.0f;
-					}
-					tts.setSpeechRate(ttsRate);
-					tts.setPitch(ttsPitch);
-					AudioAttributes audioAttributes = new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build();
-					tts.setAudioAttributes(audioAttributes);
-					initializeVoices();
-					setupPcmListener();
-				} else
-					isTTSInitialized = false;
+				ttsInitStatus = status;
 				isTTSInitializedLatch.countDown();
 			}
 		};
-		tts = enginePackage != null ? new TextToSpeech(context, listener, enginePackage) : new TextToSpeech(context, listener);
 		try {
-			// Changed from 1000ms to 10 seconds to fix race condition on slower devices/cold starts
+			tts = enginePackage != null ? new TextToSpeech(context, listener, enginePackage) : new TextToSpeech(context, listener);
+		} catch (Exception e) {
+			// Some restricted engines (e.g. Sao Mai Myanmar TTS, org.saomaicenter.myanmartts) refuse to let third-party apps bind to their service and throw a SecurityException straight from the constructor. If we let that propagate it leaves a pending Java exception that aborts the process on the next JNI call. Swallow it here and mark this engine as unavailable instead.
+			tts = null;
+			isTTSInitialized = false;
+			isTTSInitializedLatch.countDown();
+			return;
+		}
+		try {
+			// Wait for the async onInit callback (10s for slower devices / cold starts).
 			isTTSInitializedLatch.await(10, TimeUnit.SECONDS);
 		} catch (InterruptedException e) {}
+		// Configure the engine here, on the constructor thread, where `tts` is non-null.
+		// Anything that touches `tts` and used to live in onInit is now done here.
+		if (ttsInitStatus == TextToSpeech.SUCCESS && tts != null) {
+			try {
+				tts.setLanguage(Locale.getDefault());
+			} catch (Exception e) {}
+			// Read system TTS rate and pitch from Android settings instead of hardcoding 1.0f
+			try {
+				int systemRate = Settings.Secure.getInt(context.getContentResolver(), "tts_default_rate", 100);
+				ttsRate = systemRate / 100.0f;
+			} catch (Exception e) {
+				ttsRate = 1.0f;
+			}
+			try {
+				int systemPitch = Settings.Secure.getInt(context.getContentResolver(), "tts_default_pitch", 100);
+				ttsPitch = systemPitch / 100.0f;
+			} catch (Exception e) {
+				ttsPitch = 1.0f;
+			}
+			try {
+				tts.setSpeechRate(ttsRate);
+				tts.setPitch(ttsPitch);
+				AudioAttributes audioAttributes = new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build();
+				tts.setAudioAttributes(audioAttributes);
+			} catch (Exception e) {}
+			// Must be true before initializeVoices(), which early-returns when !isActive().
+			isTTSInitialized = true;
+			initializeVoices();
+			setupPcmListener();
+		} else {
+			isTTSInitialized = false;
+		}
 	}
 	public TTS() { this(null); }
 

@@ -282,6 +282,8 @@ android_tts_engine::android_tts_engine(const std::string& enginePkg) : tts_engin
 	jstring jengine = engine_package.empty()? nullptr : env->NewStringUTF(engine_package.c_str());
 	TTSObj = env->NewObject(TTSClass, constructor, jengine);
 	if (jengine) env->DeleteLocalRef(jengine);
+	// A restricted engine (e.g. Sao Mai Myanmar TTS) can raise a SecurityException while binding to its service. Even though the Java side now swallows it, clear any pending Java exception here as well so it can never poison a subsequent JNI call and abort the process with "No pending exception expected".
+	if (env->ExceptionCheck()) env->ExceptionClear();
 	if (!TTSObj) throw std::runtime_error("Can't instantiate TTS object!");
 	midIsActive = env->GetMethodID(TTSClass, "isActive", "()Z");
 	midIsSpeaking = env->GetMethodID(TTSClass, "isSpeaking", "()Z");
@@ -310,7 +312,7 @@ android_tts_engine::android_tts_engine(const std::string& enginePkg) : tts_engin
 	midGetCurrentVoiceIndex = env->GetMethodID(TTSClass, "getCurrentVoiceIndex", "()I");
 	midGetEngineLabel = env->GetMethodID(TTSClass, "getEngineLabel", "()Ljava/lang/String;");
 	if (!midIsActive || !midIsSpeaking || !midSpeak || !midSilence || !midGetVoice || !midSetRate || !midSetPitch || !midSetPan || !midSetVolume || !midGetVoices || !midSetVoice || !midGetMaxSpeechInputLength || !midGetPitch || !midGetPan || !midGetRate || !midGetVolume || !midSpeakPcm || !midGetPcmSampleRate || !midGetPcmAudioFormat || !midGetPcmChannelCount || !midGetVoiceCount || !midGetVoiceName || !midGetVoiceLanguage || !midSetVoiceByIndex || !midGetCurrentVoiceIndex || !midGetEngineLabel) throw std::runtime_error("One or more methods on the TTS class could not be retrieved from JNI!");
-	if (!env->CallBooleanMethod(TTSObj, midIsActive)) throw std::runtime_error("TTS engine could not be initialized!");
+	if (!env->CallBooleanMethod(TTSObj, midIsActive)) { if (env->ExceptionCheck()) env->ExceptionClear(); throw std::runtime_error("TTS engine could not be initialized!"); }
 	jstring jlabel = (jstring)env->CallObjectMethod(TTSObj, midGetEngineLabel);
 	engine_label = from_jstring(env, jlabel);
 	if (jlabel) env->DeleteLocalRef(jlabel);
