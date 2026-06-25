@@ -123,6 +123,8 @@ class tts_voice {
 	std::vector<voice_info> voices;
 	int current_voice_index;
 	std::string current_language;
+	float nvgt_rate, nvgt_pitch, nvgt_volume; // This tts_voice's speech parameters in NVGT units. Owned here rather than in the engine, because engines are shared program-wide; they are pushed onto the shared engine right before each use.
+	bool params_initialized; // Whether nvgt_rate/pitch/volume have been seeded from the engine's system defaults yet.
 	typedef std::shared_ptr<sound> soundptr;
 	typedef std::queue<soundptr> sound_queue;
 	sound_queue queue;
@@ -132,7 +134,9 @@ class tts_voice {
 	voice_info *get_voice_info(int voice_index);
 	void ensure_default(); // Bind only the default/preferred engine and select its default voice (enough to speak); does not touch other engines.
 	void ensure_enumerated(); // Build the full flattened voice list across all engines (needed to list or select voices).
-	tts_engine *active_engine(); // Lazily (re)binds the engine for the current voice and returns it (or null on failure).
+	void ensure_params(); // Seed nvgt_rate/pitch/volume from the current engine's system defaults on first use.
+	void apply_params(tts_engine *engine); // Push this tts_voice's parameters onto the (shared) engine.
+	tts_engine *active_engine(); // Resolves the program-wide shared engine for the current voice, re-asserts our voice + parameters on it, and returns it (or null on failure).
 	void *speak_to_pcm(const std::string &text, tts_audio_data** datablock); // Returns pointer to trimmed sample.
 	bool schedule(soundptr &s, bool interrupt);
 	void clear();

@@ -133,13 +133,35 @@ shared_ptr<tts_engine> tts_create_engine(const string &name) {
 	catch (...) { return nullptr; }
 }
 
+// Program-wide cache of engine instances. Each engine is instantiated (and therefore bound to its OS service) AT MOST ONCE for the entire lifetime of the program; every tts_voice shares these instances. A failed bind is remembered as a null entry so it is never retried. We also capture each engine's pristine default speech parameters at first bind, so any tts_voice can initialize from the real system defaults even after another tts_voice has changed the shared engine's live state.
+struct shared_engine_entry {
+	shared_ptr<tts_engine> engine; // null if this engine could not be bound (cached so we never retry).
+	float init_rate = 0, init_pitch = 0, init_volume = 0; // captured at first bind, in NVGT units.
+};
+static unordered_map<string, shared_engine_entry> g_shared_engines;
+static shared_engine_entry& tts_get_shared_engine(const string &name) {
+	auto it = g_shared_engines.find(name);
+	if (it != g_shared_engines.end()) return it->second;
+	shared_engine_entry entry;
+	shared_ptr<tts_engine> engine = tts_create_engine(name);
+	if (engine && !engine->is_available()) engine = nullptr;
+	entry.engine = engine;
+	if (engine) {
+		float lo, mid, hi;
+		if (engine->get_rate_range(lo, mid, hi)) entry.init_rate = fRound(range_convert_midpoint(engine->get_rate(), lo, mid, hi, -10.0f, 0.0f, 10.0f), 3);
+		if (engine->get_pitch_range(lo, mid, hi)) entry.init_pitch = fRound(range_convert_midpoint(engine->get_pitch(), lo, mid, hi, -10.0f, 0.0f, 10.0f), 3);
+		if (engine->get_volume_range(lo, mid, hi)) entry.init_volume = fRound(range_convert_midpoint(engine->get_volume(), lo, mid, hi, -100.0f, -50.0f, 0.0f), 3);
+	}
+	return g_shared_engines.emplace(name, std::move(entry)).first->second;
+}
+
 static void register_builtin_engines() {
 	tts_engine_register("fallback", []() -> shared_ptr<tts_engine> { return make_shared<fallback_voice_engine>(); });
 	register_native_tts();
 }
 
 // tts_voice implementation
-tts_voice::tts_voice(const string &engine_list) : RefCount(1), voice_state(VOICES_NONE), current_voice_index(-1) {
+tts_voice::tts_voice(const string &engine_list) : RefCount(1), voice_state(VOICES_NONE), current_voice_index(-1), nvgt_rate(0), nvgt_pitch(0), nvgt_volume(0), params_initialized(false) {
 	if (engine_registry.empty()) register_builtin_engines();
 	speaking.clear();
 	if (engine_list.empty()) engine_names = tts_get_engine_names();
@@ -161,8 +183,9 @@ void tts_voice::ensure_default() {
 	string pref = preferred_engine_name;
 	if (pref.empty()) for (const string &name : engine_names) if (name != "fallback") { pref = name; break; }
 	if (pref.empty() && !engine_names.empty()) pref = engine_names.front();
-	shared_ptr<tts_engine> engine = pref.empty()? nullptr : tts_create_engine(pref);
-	if (!engine || !engine->is_available()) { refresh(); return; } // Preferred engine unavailable: fall back to a full search for anything usable.
+	shared_engine_entry *entry = pref.empty()? nullptr : &tts_get_shared_engine(pref);
+	if (!entry || !entry->engine || !entry->engine->is_available()) { refresh(); return; } // Preferred engine unavailable: fall back to a full search for anything usable.
+	tts_engine *engine = entry->engine.get();
 	voices.clear();
 	int default_voice = engine->get_current_voice();
 	int voice_count = engine->get_voice_count();
@@ -173,22 +196,41 @@ void tts_voice::ensure_default() {
 	if (voices.empty()) { refresh(); return; } // e.g. a language filter excluded everything from this engine; search the rest.
 	current_voice_index = 0;
 	for (size_t i = 0; i < voices.size(); i++) if (voices[i].engine_voice_index == default_voice) { current_voice_index = i; break; }
-	current_engine = engine;
+	current_engine = entry->engine;
 	current_engine_name = pref;
 	voice_state = VOICES_DEFAULT_ONLY;
 }
 void tts_voice::ensure_enumerated() { if (voice_state != VOICES_FULL) refresh(); }
+void tts_voice::ensure_params() {
+	if (params_initialized) return;
+	voice_info *voice = get_voice_info(current_voice_index);
+	if (!voice) return;
+	shared_engine_entry &entry = tts_get_shared_engine(voice->engine_name);
+	if (!entry.engine) return;
+	nvgt_rate = entry.init_rate;
+	nvgt_pitch = entry.init_pitch;
+	nvgt_volume = entry.init_volume;
+	params_initialized = true;
+}
+void tts_voice::apply_params(tts_engine *engine) {
+	float lo, mid, hi;
+	if (engine->get_rate_range(lo, mid, hi)) engine->set_rate(range_convert_midpoint(nvgt_rate, -10.0f, 0.0f, 10.0f, lo, mid, hi));
+	if (engine->get_pitch_range(lo, mid, hi)) engine->set_pitch(range_convert_midpoint(nvgt_pitch, -10.0f, 0.0f, 10.0f, lo, mid, hi));
+	if (engine->get_volume_range(lo, mid, hi)) engine->set_volume(range_convert_midpoint(nvgt_volume, -100.0f, -50.0f, 0.0f, lo, mid, hi));
+}
 tts_engine *tts_voice::active_engine() {
 	voice_info *voice = get_voice_info(current_voice_index);
 	if (!voice) return nullptr;
-	if (current_engine && current_engine_name == voice->engine_name) return current_engine.get();
-	// This is the ONLY place an engine is actually instantiated/bound. If the engine backing this voice can't be bound (e.g. a restricted engine), leave any previously-bound engine untouched and report failure so the caller can fall back.
-	shared_ptr<tts_engine> engine = tts_create_engine(voice->engine_name);
-	if (!engine || !engine->is_available()) return nullptr;
-	current_engine = engine;
+	// Resolve the program-wide shared engine (binds it at most once, ever). If it can't be bound (e.g. a restricted engine), report failure so the caller can fall back.
+	shared_engine_entry &entry = tts_get_shared_engine(voice->engine_name);
+	if (!entry.engine) return nullptr;
+	ensure_params();
+	current_engine = entry.engine;
 	current_engine_name = voice->engine_name;
-	current_engine->set_voice(voice->engine_voice_index);
-	return current_engine.get();
+	// Because engines are shared, another tts_voice may have left this one on a different voice/rate. Re-assert OUR voice and parameters every time before handing it back.
+	entry.engine->set_voice(voice->engine_voice_index);
+	apply_params(entry.engine.get());
+	return entry.engine.get();
 }
 void *tts_voice::speak_to_pcm(const string &text, tts_audio_data** datablock) {
 	ensure_default();
@@ -276,27 +318,9 @@ sound *tts_voice::speak_to_sound(const string &text) {
 	datablock->free();
 	return s;
 }
-float tts_voice::get_rate() {
-	float engine_min, engine_mid, engine_max;
-	ensure_default();
-	tts_engine *engine = active_engine();
-	if (!engine || !engine->get_rate_range(engine_min, engine_mid, engine_max)) return 0;
-	return fRound(range_convert_midpoint(engine->get_rate(), engine_min, engine_mid, engine_max, -10.0f, 0.0f, 10.0f), 3);
-}
-float tts_voice::get_pitch() {
-	float engine_min, engine_mid, engine_max;
-	ensure_default();
-	tts_engine *engine = active_engine();
-	if (!engine || !engine->get_pitch_range(engine_min, engine_mid, engine_max)) return 0;
-	return fRound(range_convert_midpoint(engine->get_pitch(), engine_min, engine_mid, engine_max, -10.0f, 0.0f, 10.0f), 3);
-}
-float tts_voice::get_volume() {
-	float engine_min, engine_mid, engine_max;
-	ensure_default();
-	tts_engine *engine = active_engine();
-	if (!engine || !engine->get_volume_range(engine_min, engine_mid, engine_max)) return 0;
-	return fRound(range_convert_midpoint(engine->get_volume(), engine_min, engine_mid, engine_max, -100.0f, -50.0f, 0.0f), 3);
-}
+float tts_voice::get_rate() { ensure_default(); ensure_params(); return fRound(nvgt_rate, 3); }
+float tts_voice::get_pitch() { ensure_default(); ensure_params(); return fRound(nvgt_pitch, 3); }
+float tts_voice::get_volume() { ensure_default(); ensure_params(); return fRound(nvgt_volume, 3); }
 int tts_voice::get_voice_count() { ensure_enumerated(); return voices.size(); }
 string tts_voice::get_voice_name(int index) {
 	ensure_enumerated();
@@ -305,28 +329,22 @@ string tts_voice::get_voice_name(int index) {
 }
 int tts_voice::get_current_voice() { ensure_enumerated(); return current_voice_index; }
 void tts_voice::set_rate(float rate) {
-	rate = clamp(rate, -10.0f, 10.0f);
-	float engine_min, engine_mid, engine_max;
 	ensure_default();
-	tts_engine *engine = active_engine();
-	if (!engine || !engine->get_rate_range(engine_min, engine_mid, engine_max)) return;
-	engine->set_rate(range_convert_midpoint(rate, -10.0f, 0.0f, 10.0f, engine_min, engine_mid, engine_max));
+	ensure_params(); // seed from defaults before we overwrite, so initialization can't clobber the new value
+	nvgt_rate = clamp(rate, -10.0f, 10.0f);
+	active_engine(); // push the new parameter onto the (shared) engine
 }
 void tts_voice::set_pitch(float pitch) {
-	pitch = clamp(pitch, -10.0f, 10.0f);
-	float engine_min, engine_mid, engine_max;
 	ensure_default();
-	tts_engine *engine = active_engine();
-	if (!engine || !engine->get_pitch_range(engine_min, engine_mid, engine_max)) return;
-	engine->set_pitch(range_convert_midpoint(pitch, -10.0f, 0.0f, 10.0f, engine_min, engine_mid, engine_max));
+	ensure_params();
+	nvgt_pitch = clamp(pitch, -10.0f, 10.0f);
+	active_engine();
 }
 void tts_voice::set_volume(float volume) {
-	volume = clamp(volume, -100.0f, 0.0f);
-	float engine_min, engine_mid, engine_max;
 	ensure_default();
-	tts_engine *engine = active_engine();
-	if (!engine || !engine->get_volume_range(engine_min, engine_mid, engine_max)) return;
-	engine->set_volume(range_convert_midpoint(volume, -100.0f, -50.0f, 0.0f, engine_min, engine_mid, engine_max));
+	ensure_params();
+	nvgt_volume = clamp(volume, -100.0f, 0.0f);
+	active_engine();
 }
 CScriptArray *tts_voice::list_voices() {
 	ensure_enumerated();
@@ -344,26 +362,14 @@ CScriptArray *tts_voice::list_voices() {
 bool tts_voice::set_voice(int voice) {
 	ensure_enumerated();
 	if (voice < 0 || voice >= static_cast<int>(voices.size())) return false;
-	voice_info *old_voice = get_voice_info(current_voice_index);
-	voice_info *new_voice = get_voice_info(voice);
-	if (!new_voice) return false;
-	int nvgt_rate = 0, nvgt_pitch = 0, nvgt_volume = 0;
-	if (old_voice) {
-		nvgt_rate = get_rate();
-		nvgt_pitch = get_pitch();
-		nvgt_volume = get_volume();
-	}
+	if (!get_voice_info(voice)) return false;
+	ensure_params(); // make sure our parameters are seeded before we possibly move to a different engine
 	int previous_voice_index = current_voice_index;
 	current_voice_index = voice;
-	// Binding happens here, lazily, via active_engine(). If the engine backing this voice can't be bound (e.g. a restricted Android engine like Sao Mai Myanmar TTS), stay on whatever was selected before and report failure rather than leaving the object pointing at an unusable voice.
+	// Binding happens here, lazily, via active_engine(), which also re-applies our (engine-independent) rate/pitch/volume to the newly selected engine. If the engine backing this voice can't be bound (e.g. a restricted Android engine like Sao Mai Myanmar TTS), stay on whatever was selected before and report failure rather than leaving the object pointing at an unusable voice.
 	if (!active_engine()) {
 		current_voice_index = previous_voice_index;
 		return false;
-	}
-	if (old_voice) {
-		set_rate(nvgt_rate);
-		set_pitch(nvgt_pitch);
-		set_volume(nvgt_volume);
 	}
 	return true;
 }
@@ -385,8 +391,8 @@ bool tts_voice::refresh() {
 	// Track each engine's own current/default voice index so we can preserve the platform default voice when picking an initial selection.
 	unordered_map<string, int> engine_default_voice;
 	for (const string &name : engine_names) {
-		// Reuse the already-bound engine if it's the one being enumerated; otherwise bind transiently just long enough to read its voice list, then release it when this shared_ptr goes out of scope. This keeps at most one engine bound at a time, and an engine that refuses to bind simply contributes no voices instead of taking down the whole list.
-		shared_ptr<tts_engine> engine = (current_engine && current_engine_name == name)? current_engine : tts_create_engine(name);
+		// Resolve through the program-wide cache: each engine is bound at most once, ever, and reused here. An engine that refuses to bind is cached as unavailable and simply contributes no voices instead of taking down the whole list.
+		tts_engine *engine = tts_get_shared_engine(name).engine.get();
 		if (!engine || !engine->is_available()) continue;
 		engine_default_voice[name] = engine->get_current_voice();
 		int voice_count = engine->get_voice_count();
@@ -418,7 +424,7 @@ bool tts_voice::refresh() {
 			if (target < 0 || voices[i].engine_voice_index == target) { current_voice_index = i; break; }
 		}
 	}
-	// Maintain the "only the selected engine stays bound" invariant: if the live engine no longer backs the selected voice, release it (it'll be rebound lazily on next use).
+	// If our cached active-engine pointer no longer matches the selected voice, drop it so the next use re-resolves through the shared cache. (This does not unbind anything; the program-wide cache keeps the engine alive.)
 	voice_info *sel = get_voice_info(current_voice_index);
 	if (current_engine && (!sel || current_engine_name != sel->engine_name)) { current_engine.reset(); current_engine_name.clear(); }
 	return !voices.empty();

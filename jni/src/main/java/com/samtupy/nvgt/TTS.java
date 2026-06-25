@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.ResolveInfo;
 import android.media.AudioManager;
 import android.media.AudioAttributes;
 import android.os.Bundle;
@@ -92,26 +93,25 @@ public class TTS {
 
 	public static List<String> getEnginePackages() {
 		Context context = SDL.getContext();
+		List<String> packages = new ArrayList<>();
 		try {
-			TextToSpeech tempTts = new TextToSpeech(context, status -> {});
-			List<TextToSpeech.EngineInfo> engines = tempTts.getEngines();
-			List<String> packages = new ArrayList<>();
-			if (engines != null) {
-				for (TextToSpeech.EngineInfo engine : engines) packages.add(engine.name);
+			// Enumerate installed TTS engines WITHOUT instantiating a TextToSpeech. Creating a TextToSpeech (even just to call getEngines()) eagerly binds to the default engine; doing it here AND in getDefaultEnginePackage() is exactly why the default engine was being bound twice at startup. queryIntentServices is a lightweight PackageManager query, gated by the <queries> TTS_SERVICE declaration in our manifest, so it returns the same engine list with no binding.
+			Intent intent = new Intent(TextToSpeech.Engine.INTENT_ACTION_TTS_SERVICE);
+			List<ResolveInfo> services = context.getPackageManager().queryIntentServices(intent, 0);
+			if (services != null) {
+				for (ResolveInfo info : services) {
+					if (info.serviceInfo != null && info.serviceInfo.packageName != null) packages.add(info.serviceInfo.packageName);
+				}
 			}
-			tempTts.shutdown();
-			return packages;
-		} catch (Exception e) {
-			return new ArrayList<>();
-		}
+		} catch (Exception e) {}
+		return packages;
 	}
 
 	public static String getDefaultEnginePackage() {
 		Context context = SDL.getContext();
 		try {
-			TextToSpeech tempTts = new TextToSpeech(context, status -> {});
-			String defaultEngine = tempTts.getDefaultEngine();
-			tempTts.shutdown();
+			// Read the user's default TTS engine straight from settings instead of constructing a TextToSpeech (which would bind to it). This is the same value TextToSpeech.getDefaultEngine() reports, minus the bind.
+			String defaultEngine = Settings.Secure.getString(context.getContentResolver(), "tts_default_synth");
 			return defaultEngine != null ? defaultEngine : "";
 		} catch (Exception e) {
 			return "";
