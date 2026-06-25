@@ -919,13 +919,20 @@ string GetExceptionInfo(asIScriptContext *ctx, bool showStack)
 	stringstream text;
 
 	const asIScriptFunction *function = ctx->GetExceptionFunction();
-	const char* section_name;
-	text << "in function: " << function->GetDeclaration() << "\n";
-	if(function->GetDeclaredAt(&section_name, nullptr, nullptr) >= 0)
-		text << "file: " << (section_name) << "\n";
+	const char* section_name = nullptr;
+	// AngelScript's getters may return null (function without a declaration, unnamed
+	// section, etc.). Streaming a null const char* runs strlen(NULL) and crashes, so
+	// every one of them must be guarded before it reaches operator<<.
+	if (function) {
+		const char* decl = function->GetDeclaration();
+		text << "in function: " << (decl ? decl : "{unknown}") << "\n";
+		if(function->GetDeclaredAt(&section_name, nullptr, nullptr) >= 0 && section_name)
+			text << "file: " << section_name << "\n";
+	}
 	if(ctx->GetExceptionLineNumber())
 		text << "line: " << ctx->GetExceptionLineNumber() << "\n";
-	text << "description: " << ctx->GetExceptionString() << "\n";
+	const char* desc = ctx->GetExceptionString();
+	text << "description: " << (desc ? desc : "{no description}") << "\n";
 
 	if( showStack && ctx->GetCallstackSize()>1)
 	{
@@ -937,13 +944,17 @@ string GetExceptionInfo(asIScriptContext *ctx, bool showStack)
 			{
 				if( function->GetFuncType() == asFUNC_SCRIPT )
 				{
-					const char* section_name;
-					if (function->GetDeclaredAt(&section_name, nullptr, nullptr) >= 0) text << (section_name) << " (" << ctx->GetLineNumber(n) << "): " << function->GetDeclaration() << "\n";
+					const char* section_name = nullptr;
+					if (function->GetDeclaredAt(&section_name, nullptr, nullptr) >= 0) {
+						const char* decl = function->GetDeclaration();
+						text << (section_name ? section_name : "{unknown}") << " (" << ctx->GetLineNumber(n) << "): " << (decl ? decl : "{unknown}") << "\n";
+					}
 				}
 				else
 				{
 					// The context is being reused by the application for a nested call
-					text << "{...application...}: " << function->GetDeclaration() << "\n";
+					const char* decl = function->GetDeclaration();
+					text << "{...application...}: " << (decl ? decl : "{unknown}") << "\n";
 				}
 			}
 			else
