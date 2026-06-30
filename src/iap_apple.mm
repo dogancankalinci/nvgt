@@ -242,29 +242,46 @@ static bool pkcs7_signature_valid(PKCS7* p7, time_t creation_time) {
 // file being absent or PKCS7-corrupt — cases where SKReceiptRefreshRequest can help.
 // It is NOT set for bundle ID / version / hash mismatches; those cannot be fixed by
 // a refresh and should result in an immediate failure.
-static std::vector<iap_receipt_entry> load_receipt_entries(bool* out_refresh_recommended = nullptr) {
+static std::vector<iap_receipt_entry> load_receipt_entries(bool* out_refresh_recommended = nullptr,
+                                                            bool* out_validation_failed = nullptr) {
 	if (out_refresh_recommended) *out_refresh_recommended = false;
+	if (out_validation_failed) *out_validation_failed = false;
 	std::vector<iap_receipt_entry> result;
 
 	NSURL*  url  = [[NSBundle mainBundle] appStoreReceiptURL];
 	NSData* data = url ? [NSData dataWithContentsOfURL:url] : nil;
 	if (!data || data.length == 0) {
+		{
+			std::lock_guard<std::mutex> lk(g_iap.mtx);
+			g_iap.last_error = "Receipt validation: no receipt file present at appStoreReceiptURL";
+		}
 		if (out_refresh_recommended) *out_refresh_recommended = true;
+		if (out_validation_failed) *out_validation_failed = true;
 		return result;
 	}
 
 	const unsigned char* ptr = (const unsigned char*)data.bytes;
 	PKCS7* p7 = d2i_PKCS7(nullptr, &ptr, (long)data.length);
 	if (!p7) {
+		{
+			std::lock_guard<std::mutex> lk(g_iap.mtx);
+			g_iap.last_error = "Receipt validation: receipt file is not a valid PKCS7 container (d2i_PKCS7 failed)";
+		}
 		ERR_clear_error();
 		if (out_refresh_recommended) *out_refresh_recommended = true;
+		if (out_validation_failed) *out_validation_failed = true;
 		return result;
 	}
 
 	if (!PKCS7_type_is_signed(p7) || !p7->d.sign || !p7->d.sign->contents ||
 	    !PKCS7_type_is_data(p7->d.sign->contents) || !p7->d.sign->contents->d.data) {
+		{
+			std::lock_guard<std::mutex> lk(g_iap.mtx);
+			g_iap.last_error = "Receipt validation: PKCS7 container is not signed-data as expected";
+		}
 		PKCS7_free(p7); ERR_clear_error();
 		if (out_refresh_recommended) *out_refresh_recommended = true;
+		if (out_validation_failed) *out_validation_failed = true;
 		return result;
 	}
 
@@ -277,7 +294,13 @@ static std::vector<iap_receipt_entry> load_receipt_entries(bool* out_refresh_rec
 
 	int tag; const uint8_t* val; size_t vlen;
 	if (!asn1_next(p, end, &tag, &val, &vlen) || tag != 0x31 /*SET*/) {
-		PKCS7_free(p7); ERR_clear_error(); return result;
+		{
+			std::lock_guard<std::mutex> lk(g_iap.mtx);
+			g_iap.last_error = "Receipt validation: outer ASN.1 SET could not be parsed";
+		}
+		PKCS7_free(p7); ERR_clear_error();
+		if (out_validation_failed) *out_validation_failed = true;
+		return result;
 	}
 	p = val; end = val + vlen;
 
@@ -325,8 +348,13 @@ static std::vector<iap_receipt_entry> load_receipt_entries(bool* out_refresh_rec
 	// A signature failure means the receipt file is corrupt or tampered; a refresh may fix it.
 	time_t creation_time = parse_receipt_date(creation_date);
 	if (!pkcs7_signature_valid(p7, creation_time)) {
+		{
+			std::lock_guard<std::mutex> lk(g_iap.mtx);
+			g_iap.last_error = "Receipt validation: PKCS7 signature invalid or not signed by Apple";
+		}
 		PKCS7_free(p7); ERR_clear_error();
 		if (out_refresh_recommended) *out_refresh_recommended = true;
+		if (out_validation_failed) *out_validation_failed = true;
 		return {};
 	}
 	PKCS7_free(p7);
@@ -335,21 +363,38 @@ static std::vector<iap_receipt_entry> load_receipt_entries(bool* out_refresh_rec
 	NSString* expected_bid_ns = [[NSBundle mainBundle] bundleIdentifier];
 	std::string expected_bid = expected_bid_ns ? [expected_bid_ns UTF8String] : "";
 	if (!expected_bid.empty() && bundle_id != expected_bid) {
-		ERR_clear_error(); return {};
+		{
+			std::lock_guard<std::mutex> lk(g_iap.mtx);
+			g_iap.last_error = "Receipt validation: bundle ID mismatch (receipt=\"" + bundle_id
+			                  + "\", expected=\"" + expected_bid + "\")";
+		}
+		ERR_clear_error();
+		if (out_validation_failed) *out_validation_failed = true;
+		return {};
 	}
 
 	// Step 3: App version (CFBundleVersion build string) must match.
 	NSString* expected_ver_ns = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleVersion"];
 	std::string expected_ver = expected_ver_ns ? [expected_ver_ns UTF8String] : "";
 	if (!expected_ver.empty() && app_version != expected_ver) {
-		ERR_clear_error(); return {};
+		{
+			std::lock_guard<std::mutex> lk(g_iap.mtx);
+			g_iap.last_error = "Receipt validation: app version mismatch (receipt=\"" + app_version
+			                  + "\", expected CFBundleVersion=\"" + expected_ver + "\")";
+		}
+		ERR_clear_error();
+		if (out_validation_failed) *out_validation_failed = true;
+		return {};
 	}
 
 	// Step 4: Device SHA-1 hash — SHA1(deviceId || opaqueValue || bundleIdRaw).
 	if (!sha1_hash.empty() && sha1_hash.size() == SHA_DIGEST_LENGTH &&
 	    !opaque_value.empty() && !bundle_id_raw.empty()) {
 		std::vector<uint8_t> dev_id = device_identifier_bytes();
-		if (!dev_id.empty()) {
+		if (dev_id.empty()) {
+			std::lock_guard<std::mutex> lk(g_iap.mtx);
+			g_iap.last_error = "Receipt validation: could not obtain device identifier for SHA-1 check (skipped)";
+		} else {
 			uint8_t computed[SHA_DIGEST_LENGTH];
 			SHA_CTX ctx;
 			SHA1_Init(&ctx);
@@ -358,7 +403,14 @@ static std::vector<iap_receipt_entry> load_receipt_entries(bool* out_refresh_rec
 			SHA1_Update(&ctx, bundle_id_raw.data(), bundle_id_raw.size());
 			SHA1_Final(computed, &ctx);
 			if (memcmp(computed, sha1_hash.data(), SHA_DIGEST_LENGTH) != 0) {
-				ERR_clear_error(); return {};
+				{
+					std::lock_guard<std::mutex> lk(g_iap.mtx);
+					g_iap.last_error = "Receipt validation: SHA-1 device hash mismatch "
+					                  "(computed hash does not match receipt's field-5 hash)";
+				}
+				ERR_clear_error();
+				if (out_validation_failed) *out_validation_failed = true;
+				return {};
 			}
 		}
 	}
@@ -427,8 +479,15 @@ static bool receipt_contains(const std::vector<iap_receipt_entry>& entries,
 // Validates and finishes one Purchased/Restored transaction against a receipt that
 // has already passed all structural checks.  Shared by the normal transaction path
 // and the post-refresh retry path.
+//
+// validationFailed indicates load_receipt_entries already failed a structural check
+// (signature, bundle ID, version, or SHA-1) and already set a specific g_iap.last_error
+// describing exactly why. In that case this method must NOT overwrite it with the
+// generic "not found" message below — doing so would hide the real cause from
+// iap_get_last_error().
 - (void)finishValidatedTransaction:(SKPaymentTransaction*)tx
-                           receipt:(const std::vector<iap_receipt_entry>&)receipt {
+                           receipt:(const std::vector<iap_receipt_entry>&)receipt
+                  validationFailed:(bool)validationFailed {
 	bool is_restored = (tx.transactionState == SKPaymentTransactionStateRestored);
 	iap_purchase_info info;
 	info.product_id = [tx.payment.productIdentifier UTF8String];
@@ -443,8 +502,14 @@ static bool receipt_contains(const std::vector<iap_receipt_entry>& entries,
 	if (!receipt_contains(receipt, info.product_id, receipt_tx)) {
 		info.state = IAP_PURCHASE_FAILED;
 		std::lock_guard<std::mutex> lk(g_iap.mtx);
-		g_iap.last_error = "Receipt validation failed: " + info.product_id
-		                 + " not found in App Store receipt";
+		if (!validationFailed) {
+			// Receipt passed every structural check but this specific product/transaction
+			// pair genuinely isn't present in it yet.
+			g_iap.last_error = "Receipt validation failed: " + info.product_id
+			                 + " not found in App Store receipt";
+		}
+		// else: load_receipt_entries already set the precise reason (signature,
+		// bundle ID, version, or SHA-1 mismatch) — leave g_iap.last_error untouched.
 		g_iap.pending_purchases.push_back(info);
 	} else {
 		std::lock_guard<std::mutex> lk(g_iap.mtx);
@@ -465,24 +530,29 @@ static bool receipt_contains(const std::vector<iap_receipt_entry>& entries,
 	[self.pendingReceiptTransactions removeAllObjects];
 
 	bool refresh_recommended = false;
-	const std::vector<iap_receipt_entry> receipt = load_receipt_entries(&refresh_recommended);
+	bool validation_failed = false;
+	const std::vector<iap_receipt_entry> receipt = load_receipt_entries(&refresh_recommended, &validation_failed);
 
 	for (SKPaymentTransaction* tx in deferred) {
 		if (refresh_recommended) {
 			// Receipt still unusable after refresh — fail immediately rather than
 			// looping.  The queue must not be left blocked indefinitely.
+			// load_receipt_entries already set a precise g_iap.last_error describing
+			// the exact reason — do not overwrite it with a generic message.
 			iap_purchase_info info;
 			info.product_id     = [tx.payment.productIdentifier UTF8String];
 			info.transaction_id = tx.transactionIdentifier ? [tx.transactionIdentifier UTF8String] : "";
 			info.state          = IAP_PURCHASE_FAILED;
 			{
 				std::lock_guard<std::mutex> lk(g_iap.mtx);
-				g_iap.last_error = "Receipt still invalid after refresh: " + info.product_id;
+				if (!validation_failed) {
+					g_iap.last_error = "Receipt still invalid after refresh: " + info.product_id;
+				}
 				g_iap.pending_purchases.push_back(info);
 			}
 			[[SKPaymentQueue defaultQueue] finishTransaction:tx];
 		} else {
-			[self finishValidatedTransaction:tx receipt:receipt];
+			[self finishValidatedTransaction:tx receipt:receipt validationFailed:validation_failed];
 		}
 	}
 	[deferred release];
@@ -567,7 +637,8 @@ static bool receipt_contains(const std::vector<iap_receipt_entry>& entries,
 	// SKReceiptRefreshRequest (missing file or PKCS7-corrupt), NOT for hard
 	// mismatches (bundle ID, version, SHA-1) which a refresh cannot fix.
 	bool refresh_recommended = false;
-	const std::vector<iap_receipt_entry> receipt = load_receipt_entries(&refresh_recommended);
+	bool validation_failed = false;
+	const std::vector<iap_receipt_entry> receipt = load_receipt_entries(&refresh_recommended, &validation_failed);
 
 	for (SKPaymentTransaction* tx in transactions) {
 		switch (tx.transactionState) {
@@ -583,7 +654,7 @@ static bool receipt_contains(const std::vector<iap_receipt_entry>& entries,
 					break;
 				}
 
-				[self finishValidatedTransaction:tx receipt:receipt];
+				[self finishValidatedTransaction:tx receipt:receipt validationFailed:validation_failed];
 				break;
 			}
 			case SKPaymentTransactionStateFailed: {
