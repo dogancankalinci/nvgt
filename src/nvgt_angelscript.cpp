@@ -1055,7 +1055,7 @@ int PragmaCallback(const string &pragmaText, CScriptBuilder &builder, void* /*us
 		int space = ns.rfind(" ");
 		if (space == string::npos) return -1;
 		g_system_namespaces[ns.substr(0, space)] = ns.substr(space + 1);
-	} else if (cleanText.starts_with("microphone_usage_description ")) config.setString("build.NSMicrophoneUsageDescription", cleanText.substr(29));
+	} else if (cleanText.starts_with("microphone_usage_description ")) config.setString("build.microphone_usage_description", cleanText.substr(29));
 	else if (cleanText == "console") config.setString("build.windows_console", "");
 	else if (cleanText == "no_auto_chdir") config.setString("app.no_auto_chdir", "");
 	else return -1;

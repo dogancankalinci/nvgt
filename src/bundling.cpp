@@ -545,7 +545,7 @@ protected:
 		plist_t plist_env_block = plist_new_dict();
 		plist_dict_set_item(plist_env_block, "MACOS_BUNDLED_APP", plist_new_string("1"));
 		plist_dict_set_item(plist, "LSEnvironment", plist_env_block);
-		string mic_usage = config.getString("build.NSMicrophoneUsageDescription", "");
+		string mic_usage = config.getString("build.microphone_usage_description", "");
 		if (!mic_usage.empty()) plist_dict_set_item(plist, "NSMicrophoneUsageDescription", plist_new_string(mic_usage.c_str()));
 		char* plist_xml;
 		uint32_t plist_len;
@@ -791,7 +791,7 @@ plist_dict_set_item(plist, "DTPlatformName", plist_new_string("iphoneos"));
 		plist_array_append_item(device_family, plist_new_uint(2));
 		plist_dict_set_item(plist, "UIDeviceFamily", device_family);
 		plist_dict_set_item(plist, "UILaunchScreen", plist_new_dict());
-		string mic_usage = config.getString("build.NSMicrophoneUsageDescription", "");
+		string mic_usage = config.getString("build.microphone_usage_description", "");
 		if (!mic_usage.empty()) plist_dict_set_item(plist, "NSMicrophoneUsageDescription", plist_new_string(mic_usage.c_str()));
 		char* plist_xml;
 		uint32_t plist_len;
