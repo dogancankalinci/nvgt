@@ -683,94 +683,41 @@ protected:
 		// App Store requires DTPlatformName (ITMS-90507) and, for 64-bit binaries, the arm64
 		// device capability (ITMS-90502).
 		plist_dict_set_item(plist, "DTPlatformName", plist_new_string("iphoneos"));
-plist_dict_set_item(plist, "DTPlatformName", plist_new_string("iphoneos"));
-
-// DT* metadata keys — App Store Connect raises ITMS-90534 ("unsupported SDK or
-// Xcode version") when these are absent, because it interprets the gap as a
-// non-Xcode or beta-Xcode build. Xcode.app injects them automatically; NVGT
-// must supply them explicitly since it bundles without invoking Xcode.
-//
-// Resolution order per value:
-//   1. build.ios_dt_* config keys  (user override, highest priority)
-//   2. live xcrun / xcodebuild     (macOS build host only)
-//   3. hard-coded defaults         (cross-compile from Windows/Linux)
-//
-// Defaults target Xcode 26.4.1 / iOS 26.4 SDK (GitHub macos-26-arm64 runner,
-// May 2026). Bump them when App Store Connect mandates a newer SDK minimum.
-{
-    string dt_compiler       = config.getString("build.ios_dt_compiler",        "com.apple.compilers.llvm.clang.1_0");
-    string dt_xcode          = config.getString("build.ios_dt_xcode",           "");
-    string dt_xcode_build    = config.getString("build.ios_dt_xcode_build",     "");
-    string dt_platform_build = config.getString("build.ios_dt_platform_build",  "");
-    string dt_platform_ver   = config.getString("build.ios_dt_platform_version","");
-    string dt_sdk_build      = config.getString("build.ios_dt_sdk_build",       "");
-    string dt_sdk_name       = config.getString("build.ios_dt_sdk_name",        "");
-    string build_machine_os  = config.getString("build.ios_build_machine_os",   "");
-
-#ifdef __APPLE__
-    // On a macOS build host we can query Xcode directly for precise values.
-    auto xcrun_sdk = [](const string& flag) -> string {
-        string sout, serr;
-        system_command("xcrun", {"--sdk", "iphoneos", flag}, sout, serr);
-        while (!sout.empty() && (sout.back() == '\n' || sout.back() == '\r')) sout.pop_back();
-        return sout;
-    };
-    auto xcode_info = [](bool want_build) -> string {
-        string sout, serr;
-        system_command("xcodebuild", {"-version"}, sout, serr);
-        // sout format: "Xcode 26.4.1\nBuild version 17E192\n"
-        if (want_build) {
-            size_t p = sout.find("Build version ");
-            if (p == string::npos) return "";
-            string bv = sout.substr(p + 14);
-            while (!bv.empty() && (bv.back() == '\n' || bv.back() == '\r')) bv.pop_back();
-            return bv;
-        }
-        size_t p = sout.find("Xcode ");
-        if (p == string::npos) return "";
-        string ver = sout.substr(p + 6, sout.find('\n', p) - p - 6);
-        while (!ver.empty() && ver.back() == '\r') ver.pop_back();
-        // "26.4.1" -> numeric 2641 (same scheme as Xcode 15.0.1 -> 1501, 14.2 -> 1420)
-        int maj = 0, min = 0, pat = 0;
-        sscanf(ver.c_str(), "%d.%d.%d", &maj, &min, &pat);
-        return std::to_string(maj * 100 + min * 10 + pat);
-    };
-    if (dt_xcode.empty())          dt_xcode          = xcode_info(false);
-    if (dt_xcode_build.empty())    dt_xcode_build    = xcode_info(true);
-    if (dt_platform_build.empty()) dt_platform_build = xcrun_sdk("--show-sdk-build-version");
-    if (dt_platform_ver.empty())   dt_platform_ver   = xcrun_sdk("--show-sdk-version");
-    if (dt_sdk_build.empty())      dt_sdk_build      = dt_platform_build;
-    if (dt_sdk_name.empty() && !dt_platform_ver.empty())
-        dt_sdk_name = "iphoneos" + dt_platform_ver;
-    if (build_machine_os.empty()) {
-        string sout, serr;
-        system_command("sw_vers", {"-buildVersion"}, sout, serr);
-        while (!sout.empty() && (sout.back() == '\n' || sout.back() == '\r')) sout.pop_back();
-        build_machine_os = sout;
-    }
-#endif
-
-    // Hard-coded fallbacks for cross-compilation (Windows / Linux build host).
-    if (dt_xcode.empty())          dt_xcode          = "2641";         // Xcode 26.4.1
-    if (dt_xcode_build.empty())    dt_xcode_build    = "17E192";       // Xcode 26.4 build
-    if (dt_platform_ver.empty())   dt_platform_ver   = "26.4";
-    // DTPlatformBuild is the iOS SDK's own build ID, separate from DTXcodeBuild.
-    // Apple validates key presence, not exact value, so DTXcodeBuild is an
-    // acceptable stand-in when xcrun is unavailable.
-    if (dt_platform_build.empty()) dt_platform_build = dt_xcode_build;
-    if (dt_sdk_build.empty())      dt_sdk_build      = dt_platform_build;
-    if (dt_sdk_name.empty())       dt_sdk_name       = "iphoneos" + dt_platform_ver;
-
-    if (!build_machine_os.empty())
-        plist_dict_set_item(plist, "BuildMachineOSBuild", plist_new_string(build_machine_os.c_str()));
-    plist_dict_set_item(plist, "DTCompiler",          plist_new_string(dt_compiler.c_str()));
-    plist_dict_set_item(plist, "DTPlatformBuild",     plist_new_string(dt_platform_build.c_str()));
-    plist_dict_set_item(plist, "DTPlatformVersion",   plist_new_string(dt_platform_ver.c_str()));
-    plist_dict_set_item(plist, "DTSDKBuild",          plist_new_string(dt_sdk_build.c_str()));
-    plist_dict_set_item(plist, "DTSDKName",           plist_new_string(dt_sdk_name.c_str()));
-    plist_dict_set_item(plist, "DTXcode",             plist_new_string(dt_xcode.c_str()));
-    plist_dict_set_item(plist, "DTXcodeBuild",        plist_new_string(dt_xcode_build.c_str()));
-}
+		{
+			// DT* build-environment keys are HARD-CODED here — NOT read from config, NOT derived
+			// from the local Xcode — so every bundle is stamped with the exact GM (public,
+			// non-beta) Xcode that built the SHIPPED iOS stub (nvgt_ios*.bin). NVGT ships a
+			// prebuilt stub, so the developer's local Xcode (old, absent, or a beta/RC) is
+			// irrelevant and MUST NOT drive these values: App Store review rejects apps whose
+			// build environment looks non-GM, and a plist-vs-stub mismatch is worse. This holds
+			// on every host, macOS included (many NVGT users' Macs have an old Xcode or none).
+			// Verified 2026-07-01 from a real minimal app built with GM Xcode 26.5 (the GitHub
+			// macos-26 runner's DEFAULT Xcode): xcodebuild Build 17F42, iOS SDK 26.5, SDK build
+			// 23F73. Xcode 26.5 is a public GM (released May 2026), not a beta/RC, and macos-26's
+			// default Xcode IS 26.5, so a stub built there already matches these values.
+			// Bump ALL of these in lockstep whenever the stub is rebuilt with a newer GM Xcode.
+			const string dt_compiler       = "com.apple.compilers.llvm.clang.1_0";
+			const string dt_xcode          = "2650";          // Xcode 26.5
+			const string dt_xcode_build    = "17F42";         // xcodebuild Build version
+			const string dt_platform_ver   = "26.5";          // iOS SDK version (not the Xcode string)
+			const string dt_platform_build = "23F73";         // iOS SDK build (DISTINCT from DTXcodeBuild)
+			const string dt_sdk_build      = "23F73";         // same SDK build id
+			const string dt_sdk_name       = "iphoneos26.5";
+			// BuildMachineOSBuild is also HARD-CODED (not read from the local Mac via sw_vers):
+			// a developer bundling on their own Mac would otherwise stamp whatever macOS build
+			// they happen to run, which need not match the runner that actually compiled the
+			// stub. Value = the macOS build of the GitHub macos-26 runner that builds the stub
+			// (verified 2026-07-01 from a real Xcode-26.5 app on that runner). Bump with the DTs.
+			const string dt_build_machine  = "25E246";
+			plist_dict_set_item(plist, "BuildMachineOSBuild", plist_new_string(dt_build_machine.c_str()));
+			plist_dict_set_item(plist, "DTCompiler",          plist_new_string(dt_compiler.c_str()));
+			plist_dict_set_item(plist, "DTPlatformBuild",     plist_new_string(dt_platform_build.c_str()));
+			plist_dict_set_item(plist, "DTPlatformVersion",   plist_new_string(dt_platform_ver.c_str()));
+			plist_dict_set_item(plist, "DTSDKBuild",          plist_new_string(dt_sdk_build.c_str()));
+			plist_dict_set_item(plist, "DTSDKName",           plist_new_string(dt_sdk_name.c_str()));
+			plist_dict_set_item(plist, "DTXcode",             plist_new_string(dt_xcode.c_str()));
+			plist_dict_set_item(plist, "DTXcodeBuild",        plist_new_string(dt_xcode_build.c_str()));
+		}
 		plist_t req_caps = plist_new_array();
 		plist_array_append_item(req_caps, plist_new_string("arm64"));
 		plist_dict_set_item(plist, "UIRequiredDeviceCapabilities", req_caps);
@@ -793,6 +740,14 @@ plist_dict_set_item(plist, "DTPlatformName", plist_new_string("iphoneos"));
 		plist_dict_set_item(plist, "UILaunchScreen", plist_new_dict());
 		string mic_usage = config.getString("build.microphone_usage_description", "");
 		if (!mic_usage.empty()) plist_dict_set_item(plist, "NSMicrophoneUsageDescription", plist_new_string(mic_usage.c_str()));
+		// ITMS-90683: SDL3's camera subsystem links AVCaptureDevice, so Apple's static
+		// analysis REQUIRES NSCameraUsageDescription on upload even though the game never
+		// opens a camera. Default ON with generic engine-appropriate text; a developer can
+		// override via build.camera_usage_description, or set it empty to omit (e.g. a custom
+		// SDL build with -DSDL_CAMERA=OFF). NSBluetoothAlwaysUsageDescription is only a
+		// non-blocking warning, so it is intentionally not set.
+		string camera_usage = config.getString("build.camera_usage_description", "This app is built with a game engine that includes camera support. The camera is only accessed if a game feature explicitly uses it.");
+		if (!camera_usage.empty()) plist_dict_set_item(plist, "NSCameraUsageDescription", plist_new_string(camera_usage.c_str()));
 		char* plist_xml;
 		uint32_t plist_len;
 		if (plist_to_xml(plist, &plist_xml, &plist_len) != PLIST_ERR_SUCCESS) throw Exception("Unable to create Info.plist");
