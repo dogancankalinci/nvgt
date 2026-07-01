@@ -161,12 +161,12 @@ static iap_receipt_entry parse_in_app_value(const uint8_t* data, size_t len) {
 	const uint8_t *p = data, *end = data + len;
 	int tag; const uint8_t* val; size_t vlen;
 
-	if (!asn1_next(p, end, &tag, &val, &vlen) || tag != 0x31 /*SET*/) return e;
+	if (!asn1_next(p, end, &tag, &val, &vlen) || tag != V_ASN1_SET) return e;
 	p = val; end = val + vlen;
 
 	while (p < end) {
 		if (!asn1_next(p, end, &tag, &val, &vlen)) break;
-		if (tag != 0x30 /*SEQUENCE*/) continue;
+		if (tag != V_ASN1_SEQUENCE) continue;
 		const uint8_t *ap = val, *ae = val + vlen;
 
 		int t; const uint8_t* tv; size_t tl;
@@ -293,7 +293,7 @@ static std::vector<iap_receipt_entry> load_receipt_entries(bool* out_refresh_rec
 	std::vector<uint8_t> bundle_id_raw, opaque_value, sha1_hash;
 
 	int tag; const uint8_t* val; size_t vlen;
-	if (!asn1_next(p, end, &tag, &val, &vlen) || tag != 0x31 /*SET*/) {
+	if (!asn1_next(p, end, &tag, &val, &vlen) || tag != V_ASN1_SET) {
 		{
 			std::lock_guard<std::mutex> lk(g_iap.mtx);
 			g_iap.last_error = "Receipt validation: outer ASN.1 SET could not be parsed";
@@ -306,7 +306,7 @@ static std::vector<iap_receipt_entry> load_receipt_entries(bool* out_refresh_rec
 
 	while (p < end) {
 		if (!asn1_next(p, end, &tag, &val, &vlen)) break;
-		if (tag != 0x30 /*SEQUENCE*/) continue;
+		if (tag != V_ASN1_SEQUENCE) continue;
 		const uint8_t *ap = val, *ae = val + vlen;
 
 		int t; const uint8_t* tv; size_t tl;
