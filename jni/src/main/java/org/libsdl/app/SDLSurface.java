@@ -235,6 +235,20 @@ public class SDLSurface extends SurfaceView implements SurfaceHolder.Callback,
         return SDLActivity.handleKeyEvent(v, keyCode, event, null);
     }
 
+    // Ctrl+Space is reserved by Android as the physical-keyboard "switch input method"
+    // shortcut, so the IME consumes it before it reaches onKey (post-IME). onKeyPreIme runs
+    // before the IME: intercept Ctrl+Space here, forward it to SDL as a normal key event, and
+    // return true so the IME never switches. This makes Ctrl+Space behave like on desktop.
+    @Override
+    public boolean onKeyPreIme(int keyCode, KeyEvent event) {
+        if (!SDLActivity.mBrokenLibraries &&
+            keyCode == KeyEvent.KEYCODE_SPACE &&
+            event.isCtrlPressed()) {
+            return SDLActivity.handleKeyEvent(this, keyCode, event, null);
+        }
+        return super.onKeyPreIme(keyCode, event);
+    }
+
     private float getNormalizedX(float x)
     {
         if (mWidth <= 1) {
