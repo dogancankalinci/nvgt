@@ -252,7 +252,9 @@ game_window::game_window(const std::string& title, unsigned int w, unsigned int 
 	if (Poco::Environment::os() == POCO_OS_LINUX) flags |= SDL_WINDOW_FULLSCREEN;
 	_window = SDL_CreateWindow(title.c_str(), (int)w, (int)h, flags);
 	if (!_window) return;
-	_renderer = new graphics_renderer(this);
+	// The renderer is created lazily on first graphics use (see ensure_renderer). Creating it here
+	// would make refresh_window present an empty frame every tick, which on Android holds the
+	// SDL ActivityMutex across a blocking eglSwapBuffers and can cause input-dispatch ANRs.
 	if (!SDL_HasScreenKeyboardSupport()) SDL_StartTextInput(_window);
 	SDL_PropertiesID props = SDL_GetWindowProperties(_window);
 	#ifdef NATIVE_WINDOW_SDL_PROP
@@ -266,7 +268,7 @@ game_window::game_window(const std::string& title, unsigned int w, unsigned int 
 }
 game_window::game_window(SDL_Window* window) : _window(window), _owns_window(false), _native_window(nullptr), _refcount(1) {
 	if (!_window) return;
-	_renderer = new graphics_renderer(this);
+	// Renderer created lazily on first graphics use; see ensure_renderer().
 	SDL_PropertiesID props = SDL_GetWindowProperties(_window);
 	#ifdef NATIVE_WINDOW_SDL_PROP
 	_native_window = (native_window_t)SDL_GetPointerProperty(props, NATIVE_WINDOW_SDL_PROP, nullptr);
@@ -277,13 +279,20 @@ game_window::~game_window() {
 	_renderer = nullptr;
 	if (_owns_window && _window) SDL_DestroyWindow(_window);
 }
+graphics_renderer* game_window::ensure_renderer() {
+	// Create the SDL renderer the first time graphics are actually drawn. Until then get_renderer()
+	// stays null so refresh_window's per-frame present() (via peek_renderer) is skipped entirely,
+	// which is what keeps audio-only games off the Android eglSwapBuffers/ActivityMutex ANR path.
+	if (!_renderer && _window) _renderer = new graphics_renderer(this);
+	return _renderer.get();
+}
 bool game_window::clear(unsigned int r, unsigned int g, unsigned int b) {
-	if (!_renderer) return false;
+	if (!ensure_renderer()) return false;
 	_renderer->set_draw_color(r, g, b, 255);
 	return _renderer->clear();
 }
 void game_window::draw_text(const std::string& text, float x, float y, unsigned int r, unsigned int g, unsigned int b) {
-	if (!_renderer || !_font || text.empty()) return;
+	if (!ensure_renderer() || !_font || text.empty()) return;
 	Poco::AutoPtr<graphic> surf(_font->render_text_blended(text, r, g, b));
 	if (surf && surf->is_valid()) _renderer->render_graphic(surf.get(), x, y);
 }
@@ -294,7 +303,7 @@ uint64_t game_window::measure_text(const std::string& text) const {
 	return ((uint64_t)w << 32) | (uint32_t)h;
 }
 void game_window::draw_text_wrapped(const std::string& text, float x, float y, int wrap_width, unsigned int r, unsigned int g, unsigned int b) {
-	if (!_renderer || !_font || text.empty()) return;
+	if (!ensure_renderer() || !_font || text.empty()) return;
 	Poco::AutoPtr<graphic> surf(_font->render_text_blended_wrapped(text, wrap_width, r, g, b));
 	if (surf && surf->is_valid()) _renderer->render_graphic(surf.get(), x, y);
 }
@@ -305,18 +314,18 @@ uint64_t game_window::measure_text_wrapped(const std::string& text, int wrap_wid
 	return ((uint64_t)w << 32) | (uint32_t)h;
 }
 void game_window::draw_rect(float x, float y, float w, float h, unsigned int r, unsigned int g, unsigned int b, bool filled) {
-	if (!_renderer) return;
+	if (!ensure_renderer()) return;
 	_renderer->set_draw_color(r, g, b, 255);
 	if (filled) _renderer->fill_rect(x, y, w, h);
 	else _renderer->draw_rect(x, y, w, h);
 }
 void game_window::draw_line(float x1, float y1, float x2, float y2, unsigned int r, unsigned int g, unsigned int b) {
-	if (!_renderer) return;
+	if (!ensure_renderer()) return;
 	_renderer->set_draw_color(r, g, b, 255);
 	_renderer->draw_line(x1, y1, x2, y2);
 }
 void game_window::draw_circle(float cx, float cy, int radius, unsigned int r, unsigned int g, unsigned int b, bool filled) {
-	if (!_renderer) return;
+	if (!ensure_renderer()) return;
 	_renderer->set_draw_color(r, g, b, 255);
 	SDL_Renderer* rend = _renderer->get_renderer();
 	int offsetx = 0, offsety = radius, d = radius - 1, status = 0;
@@ -342,7 +351,7 @@ void game_window::draw_circle(float cx, float cy, int radius, unsigned int r, un
 	}
 }
 void game_window::draw_menu(CScriptArray* items, float x, float y) {
-	if (!_renderer || !_font || !items) return;
+	if (!ensure_renderer() || !_font || !items) return;
 	int w = 0, h = 0;
 	_font->get_string_size("A", w, h);
 	float line_height = (float)(h + 10);
@@ -453,7 +462,10 @@ void refresh_window() {
 	#endif
 	SDL_PumpEvents();
 	update_joysticks(); // Update all active joystick instances
-	if (g_window && g_window->get_renderer()) g_window->get_renderer()->present();
+	// peek_renderer (non-creating): only present once graphics have actually been drawn, so audio-only
+	// games never enter Android's eglSwapBuffers-under-ActivityMutex path. Using get_renderer() here
+	// would lazily create the renderer and defeat the purpose.
+	if (g_window) { graphics_renderer* _r = g_window->peek_renderer(); if (_r) _r->present(); }
 	SDL_Event evt;
 	std::unordered_set<int> keys_pressed_this_frame;
 	while (SDL_PollEvent(&evt)) {

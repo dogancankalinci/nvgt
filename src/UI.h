@@ -69,7 +69,9 @@ public:
 	void release() { if (asAtomicDec(_refcount) < 1) delete this; }
 	SDL_Window* get_sdl_window() const { return _window; }
 	native_window_t get_native_window() const { return _native_window; }
-	graphics_renderer* get_renderer() { return _renderer.get(); }
+	graphics_renderer* ensure_renderer(); // lazily create the renderer on first graphics use, so audio-only games never present an empty frame (avoids the Android eglSwapBuffers/ActivityMutex ANR)
+	graphics_renderer* peek_renderer() { return _renderer.get(); } // non-creating; used by the per-frame present check so it does not itself trigger renderer creation
+	graphics_renderer* get_renderer() { return ensure_renderer(); }
 	text_font* get_font() { return _font.get(); }
 	bool show() { return SDL_ShowWindow(_window); }
 	bool hide() { return SDL_HideWindow(_window); }
@@ -133,7 +135,7 @@ public:
 	void draw_rect(float x, float y, float w, float h, unsigned int r, unsigned int g, unsigned int b, bool filled = false);
 	void draw_circle(float cx, float cy, int radius, unsigned int r, unsigned int g, unsigned int b, bool filled = false);
 	void draw_line(float x1, float y1, float x2, float y2, unsigned int r, unsigned int g, unsigned int b);
-	bool render_graphic(graphic* gfx, float x, float y) { return _renderer && _renderer->render_graphic(gfx, x, y); }
+	bool render_graphic(graphic* gfx, float x, float y) { return ensure_renderer() && _renderer->render_graphic(gfx, x, y); }
 	void draw_menu(CScriptArray* items, float x, float y);
 };
 
