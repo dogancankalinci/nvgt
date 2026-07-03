@@ -153,6 +153,14 @@ LOCAL_STATIC_LIBRARIES_COMMON := libPocoFoundation libPocoCrypto libPocoJSON lib
 LOCAL_LDLIBS_COMMON := -lGLESv1_CM -lGLESv2 -lOpenSLES -llog -landroid
 LOCAL_CPP_FEATURES_COMMON := rtti exceptions
 
+# If the user has a custom config (e.g. the randomized bytecode encryption generated per CI run),
+# define NVGT_USER_CONFIG so the source includes ../user/nvgt_config.h instead of the default src/nvgt_config.h.
+# This mirrors SConstruct's behavior; without it the Android stub decrypts bytecode with the default
+# scheme while desktop builds encrypt with the user scheme, producing garbage bytecode at runtime.
+ifneq ($(wildcard $(LOCAL_PATH)/../user/nvgt_config.h),)
+LOCAL_CXXFLAGS_COMMON += -DNVGT_USER_CONFIG
+endif
+
 # A default invocation to ndk-build will cause both runner and stubs to build, call ndk-build BUILD_STUB=0 to disable the stub, for example. Used mostly by gradle.
 BUILD_RUNNER := 1
 BUILD_STUB := 1
