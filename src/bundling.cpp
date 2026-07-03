@@ -18,6 +18,8 @@
 #include "xplatform.h"
 #if !defined(NVGT_STUB) && !defined(NVGT_MOBILE)
 #include <algorithm>
+#include <cstdint>
+#include <cstring>
 #include <sstream>
 #include <utility>
 #include <Poco/BinaryReader.h>
@@ -38,6 +40,7 @@
 #include <Poco/StringTokenizer.h>
 #include <Poco/TemporaryFile.h>
 #include <Poco/Timestamp.h>
+#include <Poco/UnicodeConverter.h>
 #include <Poco/Util/Application.h>
 #include <archive.h>
 #include <archive_entry.h>
@@ -48,6 +51,7 @@
 #include <openssl/x509.h>
 #include <plist/plist.h>
 #ifdef _WIN32
+#include <windows.h>
 #include <vs_version.h>
 #endif
 #include "bundling.h"
@@ -237,6 +241,63 @@ static string make_unique_temp_path(const string& suffix) {
 	if (File(path).exists()) File(path).remove(true);
 	return path;
 }
+// --- Custom application icon helpers (shared by every platform bundler) ---
+// Read the whole file at path into a string (raw bytes).
+static string read_file_bytes(const string& path) {
+	FileInputStream f(path);
+	string data;
+	StreamCopier::copyToString(f, data);
+	return data;
+}
+// Read a PNG's pixel dimensions straight from its IHDR chunk without decoding the image. The PNG
+// spec fixes the layout: 8-byte signature, then the IHDR chunk whose 4-byte big-endian width and
+// height start at byte offsets 16 and 20 respectively. Returns false if the file is not a PNG.
+static bool read_png_size(const string& path, uint32_t& width, uint32_t& height) {
+	FileInputStream f(path);
+	unsigned char hdr[24];
+	f.read((char*)hdr, sizeof(hdr));
+	if (f.gcount() < (streamsize)sizeof(hdr)) return false;
+	static const unsigned char sig[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+	if (memcmp(hdr, sig, 8) != 0 || memcmp(hdr + 12, "IHDR", 4) != 0) return false;
+	width  = (uint32_t(hdr[16]) << 24) | (uint32_t(hdr[17]) << 16) | (uint32_t(hdr[18]) << 8) | hdr[19];
+	height = (uint32_t(hdr[20]) << 24) | (uint32_t(hdr[21]) << 16) | (uint32_t(hdr[22]) << 8) | hdr[23];
+	return true;
+}
+// Append a 32-bit big-endian integer to a byte string.
+static void append_be32(string& out, uint32_t v) {
+	out.push_back(char((v >> 24) & 0xff));
+	out.push_back(char((v >> 16) & 0xff));
+	out.push_back(char((v >> 8) & 0xff));
+	out.push_back(char(v & 0xff));
+}
+// Build an Apple .icns file that wraps a single PNG. The .icns container is a magic ('icns'),
+// a big-endian total length, then a series of {4-char OSType, big-endian length incl. header,
+// data} chunks. Modern macOS accepts PNG data directly under the ic07..ic10 / icp4..icp6 types,
+// so we pick the OSType whose nominal size best fits the source PNG and embed it as-is; Finder
+// scales the single representation to the sizes it needs. Returns the .icns bytes.
+static string build_icns_from_png(const string& png_path) {
+	uint32_t w = 0, h = 0;
+	if (!read_png_size(png_path, w, h)) throw Exception(format("custom icon %s is not a valid PNG", png_path));
+	string png = read_file_bytes(png_path);
+	uint32_t dim = w > h ? w : h; // use the larger edge to avoid ever labeling the icon smaller than it is.
+	const char* ostype;
+	if (dim <= 16) ostype = "icp4";
+	else if (dim <= 32) ostype = "icp5";
+	else if (dim <= 64) ostype = "icp6";
+	else if (dim <= 128) ostype = "ic07";
+	else if (dim <= 256) ostype = "ic08";
+	else if (dim <= 512) ostype = "ic09";
+	else ostype = "ic10";
+	string body;
+	body.append(ostype, 4);
+	append_be32(body, uint32_t(8 + png.size())); // chunk length includes the 8-byte chunk header.
+	body += png;
+	string icns;
+	icns.append("icns", 4);
+	append_be32(icns, uint32_t(8 + body.size())); // file length includes the 8-byte file header.
+	icns += body;
+	return icns;
+}
 // Thread-safe message box for use from the compilation worker thread. Dispatches message_box() onto the main thread via SDL_RunOnMainThread and blocks until the result is available. Returns -1 without showing anything for multi-button dialogs when quiet mode is active or a console is available, since the user cannot answer interactive questions in those conditions. Single-button alerts in console mode are printed to stdout.
 struct bundler_msgbox_args { const string& title; const string& text; const vector<string>& buttons; int result; };
 static void bundler_msgbox_callback(void* userdata) {
@@ -360,6 +421,21 @@ public:
 protected:
 	FileStream fs;
 	Util::LayeredConfiguration& config;
+	// Returns the absolute path to the icon requested via `#pragma icon` (build.icon), resolved
+	// relative to the script being compiled like the asset/embed pragmas, or an empty string if no
+	// custom icon was requested. Throws if a path was given but the file does not exist.
+	string get_custom_icon_path() {
+		string icon_cfg = config.getString("build.icon", "");
+		if (icon_cfg.empty()) return "";
+		Path p = Path(icon_cfg).makeAbsolute(Path(get_input_file()).makeParent());
+		// Every target's icon container (Windows RT_ICON, Apple .icns, iOS/Android/Linux) expects PNG
+		// data, and we have no image transcoder, so reject anything that isn't a .png up front. This
+		// fails fast on all platforms with one clear message instead of an obscure per-platform error.
+		string ext = Poco::toLower(p.getExtension());
+		if (ext != "png") throw Exception(format("custom icon must be a PNG file, but '%s' has extension '%s'", p.toString(), ext.empty()? "(none)" : ext));
+		if (!File(p).exists()) throw Exception(format("custom icon file %s does not exist", p.toString()));
+		return p.toString();
+	}
 	string make_product_id() {
 		// If the user does not specify a product ID such as com.developer.mygame for platforms that require such a thing, we'll generate one using the script basename.
 		string output;
@@ -468,7 +544,50 @@ protected:
 		}
 	}
 	void finalize_output_stream() override {} // Don't write payload offset on this platform.
+	// Embed a custom launcher icon (via #pragma icon) into the compiled .exe's PE resource table.
+	// Windows stores icons as an RT_GROUP_ICON directory plus one RT_ICON per image; Explorer shows
+	// the group with the lowest resource id, so overwriting id 1 makes our icon win. Vista+ accepts
+	// PNG data directly as an RT_ICON, so no bitmap conversion is needed. Rewriting PE resources
+	// portably is impractical, so this uses the Win32 UpdateResource API and therefore only takes
+	// effect when the Windows build is produced on Windows (much like Android needs the Android SDK).
+	void apply_windows_icon(const string& exe_path) {
+		string icon = get_custom_icon_path();
+		if (icon.empty()) return;
+		set_status("applying custom app icon...");
+#ifdef _WIN32
+		uint32_t iw = 0, ih = 0;
+		if (!read_png_size(icon, iw, ih)) throw Exception(format("custom icon %s is not a valid PNG", icon));
+		string png = read_file_bytes(icon);
+		#pragma pack(push, 1)
+		struct GRPICONDIRENTRY { BYTE bWidth, bHeight, bColorCount, bReserved; WORD wPlanes, wBitCount; DWORD dwBytesInRes; WORD nID; };
+		struct GRPICONDIR { WORD idReserved, idType, idCount; GRPICONDIRENTRY entry; };
+		#pragma pack(pop)
+		GRPICONDIR dir{};
+		dir.idType = 1; // 1 = icon
+		dir.idCount = 1;
+		dir.entry.bWidth = iw >= 256 ? 0 : BYTE(iw); // 0 encodes 256 (or larger) per the icon format.
+		dir.entry.bHeight = ih >= 256 ? 0 : BYTE(ih);
+		dir.entry.wPlanes = 1;
+		dir.entry.wBitCount = 32;
+		dir.entry.dwBytesInRes = DWORD(png.size());
+		dir.entry.nID = 1;
+		wstring wexe;
+		Poco::UnicodeConverter::toUTF16(exe_path, wexe);
+		HANDLE upd = BeginUpdateResourceW(wexe.c_str(), FALSE);
+		if (!upd) throw Exception(format("unable to open %s to embed its icon", exe_path));
+		WORD lang = MAKELANGID(LANG_NEUTRAL, SUBLANG_NEUTRAL);
+		// Use the numeric resource-type ids as wide strings (RT_ICON=3, RT_GROUP_ICON=14) so this
+		// compiles whether or not the project defines UNICODE (RT_ICON itself would pick the ANSI type).
+		bool ok = UpdateResourceW(upd, MAKEINTRESOURCEW(3), MAKEINTRESOURCEW(1), lang, (LPVOID)png.data(), DWORD(png.size()))
+			&& UpdateResourceW(upd, MAKEINTRESOURCEW(14), MAKEINTRESOURCEW(1), lang, &dir, sizeof(dir));
+		if (!ok) { EndUpdateResourceW(upd, TRUE); throw Exception(format("failed to write icon resources into %s", exe_path)); }
+		if (!EndUpdateResourceW(upd, FALSE)) throw Exception(format("failed to commit icon resources into %s", exe_path));
+#else
+		set_status("custom icon skipped: Windows icons can only be embedded when compiling on Windows");
+#endif
+	}
 	void finalize_product(Path& output_path) override {
+		apply_windows_icon(output_path.toString()); // Applies to the .exe whether or not we go on to build a bundle.
 		if (!bundle_mode) return; // We are not creating a bundle in this condition.
 		bundle_assets(workplace.path(), workplace.path());
 		copy_shared_libraries(Path(workplace.path()).append("lib"));
@@ -547,6 +666,26 @@ protected:
 		plist_dict_set_item(plist, "LSEnvironment", plist_env_block);
 		string mic_usage = config.getString("build.microphone_usage_description", "");
 		if (!mic_usage.empty()) plist_dict_set_item(plist, "NSMicrophoneUsageDescription", plist_new_string(mic_usage.c_str()));
+		// Custom application icon (via #pragma icon). macOS reads it from an .icns in Resources named
+		// by CFBundleIconFile. On a real Mac we let sips build a proper multi-resolution .icns; on
+		// other hosts (cross-compiling) we wrap the PNG directly, which Finder scales as needed.
+		string mac_icon = get_custom_icon_path();
+		if (!mac_icon.empty()) {
+			set_status("applying custom app icon...");
+			string icns_out = Path(workplace.path()).append("Contents/Resources/AppIcon.icns").toString();
+			bool wrote = false;
+			#ifdef __APPLE__
+				string isout, iserr;
+				wrote = system_command("sips", {"-s", "format", "icns", mac_icon, "--out", icns_out}, isout, iserr);
+			#endif
+			if (!wrote) {
+				string icns = build_icns_from_png(mac_icon);
+				FileOutputStream icns_f(icns_out);
+				icns_f.write(icns.data(), icns.size());
+				icns_f.close();
+			}
+			plist_dict_set_item(plist, "CFBundleIconFile", plist_new_string("AppIcon"));
+		}
 		char* plist_xml;
 		uint32_t plist_len;
 		if (plist_to_xml(plist, &plist_xml, &plist_len) != PLIST_ERR_SUCCESS) throw Exception("Unable to create info.plist");
@@ -748,6 +887,35 @@ protected:
 		// non-blocking warning, so it is intentionally not set.
 		string camera_usage = config.getString("build.camera_usage_description", "This app is built with a game engine that includes camera support. The camera is only accessed if a game feature explicitly uses it.");
 		if (!camera_usage.empty()) plist_dict_set_item(plist, "NSCameraUsageDescription", plist_new_string(camera_usage.c_str()));
+		// Custom application icon (via #pragma icon). Without an Xcode-built asset catalog, iOS reads
+		// the home-screen icon from loose PNG files listed in CFBundleIconFiles. We copy the source
+		// PNG under the standard 60pt @2x/@3x names (iOS scales the single artwork to the sizes it
+		// needs) and register it for both iPhone and iPad. Note: App Store upload generally expects an
+		// asset catalog, so this loose-file icon is aimed at on-device/ad-hoc installs.
+		string ios_icon = get_custom_icon_path();
+		if (!ios_icon.empty()) {
+			set_status("applying custom app icon...");
+			// Mirror the loose icon files and CFBundleIconFiles keys that a real Xcode/actool build
+			// emits. iPhone uses the 60pt icon (files @2x=120px, @3x=180px); iPad additionally uses the
+			// 76pt icon (@2x=152px). We copy the single source PNG under each name and let iOS scale it
+			// at runtime. We deliberately omit Xcode's CFBundleIconName key: it names an icon inside the
+			// compiled asset catalog (Assets.car) that we cannot produce without Xcode, and setting it
+			// with no backing catalog can yield a blank icon on device. The loose CFBundleIconFiles are
+			// the fallback iOS actually uses here.
+			File(ios_icon).copyTo(Path(workplace.path()).append("AppIcon60x60@2x.png").toString());
+			File(ios_icon).copyTo(Path(workplace.path()).append("AppIcon60x60@3x.png").toString());
+			File(ios_icon).copyTo(Path(workplace.path()).append("AppIcon76x76@2x~ipad.png").toString());
+			for (int ipad = 0; ipad <= 1; ++ipad) {
+				plist_t icon_files = plist_new_array();
+				plist_array_append_item(icon_files, plist_new_string("AppIcon60x60"));
+				if (ipad) plist_array_append_item(icon_files, plist_new_string("AppIcon76x76"));
+				plist_t primary_icon = plist_new_dict();
+				plist_dict_set_item(primary_icon, "CFBundleIconFiles", icon_files);
+				plist_t icons = plist_new_dict();
+				plist_dict_set_item(icons, "CFBundlePrimaryIcon", primary_icon);
+				plist_dict_set_item(plist, ipad? "CFBundleIcons~ipad" : "CFBundleIcons", icons);
+			}
+		}
 		char* plist_xml;
 		uint32_t plist_len;
 		if (plist_to_xml(plist, &plist_xml, &plist_len) != PLIST_ERR_SUCCESS) throw Exception("Unable to create Info.plist");
@@ -814,6 +982,21 @@ protected:
 		if (!bundle_mode) return; // We are not creating a bundle in this condition.
 		bundle_assets(workplace.path(), workplace.path());
 		copy_shared_libraries(Path(workplace.path()).append("lib"));
+		// Custom application icon (via #pragma icon). Linux executables carry no embedded icon, so the
+		// portable convention is to ship the image plus a .desktop launcher entry that points at it.
+		// We place both alongside the binary; a user can install them into the standard XDG locations
+		// (or the icon is picked up when the folder is used as a self-contained app directory).
+		string linux_icon = get_custom_icon_path();
+		if (!linux_icon.empty()) {
+			set_status("applying custom app icon...");
+			string appbase = output_path.getBaseName();
+			File(linux_icon).copyTo(Path(workplace.path()).append(appbase + ".png").toString());
+			string product_name = config.getString("build.product_name", appbase);
+			string desktop = format("[Desktop Entry]\nType=Application\nName=%s\nExec=./%s\nIcon=%s\nTerminal=false\nCategories=Game;\n", product_name, output_path.getFileName(), appbase);
+			FileOutputStream desktop_f(Path(workplace.path()).append(appbase + ".desktop").toString());
+			desktop_f.write(desktop.data(), desktop.size());
+			desktop_f.close();
+		}
 		if (bundle_mode > 1) {
 			set_status("packaging product...");
 			File tgz_out = Path(final_output_path).makeFile().setExtension("tar.gz").toString();
@@ -1383,6 +1566,52 @@ class nvgt_compilation_output_android : public nvgt_compilation_output_impl {
 		install_device_name = devices[result].first;
 		return install_transport_id = devices[result].second;
 	}
+	// If the script requested a custom launcher icon via `#pragma icon`, replace the stub's
+	// built-in ic_launcher resources inside res.zip before aapt2 link consumes it. Because
+	// aapt2 link regenerates resources.arsc entirely from the flats we feed it, swapping the
+	// compiled icon flats is enough — no need to touch the binary resources.arsc or manifest.
+	void apply_custom_icon() {
+		string icon_str = get_custom_icon_path();
+		if (icon_str.empty()) return;
+		Path icon_path = icon_str;
+		set_status("applying custom app icon...");
+		// aapt2 derives a resource's type and density from its parent directory name, so the icon
+		// must live in a properly-named bucket. We use the highest density (xxxhdpi) as the single
+		// source: it becomes the only mipmap/ic_launcher variant, so Android always downscales it
+		// for lower-density screens (never upscales), keeping the icon crisp everywhere.
+		string icon_src_dir = make_unique_temp_path(".iconsrc");
+		Path bucket = Path(icon_src_dir).append("mipmap-xxxhdpi");
+		File(bucket).createDirectories();
+		string staged_icon = Path(bucket).append("ic_launcher.png").toString();
+		File(icon_path).copyTo(staged_icon);
+		// Compile the icon into an aapt2 .flat container.
+		string flat_out = make_unique_temp_path(".iconflat");
+		File(flat_out).createDirectories();
+		string sout, serr;
+		if (!system_command(exe("aapt2"), {"compile", staged_icon, "-o", flat_out}, sout, serr)) throw Exception(format("Failed to compile custom icon %s, %s%s", icon_path.toString(), sout, serr));
+		// Rewrite res.zip: drop the stub's ic_launcher flats, add the freshly compiled one(s).
+		string res_zip = Path(workplace.path()).append("res.zip").toString();
+		string res_dir = make_unique_temp_path(".reszip");
+		File(res_dir).createDirectories();
+		libarchive_extract(res_zip, res_dir);
+		vector<File> existing;
+		File(res_dir).list(existing);
+		for (const File& f : existing) {
+			string name = Path(f.path()).makeFile().getFileName();
+			if (name.find("ic_launcher") != string::npos && string_has_suffix(name, ".flat")) File(f.path()).remove();
+		}
+		vector<File> new_flats;
+		File(flat_out).list(new_flats);
+		for (const File& f : new_flats) File(f.path()).copyTo(Path(res_dir).append(Path(f.path()).makeFile().getFileName()).toString());
+		File(res_zip).remove();
+		struct archive* res_arc = archive_write_new();
+		archive_write_set_format_zip(res_arc);
+		archive_write_zip_set_compression_deflate(res_arc);
+		archive_write_open_filename(res_arc, res_zip.c_str());
+		archive_write_dir(res_arc, res_dir, "", {}, {}, true, true);
+		archive_write_close(res_arc);
+		archive_write_free(res_arc);
+	}
 protected:
 	void alter_output_path(Path& output_path) override {
 		is_aab = config.getString("build.android_format", "apk") == "aab";
@@ -1445,6 +1674,7 @@ protected:
 		string version_code = config.getString("build.product_version_code", format("%u", uint32_t(Timestamp().epochTime()) / 60));
 		string version_name = config.getString("build.product_version", "1.0");
 		bool custom_manifest = !config.getString("build.android_manifest", "").empty();
+		apply_custom_icon(); // swap the stub's launcher icon if #pragma icon was set; consumed by both the APK and AAB aapt2 link steps below.
 		if (is_aab) {
 			// --- Android App Bundle (AAB) path ---
 			// 1. Run aapt2 link with --proto-format to create proto-format APK (contains resources.pb).

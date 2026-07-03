@@ -63,6 +63,27 @@ The asset and document pragmas are very similar, on  most platforms indeed they 
 
 Sometimes you may have a file that you wish to include as an asset, but as a different name in the bundle than that of the file stored on disk. To do this, you can express the asset pragma like `#pragma asset sounds.dat;audio.dat` if you want sounds.dat to actually be called audio.dat in the bundle. The asset and document pragmas will copy/include directories recursively. For example if you have a folder called sounds, the code `#pragma asset sounds` will successfully include the entire sounds folder in your bundle.
 
+### Setting a custom application icon
+By default your compiled application uses NVGT's built in icon. To provide your own, use the icon pragma, for example `#pragma icon "icon.png"`. The path is resolved relative to the script being compiled, the same as the asset and embed pragmas. The file must be a PNG (a .png extension is required, and compilation stops with an error if you point the pragma at anything else) because every platform's icon format expects PNG data and NVGT does not convert other formats for you; if you have a JPG or other image, convert it to PNG first. Always provide a square image; a large source (for example 512x512 or 1024x1024) is recommended because the single image is scaled down to whatever sizes each platform needs, which keeps it looking crisp everywhere. No specific dimensions are required, but a power-of-two square gives the cleanest result on macOS.
+
+The icon pragma is honored on every platform NVGT can build for, though the mechanism and a few caveats differ per platform:
+
+* Android (.apk and .aab): replaces the launcher icon shown on the home screen and app list.
+* Windows (.exe): the icon is embedded into the executable's resources so it shows in Explorer, the taskbar, and so on. Because this uses a Windows API to rewrite the executable's resources, it only takes effect when you build your Windows app on Windows; cross compiling from another operating system will skip this step with a status message.
+* macOS (.app/.dmg): written as an .icns and referenced from the bundle's Info.plist. When you build on a Mac a proper multi resolution icon is generated for you; on other hosts the single PNG is embedded directly.
+* iOS (.app/.ipa): installed as the home screen icon via loose icon files. Note that submitting to the App Store generally expects an icon supplied through an Xcode asset catalog, so this loose icon is primarily intended for on device and ad hoc installs.
+* Linux (folder/.tar.gz): Linux executables have no embedded icon, so the image plus a matching .desktop launcher entry are placed alongside the binary in the bundle. You can install these into the standard locations for your desktop environment to have the icon appear. This only applies when bundling is enabled (it does nothing for a bare executable).
+
+Setting the pragma is harmless on any platform, so you can specify it once and build for all of your targets.
+
+### Choosing the Android package format (APK or AAB)
+When you build for Android, NVGT can produce one of two package formats, selected with the `build.android_format` configuration option:
+
+* `apk` (the default): a standard Android package that can be installed directly onto a device (including via NVGT's automatic install onto a connected device) and shared as a file. This is what you want for testing, side-loading, and distributing outside of Google Play.
+* `aab`: an [Android App Bundle](https://developer.android.com/guide/app-bundle). This is the format Google Play requires for new apps uploaded to the store. An .aab is not directly installable on a device; Google Play processes it and generates the per-device APKs for you. Choose this when your goal is to publish on the Play Store.
+
+For example, to build an app bundle you can add `#pragma config build.android_format = aab` to your script, or set `build.android_format = aab` in your configuration file. NVGT generates and signs the .aab for you without requiring Google's bundletool to be installed. Everything else about the build (icon, permissions, product identifier, signing, and so on) is identical between the two formats, so you can switch freely depending on whether you are testing locally or preparing a Play Store upload.
+
 ## Libraries needed for distribution:
 The following information can be helpful if you have disabled NVGT's bundling facility and you wish to package your compiled games yourself.
 

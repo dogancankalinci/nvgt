@@ -119,8 +119,12 @@ This section contains options that are directly related to the compiling/bundlin
 * android_path string defaults to %PATH%: where to look for android development tools
 * android_signature_cert = string: path to a .keystore file used to sign an Android apk bundle
 * android_signature_password = string: password used to access the given signing keystore (see remarks at the bottom of this article)
+* android_format = string default apk: the package format produced for Android builds, either "apk" (a directly installable package) or "aab" (an Android App Bundle, the format Google Play requires for upload)
+* camera_usage_description = string default set by NVGT: on iOS, the explanation the system shows when your app first requests camera access (also settable with `#pragma camera_usage_description`). NVGT provides a default because SDL links Apple's camera API; set this to an empty string to omit the key entirely
+* icon = string: path to a square PNG file to use as your application's icon on every platform (usually set with `#pragma icon`, see the compiling for distribution tutorial)
 * linux_bundle = integer default 2: 0 no bundle, 1 folder, 2 .zip, 3 both folder and .zip
 * mac_bundle = integer default 2: 0 no bundle, 1 .app, 2 .dmg/.zip, 3 both .app and .dmg/.zip
+* microphone_usage_description = string: on macOS and iOS, the explanation the system shows when your app first requests microphone access (also settable with `#pragma microphone_usage_description`)
 * no_success_message: specifically hides the compilation success message if defined
 * output_basename = string default set from input filename: the output file or directory name of the final compiled package without an extension
 * precommand = string: a custom system command that will be executed before the build begins if no platform specific command is set
@@ -188,6 +192,9 @@ The syntax for a pragma directive looks like `#pragma name value` or sometimes j
 * `#pragma compiled_basename <basename>`: the output filename of the compiled executable without the extension
 * `#pragma bytecode_compression <level from 0 to 9>`: controls the compression level for bytecode saved in the compiled executable (0 disabled 9 maximum)
 * `#pragma console`: produce the compiled executable on windows using the console subsystem for CLI based programs
+* `#pragma icon "<pathname>"`: use a custom application icon from a square PNG file, applied on every platform (see the compiling for distribution tutorial for the per-platform details and caveats)
+* `#pragma microphone_usage_description "<text>"`: on macOS and iOS, set the explanation the system shows when your app first requests microphone access
+* `#pragma camera_usage_description "<text>"`: on iOS, set the explanation the system shows when your app requests camera access; NVGT sets a default because SDL links Apple's camera API, so set this to an empty string if your app never uses the camera and you want to omit the prompt
 
 ## Remarks on complex options
 This section contains any explanations of topics that were too bulky to fit in the documentation of each specific configuration option or article section.
