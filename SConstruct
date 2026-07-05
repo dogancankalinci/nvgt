@@ -146,6 +146,10 @@ if env["NVGT_TARGET"] == "windows": env.Append(LINKFLAGS = ["/delayload:plist-2.
 env.Append(LIBS = ["plist-2.0", "archive"])
 extra_objects = [version_object]
 if static_plugins_object: extra_objects.append(static_plugins_object)
+# LZFSE encoder sources, compiled into the main nvgt binary only (the iOS Assets.car generator in
+# bundling.cpp uses it; stubs exclude bundling.cpp so they don't need it).
+if env["NVGT_TARGET"] != "ios":
+	extra_objects += [env.Object("build/obj_lzfse/" + s, "dep/lzfse/" + s + ".c") for s in ["lzfse_encode", "lzfse_encode_base", "lzfse_fse", "lzvn_encode_base"]]
 if env["NVGT_TARGET"] != "ios":
 	if ARGUMENTS.get("debug", "0") == "1": env["PDB"] = "#build/debug/nvgt.pdb"
 	nvgt = env.Program("release/nvgt", env.Object([os.path.join("build/obj_src", s) for s in sources]) + extra_objects)

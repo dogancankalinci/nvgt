@@ -55,6 +55,8 @@
 #include <vs_version.h>
 #endif
 #include "bundling.h"
+#include "lzfse/lzfse.h"        // LZFSE encoder for the iOS Assets.car bitmap renditions
+#include "ios_appicon_template.h" // embedded actool-produced catalog structure (bitmaps replaced at build time)
 #include "filesystem.h"
 #include "misc_functions.h" // parse_float
 #include "nvgt.h"
@@ -297,6 +299,127 @@ static string build_icns_from_png(const string& png_path) {
 	append_be32(icns, uint32_t(8 + body.size())); // file length includes the 8-byte file header.
 	icns += body;
 	return icns;
+}
+// Resize the source PNG to exactly w x h pixels and write it as a PNG to out_path, using SDL's
+// built-in PNG loader/scaler/saver (already linked into nvgt). Returns false on any failure. Used to
+// emit the exact-size loose iOS icons Apple's validator demands (e.g. 120x120, 152x152).
+static string write_resized_png(const string& src_png, int w, int h, const string& out_path) {
+	SDL_Surface* s = SDL_LoadPNG(src_png.c_str());
+	if (!s) return format("SDL_LoadPNG(%s) failed: %s", src_png, string(SDL_GetError()));
+	SDL_Surface* scaled = SDL_ScaleSurface(s, w, h, SDL_SCALEMODE_LINEAR);
+	SDL_DestroySurface(s);
+	if (!scaled) return format("SDL_ScaleSurface failed: %s", string(SDL_GetError()));
+	bool ok = SDL_SavePNG(scaled, out_path.c_str());
+	SDL_DestroySurface(scaled);
+	if (!ok) return format("SDL_SavePNG(%s) failed: %s", out_path, string(SDL_GetError()));
+	return "";
+}
+// Load an icon PNG, scale to 1024x1024, and return its premultiplied BGRA bytes (4194304) — the pixel
+// format Apple's CoreUI stores app-icon renditions in. Returns empty string on failure.
+static string load_icon_bgra_1024(const string& png) {
+	SDL_Surface* s = SDL_LoadPNG(png.c_str());
+	if (!s) return "";
+	if (s->w != 1024 || s->h != 1024) {
+		SDL_Surface* r = SDL_ScaleSurface(s, 1024, 1024, SDL_SCALEMODE_LINEAR);
+		SDL_DestroySurface(s); s = r;
+		if (!s) return "";
+	}
+	SDL_Surface* rgba = SDL_ConvertSurface(s, SDL_PIXELFORMAT_RGBA32); // memory order R,G,B,A on any endian
+	SDL_DestroySurface(s);
+	if (!rgba) return "";
+	string out; out.resize(1024u * 1024 * 4);
+	for (int y = 0; y < 1024; y++) {
+		const unsigned char* row = (const unsigned char*)rgba->pixels + (size_t)y * rgba->pitch;
+		for (int x = 0; x < 1024; x++) {
+			unsigned char R = row[x*4+0], G = row[x*4+1], B = row[x*4+2], A = row[x*4+3];
+			unsigned char* o = (unsigned char*)&out[((size_t)y*1024 + x) * 4];
+			o[0] = (B*A + 127) / 255; o[1] = (G*A + 127) / 255; o[2] = (R*A + 127) / 255; o[3] = A; // premultiplied BGRA
+		}
+	}
+	SDL_DestroySurface(rgba);
+	return out;
+}
+// Generate an Apple compiled asset catalog (Assets.car) containing the given icon as its AppIcon,
+// which the App Store requires for iOS apps (ITMS-90713). We start from an embedded actool-produced
+// catalog (ios_appicon_template) whose every structural block is byte-identical to Xcode's output,
+// and replace only the two 1024x1024 image renditions' bitmaps with the user's icon (BGRA, split into
+// the same 341-row LZFSE chunks CoreUI uses), then rebuild the BOM block table. See bundling notes:
+// the exact byte format was reverse-engineered from a real actool Assets.car.
+static string build_assets_car(const string& icon_png) {
+	string bgra = load_icon_bgra_1024(icon_png);
+	if (bgra.size() != 1024u * 1024 * 4) throw Exception(format("failed to load icon %s for asset catalog", icon_png));
+	const unsigned char* T = ios_appicon_template;
+	auto be32 = [](const unsigned char* p){ return (uint32_t)p[0]<<24 | (uint32_t)p[1]<<16 | (uint32_t)p[2]<<8 | p[3]; };
+	auto le32 = [](const unsigned char* p){ return (uint32_t)p[0] | (uint32_t)p[1]<<8 | (uint32_t)p[2]<<16 | (uint32_t)p[3]<<24; };
+	uint32_t ver = be32(T+8), btrail = be32(T+12), indexOff = be32(T+16), varsOff = be32(T+24);
+	// vars
+	const unsigned char* vp = T + varsOff; uint32_t vc = be32(vp); vp += 4;
+	vector<pair<string,uint32_t>> vars;
+	for (uint32_t i = 0; i < vc; i++) { uint32_t idx = be32(vp); vp += 4; uint8_t ln = *vp++; vars.push_back({string((const char*)vp, ln), idx}); vp += ln; }
+	// block table
+	const unsigned char* ip = T + indexOff; uint32_t bc = be32(ip); ip += 4;
+	vector<pair<uint32_t,uint32_t>> blocks(bc);
+	for (uint32_t i = 0; i < bc; i++) { blocks[i] = {be32(ip), be32(ip+4)}; ip += 8; }
+	// The two image renditions are the CSI ('ISTC') value blocks whose stored width is 1024.
+	vector<int> img;
+	for (uint32_t i = 0; i < bc; i++)
+		if (blocks[i].second >= 304 && memcmp(T + blocks[i].first, "ISTC", 4) == 0 && le32(T + blocks[i].first + 12) == 1024) img.push_back(i);
+	if (img.size() != 2) throw Exception("asset catalog template is malformed (expected 2 image renditions)");
+	// LZFSE-compress the bitmap in the same 341-row chunks CoreUI uses.
+	static const int rows[4] = {341, 341, 341, 1};
+	string scratch; scratch.resize(lzfse_encode_scratch_size());
+	string chunks[4]; size_t roff = 0; uint32_t sumcomp = 0;
+	for (int i = 0; i < 4; i++) {
+		size_t seglen = (size_t)rows[i] * 1024 * 4;
+		string dst; dst.resize(seglen + 4096);
+		size_t n = lzfse_encode_buffer((uint8_t*)&dst[0], dst.size(), (const uint8_t*)bgra.data() + roff*1024*4, seglen, (uint8_t*)&scratch[0]);
+		if (n == 0) throw Exception("LZFSE encode failed while building asset catalog");
+		dst.resize(n); chunks[i] = dst; roff += rows[i]; sumcomp += (uint32_t)n;
+	}
+	// Rebuild the image CSI: copy the template header, patch the one size field (offset 180 = 96 + sum
+	// of compressed lengths), then append each chunk framed by its 20-byte KCBC header.
+	const unsigned char* tc = T + blocks[img[0]].first;
+	auto app_le = [](string& s, uint32_t v){ unsigned char b[4] = {(unsigned char)v, (unsigned char)(v>>8), (unsigned char)(v>>16), (unsigned char)(v>>24)}; s.append((char*)b, 4); };
+	string new_csi;
+	new_csi.append((const char*)tc, 180);
+	app_le(new_csi, 96 + sumcomp);
+	new_csi.append((const char*)tc + 184, 304 - 184);
+	for (int i = 0; i < 4; i++) {
+		new_csi.append("KCBC", 4); new_csi.append(8, '\0');
+		app_le(new_csi, (uint32_t)rows[i]); app_le(new_csi, (uint32_t)chunks[i].size());
+		new_csi += chunks[i];
+	}
+	for (int bi : img) blocks[bi].second = (uint32_t)new_csi.size();
+	// Reassemble the file: keep the 512-byte header region, re-lay-out every non-empty block (4-byte
+	// aligned, original address order), then write the vars and block index and patch the header.
+	string out; out.append((const char*)T, 512);
+	vector<pair<uint32_t,uint32_t>> newblk(bc, {0, 0});
+	vector<int> order;
+	for (uint32_t i = 0; i < bc; i++) if (blocks[i].second > 0) order.push_back(i);
+	sort(order.begin(), order.end(), [&](int a, int b){ return blocks[a].first < blocks[b].first; });
+	for (int idx : order) {
+		while (out.size() % 16) out.push_back(0);
+		uint32_t addr = (uint32_t)out.size();
+		bool isimg = (idx == img[0] || idx == img[1]);
+		if (isimg) out += new_csi;
+		else out.append((const char*)T + blocks[idx].first, blocks[idx].second);
+		newblk[idx] = {addr, isimg ? (uint32_t)new_csi.size() : blocks[idx].second};
+	}
+	auto app_be = [](string& s, uint32_t v){ unsigned char b[4] = {(unsigned char)(v>>24), (unsigned char)(v>>16), (unsigned char)(v>>8), (unsigned char)v}; s.append((char*)b, 4); };
+	while (out.size() % 16) out.push_back(0);
+	uint32_t vo2 = (uint32_t)out.size();
+	app_be(out, (uint32_t)vars.size());
+	for (auto& pr : vars) { app_be(out, pr.second); out.push_back((char)pr.first.size()); out += pr.first; }
+	uint32_t vl = (uint32_t)out.size() - vo2;
+	while (out.size() % 16) out.push_back(0);
+	uint32_t io2 = (uint32_t)out.size();
+	app_be(out, bc);
+	for (auto& bl : newblk) { app_be(out, bl.first); app_be(out, bl.second); }
+	out.append(20, '\0'); // empty BOM free list (count 0 + reserved), matching actool byte-for-byte
+	uint32_t il = (uint32_t)out.size() - io2;
+	auto put_be = [&](size_t off, uint32_t v){ out[off]=(char)(v>>24); out[off+1]=(char)(v>>16); out[off+2]=(char)(v>>8); out[off+3]=(char)v; };
+	put_be(8, ver); put_be(12, btrail); put_be(16, io2); put_be(20, il); put_be(24, vo2); put_be(28, vl);
+	return out;
 }
 // Thread-safe message box for use from the compilation worker thread. Dispatches message_box() onto the main thread via SDL_RunOnMainThread and blocks until the result is available. Returns -1 without showing anything for multi-button dialogs when quiet mode is active or a console is available, since the user cannot answer interactive questions in those conditions. Single-button alerts in console mode are printed to stdout.
 struct bundler_msgbox_args { const string& title; const string& text; const vector<string>& buttons; int result; };
@@ -887,34 +1010,45 @@ protected:
 		// non-blocking warning, so it is intentionally not set.
 		string camera_usage = config.getString("build.camera_usage_description", "This app is built with a game engine that includes camera support. The camera is only accessed if a game feature explicitly uses it.");
 		if (!camera_usage.empty()) plist_dict_set_item(plist, "NSCameraUsageDescription", plist_new_string(camera_usage.c_str()));
-		// Custom application icon (via #pragma icon). Without an Xcode-built asset catalog, iOS reads
-		// the home-screen icon from loose PNG files listed in CFBundleIconFiles. We copy the source
-		// PNG under the standard 60pt @2x/@3x names (iOS scales the single artwork to the sizes it
-		// needs) and register it for both iPhone and iPad. Note: App Store upload generally expects an
-		// asset catalog, so this loose-file icon is aimed at on-device/ad-hoc installs.
+		// Custom application icon (via #pragma icon). A full App-Store-valid iOS icon needs BOTH the
+		// exact-size loose PNGs (below) AND a compiled asset catalog (Assets.car) named by
+		// CFBundleIconName; we generate both, matching what Xcode/actool produces.
 		string ios_icon = get_custom_icon_path();
 		if (!ios_icon.empty()) {
 			set_status("applying custom app icon...");
-			// Mirror the loose icon files and CFBundleIconFiles keys that a real Xcode/actool build
-			// emits. iPhone uses the 60pt icon (files @2x=120px, @3x=180px); iPad additionally uses the
-			// 76pt icon (@2x=152px). We copy the single source PNG under each name and let iOS scale it
-			// at runtime. We deliberately omit Xcode's CFBundleIconName key: it names an icon inside the
-			// compiled asset catalog (Assets.car) that we cannot produce without Xcode, and setting it
-			// with no backing catalog can yield a blank icon on device. The loose CFBundleIconFiles are
-			// the fallback iOS actually uses here.
-			File(ios_icon).copyTo(Path(workplace.path()).append("AppIcon60x60@2x.png").toString());
-			File(ios_icon).copyTo(Path(workplace.path()).append("AppIcon60x60@3x.png").toString());
-			File(ios_icon).copyTo(Path(workplace.path()).append("AppIcon76x76@2x~ipad.png").toString());
+			// Apple's App Store validator requires physical, EXACT-size PNG icons in the bundle root
+			// (outside the asset catalog): 120x120 for iPhone (ITMS-90022) and 152x152 for iPad
+			// (ITMS-90023). A real Xcode/actool single-size build emits exactly these two flattened
+			// files, so we match it byte-for-byte in layout: resize the source PNG to each exact size
+			// (copying it unchanged is rejected) and reference them via CFBundleIconFiles.
+			struct { const char* file; int size; } ios_icons[] = {
+				{"AppIcon60x60@2x.png", 120},      // iPhone @2x
+				{"AppIcon76x76@2x~ipad.png", 152}, // iPad @2x
+			};
+			for (const auto& ic : ios_icons) {
+				string err = write_resized_png(ios_icon, ic.size, ic.size, Path(workplace.path()).append(ic.file).toString());
+				if (!err.empty()) throw Exception(format("failed to generate iOS icon %s: %s", string(ic.file), err));
+			}
+			// CFBundleIconFiles lists base names; iPhone uses 60pt, iPad adds 76pt (matches Xcode output).
 			for (int ipad = 0; ipad <= 1; ++ipad) {
 				plist_t icon_files = plist_new_array();
 				plist_array_append_item(icon_files, plist_new_string("AppIcon60x60"));
 				if (ipad) plist_array_append_item(icon_files, plist_new_string("AppIcon76x76"));
 				plist_t primary_icon = plist_new_dict();
 				plist_dict_set_item(primary_icon, "CFBundleIconFiles", icon_files);
+				plist_dict_set_item(primary_icon, "CFBundleIconName", plist_new_string("AppIcon"));
 				plist_t icons = plist_new_dict();
 				plist_dict_set_item(icons, "CFBundlePrimaryIcon", primary_icon);
 				plist_dict_set_item(plist, ipad? "CFBundleIcons~ipad" : "CFBundleIcons", icons);
 			}
+			// Compiled asset catalog + top-level CFBundleIconName, required by App Store upload
+			// (ITMS-90713). Generated from the user's icon; see build_assets_car.
+			set_status("building icon asset catalog...");
+			string car = build_assets_car(ios_icon);
+			FileOutputStream car_out(Path(workplace.path()).append("Assets.car").toString());
+			car_out.write(car.data(), car.size());
+			car_out.close();
+			plist_dict_set_item(plist, "CFBundleIconName", plist_new_string("AppIcon"));
 		}
 		char* plist_xml;
 		uint32_t plist_len;
