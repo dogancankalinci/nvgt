@@ -488,7 +488,9 @@ public:
 	void prepare() {
 		set_status("initializing...");
 		stub = g_stub; // We must do this now because script should be compiled at this point and thus stub selected from pragma should be stored in g_stub.
-		Path stubpath = config.getString("application.dir");
+		string app_dir = config.getString("application.dir", "");
+		if (app_dir.empty()) app_dir = Path(Util::Application::instance().commandPath()).makeParent().toString();
+		Path stubpath = app_dir;
 		stubpath.pushDirectory("stub");
 		xplatform_correct_path_to_stubs(stubpath);
 		alter_stub_path(stubpath);
@@ -496,7 +498,7 @@ public:
 		string outpath_str = config.getString("build.output_basename", format("%s", Path(input_file).setExtension("").makeAbsolute().toString()));
 		replaceInPlace(outpath_str, "$platform"s, platform);
 		outpath_str = Path(outpath_str).makeAbsolute().toString();
-		if (DirectoryExists(outpath_str)) File(outpath_str).remove(true); // Though some platforms must do indipendantly after extra modification, we still attempt to clean previous builds for generic outputs here so that a linux build won't output overtop a windows one leaving both an elf and an executable binary in the same place, for example.
+		if (DirectoryExists(outpath_str)) File(outpath_str).remove(true);
 		outpath = outpath_str;
 		File(outpath.parent()).createDirectories();
 		alter_output_path(outpath);
@@ -1771,11 +1773,22 @@ protected:
 				root_dir.remove();
 			}
 		}
-		// Rename libgame_iap.so → libgame.so (IAP stub uses a different module name during NDK build to avoid conflicts).
+		// Rename libgame_iap.so → libgame.so (IAP stub uses a different module name during NDK build to avoid conflicts),
+		// and copy any requested dynamic plugins (redis, legacy_sound, etc.) from the SCons lib_android output, per ABI.
+		string plugin_src_base = get_nvgt_lib_directory("android"); // .../lib_android; plugins are stored per-ABI beneath it.
 		for (const string& abi : {"arm64-v8a", "armeabi-v7a"}) {
 			File iap_lib(Path(workplace.path()).append(format("lib/%s/libgame_iap.so", abi)));
 			if (iap_lib.exists())
 				iap_lib.renameTo(Path(workplace.path()).append(format("lib/%s/libgame.so", abi)).toString());
+			Path plugin_dest = Path(workplace.path()).append(format("lib/%s", abi));
+			if (!plugin_src_base.empty() && File(plugin_dest).exists()) {
+				Path plugin_src = Path(plugin_src_base).append(abi);
+				if (File(plugin_src).exists())
+					for (const string& lib : g_bundle_libraries) {
+						Path src = Path(plugin_src).append(lib + ".so");
+						if (File(src).exists()) File(src).copyTo(plugin_dest.toString());
+					}
+			}
 		}
 	}
 	void open_output_stream(const Path& output_path) override {
@@ -1959,6 +1972,13 @@ nvgt_compilation_output* nvgt_init_compilation(const string& input_file, bool au
 	else if (g_platform == "android") output = new nvgt_compilation_output_android(input_file);
 	else if (g_platform == "ios") output = new nvgt_compilation_output_ios(input_file);
 	else output = new nvgt_compilation_output_impl(input_file);
+	
+	// Ensure stubs can be found in development environments.
+	if (!File(Path(Util::Application::instance().config().getString("application.dir", "")).append("stub")).exists()) {
+		Path dev_stub = Path(Util::Application::instance().commandPath()).makeParent().append("stub");
+		if (File(dev_stub).exists()) Util::Application::instance().config().setString("application.dir", dev_stub.makeParent().toString());
+	}
+
 	if (auto_prepare) output->prepare();
 	return output;
 }
