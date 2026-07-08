@@ -217,6 +217,10 @@ elif env["NVGT_TARGET"] == "android":
 	# libs ship — but they must still not collide). Shared libs already honour the per-ABI PLUGIN_DEST_DIR we set below.
 	def android_plugin_env(base_env, abi):
 		pe = base_env.Clone()
+		# Normalise CPPDEFINES to a plain list (SCons keeps it as a deque after Append): some plugin SConscripts do
+		# `env["CPPDEFINES"] + [...]`, which throws "can only concatenate deque (not list)". The top-level plugin build
+		# does the same conversion (see the `plugins` section above).
+		pe["CPPDEFINES"] = list(pe["CPPDEFINES"])
 		pe["PLUGIN_DEST_DIR"] = "#release/lib_android/" + abi
 		pe.Append(CXXFLAGS = ["-fPIC"])
 		libdir = "#build/lib_android/" + abi
