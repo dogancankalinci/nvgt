@@ -243,6 +243,20 @@ elif env["NVGT_TARGET"] == "android":
 					return out
 				return obj_redir
 			pe.AddMethod(make(orig_obj), bname)
+		# SharedLibrary compiles any raw source passed to it directly; an absolute #-rooted source (e.g. unicode's
+		# "#extra/plugin/dep/uni_algo/data.cpp") would be built to an object next to the source, outside the per-ABI variant
+		# dir, and collide across ABIs. Pre-compile such sources into per-ABI shared objects (via the redirected SharedObject).
+		orig_shlib = pe["BUILDERS"]["SharedLibrary"]
+		def shlib_redir(environment, target, source, *a, **kw):
+			srcs = source if isinstance(source, list) else [source]
+			new_srcs = []
+			for s in srcs:
+				ss = str(s)
+				if isinstance(s, str) and ss.startswith("#") and ss.rsplit(".", 1)[-1].lower() in ("c", "cpp", "cc", "cxx", "mm"):
+					new_srcs += environment.SharedObject(os.path.splitext(os.path.basename(ss))[0], s)
+				else: new_srcs.append(s)
+			return orig_shlib(environment, target, new_srcs, *a, **kw)
+		pe.AddMethod(shlib_redir, "SharedLibrary")
 		return pe
 	android_plugin_scripts = Glob("plugin/*/_SConscript") + Glob("plugin/*/SConscript") + Glob("extra/plugin/integrated/*/_SConscript") + Glob("extra/plugin/integrated/*/SConscript")
 	# BASS is a dynamic dependency of the legacy_sound plugin: its shared libs must ship in lib_android/<abi> so the bundler
