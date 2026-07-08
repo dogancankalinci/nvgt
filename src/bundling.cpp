@@ -1773,21 +1773,24 @@ protected:
 				root_dir.remove();
 			}
 		}
-		// Rename libgame_iap.so → libgame.so (IAP stub uses a different module name during NDK build to avoid conflicts),
-		// and copy any requested dynamic plugins (redis, legacy_sound, etc.) from the SCons lib_android output, per ABI.
-		string plugin_src_base = get_nvgt_lib_directory("android"); // .../lib_android; plugins are stored per-ABI beneath it.
+		// libgame.so already lives inside the extracted stub at lib/<abi>/ — the IAP stub (nvgt_android_iap.bin) carries
+		// its IAP-enabled build under the very same name, so nothing here touches libgame. lib_android holds the dynamic
+		// PLUGINS plus any shared libs those plugins register via nvgt_bundle_shared_library (e.g. BASS for legacy_sound).
+		// Pick the ones this script actually uses out of lib_android/<abi>/ into the APK's lib/<abi>/, matching by substring
+		// on the base name exactly like copy_shared_libraries() on desktop — so a registered name like "bass" also matches
+		// its real file "libbass.so". Done for every ABI so each abi dir in the APK gets its own copies.
+		string plugin_src_base = get_nvgt_lib_directory("android"); // .../lib_android; plugins + their shared deps live per-ABI beneath it.
 		for (const string& abi : {"arm64-v8a", "armeabi-v7a"}) {
-			File iap_lib(Path(workplace.path()).append(format("lib/%s/libgame_iap.so", abi)));
-			if (iap_lib.exists())
-				iap_lib.renameTo(Path(workplace.path()).append(format("lib/%s/libgame.so", abi)).toString());
 			Path plugin_dest = Path(workplace.path()).append(format("lib/%s", abi));
-			if (!plugin_src_base.empty() && File(plugin_dest).exists()) {
-				Path plugin_src = Path(plugin_src_base).append(abi);
-				if (File(plugin_src).exists())
-					for (const string& lib : g_bundle_libraries) {
-						Path src = Path(plugin_src).append(lib + ".so");
-						if (File(src).exists()) File(src).copyTo(plugin_dest.toString());
-					}
+			if (plugin_src_base.empty() || !File(plugin_dest).exists()) continue;
+			Path plugin_src = Path(plugin_src_base).append(abi);
+			if (!File(plugin_src).exists()) continue;
+			set<string> libs;
+			Glob::glob(Path(plugin_src).append("*").toString(), libs, Glob::GLOB_DOT_SPECIAL | Glob::GLOB_FOLLOW_SYMLINKS | Glob::GLOB_CASELESS);
+			for (const string& library : libs) {
+				bool included = false;
+				for (const string& l : g_bundle_libraries) if (Path(library).getBaseName().find(l) != string::npos) { included = true; break; }
+				if (included) File(library).copyTo(plugin_dest.toString());
 			}
 		}
 	}

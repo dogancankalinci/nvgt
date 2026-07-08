@@ -74,6 +74,9 @@ elif env["NVGT_TARGET"] == "android":
 	env.Append(LIBS = common_libs + ["z", "GLESv1_CM", "GLESv2", "OpenSLES", "log", "android"])
 env.Append(CPPDEFINES = ["POCO_STATIC", "POCO_NO_AUTOMATIC_LIBS", "UNIVERSAL_SPEECH_STATIC", "DEBUG" if ARGUMENTS.get("debug", "0") == "1" else "NDEBUG", "UNICODE"])
 env.Append(CPPPATH = ["#ASAddon/include", "#dep"], LIBPATH = ["#build/lib"])
+# Output directory for NVGT's own static libs (deps, ASAddon, per-plugin). The android build overrides this per ABI so the
+# plugin static libs from each ABI's SConscript pass don't collide on one hardcoded path.
+env["NVGT_LIB_DIR"] = "#build/lib"
 env["PLUGIN_DEST_DIR"] = "#release/lib_android/arm64-v8a" if env["NVGT_TARGET"] == "android" else "#release/lib"
 
 # plugins
@@ -95,7 +98,11 @@ if  ARGUMENTS.get("no_plugins", "0") == "0":
 		plugin_env.Append(CXXFLAGS = ["-fPIC"])
 		plugin_env["SHLIBPREFIX"] = ""
 	# Then loop through all known plugins and build them.
-	for s in Glob("plugin/*/_SConscript") + Glob("plugin/*/SConscript") + Glob("extra/plugin/integrated/*/_SConscript") + Glob("extra/plugin/integrated/*/SConscript"):
+	# Android skips the top-level (arm64/base-env) plugin build entirely: each plugin must be compiled per ABI against its
+	# own droidev/<abi> headers, which the android build loop does separately. Building them here with the base env would
+	# fail (there is no flat droidev/include once deps are laid out per-ABI) and produce arm64-only libs anyway.
+	plugin_scripts = [] if env["NVGT_TARGET"] == "android" else Glob("plugin/*/_SConscript") + Glob("plugin/*/SConscript") + Glob("extra/plugin/integrated/*/_SConscript") + Glob("extra/plugin/integrated/*/SConscript")
+	for s in plugin_scripts:
 		plugname = str(s).split(os.path.sep)[-2]
 		if ARGUMENTS.get(f"no_{plugname}_plugin", "0") == "1": continue
 		if ARGUMENTS.get(f"static_{plugname}_plugin", "0") == "1" and not plugname in static_plugins: static_plugins.append(plugname)
@@ -112,7 +119,10 @@ if  ARGUMENTS.get("no_plugins", "0") == "0":
 			static_plugins_object = env.Object(static_plugins_path, static_plugins_path + ".cpp", CPPPATH = env["CPPPATH"] + ["#src"])
 
 # Project libraries
-env.Append(LIBS = ["deps"] + common_libs + ["zs" if env["NVGT_TARGET"] == "windows" else "z", "SDL3", "phonon", "ASAddon"])
+# Android does not use NVGT's own prebuilt static libs (deps/ASAddon) or the shared libpath here — its build loop compiles
+# those sources directly per ABI and replaces LIBS/LIBPATH with a clean per-ABI set. Everyone else links them as usual.
+if env["NVGT_TARGET"] != "android":
+	env.Append(LIBS = ["deps"] + common_libs + ["zs" if env["NVGT_TARGET"] == "windows" else "z", "SDL3", "phonon", "ASAddon"])
 if env["NVGT_TARGET"] == "windows": env.Append(LIBS = ["UniversalSpeechStatic"])
 
 # nvgt itself
@@ -151,8 +161,11 @@ if ARGUMENTS.get("no_user", "0") == "0":
 		if os.path.isfile(f"user/{s}"):
 			SConscript(f"user/{s}", exports = {"plugin_env": plugin_env, "nvgt_env": env})
 			break # only execute one script from here
-SConscript("ASAddon/_SConscript", variant_dir = "build/obj_ASAddon", duplicate = 0, exports = "env")
-SConscript("dep/_SConscript", variant_dir = "build/obj_dep", duplicate = 0, exports = "env")
+# Non-android links ASAddon/dep as prebuilt static libs. Android instead compiles their sources directly into each
+# per-ABI native lib (see the android build loop), so skip the base-env (arm64, no per-ABI headers) build here.
+if env["NVGT_TARGET"] != "android":
+	SConscript("ASAddon/_SConscript", variant_dir = "build/obj_ASAddon", duplicate = 0, exports = "env")
+	SConscript("dep/_SConscript", variant_dir = "build/obj_dep", duplicate = 0, exports = "env")
 # We'll clone the environment for stubs now so that we can then add any extra libraries that are not needed for stubs to the main nvgt environment.
 stub_env = env.Clone(PROGSUFFIX = ".bin")
 if env["NVGT_TARGET"] == "windows":
@@ -194,29 +207,87 @@ elif env["NVGT_TARGET"] == "android":
 	# NVGT_NO_IAP define, matching the old ndk-build: runner + regular stub disable IAP; the IAP stub enables it
 	# (Google Play Billing via src/iap/java on the gradle side).
 	android_deps = []
-	osdev_base = str(Dir("#" + env["NVGT_OSDEV_NAME"]))  # droidev; contains per-ABI subdirs (arm64-v8a, armeabi-v7a)
+	osdev_base = str(Dir("#" + env["NVGT_OSDEV_NAME"]))  # droidev; holds one self-contained subdir per ABI (arm64-v8a, armeabi-v7a)
 	tb = env["NDK_TOOLCHAIN_BIN"]; ce = env["NDK_CMD_EXT"]
+	# Dynamic plugins are compiled once per ABI into release/lib_android/<abi>. The plugin SConscripts (some in the read-only
+	# `extra` submodule) hardcode a single #build/lib/<x> static-lib target and, for a few, implicit-target objects from
+	# absolute #-rooted sources; both would clash when a plugin is built for more than one ABI in one scons run. Rather than
+	# editing any plugin file, we hand each per-ABI plugin build an env whose StaticLibrary/Object/SharedObject builders are
+	# transparently redirected to per-ABI output paths (the static libs themselves are unused on Android — only the shared
+	# libs ship — but they must still not collide). Shared libs already honour the per-ABI PLUGIN_DEST_DIR we set below.
+	def android_plugin_env(base_env, abi):
+		pe = base_env.Clone()
+		pe["PLUGIN_DEST_DIR"] = "#release/lib_android/" + abi
+		pe.Append(CXXFLAGS = ["-fPIC"])
+		libdir = "#build/lib_android/" + abi
+		orig_static = pe["BUILDERS"]["StaticLibrary"]
+		def static_redir(environment, target, source, *a, **kw):
+			if isinstance(target, str): target = target.replace("#build/lib/", libdir + "/")
+			return orig_static(environment, target, source, *a, **kw)
+		pe.AddMethod(static_redir, "StaticLibrary")
+		for bname in ("SharedObject", "Object"):
+			orig_obj = pe["BUILDERS"][bname]
+			def make(orig):
+				def obj_redir(environment, target, source = None, *a, **kw):
+					if source is None: source, target = target, None
+					if target is not None: return orig(environment, target, source, *a, **kw)
+					# implicit target: give each source a relative basename target so absolute #-rooted sources land in this
+					# plugin's per-ABI variant dir instead of one shared path next to the source (which collides across ABIs).
+					srcs = source if isinstance(source, list) else [source]
+					out = []
+					for s in srcs: out += orig(environment, os.path.splitext(os.path.basename(str(s)))[0], s, *a, **kw)
+					return out
+				return obj_redir
+			pe.AddMethod(make(orig_obj), bname)
+		return pe
+	android_plugin_scripts = Glob("plugin/*/_SConscript") + Glob("plugin/*/SConscript") + Glob("extra/plugin/integrated/*/_SConscript") + Glob("extra/plugin/integrated/*/SConscript")
+	# BASS is a dynamic dependency of the legacy_sound plugin: its shared libs must ship in lib_android/<abi> so the bundler
+	# can drop them next to legacy_sound.so (which links -lbass). The stub itself never links BASS.
+	android_plugin_shared_deps = {"legacy_sound": ["libbass.so", "libbass_fx.so", "libbassmix.so"]}
+	# NVGT's own code compiled directly into every native lib (the old ndk-build LOCAL_SRC_FILES_COMMON): AngelScript addons,
+	# a selected set of dep/ C/C++ sources, and all of src/. It is NOT linked as prebuilt static libs (those are arm64-only);
+	# only the per-ABI droidev deps + SDL3/phonon + Android system libs are linked below.
+	asaddon_srcs = [str(f).replace(os.path.sep, "/") for f in Glob("ASAddon/src/*.cpp")]
+	dep_srcs = ["dep/" + s for s in ["cmp.c", "entities.cpp", "ma_reverb_node.c", "micropather.cpp", "miniaudio_libopus.c", "miniaudio_libvorbis.c", "miniaudio_phonon.c", "miniaudio_wdl_resampler.cpp", "monocypher.c", "resample.cpp", "rng_get_bytes.c", "singleheader.cpp", "sonic.c", "tonar.c", "uncompr.c"]]
+	# Clean per-ABI link set: droidev static deps + SDL3/phonon shared + Android system libs. No NVGT static libs, no plugins.
+	android_link_libs = common_libs + ["z", "SDL3", "phonon", "GLESv1_CM", "GLESv2", "OpenSLES", "log", "android", "m"]
 	for abi, (clang_triple, libcxx_dir) in env["ANDROID_ABIS"].items():
 		abi_dev = os.path.join(osdev_base, abi)
 		abi_env = env.Clone()
 		abi_env["CC"] = os.path.join(tb, f"{clang_triple}-clang{ce}")
 		abi_env["CXX"] = os.path.join(tb, f"{clang_triple}-clang++{ce}")
 		abi_env["LINK"] = os.path.join(tb, f"{clang_triple}-clang++{ce}")
-		abi_env.Append(CPPPATH = [os.path.join(abi_dev, "include")])
-		abi_env.Prepend(LIBPATH = [os.path.join(abi_dev, "lib")])
-		# Per-ABI extra objects (arch-specific): version + lzfse (bundling.cpp's Assets.car encoder, linked into the runner).
-		abi_extra = [abi_env.Object(f"build/obj_android/{abi}/version", "src/version.cpp")]
-		abi_extra += [abi_env.Object(f"build/obj_android/{abi}/lzfse/{s}", "dep/lzfse/" + s + ".c") for s in lzfse_srcs]
+		abi_env["SHLIBPREFIX"] = ""  # lib names below already carry the "lib" prefix -> emit libmain.so / libgame.so verbatim
+		# Each ABI builds strictly against ITS OWN droidev/<abi> tree — nothing flat, never another ABI's headers/libs.
+		abi_env.Replace(CPPPATH = [os.path.join(abi_dev, "include"), "#ASAddon/include", "#dep"])
+		abi_env.Replace(LIBPATH = [os.path.join(abi_dev, "lib")])
+		abi_env.Replace(LIBS = android_link_libs)
 		libcxx_path = os.path.join(env["NDK_HOME"], "toolchains", "llvm", "prebuilt", env["NDK_HOST_TAG"], "sysroot", "usr", "lib", libcxx_dir, "libc++_shared.so")
-		# The three variants differ only by their defines.
+		# Dynamic plugins for this ABI -> release/lib_android/<abi>/*.so (shipped alongside nvgt; the bundler drops the ones a
+		# script actually uses into the APK's lib/<abi>/). Built through the sandbox env so per-ABI runs never collide.
+		lib_android_dest = f"#release/lib_android/{abi}"
+		for s in android_plugin_scripts:
+			plugname = str(s).split(os.path.sep)[-2]
+			if ARGUMENTS.get(f"no_{plugname}_plugin", "0") == "1": continue
+			SConscript(s, variant_dir = f"build/obj_plugin_android/{abi}/{plugname}", duplicate = 0, exports = {"env": android_plugin_env(abi_env, abi), "nvgt_env": abi_env})
+			# Ship each plugin's dynamic dependencies (e.g. BASS for legacy_sound) next to it so the bundler can include them.
+			for dep_so in android_plugin_shared_deps.get(plugname, []):
+				android_deps.extend(env.Install(lib_android_dest, os.path.join(abi_dev, "lib", dep_so)))
+		# version + lzfse (bundling.cpp's Assets.car encoder) are arch-specific but variant-independent: build once per ABI.
+		shared_objs = [abi_env.Object(f"build/obj_android/{abi}/version", "src/version.cpp")]
+		shared_objs += [abi_env.Object(f"build/obj_android/{abi}/lzfse/{s}", "dep/lzfse/" + s + ".c") for s in lzfse_srcs]
+		# The three variants differ only by their defines: runner + regular stub disable IAP, the IAP stub enables it.
 		for variant, extra_defines in [("runner", ["NVGT_NO_IAP"]), ("stub", ["NVGT_STUB", "NVGT_NO_IAP"]), ("stub_iap", ["NVGT_STUB"])]:
 			venv = abi_env.Clone()
 			venv.Append(CPPDEFINES = extra_defines)
-			obj_dir = f"build/obj_android/{abi}/{variant}"
-			VariantDir(obj_dir, "src", duplicate = 0)
+			obj_root = f"build/obj_android/{abi}/{variant}"
+			objs = [venv.Object(f"{obj_root}/src/{os.path.splitext(s)[0]}", "src/" + s) for s in sources]
+			objs += [venv.Object(f"{obj_root}/asaddon/{os.path.splitext(os.path.basename(s))[0]}", s) for s in asaddon_srcs]
+			objs += [venv.Object(f"{obj_root}/dep/{os.path.splitext(os.path.basename(s))[0]}", s) for s in dep_srcs]
+			objs += shared_objs
 			dest = f"jni/libs/{variant}/{abi}"
 			libname = "libmain" if variant == "runner" else "libgame"
-			lib = venv.SharedLibrary(os.path.join(dest, libname), venv.Object([os.path.join(obj_dir, s) for s in sources]) + abi_extra)
+			lib = venv.SharedLibrary(os.path.join(dest, libname), objs)
 			android_deps.append(lib)
 			android_deps.extend(env.Install(dest, libcxx_path))
 			android_deps.extend(env.Install(dest, os.path.join(abi_dev, "lib/libSDL3.so")))

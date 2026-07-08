@@ -17,7 +17,11 @@ def download_deps():
 	ts_file = osdev_path / "timestamp"
 	if osdev_path.exists():
 		try: last_update = int(ts_file.read_text())
-		except: last_update = 0 if (osdev_path / "include").exists() and (osdev_path / "lib").exists() else -1
+		# "Valid but unmanaged" (last_update = 0, i.e. don't touch it) if either the flat layout (include + lib) exists,
+		# OR the per-ABI Android layout (droidev/<abi>/lib) does. Without the per-ABI case, a droidev freshly built by
+		# build_dependencies (which has no timestamp file and no flat include/lib) would be silently wiped and replaced
+		# with the flat public download — destroying the armeabi-v7a tree and mislocating arm64's libs.
+		except: last_update = 0 if ((osdev_path / "include").exists() and (osdev_path / "lib").exists()) or (osdev_path / "arm64-v8a" / "lib").exists() else -1
 	if not last_update: return # Given directory looks valid but contains no timestamp, thus is not managed by us
 	latest = 0
 	with urlopen(f"https://nvgt.dev/{env['NVGT_OSDEV_NAME']}.zip.timestamp") as f: latest = int(f.read().decode())

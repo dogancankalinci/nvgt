@@ -40,6 +40,8 @@ def build(triplet = "", do_archive = False, out_dir = ""):
 	if "-windows" in triplet: dev_basename = "windev"
 	elif "-osx" in triplet: dev_basename = "macosdev"
 	elif "-linux" in triplet: dev_basename = "lindev"
+	# Android deps are always laid out per-ABI: droidev/arm64-v8a and droidev/armeabi-v7a, each self-contained (include + lib).
+	# scons builds each ABI against only its own subdir; there is no flat droidev/lib for Android.
 	elif "armv7-android" in triplet: dev_basename = "droidev"; abi_subdir = "armeabi-v7a"
 	elif "-android" in triplet: dev_basename = "droidev"; abi_subdir = "arm64-v8a"
 	elif "-ios" in triplet: dev_basename = "iosdev"
