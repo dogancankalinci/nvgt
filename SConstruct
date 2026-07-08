@@ -277,8 +277,11 @@ elif env["NVGT_TARGET"] == "android":
 		abi_env["LINK"] = os.path.join(tb, f"{clang_triple}-clang++{ce}")
 		abi_env["SHLIBPREFIX"] = ""  # lib names below already carry the "lib" prefix -> emit libmain.so / libgame.so verbatim
 		# Each ABI builds strictly against ITS OWN droidev/<abi> tree — nothing flat, never another ABI's headers/libs.
-		abi_env.Replace(CPPPATH = [os.path.join(abi_dev, "include"), "#ASAddon/include", "#dep"])
-		abi_env.Replace(LIBPATH = [os.path.join(abi_dev, "lib")])
+		# These MUST be top-relative ("#..."): the per-plugin SConscript calls below run under a variant_dir, and SCons
+		# rewrites any *relative* CPPPATH/LIBPATH entry against that variant dir (yielding bogus paths like
+		# build/obj_plugin_android/<abi>/<plug>/droidev/<abi>/include). A "#" anchor keeps them at the project root.
+		abi_env.Replace(CPPPATH = ["#" + abi_dev + "/include", "#ASAddon/include", "#dep"])
+		abi_env.Replace(LIBPATH = ["#" + abi_dev + "/lib"])
 		abi_env.Replace(LIBS = android_link_libs)
 		libcxx_path = os.path.join(env["NDK_HOME"], "toolchains", "llvm", "prebuilt", env["NDK_HOST_TAG"], "sysroot", "usr", "lib", libcxx_dir, "libc++_shared.so")
 		# Dynamic plugins for this ABI -> release/lib_android/<abi>/*.so (shipped alongside nvgt; the bundler drops the ones a
