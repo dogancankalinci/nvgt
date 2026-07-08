@@ -218,9 +218,12 @@ elif env["NVGT_TARGET"] == "android":
 	def android_plugin_env(base_env, abi):
 		pe = base_env.Clone()
 		# Normalise CPPDEFINES to a plain list (SCons keeps it as a deque after Append): some plugin SConscripts do
-		# `env["CPPDEFINES"] + [...]`, which throws "can only concatenate deque (not list)". The top-level plugin build
-		# does the same conversion (see the `plugins` section above).
-		pe["CPPDEFINES"] = list(pe["CPPDEFINES"])
+		# `env["CPPDEFINES"] + [...]`, which throws "can only concatenate deque (not list)". Also drop the defines that only
+		# apply to building NVGT itself — crucially NVGT_BUILDING: nvgt_plugin.h wraps the entire plugin-side API
+		# (plugin_main / prepare_plugin) in `#ifndef NVGT_BUILDING`, so a plugin compiled with it set fails to declare its
+		# own entry point. The desktop plugin_env avoids this by being cloned before these defines are appended.
+		_nvgt_only_defines = {"NVGT_BUILDING", "NO_OBFUSCATE", "NVGT_USER_CONFIG"}
+		pe["CPPDEFINES"] = [d for d in list(pe["CPPDEFINES"]) if (d[0] if isinstance(d, (tuple, list)) else d) not in _nvgt_only_defines]
 		pe["PLUGIN_DEST_DIR"] = "#release/lib_android/" + abi
 		pe.Append(CXXFLAGS = ["-fPIC"])
 		libdir = "#build/lib_android/" + abi
