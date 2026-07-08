@@ -360,11 +360,9 @@ poco_json_object& poco_json_object::operator=(poco_json_object* other) {
 	return *this;
 }
 poco_shared<Dynamic::Var>* poco_json_object::get(const std::string& key, poco_shared<Dynamic::Var>* default_value) const {
-	if (ptr->has(key)) {
-		if (default_value) default_value->release();
-		return new poco_shared<Dynamic::Var>(SharedPtr<Dynamic::Var>(new Dynamic::Var(ptr->get(key))));
-	}
-	return default_value;
+	if (!ptr->has(key)) return default_value;
+	if (default_value) default_value->release();
+	return new poco_shared<Dynamic::Var>(SharedPtr<Dynamic::Var>(new Dynamic::Var(ptr->get(key))));
 }
 poco_shared<Dynamic::Var>* poco_json_object::get_indexed(const std::string& key) const {
 	return new poco_shared<Dynamic::Var>(SharedPtr<Dynamic::Var>(new Dynamic::Var(ptr->get(key)))); // Oof, more duplication than I like probably?
