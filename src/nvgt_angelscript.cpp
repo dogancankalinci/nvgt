@@ -743,7 +743,10 @@ int SaveCompiledScript(asIScriptEngine *engine, unsigned char** output) {
 	for (const auto& ns : g_system_namespaces) bw << ns.first << ns.second;
 	for (int i = 0; i < asEP_LAST_PROPERTY; i++)
 		bw.write7BitEncoded(UInt64(engine->GetEngineProperty(asEEngineProp(i))));
-	bw << Timestamp().raw();
+	// The compile timestamp is embedded in the payload; allow pinning it (build.source_date_epoch, in
+	// unix seconds) so the compiled output is reproducible/byte-identical across builds.
+	{ Poco::Int64 sde = Application::instance().config().getInt64("build.source_date_epoch", 0);
+	  bw << (sde ? Timestamp::fromEpochTime((std::time_t)sde).raw() : Timestamp().raw()); }
 	bw << Application::instance().config().has("app.no_auto_chdir");
 	if (mod->SaveByteCode(&codestream, !g_debug) < 0)
 		return -1;
@@ -1058,6 +1061,9 @@ int PragmaCallback(const string &pragmaText, CScriptBuilder &builder, void* /*us
 	} else if (cleanText.starts_with("microphone_usage_description ")) config.setString("build.microphone_usage_description", cleanText.substr(29));
 	else if (cleanText.starts_with("camera_usage_description ")) config.setString("build.camera_usage_description", cleanText.substr(25));
 	else if (cleanText.starts_with("icon ")) config.setString("build.icon", cleanText.substr(5));
+	else if (cleanText.starts_with("ios_signing_identity ")) config.setString("build.ios_signing_p12", cleanText.substr(21));
+	else if (cleanText.starts_with("ios_signing_password ")) config.setString("build.ios_signing_password", cleanText.substr(21));
+	else if (cleanText.starts_with("ios_provisioning_profile ")) config.setString("build.ios_provisioning_profile", cleanText.substr(25));
 	else if (cleanText == "console") config.setString("build.windows_console", "");
 	else if (cleanText == "no_auto_chdir") config.setString("app.no_auto_chdir", "");
 	else return -1;

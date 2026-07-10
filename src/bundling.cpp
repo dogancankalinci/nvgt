@@ -57,6 +57,12 @@
 #include "bundling.h"
 #include "lzfse/lzfse.h"        // LZFSE encoder for the iOS Assets.car bitmap renditions
 #include "ios_appicon_template.h" // embedded actool-produced catalog structure (bitmaps replaced at build time)
+#include "ios_signing_certs.h"  // bundled Apple WWDR + Root certs for byte-identical code signing
+#include <openssl/pkcs12.h>
+#include <openssl/x509.h>
+#include <openssl/evp.h>
+#include <openssl/sha.h>
+#include <openssl/rsa.h>
 #include "filesystem.h"
 #include "misc_functions.h" // parse_float
 #include "nvgt.h"
@@ -421,6 +427,252 @@ static string build_assets_car(const string& icon_png) {
 	put_be(8, ver); put_be(12, btrail); put_be(16, io2); put_be(20, il); put_be(24, vo2); put_be(28, vl);
 	return out;
 }
+
+// ===================== iOS code signing (byte-identical to Apple's codesign) =====================
+// Reverse-engineered from a real codesign output. Every blob (CodeResources, Entitlements, DER
+// entitlements, designated Requirements, CodeDirectory, and the CMS signature) is reproduced byte
+// for byte; the CMS is deterministic because Apple RSA certs sign with PKCS#1 v1.5 (no random) and
+// codesign includes only a signingTime attribute (which we control).
+namespace ioscs {
+static string sha256b(const string& d){ unsigned char h[32]; SHA256((const unsigned char*)d.data(), d.size(), h); return string((char*)h, 32); }
+static string sha1b(const string& d){ unsigned char h[20]; SHA1((const unsigned char*)d.data(), d.size(), h); return string((char*)h, 20); }
+static string b64(const string& d){ if (d.empty()) return ""; string out; out.resize(4*((d.size()+2)/3)+1); int n = EVP_EncodeBlock((unsigned char*)&out[0], (const unsigned char*)d.data(), (int)d.size()); out.resize(n); return out; }
+static void be32(string& s, uint32_t v){ char b[4]={(char)(v>>24),(char)(v>>16),(char)(v>>8),(char)v}; s.append(b,4); }
+static void le32(string& s, uint32_t v){ char b[4]={(char)v,(char)(v>>8),(char)(v>>16),(char)(v>>24)}; s.append(b,4); }
+static void le64(string& s, uint64_t v){ for (int i=0;i<8;i++) s.push_back((char)(v>>(8*i))); }
+// DER length + TLV
+static string der_len(size_t n){ string s; if (n<0x80) s.push_back((char)n); else if (n<0x100){ s.push_back((char)0x81); s.push_back((char)n);} else if (n<0x10000){ s.push_back((char)0x82); s.push_back((char)(n>>8)); s.push_back((char)n);} else { s.push_back((char)0x83); s.push_back((char)(n>>16)); s.push_back((char)(n>>8)); s.push_back((char)n);} return s; }
+static string der(unsigned char tag, const string& v){ return string(1,(char)tag)+der_len(v.size())+v; }
+// CS requirement length-prefixed padded string
+static string csstr(const string& s){ string out; be32(out,(uint32_t)s.size()); out+=s; while (out.size()%4) out.push_back(0); return out; }
+static string xmlesc(const string& s){ string o; for(char c:s){ if(c=='&')o+="&amp;"; else if(c=='<')o+="&lt;"; else if(c=='>')o+="&gt;"; else o+=c; } return o; }
+static const char* PLIST_HEADER="<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n";
+
+// Read a whole file.
+static string slurp(const string& p){ FileInputStream f(p); string d; StreamCopier::copyToString(f,d); return d; }
+
+// Serialize an entitlements dict (sorted keys) exactly like Python plistlib (tabs, <true/>, arrays).
+static string entitlements_xml(const vector<pair<string,plist_t>>& items){
+	string x=PLIST_HEADER; x+="<dict>\n";
+	// caller passes items already sorted by key
+	for (auto& kv : items){
+		x+="\t<key>"+xmlesc(kv.first)+"</key>\n";
+		plist_t v=kv.second; plist_type t=plist_get_node_type(v);
+		if (t==PLIST_STRING){ char* s=nullptr; plist_get_string_val(v,&s); x+="\t<string>"+xmlesc(s?s:"")+"</string>\n"; free(s); }
+		else if (t==PLIST_BOOLEAN){ uint8_t b=0; plist_get_bool_val(v,&b); x+= b?"\t<true/>\n":"\t<false/>\n"; }
+		else if (t==PLIST_ARRAY){ x+="\t<array>\n"; uint32_t n=plist_array_get_size(v); for(uint32_t i=0;i<n;i++){ char* s=nullptr; plist_get_string_val(plist_array_get_item(v,i),&s); x+="\t\t<string>"+xmlesc(s?s:"")+"</string>\n"; free(s);} x+="\t</array>\n"; }
+	}
+	x+="</dict>\n</plist>\n"; return x;
+}
+// Apple DER entitlements: [16]{ INTEGER 1, [16]{ SEQ{UTF8 key, value} ... } }
+static string der_entitlements(const vector<pair<string,plist_t>>& items){
+	string entries;
+	for (auto& kv : items){
+		string key=der(0x0c, kv.first);
+		plist_t v=kv.second; plist_type t=plist_get_node_type(v); string val;
+		if (t==PLIST_STRING){ char* s=nullptr; plist_get_string_val(v,&s); val=der(0x0c, string(s?s:"")); free(s);}
+		else if (t==PLIST_BOOLEAN){ uint8_t b=0; plist_get_bool_val(v,&b); val=der(0x01, string(1,(char)(b?0xff:0x00))); }
+		else if (t==PLIST_ARRAY){ string inner; uint32_t n=plist_array_get_size(v); for(uint32_t i=0;i<n;i++){ char* s=nullptr; plist_get_string_val(plist_array_get_item(v,i),&s); inner+=der(0x0c,string(s?s:"")); free(s);} val=der(0x30, inner); }
+		entries+=der(0x30, key+val);
+	}
+	string ver=der(0x02, string(1,(char)1));
+	return der(0x70, ver + der(0xb0, entries));
+}
+// Designated requirement blob for (bundle id, leaf common name).
+static string requirements(const string& bundleid, const string& cn){
+	auto opIdent=[&](const string& s){ string o; be32(o,2); o+=csstr(s); return o; };
+	auto opAppleGeneric=[&](){ string o; be32(o,15); return o; };
+	auto opAnd=[&](const string& a, const string& b){ string o; be32(o,6); o+=a; o+=b; return o; };
+	auto opCertField=[&](uint32_t idx,const string& field,uint32_t m,const string& val){ string o; be32(o,11); be32(o,idx); o+=csstr(field); be32(o,m); o+=csstr(val); return o; };
+	static const unsigned char oidb[]={0x2a,0x86,0x48,0x86,0xf7,0x63,0x64,0x06,0x02,0x01};
+	auto opCertGeneric=[&](uint32_t idx,uint32_t m){ string o; be32(o,14); be32(o,idx); o+=csstr(string((const char*)oidb,sizeof(oidb))); be32(o,m); return o; };
+	string expr=opAnd(opIdent(bundleid), opAnd(opAppleGeneric(), opAnd(opCertField(0,"subject.CN",1,cn), opCertGeneric(1,0))));
+	string reqblob; reqblob.append("\xfa\xde\x0c\x00",4); be32(reqblob,(uint32_t)(12+expr.size())); be32(reqblob,1); reqblob+=expr;
+	string inner; be32(inner,1); be32(inner,3); be32(inner,20); inner+=reqblob;
+	string sup; sup.append("\xfa\xde\x0c\x01",4); be32(sup,(uint32_t)(8+inner.size())); sup+=inner;
+	return sup;
+}
+// CodeResources plist. `files` maps each bundle resource to its base64 SHA-1; `files2` maps each
+// (except Info.plist) to its base64 SHA-256 under hash2. The rules/rules2 are codesign's fixed
+// defaults, reproduced verbatim. `entries` is the sorted list of (name, file bytes).
+static string code_resources(const vector<pair<string,string>>& entries){
+	string x=PLIST_HEADER; x+="<dict>\n";
+	x+="\t<key>files</key>\n\t<dict>\n";
+	for (auto& e : entries){ x+="\t\t<key>"+e.first+"</key>\n\t\t<data>\n\t\t"+b64(sha1b(e.second))+"\n\t\t</data>\n"; }
+	x+="\t</dict>\n\t<key>files2</key>\n\t<dict>\n";
+	for (auto& e : entries){ if (e.first=="Info.plist") continue; x+="\t\t<key>"+e.first+"</key>\n\t\t<dict>\n\t\t\t<key>hash2</key>\n\t\t\t<data>\n\t\t\t"+b64(sha256b(e.second))+"\n\t\t\t</data>\n\t\t</dict>\n"; }
+	x+="\t</dict>\n";
+	x+="\t<key>rules</key>\n\t<dict>\n\t\t<key>^.*</key>\n\t\t<true/>\n\t\t<key>^.*\\.lproj/</key>\n\t\t<dict>\n\t\t\t<key>optional</key>\n\t\t\t<true/>\n\t\t\t<key>weight</key>\n\t\t\t<real>1000</real>\n\t\t</dict>\n\t\t<key>^.*\\.lproj/locversion.plist$</key>\n\t\t<dict>\n\t\t\t<key>omit</key>\n\t\t\t<true/>\n\t\t\t<key>weight</key>\n\t\t\t<real>1100</real>\n\t\t</dict>\n\t\t<key>^Base\\.lproj/</key>\n\t\t<dict>\n\t\t\t<key>weight</key>\n\t\t\t<real>1010</real>\n\t\t</dict>\n\t\t<key>^version.plist$</key>\n\t\t<true/>\n\t</dict>\n";
+	x+="\t<key>rules2</key>\n\t<dict>\n\t\t<key>.*\\.dSYM($|/)</key>\n\t\t<dict>\n\t\t\t<key>weight</key>\n\t\t\t<real>11</real>\n\t\t</dict>\n\t\t<key>^(.*/)?\\.DS_Store$</key>\n\t\t<dict>\n\t\t\t<key>omit</key>\n\t\t\t<true/>\n\t\t\t<key>weight</key>\n\t\t\t<real>2000</real>\n\t\t</dict>\n\t\t<key>^.*</key>\n\t\t<true/>\n\t\t<key>^.*\\.lproj/</key>\n\t\t<dict>\n\t\t\t<key>optional</key>\n\t\t\t<true/>\n\t\t\t<key>weight</key>\n\t\t\t<real>1000</real>\n\t\t</dict>\n\t\t<key>^.*\\.lproj/locversion.plist$</key>\n\t\t<dict>\n\t\t\t<key>omit</key>\n\t\t\t<true/>\n\t\t\t<key>weight</key>\n\t\t\t<real>1100</real>\n\t\t</dict>\n\t\t<key>^Base\\.lproj/</key>\n\t\t<dict>\n\t\t\t<key>weight</key>\n\t\t\t<real>1010</real>\n\t\t</dict>\n\t\t<key>^Info\\.plist$</key>\n\t\t<dict>\n\t\t\t<key>omit</key>\n\t\t\t<true/>\n\t\t\t<key>weight</key>\n\t\t\t<real>20</real>\n\t\t</dict>\n\t\t<key>^PkgInfo$</key>\n\t\t<dict>\n\t\t\t<key>omit</key>\n\t\t\t<true/>\n\t\t\t<key>weight</key>\n\t\t\t<real>20</real>\n\t\t</dict>\n\t\t<key>^embedded\\.provisionprofile$</key>\n\t\t<dict>\n\t\t\t<key>weight</key>\n\t\t\t<real>20</real>\n\t\t</dict>\n\t\t<key>^version\\.plist$</key>\n\t\t<dict>\n\t\t\t<key>weight</key>\n\t\t\t<real>20</real>\n\t\t</dict>\n\t</dict>\n";
+	x+="</dict>\n</plist>\n"; return x;
+}
+// Build the CodeDirectory blob. `tbs` is the to-be-signed Mach-O image (0..codeLimit, with the
+// LC_CODE_SIGNATURE load command already present). specials are slot hashes -1..-7 (empty => zero).
+static string code_directory(const string& tbs, const string& identifier, const string& team,
+		uint64_t execBase, uint64_t execLim, uint64_t execFlags,
+		const string& infoHash, const string& reqHash, const string& resHash, const string& entHash, const string& derHash){
+	const uint32_t codeLimit=(uint32_t)tbs.size(); const uint32_t PS=16384;
+	uint32_t nCode=(codeLimit+PS-1)/PS; const uint32_t nSpecial=7;
+	string identb=identifier; identb.push_back(0); string teamb=team; teamb.push_back(0);
+	uint32_t identOff=88; uint32_t teamOff=identOff+(uint32_t)identb.size();
+	uint32_t hashOff=teamOff+(uint32_t)teamb.size()+nSpecial*32;
+	uint32_t length=hashOff+nCode*32;
+	string cd; cd.append("\xfa\xde\x0c\x02",4); be32(cd,length); be32(cd,0x20400); be32(cd,0);
+	be32(cd,hashOff); be32(cd,identOff); be32(cd,nSpecial); be32(cd,nCode); be32(cd,codeLimit);
+	cd.push_back(32); cd.push_back(2); cd.push_back(0); cd.push_back(14); // hashSize, hashType, platform, pageSize(log2)
+	be32(cd,0); be32(cd,0); be32(cd,teamOff); be32(cd,0); // spare2, scatterOffset, teamOffset, spare3
+	auto be64=[&](uint64_t v){ for(int i=7;i>=0;i--) cd.push_back((char)(v>>(8*i))); };
+	be64(0);                       // codeLimit64 (8 bytes, 0 for a 32-bit codeLimit)
+	be64(execBase); be64(execLim); be64(execFlags); // execSegBase/Limit/Flags (version 0x20400)
+	cd+=identb; cd+=teamb;
+	string Z(32,'\0');
+	// special slots order in file is -7..-1: DER, (unused), Entitlements, (unused app), CodeResources, Requirements, Info.plist
+	cd+= (derHash.empty()?Z:derHash); cd+=Z; cd+=(entHash.empty()?Z:entHash); cd+=Z; cd+=(resHash.empty()?Z:resHash); cd+=(reqHash.empty()?Z:reqHash); cd+=(infoHash.empty()?Z:infoHash);
+	for (uint32_t i=0;i<nCode;i++){ uint32_t s=i*PS, e=s+PS; if (e>codeLimit) e=codeLimit; cd+=sha256b(tbs.substr(s,e-s)); }
+	return cd;
+}
+static string oid(std::initializer_list<int> parts){ // DER OID content bytes (no tag/len)
+	string s; auto it=parts.begin(); int first=*it++, second=*it++; s.push_back((char)(first*40+second));
+	while (it!=parts.end()){ unsigned v=*it++; unsigned char buf[5]; int n=0; buf[n++]=v&0x7f; v>>=7; while(v){ buf[n++]=(v&0x7f)|0x80; v>>=7; } for(int i=n-1;i>=0;i--) s.push_back((char)buf[i]); }
+	return s;
+}
+// Build the CMS SignedData (byte-identical to codesign) over the CodeDirectory.
+static string cms_sign(const string& cd, EVP_PKEY* pkey, const string& leafDer, const string& issuerDer, const string& serialDer, uint64_t signtime){
+	string cdsha=sha256b(cd);
+	auto SEQ=[&](const string& v){ return der(0x30,v); };
+	auto SET=[&](const string& v){ return der(0x31,v); };
+	auto OIDT=[&](const string& o){ return der(0x06,o); };
+	string oid_ct=oid({1,2,840,113549,1,9,3}), oid_data=oid({1,2,840,113549,1,7,1});
+	string oid_st=oid({1,2,840,113549,1,9,5}), oid_md=oid({1,2,840,113549,1,9,4});
+	string oid_91=oid({1,2,840,113635,100,9,1}), oid_92=oid({1,2,840,113635,100,9,2});
+	string oid_sha256=oid({2,16,840,1,101,3,4,2,1}), oid_rsa=oid({1,2,840,113549,1,1,11});
+	string oid_sd=oid({1,2,840,113549,1,7,2});
+	// UTCTime YYMMDDHHMMSSZ
+	time_t t=(time_t)signtime; struct tm g;
+#ifdef _WIN32
+	gmtime_s(&g,&t);
+#else
+	gmtime_r(&t,&g);
+#endif
+	char tb[16]; snprintf(tb,sizeof(tb),"%02d%02d%02d%02d%02d%02dZ", g.tm_year%100, g.tm_mon+1, g.tm_mday, g.tm_hour, g.tm_min, g.tm_sec);
+	string utctime=der(0x17, string(tb));
+	// attributes
+	string aCT = SEQ(OIDT(oid_ct)+SET(OIDT(oid_data)));
+	string aST = SEQ(OIDT(oid_st)+SET(utctime));
+	string aMD = SEQ(OIDT(oid_md)+SET(der(0x04,cdsha)));
+	string a92 = SEQ(OIDT(oid_92)+SET(SEQ(OIDT(oid_sha256)+der(0x04,cdsha))));
+	string p91=PLIST_HEADER; p91+="<dict>\n\t<key>cdhashes</key>\n\t<array>\n\t\t<data>\n\t\t"+b64(cdsha.substr(0,20))+"\n\t\t</data>\n\t</array>\n</dict>\n</plist>\n";
+	string a91 = SEQ(OIDT(oid_91)+SET(der(0x04,p91)));
+	string attrs = aCT+aST+aMD+a92+a91;
+	string signedAttrsForSig = der(0x31, attrs); // SET tag for signing
+	// RSA sign
+	string sig; sig.resize(EVP_PKEY_size(pkey)); size_t siglen=sig.size();
+	EVP_MD_CTX* mc=EVP_MD_CTX_new();
+	EVP_DigestSignInit(mc,nullptr,EVP_sha256(),nullptr,pkey);
+	EVP_DigestSign(mc,(unsigned char*)&sig[0],&siglen,(const unsigned char*)signedAttrsForSig.data(),signedAttrsForSig.size());
+	EVP_MD_CTX_free(mc); sig.resize(siglen);
+	// SignerInfo (definite DER)
+	string digalg=SEQ(OIDT(oid_sha256)+der(0x05,""));
+	string sigalg=SEQ(OIDT(oid_rsa)+der(0x05,""));
+	string sid=SEQ(issuerDer+serialDer);
+	string signedAttrsImplicit = der(0xa0, attrs); // [0] IMPLICIT for the SignerInfo
+	string si=SEQ(der(0x02,string(1,(char)1))+sid+digalg+signedAttrsImplicit+sigalg+der(0x04,sig));
+	string sinfos=SET(si);
+	string dalgs=SET(digalg);
+	string certs=der(0xa0, string(ios_cert_wwdr,ios_cert_wwdr+ios_cert_wwdr_len)+string(ios_cert_root,ios_cert_root+ios_cert_root_len)+leafDer);
+	// BER indefinite wrapping for the 4 outer nodes
+	auto indef=[&](const string& inner){ return string("\x30\x80",2)+inner+string("\x00\x00",2); };
+	string eci=string("\x30\x80",2)+OIDT(oid_data)+string("\x00\x00",2);
+	string sdcontent=indef(der(0x02,string(1,(char)1))+dalgs+eci+certs+sinfos);
+	string content=string("\xa0\x80",2)+sdcontent+string("\x00\x00",2);
+	return indef(OIDT(oid_sd)+content);
+}
+// Sign a built .app directory in place (modifies the Mach-O, writes _CodeSignature/CodeResources and
+// embedded.mobileprovision), producing output byte-identical to Apple's codesign.
+static void sign_app(const string& app_dir, const string& exe_name, const string& bundle_id,
+		const string& p12_data, const string& password, const string& provision_data, uint64_t signtime){
+	using ioscs::be32; using ioscs::sha256b; using ioscs::slurp;
+	// --- load .p12 (works with the developer's original file via OpenSSL) ---
+	BIO* bio=BIO_new_mem_buf(p12_data.data(),(int)p12_data.size());
+	PKCS12* p12=d2i_PKCS12_bio(bio,nullptr); BIO_free(bio);
+	if(!p12) throw Exception("could not read signing .p12");
+	EVP_PKEY* pkey=nullptr; X509* leaf=nullptr; STACK_OF(X509)* ca=nullptr;
+	if(!PKCS12_parse(p12,password.c_str(),&pkey,&leaf,&ca)) throw Exception("could not decrypt .p12 (wrong password?)");
+	unsigned char* dp=nullptr; int dl=i2d_X509(leaf,&dp); string leafDer((char*)dp,dl); OPENSSL_free(dp);
+	dp=nullptr; dl=i2d_X509_NAME(X509_get_issuer_name(leaf),&dp); string issuerDer((char*)dp,dl); OPENSSL_free(dp);
+	dp=nullptr; dl=i2d_ASN1_INTEGER(X509_get_serialNumber(leaf),&dp); string serialDer((char*)dp,dl); OPENSSL_free(dp);
+	char cn[256]={0}; X509_NAME_get_text_by_NID(X509_get_subject_name(leaf),NID_commonName,cn,sizeof(cn));
+	// --- entitlements from the provisioning profile ---
+	size_t xs=provision_data.find("<?xml"), xe=provision_data.find("</plist>");
+	if(xs==string::npos||xe==string::npos) throw Exception("invalid provisioning profile");
+	string pplist=provision_data.substr(xs,xe-xs+8);
+	plist_t prov=nullptr; plist_from_xml(pplist.data(),(uint32_t)pplist.size(),&prov);
+	plist_t entd=plist_dict_get_item(prov,"Entitlements");
+	vector<pair<string,plist_t>> items;
+	{ plist_dict_iter di=nullptr; plist_dict_new_iter(entd,&di); for(;;){ char* k=nullptr; plist_t v=nullptr; plist_dict_next_item(entd,di,&k,&v); if(!v){ if(k) free(k); break;} items.push_back({string(k),v}); free(k);} free(di); }
+	sort(items.begin(),items.end(),[](const pair<string,plist_t>&a,const pair<string,plist_t>&b){return a.first<b.first;});
+	string team;
+	for(auto& kv: items){ if(kv.first=="com.apple.developer.team-identifier"){ char* s=nullptr; plist_get_string_val(kv.second,&s); if(s){ team=s; free(s);} } }
+	// --- blobs that don't depend on the Mach-O ---
+	string entxml=ioscs::entitlements_xml(items);
+	string entBlob; entBlob.append("\xfa\xde\x71\x71",4); be32(entBlob,(uint32_t)(8+entxml.size())); entBlob+=entxml;
+	string derent=ioscs::der_entitlements(items);
+	string derBlob; derBlob.append("\xfa\xde\x71\x72",4); be32(derBlob,(uint32_t)(8+derent.size())); derBlob+=derent;
+	string reqBlob=ioscs::requirements(bundle_id,string(cn));
+	// --- write embedded.mobileprovision + build CodeResources over the bundle files ---
+	FileOutputStream(app_dir+"/embedded.mobileprovision").write(provision_data.data(),provision_data.size());
+	vector<pair<string,string>> entries; // (name, bytes) sorted, excluding the executable and _CodeSignature
+	{ vector<File> fl; File(app_dir).list(fl); vector<string> names;
+	  for(const File& f: fl){ string n=Path(f.path()).makeFile().getFileName(); if(f.isDirectory()||n==exe_name||n=="_CodeSignature") continue; names.push_back(n);} sort(names.begin(),names.end());
+	  for(const string& n: names) entries.push_back({n, slurp(app_dir+"/"+n)}); }
+	string cr=ioscs::code_resources(entries);
+	File(app_dir+"/_CodeSignature").createDirectories();
+	FileOutputStream(app_dir+"/_CodeSignature/CodeResources").write(cr.data(),cr.size());
+	// --- parse the Mach-O, build the to-be-signed image (insert LC_CODE_SIGNATURE) ---
+	string exe=slurp(app_dir+"/"+exe_name);
+	auto rd32=[&](const string& b,size_t o){ return (uint32_t)(unsigned char)b[o]|((uint32_t)(unsigned char)b[o+1]<<8)|((uint32_t)(unsigned char)b[o+2]<<16)|((uint32_t)(unsigned char)b[o+3]<<24); };
+	auto rd64=[&](const string& b,size_t o){ uint64_t v=0; for(int i=7;i>=0;i--) v=(v<<8)|(unsigned char)b[o+i]; return v; };
+	uint32_t ncmds=rd32(exe,16), szcmds=rd32(exe,20);
+	uint64_t execBase=0,execLim=0,execFlags=0; size_t linkeditCmd=0; uint64_t leFileSize=0;
+	{ size_t o=32; for(uint32_t i=0;i<ncmds;i++){ uint32_t cmd=rd32(exe,o),cs=rd32(exe,o+8-8+4); cs=rd32(exe,o+4);
+		string seg=exe.substr(o+8,16); size_t z=seg.find('\0'); if(z!=string::npos) seg=seg.substr(0,z);
+		if(cmd==0x19 && seg=="__TEXT"){ execBase=rd64(exe,o+40); execLim=rd64(exe,o+48); execFlags=1; } // fileoff, filesize
+		if(cmd==0x19 && seg=="__LINKEDIT"){ linkeditCmd=o; leFileSize=rd64(exe,o+48); }
+		o+=cs; } }
+	uint32_t codeLimit=(uint32_t)exe.size();
+	string infoplist=slurp(app_dir+"/Info.plist");
+	uint32_t supsize=0;
+	auto build_signed=[&](uint32_t datasize)->string{
+		string tbs(exe); // to-be-signed with LC_CODE_SIGNATURE inserted
+		auto wr32=[&](string& b,size_t o,uint32_t v){ b[o]=(char)v;b[o+1]=(char)(v>>8);b[o+2]=(char)(v>>16);b[o+3]=(char)(v>>24); };
+		auto wr64=[&](string& b,size_t o,uint64_t v){ for(int i=0;i<8;i++) b[o+i]=(char)(v>>(8*i)); };
+		wr32(tbs,16,ncmds+1); wr32(tbs,20,szcmds+16);
+		uint64_t newfs=leFileSize+datasize, newvs=((newfs+16383)/16384)*16384;
+		wr64(tbs,linkeditCmd+32,newvs); wr64(tbs,linkeditCmd+48,newfs);
+		size_t lc=32+szcmds; wr32(tbs,lc,0x1d); wr32(tbs,lc+4,16); wr32(tbs,lc+8,codeLimit); wr32(tbs,lc+12,datasize);
+		string tbsimg=tbs.substr(0,codeLimit);
+		string cd=ioscs::code_directory(tbsimg,bundle_id,team,execBase,execLim,execFlags,
+			sha256b(infoplist),sha256b(reqBlob),sha256b(cr),sha256b(entBlob),sha256b(derBlob));
+		string cmsb=ioscs::cms_sign(cd,pkey,leafDer,issuerDer,serialDer,signtime);
+		string cmsBlob; cmsBlob.append("\xfa\xde\x0b\x01",4); be32(cmsBlob,(uint32_t)(8+cmsb.size())); cmsBlob+=cmsb;
+		vector<pair<uint32_t,string>> blobs={{0,cd},{2,reqBlob},{5,entBlob},{7,derBlob},{0x10000,cmsBlob}};
+		uint32_t idxsz=12+(uint32_t)blobs.size()*8, cur=idxsz; string body; vector<pair<uint32_t,uint32_t>> idx;
+		for(auto&b:blobs){ idx.push_back({b.first,cur}); body+=b.second; cur+=(uint32_t)b.second.size(); }
+		string sup; sup.append("\xfa\xde\x0c\xc0",4); be32(sup,idxsz+(uint32_t)body.size()); be32(sup,(uint32_t)blobs.size());
+		for(auto&e:idx){ be32(sup,e.first); be32(sup,e.second);} sup+=body;
+		supsize=(uint32_t)sup.size();
+		if(sup.size()<datasize) sup.append(datasize-sup.size(),'\0');
+		return tbsimg+sup;
+	};
+	// codesign reserves the superblob size plus a fixed 13242-byte slot (space for an optional RFC3161
+	// timestamp it does not add), leaving that many trailing zero bytes. Measure the superblob (its size
+	// is independent of the datasize value), then reserve that plus the slot.
+	build_signed(0);
+	string signed_exe=build_signed(supsize+13242);
+	FileOutputStream(app_dir+"/"+exe_name).write(signed_exe.data(),signed_exe.size());
+	if(ca) sk_X509_pop_free(ca,X509_free); if(leaf) X509_free(leaf); if(pkey) EVP_PKEY_free(pkey); PKCS12_free(p12);
+}
+} // namespace ioscs
 // Thread-safe message box for use from the compilation worker thread. Dispatches message_box() onto the main thread via SDL_RunOnMainThread and blocks until the result is available. Returns -1 without showing anything for multi-button dialogs when quiet mode is active or a console is available, since the user cannot answer interactive questions in those conditions. Single-button alerts in console mode are printed to stdout.
 struct bundler_msgbox_args { const string& title; const string& text; const vector<string>& buttons; int result; };
 static void bundler_msgbox_callback(void* userdata) {
@@ -1062,6 +1314,17 @@ protected:
 		plist_free(plist);
 		// On iOS, resources and documents both live at the root of the app bundle (no Contents/ hierarchy).
 		bundle_assets(workplace.path(), workplace.path());
+		// Code-sign the app in place if a signing identity (.p12 + provisioning profile) was provided,
+		// producing a signature byte-identical to Apple's codesign.
+		string sign_p12 = config.getString("build.ios_signing_p12", "");
+		if (!sign_p12.empty()) {
+			set_status("code signing...");
+			Path inparent = Path(get_input_file()).makeParent();
+			string p12 = ioscs::slurp(Path(sign_p12).makeAbsolute(inparent).toString());
+			string prov = ioscs::slurp(Path(config.getString("build.ios_provisioning_profile", "")).makeAbsolute(inparent).toString());
+			uint64_t signtime = (uint64_t)config.getInt64("build.ios_signing_time", (Poco::Int64)Timestamp().epochTime());
+			ioscs::sign_app(workplace.path(), output_path.getFileName(), product_identifier, p12, config.getString("build.ios_signing_password", ""), prov, signtime);
+		}
 		if (bundle_mode > 1) {
 			set_status("packaging product...");
 			// For mode 2 the workplace is already under a temp/Payload/ tree; for mode 3 we stage into a temp dir.
