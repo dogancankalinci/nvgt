@@ -122,6 +122,9 @@ This section contains options that are directly related to the compiling/bundlin
 * android_format = string default apk: the package format produced for Android builds, either "apk" (a directly installable package) or "aab" (an Android App Bundle, the format Google Play requires for upload)
 * camera_usage_description = string default set by NVGT: on iOS, the explanation the system shows when your app first requests camera access (also settable with `#pragma camera_usage_description`). NVGT provides a default because SDL links Apple's camera API; set this to an empty string to omit the key entirely
 * icon = string: path to a square PNG file to use as your application's icon on every platform (usually set with `#pragma icon`, see the compiling for distribution tutorial)
+* ios_provisioning_profile = string: path to the .mobileprovision provisioning profile used when code signing an iOS app (also settable with `#pragma ios_provisioning_profile`, see the "Publishing your app to the Apple App Store" tutorial)
+* ios_signing_p12 = string: path to the developer .p12 signing identity used to code sign an iOS app (also settable with `#pragma ios_signing_identity`). When set, NVGT produces a signed .ipa; when unset the .ipa is unsigned
+* ios_signing_password = string: the password protecting the .p12 given in ios_signing_p12 (also settable with `#pragma ios_signing_password`)
 * linux_bundle = integer default 2: 0 no bundle, 1 folder, 2 .zip, 3 both folder and .zip
 * mac_bundle = integer default 2: 0 no bundle, 1 .app, 2 .dmg/.zip, 3 both .app and .dmg/.zip
 * microphone_usage_description = string: on macOS and iOS, the explanation the system shows when your app first requests microphone access (also settable with `#pragma microphone_usage_description`)
@@ -195,6 +198,9 @@ The syntax for a pragma directive looks like `#pragma name value` or sometimes j
 * `#pragma icon "<pathname>"`: use a custom application icon from a square PNG file, applied on every platform (see the compiling for distribution tutorial for the per-platform details and caveats)
 * `#pragma microphone_usage_description "<text>"`: on macOS and iOS, set the explanation the system shows when your app first requests microphone access
 * `#pragma camera_usage_description "<text>"`: on iOS, set the explanation the system shows when your app requests camera access; NVGT sets a default because SDL links Apple's camera API, so set this to an empty string if your app never uses the camera and you want to omit the prompt
+* `#pragma ios_signing_identity "<pathname>"`: path to a developer .p12 signing identity used to code sign an iOS app for distribution (see the "Publishing your app to the Apple App Store" tutorial)
+* `#pragma ios_signing_password "<password>"`: the password protecting the .p12 given to `#pragma ios_signing_identity`
+* `#pragma ios_provisioning_profile "<pathname>"`: path to the .mobileprovision provisioning profile used when code signing an iOS app
 
 ## Remarks on complex options
 This section contains any explanations of topics that were too bulky to fit in the documentation of each specific configuration option or article section.

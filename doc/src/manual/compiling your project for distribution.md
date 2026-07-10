@@ -84,6 +84,12 @@ When you build for Android, NVGT can produce one of two package formats, selecte
 
 For example, to build an app bundle you can add `#pragma config build.android_format = aab` to your script, or set `build.android_format = aab` in your configuration file. NVGT generates and signs the .aab for you without requiring Google's bundletool to be installed. Everything else about the build (icon, permissions, product identifier, signing, and so on) is identical between the two formats, so you can switch freely depending on whether you are testing locally or preparing a Play Store upload.
 
+### Publishing to the app stores
+Getting a compiled app onto the Apple App Store or the Google Play Store involves a lot more than building it: developer accounts, code signing certificates and keystores, store listings, testing tracks, upload tools, and review. NVGT can build and sign a fully store-ready package for both platforms from Windows without a Mac, and there are two dedicated step-by-step tutorials that walk you through the entire process from creating a developer account to shipping updates:
+
+* The "Publishing your app to the Apple App Store" tutorial covers Apple Developer enrollment, creating signing certificates and provisioning profiles with OpenSSL on Windows, the iOS signing pragmas, uploading with iTMSTransporter, TestFlight, and App Review.
+* The "Publishing your app to the Google Play Store" tutorial covers Play Console registration, Play App Signing, the App Bundle format, store listing and policy declarations, the closed-testing requirement for new accounts, and releasing/updating.
+
 ## Libraries needed for distribution:
 The following information can be helpful if you have disabled NVGT's bundling facility and you wish to package your compiled games yourself.
 
