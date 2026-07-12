@@ -504,6 +504,15 @@ What each field is and where it comes from:
 
 Everything else in the template is a fixed constant; copy it exactly.
 
+#### Do not "fix" the key names
+Look closely and this file is inconsistent with itself. Most of its keys are hyphenated — `bundle-identifier`, `bundle-path`, `platform-id`, `archive-bytes`, `file-name` — but two of them are not: `CFBundleShortVersionString` and `CFBundleVersion`. Those two are Apple's Core Foundation names, and they appear here spelled exactly as they are spelled in your app's `Info.plist`.
+
+The likely reason is that these entries are a merge of two things: the description format's own fields, which are hyphenated, and a handful of keys copied straight out of the app's `Info.plist`, which keep their original names. Xcode's version of this file is enormous, so it very probably copies most of `Info.plist` in wholesale; the minimal file we are building keeps only the two version keys, which is why the seam between the two naming styles is so visible here. Apple publishes no schema for the format, so this is inference rather than fact — but the practical consequence is not in any doubt.
+
+**Copy the key names exactly as shown.** The parser matches literal strings, so "tidying" `bundle-identifier` into `CFBundleIdentifier`, or `CFBundleVersion` into `bundle-version`, does not correct an inconsistency — it makes the field invisible.
+
+This is also a quiet advantage of the script above, which reads the bundle identifier out of the `Info.plist` key `CFBundleIdentifier` but writes it under the key `bundle-identifier`. The name changes, the value does not. That is easy to get wrong by hand and impossible to get wrong this way.
+
 #### Why is the provisioning profile in here? It is already inside the `.ipa`
 It is, and embedding it a second time looks like pointless duplication until you see what this file is for. Compare it with the `metadata.xml` of Method A:
 
