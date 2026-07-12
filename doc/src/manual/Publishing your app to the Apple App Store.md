@@ -595,11 +595,23 @@ $zip.Dispose()
 
 If `$prov` comes back empty, your `.ipa` is unsigned — go back to Step 7, because Method B cannot work without a provisioning profile inside the bundle.
 
-#### If iTMSTransporter rejects the plist
-The structure above is the minimum Apple's servers are known to accept, but Apple does not publish a schema for this file and iTMSTransporter may be stricter than the upload service itself. If it complains:
+#### Binary or XML?
+A property list can be serialised either as XML or as Apple's compact binary format. The two carry exactly the same data — the same dictionaries, arrays, strings, integers and raw data blobs — and converting between them loses nothing, so this is purely a question of what the reader expects.
 
-1. **Make sure the file is a binary property list, not XML.** Apple's own tooling emits it in binary form. The Python script above already does this. If you wrote the XML by hand, convert it with `plistutil`, the command line tool shipped by [**libplist**](https://github.com/libimobiledevice/libplist) (part of the libimobiledevice project): `plistutil -i AppStoreInfo.plist -o AppStoreInfo.bin.plist`, then pass the converted file to `-assetDescription`. Note that the project does not publish prebuilt Windows binaries; on Windows it is built through [MSYS2](https://www.msys2.org/), so unless you already have it, using the Python script is far less trouble.
-2. **Fall back to Method A or Method C** and please report what failed, so this tutorial can be corrected.
+The template above is shown as XML because that is readable, but **you should deliver this file as a binary plist**, and the Python script above does that for you.
+
+The reason is simply that binary is the format Apple's own tooling produces, and therefore the only one that is definitely exercised. Xcode's export writes `AppStoreInfo.plist` in binary form, and Apple's upload service is told to expect the UTI `com.apple.binary-property-list`. XML very probably works too — iTMSTransporter runs on Java, and Java's property list parsers detect the format from the file's leading bytes (`bplist00` versus `<?xml`) and accept either — but Apple publishes no schema for this file and no confirmed report of an XML one being accepted could be found. When you are working against an interface Apple does not document, prefer the path its own tools take.
+
+If you hand-wrote the XML and want to convert it, use `plistutil`, the command line tool shipped by [**libplist**](https://github.com/libimobiledevice/libplist) (part of the libimobiledevice project):
+
+```
+plistutil -i AppStoreInfo.plist -o AppStoreInfo.bin.plist
+```
+
+Then pass the converted file to `-assetDescription`. Note that the project publishes no prebuilt Windows binaries — on Windows it is built through [MSYS2](https://www.msys2.org/) — so unless you already have it, the Python script is far less trouble.
+
+#### If iTMSTransporter still rejects the plist
+The structure above is the minimum Apple's servers are known to accept, but iTMSTransporter may be stricter than the upload service itself. If it complains even with a binary plist, **fall back to Method A or Method C**, and please report what failed so this tutorial can be corrected.
 
 > **A note on where this template came from, and NVGT's plan:** NVGT does not generate `AppStoreInfo.plist` today, exactly as it does not generate `metadata.xml`. The structure above was derived from the open source [ios-uploader](https://github.com/simonnilsson/ios-uploader) project, which builds the same file from an `.ipa` and successfully delivers builds to Apple with it. The proper long term fix is for **NVGT itself to emit `AppStoreInfo.plist` next to the signed `.ipa`**, since every value in it is already known at bundling time — at which point this whole section collapses into a single command.
 
