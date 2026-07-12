@@ -307,11 +307,11 @@ Apple's build upload tool with a graphical interface, "Transporter," is only ava
 >
 > This step therefore describes **three methods**:
 >
-> * **Method A (`-f` with an `.itmsp` package)** — the long standing method, described in 9c and 9d. It still works today and is the one most NVGT users have used successfully. It is deprecated and will eventually stop working.
-> * **Method B (`-assetFile` with an `AppStoreInfo.plist`)** — Apple's official replacement, described in 9e. It is simpler once set up (no `.itmsp` folder, no `metadata.xml`, no Team ID/Apple ID/SKU to look up), but on Windows it needs one extra file that Apple expects Xcode to produce, so you must write that file by hand.
-> * **Method C (`ios-uploader`)** — described in 9f. A third party open source tool that replaces iTMSTransporter entirely: one command, no Java, nothing to write by hand. It uses an undocumented Apple API, so it is a convenient fallback rather than something to depend on.
+> * **Method A (`-f` with an `.itmsp` package)** — Apple's traditional upload flow, described in 9c and 9d. It is deprecated and will eventually stop working.
+> * **Method B (`-assetFile` with an `AppStoreInfo.plist`)** — Apple's official replacement, described in 9e. It is simpler once set up (no `.itmsp` folder, no `metadata.xml`, no Team ID/Apple ID/SKU to look up), but on Windows it needs one extra file that Apple expects Xcode to produce, so you must generate that file yourself.
+> * **Method C (`ios-uploader`)** — described in 9f. A third party open source tool that replaces iTMSTransporter entirely: one command, no Java, nothing to generate. It uses an undocumented Apple API, so it is a convenient fallback rather than something to depend on.
 >
-> **Try Method A first**, since it is the least surprising and is what this tutorial has always described. If it has stopped working, or you want to be ready for when Apple removes it, move to Method B. Method C is there if iTMSTransporter is fighting you.
+> **Which should you use?** Method B is the one to aim for: it is Apple's supported direction, it works with API keys, and it is where you will end up anyway. Method A is documented because it is the flow most existing material describes and it still works today, so it is a reasonable thing to fall back to if B gives you trouble. Method C is there if iTMSTransporter is fighting you and you just want the build uploaded.
 
 ### 9a. Install iTMSTransporter
 Download it from Apple's **[Transporter User Guide](https://help.apple.com/itc/transporteruserguide/)**; the guide's install page links to the Windows installer (a file named like `iTMSTransporterToolInstaller_4.2.0.<build>.exe`). Run the installer, accept the license, and keep the default install location (typically `C:\Program Files\itms`). The tool bundles its own Java runtime, so you do not normally need to install Java separately. The command line program lives in the install's `bin` folder.
