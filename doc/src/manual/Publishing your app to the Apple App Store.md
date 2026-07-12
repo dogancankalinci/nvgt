@@ -16,7 +16,7 @@ Here is the entire path so you have a mental map. Each step is explained in deta
 6. **Create and download a provisioning profile** that ties your App ID to your certificate.
 7. **Tell NVGT to sign your app** using `#pragma` keys that point at your `.p12`, its password, and your provisioning profile, then compile to get a signed `.ipa`.
 8. **Create your app's record in App Store Connect** and fill in all of the store metadata (screenshots, description, privacy answers, age rating, and so on).
-9. **Upload the `.ipa`** to Apple using the free iTMSTransporter command line tool, which runs on Windows.
+9. **Upload the `.ipa`** to Apple. The usual route is Apple's free iTMSTransporter command line tool, which runs on Windows. Apple is currently retiring the specific upload flow this tutorial has long described, so Step 9 gives you three ways to do it and explains when to use which.
 10. **(Optional but recommended) Test with TestFlight** before you go live.
 11. **Submit for review**, wait for Apple, and release.
 12. **Handle the result:** if Apple rejects the build you fix it and re-upload into the *same* version; once your app is live, shipping an update uses a *different* flow where you create a *new* version. These two flows are not the same, and mixing them up is one of the most common sources of confusion, so the difference is explained carefully at the end.
@@ -80,7 +80,7 @@ A few rules from Apple that you should respect in your source image to avoid a r
 
 If you skip `#pragma icon` on iOS, NVGT produces **no icon at all** — it does not fall back to any placeholder or NVGT logo. No icon images are generated, no compiled asset catalog (`Assets.car`) is written, no loose PNG icons are placed in the bundle, and not even an icon entry is added to the `Info.plist`. Such a build can still be sideloaded for local testing (for example with Sideloadly), and it will install and run, but it has no home screen icon of its own.
 
-For the App Store this omission is fatal in the hardest possible way: **an app with no icon is rejected by iTMSTransporter at upload time (Step 9), before it is ever sent to App Review.** You get an ITMS error and the build never even enters the review queue. So on iOS `#pragma icon` is not optional for a store submission; a build without it cannot be uploaded at all.
+For the App Store this omission is fatal: **an app with no icon never reaches App Review.** You get an ITMS error and the build is thrown out. Depending on which upload method you use in Step 9 the error arrives at a different moment — iTMSTransporter can catch it at upload time, or Apple's servers reject the build during processing shortly afterwards — but either way it is rejected and never enters the review queue. So on iOS `#pragma icon` is not optional for a store submission.
 
 Be aware that NVGT's icon fallback behavior is **inconsistent across platforms**. On Android, omitting `#pragma icon` does *not* leave the app icon-less; instead NVGT ships SDL's default icon (a leftover from the SDL project template NVGT's Android build is based on). On iOS, omitting the pragma leaves the app with no icon whatsoever. Do not rely on either behavior; always set your own icon. For the full per platform behavior of the icon pragma, see the "compiling your project for distribution" tutorial.
 
@@ -275,11 +275,11 @@ Now create the listing:
    * **Name:** your app's public name (up to 30 characters).
    * **Primary Language.**
    * **Bundle ID:** choose the App ID you registered in Step 5 from the dropdown. (This is why you had to register it first.)
-   * **SKU:** an arbitrary unique string you invent to identify the app internally (for example `yourgame001`). Users never see it. Remember what you choose, because this value is the **vendor ID** that appears in the upload metadata in Step 9.
+   * **SKU:** an arbitrary unique string you invent to identify the app internally (for example `yourgame001`). Users never see it. Remember what you choose: if you upload with Method A in Step 9, this value is the **vendor ID** that goes into the upload metadata. (Methods B and C do not need it.)
    * **User Access:** leave as Full Access unless you manage a team with restricted roles.
 4. Click **Create**.
 
-Apple now assigns your app a numeric **Apple ID** (a long number, different from your login email and from your bundle ID). You can find it in your app's **App Information** page under General Information. Write it down; you need it for the upload metadata in Step 9.
+Apple now assigns your app a numeric **Apple ID** (a long number, different from your login email and from your bundle ID). You can find it in your app's **App Information** page under General Information. Write it down; you need it for the upload metadata if you use Method A in Step 9. (Methods B and C look it up from your bundle identifier automatically.)
 
 ### Fill in the required store metadata
 Open your new app and complete every required field. Apple will not let you submit until these are done, and missing or placeholder content is a rejection reason:
@@ -504,8 +504,74 @@ What each field is and where it comes from:
 
 Everything else in the template is a fixed constant; copy it exactly.
 
-#### Generating the file on Windows
-An `.ipa` is just a ZIP archive, so PowerShell can pull the values out for you. Adjust the first two lines and run this in PowerShell; it prints every value you need to paste into the template:
+#### Why are `icons` and `bundles` empty?
+This surprises people, so it is worth stating plainly: **`icons` stays an empty array even though your `.ipa` definitely contains an icon.**
+
+That is fine, because this file is not where Apple learns about your icon. Icon validation is performed against the `.ipa` itself — Apple opens your `Assets.car`, reads `CFBundleIconName` and the exact size PNGs out of `Info.plist`, and checks them on its servers. The `icons` array here is only a hint that Apple's own tooling fills in as a convenience when it analyses the bundle on a Mac. Leaving it empty does not remove your icon and does not cause a rejection; at most it means Transporter cannot run its client side icon pre-check, so a genuinely missing icon would be reported by Apple during processing rather than at upload time.
+
+The inner `bundles` array is for embedded app extensions and frameworks. NVGT builds a single, self contained app bundle with neither, so for an NVGT game this one is not just acceptable but actually correct.
+
+#### Generating the file automatically (recommended)
+Rather than transcribing values by hand, let a script read them out of the `.ipa`, which is just a ZIP archive. Python's standard library can do the whole job — `zipfile` to read the archive and `plistlib` to write the result — with nothing to install. Save this as `make_appstoreinfo.py` next to your build:
+
+```python
+import os, plistlib, sys, zipfile
+
+ipa_path = sys.argv[1]
+out_path = sys.argv[2] if len(sys.argv) > 2 else "AppStoreInfo.plist"
+
+with zipfile.ZipFile(ipa_path) as z:
+    # Payload/<something>.app/Info.plist -- exactly two slashes, so nested
+    # bundles inside Frameworks/ or PlugIns/ are not picked up by mistake.
+    info_name = next(n for n in z.namelist()
+                     if n.count("/") == 2 and n.endswith(".app/Info.plist"))
+    app_dir  = info_name[:-len("/Info.plist")]   # Payload/yourgame.app
+    app_name = os.path.basename(app_dir)         # yourgame.app
+    info = plistlib.loads(z.read(info_name))
+    try:
+        prov = z.read(app_dir + "/embedded.mobileprovision")
+    except KeyError:
+        sys.exit("This .ipa is unsigned (no embedded.mobileprovision). See step 7.")
+
+data = {"product-metadata": {
+    "archive-bytes": os.path.getsize(ipa_path),
+    "file-name": os.path.basename(ipa_path),
+    "packages": [{
+        "bundles": [{
+            "CFBundleShortVersionString": info["CFBundleShortVersionString"],
+            "CFBundleVersion": info["CFBundleVersion"],
+            "bundle-identifier": info["CFBundleIdentifier"],
+            "bundle-path": app_name,
+            "bundles": [],
+            "icons": [],
+            "platform-display-name": "iOS App",
+            "platform-id": 1,
+        }],
+        "files": [{
+            "file-size": len(prov),
+            "file-type": "NSFileTypeRegular",
+            "file-data": prov,
+            "uti": "com.apple.mobileprovision",
+            "path": app_name + "/embedded.mobileprovision",
+        }],
+    }],
+}}
+
+with open(out_path, "wb") as f:
+    plistlib.dump(data, f, fmt=plistlib.FMT_BINARY)
+print("wrote", out_path)
+```
+
+Run it with:
+
+```
+python make_appstoreinfo.py yourgame.ipa AppStoreInfo.plist
+```
+
+This is better than filling the template in by hand for three reasons: the version numbers and bundle identifier are read straight out of the `.ipa`, so they cannot disagree with the build you are actually uploading; the provisioning profile is embedded as raw bytes with no base64 transcription to get wrong; and the output is written as a **binary** property list, which is the format Apple's own tooling produces.
+
+#### Filling the template in by hand instead
+If you would rather not use Python, you still need the values out of the `.ipa`. Adjust the first two lines and run this in PowerShell; it prints everything you need to paste into the XML template above:
 
 ```powershell
 $ipa     = "C:\path\to\yourgame.ipa"
@@ -527,13 +593,13 @@ $zip.Dispose()
 [Convert]::ToBase64String($bytes)
 ```
 
-If the `$prov` line comes back empty, your `.ipa` is unsigned — go back to Step 7, because Method B cannot work without a provisioning profile inside the bundle.
+If `$prov` comes back empty, your `.ipa` is unsigned — go back to Step 7, because Method B cannot work without a provisioning profile inside the bundle.
 
 #### If iTMSTransporter rejects the plist
-The structure above is the minimum Apple's servers are known to accept, but Apple does not publish a schema for this file and iTMSTransporter may be stricter than the upload service itself. If it complains, the two things worth trying are:
+The structure above is the minimum Apple's servers are known to accept, but Apple does not publish a schema for this file and iTMSTransporter may be stricter than the upload service itself. If it complains:
 
-1. **Convert the plist to binary format.** Apple's own tooling emits this file as a binary property list rather than XML. On Windows you can convert it with `plistutil` (part of libimobiledevice, which ships Windows builds): `plistutil -i AppStoreInfo.plist -o AppStoreInfo.bin.plist` — then pass the converted file to `-assetDescription`.
-2. **Fall back to Method A or Method C** and report what failed, so this tutorial can be corrected.
+1. **Make sure the file is a binary property list, not XML.** Apple's own tooling emits it in binary form. The Python script above already does this. If you wrote the XML by hand, convert it with `plistutil`, the command line tool shipped by [**libplist**](https://github.com/libimobiledevice/libplist) (part of the libimobiledevice project): `plistutil -i AppStoreInfo.plist -o AppStoreInfo.bin.plist`, then pass the converted file to `-assetDescription`. Note that the project does not publish prebuilt Windows binaries; on Windows it is built through [MSYS2](https://www.msys2.org/), so unless you already have it, using the Python script is far less trouble.
+2. **Fall back to Method A or Method C** and please report what failed, so this tutorial can be corrected.
 
 > **A note on where this template came from, and NVGT's plan:** NVGT does not generate `AppStoreInfo.plist` today, exactly as it does not generate `metadata.xml`. The structure above was derived from the open source [ios-uploader](https://github.com/simonnilsson/ios-uploader) project, which builds the same file from an `.ipa` and successfully delivers builds to Apple with it. The proper long term fix is for **NVGT itself to emit `AppStoreInfo.plist` next to the signed `.ipa`**, since every value in it is already known at bundling time — at which point this whole section collapses into a single command.
 
