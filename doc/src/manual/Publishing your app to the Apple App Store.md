@@ -299,20 +299,51 @@ Open your new app and complete every required field. Apple will not let you subm
 ## Step 9: Upload your `.ipa` from Windows with iTMSTransporter
 Apple's build upload tool with a graphical interface, "Transporter," is only available on the Mac App Store. But the underlying command line uploader, **iTMSTransporter**, is a free, Java based tool that Apple provides for **Windows**, and it does the same job.
 
+> **Important — Apple is retiring the `.itmsp` upload method.** As of Transporter 4.2, running the tool with `-f` prints:
+>
+> *"Deprecated Transporter usage. No action is required at this time. However, starting in 2026, you'll be required to use the `-assetFile` command instead of the `-f` command with your .ipa or .pkg files."*
+>
+> Apple's Transporter guide additionally states that delivering applications as `.itmsp` packages is deprecated, and that using `.itmsp` to *update* app content is already unsupported.
+>
+> This step therefore describes **three methods**:
+>
+> * **Method A (`-f` with an `.itmsp` package)** — the long standing method, described in 9c and 9d. It still works today and is the one most NVGT users have used successfully. It is deprecated and will eventually stop working.
+> * **Method B (`-assetFile` with an `AppStoreInfo.plist`)** — Apple's official replacement, described in 9e. It is simpler once set up (no `.itmsp` folder, no `metadata.xml`, no Team ID/Apple ID/SKU to look up), but on Windows it needs one extra file that Apple expects Xcode to produce, so you must write that file by hand.
+> * **Method C (`ios-uploader`)** — described in 9f. A third party open source tool that replaces iTMSTransporter entirely: one command, no Java, nothing to write by hand. It uses an undocumented Apple API, so it is a convenient fallback rather than something to depend on.
+>
+> **Try Method A first**, since it is the least surprising and is what this tutorial has always described. If it has stopped working, or you want to be ready for when Apple removes it, move to Method B. Method C is there if iTMSTransporter is fighting you.
+
 ### 9a. Install iTMSTransporter
 Download it from Apple's **[Transporter User Guide](https://help.apple.com/itc/transporteruserguide/)**; the guide's install page links to the Windows installer (a file named like `iTMSTransporterToolInstaller_4.2.0.<build>.exe`). Run the installer, accept the license, and keep the default install location (typically `C:\Program Files\itms`). The tool bundles its own Java runtime, so you do not normally need to install Java separately. The command line program lives in the install's `bin` folder.
 
-### 9b. Create an app specific password
-iTMSTransporter cannot log in with your normal Apple password because your account uses two factor authentication. Instead you create an **app specific password**, a special password that stands in for your account in tools like this:
+### 9b. Choose how you will authenticate
+iTMSTransporter cannot log in with your normal Apple password because your account uses two factor authentication. There are two supported ways around this, and **either one works with both Method A and Method B** — authentication and delivery method are independent choices.
+
+#### Option 1: an app specific password (simplest)
+An **app specific password** is a special password that stands in for your account in tools like this:
 
 1. Sign in at [appleid.apple.com](https://appleid.apple.com).
 2. In **Sign-In and Security**, choose **App-Specific Passwords**.
 3. Click **Generate an app-specific password**, give it a label (for example "Transporter"), and copy the generated password. It looks like `abcd-efgh-ijkl-mnop`.
 
+You then pass `-u YOUR_APPLE_ID_EMAIL -p abcd-efgh-ijkl-mnop`.
+
 Keep it somewhere safe. Note that changing your main Apple password automatically revokes all app specific passwords, so you would need to generate a new one.
 
-### 9c. Build the `.itmsp` package
-iTMSTransporter does not upload a bare `.ipa`. It uploads a **package**, which is simply a **folder whose name ends in `.itmsp`** containing two files: your `.ipa` and a `metadata.xml` file describing it.
+#### Option 2: an App Store Connect API key (recommended)
+An **API key** is a keypair issued to your team rather than to your personal login. It does not expire, it survives a password change, and it is safe to use from an automated build. This is what Apple now recommends.
+
+1. In [App Store Connect](https://appstoreconnect.apple.com/), go to **Users and Access > Integrations > App Store Connect API**.
+2. Generate a key with the **App Manager** role. Copy the **Issuer ID** (a UUID shown at the top of the page) and the **Key ID** (a short string next to your new key).
+3. Download the private key file. It is named `AuthKey_<KEY_ID>.p8` and **Apple only lets you download it once**, so save it carefully.
+4. Place that `.p8` file in one of the directories iTMSTransporter searches, most conveniently a folder named `private_keys` inside the directory you will run the command from, or `C:\Users\<you>\private_keys`.
+
+You then pass `-apiKey YOUR_KEY_ID -apiIssuer YOUR_ISSUER_ID` and **omit `-u` and `-p` entirely**; mixing them is an error.
+
+### 9c. Method A: build the `.itmsp` package (deprecated)
+> **This is the deprecated method.** It still works today, but see the warning at the top of Step 9. If you would rather set up the replacement now, skip to 9e.
+
+Used this way, iTMSTransporter does not upload a bare `.ipa`. It uploads a **package**, which is simply a **folder whose name ends in `.itmsp`** containing two files: your `.ipa` and a `metadata.xml` file describing it.
 
 Create a folder, for example `MyGame.itmsp`, and copy your signed `.ipa` into it. Then you need two facts about the `.ipa`:
 
@@ -355,26 +386,186 @@ What each field is and where it comes from:
 
 The two version values are the same numbers you set in NVGT and entered in App Store Connect. Keeping all three in agreement (your build, this metadata, and the store listing) is essential; a mismatch causes the upload or the version association to fail.
 
-### 9d. Verify, then upload
-Open a command prompt in the iTMSTransporter `bin` folder (or use its full path). First validate the package without submitting:
-
-```
-iTMSTransporter -m verify -f "C:\path\to\MyGame.itmsp" -u YOUR_APPLE_ID_EMAIL -p APP_SPECIFIC_PASSWORD -v eXtreme
-```
-
-If verification passes, upload for real:
+### 9d. Method A: upload
+Open a command prompt in the iTMSTransporter `bin` folder (or use its full path):
 
 ```
 iTMSTransporter -m upload -f "C:\path\to\MyGame.itmsp" -u YOUR_APPLE_ID_EMAIL -p APP_SPECIFIC_PASSWORD -v eXtreme
 ```
 
-* `-m` is the mode (`verify` or `upload`).
-* `-f` is the path to your `.itmsp` **folder**.
-* `-u` is your Apple **login email**.
-* `-p` is the **app specific password** from Step 9b (not your real password).
+Or, with an API key instead:
+
+```
+iTMSTransporter -m upload -f "C:\path\to\MyGame.itmsp" -apiKey YOUR_KEY_ID -apiIssuer YOUR_ISSUER_ID -v eXtreme
+```
+
+* `-m` is the mode.
+* `-f` is the path to your `.itmsp` **folder**. This is the deprecated flag.
 * `-v eXtreme` turns on detailed logging, which is invaluable when something fails.
 
-After a successful upload, Apple **processes** the build on its servers. It becomes selectable in App Store Connect after processing finishes, which usually takes anywhere from a few minutes to about an hour. You will typically get an email when it is ready.
+> **Note on `-m verify`:** older versions of this tutorial suggested running `-m verify -f ...` first as a dry run. Apple's current Transporter guide states that **the `-f` option can no longer be used to verify an app** ("For apps, use the `-assetFile` option instead"), so that dry run may simply fail with Method A even when the real upload succeeds. Verification is available in Method B.
+
+### 9e. Method B: upload with `-assetFile` and an `AppStoreInfo.plist`
+This is the method Apple is moving everyone to. Instead of a package folder, you hand iTMSTransporter the `.ipa` directly:
+
+```
+iTMSTransporter -m upload -assetFile "C:\path\to\yourgame.ipa" -assetDescription "C:\path\to\AppStoreInfo.plist" -apiKey YOUR_KEY_ID -apiIssuer YOUR_ISSUER_ID -v eXtreme
+```
+
+Notice what is gone: no `.itmsp` folder, no `metadata.xml`, and no need to look up your Team ID, your app's numeric Apple ID, or your SKU. iTMSTransporter derives all of that from the bundle identifier inside the `.ipa` itself.
+
+You can also dry run this one, which Method A no longer supports:
+
+```
+iTMSTransporter -m verify -assetFile "C:\path\to\yourgame.ipa" -assetDescription "C:\path\to\AppStoreInfo.plist" -apiKey YOUR_KEY_ID -apiIssuer YOUR_ISSUER_ID -v eXtreme
+```
+
+#### Why Windows needs `-assetDescription`
+On a Mac, iTMSTransporter analyses the `.ipa` itself and works out everything it needs. On **Windows and Linux it cannot do that analysis**, and it fails with:
+
+```
+Unable to perform software analysis on Linux. Export an AppStoreInfo.plist from Xcode, and use the -assetDescription option.
+```
+
+Apple's suggested fix — "export it from Xcode" — is useless if you do not own a Mac. Fortunately the file is small and every value in it comes from the `.ipa` you already have, so you can write it yourself.
+
+#### The `AppStoreInfo.plist` template
+Create this file next to your `.ipa`. As with `metadata.xml`, every value in capitals is something you fill in:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>product-metadata</key>
+    <dict>
+        <key>archive-bytes</key>
+        <integer>YOUR_IPA_SIZE_IN_BYTES</integer>
+        <key>file-name</key>
+        <string>yourgame.ipa</string>
+        <key>packages</key>
+        <array>
+            <dict>
+                <key>bundles</key>
+                <array>
+                    <dict>
+                        <key>CFBundleShortVersionString</key>
+                        <string>1.0.0</string>
+                        <key>CFBundleVersion</key>
+                        <string>1</string>
+                        <key>bundle-identifier</key>
+                        <string>com.yourcompany.yourgame</string>
+                        <key>bundle-path</key>
+                        <string>yourgame.app</string>
+                        <key>bundles</key>
+                        <array/>
+                        <key>icons</key>
+                        <array/>
+                        <key>platform-display-name</key>
+                        <string>iOS App</string>
+                        <key>platform-id</key>
+                        <integer>1</integer>
+                    </dict>
+                </array>
+                <key>files</key>
+                <array>
+                    <dict>
+                        <key>file-size</key>
+                        <integer>MOBILEPROVISION_SIZE_IN_BYTES</integer>
+                        <key>file-type</key>
+                        <string>NSFileTypeRegular</string>
+                        <key>file-data</key>
+                        <data>BASE64_OF_EMBEDDED_MOBILEPROVISION</data>
+                        <key>uti</key>
+                        <string>com.apple.mobileprovision</string>
+                        <key>path</key>
+                        <string>yourgame.app/embedded.mobileprovision</string>
+                    </dict>
+                </array>
+            </dict>
+        </array>
+    </dict>
+</dict>
+</plist>
+```
+
+What each field is and where it comes from:
+
+* **`archive-bytes`** — the size of your `.ipa` in bytes.
+* **`file-name`** — the exact filename of the `.ipa` (not a path).
+* **`CFBundleShortVersionString`** — your marketing version. Must match `build.product_version` (for example `1.0.0`).
+* **`CFBundleVersion`** — your build number. Must match `build.product_version_code` (for example `1`).
+* **`bundle-identifier`** — your bundle ID, matching your NVGT `build.product_identifier`.
+* **`bundle-path`** — the name of the `.app` folder **inside** the `.ipa`, which is `Payload/<something>.app`. For an NVGT build this is your project's base name plus `.app` (for example `yourgame.app`). Just the folder name, not the full path.
+* **`platform-id`** — `1` for iOS. Leave it as shown.
+* **`file-data`** — the **base64** of the `embedded.mobileprovision` file that NVGT placed inside your signed app bundle (Step 7). Note it is the *provisioning profile*, not the `.ipa`.
+* **`file-size`** — the size in bytes of that same `embedded.mobileprovision`, **before** base64 encoding.
+* **`path`** — where the profile lives inside the `.ipa`, relative to `Payload`, so `<your app>.app/embedded.mobileprovision`.
+
+Everything else in the template is a fixed constant; copy it exactly.
+
+#### Generating the file on Windows
+An `.ipa` is just a ZIP archive, so PowerShell can pull the values out for you. Adjust the first two lines and run this in PowerShell; it prints every value you need to paste into the template:
+
+```powershell
+$ipa     = "C:\path\to\yourgame.ipa"
+$appName = "yourgame.app"          # the folder inside Payload/
+
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$zip  = [IO.Compression.ZipFile]::OpenRead($ipa)
+$prov = $zip.Entries | Where-Object { $_.FullName -eq "Payload/$appName/embedded.mobileprovision" }
+$ms   = New-Object IO.MemoryStream
+$prov.Open().CopyTo($ms)
+$bytes = $ms.ToArray()
+$zip.Dispose()
+
+"archive-bytes : " + (Get-Item $ipa).Length
+"file-name     : " + (Split-Path $ipa -Leaf)
+"bundle-path   : $appName"
+"file-size     : " + $bytes.Length
+"file-data     :"
+[Convert]::ToBase64String($bytes)
+```
+
+If the `$prov` line comes back empty, your `.ipa` is unsigned — go back to Step 7, because Method B cannot work without a provisioning profile inside the bundle.
+
+#### If iTMSTransporter rejects the plist
+The structure above is the minimum Apple's servers are known to accept, but Apple does not publish a schema for this file and iTMSTransporter may be stricter than the upload service itself. If it complains, the two things worth trying are:
+
+1. **Convert the plist to binary format.** Apple's own tooling emits this file as a binary property list rather than XML. On Windows you can convert it with `plistutil` (part of libimobiledevice, which ships Windows builds): `plistutil -i AppStoreInfo.plist -o AppStoreInfo.bin.plist` — then pass the converted file to `-assetDescription`.
+2. **Fall back to Method A or Method C** and report what failed, so this tutorial can be corrected.
+
+> **A note on where this template came from, and NVGT's plan:** NVGT does not generate `AppStoreInfo.plist` today, exactly as it does not generate `metadata.xml`. The structure above was derived from the open source [ios-uploader](https://github.com/simonnilsson/ios-uploader) project, which builds the same file from an `.ipa` and successfully delivers builds to Apple with it. The proper long term fix is for **NVGT itself to emit `AppStoreInfo.plist` next to the signed `.ipa`**, since every value in it is already known at bundling time — at which point this whole section collapses into a single command.
+
+### 9f. Method C: upload without iTMSTransporter at all
+There is a third route that skips Apple's tooling entirely. [**ios-uploader**](https://github.com/simonnilsson/ios-uploader) is a small, open source, cross platform command line tool that speaks Apple's upload protocol directly. It builds the `AppStoreInfo.plist` in memory for you, so there is nothing to write by hand, and it needs no Java runtime and no Transporter install.
+
+Install Node.js, then either run it on demand:
+
+```
+npx ios-uploader -u YOUR_APPLE_ID_EMAIL -p APP_SPECIFIC_PASSWORD -f C:\path\to\yourgame.ipa
+```
+
+or install it once:
+
+```
+npm install -g ios-uploader
+ios-uploader -u YOUR_APPLE_ID_EMAIL -p APP_SPECIFIC_PASSWORD -f C:\path\to\yourgame.ipa
+```
+
+That is the whole procedure. It reads the bundle ID and both version numbers out of your `.ipa`, looks your app up on Apple's side, registers the build, uploads the file in parallel chunks, and reports the processing status.
+
+Be aware of the trade offs before you rely on it:
+
+* **It is not an Apple product and uses an undocumented API.** The project's own README warns that it "may stop working at any time without prior notice if Apple decides to change the API." It is actively maintained and works at the time of writing, but it carries a risk that Apple's own tool does not.
+* **App specific passwords only.** It does not support App Store Connect API keys, so it is a weaker fit for automated builds.
+* **No dry run.** There is no equivalent of `-m verify`; problems surface during Apple's processing stage rather than before the upload.
+* Your `.ipa` must be signed, as with Method B.
+
+It is an excellent fallback if iTMSTransporter is giving you trouble, and a genuinely convenient option for a one person project. For anything you depend on, prefer Method B.
+
+### 9g. After the upload
+Whichever method you used, Apple now **processes** the build on its servers. It becomes selectable in App Store Connect after processing finishes, which usually takes anywhere from a few minutes to about an hour. You will typically get an email when it is ready.
 
 ---
 
@@ -501,7 +692,7 @@ In-app purchases are reviewed by Apple. **Your first in-app purchase must be sub
 7. Add `#pragma microphone_usage_description` if you use the microphone.
 8. Set `build.product_version` (e.g. `1.0.0`) and `build.product_version_code` (e.g. `1`).
 9. Create the app in App Store Connect, note its numeric **Apple ID**, fill in all metadata (change the version from the default `1.0`).
-10. Build the `.itmsp` folder (`.ipa` + `metadata.xml` with matching versions, size, and MD5) and upload with **iTMSTransporter** using an **app specific password**.
+10. Upload the build. Authenticate with an **app specific password** or, better, an **App Store Connect API key**. Then pick a method: **A** — build the `.itmsp` folder (`.ipa` + `metadata.xml` with matching versions, size, and MD5) and upload with `iTMSTransporter -f` (deprecated, retiring in 2026); **B** — write an `AppStoreInfo.plist` and upload with `iTMSTransporter -assetFile` (Apple's replacement); or **C** — run `ios-uploader` and skip Transporter entirely.
 11. Optionally test via **TestFlight** (internal = no review; external = Beta App Review).
 12. Submit for review. If rejected before release: same version, higher build number. Once live: new version via **(+) Version or Platform**.
 13. Selling items? Sign the Paid Applications Agreement, create each product **choosing its type (Consumable/Non-Consumable)** in App Store Connect with a Product ID matching your script, and submit your first purchase alongside an app version. `consume()`/`acknowledge()` are no-ops on iOS.
