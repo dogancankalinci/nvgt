@@ -541,6 +541,25 @@ The trade is therefore quite clean, and it explains why the two files feel so un
 
 Method A makes you look things up that Apple already knows, and tells Apple nothing it could not find out later. Method B is the reverse: it looks up for you what Apple already knows, and asks you instead for the things Apple would rather learn before a multi gigabyte upload begins. That is also precisely why Method B needs an analysis step on the client — and why, on Windows, that step has to be you.
 
+##### Worked example: why `metadata.xml` never says "iOS"
+The provisioning profile is the most visible thing `AppStoreInfo.plist` demands and `metadata.xml` does not, but `platform-display-name` and `platform-id` make the same point more sharply, because they are so small. Nowhere in `metadata.xml` do you tell Apple that you are uploading an iOS app. Why does the plist insist on it twice?
+
+Because under Method A, Apple has two independent ways to find out and needs no help from you:
+
+* **The app record you addressed.** `metadata.xml` names a specific `apple_id`, and that record already knows what kind of app it is — it is the very `Type: iOS App` field Apple reports back when you look an app up.
+* **The `.ipa` itself.** Your app's `Info.plist` says so five times over. NVGT writes `CFBundleSupportedPlatforms` as `[iPhoneOS]`, `LSRequiresIPhoneOS` as true, `DTPlatformName` as `iphoneos`, `MinimumOSVersion`, and `UIDeviceFamily`. Apple opens the archive on its servers after the upload and reads all of it.
+
+So under Method A the platform is over determined, and asking you to restate it would only create a new way for you to contradict yourself.
+
+Under Method B neither source is available at the moment the platform is needed. The description is read **before the `.ipa` has finished arriving**, so `Info.plist` is out of reach; and the app record has not been identified yet, because identifying it *is what the platform is needed for*. You can see this in Transporter's own logs, where the lookup that resolves your app goes out carrying both facts together:
+
+```
+parameter BundleId         = com.apple.MyApp
+parameter SoftwareTypeEnum = ios
+```
+
+A bundle identifier on its own is not always a complete answer: a single app record can cover more than one platform, and the reply to that lookup can come back carrying fields such as `DidOptInToMacAppStore=true`. The platform is what says *which* build of that app this one is. It is the first thing Apple needs and the one thing that, at that instant, only you can supply — which is exactly why it is a required constant in a file that otherwise describes only your app.
+
 #### Do not "fix" the key names
 Look closely and this file is inconsistent with itself. Most of its keys are hyphenated — `bundle-identifier`, `bundle-path`, `platform-id`, `archive-bytes`, `file-name` — but two of them are not: `CFBundleShortVersionString` and `CFBundleVersion`. Those two are Apple's Core Foundation names, and they appear here spelled exactly as they are spelled in your app's `Info.plist`.
 
