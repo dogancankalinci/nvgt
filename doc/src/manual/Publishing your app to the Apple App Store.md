@@ -528,12 +528,40 @@ Two consequences follow:
 * The profile you put in this file **must be the same one that is inside the `.ipa`**, since Apple can compare them during processing. This is exactly why the script above reads it straight out of the `.ipa` rather than asking you to point at your `.mobileprovision` separately — a copy that has drifted out of sync is a whole class of failure that simply cannot happen this way.
 * An **unsigned `.ipa` cannot use Method B at all**, because there is no profile to describe. If you need to upload, sign the build (Step 7).
 
-#### Why are `icons` and `bundles` empty?
+#### Why is `icons` empty?
 This surprises people, so it is worth stating plainly: **`icons` stays an empty array even though your `.ipa` definitely contains an icon.**
 
 That is fine, because this file is not where Apple learns about your icon. Icon validation is performed against the `.ipa` itself — Apple opens your `Assets.car`, reads `CFBundleIconName` and the exact size PNGs out of `Info.plist`, and checks them on its servers. The `icons` array here is only a hint that Apple's own tooling fills in as a convenience when it analyses the bundle on a Mac. Leaving it empty does not remove your icon and does not cause a rejection; at most it means Transporter cannot run its client side icon pre-check, so a genuinely missing icon would be reported by Apple during processing rather than at upload time.
 
-The inner `bundles` array is for embedded app extensions and frameworks. NVGT builds a single, self contained app bundle with neither, so for an NVGT game this one is not just acceptable but actually correct.
+#### Why is the inner `bundles` empty?
+Note that `bundles` appears twice, and they are not the same thing. The outer one is the list of app bundles in the package, and it holds your app. The **inner** one, nested inside your app's entry, is a list of *further bundles embedded within it* — the array is recursive, because an iOS app can contain other bundles.
+
+What would go in there:
+
+* **App extensions** (`.appex`) — widgets, share sheets, keyboards, Siri intents. Each is a complete signed bundle living inside `PlugIns/`.
+* **Embedded frameworks and dynamic libraries** — anything shipped in `Frameworks/` and loaded at run time.
+
+Apple wants these declared because each one is separately signed, separately entitled, and separately reviewed. An app whose extension is misconfigured is rejected even if the app itself is perfect.
+
+For an NVGT game the array is empty, and here that is not a shortcut — it is simply the truth. NVGT builds a single, self contained `.app`: the executable, `Info.plist`, `Assets.car`, the icon PNGs, `embedded.mobileprovision`, `_CodeSignature`, and your packed game assets. There is no `PlugIns/` directory and no `Frameworks/` directory, because everything the engine needs is linked statically into the one binary. NVGT does not currently offer any way to add an app extension, so there is nothing this array could ever describe.
+
+So of the two empty arrays in the template, `icons` is a harmless omission and `bundles` is accurate.
+
+#### What does `"iOS App"` mean, and must it be exact?
+Yes, exact. `platform-display-name` is not a free text label you can reword — it is a token from App Store Connect's own vocabulary, and it must be spelled `iOS App`.
+
+You can see the same string coming back from Apple's side. When Transporter looks your app up by its bundle identifier, the reply contains entries like:
+
+```
+parameter Applications = {MyApp 1.0 (iOS App)=4112979851}
+parameter Attributes   = [{Type=iOS App, Apple ID=4112979851, ...}]
+```
+
+`iOS App` is precisely the value of that `Type` field — the kind of app record your build is being matched against.
+
+`platform-id` is the same fact in numeric form: an identifier for the platform, taken from an internal Apple enumeration. **For iOS it is `1`.** Apple does not publish that enumeration, so what the other numbers mean is not something this tutorial can honestly tell you — `1` is simply the value Apple's own tooling emits for an iOS app, and the value that is known to work. (Note that it is an `<integer>`, not a `<string>`; the script writes it as one.)
+
+Both keys are constants for our purposes. NVGT only produces iOS apps, so copy `iOS App` and `1` exactly as the template shows them and change neither.
 
 #### Generating the file automatically (recommended)
 Rather than transcribing values by hand, let a script read them out of the `.ipa`, which is just a ZIP archive. Python's standard library can do the whole job — `zipfile` to read the archive and `plistlib` to write the result — with nothing to install. Save this as `make_appstoreinfo.py` next to your build:
