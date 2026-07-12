@@ -504,6 +504,21 @@ What each field is and where it comes from:
 
 Everything else in the template is a fixed constant; copy it exactly.
 
+#### Why is the provisioning profile in here? It is already inside the `.ipa`
+It is, and embedding it a second time looks like pointless duplication until you see what this file is for. Compare it with the `metadata.xml` of Method A:
+
+* **`metadata.xml` is a delivery note.** It says "here is a file, this big, with this checksum, for this app record." It describes the *shipment*, and says nothing whatsoever about the app. It does not need the provisioning profile because it does not validate anything: the whole `.itmsp` package is uploaded first, and Apple opens the `.ipa` on its own servers afterwards and works everything out from the binary itself.
+* **`AppStoreInfo.plist` is a description of the app.** It says "this build has this bundle identifier, these version numbers, and is signed with this profile." It exists so that Apple can know those things *without opening the `.ipa`*.
+
+That last point is the whole reason it exists. Under Method B the description and the `.ipa` are two separate uploads. The description is a few kilobytes and arrives immediately; the `.ipa` can be gigabytes and streams in chunks for minutes afterwards. Apple wants to answer questions like *which team does this build belong to, is it signed for App Store distribution rather than Ad Hoc, which App ID does it claim, what entitlements does it request, has the profile expired* — and it wants to answer them at the front door, before a large upload is accepted. Every one of those answers lives in the provisioning profile.
+
+So the duplication is deliberate. Think of it as the cover note taped to the outside of a parcel: the information is also inside, but Apple should not have to open the parcel to read it.
+
+Two consequences follow:
+
+* The profile you put in this file **must be the same one that is inside the `.ipa`**, since Apple can compare them during processing. This is exactly why the script above reads it straight out of the `.ipa` rather than asking you to point at your `.mobileprovision` separately — a copy that has drifted out of sync is a whole class of failure that simply cannot happen this way.
+* An **unsigned `.ipa` cannot use Method B at all**, because there is no profile to describe. If you need to upload, sign the build (Step 7).
+
 #### Why are `icons` and `bundles` empty?
 This surprises people, so it is worth stating plainly: **`icons` stays an empty array even though your `.ipa` definitely contains an icon.**
 
