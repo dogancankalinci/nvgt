@@ -489,20 +489,57 @@ Create this file next to your `.ipa`. As with `metadata.xml`, every value in cap
 </plist>
 ```
 
-What each field is and where it comes from:
+Every key in the template is listed below. Nothing in this file is decoration: if a key is there, copy it.
+
+**The structure** — four keys that exist only to hold other keys, and which you never change:
+
+* **`product-metadata`** — the single top level container. Everything lives under it.
+* **`packages`** — an array of the packages being delivered. For an app upload there is always exactly one, so this array always has exactly one entry.
+* **`bundles`** (the **outer** one, directly inside the package) — the array of app bundles in that package. Again always exactly one for us: your app.
+* **`files`** — an array of loose files from inside the bundle that Apple wants handed to it directly, rather than being left for it to find in the `.ipa`. For a minimal upload that list has exactly one member, your provisioning profile, for the reasons explained below.
+
+**Facts about the `.ipa` as a file:**
 
 * **`archive-bytes`** — the size of your `.ipa` in bytes.
 * **`file-name`** — the exact filename of the `.ipa` (not a path).
+
+**Facts about the app inside it:**
+
 * **`CFBundleShortVersionString`** — your marketing version. Must match `build.product_version` (for example `1.0.0`).
 * **`CFBundleVersion`** — your build number. Must match `build.product_version_code` (for example `1`).
 * **`bundle-identifier`** — your bundle ID, matching your NVGT `build.product_identifier`.
 * **`bundle-path`** — the name of the `.app` folder **inside** the `.ipa`, which is `Payload/<something>.app`. For an NVGT build this is your project's base name plus `.app` (for example `yourgame.app`). Just the folder name, not the full path.
-* **`platform-id`** — `1` for iOS. Leave it as shown.
-* **`file-data`** — the **base64** of the `embedded.mobileprovision` file that NVGT placed inside your signed app bundle (Step 7). Note it is the *provisioning profile*, not the `.ipa`.
-* **`file-size`** — the size in bytes of that same `embedded.mobileprovision`, **before** base64 encoding.
-* **`path`** — where the profile lives inside the `.ipa`, relative to `Payload`, so `<your app>.app/embedded.mobileprovision`.
+* **`icons`** — left empty; see below.
+* **`bundles`** (the **inner** one, inside your app's entry) — left empty; see below.
+* **`platform-display-name`** — the constant `iOS App`; see below.
+* **`platform-id`** — the constant `1`; see below.
 
-Everything else in the template is a fixed constant; copy it exactly.
+**The provisioning profile, delivered inline:**
+
+* **`path`** — where the profile lives inside the `.ipa`, relative to `Payload`, so `<your app>.app/embedded.mobileprovision`.
+* **`file-data`** — the profile's **contents**: raw bytes in a binary plist, or base64 in the XML form above. Note this is the *provisioning profile*, not the `.ipa`.
+* **`file-size`** — the size in bytes of that same profile, **before** any base64 encoding.
+* **`file-type`** — the constant `NSFileTypeRegular`. This is a Foundation constant, the value `NSFileManager` reports for an ordinary file as opposed to a directory or a symbolic link. It is here purely to say "this entry is a plain file", and it is another place where Apple's internal vocabulary shows through, just like the `CFBundle...` keys above.
+* **`uti`** — the constant `com.apple.mobileprovision`. A **UTI**, or Uniform Type Identifier, is Apple's reverse DNS way of naming a file format — the same system that calls your `.ipa` `com.apple.ipa`. This is what tells Apple how to interpret the bytes in `file-data`; without it they would just be an anonymous blob.
+
+#### Why does `metadata.xml` get away with so much less?
+Set the two files side by side and something looks backwards. `metadata.xml` is a dozen lines and describes nothing about your app; `AppStoreInfo.plist` is far longer and knows your bundle path, your platform and your entire provisioning profile. Yet `metadata.xml` demands three things the plist never asks for: your **Team ID**, your **SKU**, and your app's numeric **Apple ID**. And it wants an **MD5 checksum**, which the plist also does without.
+
+So it is not that one file is a fuller version of the other. They carry *different* information, because the protocol around them is different.
+
+**`metadata.xml` is a delivery note.** Its job is to address the parcel: which Apple team is this from, which app record does it belong to, and did the bytes arrive intact? Hence Team ID, SKU, Apple ID and the checksum. It says nothing about the app because it does not have to — under Method A the whole `.itmsp` package is uploaded first and Apple opens the `.ipa` on its own servers afterwards, deriving everything else from the binary itself.
+
+**`AppStoreInfo.plist` is a description of the app.** It never states which app record to file the build under, because under Method B nobody needs to be told: Transporter takes the bundle identifier out of the `.ipa`, asks Apple *"which app is this?"*, and Apple hands back the numeric Apple ID and the provider — the very facts you had to look up by hand for Method A. Routing is **derived rather than declared**. The checksum is absent for the same kind of reason: Transporter computes it itself and registers it with the upload service as it goes, so there is nothing for you to state.
+
+The trade is therefore quite clean, and it explains why the two files feel so unlike each other:
+
+| | `metadata.xml` (Method A) | `AppStoreInfo.plist` (Method B) |
+|---|---|---|
+| Which app record to file this under | You declare it (Apple ID, SKU, Team ID) | Derived from the bundle identifier |
+| File integrity | You declare it (MD5) | Computed by the tool |
+| What the app actually *is* | Not described; Apple works it out server side | You describe it (versions, platform, profile) |
+
+Method A makes you look things up that Apple already knows, and tells Apple nothing it could not find out later. Method B is the reverse: it looks up for you what Apple already knows, and asks you instead for the things Apple would rather learn before a multi gigabyte upload begins. That is also precisely why Method B needs an analysis step on the client — and why, on Windows, that step has to be you.
 
 #### Do not "fix" the key names
 Look closely and this file is inconsistent with itself. Most of its keys are hyphenated — `bundle-identifier`, `bundle-path`, `platform-id`, `archive-bytes`, `file-name` — but two of them are not: `CFBundleShortVersionString` and `CFBundleVersion`. Those two are Apple's Core Foundation names, and they appear here spelled exactly as they are spelled in your app's `Info.plist`.
