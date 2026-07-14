@@ -23,8 +23,21 @@
 #elif defined(__APPLE__)
 #include <sys/sysctl.h>
 #include <unistd.h>
+#include <ifaddrs.h>
+#include <sys/socket.h>
+#include <net/if_dl.h>
+#include <libproc.h>
+#include <csignal>
+#include <csetjmp>
 #else
 #include <unistd.h>
+#include <ifaddrs.h>
+#include <sys/socket.h>
+#include <netpacket/packet.h>
+#include <net/if.h>
+#include <dirent.h>
+#include <csignal>
+#include <csetjmp>
 #endif
 #if defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64)
 #define NVGT_HAS_X86_CPUID 1
@@ -34,6 +47,7 @@
 #endif
 #include <string>
 #include <string_view>
+#include <vector>
 #include <fstream>
 #include <algorithm>
 #include <cctype>
@@ -670,23 +684,45 @@ bool vm_check_artifacts() {
 // The NIC hardware address. VMware and VirtualBox hand out virtual adapters whose
 // OUI (first three bytes) is registered to them; no physical NIC uses these.
 bool vm_check_mac() {
-#ifdef _WIN32
 	// OUIs: VMware 00:05:69, 00:0C:29, 00:1C:14, 00:50:56; VirtualBox 08:00:27, 0A:00:27.
-	struct Oui { BYTE b[3]; };
-	const Oui ouis[] = {{{0x00, 0x05, 0x69}}, {{0x00, 0x0C, 0x29}}, {{0x00, 0x1C, 0x14}}, {{0x00, 0x50, 0x56}}, {{0x08, 0x00, 0x27}}, {{0x0A, 0x00, 0x27}}};
+	static const uint8_t ouis[][3] = {
+		{0x00, 0x05, 0x69}, {0x00, 0x0C, 0x29}, {0x00, 0x1C, 0x14}, {0x00, 0x50, 0x56},
+		{0x08, 0x00, 0x27}, {0x0A, 0x00, 0x27},
+	};
+	auto oui_matches = [&](const uint8_t* addr) {
+		for (const auto& o : ouis)
+			if (std::memcmp(addr, o, 3) == 0) return true;
+		return false;
+	};
+#ifdef _WIN32
 	ULONG size = 0;
 	if (GetAdaptersInfo(nullptr, &size) != ERROR_BUFFER_OVERFLOW || !size) return false;
 	std::string buffer(size, '\0');
 	IP_ADAPTER_INFO* info = reinterpret_cast<IP_ADAPTER_INFO*>(buffer.data());
 	if (GetAdaptersInfo(info, &size) != NO_ERROR) return false;
-	for (IP_ADAPTER_INFO* a = info; a; a = a->Next) {
-		if (a->AddressLength != 6) continue;
-		for (const Oui& o : ouis)
-			if (std::memcmp(a->Address, o.b, 3) == 0) return true;
-	}
+	for (IP_ADAPTER_INFO* a = info; a; a = a->Next)
+		if (a->AddressLength == 6 && oui_matches(a->Address)) return true;
 	return false;
 #else
-	return false; // Enumerating MACs portably on POSIX is covered by the DMI/artifact checks above.
+	// POSIX: enumerate link-layer addresses. Linux exposes them via AF_PACKET
+	// (sockaddr_ll), the BSDs/macOS via AF_LINK (sockaddr_dl).
+	struct ifaddrs* ifap = nullptr;
+	if (getifaddrs(&ifap) != 0) return false;
+	bool found = false;
+	for (struct ifaddrs* ifa = ifap; ifa && !found; ifa = ifa->ifa_next) {
+		if (!ifa->ifa_addr) continue;
+#if defined(__APPLE__)
+		if (ifa->ifa_addr->sa_family != AF_LINK) continue;
+		auto* sdl = reinterpret_cast<struct sockaddr_dl*>(ifa->ifa_addr);
+		if (sdl->sdl_alen == 6) found = oui_matches(reinterpret_cast<const uint8_t*>(LLADDR(sdl)));
+#else
+		if (ifa->ifa_addr->sa_family != AF_PACKET) continue;
+		auto* sll = reinterpret_cast<struct sockaddr_ll*>(ifa->ifa_addr);
+		if (sll->sll_halen == 6) found = oui_matches(sll->sll_addr);
+#endif
+	}
+	freeifaddrs(ifap);
+	return found;
 #endif
 }
 
@@ -711,6 +747,35 @@ bool vm_check_vmware_backdoor() {
 	} __except (EXCEPTION_EXECUTE_HANDLER) {
 		return false;
 	}
+}
+#elif !defined(_WIN32) && (defined(__i386__) || defined(__x86_64__))
+// POSIX (Linux / Intel macOS) equivalent of the backdoor probe. There is no SEH, so
+// the privileged IN's fault (delivered as SIGSEGV, or SIGILL/SIGBUS on some kernels)
+// is recovered with a scoped signal handler + siglongjmp. We install the handlers only
+// for the microsecond-long probe and restore the previous ones immediately afterward,
+// so the engine's own crash handling is never permanently displaced. (Not re-entrant:
+// is_vm() is expected to be called from a single thread.)
+static sigjmp_buf vm_bd_jmp;
+static void vm_bd_signal(int) { siglongjmp(vm_bd_jmp, 1); }
+
+bool vm_check_vmware_backdoor() {
+	struct sigaction sa {}, old_segv {}, old_ill {}, old_bus {};
+	sa.sa_handler = vm_bd_signal;
+	sigemptyset(&sa.sa_mask);
+	sa.sa_flags = 0;
+	sigaction(SIGSEGV, &sa, &old_segv);
+	sigaction(SIGILL, &sa, &old_ill);
+	sigaction(SIGBUS, &sa, &old_bus);
+	bool result = false;
+	if (sigsetjmp(vm_bd_jmp, 1) == 0) {
+		uint32_t eax = 0x564D5868, ebx = 0, ecx = 0x0A, edx = 0x5658;
+		__asm__ __volatile__("inl %%dx, %%eax" : "+a"(eax), "+b"(ebx), "+c"(ecx), "+d"(edx));
+		result = (ebx == 0x564D5868); // faults on bare metal -> handler longjmps, result stays false
+	}
+	sigaction(SIGSEGV, &old_segv, nullptr);
+	sigaction(SIGILL, &old_ill, nullptr);
+	sigaction(SIGBUS, &old_bus, nullptr);
+	return result;
 }
 #else
 bool vm_check_vmware_backdoor() { return false; }
@@ -750,6 +815,7 @@ bool vm_check_dxgi() {
 	FreeLibrary(dxgi);
 	return found;
 }
+#endif
 
 // Running-process scan for the VMware Tools / VirtualBox Guest Additions helper
 // daemons. This is a runtime channel that still fires if the guest tools were
@@ -758,6 +824,7 @@ bool vm_check_dxgi() {
 // NOT generic analysis tools (Wireshark, Fiddler, Process Hacker, ...), which run
 // on plenty of real developer machines and would cause false positives.
 bool vm_check_processes() {
+#ifdef _WIN32
 	static const wchar_t* names[] = {
 		L"vmtoolsd.exe", L"vmwaretray.exe", L"vmwareuser.exe", L"vgauthservice.exe", L"vmacthlp.exe", // VMware
 		L"vboxservice.exe", L"vboxtray.exe", // VirtualBox
@@ -775,8 +842,80 @@ bool vm_check_processes() {
 	}
 	CloseHandle(snap);
 	return found;
-}
+#elif defined(__APPLE__)
+	// macOS: enumerate all pids and compare each process short name.
+	static const char* names[] = {"vmtoolsd", "vmware-tools-daemon", "VBoxService", "VBoxClient"};
+	int cap = proc_listpids(PROC_ALL_PIDS, 0, nullptr, 0);
+	if (cap <= 0) return false;
+	std::vector<pid_t> pids(static_cast<size_t>(cap) / sizeof(pid_t) + 16, 0);
+	int used = proc_listpids(PROC_ALL_PIDS, 0, pids.data(), static_cast<int>(pids.size() * sizeof(pid_t)));
+	int count = used <= 0 ? 0 : used / static_cast<int>(sizeof(pid_t));
+	char name[256];
+	for (int i = 0; i < count; ++i) {
+		if (pids[i] == 0) continue;
+		if (proc_name(pids[i], name, sizeof(name)) <= 0) continue;
+		std::string pn(name);
+		for (const char* nm : names)
+			if (pn == nm) return true;
+	}
+	return false;
+#else
+	// Linux: read /proc/<pid>/comm. Note comm is capped at 15 chars, so listed names
+	// must fit within that (VBoxService, vmtoolsd, VBoxClient all do).
+	static const char* names[] = {"vmtoolsd", "VBoxService", "VBoxClient", "vmware-user"};
+	DIR* proc = opendir("/proc");
+	if (!proc) return false;
+	bool found = false;
+	for (struct dirent* ent = readdir(proc); ent && !found; ent = readdir(proc)) {
+		if (ent->d_name[0] < '0' || ent->d_name[0] > '9') continue; // pid dirs only
+		std::ifstream f(std::string("/proc/") + ent->d_name + "/comm");
+		std::string comm;
+		if (!f || !std::getline(f, comm)) continue;
+		for (const char* nm : names)
+			if (comm == nm) { found = true; break; }
+	}
+	closedir(proc);
+	return found;
 #endif
+}
+
+// PCI / GPU vendor probe for POSIX (the cross-platform counterpart of vm_check_dxgi).
+// The emulated VMware SVGA (PCI vendor 0x15AD) or VirtualBox devices (0x80EE) are the
+// hardest signal for a hardened guest to hide -- present even with no guest tools and
+// unforgeable by any .vmx setting. On Windows this is covered by DXGI + WMI PnP.
+bool vm_check_pci() {
+#if defined(_WIN32)
+	return false; // handled by vm_check_dxgi() + Win32_PnPEntity in vm_check_hardware().
+#elif defined(__APPLE__)
+	// No sysfs on macOS; query the IO registry for the virtual GPU / devices.
+	FILE* pipe = popen("ioreg -l 2>/dev/null", "r");
+	if (!pipe) return false;
+	std::string out;
+	char buf[512];
+	bool found = false;
+	while (!found && fgets(buf, sizeof(buf), pipe)) {
+		std::string line(buf);
+		if (icontains(line, "vmware") || icontains(line, "virtualbox") || icontains(line, "0x15ad") || icontains(line, "0x80ee")) found = true;
+	}
+	pclose(pipe);
+	return found;
+#else
+	// Linux: every PCI device exposes its vendor id at /sys/bus/pci/devices/*/vendor.
+	DIR* dir = opendir("/sys/bus/pci/devices");
+	if (!dir) return false;
+	bool found = false;
+	for (struct dirent* ent = readdir(dir); ent && !found; ent = readdir(dir)) {
+		if (ent->d_name[0] == '.') continue;
+		std::ifstream f(std::string("/sys/bus/pci/devices/") + ent->d_name + "/vendor");
+		std::string v;
+		if (!f || !std::getline(f, v)) continue;
+		// Content is like "0x15ad".
+		if (icontains(v, "15ad") || icontains(v, "80ee")) found = true;
+	}
+	closedir(dir);
+	return found;
+#endif
+}
 
 // The Windows Sandbox user profile marker. Windows Sandbox is a Hyper-V-backed
 // disposable VM; this is a specific, non-generic artifact that never appears on a
@@ -813,9 +952,10 @@ bool is_vm() {
 #endif
 	if (vm_check_artifacts()) return true;
 	if (vm_check_mac()) return true;
-#ifdef _WIN32
 	if (vm_check_processes()) return true;
-	if (vm_check_dxgi()) return true; // Emulated GPU by PCI vendor id; survives VM hardening.
+	if (vm_check_pci()) return true; // POSIX emulated-GPU/PCI residual (VEN_15AD/80EE); survives hardening.
+#ifdef _WIN32
+	if (vm_check_dxgi()) return true; // Windows GPU by PCI vendor id; survives VM hardening.
 #endif
 	if (vm_check_sandbox_files()) return true;
 	if (vm_check_hardware()) return true; // Slowest (WMI/COM); last resort.
