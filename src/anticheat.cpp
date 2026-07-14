@@ -19,6 +19,7 @@
 #include <Wbemidl.h>
 #include <iphlpapi.h>
 #include <tlhelp32.h>
+#include <dxgi.h>
 #elif defined(__APPLE__)
 #include <sys/sysctl.h>
 #include <unistd.h>
@@ -448,6 +449,12 @@ bool vm_check_hardware() {
 				|| wmi_query_contains(services, L"SELECT SerialNumber FROM Win32_BIOS", L"SerialNumber", {"vmware-"})
 				|| wmi_query_contains(services, L"SELECT Product FROM Win32_BaseBoard", L"Product", {"vmware", "virtualbox", "vbox"})
 				|| wmi_query_contains(services, L"SELECT Name FROM Win32_VideoController", L"Name", {"vmware", "virtualbox", "vbox"})
+				// The emulated display adapter is the hardest signal for a hardened VM to hide:
+				// its PCI vendor ID (VMware SVGA = VEN_15AD, VirtualBox = VEN_80EE) is baked into
+				// the virtual hardware and survives .vmx SMBIOS/CPUID/MAC spoofing and uninstalling
+				// the guest tools. Match the vendor ID directly, not the driver-provided Name, since
+				// with no tools installed the adapter shows a generic name but keeps its PCI ID.
+				|| wmi_query_contains(services, L"SELECT PNPDeviceID FROM Win32_VideoController", L"PNPDeviceID", {"ven_15ad", "ven_80ee"})
 				|| wmi_query_contains(services, L"SELECT Model, PNPDeviceID FROM Win32_DiskDrive", L"Model", {"vmware", "virtualbox", "vbox"})
 				|| wmi_query_contains(services, L"SELECT PNPDeviceID FROM Win32_DiskDrive", L"PNPDeviceID", {"ven_vmware", "ven_80ee", "vbox"})
 				|| wmi_query_contains(services, L"SELECT DeviceID FROM Win32_PnPEntity WHERE DeviceID LIKE '%VEN_15AD%' OR DeviceID LIKE '%VEN_80EE%'", L"DeviceID", {"ven_15ad", "ven_80ee"});
@@ -710,6 +717,40 @@ bool vm_check_vmware_backdoor() { return false; }
 #endif
 
 #ifdef _WIN32
+// Enumerate graphics adapters through DXGI and match the emulated GPU by its PCI
+// vendor ID (VMware SVGA = 0x15AD, VirtualBox = 0x80EE) or adapter description. This
+// is the single hardest signal for a hardened VM to hide: the virtual GPU is present
+// even with no guest tools and its PCI vendor ID cannot be rewritten by any .vmx
+// setting. DXGI reads the adapter straight from the graphics stack -- a different code
+// path from the WMI/PnP query in vm_check_hardware -- so an attacker must hook both to
+// conceal it. CreateDXGIFactory is loaded dynamically to avoid a static dxgi.lib
+// dependency; the IID comes from the already-linked dxguid.lib.
+bool vm_check_dxgi() {
+	HMODULE dxgi = LoadLibraryW(L"dxgi.dll");
+	if (!dxgi) return false;
+	using PFN_CreateDXGIFactory = HRESULT(WINAPI*)(REFIID, void**);
+	auto create = reinterpret_cast<PFN_CreateDXGIFactory>(GetProcAddress(dxgi, "CreateDXGIFactory"));
+	bool found = false;
+	IDXGIFactory* factory = nullptr;
+	if (create && SUCCEEDED(create(__uuidof(IDXGIFactory), reinterpret_cast<void**>(&factory))) && factory) {
+		IDXGIAdapter* adapter = nullptr;
+		for (UINT i = 0; !found && factory->EnumAdapters(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+			DXGI_ADAPTER_DESC desc;
+			if (SUCCEEDED(adapter->GetDesc(&desc))) {
+				if (desc.VendorId == 0x15AD || desc.VendorId == 0x80EE) found = true;
+				else {
+					std::string d = narrow_ascii(desc.Description);
+					if (icontains(d, "vmware") || icontains(d, "virtualbox") || icontains(d, "vbox")) found = true;
+				}
+			}
+			adapter->Release();
+		}
+		factory->Release();
+	}
+	FreeLibrary(dxgi);
+	return found;
+}
+
 // Running-process scan for the VMware Tools / VirtualBox Guest Additions helper
 // daemons. This is a runtime channel that still fires if the guest tools were
 // installed to a non-standard path (so the file/registry probes missed) but their
@@ -774,6 +815,7 @@ bool is_vm() {
 	if (vm_check_mac()) return true;
 #ifdef _WIN32
 	if (vm_check_processes()) return true;
+	if (vm_check_dxgi()) return true; // Emulated GPU by PCI vendor id; survives VM hardening.
 #endif
 	if (vm_check_sandbox_files()) return true;
 	if (vm_check_hardware()) return true; // Slowest (WMI/COM); last resort.
