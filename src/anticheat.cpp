@@ -17,11 +17,19 @@
 #include <winternl.h>
 #include <comdef.h>
 #include <Wbemidl.h>
+#include <iphlpapi.h>
+#include <tlhelp32.h>
 #elif defined(__APPLE__)
 #include <sys/sysctl.h>
 #include <unistd.h>
 #else
 #include <unistd.h>
+#endif
+#if defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64)
+#define NVGT_HAS_X86_CPUID 1
+#ifdef _MSC_VER
+#include <intrin.h> // for __cpuidex; other toolchains use inline assembly instead.
+#endif
 #endif
 #include <string>
 #include <string_view>
@@ -29,6 +37,9 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstdint>
+#include <cstring>
+#include <initializer_list>
 #include <atomic>
 #include <angelscript.h>
 #include <cassert>
@@ -301,11 +312,21 @@ void handle_dll_loader_notification(ULONG reason, const PLDR_DLL_NOTIFICATION_DA
 }
 #endif
 
-// Virtual machine / analysis environment detection.
-// This mirrors the checks performed by the referenced Python "Detector.is_virtualized"
-// property (which is what the standalone is_vm() helper invokes): hardware/model
-// inspection, known guest-tool file artifacts, CPU hypervisor features and the
-// Windows Sandbox profile marker. Any single positive result reports a VM.
+// Virtual machine detection, specifically targeting VMware and VirtualBox guests.
+//
+// Design goals, in priority order:
+//   1. No false positives on real hardware. This is the hard constraint. In
+//      particular, a *bare-metal* Windows 11 machine with Virtualization-Based
+//      Security (VBS/HVCI/Credential Guard), Hyper-V or WSL2 enabled reports the
+//      generic CPUID "hypervisor present" bit set and a hypervisor vendor of
+//      "Microsoft Hv" even though it is NOT a virtual machine. Therefore we never
+//      report a VM from generic virtualization signals alone; every trigger below
+//      is tied to a VMware- or VirtualBox-specific artifact.
+//   2. Detect VMware/VirtualBox as robustly as possible. A guest exposes the same
+//      fingerprint through many independent channels (CPU, firmware, registry,
+//      drivers, devices, services, NIC MAC). We probe all of them, so a user who
+//      hides one channel is still caught by the others. Any single positive
+//      reports a VM.
 namespace {
 // Case-insensitive substring search helper.
 bool icontains(const std::string& haystack, const std::string& needle) {
@@ -316,11 +337,100 @@ bool icontains(const std::string& haystack, const std::string& needle) {
 	return it != haystack.end();
 }
 
-// Mirrors VMChecks.check_vm_hardware(): inspect the system model/hardware string for
-// known hypervisor vendor names.
+#ifdef _WIN32
+// Narrow a wide string to bytes for ASCII substring matching. Vendor/model/registry
+// strings are ASCII, so the truncating cast is intentional (and avoids the implicit
+// wchar_t->char narrowing warning from constructing a std::string from wide iterators).
+std::string narrow_ascii(const std::wstring& w) {
+	std::string out;
+	out.reserve(w.size());
+	for (wchar_t c : w) out.push_back(static_cast<char>(c & 0xFF));
+	return out;
+}
+#endif
+
+#ifdef NVGT_HAS_X86_CPUID
+// Portable CPUID wrapper. out = {EAX, EBX, ECX, EDX}. The MSVC toolchain lacks
+// GCC-style inline assembly and exposes the __cpuidex intrinsic instead; every other
+// toolchain uses the inline-assembly path. The distinction is the intrinsic vs. the
+// instruction, not any particular compiler.
+void cpuid_raw(uint32_t leaf, uint32_t subleaf, uint32_t out[4]) {
+#ifdef _MSC_VER
+	int regs[4];
+	__cpuidex(regs, static_cast<int>(leaf), static_cast<int>(subleaf));
+	out[0] = static_cast<uint32_t>(regs[0]);
+	out[1] = static_cast<uint32_t>(regs[1]);
+	out[2] = static_cast<uint32_t>(regs[2]);
+	out[3] = static_cast<uint32_t>(regs[3]);
+#else
+	__asm__ __volatile__("cpuid" : "=a"(out[0]), "=b"(out[1]), "=c"(out[2]), "=d"(out[3]) : "a"(leaf), "c"(subleaf));
+#endif
+}
+
+// Read the hypervisor vendor signature from CPUID leaf 0x40000000 (12 chars laid
+// out across EBX, ECX, EDX). Returns "" when no hypervisor is present.
+std::string cpuid_hypervisor_vendor() {
+	uint32_t regs[4];
+	cpuid_raw(1, 0, regs);
+	// ECX bit 31 is the "hypervisor present" hint. When clear we are on bare metal
+	// and leaf 0x40000000 is not meaningful, so skip it.
+	if (!(regs[2] & (1u << 31))) return std::string();
+	cpuid_raw(0x40000000, 0, regs);
+	char vendor[13] = {0};
+	std::memcpy(vendor + 0, &regs[1], 4); // EBX
+	std::memcpy(vendor + 4, &regs[2], 4); // ECX
+	std::memcpy(vendor + 8, &regs[3], 4); // EDX
+	return std::string(vendor);
+}
+
+// True only for VMware or VirtualBox. We deliberately ignore "Microsoft Hv"
+// (Hyper-V/VBS on real Windows 11), "KVMKVMKVM", "XenVMMXenVMM", etc. so those
+// do not cause false positives.
+bool cpuid_is_vmware_or_vbox() {
+	const std::string vendor = cpuid_hypervisor_vendor();
+	return vendor == "VMwareVMware" || vendor == "VBoxVBoxVBox";
+}
+#else
+bool cpuid_is_vmware_or_vbox() { return false; }
+#endif
+
+#ifdef _WIN32
+// Run one WQL query against an already-connected namespace and test the given string
+// property of every returned row for any needle (case-insensitive).
+bool wmi_query_contains(IWbemServices* services, const wchar_t* wql, const wchar_t* prop, std::initializer_list<const char*> needles) {
+	IEnumWbemClassObject* enumerator = nullptr;
+	if (FAILED(services->ExecQuery(_bstr_t(L"WQL"), _bstr_t(wql), WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY, nullptr, &enumerator)) || !enumerator) return false;
+	bool result = false;
+	IWbemClassObject* obj = nullptr;
+	ULONG returned = 0;
+	while (!result && enumerator->Next(WBEM_INFINITE, 1, &obj, &returned) == S_OK && returned) {
+		VARIANT v;
+		VariantInit(&v);
+		if (SUCCEEDED(obj->Get(prop, 0, &v, nullptr, nullptr)) && v.vt == VT_BSTR && v.bstrVal) {
+			std::string s = narrow_ascii(v.bstrVal);
+			for (const char* needle : needles)
+				if (icontains(s, needle)) { result = true; break; }
+		}
+		VariantClear(&v);
+		obj->Release();
+	}
+	enumerator->Release();
+	return result;
+}
+#endif
+
+// Inspect firmware/model/BIOS/baseboard/disk/video/PCI strings for VMware/VirtualBox
+// vendor names. On a real machine these fields carry the physical OEM's names
+// (Dell, ASUS, ...) and real PCI vendor IDs (10DE/8086/...), never "VMware",
+// "innotek", VEN_15AD or VEN_80EE, so this cannot false-positive. This is the
+// slowest probe (WMI/COM), so is_vm() runs it only after the cheap checks miss.
 bool vm_check_hardware() {
 #ifdef _WIN32
-	// Equivalent of the Python WMI query for Win32_ComputerSystem.Model.
+	// Connect to ROOT\CIMV2 once and reuse it for every query below. "innotek GmbH"
+	// is VirtualBox's historic manufacturer; "VirtualBox"/"VBOX"/"VEN_80EE" identify
+	// its devices; VMware uses "VMware"/"VMware Virtual Platform"/"VEN_15AD". We do
+	// NOT match generic terms like "virtual machine", so a Hyper-V guest label (and
+	// therefore a real Win11 host's Hyper-V surface) never trips this.
 	bool com_initialized = false;
 	HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 	if (SUCCEEDED(hr)) com_initialized = true;
@@ -328,29 +438,19 @@ bool vm_check_hardware() {
 	bool result = false;
 	IWbemLocator* locator = nullptr;
 	IWbemServices* services = nullptr;
-	IEnumWbemClassObject* enumerator = nullptr;
 	if (SUCCEEDED(CoCreateInstance(CLSID_WbemLocator, nullptr, CLSCTX_INPROC_SERVER, IID_IWbemLocator, reinterpret_cast<void**>(&locator))) && locator) {
 		if (SUCCEEDED(locator->ConnectServer(_bstr_t(L"ROOT\\CIMV2"), nullptr, nullptr, nullptr, 0, nullptr, nullptr, &services)) && services) {
 			CoSetProxyBlanket(services, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, nullptr, RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_NONE);
-			if (SUCCEEDED(services->ExecQuery(_bstr_t(L"WQL"), _bstr_t(L"SELECT Model FROM Win32_ComputerSystem"), WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY, nullptr, &enumerator)) && enumerator) {
-				IWbemClassObject* obj = nullptr;
-				ULONG returned = 0;
-				while (enumerator->Next(WBEM_INFINITE, 1, &obj, &returned) == S_OK && returned) {
-					VARIANT v;
-					VariantInit(&v);
-					if (SUCCEEDED(obj->Get(L"Model", 0, &v, nullptr, nullptr)) && v.vt == VT_BSTR && v.bstrVal) {
-						std::wstring wmodel(v.bstrVal);
-						std::string model(wmodel.begin(), wmodel.end());
-						for (const char* indicator : {"vmware", "virtualbox", "hyper-v", "kvm", "qemu"}) {
-							if (icontains(model, indicator)) { result = true; break; }
-						}
-					}
-					VariantClear(&v);
-					obj->Release();
-					if (result) break;
-				}
-				enumerator->Release();
-			}
+			result = wmi_query_contains(services, L"SELECT Model FROM Win32_ComputerSystem", L"Model", {"vmware", "virtualbox", "vbox"})
+				|| wmi_query_contains(services, L"SELECT Manufacturer FROM Win32_ComputerSystem", L"Manufacturer", {"vmware", "innotek", "virtualbox"})
+				|| wmi_query_contains(services, L"SELECT SMBIOSBIOSVersion FROM Win32_BIOS", L"SMBIOSBIOSVersion", {"vmware", "virtualbox", "vbox"})
+				|| wmi_query_contains(services, L"SELECT Manufacturer FROM Win32_BIOS", L"Manufacturer", {"vmware", "innotek", "virtualbox"})
+				|| wmi_query_contains(services, L"SELECT SerialNumber FROM Win32_BIOS", L"SerialNumber", {"vmware-"})
+				|| wmi_query_contains(services, L"SELECT Product FROM Win32_BaseBoard", L"Product", {"vmware", "virtualbox", "vbox"})
+				|| wmi_query_contains(services, L"SELECT Name FROM Win32_VideoController", L"Name", {"vmware", "virtualbox", "vbox"})
+				|| wmi_query_contains(services, L"SELECT Model, PNPDeviceID FROM Win32_DiskDrive", L"Model", {"vmware", "virtualbox", "vbox"})
+				|| wmi_query_contains(services, L"SELECT PNPDeviceID FROM Win32_DiskDrive", L"PNPDeviceID", {"ven_vmware", "ven_80ee", "vbox"})
+				|| wmi_query_contains(services, L"SELECT DeviceID FROM Win32_PnPEntity WHERE DeviceID LIKE '%VEN_15AD%' OR DeviceID LIKE '%VEN_80EE%'", L"DeviceID", {"ven_15ad", "ven_80ee"});
 			services->Release();
 		}
 		locator->Release();
@@ -364,64 +464,282 @@ bool vm_check_hardware() {
 	std::string model(buf);
 	return icontains(model, "VMware") || icontains(model, "VirtualBox");
 #else // Linux
-	// systemd-detect-virt is the most reliable modern method.
+	// DMI/SMBIOS fields exposed by the kernel. These carry the physical OEM's names
+	// on real hardware, so a VMware/VirtualBox string here is definitive.
+	const char* dmi_files[] = {
+		"/sys/class/dmi/id/product_name", "/sys/class/dmi/id/sys_vendor",
+		"/sys/class/dmi/id/board_vendor", "/sys/class/dmi/id/bios_vendor",
+		"/sys/class/dmi/id/product_serial", "/sys/class/dmi/id/board_name",
+	};
+	for (const char* path : dmi_files) {
+		std::ifstream f(path);
+		if (!f) continue;
+		std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+		if (icontains(content, "vmware") || icontains(content, "virtualbox") || icontains(content, "innotek") || icontains(content, "vbox")) return true;
+	}
+	// systemd-detect-virt names the specific technology; restrict to our targets.
 	FILE* pipe = popen("systemd-detect-virt 2>/dev/null", "r");
-	if (!pipe) return false;
-	std::string output;
-	char buf[128];
-	while (fgets(buf, sizeof(buf), pipe)) output += buf;
-	int status = pclose(pipe);
-	// If the command isn't present or failed, treat as not a VM.
-	if (status != 0) return false;
-	// Trim whitespace.
-	output.erase(std::remove_if(output.begin(), output.end(), [](unsigned char c) { return std::isspace(c); }), output.end());
-	return !output.empty() && output != "none";
+	if (pipe) {
+		std::string output;
+		char buf[128];
+		while (fgets(buf, sizeof(buf), pipe)) output += buf;
+		int status = pclose(pipe);
+		output.erase(std::remove_if(output.begin(), output.end(), [](unsigned char c) { return std::isspace(c); }), output.end());
+		if (status == 0 && (output == "vmware" || output == "oracle")) return true;
+	}
+	return false;
 #endif
 }
 
-// Mirrors VMChecks.check_vm_artifacts(): existence of known guest-tool install paths.
+#ifdef _WIN32
+// Read the raw SMBIOS (DMI) firmware table and scan it for VMware/VirtualBox
+// vendor strings. This bypasses WMI entirely (harder to spoof from user space than
+// the model string) and works even when the guest tools have been uninstalled.
+bool vm_check_smbios() {
+	const DWORD signature = 'RSMB'; // Raw SMBIOS firmware table provider.
+	UINT size = GetSystemFirmwareTable(signature, 0, nullptr, 0);
+	if (!size) return false;
+	std::string data(size, '\0');
+	if (GetSystemFirmwareTable(signature, 0, data.data(), size) != size) return false;
+	return icontains(data, "vmware") || icontains(data, "virtualbox") || icontains(data, "vbox") || icontains(data, "innotek");
+}
+
+// True if the registry value (REG_SZ / REG_MULTI_SZ) under (root, subkey, value)
+// contains any needle. Reads via both 64-bit and 32-bit views.
+bool reg_value_contains(HKEY root, const wchar_t* subkey, const wchar_t* value, std::initializer_list<const char*> needles) {
+	for (REGSAM view : {KEY_WOW64_64KEY, KEY_WOW64_32KEY}) {
+		HKEY key;
+		if (RegOpenKeyExW(root, subkey, 0, KEY_READ | view, &key) != ERROR_SUCCESS) continue;
+		BYTE buf[1024] = {0};
+		DWORD len = sizeof(buf), type = 0;
+		LONG rc = RegQueryValueExW(key, value, nullptr, &type, buf, &len);
+		RegCloseKey(key);
+		if (rc != ERROR_SUCCESS || (type != REG_SZ && type != REG_MULTI_SZ)) continue;
+		std::wstring w(reinterpret_cast<wchar_t*>(buf), len / sizeof(wchar_t));
+		std::string s = narrow_ascii(w);
+		for (const char* needle : needles)
+			if (icontains(s, needle)) return true;
+	}
+	return false;
+}
+
+// True if the registry key itself exists (presence is the signal).
+bool reg_key_exists(HKEY root, const wchar_t* subkey) {
+	for (REGSAM view : {KEY_WOW64_64KEY, KEY_WOW64_32KEY}) {
+		HKEY key;
+		if (RegOpenKeyExW(root, subkey, 0, KEY_READ | view, &key) == ERROR_SUCCESS) {
+			RegCloseKey(key);
+			return true;
+		}
+	}
+	return false;
+}
+
+// Registry artifacts unique to VMware or VirtualBox guests.
+bool vm_check_registry() {
+	// VirtualBox writes "VBOX__" into the ACPI table identifiers and installs a
+	// dedicated set of guest services. VMware installs the "VMware, Inc." key and
+	// a family of vm* services. None of these exist on real hardware.
+	const wchar_t* vbox_keys[] = {
+		L"HARDWARE\\ACPI\\DSDT\\VBOX__",
+		L"HARDWARE\\ACPI\\FADT\\VBOX__",
+		L"HARDWARE\\ACPI\\RSDT\\VBOX__",
+		L"SOFTWARE\\Oracle\\VirtualBox Guest Additions",
+		L"SYSTEM\\CurrentControlSet\\Services\\VBoxGuest",
+		L"SYSTEM\\CurrentControlSet\\Services\\VBoxMouse",
+		L"SYSTEM\\CurrentControlSet\\Services\\VBoxService",
+		L"SYSTEM\\CurrentControlSet\\Services\\VBoxSF",
+		L"SYSTEM\\CurrentControlSet\\Services\\VBoxVideo",
+	};
+	const wchar_t* vmware_keys[] = {
+		L"SOFTWARE\\VMware, Inc.\\VMware Tools",
+		L"SYSTEM\\CurrentControlSet\\Services\\vmci",
+		L"SYSTEM\\CurrentControlSet\\Services\\vmhgfs",
+		L"SYSTEM\\CurrentControlSet\\Services\\vmmouse",
+		L"SYSTEM\\CurrentControlSet\\Services\\vmrawdsk",
+		L"SYSTEM\\CurrentControlSet\\Services\\vmusbmouse",
+		L"SYSTEM\\CurrentControlSet\\Services\\vmvss",
+		L"SYSTEM\\CurrentControlSet\\Services\\vmscsi",
+		L"SYSTEM\\CurrentControlSet\\Services\\vmxnet",
+		L"SYSTEM\\CurrentControlSet\\Services\\VMTools",
+	};
+	for (const wchar_t* k : vbox_keys)
+		if (reg_key_exists(HKEY_LOCAL_MACHINE, k)) return true;
+	for (const wchar_t* k : vmware_keys)
+		if (reg_key_exists(HKEY_LOCAL_MACHINE, k)) return true;
+	// BIOS/disk identifier strings recorded by the firmware.
+	if (reg_value_contains(HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System", L"SystemBiosVersion", {"vbox", "vmware", "virtualbox"})) return true;
+	if (reg_value_contains(HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System", L"VideoBiosVersion", {"virtualbox", "vmware"})) return true;
+	if (reg_value_contains(HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System\\BIOS", L"SystemManufacturer", {"vmware", "innotek", "virtualbox"})) return true;
+	if (reg_value_contains(HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System\\BIOS", L"SystemProductName", {"vmware", "virtualbox", "vbox"})) return true;
+	if (reg_value_contains(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Services\\Disk\\Enum", L"0", {"vmware", "vbox"})) return true;
+	// The SCSI controller identifier recorded by the firmware carries the virtual
+	// disk vendor. Both hypervisors expose their disks on port 0.
+	if (reg_value_contains(HKEY_LOCAL_MACHINE, L"HARDWARE\\DEVICEMAP\\Scsi\\Scsi Port 0\\Scsi Bus 0\\Target Id 0\\Logical Unit Id 0", L"Identifier", {"vmware", "vbox", "virtualbox"})) return true;
+	return false;
+}
+#endif
+
+// Existence of known guest-tool install paths, driver/DLL files, and open-able
+// guest device objects. Every name below ships only with VMware Tools or the
+// VirtualBox Guest Additions.
 bool vm_check_artifacts() {
 #ifdef _WIN32
-	const wchar_t* paths[] = {
+	const wchar_t* dirs[] = {
 		L"%ProgramFiles%\\VMware\\VMware Tools",
-		L"%ProgramFiles%\\Oracle\\VirtualBox Guest Additions"
+		L"%ProgramFiles%\\Oracle\\VirtualBox Guest Additions",
 	};
-	for (const wchar_t* raw : paths) {
+	for (const wchar_t* raw : dirs) {
 		wchar_t expanded[MAX_PATH * 2];
 		if (ExpandEnvironmentStringsW(raw, expanded, MAX_PATH * 2) && GetFileAttributesW(expanded) != INVALID_FILE_ATTRIBUTES)
 			return true;
 	}
+	// Guest driver and helper files under %SystemRoot%\System32.
+	const wchar_t* files[] = {
+		// VirtualBox Guest Additions.
+		L"%SystemRoot%\\System32\\drivers\\VBoxGuest.sys",
+		L"%SystemRoot%\\System32\\drivers\\VBoxMouse.sys",
+		L"%SystemRoot%\\System32\\drivers\\VBoxSF.sys",
+		L"%SystemRoot%\\System32\\drivers\\VBoxVideo.sys",
+		L"%SystemRoot%\\System32\\vboxdisp.dll",
+		L"%SystemRoot%\\System32\\vboxhook.dll",
+		L"%SystemRoot%\\System32\\vboxmrxnp.dll",
+		L"%SystemRoot%\\System32\\vboxservice.exe",
+		L"%SystemRoot%\\System32\\vboxtray.exe",
+		L"%SystemRoot%\\System32\\VBoxControl.exe",
+		// VMware Tools.
+		L"%SystemRoot%\\System32\\drivers\\vmci.sys",
+		L"%SystemRoot%\\System32\\drivers\\vmhgfs.sys",
+		L"%SystemRoot%\\System32\\drivers\\vmmouse.sys",
+		L"%SystemRoot%\\System32\\drivers\\vmrawdsk.sys",
+		L"%SystemRoot%\\System32\\drivers\\vmusbmouse.sys",
+		L"%SystemRoot%\\System32\\drivers\\vmx_svga.sys",
+		L"%SystemRoot%\\System32\\drivers\\vmxnet.sys",
+		L"%SystemRoot%\\System32\\drivers\\vm3dmp.sys",
+		L"%SystemRoot%\\System32\\vmGuestLib.dll",
+		L"%SystemRoot%\\System32\\vm3dgl.dll",
+	};
+	for (const wchar_t* raw : files) {
+		wchar_t expanded[MAX_PATH * 2];
+		if (ExpandEnvironmentStringsW(raw, expanded, MAX_PATH * 2) && GetFileAttributesW(expanded) != INVALID_FILE_ATTRIBUTES)
+			return true;
+	}
+	// Guest kernel device objects / named pipes. A successful open (or a
+	// "device busy" style error rather than "not found") means the guest driver is
+	// loaded. These paths simply do not resolve on real hardware.
+	const wchar_t* devices[] = {
+		L"\\\\.\\VBoxGuest",
+		L"\\\\.\\VBoxMiniRdrDN",
+		L"\\\\.\\pipe\\VBoxTrayIPC",
+		L"\\\\.\\HGFS",
+		L"\\\\.\\vmci",
+	};
+	for (const wchar_t* dev : devices) {
+		HANDLE h = CreateFileW(dev, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+		if (h != INVALID_HANDLE_VALUE) {
+			CloseHandle(h);
+			return true;
+		}
+		if (GetLastError() == ERROR_ACCESS_DENIED) return true; // Exists but locked -> present.
+	}
 	return false;
 #elif defined(__APPLE__)
-	const char* paths[] = {"/Applications/VMware Fusion.app", "/Applications/VirtualBox.app"};
+	const char* paths[] = {"/Applications/VMware Fusion.app", "/Applications/VirtualBox.app", "/Library/Application Support/VMware Tools"};
 	for (const char* p : paths)
 		if (access(p, F_OK) == 0) return true;
 	return false;
-#else
-	return false; // Python defines no Linux artifact paths.
+#else // Linux
+	const char* paths[] = {
+		"/usr/bin/VBoxClient", "/usr/bin/VBoxControl", "/usr/sbin/VBoxService",
+		"/dev/vboxguest", "/dev/vboxuser",
+		"/usr/bin/vmware-toolbox-cmd", "/usr/bin/vmtoolsd", "/dev/vmci",
+	};
+	for (const char* p : paths)
+		if (access(p, F_OK) == 0) return true;
+	return false;
 #endif
 }
 
-// Mirrors VMChecks.check_cpu_features(): CPU flags exposed by the hypervisor.
-bool vm_check_cpu_features() {
-#ifdef __APPLE__
-	char buf[1024] = {0};
-	size_t len = sizeof(buf) - 1;
-	if (sysctlbyname("machdep.cpu.features", buf, &len, nullptr, 0) != 0) return false;
-	return std::string(buf).find("VMM") != std::string::npos; // Virtual Machine Monitor flag.
-#elif !defined(_WIN32)
-	std::ifstream cpuinfo("/proc/cpuinfo");
-	if (!cpuinfo) return false;
-	std::string line;
-	while (std::getline(cpuinfo, line))
-		if (line.find("hypervisor") != std::string::npos) return true;
+// The NIC hardware address. VMware and VirtualBox hand out virtual adapters whose
+// OUI (first three bytes) is registered to them; no physical NIC uses these.
+bool vm_check_mac() {
+#ifdef _WIN32
+	// OUIs: VMware 00:05:69, 00:0C:29, 00:1C:14, 00:50:56; VirtualBox 08:00:27, 0A:00:27.
+	struct Oui { BYTE b[3]; };
+	const Oui ouis[] = {{{0x00, 0x05, 0x69}}, {{0x00, 0x0C, 0x29}}, {{0x00, 0x1C, 0x14}}, {{0x00, 0x50, 0x56}}, {{0x08, 0x00, 0x27}}, {{0x0A, 0x00, 0x27}}};
+	ULONG size = 0;
+	if (GetAdaptersInfo(nullptr, &size) != ERROR_BUFFER_OVERFLOW || !size) return false;
+	std::string buffer(size, '\0');
+	IP_ADAPTER_INFO* info = reinterpret_cast<IP_ADAPTER_INFO*>(buffer.data());
+	if (GetAdaptersInfo(info, &size) != NO_ERROR) return false;
+	for (IP_ADAPTER_INFO* a = info; a; a = a->Next) {
+		if (a->AddressLength != 6) continue;
+		for (const Oui& o : ouis)
+			if (std::memcmp(a->Address, o.b, 3) == 0) return true;
+	}
 	return false;
 #else
-	return false; // Python performs this check only on Linux/macOS.
+	return false; // Enumerating MACs portably on POSIX is covered by the DMI/artifact checks above.
 #endif
 }
 
-// Mirrors DebuggerChecks.check_sandbox_files(): the Windows Sandbox user profile marker.
+// The VMware "backdoor" I/O request: magic 'VMXh' (0x564D5868) in EAX, command
+// GETVERSION (0x0A) in ECX, port 'VX' (0x5658) in DX. On a VMware guest the IN
+// instruction is intercepted and returns the magic back in EBX; on real hardware the
+// privileged IN raises #GP. The port IN and register setup are implemented in the
+// hand-written assembly stub src/vmware_backdoor.asm (x64 Windows only), because the
+// backdoor protocol -- preloading EBX/ECX and reading EBX back -- cannot be expressed
+// with the port-I/O intrinsics available on x64, and #GP recovery here relies on
+// Windows SEH. VMware on other platforms is still caught by the CPUID "VMwareVMware"
+// vendor, SMBIOS/DMI, \\.\vmci/\\.\HGFS devices, registry, services and MAC.
+#if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
+extern "C" uint32_t vmware_backdoor_probe(void);
+
+// VMware-specific and near-zero false positive: a real machine (including a Windows 11
+// host with Hyper-V/VBS enabled) cannot answer the backdoor and instead faults on the
+// privileged IN, which the SEH wrapper swallows.
+bool vm_check_vmware_backdoor() {
+	__try {
+		return vmware_backdoor_probe() == 0x564D5868;
+	} __except (EXCEPTION_EXECUTE_HANDLER) {
+		return false;
+	}
+}
+#else
+bool vm_check_vmware_backdoor() { return false; }
+#endif
+
+#ifdef _WIN32
+// Running-process scan for the VMware Tools / VirtualBox Guest Additions helper
+// daemons. This is a runtime channel that still fires if the guest tools were
+// installed to a non-standard path (so the file/registry probes missed) but their
+// services are running. Only guest-tool process names are listed -- deliberately
+// NOT generic analysis tools (Wireshark, Fiddler, Process Hacker, ...), which run
+// on plenty of real developer machines and would cause false positives.
+bool vm_check_processes() {
+	static const wchar_t* names[] = {
+		L"vmtoolsd.exe", L"vmwaretray.exe", L"vmwareuser.exe", L"vgauthservice.exe", L"vmacthlp.exe", // VMware
+		L"vboxservice.exe", L"vboxtray.exe", // VirtualBox
+	};
+	HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+	if (snap == INVALID_HANDLE_VALUE) return false;
+	PROCESSENTRY32W pe;
+	pe.dwSize = sizeof(pe);
+	bool found = false;
+	if (Process32FirstW(snap, &pe)) {
+		do {
+			for (const wchar_t* n : names)
+				if (_wcsicmp(pe.szExeFile, n) == 0) { found = true; break; }
+		} while (!found && Process32NextW(snap, &pe));
+	}
+	CloseHandle(snap);
+	return found;
+}
+#endif
+
+// The Windows Sandbox user profile marker. Windows Sandbox is a Hyper-V-backed
+// disposable VM; this is a specific, non-generic artifact that never appears on a
+// normal desktop.
 bool vm_check_sandbox_files() {
 #ifdef _WIN32
 	wchar_t profile[MAX_PATH * 2];
@@ -437,9 +755,29 @@ bool vm_check_sandbox_files() {
 } // namespace
 
 bool is_vm() {
-	// Equivalent of the Python is_virtualized property: True if any check matches.
-	// (check_mac_address and check_virtualbox_drivers are disabled in the reference and omitted.)
-	return vm_check_hardware() || vm_check_artifacts() || vm_check_cpu_features() || vm_check_sandbox_files();
+	// True if ANY VMware/VirtualBox-specific signal fires. Each probe is a distinct
+	// channel, so hiding one (e.g. masking the CPUID vendor, spoofing the MAC, or
+	// uninstalling the guest tools) still leaves the others to catch the guest. None
+	// of these fire on bare-metal hardware -- including a Windows 11 host running
+	// Hyper-V/VBS/WSL2 -- so real players are not misclassified.
+	//
+	// Ordered cheapest-first and short-circuiting: the CPUID/firmware/registry/device
+	// probes are near-instant, so the expensive WMI query only runs when everything
+	// else has already missed.
+	if (cpuid_is_vmware_or_vbox()) return true;
+	if (vm_check_vmware_backdoor()) return true;
+#ifdef _WIN32
+	if (vm_check_smbios()) return true;
+	if (vm_check_registry()) return true;
+#endif
+	if (vm_check_artifacts()) return true;
+	if (vm_check_mac()) return true;
+#ifdef _WIN32
+	if (vm_check_processes()) return true;
+#endif
+	if (vm_check_sandbox_files()) return true;
+	if (vm_check_hardware()) return true; // Slowest (WMI/COM); last resort.
+	return false;
 }
 
 void register_anticheat(asIScriptEngine* engine) {

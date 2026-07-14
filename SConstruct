@@ -183,6 +183,14 @@ if static_plugins_object: extra_objects.append(static_plugins_object)
 lzfse_srcs = ["lzfse_encode", "lzfse_encode_base", "lzfse_fse", "lzvn_encode_base"]
 if env["NVGT_TARGET"] not in ("ios", "android"):
 	extra_objects += [env.Object("build/obj_lzfse/" + s, "dep/lzfse/" + s + ".c") for s in lzfse_srcs]
+if env["NVGT_TARGET"] == "windows":
+	# MASM (ml64) stub for the anti-cheat's VMware backdoor probe: MSVC has no x64 inline
+	# assembly, so src/anticheat.cpp calls this hand-written object instead. Added to
+	# extra_objects so it links into nvgt, nvgtw and every stub. The masm tool defaults
+	# to the 32-bit "ml"; force the 64-bit assembler, which lives beside cl.exe.
+	env.Tool("masm")
+	env["AS"] = "ml64"
+	extra_objects.append(env.Object("build/obj_src/vmware_backdoor", "src/vmware_backdoor.asm"))
 if env["NVGT_TARGET"] not in ("ios", "android"):
 	if ARGUMENTS.get("debug", "0") == "1": env["PDB"] = "#build/debug/nvgt.pdb"
 	nvgt = env.Program("release/nvgt", env.Object([os.path.join("build/obj_src", s) for s in sources]) + extra_objects)
