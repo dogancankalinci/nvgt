@@ -31,6 +31,7 @@ network::network() {
 	host = NULL;
 	next_peer = 1;
 	channel_count = 0;
+	peer_count = 0;
 	is_client = receive_timeout_event = IPv6enabled = false;
 	send_immediately = true;
 	RefCount = 1;
@@ -59,6 +60,7 @@ void network::destroy(bool flush) {
 	peers.clear();
 	next_peer = 1;
 	channel_count = 0;
+	peer_count = 0;
 	is_client = false;
 	reset_totals();
 }
@@ -66,10 +68,22 @@ void network::destroy(bool flush) {
 bool network::setup_client(unsigned char max_channels, unsigned short max_peers) {
 	std::lock_guard<std::recursive_mutex> lock(mtx);
 	if (host) return false;
-	host = enet_host_create(IPv6enabled? ENET_ADDRESS_TYPE_ANY : ENET_ADDRESS_TYPE_IPV4, NULL, max_peers, max_channels, 0, 0);
-	if (!host) return false;
-	is_client = true;
 	channel_count = max_channels;
+	peer_count = max_peers;
+	is_client = true;
+	// A client host's socket family must match the address it will connect to: enet6 sends a
+	// sockaddr_in for an IPv4 address and a sockaddr_in6 for an IPv6 one, and a socket rejects
+	// the wrong family outright. ENET_ADDRESS_TYPE_ANY yields an AF_INET6 socket, so pairing it
+	// with a hostname that resolves to IPv4 only makes every send fail. Since the family isn't
+	// known until the address is resolved, defer creation to connect() and build the host from
+	// the resolved type, as enet6 documents for clients. IPv4-only mode keeps creating the host
+	// here so its behaviour, including active(), is unchanged.
+	if (IPv6enabled) return true;
+	host = enet_host_create(ENET_ADDRESS_TYPE_IPV4, NULL, max_peers, max_channels, 0, 0);
+	if (!host) {
+		is_client = false;
+		return false;
+	}
 	return true;
 }
 
@@ -99,10 +113,18 @@ bool network::setup_local_server(unsigned short port, unsigned char max_channels
 
 asQWORD network::connect(const std::string& hostname, unsigned short port) {
 	std::lock_guard<std::recursive_mutex> lock(mtx);
-	if (!host || !is_client) return 0;
+	if (!is_client) return 0;
 	ENetAddress addr;
-	if (enet_address_set_host(&addr, IPv6enabled? ENET_ADDRESS_TYPE_ANY : ENET_ADDRESS_TYPE_IPV4, hostname.c_str()) < 0) return false;
+	if (enet_address_set_host(&addr, IPv6enabled? ENET_ADDRESS_TYPE_ANY : ENET_ADDRESS_TYPE_IPV4, hostname.c_str()) < 0) return 0;
 	addr.port = port;
+	// ENET_ADDRESS_TYPE_ANY resolves to IPv6 when the name has an AAAA record and falls back to
+	// IPv4 otherwise, so the host deferred by setup_client is built here to match. On an
+	// IPv6-only network DNS64 synthesises the AAAA and NAT64 carries the traffic to an
+	// IPv4-only server, which is what App Review's network requires.
+	if (!host) {
+		host = enet_host_create(addr.type, NULL, peer_count, channel_count, 0, 0);
+		if (!host) return 0;
+	}
 	ENetPeer* svr = enet_host_connect(host, &addr, channel_count, 0);
 	if (!svr) return 0;
 	peers[next_peer] = svr;

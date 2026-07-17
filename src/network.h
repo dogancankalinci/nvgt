@@ -38,6 +38,9 @@ class network {
 	std::unordered_map<asQWORD, ENetPeer*> peers;
 	asQWORD next_peer;
 	unsigned char channel_count;
+	// Remembered from setup_client so that connect() can build the host later; see
+	// network::setup_client for why creation is deferred when IPv6enabled is set.
+	unsigned short peer_count;
 	ENetPeer* get_peer(asQWORD peer_id);
 	// Enet's total_sent/received counters are 32 bit integers that can overflow, work around that
 	asQWORD total_sent_data, total_sent_packets, total_received_data, total_received_packets;
