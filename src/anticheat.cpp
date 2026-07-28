@@ -21,12 +21,15 @@
 #include <tlhelp32.h>
 #include <dxgi.h>
 #elif defined(__APPLE__)
+#include <TargetConditionals.h>
 #include <sys/sysctl.h>
 #include <unistd.h>
 #include <ifaddrs.h>
 #include <sys/socket.h>
 #include <net/if_dl.h>
-#include <libproc.h>
+#if TARGET_OS_OSX
+#include <libproc.h> // process enumeration APIs; not present in the iOS SDK (and unusable in the iOS sandbox anyway).
+#endif
 #include <csignal>
 #include <csetjmp>
 #else
@@ -843,6 +846,7 @@ bool vm_check_processes() {
 	CloseHandle(snap);
 	return found;
 #elif defined(__APPLE__)
+#if TARGET_OS_OSX
 	// macOS: enumerate all pids and compare each process short name.
 	static const char* names[] = {"vmtoolsd", "vmware-tools-daemon", "VBoxService", "VBoxClient"};
 	int cap = proc_listpids(PROC_ALL_PIDS, 0, nullptr, 0);
@@ -859,6 +863,9 @@ bool vm_check_processes() {
 			if (pn == nm) return true;
 	}
 	return false;
+#else
+	return false; // iOS: apps are sandboxed and cannot enumerate other processes.
+#endif
 #else
 	// Linux: read /proc/<pid>/comm. Note comm is capped at 15 chars, so listed names
 	// must fit within that (VBoxService, vmtoolsd, VBoxClient all do).
