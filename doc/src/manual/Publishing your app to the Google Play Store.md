@@ -174,8 +174,13 @@ For clarity, set your user facing version explicitly and let the code auto incre
    * **Default language.**
    * **App or game.**
    * **Free or paid.** Note a one way restriction: you can switch a paid app to free later, but you **cannot switch a free app to paid** after it has been published. Decide deliberately.
+   * **Package name** (see the important note below).
    * The required **declarations** (Developer Program Policies and US export law checkboxes).
 3. Click **Create app**.
+
+> **The package name is now asked for up front, and it must match your build.** Google Play used to *not* ask for the package name when you created the app — it simply learned it from the first `.aab`/`.apk` you uploaded (the package name lives inside the bundle's manifest). As part of Google's **Android developer verification** rollout (from around August 2025), the Create app step now **registers the package name and locks it to your account** immediately. The reason is identity and anti-squatting: every package name must be unique across all of Google Play and tied to one verified developer, so Google reserves it for you at creation and, if someone else already holds it, makes you choose a different one.
+>
+> **This package name must be exactly the same as your NVGT `build.product_identifier`** (Step 4), which is the `applicationId` baked into your `.aab`. If the package name inside the bundle you upload does not match the one registered for the app, **Google Play rejects the upload** with an error like *"The package name of your APK or Android App Bundle must be 'com.yourcompany.yourgame'."* A bundle with a different package name is treated as a completely different app and cannot be uploaded to this record. Like the bundle identifier itself, the registered package name is **permanent** — it cannot be changed or reused later — so enter it carefully and keep it identical to `build.product_identifier`.
 
 ### Complete the "App content" declarations
 Google will not let you publish until every required item is done. In the Play Console, under **Policy** (or "Policy and programs") **> App content**, complete all of these:
