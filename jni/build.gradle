@@ -96,6 +96,9 @@ android {
 }
 
 dependencies {
+	// kotlin-bom aligns kotlin-stdlib with its pre-1.8 split jdk7/jdk8 jars: billing 9 pulls
+	// stdlib 1.8.22 while other transitives pull *-jdk8:1.6.21, tripping checkDuplicateClasses.
+	stubIapImplementation platform('org.jetbrains.kotlin:kotlin-bom:1.8.22')
 	// Pinned: Google Play requires new uploads to use PBL 8+ after 2026-08-31; 9.x is the recommended line.
 	stubIapImplementation 'com.android.billingclient:billing:9.1.0'
 }
