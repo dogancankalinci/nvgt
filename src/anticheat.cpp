@@ -41,6 +41,9 @@
 #include <dirent.h>
 #include <csignal>
 #include <csetjmp>
+#if defined(__ANDROID__) && __ANDROID_API__ < 24
+#include <dlfcn.h> // bionic only gained getifaddrs() in API 24; we resolve it at runtime below.
+#endif
 #endif
 #if defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64)
 #define NVGT_HAS_X86_CPUID 1
@@ -709,8 +712,18 @@ bool vm_check_mac() {
 #else
 	// POSIX: enumerate link-layer addresses. Linux exposes them via AF_PACKET
 	// (sockaddr_ll), the BSDs/macOS via AF_LINK (sockaddr_dl).
+#if defined(__ANDROID__) && __ANDROID_API__ < 24
+	// bionic's getifaddrs()/freeifaddrs() only exist on API 24+ devices; referencing them
+	// directly would either fail to compile (availability error) or fail to load on API 21-23.
+	static const auto p_getifaddrs = reinterpret_cast<int (*)(struct ifaddrs**)>(dlsym(RTLD_DEFAULT, "getifaddrs"));
+	static const auto p_freeifaddrs = reinterpret_cast<void (*)(struct ifaddrs*)>(dlsym(RTLD_DEFAULT, "freeifaddrs"));
+	if (!p_getifaddrs || !p_freeifaddrs) return false; // pre-API-24 device: skip this check
+#else
+	constexpr auto p_getifaddrs = getifaddrs;
+	constexpr auto p_freeifaddrs = freeifaddrs;
+#endif
 	struct ifaddrs* ifap = nullptr;
-	if (getifaddrs(&ifap) != 0) return false;
+	if (p_getifaddrs(&ifap) != 0) return false;
 	bool found = false;
 	for (struct ifaddrs* ifa = ifap; ifa && !found; ifa = ifa->ifa_next) {
 		if (!ifa->ifa_addr) continue;
@@ -724,7 +737,7 @@ bool vm_check_mac() {
 		if (sll->sll_halen == 6) found = oui_matches(sll->sll_addr);
 #endif
 	}
-	freeifaddrs(ifap);
+	p_freeifaddrs(ifap);
 	return found;
 #endif
 }

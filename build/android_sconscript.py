@@ -27,20 +27,22 @@ else:
 # NVGT ships multiple Android ABIs; `scons target=android` builds all of them (each is compiled separately in
 # SConstruct's android build loop). Map: ABI -> (compiler triple, sysroot/libc++ dir name).
 # Note the armv7 compiler triple (armv7a-linux-androideabi) differs from its libc++ dir name (arm-linux-androideabi).
-env["ANDROID_ABIS"] = {"arm64-v8a": ("aarch64-linux-android28", "aarch64-linux-android"), "armeabi-v7a": ("armv7a-linux-androideabi28", "arm-linux-androideabi")}
+env["ANDROID_ABIS"] = {"arm64-v8a": ("aarch64-linux-android21", "aarch64-linux-android"), "armeabi-v7a": ("armv7a-linux-androideabi21", "arm-linux-androideabi")}
 env["NDK_TOOLCHAIN_BIN"] = os.path.join(env["NDK_HOME"], "toolchains", "llvm", "prebuilt", env["NDK_HOST_TAG"], "bin")
 env["NDK_CMD_EXT"] = cmd_ext
 env["NDK_EXE_EXT"] = exe_ext
 toolchain_bin = env["NDK_TOOLCHAIN_BIN"]
 # Default toolchain (arm64) so any env.Object() defined before the per-ABI loop has a valid compiler; the loop overrides CC/CXX/LINK per ABI.
-env["CC"] = os.path.join(toolchain_bin, f"aarch64-linux-android28-clang{cmd_ext}")
-env["CXX"] = os.path.join(toolchain_bin, f"aarch64-linux-android28-clang++{cmd_ext}")
-env["LINK"] = os.path.join(toolchain_bin, f"aarch64-linux-android28-clang++{cmd_ext}")
+env["CC"] = os.path.join(toolchain_bin, f"aarch64-linux-android21-clang{cmd_ext}")
+env["CXX"] = os.path.join(toolchain_bin, f"aarch64-linux-android21-clang++{cmd_ext}")
+env["LINK"] = os.path.join(toolchain_bin, f"aarch64-linux-android21-clang++{cmd_ext}")
 env["AR"] = os.path.join(toolchain_bin, f"llvm-ar{exe_ext}")
 env["RANLIB"] = os.path.join(toolchain_bin, f"llvm-ranlib{exe_ext}")
 env["SHLINKCOM"] = "$LINK -o $TARGET $LINKFLAGS -shared $__RPATH $SOURCES $_LIBDIRFLAGS $_LIBFLAGS"
 env.Append(CCFLAGS = ["-fPIC"])
-env.Append(CXXFLAGS = ["-DAS_USE_STLNAMES=1", "-ffunction-sections", "-O2", "-Wno-deprecated-array-compare", "-Wno-implicit-const-int-float-conversion", "-Wno-deprecated-enum-enum-conversion", "-Wno-absolute-value"])
+# -faligned-allocation: clang marks C++17 aligned operator new unavailable below android-28, but the
+# operators live in libc++_shared.so which ships inside the APK, so they exist on every device.
+env.Append(CXXFLAGS = ["-DAS_USE_STLNAMES=1", "-ffunction-sections", "-O2", "-faligned-allocation", "-Wno-deprecated-array-compare", "-Wno-implicit-const-int-float-conversion", "-Wno-deprecated-enum-enum-conversion", "-Wno-absolute-value"])
 # -Wl,-z,max-page-size=16384 -> 16KB-aligned ELF LOAD segments, required by Google Play's 16 KB page size rule (Android 15+, Nov 2025).
 env.Append(LINKFLAGS = ["-Wl,--no-fatal-warnings", "-Wl,--no-undefined", "-Wl,--gc-sections", "-Wl,-z,max-page-size=16384", "-Wl,-z,common-page-size=16384"])
 env["PROGSUFFIX"] = ".so"

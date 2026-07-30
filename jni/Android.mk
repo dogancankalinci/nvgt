@@ -144,7 +144,9 @@ LOCAL_SRC_FILES_COMMON := \
     ../dep/cmp.c ../dep/entities.cpp ../dep/ma_reverb_node.c ../dep/micropather.cpp ../dep/miniaudio_libopus.c ../dep/miniaudio_libvorbis.c ../dep/miniaudio_phonon.c ../dep/miniaudio_wdl_resampler.cpp ../dep/monocypher.c ../dep/resample.cpp ../dep/rng_get_bytes.c ../dep/singleheader.cpp ../dep/sonic.c ../dep/tonar.c ../dep/uncompr.c\
     $(wildcard $(LOCAL_PATH)/../src/*.cpp))
 LOCAL_C_INCLUDES_COMMON := $(LOCAL_PATH)/$(INCLUDEPATH) $(LOCAL_PATH)/../ASAddon/include $(LOCAL_PATH)/../dep
-LOCAL_CXXFLAGS_COMMON := -DPOCO_STATIC -DNVGT_BUILDING -DAS_USE_STLNAMES=1 -std=c++20 -fms-extensions -ffunction-sections -O2 -fpermissive -O2 -Wno-narrowing -Wno-int-to-pointer-cast -Wno-delete-incomplete -Wno-unused-result -Wno-deprecated-array-compare -Wno-implicit-const-int-float-conversion -Wno-deprecated-enum-enum-conversion -Wno-absolute-value
+# -faligned-allocation: clang marks C++17 aligned operator new unavailable below android-28, but the
+# operators live in libc++_shared.so which ships inside the APK, so they exist on every device.
+LOCAL_CXXFLAGS_COMMON := -DPOCO_STATIC -DNVGT_BUILDING -DAS_USE_STLNAMES=1 -std=c++20 -fms-extensions -ffunction-sections -O2 -faligned-allocation -fpermissive -O2 -Wno-narrowing -Wno-int-to-pointer-cast -Wno-delete-incomplete -Wno-unused-result -Wno-deprecated-array-compare -Wno-implicit-const-int-float-conversion -Wno-deprecated-enum-enum-conversion -Wno-absolute-value
 # -Wl,-z,max-page-size=16384 makes ELF LOAD segments 16KB-aligned -> required by Google Play's
 # 16 KB page size rule (Nov 2025) for apps targeting Android 15+. Fixes libgame.so (this module).
 LOCAL_LDFLAGS_COMMON = -Wl,--no-fatal-warnings -Wl,--no-undefined -Wl,--gc-sections -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384

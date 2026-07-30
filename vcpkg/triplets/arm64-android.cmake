@@ -6,7 +6,7 @@ else()
 	set(VCPKG_LIBRARY_LINKAGE static)
 endif()
 set(VCPKG_CMAKE_SYSTEM_NAME Android)
-set(VCPKG_CMAKE_SYSTEM_VERSION 28)
+set(VCPKG_CMAKE_SYSTEM_VERSION 21)
 set(VCPKG_MAKE_BUILD_TRIPLET "--host=aarch64-linux-android")
 # CMAKE_SHARED_LINKER_FLAGS forces 16KB ELF segment alignment on vcpkg-built shared libs (libSDL3.so)
 # -> required by Google Play's 16 KB page size rule (Nov 2025) for apps targeting Android 15+.

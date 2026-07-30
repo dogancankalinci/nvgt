@@ -21,9 +21,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.List;
 import java.util.Locale;
-import java.util.Optional;
 import java.util.Set;
-import java.util.stream.Collectors;
 import java.util.ArrayList;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -252,16 +250,21 @@ public class TTS {
 		super.finalize();
 	}
 
-	public List<String> getVoices() { 
-		if (!isActive() || tts.getVoices() == null) return new ArrayList<>();
-		return tts.getVoices().stream().map(Voice::getName).collect(Collectors.toList()); 
+	public List<String> getVoices() {
+		List<String> names = new ArrayList<>();
+		if (!isActive() || tts.getVoices() == null) return names;
+		for (Voice voice : tts.getVoices())
+			names.add(voice.getName());
+		return names;
 	}
 	public boolean setVoice(String name) {
 		if (!isActive()) return false;
 		Set<Voice> voices = tts.getVoices();
 		if (voices == null) return false;
-		Optional<Voice> desiredVoice = voices.stream().filter(voice -> voice.getName().equals(name)).findFirst();
-		if (desiredVoice.isPresent()) return tts.setVoice(desiredVoice.get()) == TextToSpeech.SUCCESS;
+		for (Voice voice : voices) {
+			if (voice.getName().equals(name))
+				return tts.setVoice(voice) == TextToSpeech.SUCCESS;
+		}
 		return false;
 	}
 	public int getMaxSpeechInputLength() { return isActive()? tts.getMaxSpeechInputLength() : 0; }

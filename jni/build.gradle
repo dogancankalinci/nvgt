@@ -4,7 +4,7 @@ buildscript {
 		google()
 	}
 	dependencies {
-		classpath 'com.android.tools.build:gradle:8.7.3'
+		classpath 'com.android.tools.build:gradle:8.10.1'
 	}
 }
 
@@ -19,14 +19,14 @@ apply plugin: 'com.android.application'
 
 android {
 	namespace "com.samtupy.nvgt"
-	compileSdkVersion 35
+	compileSdkVersion 36
 	aaptOptions {
 		cruncherEnabled = false  
 	}
 	flavorDimensions "version"
 	defaultConfig {
-		minSdkVersion 28
-		targetSdkVersion 35
+		minSdkVersion 21
+		targetSdkVersion 36
 		versionCode 1
 		versionName "1.0"
 	}
@@ -50,6 +50,9 @@ android {
 		stubIap {
 			dimension "version"
 			applicationId "com.samtupy.nvgt.stub"
+			// Play Billing Library 8.1+ raised its own floor to API 23, so the IAP-enabled
+			// stub cannot go as low as the plain stub/runner (API 21).
+			minSdkVersion 23
 		}
 	}
 
@@ -93,5 +96,6 @@ android {
 }
 
 dependencies {
-	stubIapImplementation 'com.android.billingclient:billing:7.+'
+	// Pinned: Google Play requires new uploads to use PBL 8+ after 2026-08-31; 9.x is the recommended line.
+	stubIapImplementation 'com.android.billingclient:billing:9.1.0'
 }

@@ -397,10 +397,22 @@ public class BillingManager implements PurchasesUpdatedListener {
 		}
 
 		AtomicInteger remaining = new AtomicInteger(total);
-		ProductDetailsResponseListener listener = (result, detailsList) -> {
-			if (result.getResponseCode() == BillingClient.BillingResponseCode.OK && detailsList != null) {
+		// PBL 8+ delivers a QueryProductDetailsResult instead of a bare List<ProductDetails>;
+		// products Play could not resolve (typo'd or unpublished IDs) arrive separately as
+		// UnfetchedProduct entries, which older versions silently dropped.
+		ProductDetailsResponseListener listener = (result, detailsResult) -> {
+			if (result.getResponseCode() == BillingClient.BillingResponseCode.OK && detailsResult != null) {
 				synchronized (productDetailsList) {
-					productDetailsList.addAll(detailsList);
+					productDetailsList.addAll(detailsResult.getProductDetailsList());
+				}
+				List<UnfetchedProduct> unfetched = detailsResult.getUnfetchedProductList();
+				if (!unfetched.isEmpty()) {
+					StringBuilder sb = new StringBuilder("Products not found on Play: ");
+					for (int i = 0; i < unfetched.size(); i++) {
+						if (i > 0) sb.append(", ");
+						sb.append(unfetched.get(i).getProductId());
+					}
+					reportError(sb.toString());
 				}
 			} else {
 				reportError(result.getDebugMessage());
