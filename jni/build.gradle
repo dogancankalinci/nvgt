@@ -50,9 +50,6 @@ android {
 		stubIap {
 			dimension "version"
 			applicationId "com.samtupy.nvgt.stub"
-			// Play Billing Library 8.1+ raised its own floor to API 23, so the IAP-enabled
-			// stub cannot go as low as the plain stub/runner (API 21).
-			minSdkVersion 23
 		}
 	}
 
@@ -99,6 +96,8 @@ dependencies {
 	// kotlin-bom aligns kotlin-stdlib with its pre-1.8 split jdk7/jdk8 jars: billing 9 pulls
 	// stdlib 1.8.22 while other transitives pull *-jdk8:1.6.21, tripping checkDuplicateClasses.
 	stubIapImplementation platform('org.jetbrains.kotlin:kotlin-bom:1.8.22')
-	// Pinned: Google Play requires new uploads to use PBL 8+ after 2026-08-31; 9.x is the recommended line.
-	stubIapImplementation 'com.android.billingclient:billing:9.1.0'
+	// Pinned to exactly 8.0.0: Google Play requires PBL 8+ after 2026-08-31, and 8.0.0 is the
+	// only 8+/9 release whose own manifest still allows minSdk 21 (8.1.0+ and 9.x require 23).
+	// Bumping this past 8.0.0 therefore forces the stubIap flavor's minSdk up to 23.
+	stubIapImplementation 'com.android.billingclient:billing:8.0.0'
 }
