@@ -17,16 +17,12 @@
 #include <winternl.h>
 #include <comdef.h>
 #include <Wbemidl.h>
-#include <iphlpapi.h>
 #include <tlhelp32.h>
 #include <dxgi.h>
 #elif defined(__APPLE__)
 #include <TargetConditionals.h>
 #include <sys/sysctl.h>
 #include <unistd.h>
-#include <ifaddrs.h>
-#include <sys/socket.h>
-#include <net/if_dl.h>
 #if TARGET_OS_OSX
 #include <libproc.h> // process enumeration APIs; not present in the iOS SDK (and unusable in the iOS sandbox anyway).
 #endif
@@ -34,16 +30,9 @@
 #include <csetjmp>
 #else
 #include <unistd.h>
-#include <ifaddrs.h>
-#include <sys/socket.h>
-#include <netpacket/packet.h>
-#include <net/if.h>
 #include <dirent.h>
 #include <csignal>
 #include <csetjmp>
-#if defined(__ANDROID__) && __ANDROID_API__ < 24
-#include <dlfcn.h> // bionic only gained getifaddrs() in API 24; we resolve it at runtime below.
-#endif
 #endif
 #if defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64)
 #define NVGT_HAS_X86_CPUID 1
@@ -345,9 +334,12 @@ void handle_dll_loader_notification(ULONG reason, const PLDR_DLL_NOTIFICATION_DA
 //      is tied to a VMware- or VirtualBox-specific artifact.
 //   2. Detect VMware/VirtualBox as robustly as possible. A guest exposes the same
 //      fingerprint through many independent channels (CPU, firmware, registry,
-//      drivers, devices, services, NIC MAC). We probe all of them, so a user who
-//      hides one channel is still caught by the others. Any single positive
-//      reports a VM.
+//      drivers, devices, services). We probe all of them, so a user who hides one
+//      channel is still caught by the others. Any single positive reports a VM.
+//   3. Only signals that come from *executing inside* a guest count. Signals that
+//      merely prove the hypervisor software is installed (host virtual NIC MACs, the
+//      host-side VMCI driver/device/service) are NOT used: a developer who runs VMs
+//      for other work, but launches the game on their real desktop, must not trip.
 namespace {
 // Case-insensitive substring search helper.
 bool icontains(const std::string& haystack, const std::string& needle) {
@@ -580,7 +572,8 @@ bool vm_check_registry() {
 	};
 	const wchar_t* vmware_keys[] = {
 		L"SOFTWARE\\VMware, Inc.\\VMware Tools",
-		L"SYSTEM\\CurrentControlSet\\Services\\vmci",
+		// NOTE: the "vmci" service is deliberately omitted -- VMware Workstation registers it
+		// on the HOST, so its presence does not imply we are running inside a guest.
 		L"SYSTEM\\CurrentControlSet\\Services\\vmhgfs",
 		L"SYSTEM\\CurrentControlSet\\Services\\vmmouse",
 		L"SYSTEM\\CurrentControlSet\\Services\\vmrawdsk",
@@ -634,8 +627,9 @@ bool vm_check_artifacts() {
 		L"%SystemRoot%\\System32\\vboxservice.exe",
 		L"%SystemRoot%\\System32\\vboxtray.exe",
 		L"%SystemRoot%\\System32\\VBoxControl.exe",
-		// VMware Tools.
-		L"%SystemRoot%\\System32\\drivers\\vmci.sys",
+		// VMware Tools. NOTE: vmci.sys is deliberately NOT listed -- VMware Workstation
+		// installs it into System32\drivers on the HOST (for host<->guest VMCI comms), so
+		// matching it flags real machines that merely have Workstation installed.
 		L"%SystemRoot%\\System32\\drivers\\vmhgfs.sys",
 		L"%SystemRoot%\\System32\\drivers\\vmmouse.sys",
 		L"%SystemRoot%\\System32\\drivers\\vmrawdsk.sys",
@@ -659,7 +653,8 @@ bool vm_check_artifacts() {
 		L"\\\\.\\VBoxMiniRdrDN",
 		L"\\\\.\\pipe\\VBoxTrayIPC",
 		L"\\\\.\\HGFS",
-		L"\\\\.\\vmci",
+		// NOTE: \\.\vmci is deliberately NOT listed -- the VMware VMCI Bus Device is present
+		// on a VMware Workstation HOST too, so opening it flags real machines.
 	};
 	for (const wchar_t* dev : devices) {
 		HANDLE h = CreateFileW(dev, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
@@ -671,15 +666,21 @@ bool vm_check_artifacts() {
 	}
 	return false;
 #elif defined(__APPLE__)
-	const char* paths[] = {"/Applications/VMware Fusion.app", "/Applications/VirtualBox.app", "/Library/Application Support/VMware Tools"};
+	// Only guest-side markers. The host applications /Applications/VMware Fusion.app and
+	// /Applications/VirtualBox.app are deliberately NOT checked: they exist on the machine
+	// of anyone who merely installed the hypervisor, which is not the same as running inside
+	// a guest. hw.model (vm_check_hardware) and ioreg (vm_check_pci) detect real Mac guests.
+	const char* paths[] = {"/Library/Application Support/VMware Tools"};
 	for (const char* p : paths)
 		if (access(p, F_OK) == 0) return true;
 	return false;
 #else // Linux
+	// Guest Additions / VMware Tools binaries and guest device nodes only. /dev/vmci is
+	// deliberately omitted: VMware Workstation's vmw_vmci module creates it on the HOST.
 	const char* paths[] = {
 		"/usr/bin/VBoxClient", "/usr/bin/VBoxControl", "/usr/sbin/VBoxService",
 		"/dev/vboxguest", "/dev/vboxuser",
-		"/usr/bin/vmware-toolbox-cmd", "/usr/bin/vmtoolsd", "/dev/vmci",
+		"/usr/bin/vmware-toolbox-cmd", "/usr/bin/vmtoolsd",
 	};
 	for (const char* p : paths)
 		if (access(p, F_OK) == 0) return true;
@@ -687,60 +688,13 @@ bool vm_check_artifacts() {
 #endif
 }
 
-// The NIC hardware address. VMware and VirtualBox hand out virtual adapters whose
-// OUI (first three bytes) is registered to them; no physical NIC uses these.
-bool vm_check_mac() {
-	// OUIs: VMware 00:05:69, 00:0C:29, 00:1C:14, 00:50:56; VirtualBox 08:00:27, 0A:00:27.
-	static const uint8_t ouis[][3] = {
-		{0x00, 0x05, 0x69}, {0x00, 0x0C, 0x29}, {0x00, 0x1C, 0x14}, {0x00, 0x50, 0x56},
-		{0x08, 0x00, 0x27}, {0x0A, 0x00, 0x27},
-	};
-	auto oui_matches = [&](const uint8_t* addr) {
-		for (const auto& o : ouis)
-			if (std::memcmp(addr, o, 3) == 0) return true;
-		return false;
-	};
-#ifdef _WIN32
-	ULONG size = 0;
-	if (GetAdaptersInfo(nullptr, &size) != ERROR_BUFFER_OVERFLOW || !size) return false;
-	std::string buffer(size, '\0');
-	IP_ADAPTER_INFO* info = reinterpret_cast<IP_ADAPTER_INFO*>(buffer.data());
-	if (GetAdaptersInfo(info, &size) != NO_ERROR) return false;
-	for (IP_ADAPTER_INFO* a = info; a; a = a->Next)
-		if (a->AddressLength == 6 && oui_matches(a->Address)) return true;
-	return false;
-#else
-	// POSIX: enumerate link-layer addresses. Linux exposes them via AF_PACKET
-	// (sockaddr_ll), the BSDs/macOS via AF_LINK (sockaddr_dl).
-#if defined(__ANDROID__) && __ANDROID_API__ < 24
-	// bionic's getifaddrs()/freeifaddrs() only exist on API 24+ devices; referencing them
-	// directly would either fail to compile (availability error) or fail to load on API 21-23.
-	static const auto p_getifaddrs = reinterpret_cast<int (*)(struct ifaddrs**)>(dlsym(RTLD_DEFAULT, "getifaddrs"));
-	static const auto p_freeifaddrs = reinterpret_cast<void (*)(struct ifaddrs*)>(dlsym(RTLD_DEFAULT, "freeifaddrs"));
-	if (!p_getifaddrs || !p_freeifaddrs) return false; // pre-API-24 device: skip this check
-#else
-	constexpr auto p_getifaddrs = getifaddrs;
-	constexpr auto p_freeifaddrs = freeifaddrs;
-#endif
-	struct ifaddrs* ifap = nullptr;
-	if (p_getifaddrs(&ifap) != 0) return false;
-	bool found = false;
-	for (struct ifaddrs* ifa = ifap; ifa && !found; ifa = ifa->ifa_next) {
-		if (!ifa->ifa_addr) continue;
-#if defined(__APPLE__)
-		if (ifa->ifa_addr->sa_family != AF_LINK) continue;
-		auto* sdl = reinterpret_cast<struct sockaddr_dl*>(ifa->ifa_addr);
-		if (sdl->sdl_alen == 6) found = oui_matches(reinterpret_cast<const uint8_t*>(LLADDR(sdl)));
-#else
-		if (ifa->ifa_addr->sa_family != AF_PACKET) continue;
-		auto* sll = reinterpret_cast<struct sockaddr_ll*>(ifa->ifa_addr);
-		if (sll->sll_halen == 6) found = oui_matches(sll->sll_addr);
-#endif
-	}
-	p_freeifaddrs(ifap);
-	return found;
-#endif
-}
+// NOTE: A NIC-MAC OUI probe used to live here but was removed: installing VMware or
+// VirtualBox on a *host* creates persistent host-side virtual adapters (VMware VMnet1/
+// VMnet8 at 00:50:56:C0:xx, VirtualBox Host-Only at 08:00:27/0A:00:27) whose MACs carry
+// the very OUIs it matched. A developer who merely has either product installed -- but
+// is NOT running the game in a VM -- would be misclassified as a guest. MAC OUI cannot
+// distinguish "host with VM software installed" from "actual guest", so the whole check
+// is unsalvageable; the firmware/CPUID/ACPI probes below detect real guests reliably.
 
 // The VMware "backdoor" I/O request: magic 'VMXh' (0x564D5868) in EAX, command
 // GETVERSION (0x0A) in ECX, port 'VX' (0x5658) in DX. On a VMware guest the IN
@@ -750,7 +704,7 @@ bool vm_check_mac() {
 // backdoor protocol -- preloading EBX/ECX and reading EBX back -- cannot be expressed
 // with the port-I/O intrinsics available on x64, and #GP recovery here relies on
 // Windows SEH. VMware on other platforms is still caught by the CPUID "VMwareVMware"
-// vendor, SMBIOS/DMI, \\.\vmci/\\.\HGFS devices, registry, services and MAC.
+// vendor, SMBIOS/DMI, the \\.\HGFS device, registry and guest services.
 #if defined(_WIN32) && (defined(_M_X64) || defined(__x86_64__))
 extern "C" uint32_t vmware_backdoor_probe(void);
 
@@ -956,8 +910,8 @@ bool vm_check_sandbox_files() {
 
 bool is_vm() {
 	// True if ANY VMware/VirtualBox-specific signal fires. Each probe is a distinct
-	// channel, so hiding one (e.g. masking the CPUID vendor, spoofing the MAC, or
-	// uninstalling the guest tools) still leaves the others to catch the guest. None
+	// channel, so hiding one (e.g. masking the CPUID vendor or uninstalling the guest
+	// tools) still leaves the others to catch the guest. None
 	// of these fire on bare-metal hardware -- including a Windows 11 host running
 	// Hyper-V/VBS/WSL2 -- so real players are not misclassified.
 	//
@@ -971,7 +925,6 @@ bool is_vm() {
 	if (vm_check_registry()) return true;
 #endif
 	if (vm_check_artifacts()) return true;
-	if (vm_check_mac()) return true;
 	if (vm_check_processes()) return true;
 	if (vm_check_pci()) return true; // POSIX emulated-GPU/PCI residual (VEN_15AD/80EE); survives hardening.
 #ifdef _WIN32
