@@ -278,7 +278,7 @@ elif env["NVGT_TARGET"] == "android":
 	# a selected set of dep/ C/C++ sources, and all of src/. It is NOT linked as prebuilt static libs (those are arm64-only);
 	# only the per-ABI droidev deps + SDL3/phonon + Android system libs are linked below.
 	asaddon_srcs = [str(f).replace(os.path.sep, "/") for f in Glob("ASAddon/src/*.cpp")]
-	dep_srcs = ["dep/" + s for s in ["cmp.c", "entities.cpp", "ma_reverb_node.c", "micropather.cpp", "miniaudio_libopus.c", "miniaudio_libvorbis.c", "miniaudio_phonon.c", "miniaudio_wdl_resampler.cpp", "monocypher.c", "resample.cpp", "rng_get_bytes.c", "singleheader.cpp", "sonic.c", "tonar.c", "uncompr.c"]]
+	dep_srcs = ["dep/" + s for s in ["entities.cpp", "ma_reverb_node.c", "micropather.cpp", "miniaudio_libopus.c", "miniaudio_libvorbis.c", "miniaudio_phonon.c", "miniaudio_wdl_resampler.cpp", "monocypher.c", "resample.cpp", "rng_get_bytes.c", "singleheader.cpp", "sonic.c", "tonar.c", "uncompr.c"]]
 	# Clean per-ABI link set: droidev static deps + SDL3/phonon shared + Android system libs. No NVGT static libs, no plugins.
 	android_link_libs = common_libs + ["z", "SDL3", "phonon", "GLESv1_CM", "GLESv2", "OpenSLES", "log", "android", "m"]
 	for abi, (clang_triple, libcxx_dir) in env["ANDROID_ABIS"].items():
