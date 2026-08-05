@@ -717,11 +717,24 @@ public:
 	unsigned int get_advised_read_frame_count() const override { return get_available_read(); }
 	unsigned int write(const float* frames_in, unsigned int frame_count) override {
 		if (!rb) return 0;
-		void* pWriteBuffer;
-		if (ma_pcm_rb_acquire_write(&*rb, &frame_count, &pWriteBuffer) != MA_SUCCESS) return 0;
-		if (frame_count) ma_copy_pcm_frames(pWriteBuffer, frames_in,frame_count, rb->format, rb->channels);
-		ma_pcm_rb_commit_write(&*rb, frame_count);
-		return frame_count;
+		// ma_pcm_rb_acquire_write only returns the CONTIGUOUS free region up to the end of the
+		// backing buffer; near the wrap point that region is smaller than the total free space.
+		// The old single-shot code silently dropped whatever didn't fit in that first region,
+		// which for the microphone meant a chunk of samples lost at every ring wrap (measured
+		// 2.6-6% of all captured audio depending on device timing, audible as periodic clicks
+		// and a production rate below realtime in voice chat). Loop until everything is written
+		// or the ring is genuinely full - same pattern stream_pcm below already uses.
+		unsigned int total = 0;
+		while (total < frame_count) {
+			ma_uint32 chunk = frame_count - total;
+			void* pWriteBuffer;
+			if (ma_pcm_rb_acquire_write(&*rb, &chunk, &pWriteBuffer) != MA_SUCCESS) break;
+			if (!chunk) break; // ring genuinely full
+			ma_copy_pcm_frames(pWriteBuffer, frames_in + (size_t)total * rb->channels, chunk, rb->format, rb->channels);
+			ma_pcm_rb_commit_write(&*rb, chunk);
+			total += chunk;
+		}
+		return total;
 	}
 	unsigned int write_script_array(CScriptArray *frames) override {
 		if (!frames) return 0;
