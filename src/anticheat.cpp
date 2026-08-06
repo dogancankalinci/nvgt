@@ -13,19 +13,16 @@
 #include "anticheat.h"
 #ifdef _WIN32
 #include <windows.h>
+#include <winsvc.h> // service control manager; vm_check_registry() asks whether a driver is actually running.
 #include <psapi.h>
 #include <winternl.h>
 #include <comdef.h>
 #include <Wbemidl.h>
-#include <tlhelp32.h>
 #include <dxgi.h>
 #elif defined(__APPLE__)
 #include <TargetConditionals.h>
 #include <sys/sysctl.h>
 #include <unistd.h>
-#if TARGET_OS_OSX
-#include <libproc.h> // process enumeration APIs; not present in the iOS SDK (and unusable in the iOS sandbox anyway).
-#endif
 #include <csignal>
 #include <csetjmp>
 #else
@@ -42,7 +39,6 @@
 #endif
 #include <string>
 #include <string_view>
-#include <vector>
 #include <fstream>
 #include <algorithm>
 #include <cctype>
@@ -511,16 +507,55 @@ bool vm_check_hardware() {
 }
 
 #ifdef _WIN32
-// Read the raw SMBIOS (DMI) firmware table and scan it for VMware/VirtualBox
-// vendor strings. This bypasses WMI entirely (harder to spoof from user space than
-// the model string) and works even when the guest tools have been uninstalled.
+// Read the raw SMBIOS (DMI) firmware table and scan its string data for VMware/VirtualBox
+// vendor strings. This bypasses WMI entirely (harder to spoof from user space than the
+// model string) and works even when the guest tools have been uninstalled.
+//
+// CRITICAL: we scan ONLY the null-terminated string set of each SMBIOS structure, never the
+// raw blob. Each structure is a fixed-size *binary* formatted area (which includes the 16-byte
+// System-Information UUID and other essentially-random bytes) followed by its string pool. A
+// naive substring search over the whole blob false-positives on real hardware: the 4-byte
+// needle "vbox" (case-insensitive) can appear by chance inside that binary data -- most easily
+// the random UUID -- flagging a physical machine that has never run VirtualBox. Parsing out the
+// string pool eliminates the coincidence while still catching real guests, which write "VMware"/
+// "VirtualBox"/"innotek" into DMI string fields (BIOS vendor, system/baseboard manufacturer, ...).
 bool vm_check_smbios() {
 	const DWORD signature = 'RSMB'; // Raw SMBIOS firmware table provider.
 	UINT size = GetSystemFirmwareTable(signature, 0, nullptr, 0);
 	if (!size) return false;
-	std::string data(size, '\0');
-	if (GetSystemFirmwareTable(signature, 0, data.data(), size) != size) return false;
-	return icontains(data, "vmware") || icontains(data, "virtualbox") || icontains(data, "vbox") || icontains(data, "innotek");
+	std::string raw(size, '\0');
+	if (GetSystemFirmwareTable(signature, 0, raw.data(), size) != size) return false;
+	// RawSMBIOSData header: 8 bytes (calling method, version bytes, DmiRevision) then a
+	// little-endian DWORD Length, then the DMI structures themselves.
+	if (raw.size() < 8) return false;
+	const uint8_t* p = reinterpret_cast<const uint8_t*>(raw.data());
+	const uint32_t table_len = static_cast<uint32_t>(p[4]) | (static_cast<uint32_t>(p[5]) << 8) | (static_cast<uint32_t>(p[6]) << 16) | (static_cast<uint32_t>(p[7]) << 24);
+	size_t end = 8 + static_cast<size_t>(table_len);
+	if (end > raw.size()) end = raw.size();
+	// Walk each structure: byte 0 = type, byte 1 = length of the formatted (binary) area
+	// (including the 4-byte header), bytes 2-3 = handle. The string set follows the formatted
+	// area and runs until a double-NUL. We copy only the string-set bytes into `strings`.
+	std::string strings;
+	for (size_t off = 8; off + 4 <= end; ) {
+		const uint8_t type = p[off];
+		const uint8_t formatted_len = p[off + 1];
+		if (formatted_len < 4) break; // malformed: the formatted area must cover its own header.
+		size_t s = off + formatted_len; // skip the binary formatted area (UUID etc.).
+		if (s > end) break;
+		while (s < end) {
+			if (p[s] == 0) {
+				if (s + 1 >= end || p[s + 1] == 0) { s += 2; break; } // double-NUL ends the structure.
+				strings.push_back(' '); // single NUL separates two strings.
+				++s;
+			} else {
+				strings.push_back(static_cast<char>(p[s]));
+				++s;
+			}
+		}
+		if (type == 127) break; // end-of-table structure.
+		off = s;
+	}
+	return icontains(strings, "vmware") || icontains(strings, "virtualbox") || icontains(strings, "vbox") || icontains(strings, "innotek");
 }
 
 // True if the registry value (REG_SZ / REG_MULTI_SZ) under (root, subkey, value)
@@ -542,6 +577,30 @@ bool reg_value_contains(HKEY root, const wchar_t* subkey, const wchar_t* value, 
 	return false;
 }
 
+// True if the named kernel driver / service is not merely REGISTERED but currently RUNNING.
+//
+// This distinction is the entire point. A key under SYSTEM\CurrentControlSet\Services proves
+// only that VMware/VirtualBox software touched this machine at some point: such keys survive
+// uninstalls, they come along when a Windows image that was prepared inside a VM is deployed to
+// physical hardware, and migration tools are documented to leave them behind (virt-v2v, for one,
+// does not remove the vmrawdsk/vmmemctl driver registrations when converting a VM *away* from
+// VMware). A genuine guest, by contrast, has the driver loaded -- the guest tools are what make
+// the VM usable at all. Asking the SCM for the live state converts an install-time record into a
+// runtime fact, which is what we actually want to know.
+bool service_is_running(const wchar_t* name) {
+	SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+	if (!scm) return false;
+	bool running = false;
+	if (SC_HANDLE svc = OpenServiceW(scm, name, SERVICE_QUERY_STATUS)) {
+		SERVICE_STATUS st = {};
+		if (QueryServiceStatus(svc, &st))
+			running = st.dwCurrentState == SERVICE_RUNNING || st.dwCurrentState == SERVICE_START_PENDING;
+		CloseServiceHandle(svc);
+	}
+	CloseServiceHandle(scm);
+	return running;
+}
+
 // True if the registry key itself exists (presence is the signal).
 bool reg_key_exists(HKEY root, const wchar_t* subkey) {
 	for (REGSAM view : {KEY_WOW64_64KEY, KEY_WOW64_32KEY}) {
@@ -556,105 +615,100 @@ bool reg_key_exists(HKEY root, const wchar_t* subkey) {
 
 // Registry artifacts unique to VMware or VirtualBox guests.
 bool vm_check_registry() {
-	// VirtualBox writes "VBOX__" into the ACPI table identifiers and installs a
-	// dedicated set of guest services. VMware installs the "VMware, Inc." key and
-	// a family of vm* services. None of these exist on real hardware.
-	const wchar_t* vbox_keys[] = {
+	// The registry holds two very different classes of evidence, and conflating them is what
+	// produced this function's false positives:
+	//
+	//  * The HARDWARE hive is VOLATILE -- Windows discards it on shutdown and rebuilds it every
+	//    boot from the firmware tables and PnP enumeration actually present on the machine.
+	//    Nothing there can be stale, so a VirtualBox ACPI OEM id or a "VMware" BIOS string found
+	//    here really does mean we are executing inside a guest.
+	//  * SYSTEM\...\Services and SOFTWARE\... are PERSISTENT installation records. They attest
+	//    that VMware/VirtualBox software once touched this box -- nothing more. They outlive
+	//    uninstalls, they ride along when a Windows image prepared inside a VM is deployed onto
+	//    physical hardware, and V2P/V2V converters are known to leave the guest driver
+	//    registrations behind. Those entries are therefore only believed while the driver is
+	//    actually RUNNING, which no amount of leftover registry state can fake.
+
+	// --- Firmware and PnP evidence (volatile hive: current by construction). ---
+	// VirtualBox stamps "VBOX__" as the OEM id of the ACPI tables it synthesises for the guest.
+	const wchar_t* acpi_keys[] = {
 		L"HARDWARE\\ACPI\\DSDT\\VBOX__",
 		L"HARDWARE\\ACPI\\FADT\\VBOX__",
 		L"HARDWARE\\ACPI\\RSDT\\VBOX__",
-		L"SOFTWARE\\Oracle\\VirtualBox Guest Additions",
-		L"SYSTEM\\CurrentControlSet\\Services\\VBoxGuest",
-		L"SYSTEM\\CurrentControlSet\\Services\\VBoxMouse",
-		L"SYSTEM\\CurrentControlSet\\Services\\VBoxService",
-		L"SYSTEM\\CurrentControlSet\\Services\\VBoxSF",
-		L"SYSTEM\\CurrentControlSet\\Services\\VBoxVideo",
 	};
-	const wchar_t* vmware_keys[] = {
-		L"SOFTWARE\\VMware, Inc.\\VMware Tools",
-		// NOTE: the "vmci" service is deliberately omitted -- VMware Workstation registers it
-		// on the HOST, so its presence does not imply we are running inside a guest.
-		L"SYSTEM\\CurrentControlSet\\Services\\vmhgfs",
-		L"SYSTEM\\CurrentControlSet\\Services\\vmmouse",
-		L"SYSTEM\\CurrentControlSet\\Services\\vmrawdsk",
-		L"SYSTEM\\CurrentControlSet\\Services\\vmusbmouse",
-		L"SYSTEM\\CurrentControlSet\\Services\\vmvss",
-		L"SYSTEM\\CurrentControlSet\\Services\\vmscsi",
-		L"SYSTEM\\CurrentControlSet\\Services\\vmxnet",
-		L"SYSTEM\\CurrentControlSet\\Services\\VMTools",
-	};
-	for (const wchar_t* k : vbox_keys)
+	for (const wchar_t* k : acpi_keys)
 		if (reg_key_exists(HKEY_LOCAL_MACHINE, k)) return true;
-	for (const wchar_t* k : vmware_keys)
-		if (reg_key_exists(HKEY_LOCAL_MACHINE, k)) return true;
-	// BIOS/disk identifier strings recorded by the firmware.
+	// BIOS/SCSI identifier strings recorded by the firmware.
 	if (reg_value_contains(HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System", L"SystemBiosVersion", {"vbox", "vmware", "virtualbox"})) return true;
 	if (reg_value_contains(HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System", L"VideoBiosVersion", {"virtualbox", "vmware"})) return true;
 	if (reg_value_contains(HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System\\BIOS", L"SystemManufacturer", {"vmware", "innotek", "virtualbox"})) return true;
 	if (reg_value_contains(HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System\\BIOS", L"SystemProductName", {"vmware", "virtualbox", "vbox"})) return true;
-	if (reg_value_contains(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Services\\Disk\\Enum", L"0", {"vmware", "vbox"})) return true;
 	// The SCSI controller identifier recorded by the firmware carries the virtual
 	// disk vendor. Both hypervisors expose their disks on port 0.
 	if (reg_value_contains(HKEY_LOCAL_MACHINE, L"HARDWARE\\DEVICEMAP\\Scsi\\Scsi Port 0\\Scsi Bus 0\\Target Id 0\\Logical Unit Id 0", L"Identifier", {"vmware", "vbox", "virtualbox"})) return true;
+
+	// --- Guest-tool drivers, believed only while loaded (see service_is_running). ---
+	const wchar_t* guest_services[] = {
+		// VirtualBox Guest Additions -- installed inside the guest only.
+		L"VBoxGuest", L"VBoxMouse", L"VBoxService", L"VBoxSF", L"VBoxVideo",
+		// VMware Tools. Deliberately absent from this list:
+		//   vmci -- VMware Workstation registers it on the HOST, so it says nothing about us.
+		//   vmrawdsk -- the "VMware Raw Disk Helper Driver". It is a stock VMware Tools component
+		//     shipped to every modern Windows guest whether or not raw disks are used, and it is
+		//     a documented leftover of migrating a machine *away* from VMware (virt-v2v does not
+		//     remove it). It is not in Check Point's VM-detection registry catalogue either. This
+		//     is the entry that misclassified a real player's physical machine, and even gated on
+		//     "running" it buys nothing: an actual VMware guest trips the backdoor port, CPUID,
+		//     SMBIOS and GPU-vendor probes regardless.
+		L"vmhgfs", L"vmmouse", L"vmusbmouse", L"vmvss", L"vmscsi", L"vmxnet", L"VMTools",
+	};
+	for (const wchar_t* s : guest_services)
+		if (service_is_running(s)) return true;
+	// Three former checks were dropped outright rather than gated, because there is no runtime
+	// state behind them to gate on:
+	//   SOFTWARE\Oracle\VirtualBox Guest Additions and SOFTWARE\VMware, Inc.\VMware Tools are pure
+	//     product-install records, so they persist verbatim after an uninstall or a V2P image.
+	//   SYSTEM\...\Services\Disk\Enum lists disk device instances including non-present ones, and
+	//     mounting a .vmdk on a physical machine (a normal thing to do with VMware Workstation
+	//     installed) leaves a "VMware" instance path there forever.
+	// The Scsi Identifier check above covers the same ground from the volatile hive.
 	return false;
 }
 #endif
 
-// Existence of known guest-tool install paths, driver/DLL files, and open-able
-// guest device objects. Every name below ships only with VMware Tools or the
-// VirtualBox Guest Additions.
-bool vm_check_artifacts() {
+// Guest device objects whose driver can only bind to EMULATED HARDWARE.
+//
+// This probe used to test for guest-tool install directories, driver/DLL files and processes
+// as well. Every one of those was removed, because they answer the wrong question. There are
+// two separable questions here:
+//
+//   Q1 "is this machine virtual?"      -- a property of the hardware and firmware.
+//   Q2 "is guest-tool software here?"  -- a property of what someone installed.
+//
+// Installing VMware Tools or the Guest Additions on a physical PC -- deliberately, by accident,
+// or by deploying a Windows image that was originally prepared inside a VM -- answers Q2 yes on
+// a machine where Q1 is emphatically no. That is not hypothetical: it misclassified a real
+// player, whose PC carried the whole VMware Tools install (directory, drivers and service key)
+// without ever having been a guest.
+//
+// A Q2 signal can only ever change is_vm()'s verdict when every Q1 probe has already missed,
+// i.e. against a deliberately hardened guest -- and step one of hardening a guest is removing
+// the guest tools. So in the single scenario where a Q2 probe could earn its place, it finds
+// nothing. It is dead weight by construction, and its false-positive cost is real.
+//
+// What survives is the narrow case that is genuinely Q1: a device node whose driver is bound by
+// PnP to a virtual PCI device. VBoxGuest.sys attaches to the VirtualBox Guest Device
+// (PCI VEN_80EE&DEV_CAFE); with no such device on the bus the driver cannot start and the node
+// cannot be opened, no matter how thoroughly the Guest Additions are installed. Shared-folder
+// redirectors (\\.\HGFS, \\.\VBoxMiniRdrDN) and tray-process pipes (\\.\pipe\VBoxTrayIPC) are
+// NOT bound to emulated hardware and so are excluded -- they load wherever the software does.
+bool vm_check_guest_devices() {
 #ifdef _WIN32
-	const wchar_t* dirs[] = {
-		L"%ProgramFiles%\\VMware\\VMware Tools",
-		L"%ProgramFiles%\\Oracle\\VirtualBox Guest Additions",
-	};
-	for (const wchar_t* raw : dirs) {
-		wchar_t expanded[MAX_PATH * 2];
-		if (ExpandEnvironmentStringsW(raw, expanded, MAX_PATH * 2) && GetFileAttributesW(expanded) != INVALID_FILE_ATTRIBUTES)
-			return true;
-	}
-	// Guest driver and helper files under %SystemRoot%\System32.
-	const wchar_t* files[] = {
-		// VirtualBox Guest Additions.
-		L"%SystemRoot%\\System32\\drivers\\VBoxGuest.sys",
-		L"%SystemRoot%\\System32\\drivers\\VBoxMouse.sys",
-		L"%SystemRoot%\\System32\\drivers\\VBoxSF.sys",
-		L"%SystemRoot%\\System32\\drivers\\VBoxVideo.sys",
-		L"%SystemRoot%\\System32\\vboxdisp.dll",
-		L"%SystemRoot%\\System32\\vboxhook.dll",
-		L"%SystemRoot%\\System32\\vboxmrxnp.dll",
-		L"%SystemRoot%\\System32\\vboxservice.exe",
-		L"%SystemRoot%\\System32\\vboxtray.exe",
-		L"%SystemRoot%\\System32\\VBoxControl.exe",
-		// VMware Tools. NOTE: vmci.sys is deliberately NOT listed -- VMware Workstation
-		// installs it into System32\drivers on the HOST (for host<->guest VMCI comms), so
-		// matching it flags real machines that merely have Workstation installed.
-		L"%SystemRoot%\\System32\\drivers\\vmhgfs.sys",
-		L"%SystemRoot%\\System32\\drivers\\vmmouse.sys",
-		L"%SystemRoot%\\System32\\drivers\\vmrawdsk.sys",
-		L"%SystemRoot%\\System32\\drivers\\vmusbmouse.sys",
-		L"%SystemRoot%\\System32\\drivers\\vmx_svga.sys",
-		L"%SystemRoot%\\System32\\drivers\\vmxnet.sys",
-		L"%SystemRoot%\\System32\\drivers\\vm3dmp.sys",
-		L"%SystemRoot%\\System32\\vmGuestLib.dll",
-		L"%SystemRoot%\\System32\\vm3dgl.dll",
-	};
-	for (const wchar_t* raw : files) {
-		wchar_t expanded[MAX_PATH * 2];
-		if (ExpandEnvironmentStringsW(raw, expanded, MAX_PATH * 2) && GetFileAttributesW(expanded) != INVALID_FILE_ATTRIBUTES)
-			return true;
-	}
-	// Guest kernel device objects / named pipes. A successful open (or a
-	// "device busy" style error rather than "not found") means the guest driver is
-	// loaded. These paths simply do not resolve on real hardware.
 	const wchar_t* devices[] = {
 		L"\\\\.\\VBoxGuest",
-		L"\\\\.\\VBoxMiniRdrDN",
-		L"\\\\.\\pipe\\VBoxTrayIPC",
-		L"\\\\.\\HGFS",
 		// NOTE: \\.\vmci is deliberately NOT listed -- the VMware VMCI Bus Device is present
-		// on a VMware Workstation HOST too, so opening it flags real machines.
+		// on a VMware Workstation HOST too, so opening it flags real machines. VMware guests
+		// are covered by the backdoor port, CPUID, SMBIOS and GPU-vendor probes instead.
 	};
 	for (const wchar_t* dev : devices) {
 		HANDLE h = CreateFileW(dev, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
@@ -666,22 +720,17 @@ bool vm_check_artifacts() {
 	}
 	return false;
 #elif defined(__APPLE__)
-	// Only guest-side markers. The host applications /Applications/VMware Fusion.app and
-	// /Applications/VirtualBox.app are deliberately NOT checked: they exist on the machine
-	// of anyone who merely installed the hypervisor, which is not the same as running inside
-	// a guest. hw.model (vm_check_hardware) and ioreg (vm_check_pci) detect real Mac guests.
-	const char* paths[] = {"/Library/Application Support/VMware Tools"};
-	for (const char* p : paths)
-		if (access(p, F_OK) == 0) return true;
+	// Nothing here is hardware-bound: VMware Fusion guest tools install to a fixed path that
+	// says nothing about the current machine. hw.model (vm_check_hardware) and ioreg
+	// (vm_check_pci) identify real Mac guests from the hardware itself.
 	return false;
 #else // Linux
-	// Guest Additions / VMware Tools binaries and guest device nodes only. /dev/vmci is
-	// deliberately omitted: VMware Workstation's vmw_vmci module creates it on the HOST.
-	const char* paths[] = {
-		"/usr/bin/VBoxClient", "/usr/bin/VBoxControl", "/usr/sbin/VBoxService",
-		"/dev/vboxguest", "/dev/vboxuser",
-		"/usr/bin/vmware-toolbox-cmd", "/usr/bin/vmtoolsd",
-	};
+	// Only the vboxguest character devices, created by the kernel module that binds to the
+	// emulated VirtualBox Guest PCI device. The Guest Additions / VMware Tools *binaries*
+	// (/usr/bin/VBoxClient, /usr/bin/vmtoolsd, ...) are deliberately not tested: they are
+	// installed software, not hardware. /dev/vmci is likewise omitted -- VMware Workstation's
+	// vmw_vmci module creates it on the HOST.
+	const char* paths[] = {"/dev/vboxguest", "/dev/vboxuser"};
 	for (const char* p : paths)
 		if (access(p, F_OK) == 0) return true;
 	return false;
@@ -787,71 +836,14 @@ bool vm_check_dxgi() {
 }
 #endif
 
-// Running-process scan for the VMware Tools / VirtualBox Guest Additions helper
-// daemons. This is a runtime channel that still fires if the guest tools were
-// installed to a non-standard path (so the file/registry probes missed) but their
-// services are running. Only guest-tool process names are listed -- deliberately
-// NOT generic analysis tools (Wireshark, Fiddler, Process Hacker, ...), which run
-// on plenty of real developer machines and would cause false positives.
-bool vm_check_processes() {
-#ifdef _WIN32
-	static const wchar_t* names[] = {
-		L"vmtoolsd.exe", L"vmwaretray.exe", L"vmwareuser.exe", L"vgauthservice.exe", L"vmacthlp.exe", // VMware
-		L"vboxservice.exe", L"vboxtray.exe", // VirtualBox
-	};
-	HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-	if (snap == INVALID_HANDLE_VALUE) return false;
-	PROCESSENTRY32W pe;
-	pe.dwSize = sizeof(pe);
-	bool found = false;
-	if (Process32FirstW(snap, &pe)) {
-		do {
-			for (const wchar_t* n : names)
-				if (_wcsicmp(pe.szExeFile, n) == 0) { found = true; break; }
-		} while (!found && Process32NextW(snap, &pe));
-	}
-	CloseHandle(snap);
-	return found;
-#elif defined(__APPLE__)
-#if TARGET_OS_OSX
-	// macOS: enumerate all pids and compare each process short name.
-	static const char* names[] = {"vmtoolsd", "vmware-tools-daemon", "VBoxService", "VBoxClient"};
-	int cap = proc_listpids(PROC_ALL_PIDS, 0, nullptr, 0);
-	if (cap <= 0) return false;
-	std::vector<pid_t> pids(static_cast<size_t>(cap) / sizeof(pid_t) + 16, 0);
-	int used = proc_listpids(PROC_ALL_PIDS, 0, pids.data(), static_cast<int>(pids.size() * sizeof(pid_t)));
-	int count = used <= 0 ? 0 : used / static_cast<int>(sizeof(pid_t));
-	char name[256];
-	for (int i = 0; i < count; ++i) {
-		if (pids[i] == 0) continue;
-		if (proc_name(pids[i], name, sizeof(name)) <= 0) continue;
-		std::string pn(name);
-		for (const char* nm : names)
-			if (pn == nm) return true;
-	}
-	return false;
-#else
-	return false; // iOS: apps are sandboxed and cannot enumerate other processes.
-#endif
-#else
-	// Linux: read /proc/<pid>/comm. Note comm is capped at 15 chars, so listed names
-	// must fit within that (VBoxService, vmtoolsd, VBoxClient all do).
-	static const char* names[] = {"vmtoolsd", "VBoxService", "VBoxClient", "vmware-user"};
-	DIR* proc = opendir("/proc");
-	if (!proc) return false;
-	bool found = false;
-	for (struct dirent* ent = readdir(proc); ent && !found; ent = readdir(proc)) {
-		if (ent->d_name[0] < '0' || ent->d_name[0] > '9') continue; // pid dirs only
-		std::ifstream f(std::string("/proc/") + ent->d_name + "/comm");
-		std::string comm;
-		if (!f || !std::getline(f, comm)) continue;
-		for (const char* nm : names)
-			if (comm == nm) { found = true; break; }
-	}
-	closedir(proc);
-	return found;
-#endif
-}
+// NOTE: a running-process scan for the guest-tool daemons (vmtoolsd.exe, VBoxService, ...)
+// used to live here. It was removed for the same reason as the guest-tool file checks above:
+// it answers "is guest-tool software installed and running here?", not "is this machine a
+// virtual machine?". Those daemons start on any PC where the tools were installed -- including
+// a physical one imaged from a VM template -- and conversely they are the first thing removed
+// from a guest that is being hardened against detection, so the probe both misfired on real
+// players and was blind exactly when it would have mattered. Genuine guests are identified
+// from the hardware itself by the CPUID, backdoor-port, SMBIOS, ACPI and GPU-vendor probes.
 
 // PCI / GPU vendor probe for POSIX (the cross-platform counterpart of vm_check_dxgi).
 // The emulated VMware SVGA (PCI vendor 0x15AD) or VirtualBox devices (0x80EE) are the
@@ -910,10 +902,19 @@ bool vm_check_sandbox_files() {
 
 bool is_vm() {
 	// True if ANY VMware/VirtualBox-specific signal fires. Each probe is a distinct
-	// channel, so hiding one (e.g. masking the CPUID vendor or uninstalling the guest
-	// tools) still leaves the others to catch the guest. None
-	// of these fire on bare-metal hardware -- including a Windows 11 host running
-	// Hyper-V/VBS/WSL2 -- so real players are not misclassified.
+	// channel, so hiding one (e.g. masking the CPUID vendor) still leaves the others.
+	//
+	// Every probe here answers one question and one only: "is the hardware this process is
+	// executing on virtual?" It is deliberately blind to the separate question "is VMware or
+	// VirtualBox software installed on this machine?", because the two are independent. A
+	// physical PC can carry a complete VMware Tools installation -- someone installed it, or
+	// its Windows image was prepared inside a VM and then deployed to real hardware -- and
+	// answering the second question got exactly such a player misclassified. Probes that read
+	// installed files, service registrations or running helper processes were therefore removed;
+	// what remains reads CPUID, the VMware backdoor port, firmware (SMBIOS/ACPI/DMI), emulated
+	// PCI/GPU vendor ids and hardware-bound device nodes. None of those can be produced by
+	// installing software, so none fires on bare metal -- including a Windows 11 host running
+	// Hyper-V/VBS/WSL2, or one with VMware Workstation and VirtualBox both installed.
 	//
 	// Ordered cheapest-first and short-circuiting: the CPUID/firmware/registry/device
 	// probes are near-instant, so the expensive WMI query only runs when everything
@@ -924,8 +925,7 @@ bool is_vm() {
 	if (vm_check_smbios()) return true;
 	if (vm_check_registry()) return true;
 #endif
-	if (vm_check_artifacts()) return true;
-	if (vm_check_processes()) return true;
+	if (vm_check_guest_devices()) return true;
 	if (vm_check_pci()) return true; // POSIX emulated-GPU/PCI residual (VEN_15AD/80EE); survives hardening.
 #ifdef _WIN32
 	if (vm_check_dxgi()) return true; // Windows GPU by PCI vendor id; survives VM hardening.
