@@ -155,55 +155,65 @@ sdl_file_stream::sdl_file_stream(const std::string& path, const std::string& mod
 sdl_file_stream::sdl_file_stream(SDL_IOStream* io, std::ios::openmode mode) : std::iostream(&_buf) { attach(io, mode); }
 
 // Prebuffered input stream implementation
-prebuffer_istreambuf::prebuffer_istreambuf(std::istream& source, std::size_t prebuffer_size) : BasicBufferedStreamBuf(4096, std::ios_base::in), source(&source), prebuffer_size(prebuffer_size), prebuffer_pos(0), prebuffer_discarded(false), owns_source(false) {
+prebuffer_istreambuf::prebuffer_istreambuf(std::istream& source, std::size_t prebuffer_size) : BasicBufferedStreamBuf(4096, std::ios_base::in), source(&source), initial_fill(prebuffer_size), window_pos(0), window_closed(false), owns_source(false) {
 	if (!source.good()) throw std::invalid_argument("Source stream is invalid.");
-	prebuffer.reserve(prebuffer_size);
+	window.reserve(WINDOW_CAP); // once, so that appending never reallocates while audio is being served
 }
 prebuffer_istreambuf::~prebuffer_istreambuf() { if (owns_source) delete source; }
 void prebuffer_istreambuf::own_source(bool owns) { owns_source = owns; }
-bool prebuffer_istreambuf::fill_prebuffer() {
-	if (!prebuffer.empty() || prebuffer_discarded) return true;
-	prebuffer.resize(prebuffer_size);
-	source->read(prebuffer.data(), prebuffer_size);
-	std::size_t bytes_read = source->gcount();
-	prebuffer.resize(bytes_read);
-	return bytes_read > 0;
+bool prebuffer_istreambuf::fill_window() {
+	if (!window.empty() || window_closed) return true;
+	window.resize(initial_fill);
+	source->read(window.data(), initial_fill);
+	window.resize(source->gcount());
+	return !window.empty();
 }
 int prebuffer_istreambuf::readFromDevice(char* buffer, std::streamsize length) {
 	if (length <= 0) return 0;
 	std::streamsize bytes_read = 0;
-	if (prebuffer.empty() && !prebuffer_discarded) fill_prebuffer();
-	if (!prebuffer_discarded && prebuffer_pos < prebuffer.size()) {
-		std::size_t available_in_prebuffer = prebuffer.size() - prebuffer_pos;
-		std::size_t to_copy = std::min(static_cast<std::size_t>(length), available_in_prebuffer);
-		std::memcpy(buffer, prebuffer.data() + prebuffer_pos, to_copy);
-		prebuffer_pos += to_copy;
+	if (window.empty() && !window_closed) fill_window();
+	// Anything still inside the window is replayed from memory rather than pulled again.
+	if (window_pos < window.size()) {
+		std::size_t to_copy = std::min(static_cast<std::size_t>(length), window.size() - window_pos);
+		std::memcpy(buffer, window.data() + window_pos, to_copy);
+		window_pos += to_copy;
 		buffer += to_copy;
 		length -= to_copy;
 		bytes_read += to_copy;
-		if (prebuffer_pos >= prebuffer.size()) {
-			prebuffer.clear();
-			prebuffer.shrink_to_fit();
-			prebuffer_discarded = true;
-		}
 	}
 	if (length > 0) {
 		source->read(buffer, length);
-		std::streamsize source_bytes_read = source->gcount();
-		bytes_read += source_bytes_read;
+		std::streamsize got = source->gcount();
+		if (!window_closed && got > 0) {
+			// Keeps every byte read so far so the window's end tracks the source's real position; once it hits WINDOW_CAP it's of no further use, so it's freed immediately rather than held for no reason.
+			std::size_t room = WINDOW_CAP - window.size();
+			window.insert(window.end(), buffer, buffer + std::min(static_cast<std::size_t>(got), room));
+			if (window.size() >= WINDOW_CAP) {
+				window.clear();
+				window.shrink_to_fit();
+				window_closed = true;
+			}
+		}
+		window_pos += got;
+		bytes_read += got;
 	}
 	return static_cast<int>(bytes_read);
 }
 std::streampos prebuffer_istreambuf::seekoff(std::streamoff off, std::ios_base::seekdir dir, std::ios_base::openmode which) {
-	if (dir == std::ios_base::beg && off == 0) return seekpos(0);
-	return -1;
+	// Where the reader actually is: the base class reads ahead of it, so those bytes have to come back off window_pos.
+	std::streamoff consumed = static_cast<std::streamoff>(window_pos) - (egptr() - gptr());
+	if (dir == std::ios_base::cur && off == 0) return consumed; // tellg() arrives here as this; answering it is what lets ma_vfs's onTell succeed
+	if (dir == std::ios_base::end) return -1; // the length is unknown, so this genuinely cannot be answered
+	return seekpos(dir == std::ios_base::beg ? off : consumed + off, which);
 }
 std::streampos prebuffer_istreambuf::seekpos(std::streampos pos, std::ios_base::openmode which) {
-	if (pos != 0 || prebuffer_discarded) return -1;
-	if (prebuffer.empty()) fill_prebuffer();
-	prebuffer_pos = 0;
-	setg(nullptr, nullptr, nullptr);
-	return 0;
+	std::streamoff target = pos;
+	if (target < 0 || window_closed) return -1;
+	if (window.empty()) fill_window();
+	if (static_cast<std::size_t>(target) > window.size()) return -1; // past what was kept, and the source cannot go back
+	window_pos = static_cast<std::size_t>(target);
+	setg(nullptr, nullptr, nullptr); // drop what the base class had buffered, so it reads through us again
+	return pos;
 }
 prebuffer_istream::prebuffer_istream(std::istream& source, std::size_t prebuffer_size) : basic_istream(new prebuffer_istreambuf(source, prebuffer_size)) {}
 prebuffer_istream::~prebuffer_istream() { delete rdbuf(); }

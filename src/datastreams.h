@@ -79,15 +79,16 @@ public:
 	sdl_file_stream(SDL_IOStream* io, std::ios::openmode mode); // wrap an externally-owned process stdio stream
 };
 
-// Prebuffered input stream for unseekable sources like internet radio
+// Prebuffered input stream for unseekable sources like internet radio; keeps a rewind window alive up to WINDOW_CAP so ma_decoder_init can probe formats on a socket that cannot itself rewind.
 class prebuffer_istreambuf : public Poco::BasicBufferedStreamBuf<char, std::char_traits<char>> {
+	static const std::size_t WINDOW_CAP = 256 * 1024;
 	std::istream* source;
-	std::vector<char> prebuffer;
-	std::size_t prebuffer_size;
-	std::size_t prebuffer_pos;
-	bool prebuffer_discarded;
+	std::vector<char> window;   // every byte handed out so far, until WINDOW_CAP
+	std::size_t initial_fill;   // pulled up front, both to prime the connection and to seed the window
+	std::size_t window_pos;     // logical read position, which is where the reader believes it is
+	bool window_closed;         // outgrew WINDOW_CAP, so rewinding is no longer possible
 	bool owns_source;
-	bool fill_prebuffer();
+	bool fill_window();
 public:
 	prebuffer_istreambuf(std::istream& source, std::size_t prebuffer_size = 1024);
 	~prebuffer_istreambuf();
