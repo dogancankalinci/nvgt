@@ -23,6 +23,7 @@
 #include <Poco/Util/Application.h>
 #include <Poco/Exception.h>
 #include <Poco/Format.h>
+#include <Poco/Path.h>
 #include <Poco/Thread.h>
 #include <scriptany.h>
 #include <scriptarray.h>
@@ -243,7 +244,8 @@ std::string get_script_executable() {
 	return Poco::Util::Application::instance().config().getString("application.path");
 }
 std::string get_script_path() {
-	return g_scriptpath;
+	if (!script_compiled()) return g_scriptpath;
+	return Poco::Path(get_script_executable()).makeAbsolute().makeParent().toString();
 }
 std::string get_function_signature(void* function, int type_id) {
 	asIScriptContext* ctx = asGetActiveContext();
