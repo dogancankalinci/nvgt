@@ -862,34 +862,39 @@ protected:
 			lib.copyTo(libpath.toString());
 		}
 	}
-	void select_bundle_libraries(const Path& stubpath) {
-		// Decide which libraries ship with the output package: the names registered via nvgt_bundle_shared_library
-		// (shared deps like BASS, plus plugins the compiling nvgt loaded from a dll) adjusted by what the target stub
-		// actually contains. How this nvgt loaded a plugin says nothing about the stub the game will run from — e.g. a
-		// plugin static in nvgt.exe may only exist as a .so for the target — so we inspect the stub itself: every
-		// statically linked plugin passes its name to register_static_plugin at startup, which guarantees the name is
-		// embedded in the stub as a NUL-terminated string. Plugins found that way are dropped from the copy set, all
-		// others are added. Misdetection is asymmetric by design: a missed static (e.g. archive stubs like android,
-		// where the scan only sees compressed data — fine, since android stubs are currently always built with all
-		// plugins dynamic) merely ships an unused library, while a false hit would break the game, hence the strict
-		// \0name\0 match.
-		bundle_names = g_bundle_libraries;
+	void drop_static_plugins_found_in(const Path& binary, set<string>& names) {
+		// Remove from names every loaded plugin whose code the given binary already carries: a statically linked
+		// plugin passes its name to register_static_plugin at startup, which guarantees the name is embedded in the
+		// binary as a NUL-terminated string, and that's what we scan for. Misdetection is asymmetric by design: a
+		// miss (e.g. a name buried in an archive's compressed data) merely ships an unused library, while a false
+		// hit would break the game, hence the strict \0name\0 match.
 		vector<string> plugins;
 		list_loaded_nvgt_plugins(plugins);
-		if (plugins.empty()) return;
-		if (!File(stubpath).exists()) { bundle_names.insert(plugins.begin(), plugins.end()); return; } // copy_stub will report the missing stub.
-		string stub_bytes;
-		FileInputStream stub_stream(stubpath.toString());
-		StreamCopier::copyToString(stub_stream, stub_bytes);
+		if (plugins.empty() || !File(binary).exists()) return;
+		string bytes;
+		FileInputStream binary_stream(binary.toString());
+		StreamCopier::copyToString(binary_stream, bytes);
 		for (const string& name : plugins) {
 			string needle;
 			needle.reserve(name.size() + 2);
 			needle.push_back('\0');
 			needle.append(name);
 			needle.push_back('\0');
-			if (stub_bytes.find(needle) != string::npos) bundle_names.erase(name);
-			else bundle_names.insert(name);
+			if (bytes.find(needle) != string::npos) names.erase(name);
 		}
+	}
+	void select_bundle_libraries(const Path& stubpath) {
+		// Decide which libraries ship with the output package: the names registered via nvgt_bundle_shared_library
+		// (shared deps like BASS, plus plugins the compiling nvgt loaded from a dll) plus every loaded plugin the
+		// target stub does not already carry. How this nvgt loaded a plugin says nothing about the stub the game
+		// will run from — e.g. a plugin static in nvgt.exe may only exist as a .so for the target — so the stub
+		// itself is inspected. Archive stubs (android) look opaque to this scan because their contents are
+		// compressed; the android copy_stub compensates by rescanning each ABI's extracted libgame.so.
+		bundle_names = g_bundle_libraries;
+		vector<string> plugins;
+		list_loaded_nvgt_plugins(plugins);
+		bundle_names.insert(plugins.begin(), plugins.end());
+		drop_static_plugins_found_in(stubpath, bundle_names); // A missing stub is reported by copy_stub right after.
 	}
 	virtual void alter_stub_path(Path& stubpath) {
 		// This method can be overwritten by subclasses to modify the location that stubs are selected from. Throw an exception to abort the compilation.
@@ -2073,22 +2078,23 @@ protected:
 		// PLUGINS plus any shared libs those plugins register via nvgt_bundle_shared_library (e.g. BASS for legacy_sound).
 		// Pick the ones this script actually uses out of lib_android/<abi>/ into the APK's lib/<abi>/, matching by substring
 		// on the base name exactly like copy_shared_libraries() on desktop — so a name like "bass" also matches its real
-		// file "libbass.so". bundle_names (see select_bundle_libraries) already includes every loaded plugin here: this
-		// stub is an archive whose static-plugin scan finds nothing, matching current reality — the android build ships
-		// every plugin dynamically (static_<name>_plugin=1 has no effect for this target yet), so each plugin the script
-		// uses must ship as a .so no matter how the compiling nvgt loaded it. Done for every ABI so each abi dir in the
-		// APK gets its own copies.
+		// file "libbass.so". bundle_names still contains every loaded plugin at this point because select_bundle_libraries
+		// couldn't see through this stub's compressed archive; now that it's extracted, rescan each ABI's actual
+		// libgame.so so plugins built into it (scons static_<name>_plugin=1) don't also ship as a dead .so — the same
+		// static-versus-dynamic decision every other platform gets. Done per ABI so each abi dir gets its own copies.
 		string plugin_src_base = get_nvgt_lib_directory("android"); // .../lib_android; plugins + their shared deps live per-ABI beneath it.
 		for (const string& abi : {"arm64-v8a", "armeabi-v7a"}) {
 			Path plugin_dest = Path(workplace.path()).append(format("lib/%s", abi));
 			if (plugin_src_base.empty() || !File(plugin_dest).exists()) continue;
 			Path plugin_src = Path(plugin_src_base).append(abi);
 			if (!File(plugin_src).exists()) continue;
+			set<string> abi_bundle_names = bundle_names;
+			drop_static_plugins_found_in(Path(plugin_dest).append("libgame.so"), abi_bundle_names);
 			set<string> libs;
 			Glob::glob(Path(plugin_src).append("*").toString(), libs, Glob::GLOB_DOT_SPECIAL | Glob::GLOB_FOLLOW_SYMLINKS | Glob::GLOB_CASELESS);
 			for (const string& library : libs) {
 				bool included = false;
-				for (const string& l : bundle_names) if (Path(library).getBaseName().find(l) != string::npos) { included = true; break; }
+				for (const string& l : abi_bundle_names) if (Path(library).getBaseName().find(l) != string::npos) { included = true; break; }
 				if (included) File(library).copyTo(plugin_dest.toString());
 			}
 		}

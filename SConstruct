@@ -119,7 +119,8 @@ if  ARGUMENTS.get("no_plugins", "0") == "0":
 		with open(static_plugins_path + ".cpp", "w") as f:
 			f.write("#define NVGT_LOAD_STATIC_PLUGINS\n#include <nvgt_plugin.h>\n")
 			for plugin in static_plugins: f.write(f"static_plugin({plugin})" + "\n")
-			static_plugins_object = env.Object(static_plugins_path, static_plugins_path + ".cpp", CPPPATH = env["CPPPATH"] + ["#src"])
+			# The android build never links this base-env object; it compiles its own per-ABI copies instead (see android_static_plugins).
+			if env["NVGT_TARGET"] != "android": static_plugins_object = env.Object(static_plugins_path, static_plugins_path + ".cpp", CPPPATH = env["CPPPATH"] + ["#src"])
 
 # Project libraries
 # Android does not use NVGT's own prebuilt static libs (deps/ASAddon) or the shared libpath here — its build loop compiles
@@ -222,8 +223,9 @@ elif env["NVGT_TARGET"] == "android":
 	# `extra` submodule) hardcode a single #build/lib/<x> static-lib target and, for a few, implicit-target objects from
 	# absolute #-rooted sources; both would clash when a plugin is built for more than one ABI in one scons run. Rather than
 	# editing any plugin file, we hand each per-ABI plugin build an env whose StaticLibrary/Object/SharedObject builders are
-	# transparently redirected to per-ABI output paths (the static libs themselves are unused on Android — only the shared
-	# libs ship — but they must still not collide). Shared libs already honour the per-ABI PLUGIN_DEST_DIR we set below.
+	# transparently redirected to per-ABI output paths (the static libs are only linked when a plugin is embedded via
+	# android_static_plugins below, but must in any case not collide). Shared libs already honour the per-ABI
+	# PLUGIN_DEST_DIR we set below.
 	def android_plugin_env(base_env, abi):
 		pe = base_env.Clone()
 		# Normalise CPPDEFINES to a plain list (SCons keeps it as a deque after Append): some plugin SConscripts do
@@ -271,15 +273,33 @@ elif env["NVGT_TARGET"] == "android":
 		pe.AddMethod(shlib_redir, "SharedLibrary")
 		return pe
 	android_plugin_scripts = Glob("plugin/*/_SConscript") + Glob("plugin/*/SConscript") + Glob("extra/plugin/integrated/*/_SConscript") + Glob("extra/plugin/integrated/*/SConscript")
-	# BASS is a dynamic dependency of the legacy_sound plugin: its shared libs must ship in lib_android/<abi> so the bundler
-	# can drop them next to legacy_sound.so (which links -lbass). The stub itself never links BASS.
-	android_plugin_shared_deps = {"legacy_sound": ["libbass.so", "libbass_fx.so", "libbassmix.so"]}
+	# Redistributable shared libs (BASS for legacy_sound, libgit2 for git2nvgt, ...) must sit in lib_android/<abi> so the
+	# bundler can drop them into the APK next to the plugin that needs them. Stage the same set every other target stages
+	# into release/lib, minus the ones already installed beside each native lib in jni/libs below, minus whatever this dev
+	# package doesn't build for android (there are no archive/plist builds in droidev, for instance).
+	android_redist_libs = [l for l in env["NVGT_OSDEV_REDIST_LIBS"] if l not in ("SDL3", "phonon")]
+	# Static plugin embedding, honoring the exact same switches as desktop (user/static_plugins and
+	# static_<plugname>_plugin=1): each requested plugin's per-ABI static lib plus a per-ABI build of the nvgt_plugins.cpp
+	# registration object are linked into every native lib below — libmain.so (runner) and libgame.so (both stubs) — so a
+	# plugin embedded this way needs no .so in the APK, and the bundler detects it there just like in a desktop stub.
+	android_static_plugins = []
+	if ARGUMENTS.get("no_plugins", "0") == "0":
+		android_static_plugins = list(static_plugins)
+		for s in android_plugin_scripts:
+			plugname = str(s).split(os.path.sep)[-2]
+			if ARGUMENTS.get(f"no_{plugname}_plugin", "0") == "1": continue
+			if ARGUMENTS.get(f"static_{plugname}_plugin", "0") == "1" and plugname not in android_static_plugins: android_static_plugins.append(plugname)
+		if android_static_plugins:
+			with open(static_plugins_path + ".cpp", "w") as f:
+				f.write("#define NVGT_LOAD_STATIC_PLUGINS\n#include <nvgt_plugin.h>\n")
+				for plugin in android_static_plugins: f.write(f"static_plugin({plugin})" + "\n")
 	# NVGT's own code compiled directly into every native lib (the old ndk-build LOCAL_SRC_FILES_COMMON): AngelScript addons,
 	# a selected set of dep/ C/C++ sources, and all of src/. It is NOT linked as prebuilt static libs (those are arm64-only);
 	# only the per-ABI droidev deps + SDL3/phonon + Android system libs are linked below.
 	asaddon_srcs = [str(f).replace(os.path.sep, "/") for f in Glob("ASAddon/src/*.cpp")]
 	dep_srcs = ["dep/" + s for s in ["entities.cpp", "ma_reverb_node.c", "micropather.cpp", "miniaudio_libopus.c", "miniaudio_libvorbis.c", "miniaudio_phonon.c", "miniaudio_wdl_resampler.cpp", "monocypher.c", "resample.cpp", "rng_get_bytes.c", "singleheader.cpp", "sonic.c", "tonar.c", "uncompr.c"]]
-	# Clean per-ABI link set: droidev static deps + SDL3/phonon shared + Android system libs. No NVGT static libs, no plugins.
+	# Clean per-ABI link set: droidev static deps + SDL3/phonon shared + Android system libs. No NVGT static libs; static
+	# plugins requested via android_static_plugins are prepended per ABI below.
 	android_link_libs = common_libs + ["z", "SDL3", "phonon", "GLESv1_CM", "GLESv2", "OpenSLES", "log", "android", "m"]
 	for abi, (clang_triple, libcxx_dir) in env["ANDROID_ABIS"].items():
 		abi_dev = os.path.join(osdev_base, abi)
@@ -299,16 +319,22 @@ elif env["NVGT_TARGET"] == "android":
 		# Dynamic plugins for this ABI -> release/lib_android/<abi>/*.so (shipped alongside nvgt; the bundler drops the ones a
 		# script actually uses into the APK's lib/<abi>/). Built through the sandbox env so per-ABI runs never collide.
 		lib_android_dest = f"#release/lib_android/{abi}"
+		for l in android_redist_libs:
+			redist = os.path.join(abi_dev, "lib", f"lib{l}.so")
+			if os.path.exists(redist): android_deps.extend(env.Install(lib_android_dest, redist))
+		abi_static_libs = []
 		for s in android_plugin_scripts:
 			plugname = str(s).split(os.path.sep)[-2]
 			if ARGUMENTS.get(f"no_{plugname}_plugin", "0") == "1": continue
-			SConscript(s, variant_dir = f"build/obj_plugin_android/{abi}/{plugname}", duplicate = 0, exports = {"env": android_plugin_env(abi_env, abi), "nvgt_env": abi_env})
-			# Ship each plugin's dynamic dependencies (e.g. BASS for legacy_sound) next to it so the bundler can include them.
-			for dep_so in android_plugin_shared_deps.get(plugname, []):
-				android_deps.extend(env.Install(lib_android_dest, os.path.join(abi_dev, "lib", dep_so)))
+			plug = SConscript(s, variant_dir = f"build/obj_plugin_android/{abi}/{plugname}", duplicate = 0, exports = {"env": android_plugin_env(abi_env, abi), "nvgt_env": abi_env})
+			if plug and plugname in android_static_plugins: abi_static_libs.append(plug)
 		# version + lzfse (bundling.cpp's Assets.car encoder) are arch-specific but variant-independent: build once per ABI.
 		shared_objs = [abi_env.Object(f"build/obj_android/{abi}/version", "src/version.cpp")]
 		shared_objs += [abi_env.Object(f"build/obj_android/{abi}/lzfse/{s}", "dep/lzfse/" + s + ".c") for s in lzfse_srcs]
+		if android_static_plugins:
+			# Archives go first so their own shared deps (e.g. BASS for legacy_sound) resolve left to right at link time.
+			abi_env.Prepend(LIBS = abi_static_libs)
+			shared_objs.append(abi_env.Object(f"build/obj_android/{abi}/nvgt_plugins", static_plugins_path + ".cpp", CPPPATH = abi_env["CPPPATH"] + ["#src"]))
 		# The three variants differ only by their defines: runner + regular stub disable IAP, the IAP stub enables it.
 		for variant, extra_defines in [("runner", ["NVGT_NO_IAP"]), ("stub", ["NVGT_STUB", "NVGT_NO_IAP"]), ("stub_iap", ["NVGT_STUB"])]:
 			venv = abi_env.Clone()
