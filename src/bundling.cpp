@@ -71,6 +71,7 @@
 #else
 	#include "../user/nvgt_config.h"
 #endif
+#include "nvgt_plugin.h" // list_loaded_nvgt_plugins
 #include "pack.h" // write_embedded_packs
 #include "UI.h"
 using namespace std;
@@ -759,6 +760,7 @@ public:
 			set_status("executing prebuild command...");
 			if (!user_command(precommand)) throw Exception("prebuild command failed");
 		}
+		select_bundle_libraries(stubpath);
 		set_status("copying stub...");
 		try {
 			copy_stub(stubpath, outpath);
@@ -798,6 +800,7 @@ public:
 protected:
 	FileStream fs;
 	Util::LayeredConfiguration& config;
+	set<string> bundle_names; // Library name fragments to ship with the output package, computed by select_bundle_libraries().
 	// Returns the absolute path to the icon requested via `#pragma icon` (build.icon), resolved
 	// relative to the script being compiled like the asset/embed pragmas, or an empty string if no
 	// custom icon was requested. Throws if a path was given but the file does not exist.
@@ -846,7 +849,7 @@ protected:
 		for (const string& library : libs) {
 			// First check if we wish to include this library.
 			bool included = false;
-			for (const string& l : g_bundle_libraries) {
+			for (const string& l : bundle_names) {
 				if (Path(library).getBaseName().find(l) == string::npos) continue;
 				included = true;
 				break;
@@ -857,6 +860,35 @@ protected:
 			File destF = Path(libpath).append(Path(library).getFileName()).toString();
 			if (destF.exists() && destF.getLastModified() >= lib.getLastModified()) continue;
 			lib.copyTo(libpath.toString());
+		}
+	}
+	void select_bundle_libraries(const Path& stubpath) {
+		// Decide which libraries ship with the output package: the names registered via nvgt_bundle_shared_library
+		// (shared deps like BASS, plus plugins the compiling nvgt loaded from a dll) adjusted by what the target stub
+		// actually contains. How this nvgt loaded a plugin says nothing about the stub the game will run from — e.g. a
+		// plugin static in nvgt.exe may only exist as a .so for the target — so we inspect the stub itself: every
+		// statically linked plugin passes its name to register_static_plugin at startup, which guarantees the name is
+		// embedded in the stub as a NUL-terminated string. Plugins found that way are dropped from the copy set, all
+		// others are added. Misdetection is asymmetric by design: a missed static (e.g. archive stubs like android,
+		// where the scan only sees compressed data — fine, since android stubs are currently always built with all
+		// plugins dynamic) merely ships an unused library, while a false hit would break the game, hence the strict
+		// \0name\0 match.
+		bundle_names = g_bundle_libraries;
+		vector<string> plugins;
+		list_loaded_nvgt_plugins(plugins);
+		if (plugins.empty()) return;
+		if (!File(stubpath).exists()) { bundle_names.insert(plugins.begin(), plugins.end()); return; } // copy_stub will report the missing stub.
+		string stub_bytes;
+		FileInputStream stub_stream(stubpath.toString());
+		StreamCopier::copyToString(stub_stream, stub_bytes);
+		for (const string& name : plugins) {
+			string needle;
+			needle.reserve(name.size() + 2);
+			needle.push_back('\0');
+			needle.append(name);
+			needle.push_back('\0');
+			if (stub_bytes.find(needle) != string::npos) bundle_names.erase(name);
+			else bundle_names.insert(name);
 		}
 	}
 	virtual void alter_stub_path(Path& stubpath) {
@@ -2040,8 +2072,12 @@ protected:
 		// its IAP-enabled build under the very same name, so nothing here touches libgame. lib_android holds the dynamic
 		// PLUGINS plus any shared libs those plugins register via nvgt_bundle_shared_library (e.g. BASS for legacy_sound).
 		// Pick the ones this script actually uses out of lib_android/<abi>/ into the APK's lib/<abi>/, matching by substring
-		// on the base name exactly like copy_shared_libraries() on desktop — so a registered name like "bass" also matches
-		// its real file "libbass.so". Done for every ABI so each abi dir in the APK gets its own copies.
+		// on the base name exactly like copy_shared_libraries() on desktop — so a name like "bass" also matches its real
+		// file "libbass.so". bundle_names (see select_bundle_libraries) already includes every loaded plugin here: this
+		// stub is an archive whose static-plugin scan finds nothing, matching current reality — the android build ships
+		// every plugin dynamically (static_<name>_plugin=1 has no effect for this target yet), so each plugin the script
+		// uses must ship as a .so no matter how the compiling nvgt loaded it. Done for every ABI so each abi dir in the
+		// APK gets its own copies.
 		string plugin_src_base = get_nvgt_lib_directory("android"); // .../lib_android; plugins + their shared deps live per-ABI beneath it.
 		for (const string& abi : {"arm64-v8a", "armeabi-v7a"}) {
 			Path plugin_dest = Path(workplace.path()).append(format("lib/%s", abi));
@@ -2052,7 +2088,7 @@ protected:
 			Glob::glob(Path(plugin_src).append("*").toString(), libs, Glob::GLOB_DOT_SPECIAL | Glob::GLOB_FOLLOW_SYMLINKS | Glob::GLOB_CASELESS);
 			for (const string& library : libs) {
 				bool included = false;
-				for (const string& l : g_bundle_libraries) if (Path(library).getBaseName().find(l) != string::npos) { included = true; break; }
+				for (const string& l : bundle_names) if (Path(library).getBaseName().find(l) != string::npos) { included = true; break; }
 				if (included) File(library).copyTo(plugin_dest.toString());
 			}
 		}
