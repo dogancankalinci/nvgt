@@ -319,9 +319,12 @@ elif env["NVGT_TARGET"] == "android":
 		# Dynamic plugins for this ABI -> release/lib_android/<abi>/*.so (shipped alongside nvgt; the bundler drops the ones a
 		# script actually uses into the APK's lib/<abi>/). Built through the sandbox env so per-ABI runs never collide.
 		lib_android_dest = f"#release/lib_android/{abi}"
-		for l in android_redist_libs:
-			redist = os.path.join(abi_dev, "lib", f"lib{l}.so")
-			if os.path.exists(redist): android_deps.extend(env.Install(lib_android_dest, redist))
+		abi_redist = {l: os.path.join(abi_dev, "lib", f"lib{l}.so") for l in android_redist_libs}
+		missing_redist = [l for l, p in abi_redist.items() if not os.path.exists(p)]
+		# Say which ones were dropped rather than silently shipping fewer libraries than every other target does.
+		if missing_redist: print(f"note: {abi} dev package has no shared build of {', '.join(missing_redist)}, not staging")
+		for l, p in abi_redist.items():
+			if l not in missing_redist: android_deps.extend(env.Install(lib_android_dest, p))
 		abi_static_libs = []
 		for s in android_plugin_scripts:
 			plugname = str(s).split(os.path.sep)[-2]
