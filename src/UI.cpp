@@ -403,9 +403,15 @@ game_window* ShowNVGTWindow(const std::string& window_title, unsigned int flags)
 }
 bool DestroyNVGTWindow() {
 	if (!g_window) return false;
-	InputDestroy();
-	TTF_Quit();	
+	// The window must be gone before InputDestroy's SDL_Quit: SDL_VideoQuit destroys the event queue
+	// (and its mutex) before it destroys any surviving windows, while Android's JNI input callbacks
+	// keep posting events for as long as the window exists. Quitting SDL with a live window lets a
+	// key press on the Java UI thread lock that just-destroyed mutex and deadlock against
+	// Android_ActivityMutex (input-dispatch ANR). This order also keeps ~game_window from passing a
+	// stale SDL_Window to SDL_DestroyWindow after SDL_Quit.
 	g_window = nullptr;
+	InputDestroy();
+	TTF_Quit();
 	return true;
 }
 bool HideNVGTWindow() {

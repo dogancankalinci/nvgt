@@ -353,6 +353,7 @@ protected:
 		timeEndPeriod(1);
 		#endif
 		screen_reader_unload();
+		DestroyNVGTWindow(); // must precede InputDestroy's SDL_Quit or a key event can deadlock Android shutdown; see DestroyNVGTWindow.
 		InputDestroy();
 		uninit_sound();
 		anticheat_deinit();
