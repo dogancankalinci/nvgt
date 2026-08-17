@@ -1120,8 +1120,9 @@ BOOL legacy_sound::close() {
 		hrtf_effect = NULL;
 		if (env) env->detach(this);
 		if (output_mixer) {
+			// Internal removal: the non-internal path would re-attach the about-to-be-deleted mixer to the global output, leaving a dangling entry there.
 			if (parent_mixer)
-				parent_mixer->remove_mixer(output_mixer);
+				parent_mixer->remove_mixer(output_mixer, TRUE);
 			output_mixer->remove_sound(*this, TRUE);
 			BASS_StreamFree(output_mixer->channel); // Can't do in mixer destructor, it's being called when I don't want it to and I don't know why.
 			output_mixer->channel = 0;
@@ -1485,11 +1486,30 @@ legacy_mixer::legacy_mixer(legacy_mixer* parent, BOOL for_single_sound, BOOL for
 }
 
 legacy_mixer::~legacy_mixer() {
+	// Detach from our parent first, otherwise its child set keeps a dangling pointer that its own destructor will later call set_mixer on.
+	if (parent_mixer) {
+		parent_mixer->remove_mixer(this, TRUE);
+		parent_mixer = NULL;
+	}
 	if (this != output) {
-		for (auto i : mixers)
-			i->set_mixer(output);
-		for (auto i : sounds)
-			i->set_mixer(output);
+		// Drain pop-style: set_mixer re-enters remove_mixer which erases from these sets, so a range-for iterator here would be invalidated by its own loop body.
+		while (!mixers.empty()) {
+			legacy_mixer* m = *mixers.begin();
+			mixers.erase(mixers.begin());
+			BASS_Mixer_ChannelRemove(m->channel);
+			m->parent_mixer = NULL;
+			m->set_mixer(output);
+			// Sounds route through an internal single-sound mixer but keep their own raw parent pointer; retarget any still aimed at this dying mixer.
+			for (auto s : m->sounds) {
+				if (s->parent_mixer == this)
+					s->parent_mixer = output;
+			}
+		}
+		while (!sounds.empty()) {
+			legacy_sound* s = *sounds.begin();
+			sounds.erase(sounds.begin());
+			s->set_mixer(output);
+		}
 	}
 	mixers.clear();
 	sounds.clear();
