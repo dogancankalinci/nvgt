@@ -307,19 +307,27 @@ Open your new app and complete every required field. Apple will not let you subm
 ## Step 9: Upload your `.ipa` from Windows with iTMSTransporter
 Apple's build upload tool with a graphical interface, "Transporter," is only available on the Mac App Store. But the underlying command line uploader, **iTMSTransporter**, is a free, Java based tool that Apple provides for **Windows**, and it does the same job.
 
-> **Important — Apple is retiring the `.itmsp` upload method.** As of Transporter 4.2, running the tool with `-f` prints:
+> **Important — Apple has begun switching the `.itmsp` upload method off.** As of Transporter 4.2, running the tool with `-f` prints:
 >
 > *"Deprecated Transporter usage. No action is required at this time. However, starting in 2026, you'll be required to use the `-assetFile` command instead of the `-f` command with your .ipa or .pkg files."*
 >
 > Apple's Transporter guide additionally states that delivering applications as `.itmsp` packages is deprecated, and that using `.itmsp` to *update* app content is already unsupported.
 >
+> That deadline has started to bite. On **21 August 2026** an app that had been delivered through Method A the previous day, from the same machine and with an unchanged script, began failing at the `validateAssets` step with:
+>
+> ```
+> Exception occurred when creating MZContentProviderUpload for provider. (1004)
+> ```
+>
+> Nothing local explained it: authentication succeeded, `validateMetadata` passed, the account's certificates and provisioning profiles were current, the build number was not a duplicate, and an app specific password and an App Store Connect API key failed identically. The same `.ipa`, delivered through Method B minutes later, uploaded without complaint. Treat a 1004 out of Method A as a sign that the old path has been closed for your account rather than as something to debug — but note that 1004 is a generic server side error that has also historically accompanied Apple outages, so if Method B works for you the question is settled either way.
+>
 > This step therefore describes **three methods**:
 >
-> * **Method A (`-f` with an `.itmsp` package)** — Apple's traditional upload flow, described in 9c and 9d. It is deprecated and will eventually stop working.
+> * **Method A (`-f` with an `.itmsp` package)** — Apple's traditional upload flow, described in 9c and 9d. It is deprecated, and as of August 2026 it has been seen to stop working outright.
 > * **Method B (`-assetFile` with an `AppStoreInfo.plist`)** — Apple's official replacement, described in 9e. It is simpler once set up (no `.itmsp` folder, no `metadata.xml`, no Team ID/Apple ID/SKU to look up), but on Windows it needs one extra file that Apple expects Xcode to produce, so you must generate that file yourself.
 > * **Method C (`ios-uploader`)** — described in 9f. A third party open source tool that replaces iTMSTransporter entirely: one command, no Java, nothing to generate. It uses an undocumented Apple API, so it is a convenient fallback rather than something to depend on.
 >
-> **Which should you use?** Method B is the one to aim for: it is Apple's supported direction, it works with API keys, and it is where you will end up anyway. Method A is documented because it is the flow most existing material describes and it still works today, so it is a reasonable thing to fall back to if B gives you trouble. Method C is there if iTMSTransporter is fighting you and you just want the build uploaded.
+> **Which should you use?** Method B. It is Apple's supported direction, it works with API keys, and it is where you will end up anyway. Method A is still documented because it is the flow most existing material describes and because you will meet it in other people's scripts, but it is no longer somewhere to fall back to. Method C is there if iTMSTransporter is fighting you and you just want the build uploaded.
 
 ### 9a. Install iTMSTransporter
 Download it from Apple's **[Transporter User Guide](https://help.apple.com/itc/transporteruserguide/)**; the guide's install page links to the Windows installer (a file named like `iTMSTransporterToolInstaller_4.2.0.<build>.exe`). Run the installer, accept the license, and keep the default install location (typically `C:\Program Files\itms`). The tool bundles its own Java runtime, so you do not normally need to install Java separately. The command line program lives in the install's `bin` folder.
@@ -483,7 +491,7 @@ Create this file next to your `.ipa`. As with `metadata.xml`, every value in cap
                         <key>file-type</key>
                         <string>NSFileTypeRegular</string>
                         <key>file-data</key>
-                        <data>BASE64_OF_EMBEDDED_MOBILEPROVISION</data>
+                        <string>BASE64_OF_EMBEDDED_MOBILEPROVISION</string>
                         <key>uti</key>
                         <string>com.apple.mobileprovision</string>
                         <key>path</key>
@@ -525,10 +533,20 @@ Every key in the template is listed below. Nothing in this file is decoration: i
 **The provisioning profile, delivered inline:**
 
 * **`path`** — where the profile lives inside the `.ipa`, relative to `Payload`, so `<your app>.app/embedded.mobileprovision`.
-* **`file-data`** — the profile's **contents**: raw bytes in a binary plist, or base64 in the XML form above. Note this is the *provisioning profile*, not the `.ipa`.
+* **`file-data`** — the profile's **contents, base64 encoded and stored as a plist *string***. Note this is the *provisioning profile*, not the `.ipa`. The type matters and is easy to get wrong; see the warning below.
 * **`file-size`** — the size in bytes of that same profile, **before** any base64 encoding.
 * **`file-type`** — the constant `NSFileTypeRegular`. This is a Foundation constant, the value `NSFileManager` reports for an ordinary file as opposed to a directory or a symbolic link. It is here purely to say "this entry is a plain file", and it is another place where Apple's internal vocabulary shows through, just like the `CFBundle...` keys above.
 * **`uti`** — the constant `com.apple.mobileprovision`. A **UTI**, or Uniform Type Identifier, is Apple's reverse DNS way of naming a file format — the same system that calls your `.ipa` `com.apple.ipa`. This is what tells Apple how to interpret the bytes in `file-data`; without it they would just be an anonymous blob.
+
+> **`file-data` must be a base64 `<string>`, never a `<data>` blob.** A property list can hold binary data natively, so writing the profile as a real data element is the obvious thing to reach for — and it is what most plist libraries do when you hand them a byte array. Apple's upload service does not accept it. It wants the base64 **text**, in a string.
+>
+> Getting this wrong does not produce an error that points anywhere near the actual mistake. Transporter uploads the description happily, and Apple rejects the delivery with:
+>
+> ```
+> Validation failed - Invalid Bundle. The bundle at 'yourgame.app' does not contain a bundle executable. - STATE_ERROR.VALIDATION_ERROR
+> ```
+>
+> Your executable is fine and present; the message is simply what Apple reports when it cannot make sense of the description it was given. If you see it, check the type of this one key before you go looking at your `.ipa`. The script below writes the string form for you.
 
 #### Why does `metadata.xml` get away with so much less?
 Set the two files side by side and something looks backwards. `metadata.xml` is a dozen lines and describes nothing about your app; `AppStoreInfo.plist` is far longer and knows your bundle path, your platform and your entire provisioning profile. Yet `metadata.xml` demands three things the plist never asks for: your **Team ID**, your **SKU**, and your app's numeric **Apple ID**. And it wants an **MD5 checksum**, which the plist also does without.
@@ -583,9 +601,9 @@ It is, and embedding it a second time looks like pointless duplication until you
 * **`metadata.xml` is a delivery note.** It says "here is a file, this big, with this checksum, for this app record." It describes the *shipment*, and says nothing whatsoever about the app. It does not need the provisioning profile because it does not validate anything: the whole `.itmsp` package is uploaded first, and Apple opens the `.ipa` on its own servers afterwards and works everything out from the binary itself.
 * **`AppStoreInfo.plist` is a description of the app.** It says "this build has this bundle identifier, these version numbers, and is signed with this profile." It exists so that Apple can know those things *without opening the `.ipa`*.
 
-That last point is the whole reason it exists. Under Method B the description and the `.ipa` are two separate uploads. The description is a few kilobytes and arrives immediately; the `.ipa` can be gigabytes and streams in chunks for minutes afterwards. Apple wants to answer questions like *which team does this build belong to, is it signed for App Store distribution rather than Ad Hoc, which App ID does it claim, what entitlements does it request, has the profile expired* — and it wants to answer them at the front door, before a large upload is accepted. Every one of those answers lives in the provisioning profile.
+That last point is the whole reason it exists. Under Method B the description and the `.ipa` are two separate uploads. The description is a few kilobytes and arrives immediately; the `.ipa` can be gigabytes and streams in chunks for minutes afterwards. Questions like *which team does this build belong to, is it signed for App Store distribution rather than Ad Hoc, which App ID does it claim, has the profile expired* are all answered by the provisioning profile, and Apple would rather have it in hand before it accepts a large upload than after.
 
-So the duplication is deliberate. Think of it as the cover note taped to the outside of a parcel: the information is also inside, but Apple should not have to open the parcel to read it.
+Be careful how far you take that reasoning, though, because it is easy to over-read. At the moment the description is committed, Apple checks that the profile entry is **there**, not that it is any good: a description whose `files` array is empty is rejected outright with *"Missing Provisioning Profile - Apps must contain a provisioning profile in a file named embedded.mobileprovision"*, while one that carries an empty or even deliberately corrupt `file-data` string is accepted and moves straight on to the binary upload. The contents are checked later, during processing, against the copy inside the `.ipa`. So the profile is a required part of the description's shape rather than something verified at the door.
 
 Two consequences follow:
 
@@ -631,7 +649,7 @@ Both keys are constants for our purposes. NVGT only produces iOS apps, so copy `
 Rather than transcribing values by hand, let a script read them out of the `.ipa`, which is just a ZIP archive. Python's standard library can do the whole job — `zipfile` to read the archive and `plistlib` to write the result — with nothing to install. Save this as `make_appstoreinfo.py` next to your build:
 
 ```python
-import os, plistlib, sys, zipfile
+import base64, os, plistlib, sys, zipfile
 
 ipa_path = sys.argv[1]
 out_path = sys.argv[2] if len(sys.argv) > 2 else "AppStoreInfo.plist"
@@ -666,7 +684,9 @@ data = {"product-metadata": {
         "files": [{
             "file-size": len(prov),
             "file-type": "NSFileTypeRegular",
-            "file-data": prov,
+            # base64 TEXT, not the raw bytes: handing plistlib a bytes object
+            # writes a <data> element, which Apple rejects. See the warning above.
+            "file-data": base64.b64encode(prov).decode("ascii"),
             "uti": "com.apple.mobileprovision",
             "path": app_name + "/embedded.mobileprovision",
         }],
@@ -684,7 +704,7 @@ Run it with:
 python make_appstoreinfo.py yourgame.ipa AppStoreInfo.plist
 ```
 
-This is better than filling the template in by hand for three reasons: the version numbers and bundle identifier are read straight out of the `.ipa`, so they cannot disagree with the build you are actually uploading; the provisioning profile is embedded as raw bytes with no base64 transcription to get wrong; and the output is written as a **binary** property list, which is the format Apple's own tooling produces.
+This is better than filling the template in by hand for three reasons: the version numbers and bundle identifier are read straight out of the `.ipa`, so they cannot disagree with the build you are actually uploading; the provisioning profile is read from the same `.ipa` and encoded in one step, so there is no base64 to transcribe and no chance of the two copies drifting apart; and the output is written as a **binary** property list, which is the format Apple's own tooling produces.
 
 #### Filling the template in by hand instead
 If you would rather not use Python, you still need the values out of the `.ipa`. Adjust the first two lines and run this in PowerShell; it prints everything you need to paste into the XML template above:
@@ -709,6 +729,8 @@ $zip.Dispose()
 [Convert]::ToBase64String($bytes)
 ```
 
+Paste that base64 text into the template's `file-data` **`<string>`** element, exactly as the template shows it. Do not "correct" it into a `<data>` element on the grounds that base64 is what a `<data>` element holds anyway — that is the one substitution Apple's upload service will not accept.
+
 If `$prov` comes back empty, your `.ipa` is unsigned — go back to Step 7, because Method B cannot work without a provisioning profile inside the bundle.
 
 #### Binary or XML?
@@ -726,10 +748,18 @@ plistutil -i AppStoreInfo.plist -o AppStoreInfo.bin.plist
 
 Then pass the converted file to `-assetDescription`. Note that the project publishes no prebuilt Windows binaries — on Windows it is built through [MSYS2](https://www.msys2.org/) — so unless you already have it, the Python script is far less trouble.
 
-#### If iTMSTransporter still rejects the plist
-The structure above is the minimum Apple's servers are known to accept, but iTMSTransporter may be stricter than the upload service itself. If it complains even with a binary plist, **fall back to Method A or Method C**, and please report what failed so this tutorial can be corrected.
+#### If Apple rejects the plist
+Apple does not tell you that a description is malformed. It tells you something is wrong with your app, and the two failures below are the ones this file actually produces:
 
-> **A note on where this template came from, and NVGT's plan:** NVGT does not generate `AppStoreInfo.plist` today, exactly as it does not generate `metadata.xml`. The structure above was derived from the open source [ios-uploader](https://github.com/simonnilsson/ios-uploader) project, which builds the same file from an `.ipa` and successfully delivers builds to Apple with it. The proper long term fix is for **NVGT itself to emit `AppStoreInfo.plist` next to the signed `.ipa`**, since every value in it is already known at bundling time — at which point this whole section collapses into a single command.
+* **"Invalid Bundle. The bundle at 'yourgame.app' does not contain a bundle executable."** — almost certainly the `file-data` type. See the warning earlier in this section: it must be a base64 `<string>`, not a `<data>` blob. Check that before you touch your build, because the message is not about your build.
+* **"Missing Provisioning Profile - Apps must contain a provisioning profile in a file named embedded.mobileprovision."** — this one means what it says: the `files` array reached Apple with no profile entry in it. Check `path` and `uti` on that entry.
+* **"could not find the application bundle within the swinfo description"** — Transporter itself could not find your app in the file, so something structural is missing: a misspelled key (the parser matches literal strings, so `CFBundleIdentifier` in place of `bundle-identifier` makes the field invisible), or a `bundle-path` that does not match the `.app` folder inside `Payload/`.
+
+Those first two are worth comparing, because together they explain why the executable message is so misleading. Apple is not vague by nature: hand it a description that parses cleanly but is genuinely missing the profile, and it names the profile precisely. The executable message appears in the other case, where the description did not parse into a usable bundle at all — and the validator doing the checking is Apple's ordinary *bundle* validator, whose entire vocabulary was written for real `.app` folders on a server. To that validator, "I could not read your description of the app" and "the app has no executable" are indistinguishable: both leave it holding a bundle record with nothing in it, and the executable check is simply the first one it fails. Apple never wrote an error for "your `AppStoreInfo.plist` is malformed" because on a Mac the file is produced by Apple's own `swinfo` and is assumed to be well formed. Writing it yourself, as you must on Windows, is a case its diagnostics do not cover.
+
+If it still fails after that, **fall back to Method C**, and please report what failed so this tutorial can be corrected. Method A is no longer a dependable fallback; see the note at the top of Step 9.
+
+> **A note on where this template came from, and NVGT's plan:** NVGT does not generate `AppStoreInfo.plist` today, exactly as it does not generate `metadata.xml`. The structure above was derived from the open source [ios-uploader](https://github.com/simonnilsson/ios-uploader) project, which builds the same file from an `.ipa` and successfully delivers builds to Apple with it, and the `file-data` form documented above is the one Apple was observed to accept: with it, a real App Store build was described, uploaded and delivered from Windows through iTMSTransporter. The proper long term fix is for **NVGT itself to emit `AppStoreInfo.plist` next to the signed `.ipa`**, since every value in it is already known at bundling time — at which point this whole section collapses into a single command.
 
 ### 9f. Method C: upload without iTMSTransporter at all
 There is a third route that skips Apple's tooling entirely. [**ios-uploader**](https://github.com/simonnilsson/ios-uploader) is a small, open source, cross platform command line tool that speaks Apple's upload protocol directly. It builds the `AppStoreInfo.plist` in memory for you, so there is nothing to write by hand, and it needs no Java runtime and no Transporter install.
@@ -818,7 +848,7 @@ This is the part people most often get wrong, so read it carefully. **Fixing a r
 Your version has never gone public, so you do **not** create a new version. You fix the problem inside the *same* version:
 
 * **If it is a Metadata Rejected** (a problem with your description, screenshots, or another store field, not the app itself): just fix the metadata and reply/resubmit in the Resolution Center. You often do **not** need a new build at all.
-* **If it is a problem with the app itself:** fix your game, then rebuild with the **same marketing version** but a **higher build number**. Concretely, leave `build.product_version` at `1.0.0` and change `build.product_version_code` from `1` to `2`. Rebuild, and re upload the new `.ipa` with iTMSTransporter (remember to update the `bundle_version`, `size`, and `checksum` in `metadata.xml`, and increment `bundle_version` to `2`).
+* **If it is a problem with the app itself:** fix your game, then rebuild with the **same marketing version** but a **higher build number**. Concretely, leave `build.product_version` at `1.0.0` and change `build.product_version_code` from `1` to `2`. Rebuild, and re upload the new `.ipa`. Regenerate the upload description for the new build first: with Method B, re run `make_appstoreinfo.py`, which reads the new build number and size straight out of the `.ipa`; with Method A, hand edit `metadata.xml` so `bundle_version`, `size` and `checksum` all describe the new file.
 * Then, in App Store Connect, open the same `1.0.0` version, and in the Build section **remove the old build (number 1) and select the new one (number 2)**. Submit for review again.
 
 Notice what stays fixed: the marketing version remains `1.0.0` the entire time you are trying to get your first release approved, because `1.0.0` was never actually released to the public. Only the build number climbs (1, 2, 3, ...) with each attempt. There is deliberately **no "create a new version" button available** in this situation, which confuses people. That button is only for updating an app that is already live, as described next.
@@ -829,7 +859,7 @@ Now the flow is different. Your current version is public and finished, so you c
 1. On your app's page in App Store Connect, click the **(+) Version or Platform** button. (This button is only available once your current version's status is **Ready for Distribution**, which is exactly why you never see it while a first release is still being reviewed or was rejected.)
 2. Enter a **new, higher marketing version** number, for example `1.0.1` or `1.1.0`. You cannot reuse `1.0.0` because it was already released.
 3. In NVGT, set `build.product_version` to that new number (for example `1.0.1`). You may reset `build.product_version_code` back to `1` for the new version, since build numbers only need to be unique within a marketing version.
-4. Build, upload the new `.ipa` with iTMSTransporter (with a `metadata.xml` whose `bundle_short_version_string` is `1.0.1` and `bundle_version` is `1`), select the build in your new version, and submit for review.
+4. Build, regenerate your upload description so it describes the new build, upload the new `.ipa` with iTMSTransporter, select the build in your new version, and submit for review.
 
 ### The two flows side by side
 | Situation | Marketing version (`product_version`) | Build number (`product_version_code`) | Where in App Store Connect |
@@ -837,7 +867,7 @@ Now the flow is different. Your current version is public and finished, so you c
 | First release keeps getting **rejected** | Stays the same (e.g. `1.0.0`) | **Increase** each try (1 → 2 → 3) | Same version; swap the build, resubmit. No "new version" button exists yet. |
 | Shipping an **update** to a live app | **Increase** (e.g. `1.0.0` → `1.0.1`) | Reset to `1` (or keep climbing) | Use **(+) Version or Platform** to create a new version. |
 
-Keep your three sources of version numbers in sync every single time: the values you build into the `.ipa` (`build.product_version` / `build.product_version_code`), the `bundle_short_version_string` / `bundle_version` in `metadata.xml`, and the version shown in App Store Connect. When they disagree, the upload or the submission fails.
+Keep your three sources of version numbers in sync every single time: the values you build into the `.ipa` (`build.product_version` / `build.product_version_code`), the copies of them in whichever description file you upload alongside it (`CFBundleShortVersionString` / `CFBundleVersion` in `AppStoreInfo.plist`, or `bundle_short_version_string` / `bundle_version` in `metadata.xml`), and the version shown in App Store Connect. When they disagree, the upload or the submission fails. Generating the description from the `.ipa` rather than editing it by hand removes this whole class of mistake.
 
 ---
 
@@ -886,7 +916,7 @@ In-app purchases are reviewed by Apple. **Your first in-app purchase must be sub
 7. Add `#pragma microphone_usage_description` if you use the microphone.
 8. Set `build.product_version` (e.g. `1.0.0`) and `build.product_version_code` (e.g. `1`).
 9. Create the app in App Store Connect, note its numeric **Apple ID**, fill in all metadata (change the version from the default `1.0`).
-10. Upload the build. Authenticate with an **app specific password** or, better, an **App Store Connect API key**. Then pick a method: **A** — build the `.itmsp` folder (`.ipa` + `metadata.xml` with matching versions, size, and MD5) and upload with `iTMSTransporter -f` (deprecated, retiring in 2026); **B** — write an `AppStoreInfo.plist` and upload with `iTMSTransporter -assetFile` (Apple's replacement); or **C** — run `ios-uploader` and skip Transporter entirely.
+10. Upload the build. Authenticate with an **app specific password** or, better, an **App Store Connect API key**. Then pick a method: **B** (do this one) — generate an `AppStoreInfo.plist` from the `.ipa` and upload with `iTMSTransporter -assetFile`, remembering that `file-data` is a base64 **string**; **C** — run `ios-uploader` and skip Transporter entirely; **A** — the old `.itmsp` folder with `iTMSTransporter -f`, which Apple has begun refusing with error 1004.
 11. Optionally test via **TestFlight** (internal = no review; external = Beta App Review).
 12. Submit for review. If rejected before release: same version, higher build number. Once live: new version via **(+) Version or Platform**.
 13. Selling items? Sign the Paid Applications Agreement, create each product **choosing its type (Consumable/Non-Consumable)** in App Store Connect with a Product ID matching your script, and submit your first purchase alongside an app version. `consume()`/`acknowledge()` are no-ops on iOS.
