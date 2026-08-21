@@ -313,6 +313,8 @@ Apple's build upload tool with a graphical interface, "Transporter," is only ava
 >
 > Apple's Transporter guide additionally states that delivering applications as `.itmsp` packages is deprecated, and that using `.itmsp` to *update* app content is already unsupported.
 >
+> Note where that warning lives: it is printed by the **client**, and only by version 4.2 and later. Search a 4.1 installation for the string and it is not in the binaries at all, so an older Transporter says nothing whatsoever — no notice, no countdown — right up to the day the method stops working. Every run prints its own version in its first few lines (`iTMSTransporter : iTunes Store Transporter [4.1.0]`), which is worth a glance: if you installed Transporter once and never updated it, the warning that was written to prepare you for this cannot reach you.
+>
 > That deadline has started to bite. On **21 August 2026** an app that had been delivered through Method A the previous day, from the same machine and with an unchanged script, began failing at the `validateAssets` step with:
 >
 > ```
@@ -320,6 +322,8 @@ Apple's build upload tool with a graphical interface, "Transporter," is only ava
 > ```
 >
 > Nothing local explained it: authentication succeeded, `validateMetadata` passed, the account's certificates and provisioning profiles were current, the build number was not a duplicate, and an app specific password and an App Store Connect API key failed identically. The same `.ipa`, delivered through Method B minutes later, uploaded without complaint. Treat a 1004 out of Method A as a sign that the old path has been closed for your account rather than as something to debug — but note that 1004 is a generic server side error that has also historically accompanied Apple outages, so if Method B works for you the question is settled either way.
+>
+> Do not expect Transporter to interpret that sentence for you, either. The text arrives in Apple's `validateAssets` response and appears nowhere in Transporter's own code, which holds no table mapping these numbers to explanations; the tool prints the server's string and stops. The string itself is a caught exception rather than a decision — *"Exception occurred when creating..."* is what a service says when something beneath it threw, not what it says when it is turning you away on purpose. Apple's newer delivery API does return structured errors with a code, a title and a human readable detail, which is why a bad `AppStoreInfo.plist` in Method B gets you an actual sentence about what is wrong. The `.itmsp` path predates all of that and can only hand back a number and a generic line, so a clear explanation was never something it was able to give. As for why nothing better was retrofitted before the path was closed, that part is inference rather than anything a log can show, but it is the ordinary shape of these things: a route is retired by switching off the component behind it, not by teaching the code you are decommissioning to explain itself, and a throw landing in a generic handler is exactly what that looks like from the outside. Either way the practical reading is the same — the server is not withholding the reason from you, the failure never reaches a layer that knows one.
 >
 > This step therefore describes **three methods**:
 >
