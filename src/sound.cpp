@@ -95,6 +95,7 @@ bool init_sound() {
 		ma_ios_session_category_option_default_to_speaker |
 		ma_ios_session_category_option_allow_bluetooth |
 		ma_ios_session_category_option_allow_bluetooth_a2dp |
+		ma_ios_session_category_option_allow_air_play |
 		ma_ios_session_category_option_mix_with_others;
 	#endif
 	if ((g_soundsystem_last_error = ma_context_init(nullptr, 0, &sound_context_config, &g_sound_context)) != MA_SUCCESS)
