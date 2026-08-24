@@ -88,17 +88,15 @@ bool init_sound() {
 		if (auto set_handler = (snd_lib_error_set_handler_t)SDL_LoadFunction(alsa, "snd_lib_error_set_handler")) set_handler(quiet_alsa_handler);
 	}
 	#endif
-	ma_context_config sound_context_config = ma_context_config_init();
-	#if defined(MA_APPLE_MOBILE)
-	sound_context_config.coreaudio.sessionCategory = ma_ios_session_category_play_and_record;
-	sound_context_config.coreaudio.sessionCategoryOptions =
+	ma_context_config cfg = ma_context_config_init();
+	cfg.coreaudio.sessionCategory = ma_ios_session_category_play_and_record;
+	cfg.coreaudio.sessionCategoryOptions =
 		ma_ios_session_category_option_default_to_speaker |
 		ma_ios_session_category_option_allow_bluetooth |
 		ma_ios_session_category_option_allow_bluetooth_a2dp |
 		ma_ios_session_category_option_allow_air_play |
 		ma_ios_session_category_option_mix_with_others;
-	#endif
-	if ((g_soundsystem_last_error = ma_context_init(nullptr, 0, &sound_context_config, &g_sound_context)) != MA_SUCCESS)
+	if ((g_soundsystem_last_error = ma_context_init(nullptr, 0, &cfg, &g_sound_context)) != MA_SUCCESS)
 		return false;
 	g_sound_service = sound_service::make();
 	if (g_sound_service == nullptr) {
@@ -2017,22 +2015,8 @@ public:
 		device_config.pUserData = this;
 		device_config.periodSizeInFrames = SOUNDSYSTEM_FRAMESIZE * 2;
 		device_config.capture.pDeviceID = (device >= 0 && device < g_sound_input_devices.size()) ? &g_sound_input_devices[device_index].id : nullptr;
-		if ((g_soundsystem_last_error = ma_device_init(nullptr, &device_config, &*capture_device)) != MA_SUCCESS) throw std::runtime_error("failed to initialize capture device");
+		if ((g_soundsystem_last_error = ma_device_init(&g_sound_context, &device_config, &*capture_device)) != MA_SUCCESS) throw std::runtime_error("failed to initialize capture device");
 		if ((g_soundsystem_last_error = ma_device_start(&*capture_device)) != MA_SUCCESS) audio_node_impl::set_state(ma_node_state_stopped);
-#if TARGET_OS_IPHONE
-    AVAudioSession *audioSession = [AVAudioSession sharedInstance];
-    NSError *audioSessionError = nil;
-    [audioSession setCategory:AVAudioSessionCategoryPlayAndRecord
-                                 withOptions:AVAudioSessionCategoryOptionMixWithOthers|AVAudioSessionCategoryOptionDefaultToSpeaker|AVAudioSessionCategoryOptionAllowBluetooth|AVAudioSessionCategoryOptionAllowBluetoothA2DP
-                                       error:&audioSessionError];
-    [audioSession setActive:YES error:&audioSessionError];
-
-[[AVAudioSession sharedInstance] requestRecordPermission:^(BOOL granted) {
-    if (granted) {
-    } else {
-    }
-}];
-#endif
 	}
 	~microphone_impl() {
 		if (capture_device) ma_device_uninit(&*capture_device);
@@ -2052,7 +2036,7 @@ public:
 		device_config.pUserData = this;
 		device_config.capture.pDeviceID = (device >= 0 && device < int(g_sound_input_devices.size())) ? &g_sound_input_devices[device].id : nullptr;
 		capture_device = make_unique<ma_device>();
-		if ((g_soundsystem_last_error = ma_device_init(nullptr, &device_config, &*capture_device)) != MA_SUCCESS) {
+		if ((g_soundsystem_last_error = ma_device_init(&g_sound_context, &device_config, &*capture_device)) != MA_SUCCESS) {
 			capture_device.reset();
 			return false;
 		}
