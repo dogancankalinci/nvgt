@@ -127,7 +127,7 @@ public:
 	float volume_step;
 	unsigned int channel;
 	hstream_entry* store_channel;
-	sound_base() : env(NULL), source(NULL), direct_effect(NULL), reflection_effect(NULL), reflection_decode_effect(NULL), use_hrtf(false) {}
+	sound_base() : env(NULL), source(NULL), direct_effect(NULL), reflection_effect(NULL), reflection_decode_effect(NULL), use_hrtf(false), channel(0), store_channel(NULL) {}
 	virtual void AddRef();
 	virtual void Release();
 	void set_hrtf(BOOL enable) {

@@ -25,6 +25,7 @@
 #endif
 #include <math.h>
 #include <unordered_map>
+#include <mutex>
 #ifndef NVGT_PLUGIN_STATIC
 	#define THREAD_IMPLEMENTATION
 #endif
@@ -66,6 +67,9 @@ static asIScriptEngine* g_ScriptEngine;
 static BOOL sound_initialized = FALSE;
 static legacy_mixer* output;
 static legacy_mixer* g_default_mixer = NULL;
+// The mixer graph (every mixer's child sets, plus the parent pointers that index into them) is reachable from any script thread: a game can create, attach or close sounds on a worker thread while the main thread does the same through the shared mixer everything hangs off. std::unordered_set is not thread safe, so one thread's insert rehashing the bucket array under another thread's erase corrupts the heap. Every graph mutation therefore runs under this lock, and it is recursive because these operations legitimately re-enter each other (set_mixer -> remove_mixer, destructor -> set_mixer -> add_mixer).
+static std::recursive_mutex g_mixer_graph_mutex;
+#define LOCK_MIXER_GRAPH() std::lock_guard<std::recursive_mutex> mixer_graph_lock(g_mixer_graph_mutex)
 static bool hrtf = TRUE;
 #define hrtf_framesize 512
 static IPLContext phonon_context = NULL;
@@ -77,9 +81,13 @@ static thread_mutex_t preload_mutex;
 static legacy_pack* g_sound_default_pack = nullptr;
 
 hstream_entry* last_channel = NULL;
+// Every load registers a node here and every close unregisters one, so this list is edited from whatever thread happens to be creating or freeing a sound. Unsynchronized, two threads linking at the same time lose a node and leave stale neighbour pointers, and the next unlink then writes through them into memory that has already been freed -- the allocator only notices later, aborting inside an unrelated free().
+static std::mutex g_hstream_mutex;
 hstream_entry* register_hstream(unsigned int channel) {
 	if (!channel) return NULL;
 	hstream_entry* e = (hstream_entry*)malloc(sizeof(hstream_entry));
+	if (!e) return NULL;
+	std::lock_guard<std::mutex> lock(g_hstream_mutex);
 	e->p = last_channel;
 	e->channel = channel;
 	e->n = NULL;
@@ -89,9 +97,12 @@ hstream_entry* register_hstream(unsigned int channel) {
 }
 void unregister_hstream(hstream_entry* e) {
 	if (!e) return;
-	if (last_channel == e) last_channel = e->p;
-	if (e->p) e->p->n = e->n;
-	if (e->n) e->n->p = e->p;
+	{
+		std::lock_guard<std::mutex> lock(g_hstream_mutex);
+		if (last_channel == e) last_channel = e->p;
+		if (e->p) e->p->n = e->n;
+		if (e->n) e->n->p = e->p;
+	}
 	free(e);
 }
 
@@ -1075,6 +1086,7 @@ BOOL legacy_sound::push_string(const std::string& buffer, BOOL stream_end, int p
 }
 
 BOOL legacy_sound::postload(const string& filename) {
+	LOCK_MIXER_GRAPH();
 	if (!channel)
 		return FALSE;
 	BASS_ChannelGetInfo(channel, &channel_info);
@@ -1099,6 +1111,7 @@ BOOL legacy_sound::postload(const string& filename) {
 }
 
 BOOL legacy_sound::close() {
+	LOCK_MIXER_GRAPH();
 	if (close_callback) close_callback->Release();
 	if (len_callback) len_callback->Release();
 	if (read_callback) read_callback->Release();
@@ -1131,6 +1144,7 @@ BOOL legacy_sound::close() {
 		}
 		BASS_StreamFree(channel);
 		unregister_hstream(store_channel);
+		store_channel = NULL; // that node is freed now: leaving the pointer behind lets a close() landing before the next postload re-registers free the very same node a second time, which corrupts the heap and takes down some later, unrelated free()
 		channel = 0;
 		thread_mutex_unlock(&close_mutex);
 		length = 0;
@@ -1153,6 +1167,7 @@ BOOL legacy_sound::close() {
 }
 
 int legacy_sound::set_fx(const std::string& fx, int idx) {
+	LOCK_MIXER_GRAPH();
 	if (!output_mixer)
 		output_mixer = new legacy_mixer(parent_mixer, TRUE);
 	if (!output_mixer)
@@ -1161,6 +1176,7 @@ int legacy_sound::set_fx(const std::string& fx, int idx) {
 }
 
 BOOL legacy_sound::set_mixer(legacy_mixer* m) {
+	LOCK_MIXER_GRAPH();
 	if (!m)
 		m = output;
 	if (output_mixer) {
@@ -1168,6 +1184,8 @@ BOOL legacy_sound::set_mixer(legacy_mixer* m) {
 			parent_mixer->remove_mixer(output_mixer, TRUE);
 		if (m && m->add_mixer(output_mixer))
 			parent_mixer = m;
+		else
+			parent_mixer = output; // the attach failed: fall back to the root mixer rather than keeping a link to one that no longer holds us and may be destroyed first
 		return parent_mixer == m;
 	}
 	parent_mixer = m;
@@ -1458,12 +1476,14 @@ int legacy_mixer::get_effect_index(const std::string& id) {
 }
 
 legacy_mixer::legacy_mixer(legacy_mixer* parent, BOOL for_single_sound, BOOL for_decode, BOOL floatingpoint) {
+	LOCK_MIXER_GRAPH();
 	if (!sound_initialized)
 		init_sound();
 	RefCount = 1;
 	if (!parent)
 		parent = output;
-	parent_mixer = parent;
+	parent_mixer = NULL; // only add_mixer may claim us; pre-assigning would leave a link to a mixer we never got stored in if the attach below fails
+
 	if (!parent) {
 		channel = BASS_Mixer_StreamCreate(44100, 2, BASS_MIXER_NONSTOP | (floatingpoint ? BASS_SAMPLE_FLOAT : 0));
 		BASS_ChannelSetAttribute(channel, BASS_ATTRIB_BUFFER, 0);
@@ -1486,6 +1506,7 @@ legacy_mixer::legacy_mixer(legacy_mixer* parent, BOOL for_single_sound, BOOL for
 }
 
 legacy_mixer::~legacy_mixer() {
+	LOCK_MIXER_GRAPH();
 	// Detach from our parent first, otherwise its child set keeps a dangling pointer that its own destructor will later call set_mixer on.
 	if (parent_mixer) {
 		parent_mixer->remove_mixer(this, TRUE);
@@ -1519,6 +1540,7 @@ void legacy_mixer::AddRef() {
 	asAtomicInc(RefCount);
 }
 void legacy_mixer::Release() {
+	LOCK_MIXER_GRAPH();
 	if (asAtomicDec(RefCount) < 1) {
 		if (channel) {
 			BASS_StreamFree(channel); // Apparently I was having a problem with extraneous calls to BASS_StreamFree when trying to do it in mixer destructor years ago, since miniaudio switch iminent we'll just leave this here rather than figuring out what I was doing wrong back then.
@@ -1534,6 +1556,7 @@ int legacy_mixer::get_data(const unsigned char* buffer, int bufsize) {
 }
 
 BOOL legacy_mixer::add_mixer(legacy_mixer* m) {
+	LOCK_MIXER_GRAPH();
 	if (!sound_initialized)
 		init_sound();
 	if (find(mixers.begin(), mixers.end(), m) != mixers.end())
@@ -1554,18 +1577,22 @@ BOOL legacy_mixer::add_mixer(legacy_mixer* m) {
 	return ret;
 }
 BOOL legacy_mixer::remove_mixer(legacy_mixer* m, BOOL internal) {
+	LOCK_MIXER_GRAPH();
 	auto i = find(mixers.begin(), mixers.end(), m);
 	if (i == mixers.end())
 		return FALSE;
 	mixers.erase(i);
 	BASS_Mixer_ChannelRemove(m->channel);
+	// Drop the back link as well: a child that still names a parent it is no longer stored in is exactly what lets a later teardown walk a set that does not contain it, or a parent that has already been freed.
+	if (m->parent_mixer == this)
+		m->parent_mixer = NULL;
 	if (internal)
 		return TRUE;
-	m->parent_mixer = NULL;
 	m->set_mixer(NULL);
 	return TRUE;
 }
 BOOL legacy_mixer::add_sound(legacy_sound& s, BOOL internal) {
+	LOCK_MIXER_GRAPH();
 	if (!sound_initialized)
 		init_sound();
 	if (sounds.find(&s) != sounds.end())
@@ -1579,6 +1606,7 @@ BOOL legacy_mixer::add_sound(legacy_sound& s, BOOL internal) {
 	return ret;
 }
 BOOL legacy_mixer::remove_sound(legacy_sound& s, BOOL internal) {
+	LOCK_MIXER_GRAPH();
 	auto i = find(sounds.begin(), sounds.end(), &s);
 	if (i == sounds.end())
 		return FALSE;
@@ -1740,6 +1768,7 @@ int legacy_mixer::set_fx(const std::string& fx, int idx) {
 }
 
 BOOL legacy_mixer::set_mixer(legacy_mixer* m) {
+	LOCK_MIXER_GRAPH();
 	if (!m)
 		m = output;
 	if (this == output)
