@@ -337,7 +337,13 @@ Apple's build upload tool with a graphical interface, "Transporter," is only ava
 Download it from Apple's **[Transporter User Guide](https://help.apple.com/itc/transporteruserguide/)**; the guide's install page links to the Windows installer (a file named like `iTMSTransporterToolInstaller_4.2.0.<build>.exe`). Run the installer, accept the license, and keep the default install location (typically `C:\Program Files\itms`). The tool bundles its own Java runtime, so you do not normally need to install Java separately. The command line program lives in the install's `bin` folder.
 
 ### 9b. Choose how you will authenticate
-iTMSTransporter cannot log in with your normal Apple password because your account uses two factor authentication. There are two supported ways around this, and **either one works with both Method A and Method B** — authentication and delivery method are independent choices.
+iTMSTransporter cannot log in with your normal Apple password because your account uses two factor authentication. There are two ways around that: an app specific password, or an App Store Connect API key. Both work with Method B, but they are not interchangeable command lines — each has its own required companions:
+
+* **API key:** pass `-apiKey` and `-apiIssuer` and omit `-u`/`-p` entirely. Nothing else is needed, because the key belongs to your team, so Transporter derives the provider from it.
+* **App specific password:** pass `-u`, `-p` **and `-asc_provider <your Team ID>`.** The third option is not decoration. A password identifies *you*, not your team, and with `-assetFile` Transporter makes no attempt to look the team up — it fails instead, with an error that does not mention providers at all (see the warning below).
+* **Method C (`ios-uploader`) accepts only the app specific password.** It does not support API keys.
+
+So in practice: set up the API key for your everyday Method B uploads, and keep an app specific password around as well — it is Transporter's own fallback when something is wrong with the key path, and it is what Method C runs on.
 
 #### Option 1: an app specific password (simplest)
 An **app specific password** is a special password that stands in for your account in tools like this:
@@ -346,9 +352,30 @@ An **app specific password** is a special password that stands in for your accou
 2. In **Sign-In and Security**, choose **App-Specific Passwords**.
 3. Click **Generate an app-specific password**, give it a label (for example "Transporter"), and copy the generated password. It looks like `abcd-efgh-ijkl-mnop`.
 
-You then pass `-u YOUR_APPLE_ID_EMAIL -p abcd-efgh-ijkl-mnop`.
+You then pass `-u YOUR_APPLE_ID_EMAIL -p abcd-efgh-ijkl-mnop` — plus, for Method B, `-asc_provider YOUR_TEAM_ID`, for the reason explained in the warning below.
 
 Keep it somewhere safe. Note that changing your main Apple password automatically revokes all app specific passwords, so you would need to generate a new one.
+
+> **Forgetting `-asc_provider` with a password does not produce an error about providers.** The run signs in successfully and then dies, before uploading anything, with the single unexplained line:
+>
+> ```
+> ERROR: Client configuration failed
+> ```
+>
+> What is actually wrong: with an API key the team is baked into the credential, but a password only proves who you are, and the `-assetFile` flow refuses to guess which of your providers to deliver to — even when your account has exactly one. Add `-asc_provider <Team ID>` (your Team ID from Membership details; `-s` is the older spelling of the same option) and the same command works.
+>
+> Nothing Apple publishes connects that error to the missing option. The Transporter guide's password example does carry `-s`, but it is attached to the retired `-f` flow and presented as a multi-provider concern; the `-assetFile` documentation and `iTMSTransporter -help upload` never mention that a password requires it, and the error text gives you nothing to search for. So remember the translation: **`Client configuration failed` almost always means the provider could not be resolved — add `-asc_provider`, or authenticate with an API key instead.**
+
+##### Why did Method A never need this, even with a password?
+Because under Method A the package answered the question itself. `metadata.xml` states `<team_id>` — along with the app's numeric Apple ID and your SKU — right inside the upload, so the old flow always knew which provider it was delivering for, no matter how you authenticated. That is why years of password-authenticated `.itmsp` uploads worked without `-s` ever appearing on the command line. It is the same split this tutorial describes when comparing the two description files: Method A *declares* its addressing, Method B *derives* it. `AppStoreInfo.plist` deliberately carries no team, on the assumption that the provider will be derived from the API key — and when you authenticate with a password instead, that assumption fails, the description names no team, the password proves who you are but not which team you act for, and the only place left for the information is the command line. `-asc_provider` is simply Method B's replacement for the `<team_id>` line you used to write in `metadata.xml`.
+
+##### Why doesn't Transporter just say "supply your Team ID"?
+Because the message you get is not written by the code that failed. The whole client-setup step — endpoints, interceptors, credential wiring, provider resolution — runs inside one catch-all that relabels *any* failure inside it to the single string `Client configuration failed`; whatever specific complaint the provider-resolution step raised is swallowed on the way up. And there has never been much pressure on Apple to do better here, because on the recommended path the situation cannot arise: an API key always carries its team, so the one input that produces this dead end is a combination — password, `-assetFile`, no provider flag — that Apple's own tools never emit. It is the same pattern as the misleading "does not contain a bundle executable" error earlier in this step: stray off the path Apple's tooling exercises, and you find the diagnostics were never written for where you are standing.
+
+##### Could Transporter not just look the team up itself?
+It could — that is not speculation. The very same password can enumerate your teams on demand (`iTMSTransporter -m provider -u ... -p ...` prints them, Team IDs included), and Method C proves the stronger case: `ios-uploader` is handed nothing but a password and an `.ipa`, asks Apple which app record the bundle identifier belongs to, and receives the provider back in the answer — fully derived, no Team ID ever typed. The server is plainly able and willing to resolve it.
+
+So the requirement is a choice, not a limitation, and its likely roots are visible in the tool's history. Transporter is not an app uploader that happens to do other media; it is a general content-delivery tool — music, films, books — where the same package genuinely can be deliverable by more than one provider, because aggregators deliver on behalf of many labels and publishers. In that world the destination *cannot* be inferred, so the shipping label has always carried the addressee: that is why `metadata.xml` demands `team_id` even though your password would identify you, and apps simply inherited the convention when they joined the pipeline. The modern flow kept the principle while moving the addressee out of the file: a team-scoped API key *is* the addressee, so nothing needs asking; a password is person-scoped — a person can sit on many teams — and rather than guess, Apple's tool requires the destination to be named. Given that delivering a build to the wrong place is about the worst failure an upload pipeline can have, "the sender states the addressee, or uses a credential that is one" is a defensible rule; the indefensible part is only that breaking it produces `Client configuration failed` instead of a sentence saying so.
 
 #### Option 2: an App Store Connect API key (recommended)
 An **API key** is a keypair issued to your team rather than to your personal login. It does not expire, it survives a password change, and it is safe to use from an automated build. This is what Apple now recommends.
