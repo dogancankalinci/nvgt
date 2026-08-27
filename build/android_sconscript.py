@@ -44,6 +44,12 @@ env.Append(CCFLAGS = ["-fPIC"])
 # operators live in libc++_shared.so which ships inside the APK, so they exist on every device.
 env.Append(CXXFLAGS = ["-DAS_USE_STLNAMES=1", "-ffunction-sections", "-O2", "-faligned-allocation", "-Wno-deprecated-array-compare", "-Wno-implicit-const-int-float-conversion", "-Wno-deprecated-enum-enum-conversion", "-Wno-absolute-value"])
 # -Wl,-z,max-page-size=16384 -> 16KB-aligned ELF LOAD segments, required by Google Play's 16 KB page size rule (Android 15+, Nov 2025).
-env.Append(LINKFLAGS = ["-Wl,--no-fatal-warnings", "-Wl,--no-undefined", "-Wl,--gc-sections", "-Wl,-z,max-page-size=16384", "-Wl,-z,common-page-size=16384"])
+# -Wl,--no-rosegment -> keep .text in the first LOAD segment at vaddr==offset. lld's default separate
+# read-only segment shifts the exec segment's vaddr 16KB past its file offset, and the stack unwinder on
+# devices below API 30 omits that load bias, so every Play Console crash report from Android <=10 comes back
+# with all libgame.so frames shifted (observed: constant 0x4000, symbolicated as nonsense). The NDK's own
+# CMake/ndk-build wrappers add this flag whenever minSdk < 30 (ndk#1196, ndk#1589); we drive clang directly,
+# so we must add it ourselves. vcpkg-built libs (SDL3) already get it via the NDK CMake toolchain.
+env.Append(LINKFLAGS = ["-Wl,--no-fatal-warnings", "-Wl,--no-undefined", "-Wl,--gc-sections", "-Wl,--no-rosegment", "-Wl,-z,max-page-size=16384", "-Wl,-z,common-page-size=16384"])
 env["PROGSUFFIX"] = ".so"
 env["SHLIBSUFFIX"] = ".so"
