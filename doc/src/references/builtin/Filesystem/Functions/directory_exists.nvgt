@@ -5,6 +5,8 @@
 		* const string&in directory: the directory whose existence will be checked (can be a relative or absolute path).
 	## Returns:
 		bool: true if the directory exists, false otherwise.
+	## Remarks:
+		On Android, a relative path that is not present on the filesystem is also looked up in the app's assets, which is where directories included with `#pragma asset` end up. Absolute paths are only ever checked against the filesystem, as an absolute path can never refer to an asset. Note that an asset directory is only reported as existing if it actually contains something, though this is not a limitation you can run into in practice because an empty directory cannot be packed into an APK to begin with.
 */
 
 // Example:

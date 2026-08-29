@@ -11,6 +11,7 @@
 */
 
 #pragma once
+#include <cstdint>
 #include <string>
 #include <vector>
 #include "tts.h"
@@ -24,6 +25,16 @@ bool android_screen_reader_silence();
 std::vector<std::string> android_get_tts_engine_packages();
 std::string android_get_default_tts_engine_package();
 std::string android_get_device_id();
+
+// Queries against the APK's assets, where #pragma asset places files. These mirror the fallback that
+// SDL_IOFromFile performs for relative paths, so that the filesystem functions agree with what can actually be
+// opened. All of them decline absolute paths, which never address assets. android_asset_list fills out with the
+// names of the entries directly inside a directory, restricted to either its subdirectories or its files, and
+// takes the empty path to mean the asset root; it returns false only if the assets could not be reached at all.
+bool android_asset_file_exists(const std::string& path);
+bool android_asset_directory_exists(const std::string& path);
+int64_t android_asset_file_size(const std::string& path);
+bool android_asset_list(const std::string& path, bool directories, std::vector<std::string>& out);
 
 // New functions moved from UI.cpp
 std::string android_input_box(const std::string& title, const std::string& text, const std::string& default_value);

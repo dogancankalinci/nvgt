@@ -13,6 +13,7 @@
 
 #include <array>
 #include <string>
+#include <vector>
 #include <angelscript.h> // the actual Angelscript header
 #include <scriptarray.h>
 #include <Poco/Exception.h>
@@ -23,6 +24,9 @@
 #include <Poco/UnicodeConverter.h>
 #include <SDL3/SDL.h>
 #include "nvgt_angelscript.h" // nvgt's Angelscript implementation needed for get_array_type
+#ifdef __ANDROID__
+	#include "android.h" // android_asset_file_exists / android_asset_directory_exists
+#endif
 
 using namespace std;
 using namespace Poco;
@@ -103,30 +107,44 @@ CScriptArray* FindFiles(const string& path) {
 	}
 	dirent* ent = 0;
 	DIR* dir = opendir(currentPath.c_str());
-	if (!dir) return array;
-	while ((ent = readdir(dir)) != NULL) {
-		const string filename = ent->d_name;
+	if (dir) {
+		while ((ent = readdir(dir)) != NULL) {
+			const string filename = ent->d_name;
 
-		// Skip . and ..
-		if (filename[0] == '.')
-			continue;
+			// Skip . and ..
+			if (filename[0] == '.')
+				continue;
 
-		// Skip sub directories
-		string fullname = currentPath + filename;
-		struct stat st;
-		if (stat(fullname.c_str(), &st) == -1)
-			continue;
-		if ((st.st_mode & S_IFDIR) != 0)
-			continue;
+			// Skip sub directories
+			string fullname = currentPath + filename;
+			struct stat st;
+			if (stat(fullname.c_str(), &st) == -1)
+				continue;
+			if ((st.st_mode & S_IFDIR) != 0)
+				continue;
 
-		// wildcard matching
-		if (!FNMatch(filename, Wildcard)) continue;
+			// wildcard matching
+			if (!FNMatch(filename, Wildcard)) continue;
 
-		// Add the file to the array
-		array->Resize(array->GetSize() + 1);
-		((string*)(array->At(array->GetSize() - 1)))->assign(filename);
+			// Add the file to the array
+			array->Resize(array->GetSize() + 1);
+			((string*)(array->At(array->GetSize() - 1)))->assign(filename);
+		}
+		closedir(dir);
 	}
-	closedir(dir);
+	#ifdef __ANDROID__
+	// Assets live inside the APK, so opendir cannot reach anything that #pragma asset included. List them from
+	// the asset manager too, which is also why the loop above must not bail out when the directory is missing
+	// from the filesystem, as that is the normal case for a path that only exists as an asset.
+	std::vector<string> asset_entries;
+	if (android_asset_list(currentPath, false, asset_entries)) {
+		for (const string& filename : asset_entries) {
+			if (!FNMatch(filename, Wildcard)) continue;
+			array->Resize(array->GetSize() + 1);
+			((string*)(array->At(array->GetSize() - 1)))->assign(filename);
+		}
+	}
+	#endif
 	#endif
 
 	return array;
@@ -185,34 +203,94 @@ CScriptArray* FindDirectories(const string& path) {
 	}
 	dirent* ent = 0;
 	DIR* dir = opendir(currentPath.c_str());
-	if (!dir) return array;
-	while ((ent = readdir(dir)) != NULL) {
-		const string filename = ent->d_name;
+	if (dir) {
+		while ((ent = readdir(dir)) != NULL) {
+			const string filename = ent->d_name;
 
-		// Skip . and ..
-		if (filename[0] == '.')
-			continue;
+			// Skip . and ..
+			if (filename[0] == '.')
+				continue;
 
-		// Skip files
-		string fullname = currentPath + filename;
-		struct stat st;
-		if (stat(fullname.c_str(), &st) == -1)
-			continue;
-		if ((st.st_mode & S_IFDIR) == 0)
-			continue;
+			// Skip files
+			string fullname = currentPath + filename;
+			struct stat st;
+			if (stat(fullname.c_str(), &st) == -1)
+				continue;
+			if ((st.st_mode & S_IFDIR) == 0)
+				continue;
 
-		// wildcard matching
-		if (!FNMatch(filename, Wildcard)) continue;
+			// wildcard matching
+			if (!FNMatch(filename, Wildcard)) continue;
 
-		// Add the dir to the array
-		array->Resize(array->GetSize() + 1);
-		((string*)(array->At(array->GetSize() - 1)))->assign(filename);
+			// Add the dir to the array
+			array->Resize(array->GetSize() + 1);
+			((string*)(array->At(array->GetSize() - 1)))->assign(filename);
+		}
+		closedir(dir);
 	}
-	closedir(dir);
+	#ifdef __ANDROID__
+	// The subdirectories of a directory included with #pragma asset are in the APK rather than on the
+	// filesystem, so ask the asset manager for those as well. See the note in FindFiles.
+	std::vector<string> asset_entries;
+	if (android_asset_list(currentPath, true, asset_entries)) {
+		for (const string& filename : asset_entries) {
+			if (!FNMatch(filename, Wildcard)) continue;
+			array->Resize(array->GetSize() + 1);
+			((string*)(array->At(array->GetSize() - 1)))->assign(filename);
+		}
+	}
+	#endif
 	#endif
 
 	return array;
 }
+
+#ifdef __ANDROID__
+// Walks the APK's assets collecting everything that matches a glob pattern, which Poco cannot do for us because
+// assets are not on the filesystem. This mirrors Poco::Glob::glob's component-wise descent: each component of
+// the pattern is matched against the entries listed in the directories reached so far, so that a wildcard never
+// crosses a path separator. Only relative patterns can match, as an absolute path never names an asset.
+static void asset_glob(const string& pattern, set<string>& files, int options) {
+	if (pattern.empty() || pattern[0] == '/') return;
+	vector<string> components;
+	for (size_t start = 0; start <= pattern.size();) {
+		size_t sep = pattern.find('/', start);
+		string component = sep == string::npos ? pattern.substr(start) : pattern.substr(start, sep - start);
+		if (!component.empty() && component != ".") components.push_back(component);
+		if (sep == string::npos) break;
+		start = sep + 1;
+	}
+	if (components.empty()) return;
+	try {
+		vector<string> bases{""}; // Every asset path is relative to the asset root, which is the empty path.
+		for (size_t i = 0; i < components.size() && !bases.empty(); i++) {
+			const bool last = i + 1 == components.size();
+			Glob matcher(components[i], options);
+			vector<string> next;
+			for (const string& base : bases) {
+				vector<string> dirs;
+				android_asset_list(base, true, dirs);
+				for (const string& entry : dirs) {
+					if (!matcher.match(entry)) continue;
+					string full = base.empty() ? entry : base + "/" + entry;
+					// Poco appends a separator to the directories it returns, so mirror that here.
+					if (last) files.insert(full + "/");
+					else next.push_back(full);
+				}
+				if (!last) continue; // An intermediate component can only descend into a directory.
+				if (options & Glob::GLOB_DIRS_ONLY) continue;
+				vector<string> found;
+				android_asset_list(base, false, found);
+				for (const string& entry : found) {
+					if (!matcher.match(entry)) continue;
+					files.insert(base.empty() ? entry : base + "/" + entry);
+				}
+			}
+			bases = next;
+		}
+	} catch(Exception&) {} // A malformed pattern, which Glob's constructor rejects.
+}
+#endif
 
 CScriptArray* script_glob(const string& pattern, int options) {
 	// Expected to have been called from a script.
@@ -220,16 +298,25 @@ CScriptArray* script_glob(const string& pattern, int options) {
 	set<string> files;
 	try {
 		Glob::glob(pattern, files, options);
-		array->Reserve(files.size());
-		for (const std::string& path : files) array->InsertLast((void*)&path);
 	} catch(Exception&) {}
+	#ifdef __ANDROID__
+	asset_glob(pattern, files, options);
+	#endif
+	array->Reserve(files.size());
+	for (const std::string& path : files) array->InsertLast((void*)&path);
 	return array;
 }
 bool DirectoryExists(const string& path) {
 	try {
 		File f(path);
-		return f.exists() && f.isDirectory();
-	} catch(Exception& e) { return false; }
+		if (f.exists()) return f.isDirectory();
+	} catch(Exception& e) {}
+	#ifdef __ANDROID__
+	// Nothing on the filesystem, but a directory added with #pragma asset lives inside the APK where Poco cannot see it.
+	return android_asset_directory_exists(path);
+	#else
+	return false;
+	#endif
 }
 
 bool FileExists(const string& path) {
@@ -246,8 +333,14 @@ bool FileExists(const string& path) {
 	#else
 	// Check if the path exists and is a file
 	struct stat st;
-	if (stat(path.c_str(), &st) == -1)
+	if (stat(path.c_str(), &st) == -1) {
+		#ifdef __ANDROID__
+		// Nothing on the filesystem, but a file added with #pragma asset lives inside the APK where stat cannot see it.
+		return android_asset_file_exists(path);
+		#else
 		return false;
+		#endif
+	}
 	if ((st.st_mode & S_IFDIR) != 0)
 		return false;
 	return true;
@@ -272,8 +365,15 @@ asINT64 FileGetSize(const string& path) {
 	#else
 	// Get the size of the file
 	struct stat st;
-	if (stat(path.c_str(), &st) == -1)
+	if (stat(path.c_str(), &st) == -1) {
+		#ifdef __ANDROID__
+		// Nothing on the filesystem, but a file added with #pragma asset lives inside the APK where stat cannot
+		// see it, and file_exists reports such a file as existing so this must be able to measure it.
+		return asINT64(android_asset_file_size(path));
+		#else
 		return -1;
+		#endif
+	}
 	return asINT64(st.st_size);
 	#endif
 }

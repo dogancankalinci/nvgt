@@ -15,9 +15,12 @@
 #include "UI.h"
 #include <jni.h>
 #include <time.h>
+#include <android/asset_manager.h>
+#include <android/asset_manager_jni.h>
 #include <Poco/Exception.h>
 #include <Poco/Format.h>
 #include <SDL3/SDL.h>
+#include <mutex>
 #include <stdexcept>
 #include <memory>
 
@@ -96,6 +99,139 @@ inline std::string from_jstring(JNIEnv* env, jstring jstr) {
 	std::string result(utf);
 	env->ReleaseStringUTFChars(jstr, utf);
 	return result;
+}
+
+// Files added to a build with #pragma asset are packed into the APK's assets rather than written to the
+// filesystem, so stat(), opendir() and Poco::File cannot see them even though SDL_IOFromFile opens them
+// transparently by falling back to the asset manager, which is how sound.load, pack and the datastreams reach
+// them. The helpers below reproduce that lookup for the filesystem functions. Only relative paths are
+// considered, matching SDL: an absolute path always addresses the real filesystem and is never an asset.
+static std::mutex g_asset_manager_mutex;
+static jobject g_asset_manager_object = nullptr; // Global ref; the pointer AAssetManager_fromJava hands back is only valid while this lives.
+static AAssetManager* g_asset_manager = nullptr;
+// Fetches the app's AssetManager, as the Java object and/or as the NDK pointer derived from it, caching both.
+static bool android_get_asset_manager(JNIEnv* env, jobject* java_out, AAssetManager** native_out) {
+	std::lock_guard<std::mutex> lock(g_asset_manager_mutex);
+	if (!g_asset_manager) {
+		LocalRef<jobject> activity(env, (jobject)SDL_GetAndroidActivity());
+		if (!activity.get()) return false;
+		LocalRef<jclass> activityClass(env, env->GetObjectClass(activity.get()));
+		if (!activityClass.get()) return false;
+		jmethodID midGetAssets = env->GetMethodID(activityClass.get(), "getAssets", "()Landroid/content/res/AssetManager;");
+		if (!midGetAssets) { env->ExceptionClear(); return false; }
+		LocalRef<jobject> assets(env, env->CallObjectMethod(activity.get(), midGetAssets));
+		if (env->ExceptionCheck()) { env->ExceptionClear(); return false; }
+		if (!assets.get()) return false;
+		g_asset_manager_object = env->NewGlobalRef(assets.get());
+		g_asset_manager = AAssetManager_fromJava(env, g_asset_manager_object);
+		if (!g_asset_manager) {
+			env->DeleteGlobalRef(g_asset_manager_object);
+			g_asset_manager_object = nullptr;
+			return false;
+		}
+	}
+	if (java_out) *java_out = g_asset_manager_object;
+	if (native_out) *native_out = g_asset_manager;
+	return true;
+}
+// The asset manager addresses everything by a plain relative path, so strip the leading ./ that a script may
+// reasonably have written and that the filesystem would have accepted.
+static std::string android_asset_path(const std::string& path) {
+	std::string p = path;
+	while (p.compare(0, 2, "./") == 0) p.erase(0, 2);
+	return p;
+}
+// The same, for a path naming a directory, which AssetManager.list wants as "sounds" rather than "sounds/".
+static std::string android_asset_dir_path(const std::string& path) {
+	std::string p = android_asset_path(path);
+	while (!p.empty() && p.back() == '/') p.pop_back();
+	return p;
+}
+// Opens an asset purely to learn whether it is there, since only a regular file can be opened. The caller must
+// already hold a usable asset manager.
+static bool android_asset_openable(AAssetManager* mgr, const std::string& path) {
+	AAsset* asset = AAssetManager_open(mgr, path.c_str(), AASSET_MODE_UNKNOWN);
+	if (!asset) return false;
+	AAsset_close(asset);
+	return true;
+}
+// Lists the names of everything directly inside an asset directory, files and subdirectories alike. The empty
+// path is the asset root. AssetManager.list is used rather than the NDK's AAssetDir, because
+// AAssetDir_getNextFileName enumerates only regular files, which would make a directory holding nothing but
+// subdirectories look empty. It is documented as slow, but none of the callers here are hot paths. A missing
+// path and a plain file both list as empty, so a non-empty listing is also what identifies a directory.
+static bool android_asset_list_raw(const std::string& path, std::vector<std::string>& out) {
+	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
+	if (!env) return false;
+	jobject assets = nullptr;
+	if (!android_get_asset_manager(env, &assets, nullptr)) return false;
+	LocalRef<jclass> assetsClass(env, env->GetObjectClass(assets));
+	if (!assetsClass.get()) return false;
+	jmethodID midList = env->GetMethodID(assetsClass.get(), "list", "(Ljava/lang/String;)[Ljava/lang/String;");
+	if (!midList) { env->ExceptionClear(); return false; }
+	LocalRef<jstring> jpath(env, env->NewStringUTF(path.c_str()));
+	if (!jpath.get()) { env->ExceptionClear(); return false; }
+	LocalRef<jobjectArray> entries(env, (jobjectArray)env->CallObjectMethod(assets, midList, jpath.get()));
+	if (env->ExceptionCheck()) { env->ExceptionClear(); return false; } // list throws IOException for paths it cannot read.
+	if (!entries.get()) return false;
+	jsize count = env->GetArrayLength(entries.get());
+	out.reserve(out.size() + count);
+	for (jsize i = 0; i < count; i++) {
+		LocalRef<jstring> entry(env, (jstring)env->GetObjectArrayElement(entries.get(), i));
+		if (entry.get()) out.push_back(from_jstring(env, entry.get()));
+	}
+	return true;
+}
+
+bool android_asset_file_exists(const std::string& path) {
+	std::string p = android_asset_path(path);
+	if (p.empty() || p[0] == '/') return false;
+	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
+	if (!env) return false;
+	AAssetManager* mgr = nullptr;
+	if (!android_get_asset_manager(env, nullptr, &mgr)) return false;
+	return android_asset_openable(mgr, p);
+}
+
+bool android_asset_directory_exists(const std::string& path) {
+	std::string p = android_asset_dir_path(path);
+	if (p.empty() || p[0] == '/') return false;
+	std::vector<std::string> entries;
+	// A directory with no entries at all therefore reads as absent, which is harmless in practice because an
+	// empty directory cannot be packed into an APK to begin with.
+	return android_asset_list_raw(p, entries) && !entries.empty();
+}
+
+int64_t android_asset_file_size(const std::string& path) {
+	std::string p = android_asset_path(path);
+	if (p.empty() || p[0] == '/') return -1;
+	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
+	if (!env) return -1;
+	AAssetManager* mgr = nullptr;
+	if (!android_get_asset_manager(env, nullptr, &mgr)) return -1;
+	AAsset* asset = AAssetManager_open(mgr, p.c_str(), AASSET_MODE_UNKNOWN);
+	if (!asset) return -1;
+	int64_t size = AAsset_getLength64(asset);
+	AAsset_close(asset);
+	return size;
+}
+
+bool android_asset_list(const std::string& path, bool directories, std::vector<std::string>& out) {
+	std::string p = android_asset_dir_path(path); // May legitimately be empty here, which is the asset root.
+	if (!p.empty() && p[0] == '/') return false;
+	std::vector<std::string> entries;
+	if (!android_asset_list_raw(p, entries)) return false;
+	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
+	if (!env) return false;
+	AAssetManager* mgr = nullptr;
+	if (!android_get_asset_manager(env, nullptr, &mgr)) return false;
+	for (const std::string& entry : entries) {
+		// An asset entry is either a file or a directory, and only a file opens, which is a much cheaper
+		// question than listing the entry to see whether it has children of its own.
+		bool is_file = android_asset_openable(mgr, p.empty() ? entry : p + "/" + entry);
+		if (is_file != directories) out.push_back(entry);
+	}
+	return true;
 }
 
 std::string android_get_device_id() {

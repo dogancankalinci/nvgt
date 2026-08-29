@@ -21,6 +21,7 @@
 		* GLOB_IGNORE_HIDDEN: do not match when directory entries begin with a .
 		* GLOB_FOLLOW_SYMLINKS: traverse even across symbolic links if the given pattern demands it
 		* GLOB_CASELESS: match case insensitively
+		On Android, a relative pattern is matched against the app's assets as well as the filesystem, so that content included with `#pragma asset` can be enumerated. The two sets of results are combined into the one array. Directories are returned with a trailing path separator, files without one.
 */
 
 // Example:

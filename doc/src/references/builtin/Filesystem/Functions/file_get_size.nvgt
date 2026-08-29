@@ -4,7 +4,9 @@
 	## Arguments:
 		* const string&in filename: the name/path of the file to get the size of.
 	## Returns:
-		int64: the size of the file (in bytes).
+		int64: the size of the file (in bytes), or -1 if the size could not be determined.
+	## Remarks:
+		On Android, a relative path that is not present on the filesystem is also looked up in the app's assets, which is where files included with `#pragma asset` end up, so that this function can measure any file `file_exists` reports as existing.
 */
 
 // Example:
