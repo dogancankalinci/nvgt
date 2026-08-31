@@ -74,8 +74,8 @@ public:
 	}
 	~audio_node_chain_impl() {
 		// We only release references, all attachments are kept in tact. Call clear(true) to detach all known nodes instead.
+		// endpoint is not released here: whichever node is physically wired to it (this, if the chain was empty, or the last node otherwise) owns that reference via audio_node_impl's own attach/detach bookkeeping.
 		for (audio_node* node: nodes) node->release();
-		if (endpoint) endpoint->release();
 	}
 	bool attach_output_bus(unsigned int bus_index, audio_node* node, unsigned int input_bus_index) override {
 		set_endpoint(node, input_bus_index);
@@ -133,16 +133,15 @@ public:
 		return success;
 	}
 	void set_endpoint(audio_node* node, unsigned int input_bus_index) override {
+		// Ownership of endpoint is not tracked here; it is taken/released automatically by whichever node's attach_output_bus/detach_output_bus is actually called below (audio_node_impl's own bookkeeping).
 		if (endpoint) {
 			if (!nodes.empty()) last()->detach_output_bus(0);
 			else audio_node_impl::detach_output_bus(0);
-			endpoint->release();
 		}
 		endpoint = node;
 		if (endpoint) {
 			if (!nodes.empty()) last()->attach_output_bus(0, endpoint, input_bus_index);
 			else audio_node_impl::attach_output_bus(0, endpoint, input_bus_index);
-			endpoint->duplicate();
 		}
 	}
 	audio_node* get_endpoint() const override { return endpoint; }
@@ -478,21 +477,20 @@ class reverb3d_impl : public passthrough_node_impl, public virtual reverb3d {
 	float min_volume, max_volume, max_volume_distance, max_audible_distance, volume_curve;
 public:
 	reverb3d_impl(audio_engine* e, audio_node* reverb, mixer* destination) : passthrough_node_impl(e), output_mixer(destination), reverb(reverb), min_volume(-7), max_volume(-5), max_volume_distance(7), max_audible_distance(60), volume_curve(0.4) {
+		if (output_mixer) output_mixer->duplicate(); // reverb owns its own reference to output_mixer via attach_output_bus below; this is reverb3d_impl's separate reference for get_mixer().
 		if (reverb) {
-			attach_output_bus(0, reverb, 0);
+			attach_output_bus(0, reverb, 0); // reverb is owned automatically via audio_node_impl's output_connections tracking.
 			if (output_mixer) reverb->attach_output_bus(0, output_mixer, 0);
 			else reverb->attach_output_bus(0, e->get_endpoint(), 0);
 		}
 	}
 	~reverb3d_impl() {
 		if (output_mixer) output_mixer->release();
-		if (reverb) reverb->release();
 	}
 	void set_reverb(audio_node* verb) override {
 		if (reverb) {
 			detach_output_bus(0);
 			if (output_mixer) reverb->detach_output_bus(0);
-			reverb->release();
 		}
 		reverb = verb;
 		if (verb) {
@@ -507,6 +505,7 @@ public:
 			output_mixer->release();
 		}
 		output_mixer = mix;
+		if (output_mixer) output_mixer->duplicate();
 		if (mix && reverb) reverb->attach_output_bus(0, mix, 0);
 		else if (reverb) reverb->attach_output_bus(0, get_engine()->get_endpoint(), 0);
 	}
@@ -788,10 +787,7 @@ public:
 		}
 	}
 	void set_reverb3d(reverb3d* new_reverb, audio_spatializer_reverb3d_placement placement = postpan) override {
-		if (new_reverb == reverb) {
-			if (new_reverb) new_reverb->release();
-			return;
-		}
+		if (new_reverb == reverb) return;
 		audio_node* tmp;
 		if (reverb) {
 			tmp = reverb;
@@ -806,13 +802,11 @@ public:
 		}
 		if (new_reverb) {
 			reverb_attachment = new_reverb->create_attachment();
-			if (!reverb_attachment) {
-				new_reverb->release();
-				return;
-			}
+			if (!reverb_attachment) return;
 			if (attached_mixer && parameters_valid) reverb_attachment->set_output_bus_volume(1, new_reverb->get_volume_at(spatialization_params.listener_distance));
 			reverb_placement = placement;
 			position_reverb();
+			new_reverb->duplicate();
 		}
 		reverb = new_reverb;
 	}

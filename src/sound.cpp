@@ -587,7 +587,7 @@ protected:
 		g_data_sources_map[new_src] = this;
 		return true;
 	}
-	void reset() {	
+	void reset() {
 		if (src) {
 			auto it = g_data_sources_map.find(src->pDataSource);
 			if (it != g_data_sources_map.end()) g_data_sources_map.erase(it);
@@ -595,10 +595,13 @@ protected:
 			node = nullptr;
 			src.reset();
 		}
+		if (src_cur) src_cur->release();
+		if (src_next) src_next->release();
 		src_cur = src_next = nullptr;
 	}
 public:
 	audio_data_source_impl(audio_engine* e, ma_data_source* initial_src = nullptr) : audio_node_impl(nullptr, e), src_cur(nullptr), src_next(nullptr), src(nullptr) { if (initial_src) set_ma_data_source(initial_src); }
+	~audio_data_source_impl() { reset(); }
 	ma_data_source* get_ma_data_source() const override { return src? src->pDataSource : nullptr; }
 	unsigned int get_advised_read_frame_count() const override { return SOUNDSYSTEM_FRAMESIZE; }
 	unsigned long long read(void* buffer, unsigned long long frame_count) override {
@@ -654,30 +657,20 @@ public:
 	bool set_loop_point(unsigned long long start_frame, unsigned long long end_frame) override { return src? (g_soundsystem_last_error = ma_data_source_set_loop_point_in_pcm_frames(src->pDataSource, start_frame, end_frame)) == MA_SUCCESS : false; }
 	void get_loop_point(unsigned long long* start_frame, unsigned long long* end_frame) const override { if (src) ma_data_source_get_loop_point_in_pcm_frames(src->pDataSource, start_frame, end_frame); }
 	bool set_current(audio_data_source* new_current) override {
-		if (!src) {
-			if (new_current) new_current->release();
-			return false;
-		}
-		if ((g_soundsystem_last_error = ma_data_source_set_current(src->pDataSource, new_current? new_current->get_ma_data_source() : nullptr)) != MA_SUCCESS) {
-			if (new_current) new_current->release();
-			return false;
-		}
+		if (!src) return false;
+		if ((g_soundsystem_last_error = ma_data_source_set_current(src->pDataSource, new_current? new_current->get_ma_data_source() : nullptr)) != MA_SUCCESS) return false;
 		if (src_cur) src_cur->release();
 		src_cur = new_current;
+		if (src_cur) src_cur->duplicate();
 		return true;
 	}
 	audio_data_source* get_current() const override {  return src_cur? src_cur : src? audio_data_source_get(ma_data_source_get_current(src->pDataSource), get_engine()) : nullptr; }
 	bool set_next(audio_data_source* new_next) override {
-		if (!src) {
-			if (new_next) new_next->release();
-			return false;
-		}
-		if ((g_soundsystem_last_error = ma_data_source_set_next(src->pDataSource, new_next? new_next->get_ma_data_source() : nullptr)) != MA_SUCCESS) {
-			if (new_next) new_next->release();
-			return false;
-		}
+		if (!src) return false;
+		if ((g_soundsystem_last_error = ma_data_source_set_next(src->pDataSource, new_next? new_next->get_ma_data_source() : nullptr)) != MA_SUCCESS) return false;
 		if (src_next) src_next->release();
 		src_next = new_next;
+		if (src_next) src_next->duplicate();
 		return true;
 	}
 	audio_data_source* get_next() const override {  return src_next? src_next : src? audio_data_source_get(ma_data_source_get_next(src->pDataSource), get_engine()) : nullptr; }
@@ -710,6 +703,7 @@ public:
 		set_ma_data_source((ma_data_source*)&*rb);
 	}
 	~audio_ring_buffer_impl() {
+		audio_data_source_impl::reset(); // Qualified: audio_ring_buffer_impl::reset() below overrides a different (ring-buffer-clearing) virtual and would otherwise hide this one.
 		if (rb) ma_pcm_rb_uninit(&*rb);
 	}
 	void reset() override { if (rb) ma_pcm_rb_reset(&*rb); }
@@ -1226,8 +1220,6 @@ public:
 			node_chain->remove_node(spatializer);
 			spatializer->release();
 		}
-		if (parent_mixer)
-			parent_mixer->release();
 		if (node_chain)
 			node_chain->release();
 		if (effects_chain)
@@ -1251,20 +1243,10 @@ public:
 	bool set_mixer(mixer *mix) override {
 		if (mix == parent_mixer)
 			return false;
-		if (parent_mixer) {
-			parent_mixer->release();
-			parent_mixer = nullptr;
-		}
-		if (mix) {
-			mix->duplicate();
-			parent_mixer = mix;
-			node_chain->set_endpoint(mix);
-			return node_chain->get_endpoint() == mix;
-		} else {
-			node_chain->set_endpoint(get_engine()->get_endpoint());
-			return node_chain->get_endpoint() == get_engine()->get_endpoint();
-		}
-		return false;
+		parent_mixer = mix; // Non-owning cache; node_chain's endpoint tracking is the sole owner of this reference.
+		audio_node *target = mix? mix : get_engine()->get_endpoint();
+		node_chain->set_endpoint(target);
+		return node_chain->get_endpoint() == target;
 	}
 	mixer *get_mixer() const override { return parent_mixer; }
 	void set_3d_panner(int panner_id) override {
@@ -2245,9 +2227,9 @@ template <class T> inline void RegisterSoundsystemDataSource(asIScriptEngine *en
 	engine->RegisterObjectMethod(type.c_str(), "void get_range(uint64&out start_frame, uint64&out end_frame) const", asFUNCTION((virtual_call<T, &T::get_range, void, unsigned long long*, unsigned long long*>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "bool set_loop_point(uint64 start_frame, uint64 end_frame)", asFUNCTION((virtual_call<T, &T::set_loop_point, bool, unsigned long long, unsigned long long>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "void get_loop_point(uint64&out start_frame, uint64&out end_frame) const", asFUNCTION((virtual_call<T, &T::get_loop_point, void, unsigned long long*, unsigned long long*>)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "bool set_current(audio_data_source@ new_current)", asFUNCTION((virtual_call<T, &T::set_current, bool, audio_data_source*>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "bool set_current(audio_data_source@+ new_current)", asFUNCTION((virtual_call<T, &T::set_current, bool, audio_data_source*>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "audio_data_source@+ get_current() const property", asFUNCTION((virtual_call<T, &T::get_current, audio_data_source*>)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "bool set_next(audio_data_source@ new_next)", asFUNCTION((virtual_call<T, &T::set_next, bool, audio_data_source*>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "bool set_next(audio_data_source@+ new_next)", asFUNCTION((virtual_call<T, &T::set_next, bool, audio_data_source*>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "audio_data_source@+ get_next() const property", asFUNCTION((virtual_call<T, &T::get_next, audio_data_source*>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "uint get_channels() const property", asFUNCTION((virtual_call<T, &T::get_channels, unsigned int>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "uint get_sample_rate() const property", asFUNCTION((virtual_call<T, &T::get_sample_rate, unsigned int>)), asCALL_CDECL_OBJFIRST);
@@ -2406,8 +2388,8 @@ template<class T> void RegisterSoundsystemMixer(asIScriptEngine *engine, const s
 	engine->RegisterObjectMethod(type.c_str(), "bool get_hrtf() const property", asFUNCTION((virtual_call < T, &T::get_hrtf, bool >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "bool set_shape(ref@ shape)", asFUNCTION((virtual_call < T, &T::set_shape, bool, CScriptHandle*>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "ref@ get_shape() const property", asFUNCTION((virtual_call < T, &T::get_shape, CScriptHandle*>)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "void set_reverb3d(reverb3d@ reverb) property", asFUNCTION((virtual_call < T, &T::set_reverb3d, void, reverb3d*>)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "void set_reverb3d_at(reverb3d@ reverb, reverb3d_placement placement)", asFUNCTION((virtual_call < T, &T::set_reverb3d_at, void, reverb3d*, audio_spatializer_reverb3d_placement>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "void set_reverb3d(reverb3d@+ reverb) property", asFUNCTION((virtual_call < T, &T::set_reverb3d, void, reverb3d*>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "void set_reverb3d_at(reverb3d@+ reverb, reverb3d_placement placement)", asFUNCTION((virtual_call < T, &T::set_reverb3d_at, void, reverb3d*, audio_spatializer_reverb3d_placement>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "reverb3d@+ get_reverb3d() const property", asFUNCTION((virtual_call < T, &T::get_reverb3d, reverb3d*>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "audio_splitter_node@+ get_reverb3d_attachment() const property", asFUNCTION((virtual_call < T, &T::get_reverb3d_attachment, splitter_node*>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "reverb3d_placement get_reverb3d_placement() const property", asFUNCTION((virtual_call < T, &T::get_reverb3d_placement, audio_spatializer_reverb3d_placement>)), asCALL_CDECL_OBJFIRST);
@@ -2467,7 +2449,7 @@ template<class T> void RegisterSoundsystemMixer(asIScriptEngine *engine, const s
 	engine->RegisterObjectMethod(type.c_str(), "bool get_playing() const property", asFUNCTION((virtual_call < T, &T::get_playing, bool >)), asCALL_CDECL_OBJFIRST);
 }
 void RegisterSoundsystemNodes(asIScriptEngine *engine) {
-	engine->RegisterObjectBehaviour("audio_node_chain", asBEHAVE_FACTORY, "audio_node_chain@ c(audio_node@ source = null, audio_node@ endpoint = null, audio_engine@+ engine = sound_default_engine)", asFUNCTION(audio_node_chain::create), asCALL_CDECL);
+	engine->RegisterObjectBehaviour("audio_node_chain", asBEHAVE_FACTORY, "audio_node_chain@ c(audio_node@ source = null, audio_node@+ endpoint = null, audio_engine@+ engine = sound_default_engine)", asFUNCTION(audio_node_chain::create), asCALL_CDECL);
 	engine->RegisterObjectMethod("audio_node_chain", "bool add_node(audio_node@+ node, audio_node@+ after = null, uint input_bus_index = 0)", asFUNCTION((virtual_call < audio_node_chain, &audio_node_chain::add_node, bool, audio_node*, audio_node*, unsigned int>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_node_chain", "bool add_node(audio_node@+ node, int after, uint input_bus_index = 0)", asFUNCTION((virtual_call < audio_node_chain, &audio_node_chain::add_node_at, bool, audio_node*, int, unsigned int>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_node_chain", "bool remove_node(audio_node@+ node)", asFUNCTION((virtual_call < audio_node_chain, &audio_node_chain::remove_node, bool, audio_node*>)), asCALL_CDECL_OBJFIRST);
@@ -2560,10 +2542,10 @@ void RegisterSoundsystemNodes(asIScriptEngine *engine) {
 	engine->RegisterObjectMethod("audio_freeverb_node", "float get_input_width() const property", asFUNCTION((virtual_call < freeverb_node, &freeverb_node::get_input_width, float >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_freeverb_node", "void set_frozen(bool frozen) property", asFUNCTION((virtual_call < freeverb_node, &freeverb_node::set_frozen, void, bool >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_freeverb_node", "bool get_frozen() const property", asFUNCTION((virtual_call < freeverb_node, &freeverb_node::get_frozen, bool >)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectBehaviour("reverb3d", asBEHAVE_FACTORY, "reverb3d@ n(audio_node@ reverb, mixer@ destination = mixer(), audio_engine@+ engine = sound_default_engine)", asFUNCTION(reverb3d::create), asCALL_CDECL);
-	engine->RegisterObjectMethod("reverb3d", "void set_reverb(audio_node@ reverb) property", asFUNCTION((virtual_call < reverb3d, &reverb3d::set_reverb, void, audio_node*>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectBehaviour("reverb3d", asBEHAVE_FACTORY, "reverb3d@ n(audio_node@+ reverb, mixer@+ destination = mixer(), audio_engine@+ engine = sound_default_engine)", asFUNCTION(reverb3d::create), asCALL_CDECL);
+	engine->RegisterObjectMethod("reverb3d", "void set_reverb(audio_node@+ reverb) property", asFUNCTION((virtual_call < reverb3d, &reverb3d::set_reverb, void, audio_node*>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("reverb3d", "audio_node@+ get_reverb() const property", asFUNCTION((virtual_call < reverb3d, &reverb3d::get_reverb, audio_node*>)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("reverb3d", "void set_mixer(mixer@ mix) property", asFUNCTION((virtual_call < reverb3d, &reverb3d::set_mixer, void, mixer*>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("reverb3d", "void set_mixer(mixer@+ mix) property", asFUNCTION((virtual_call < reverb3d, &reverb3d::set_mixer, void, mixer*>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("reverb3d", "mixer@+ get_mixer() const property", asFUNCTION((virtual_call < reverb3d, &reverb3d::get_mixer, mixer*>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("reverb3d", "void set_min_volume(float min_volume) property", asFUNCTION((virtual_call < reverb3d, &reverb3d::set_min_volume, void, float >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("reverb3d", "float get_min_volume() const property", asFUNCTION((virtual_call < reverb3d, &reverb3d::get_min_volume, float >)), asCALL_CDECL_OBJFIRST);
