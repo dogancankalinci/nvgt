@@ -350,6 +350,11 @@ elif env["NVGT_TARGET"] == "android":
 			dest = f"jni/libs/{variant}/{abi}"
 			libname = "libmain" if variant == "runner" else "libgame"
 			lib = venv.SharedLibrary(os.path.join(dest, libname), objs)
+			# Statically linked plugins reach the link line through LIBS, which SCons treats as a library search rather
+			# than a build input, so a rebuilt plugin archive did not make the shared library relink and gradle kept
+			# packaging the previous libgame.so. Declare the archives themselves as explicit dependencies; a plugin's
+			# list also names prebuilt libraries (plain strings such as "bass"), which are not files to depend on.
+			if android_static_plugins: venv.Depends(lib, [n for n in Flatten(abi_static_libs) if not isinstance(n, str)])
 			android_deps.append(lib)
 			android_deps.extend(env.Install(dest, libcxx_path))
 			android_deps.extend(env.Install(dest, os.path.join(abi_dev, "lib/libSDL3.so")))
