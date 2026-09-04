@@ -182,6 +182,10 @@ bool legacy_pack::open(const string& filename_in, pack_open_mode mode, bool meml
 bool legacy_pack::close() {
 	while (delay_close) Poco::Thread::sleep(5);
 	delay_close = false;
+	// Held for the whole teardown: a sound being cached on another thread reads through
+	// read_file_locked(), which takes this same lock, so the handle cannot be closed underneath
+	// a read in progress.
+	std::lock_guard<std::mutex> g(streams_mutex);
 	bool ret = false;
 	if (fptr && (open_mode == PACK_OPEN_MODE_APPEND || open_mode == PACK_OPEN_MODE_CREATE)) {
 		pack_header h;
@@ -454,9 +458,15 @@ unsigned int legacy_pack::read_file(const string& pack_filename, unsigned int of
 		buffer[i] = pack_char_decrypt(buffer[i], offset + i, pack_items[pack_filename].namelen);
 	return dataread;
 }
+// Reads from the pack's own file handle under the streams lock, so several threads loading
+// sounds at once cannot interleave their seeks and reads on the shared FILE*.
+unsigned int legacy_pack::read_file_locked(const string& pack_filename, unsigned int offset, unsigned char* buffer, unsigned int size) {
+	std::lock_guard<std::mutex> g(streams_mutex);
+	return read_file(pack_filename, offset, buffer, size, NULL);
+}
 std::string legacy_pack::read_file_string(const string& pack_filename, unsigned int offset, unsigned int size) {
 	std::string result(size, '\0');
-	int actual_size = read_file(pack_filename, offset, (unsigned char*)&result.front(), size);
+	int actual_size = read_file_locked(pack_filename, offset, (unsigned char*)&result.front(), size);
 	if (actual_size > -1)
 		result.resize(actual_size);
 	return result;
@@ -476,10 +486,15 @@ bool legacy_pack::raw_seek(int offset) {
 bool legacy_pack::stream_close(pack_stream* stream, bool while_reading) {
 	if (stream->reading) {
 		stream->close = true;
+		std::lock_guard<std::mutex> g(streams_mutex);
 		pack_streams.find(stream->stridx) != pack_streams.end()&&pack_streams.erase(stream->stridx);
 		return true;
 	}
-	bool ret = !while_reading & pack_streams.find(stream->stridx) != pack_streams.end() && pack_streams.erase(stream->stridx);
+	bool ret;
+	{
+		std::lock_guard<std::mutex> g(streams_mutex);
+		ret = !while_reading & pack_streams.find(stream->stridx) != pack_streams.end() && pack_streams.erase(stream->stridx);
+	}
 	stream->stridx = 0;
 	if (stream->reader)
 		fclose(stream->reader);
@@ -497,13 +512,17 @@ bool legacy_pack::stream_close_script(unsigned int idx) {
 pack_stream* legacy_pack::stream_open(const string& pack_filename, unsigned int offset) {
 	if (pack_filename == "")
 		return NULL;
-	if (pack_items.find(pack_filename) == pack_items.end())
+	auto item = pack_items.find(pack_filename);
+	if (item == pack_items.end())
 		return NULL;
-	unsigned int size = pack_items[pack_filename].filesize;
+	unsigned int size = item->second.filesize;
 	pack_stream* s = new pack_stream();
 	s->filename = pack_filename;
 	s->offset = offset;
 	s->filesize = size;
+	s->item_offset = item->second.offset;
+	s->namelen = item->second.namelen;
+	s->read_pos = -1;
 	s->reading = false;
 	s->close = false;
 	if (!mptr) {
@@ -512,9 +531,12 @@ pack_stream* legacy_pack::stream_open(const string& pack_filename, unsigned int 
 			return NULL;
 	} else
 		s->reader = NULL;
-	pack_streams[next_stream_idx] = s;
-	s->stridx = next_stream_idx;
-	next_stream_idx += 1;
+	{
+		std::lock_guard<std::mutex> g(streams_mutex);
+		pack_streams[next_stream_idx] = s;
+		s->stridx = next_stream_idx;
+		next_stream_idx += 1;
+	}
 	AddRef();
 	return s;
 }
@@ -527,7 +549,7 @@ unsigned int legacy_pack::stream_open_script(const string& pack_filename, unsign
 // Reads bytes from a stream and increments it's offset by the number of bytes read. Returns the number of bytes read on success, 0xffffffff (-1) on failure either do to end of file or invalid stream.
 unsigned int legacy_pack::stream_read(pack_stream* stream, unsigned char* buffer, unsigned int size) {
 	stream->reading = true;
-	unsigned int bytesread = read_file(stream->filename.c_str(), stream->offset, buffer, size, stream->reader);
+	unsigned int bytesread = stream_read_fast(stream, buffer, size);
 	stream->reading = false;
 	bool close = stream->close;
 	if (stream->close)
@@ -537,6 +559,40 @@ unsigned int legacy_pack::stream_read(pack_stream* stream, unsigned char* buffer
 	if (!close)
 		stream->offset += bytesread;
 	return bytesread;
+}
+// Hot path for BASS file reads: uses the offset/namelen cached at stream_open time (no
+// per-read filename hashing) and skips the fseek on sequential reads - each stream owns its
+// FILE*, so its position is entirely ours to track. Decryption goes through the regular
+// pack_char_decrypt interface so this works with any config.h implementation.
+unsigned int legacy_pack::stream_read_fast(pack_stream* stream, unsigned char* buffer, unsigned int size) {
+	unsigned int offset = stream->offset;
+	if (offset >= stream->filesize)
+		return 0;
+	unsigned int bytes_to_read = size;
+	if (offset + size > stream->filesize)
+		bytes_to_read = stream->filesize - offset;
+	if (!buffer)
+		return bytes_to_read;
+	unsigned int dataread = 0;
+	if (open_mode == PACK_OPEN_MODE_READ && mptr) {
+		memcpy(buffer, mptr + stream->item_offset + offset, bytes_to_read);
+		dataread = bytes_to_read;
+	} else {
+		// Only ever the stream's own handle: this path runs without the streams lock, while
+		// read_file_locked() seeks the pack's shared fptr under it, so borrowing that handle
+		// here would let two reads interleave their seeks and return another member's bytes.
+		FILE* reader = stream->reader;
+		if (open_mode != PACK_OPEN_MODE_READ || !reader)
+			return 0;
+		long want = (long)(file_offset + stream->item_offset + offset);
+		if (stream->read_pos != want)
+			fseek(reader, want, SEEK_SET);
+		dataread = fread(buffer, 1, bytes_to_read, reader);
+		stream->read_pos = want + (long)dataread;
+	}
+	for (unsigned int i = 0; i < dataread; i++)
+		buffer[i] = pack_char_decrypt(buffer[i], offset + i, stream->namelen);
+	return dataread;
 }
 unsigned int legacy_pack::stream_read_script(unsigned int idx, unsigned char* buffer, unsigned int size) {
 	if (pack_streams.find(idx) == pack_streams.end())
@@ -562,7 +618,7 @@ bool legacy_pack::stream_seek(pack_stream* stream, unsigned int offset, int orig
 	else
 		return false;
 	if (!mptr && stream->reader)
-		fseek(stream->reader, file_offset + stream->offset, SEEK_SET);
+		stream->read_pos = -1; // The next read repositions itself (the old fseek here missed item_offset anyway).
 	return true;
 }
 bool legacy_pack::stream_seek_script(unsigned int idx, unsigned int offset, int origin) {

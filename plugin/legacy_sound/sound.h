@@ -33,10 +33,13 @@ class legacy_sound;
 class legacy_mixer;
 
 typedef struct {
-	unsigned char* data;
+	unsigned char* data; // The file's bytes exactly as on disk (already de-obfuscated for pack members), NOT decoded PCM.
 	unsigned int size;
 	int ref;
 	unsigned long long t; // Time since preload was last used, stored using ticks().
+	bool from_file; // Entry was read from a plain file on disk, so it must be revalidated against it.
+	unsigned long long mtime; // Modification time of that file when the bytes were read.
+	unsigned int fsize; // Its size at that moment; together with mtime this detects a rewritten file.
 	std::string fn;
 } sound_preload;
 
@@ -112,6 +115,7 @@ public:
 	legacy_mixer* parent_mixer;
 	sound_environment* env;
 	BOOL use_hrtf;
+	int silent_frames; // Consecutive frames this sound has been attenuated to nothing for.
 	float x;
 	float y;
 	float z;
@@ -127,12 +131,10 @@ public:
 	float volume_step;
 	unsigned int channel;
 	hstream_entry* store_channel;
-	sound_base() : env(NULL), source(NULL), direct_effect(NULL), reflection_effect(NULL), reflection_decode_effect(NULL), use_hrtf(false), channel(0), store_channel(NULL) {}
+	sound_base() : env(NULL), source(NULL), direct_effect(NULL), reflection_effect(NULL), reflection_decode_effect(NULL), use_hrtf(false), silent_frames(0), channel(0), store_channel(NULL) {}
 	virtual void AddRef();
 	virtual void Release();
-	void set_hrtf(BOOL enable) {
-		use_hrtf = enable;
-	}
+	void set_hrtf(BOOL enable);
 	BOOL set_position(float listener_x, float listener_y, float listener_z, float sound_x, float sound_y, float sound_z, float rotation, float pan_step, float volume_step);
 };
 
@@ -150,6 +152,7 @@ public:
 	std::string callback_data;
 	BOOL script_loading;
 	thread_mutex_t close_mutex;
+	std::atomic<bool> closing; // Set before the BASS channel is torn down so file callbacks stop touching it without taking a lock on the audio thread.
 	std::vector<BYTE> push_prebuff;
 	std::string* memstream;
 	unsigned int memstream_size;

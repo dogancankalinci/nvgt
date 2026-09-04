@@ -54,6 +54,20 @@
 	#define strnicmp strncasecmp
 #endif
 
+// Mobile (Android/iOS) detection for the platform-specific audio tuning below.
+#ifdef __APPLE__
+	#include <TargetConditionals.h>
+#endif
+#if defined(__ANDROID__) || (defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE)
+	#define LEGACY_SOUND_MOBILE 1
+#else
+	#define LEGACY_SOUND_MOBILE 0
+#endif
+#include <new>
+#include <thread>
+#include <sys/types.h>
+#include <sys/stat.h>
+
 using namespace std;
 using namespace fast_float;
 
@@ -117,11 +131,31 @@ BOOL sound_available() {
 	return init_sound();
 	#endif
 }
+static std::atomic<bool> g_reaper_stopped{false};
+static std::atomic<bool> g_fill_stopped{false};
 BOOL init_sound(unsigned int dev) {
 	if (sound_initialized)
 		return TRUE;
+	// A previous shutdown_sound() parked the reaper and the cache filler; sound is coming back,
+	// so let them work again instead of falling back to the game thread for every free.
+	g_reaper_stopped.store(false);
+	g_fill_stopped.store(false);
 	BASS_SetConfig(BASS_CONFIG_DEV_DEFAULT, TRUE);
+	// The 128-sample device period is requested on desktop only. Windows ignores it (the
+	// device reports a 10ms period regardless - measured), so desktop has always run with
+	// ~441-frame blocks. Android honours it: BASS drives AAudio in callback mode and takes the
+	// frames-per-callback from this setting, so the whole mix - every decode and every
+	// spatialisation - ran inside a 2.9ms callback in 128-frame pieces. The spatialiser's cost is
+	// per call, not per frame (measured 6.4us for 128 frames against 8.0us for 512), so those
+	// small blocks made every positional source cost about three times what it costs on
+	// desktop for identical audio, and the mixer's own per-callback overhead scaled the same
+	// way. That is the platform difference behind stuttering on phones that never appears on
+	// Windows. Mobile now uses BASS's 10ms default, which is what Windows effectively runs at;
+	// a sound's start is still bounded by one period, so nothing waits longer than it does on
+	// desktop.
+	#if !LEGACY_SOUND_MOBILE
 	BASS_SetConfig(BASS_CONFIG_DEV_PERIOD, -128);
+	#endif
 	BASS_SetConfig(BASS_CONFIG_CURVE_PAN, TRUE);
 	BASS_SetConfig(BASS_CONFIG_CURVE_VOL, TRUE);
 	BASS_SetConfig(BASS_CONFIG_FLOAT, TRUE);
@@ -155,9 +189,13 @@ BOOL init_sound(unsigned int dev) {
 	}
 	return sound_initialized;
 }
+static void sound_reaper_drain();
+static void sound_fill_drain();
 BOOL shutdown_sound() {
 	if (!sound_initialized)
 		return TRUE;
+	sound_fill_drain();
+	sound_reaper_drain();
 	while (last_channel) {
 		BASS_StreamFree(last_channel->channel);
 		unregister_hstream(last_channel);
@@ -190,17 +228,31 @@ void basic_positioning_dsp(void* buffer, unsigned int length, float x, float y, 
 	else if (pan > 1.0) pan = 1.0;
 	if (volume < 0.0) volume = 0.0;
 	else if (volume > 1.0) volume = 1.0;
+	// volume and pan hold still for the whole block, so their decibel conversions do too. These
+	// pow() calls used to sit inside the loop, which meant several hundred double-precision calls
+	// per block for every positional sound - more than the spatialisation itself costs. The
+	// arithmetic is unchanged: the same expressions, the same double result feeding the same
+	// multiplications, just evaluated once. A missing pan factor is a multiply by exactly 1.
+	if (volume <= 0) {
+		// Everything here multiplies by an amplitude of zero, and this path keeps no state
+		// between blocks, so the result is a block of silence: write it and skip the work.
+		memset(buffer, 0, length);
+		return;
+	}
+	float amp = 0;
+	if (volume > 0)
+		amp = pow(10.0f, (volume * 100 - 100) / 20.0);
+	double pan_left = 1.0, pan_right = 1.0;
+	if (pan < 0)
+		pan_right = pow(10.0f, ((1 + pan) * 100 - 100) / 20.0);
+	else if (pan > 0)
+		pan_left = pow(10.0f, ((1 - pan) * 100 - 100) / 20.0);
 	float* f = (float*)buffer;
 	for (; length; length -= 8, f += 2) {
-		float amp = 0;
-		if (volume > 0)
-			amp = pow(10.0f, (volume * 100 - 100) / 20.0);
 		f[0] *= amp;
 		f[1] *= amp;
-		if (pan < 0)
-			f[1] = f[1] * pow(10.0f, ((1 + pan) * 100 - 100) / 20.0);
-		else if (pan > 0)
-			f[0] = f[0] * pow(10.0f, ((1 - pan) * 100 - 100) / 20.0);
+		f[1] = f[1] * pan_right;
+		f[0] = f[0] * pan_left;
 	}
 }
 
@@ -231,11 +283,28 @@ void phonon_dsp(void* buffer, unsigned int length, float x, float y, float z, so
 	if (!s.env) {
 		// simple distance rolloff in the case of no set sound_environment
 		float volume = 1.0 - (floorf(sqrtf(pow(fabs(x), 2) + pow(fabs(y), 2) + pow(fabs(z), 2)))) / (125.0 / s.volume_step);
+		// Same as in basic_positioning_dsp: the level is constant across the block, so its
+		// decibel conversion is hoisted out of the loop rather than recomputed per sample.
+		if (volume <= 0) {
+			// Too far away to be heard at all: the samples below would be multiplied by zero, so
+			// the only thing the spatialiser could still contribute is the tail it carries over
+			// from earlier input. Let one frame's worth of silence (hrtf_framesize samples, the
+			// effect's own frame) run through it to flush that tail, and from then on the output
+			// is zeros either way, so it is written directly and the whole chain is skipped. A
+			// crowded scene is full of sources like this, each otherwise costing as much as one
+			// standing next to the listener. Counted in frames so the flush does not depend on
+			// how large the device's blocks happen to be.
+			memset(buffer, 0, length);
+			if (s.silent_frames >= hrtf_framesize)
+				return;
+			s.silent_frames += samples;
+		} else
+			s.silent_frames = 0;
+		float amp = 0;
+		if (volume > 0)
+			amp = pow(10.0f, (volume * 100 - 100) / 20.0);
 		float* f = (float*)buffer;
 		for (; length; length -= 8, f += 2) {
-			float amp = 0;
-			if (volume > 0)
-				amp = pow(10.0f, (volume * 100 - 100) / 20.0);
 			f[0] *= amp;
 			f[1] *= amp;
 		}
@@ -294,18 +363,23 @@ void CALLBACK positioning_dsp(HDSP handle, DWORD channel, void* buffer, DWORD le
 		x = rotational_x;
 		y = rotational_y;
 	}
-	if (s->hrtf_effect && (!hrtf || !s->use_hrtf)) {
-		iplBinauralEffectRelease(&s->hrtf_effect);
-		s->hrtf_effect = NULL;
-	} else if (!s->hrtf_effect && hrtf && s->use_hrtf) {
-		IPLBinauralEffectSettings effect_settings{};
-		effect_settings.hrtf = phonon_hrtf;
-		iplBinauralEffectCreate(phonon_context, &phonon_audio_settings, &effect_settings, &s->hrtf_effect);
+	// The binaural effect is created in postload() and released in close(); this callback only
+	// decides whether to use it. Creating or freeing it here meant malloc/free on the audio thread.
+	// Work in pieces of at most hrtf_framesize frames: the spatialiser's scratch buffers are that
+	// size, and the device block is whatever the platform chose - the requested period is only a
+	// request, and a device rounding it up past 23ms would otherwise overrun them. Blocks at or
+	// below that size (every desktop block, and mobile at the default period) pass through whole.
+	const DWORD piece = hrtf_framesize * 2 * sizeof(float);
+	BYTE* p = (BYTE*)buffer;
+	while (length > 0) {
+		DWORD n = length > piece ? piece : length;
+		if (hrtf && s->hrtf_effect && s->use_hrtf)
+			phonon_dsp(p, n, x, y, z, *s);
+		else
+			basic_positioning_dsp(p, n, x, y, z, s->pan_step, s->volume_step);
+		p += n;
+		length -= n;
 	}
-	if (hrtf && s->hrtf_effect && s->use_hrtf)
-		phonon_dsp(buffer, length, x, y, z, *s);
-	else
-		basic_positioning_dsp(buffer, length, x, y, z, s->pan_step, s->volume_step);
 }
 
 // Bass fileprocs
@@ -333,15 +407,12 @@ DWORD CALLBACK bass_readproc_pack(void* buffer, DWORD length, void* user) {
 	packed_sound* snd = (packed_sound*)user;
 	if (!snd->p || !snd->p->next_stream_idx)
 		return 0;
-	DWORD ret = 0;
-	if (snd->snd)
-		thread_mutex_lock(&snd->snd->close_mutex);
-	if (!snd->snd || (snd->snd->channel || snd->snd->script_loading))
-		ret = snd->p->stream_read(snd->s, (BYTE *)buffer, length);
-	if (snd->snd)
-		thread_mutex_unlock(&snd->snd->close_mutex);
-	//if(ret==0) ret=-1;
-	return ret;
+	// This path is only used for pack members too large for the in-memory cache. No lock is
+	// taken here: close() flips `closing` before it detaches the channel, and the stream's
+	// own FILE* is only closed once BASS has released the channel (in the close callback).
+	if (snd->snd && snd->snd->closing.load(std::memory_order_acquire))
+		return 0;
+	return snd->p->stream_read(snd->s, (BYTE *)buffer, length);
 }
 BOOL CALLBACK bass_seekproc_pack(QWORD offset, void* user) {
 	if (!user)
@@ -519,88 +590,349 @@ finish:
 }
 
 std::unordered_map<std::string, sound_preload*> sound_preloads;
-sound_preload* get_sound_preload(const std::string& filename, bool allow_creating = false) {
+// The cache now holds each file's COMPRESSED bytes (an OGG is ~100-200KB), not decoded PCM
+// (which is ~10x larger). Two things follow: the budget below covers far more sounds, and a
+// cache entry is produced by a single read on the loading thread instead of a background
+// decode thread - there is no decode thread at all any more. Mobile stays small so the cache
+// can never contribute to an LMK kill or (z)swap pressure.
+static size_t sound_preload_total = 0;
+#if LEGACY_SOUND_MOBILE
+	#define SOUND_PRELOAD_MAX_TOTAL (32u * 1024 * 1024)
+	#define SOUND_PRELOAD_MAX_ITEM (3u * 1024 * 1024)
+#else
+	#define SOUND_PRELOAD_MAX_TOTAL (256u * 1024 * 1024)
+	#define SOUND_PRELOAD_MAX_ITEM (24u * 1024 * 1024)
+#endif
+// How much a first play may read on the thread that called load(). Reading a file's bytes costs
+// about 11us/KB here (measured: it is the per-byte de-obfuscation, not the disk - a repeated read
+// of the same member costs the same), and a low-end phone core is several times slower, so this
+// keeps that one-off cost inside a frame. Anything larger keeps the streaming path, where the
+// same work is spread thinly across playback instead of landing in one lump on the game thread;
+// in a typical pack over 90% of members are below this size, and the ones above it are ambience
+// and music, which are started once and played for minutes.
+#if LEGACY_SOUND_MOBILE
+	#define SOUND_PRELOAD_SYNC_MAX (128u * 1024)
+#else
+	#define SOUND_PRELOAD_SYNC_MAX (512u * 1024)
+#endif
+// Short sounds are kept DECODED. Every playing source is decoded inside the device callback, so
+// a crowded scene runs dozens of Vorbis decoders there at once - by far the largest per-source
+// cost, and the only one that can be paid once in advance instead. Decoding a short sound when
+// it is first loaded costs a millisecond or two on the loading thread and removes the codec from
+// every later play of it. The limit is on the DECODED size, so this only catches footsteps, hits
+// and interface sounds; music and ambience stay compressed, where the codec cost is negligible
+// because there are only a couple of them and they run for minutes.
+// Mobile keeps this tight: decoding is the one-off price of the saving, and on a slow core the
+// limit below is about ten milliseconds of work, still inside a frame. 256KB of float samples is
+// roughly a second and a half of mono audio, which is what a footstep, a hit or a menu sound is.
+#if LEGACY_SOUND_MOBILE
+	#define SOUND_PRELOAD_PCM_MAX (256u * 1024)
+#else
+	#define SOUND_PRELOAD_PCM_MAX (2u * 1024 * 1024)
+#endif
+// Frees a cache entry and returns the iterator to the next one. Caller must hold preload_mutex.
+static std::unordered_map<std::string, sound_preload*>::iterator sound_preload_destroy_locked(std::unordered_map<std::string, sound_preload*>::iterator it) {
+	sound_preload* p = it->second;
+	if (p->size <= sound_preload_total) sound_preload_total -= p->size;
+	else sound_preload_total = 0;
+	free(p->data);
+	p->fn.~string();
+	free(p);
+	return sound_preloads.erase(it);
+}
+// Evicts least-recently-used idle entries until need extra bytes fit under the budget.
+// Caller must hold preload_mutex. Returns false if the space cannot be made.
+static bool sound_preload_make_room(size_t need) {
+	if (need > SOUND_PRELOAD_MAX_ITEM) return false;
+	while (sound_preload_total + need > SOUND_PRELOAD_MAX_TOTAL) {
+		auto lru = sound_preloads.end();
+		for (auto it = sound_preloads.begin(); it != sound_preloads.end(); it++) {
+			if (it->second->ref > 0) continue;
+			if (lru == sound_preloads.end() || it->second->t < lru->second->t) lru = it;
+		}
+		if (lru == sound_preloads.end()) return false;
+		sound_preload_destroy_locked(lru);
+	}
+	return true;
+}
+// Looks up a cache entry and takes a reference on it while still holding the lock, so the
+// cleanup/eviction paths can never free an entry between lookup and use.
+sound_preload* get_sound_preload(const std::string& filename) {
 	lock_mutex scopelock(&preload_mutex);
 	auto it = sound_preloads.find(filename);
 	if (it == sound_preloads.end()) return NULL;
-	if (!allow_creating && it->second->t == -1) return NULL;
+	it->second->ref += 1;
+	it->second->t = ticks(false);
 	return it->second;
 }
-typedef struct {
-	std::string filename;
-	legacy_pack* p;
-} sound_preload_transport;
-void sound_preload_perform(HSTREAM channel, const std::string& filename) {
-	if (!channel) return;
-	sound_preload* pre = (sound_preload*)malloc(sizeof(sound_preload));
-	memset(pre, 0, sizeof(sound_preload));
-	pre->t = -1;
-	thread_mutex_lock(&preload_mutex);
-	sound_preloads[filename] = pre;
-	thread_mutex_unlock(&preload_mutex);
-	BASS_CHANNELINFO ci;
-	BASS_ChannelGetInfo(channel, &ci);
-	DWORD len = BASS_ChannelGetLength(channel, BASS_POS_BYTE);
-	unsigned char* samples = (unsigned char*)malloc(len + 44);
-	len = BASS_ChannelGetData(channel, samples + 44, len | BASS_DATA_FLOAT);
-	wav_header h = make_wav_header(len + 44, ci.freq, 32, ci.chans, 3);
-	memcpy(samples, &h, 44);
-	pre->ref = 1;
-	pre->data = samples;
-	pre->size = len + 44;
-	pre->fn = filename;
-	BASS_ChannelSetPosition(channel, 0, BASS_POS_BYTE);
-	thread_mutex_lock(&preload_mutex);
-	pre->t = ticks(false);
-	thread_mutex_unlock(&preload_mutex);
+// Reads an entire pack member (de-obfuscated) into memory. Returns NULL if it does not fit the
+// per-item limit or cannot be read. This is the ONLY place a sound's file data is read from
+// disk; it runs on whichever thread called load(), never on the audio thread.
+static unsigned char* sound_read_pack_member(legacy_pack* p, const std::string& filename, unsigned int& size_out, unsigned int max_size) {
+	size_out = 0;
+	if (!p || !p->is_active()) return NULL;
+	unsigned int size = p->get_file_size(filename);
+	if (!size || size > max_size) return NULL;
+	unsigned char* data = (unsigned char*)malloc(size);
+	if (!data) return NULL;
+	// One read on the pack's own file handle (no per-load fopen/fclose); the pack serialises it.
+	unsigned int got = p->read_file_locked(filename, 0, data, size);
+	if (got != size) { free(data); return NULL; }
+	size_out = size;
+	return data;
 }
-int sound_preload_thread(void* args) {
-	sound_preload_transport* t = (sound_preload_transport*)args;
-	if (get_sound_preload(t->filename, true)) {
-		free(t);
-		return 0;
+// Inserts (or finds) a cache entry for filename holding the given bytes and takes a reference
+// on it. Ownership of data passes to the cache on success; on failure it is freed and NULL is
+// returned so the caller can fall back to plain streaming.
+static sound_preload* sound_preload_insert(const std::string& filename, unsigned char* data, unsigned int size, bool from_file = false, unsigned long long mtime = 0, unsigned int fsize = 0) {
+	lock_mutex scopelock(&preload_mutex);
+	auto it = sound_preloads.find(filename);
+	if (it != sound_preloads.end()) {
+		// Another thread cached it in the meantime: use theirs, drop ours.
+		free(data);
+		it->second->ref += 1;
+		it->second->t = ticks(false);
+		return it->second;
 	}
-	pack_stream* stream = NULL;
-	DWORD channel = 0;
-	if (!t->p || !t->p->is_active() || (stream = t->p->stream_open(t->filename, 0)) == NULL)
-		channel = BASS_StreamCreateFile(FALSE, t->filename.c_str(), 0, 0, BASS_STREAM_DECODE | BASS_SAMPLE_FLOAT);
-	else {
-		BASS_FILEPROCS prox;
-		prox.close = bass_closeproc_pack;
-		prox.length = bass_lenproc_pack;
-		prox.read = bass_readproc_pack;
-		prox.seek = bass_seekproc_pack;
-		packed_sound* s = (packed_sound*)malloc(sizeof(packed_sound));
-		s->p = t->p;
-		s->s = stream;
-		s->snd = NULL;
-		channel = BASS_StreamCreateFileUser(STREAMFILE_NOBUFFER, BASS_STREAM_DECODE | BASS_SAMPLE_FLOAT, &prox, s);
-	}
-	if (!channel) {
-		free(t);
-		return 0;
-	}
-	if (t->p)
-		t->p->delay_close = TRUE;
-	sound_preload_perform(channel, t->filename);
-	if (t->p)
-		t->p->delay_close = FALSE;
-	free(t);
-	BASS_StreamFree(channel);
-	return 0;
+	if (!sound_preload_make_room(size)) { free(data); return NULL; }
+	sound_preload* pre = (sound_preload*)malloc(sizeof(sound_preload));
+	if (!pre) { free(data); return NULL; }
+	memset(pre, 0, sizeof(sound_preload));
+	new (&pre->fn) std::string(filename);
+	pre->data = data;
+	pre->size = size;
+	pre->from_file = from_file;
+	pre->mtime = mtime;
+	pre->fsize = fsize;
+	pre->ref = 1;
+	pre->t = ticks(false);
+	sound_preloads[filename] = pre;
+	sound_preload_total += size;
+	return pre;
 }
 void sound_preload_release(sound_preload* p) {
+	lock_mutex scopelock(&preload_mutex);
 	if (p->ref > 0)
 		p->ref -= 1;
-	if (p->ref < 1 && ticks(false) - p->t > 120000) {
-		lock_mutex scopelock(&preload_mutex);
-		auto it = sound_preloads.find(p->fn);
-		if (it != sound_preloads.end())
-			sound_preloads.erase(it);
-		p->fn = "";
-		free(p->data);
-		free(p);
+	// Entries are kept after release so the next play of the same sound is free; the LRU
+	// budget in sound_preload_make_room is what eventually retires them.
+}
+// Drops the caller's reference and, if nothing else holds the entry, takes it out of the cache.
+// Used when the disk file an entry was read from has been replaced since.
+static void sound_preload_invalidate(sound_preload* p) {
+	lock_mutex scopelock(&preload_mutex);
+	if (p->ref > 0)
+		p->ref -= 1;
+	if (p->ref > 0) return; // still playing somewhere: leave that copy be, it will retire on its own
+	auto it = sound_preloads.find(p->fn);
+	if (it != sound_preloads.end() && it->second == p) sound_preload_destroy_locked(it);
+}
+// Reads a disk file's identity. A cached copy is only reused while both of these still match, so
+// a game that rewrites a file under the same name (temporary speech files, downloaded clips)
+// never hears the previous contents.
+static bool sound_file_stamp(const std::string& path, unsigned long long& mtime, unsigned int& size) {
+	#ifdef _WIN32
+	std::wstring wpath;
+	Poco::UnicodeConverter::convert(path, wpath); // the rest of this file takes the same care with UTF-8 paths
+	struct _stat64 st;
+	if (_wstat64(wpath.c_str(), &st) != 0) return false;
+	#else
+	struct stat st;
+	if (stat(path.c_str(), &st) != 0) return false;
+	#endif
+	if (st.st_size <= 0 || (unsigned long long)st.st_size > 0xffffffffull) return false;
+	size = (unsigned int)st.st_size;
+	mtime = (unsigned long long)st.st_mtime; // seconds; paired with the size, which is what a rewrite almost always changes
+	return true;
+}
+// Reads a plain file into memory on the calling thread, the same way pack members are read, so
+// sounds loaded from disk are cached and replayed without touching the filesystem again.
+static unsigned char* sound_read_disk_file(const std::string& path, unsigned int& size_out, unsigned long long& mtime_out, unsigned int max_size) {
+	size_out = 0;
+	unsigned int size = 0;
+	if (!sound_file_stamp(path, mtime_out, size)) return NULL;
+	if (!size || size > max_size) return NULL;
+	unsigned char* data = (unsigned char*)malloc(size);
+	if (!data) return NULL;
+	#ifdef _WIN32
+	std::wstring wpath;
+	Poco::UnicodeConverter::convert(path, wpath);
+	FILE* f = _wfopen(wpath.c_str(), L"rb");
+	#else
+	FILE* f = fopen(path.c_str(), "rb");
+	#endif
+	if (!f) { free(data); return NULL; }
+	size_t got = fread(data, 1, size, f);
+	fclose(f);
+	if (got != size) { free(data); return NULL; }
+	size_out = size;
+	return data;
+}
+// Decodes a short sound in full and returns it as a WAV blob the cache can serve directly, or
+// NULL when it decodes to more than the limit above (or cannot be decoded at all), in which case
+// the caller keeps the compressed bytes.
+static unsigned char* sound_decode_short(const unsigned char* bytes, unsigned int size, unsigned int& out_size) {
+	out_size = 0;
+	HSTREAM d = BASS_StreamCreateFile(TRUE, (void*)bytes, 0, size, BASS_STREAM_DECODE | BASS_SAMPLE_FLOAT);
+	if (!d) return NULL;
+	QWORD len = BASS_ChannelGetLength(d, BASS_POS_BYTE);
+	BASS_CHANNELINFO ci;
+	if (!len || len == (QWORD) -1 || len + 44 > SOUND_PRELOAD_PCM_MAX || !BASS_ChannelGetInfo(d, &ci)) {
+		BASS_StreamFree(d);
+		return NULL;
 	}
+	unsigned char* out = (unsigned char*)malloc((size_t)len + 44);
+	if (!out) { BASS_StreamFree(d); return NULL; }
+	DWORD got = BASS_ChannelGetData(d, out + 44, (DWORD)len | BASS_DATA_FLOAT);
+	BASS_StreamFree(d); // freed before the caller releases the bytes it was reading from
+	if (got == (DWORD) -1 || !got) { free(out); return NULL; }
+	wav_header h = make_wav_header(got + 44, ci.freq, 32, ci.chans, 3);
+	memcpy(out, &h, 44);
+	out_size = got + 44;
+	return out;
+}
+// Replaces just-read file bytes with their decoded form when the sound is short enough to be
+// worth keeping that way. Takes ownership either way: on success the compressed bytes are freed.
+static unsigned char* sound_promote_short(unsigned char* data, unsigned int& size) {
+	unsigned int pcm_size = 0;
+	unsigned char* pcm = sound_decode_short(data, size, pcm_size);
+	if (!pcm) return data;
+	free(data);
+	size = pcm_size;
+	return pcm;
+}
+// Sources with no file behind them (script callbacks, memory streams) are cached by decoding the
+// stream once and keeping the result as a WAV blob, which the cache can hand to BASS like any
+// other file. The decode happens here, on the loading thread, exactly where it used to.
+static void sound_preload_capture_pcm(HSTREAM channel, const std::string& filename) {
+	if (!channel || filename.empty()) return;
+	sound_preload* existing = get_sound_preload(filename);
+	if (existing) { // already cached by an earlier load
+		sound_preload_release(existing);
+		return;
+	}
+	BASS_CHANNELINFO ci;
+	if (!BASS_ChannelGetInfo(channel, &ci)) return;
+	QWORD len = BASS_ChannelGetLength(channel, BASS_POS_BYTE);
+	if (!len || len == (QWORD) -1 || len + 44 > SOUND_PRELOAD_MAX_ITEM) return;
+	unsigned char* samples = (unsigned char*)malloc((size_t)len + 44);
+	if (!samples) return;
+	DWORD got = BASS_ChannelGetData(channel, samples + 44, (DWORD)len | BASS_DATA_FLOAT);
+	BASS_ChannelSetPosition(channel, 0, BASS_POS_BYTE); // hand the stream back at the start
+	if (got == (DWORD) -1 || !got) { free(samples); return; }
+	wav_header h = make_wav_header(got + 44, ci.freq, 32, ci.chans, 3);
+	memcpy(samples, &h, 44);
+	sound_preload* pre = sound_preload_insert(filename, samples, got + 44);
+	if (pre) sound_preload_release(pre); // this sound plays from its own stream; the cache keeps the copy
+}
+// Reads a large member for the background filler in pieces, releasing the pack's lock between
+// them. A multi-megabyte read costs tens of milliseconds (hundreds on a phone) and the same lock
+// is what a sound about to play needs to register its stream, so holding it for the whole read
+// would stall the game thread exactly as the audio thread used to be stalled.
+// Small pieces with a real pause between them on mobile: the filler is never urgent, and a phone
+// with four cores cannot afford a background thread that runs flat out next to the audio callback.
+#if LEGACY_SOUND_MOBILE
+	#define SOUND_PRELOAD_FILL_CHUNK (32u * 1024)
+	#define SOUND_PRELOAD_FILL_PAUSE 10
+#else
+	#define SOUND_PRELOAD_FILL_CHUNK (128u * 1024)
+	#define SOUND_PRELOAD_FILL_PAUSE 1
+#endif
+static unsigned char* sound_read_pack_member_chunked(legacy_pack* p, const std::string& filename, unsigned int& size_out) {
+	size_out = 0;
+	if (!p || !p->is_active()) return NULL;
+	unsigned int size = p->get_file_size(filename);
+	if (!size || size > SOUND_PRELOAD_MAX_ITEM) return NULL;
+	unsigned char* data = (unsigned char*)malloc(size);
+	if (!data) return NULL;
+	for (unsigned int off = 0; off < size; off += SOUND_PRELOAD_FILL_CHUNK) {
+		unsigned int want = size - off < SOUND_PRELOAD_FILL_CHUNK ? size - off : SOUND_PRELOAD_FILL_CHUNK;
+		if (p->read_file_locked(filename, off, data + off, want) != want) { // pack closed under us, or a short read
+			free(data);
+			return NULL;
+		}
+		Poco::Thread::sleep(SOUND_PRELOAD_FILL_PAUSE); // hand the lock back, and the core with it
+	}
+	size_out = size;
+	return data;
+}
+
+// Background cache filler. A sound too large to read on the loading thread (see
+// SOUND_PRELOAD_SYNC_MAX) would otherwise stream on every play, which puts the read and the
+// de-obfuscation loop back on the mixing thread - the very thing this file is arranged to avoid.
+// So the first play streams, and exactly one background thread reads the bytes into the cache
+// meanwhile; every later play comes from memory. One worker, one member at a time, with a pause
+// between them: it can never become the thread-per-sound storm that starved audio on few-core
+// devices, and it never touches BASS.
+typedef struct {
+	std::string filename;
+	legacy_pack* p; // referenced while queued so it cannot be freed under the read; NULL for a plain file
+} preload_fill_job;
+static std::mutex g_fill_mutex;
+static std::vector<preload_fill_job> g_fill_queue;
+static thread_signal_t g_fill_signal;
+static std::atomic<bool> g_fill_started{false};
+#define SOUND_PRELOAD_FILL_QUEUE_MAX 64
+static int sound_fill_thread(void*) {
+	while (true) {
+		thread_signal_wait(&g_fill_signal, 500);
+		while (true) {
+			preload_fill_job job;
+			{
+				std::lock_guard<std::mutex> g(g_fill_mutex);
+				if (g_fill_queue.empty()) break;
+				job = g_fill_queue.front();
+				g_fill_queue.erase(g_fill_queue.begin());
+			}
+			if (!g_fill_stopped.load()) {
+				sound_preload* have = get_sound_preload(job.filename);
+				if (have) sound_preload_release(have); // someone cached it first
+				else {
+					unsigned int size = 0;
+					unsigned long long mtime = 0;
+					unsigned char* data = job.p ? sound_read_pack_member_chunked(job.p, job.filename, size)
+					                            : sound_read_disk_file(job.filename, size, mtime, SOUND_PRELOAD_MAX_ITEM);
+					if (data) {
+						sound_preload* pre = sound_preload_insert(job.filename, data, size, job.p == NULL, mtime, size);
+						if (pre) sound_preload_release(pre); // nobody is holding it; it is there for the next play
+					}
+				}
+			}
+			if (job.p) job.p->Release();
+			Poco::Thread::sleep(SOUND_PRELOAD_FILL_PAUSE * 5); // breathe between members too
+		}
+	}
+	return 0;
+}
+static void sound_preload_fill_later(const std::string& filename, legacy_pack* p) {
+	if (g_fill_stopped.load()) return;
+	{
+		std::lock_guard<std::mutex> g(g_fill_mutex);
+		if (g_fill_queue.size() >= SOUND_PRELOAD_FILL_QUEUE_MAX) return; // a backlog this deep means the cache is not the bottleneck
+		for (size_t i = 0; i < g_fill_queue.size(); i++)
+			if (g_fill_queue[i].filename == filename) return; // already waiting
+		if (p) p->AddRef();
+		preload_fill_job job;
+		job.filename = filename;
+		job.p = p;
+		g_fill_queue.push_back(job);
+	}
+	if (!g_fill_started.exchange(true)) {
+		thread_signal_init(&g_fill_signal);
+		thread_create(sound_fill_thread, NULL, THREAD_STACK_SIZE_DEFAULT);
+	}
+	thread_signal_raise(&g_fill_signal);
+}
+// Stops the filler from starting new reads and hands back the packs it was holding.
+static void sound_fill_drain() {
+	g_fill_stopped.store(true);
+	std::vector<preload_fill_job> batch;
+	{
+		std::lock_guard<std::mutex> g(g_fill_mutex);
+		batch.swap(g_fill_queue);
+	}
+	for (size_t i = 0; i < batch.size(); i++)
+		if (batch[i].p) batch[i].p->Release();
 }
 static int sound_preloads_clean_counter = 0;
 void sound_preloads_clean() {
@@ -612,22 +944,76 @@ void sound_preloads_clean() {
 	lock_mutex scopelock(&preload_mutex);
 	std::unordered_map<std::string, sound_preload*>::iterator i = sound_preloads.begin();
 	while (i != sound_preloads.end()) {
-		if (i->second->t == -1) {
+		// Idle for 10 minutes: hand the memory back even if the budget is not under pressure.
+		if (i->second->ref > 0 || ticks(false) - i->second->t < 600000) {
 			i++;
 			continue;
 		}
-		if (i->second->ref > 0 || ticks(false) - i->second->t < 120000) {
-			i++;
-			continue;
-		}
-		free(i->second->data);
-		i->second->fn = "";
-		free(i->second);
-		i = sound_preloads.erase(i);
-		i++;
+		i = sound_preload_destroy_locked(i);
 	}
 }
 
+// Deferred BASS teardown. BASS_StreamFree/BASS_ChannelRemoveDSP synchronise with the audio
+// thread and can take a whole mixing period each; doing that inline in close() stalled the
+// game thread and, through the shared lock, everything else. close() now detaches the
+// channel from its mixer (which is what silences it) and hands the handles to this thread.
+static std::mutex g_reaper_mutex;
+// A stream created from a cache entry's memory keeps that entry referenced until BASS has
+// actually freed the stream: BASS documents the memory as having to stay valid for the life
+// of the stream, so releasing the reference in close() (which returns before the reaper has
+// run) would let the LRU hand those bytes to another sound first.
+struct reaper_item { HSTREAM h; sound_preload* pre; };
+static std::vector<reaper_item> g_reaper_queue;
+static thread_signal_t g_reaper_signal;
+static std::atomic<bool> g_reaper_started{false};
+static int sound_reaper_thread(void*) {
+	std::vector<reaper_item> batch;
+	while (true) {
+		thread_signal_wait(&g_reaper_signal, 250);
+		{
+			std::lock_guard<std::mutex> g(g_reaper_mutex);
+			batch.swap(g_reaper_queue);
+		}
+		if (g_reaper_stopped.load()) { batch.clear(); continue; }
+		for (reaper_item& it : batch) {
+			if (it.h) BASS_StreamFree(it.h);
+			if (it.pre) sound_preload_release(it.pre);
+		}
+		batch.clear();
+	}
+	return 0;
+}
+// Frees everything still queued, synchronously, and stops the reaper from touching BASS again.
+// Called before BASS_Free so no stream is freed after its device is gone.
+static void sound_reaper_drain() {
+	g_reaper_stopped.store(true);
+	std::vector<reaper_item> batch;
+	{
+		std::lock_guard<std::mutex> g(g_reaper_mutex);
+		batch.swap(g_reaper_queue);
+	}
+	for (reaper_item& it : batch) {
+		if (it.h) BASS_StreamFree(it.h);
+		if (it.pre) sound_preload_release(it.pre);
+	}
+}
+static void sound_reaper_push(HSTREAM h, sound_preload* pre = NULL) {
+	if (!h && !pre) return;
+	if (g_reaper_stopped.load()) {
+		if (h) BASS_StreamFree(h);
+		if (pre) sound_preload_release(pre);
+		return;
+	}
+	if (!g_reaper_started.exchange(true)) {
+		thread_signal_init(&g_reaper_signal);
+		thread_create(sound_reaper_thread, NULL, THREAD_STACK_SIZE_DEFAULT);
+	}
+	{
+		std::lock_guard<std::mutex> g(g_reaper_mutex);
+		g_reaper_queue.push_back(reaper_item{h, pre});
+	}
+	thread_signal_raise(&g_reaper_signal);
+}
 
 int sound_environment_thread(void* args) {
 	sound_environment* e = (sound_environment*)args;
@@ -868,6 +1254,7 @@ legacy_sound::legacy_sound() {
 	seek_callback = NULL;
 	callback_data = "";
 	script_loading = FALSE;
+	closing.store(false);
 	thread_mutex_init(&close_mutex);
 	memstream = NULL;
 	memstream_size = 0;
@@ -903,13 +1290,73 @@ BOOL legacy_sound::load(const string& filename, legacy_pack* containing_pack, BO
 	if (strnicmp(filename.c_str(), "http://", 7) == 0 || strnicmp(filename.c_str(), "https:///", 8) == 0 || strnicmp(filename.c_str(), "ftp://", 6) == 0)
 		return load_url(filename);
 	channel = 0;
+	closing.store(false);
 	sound_preload* pre = (allow_preloads ? get_sound_preload(filename) : NULL);
+	if (pre != NULL && pre->from_file) {
+		// Cached from a plain file: only reuse it while that file is still the one we read.
+		unsigned long long mtime = 0;
+		unsigned int fsize = 0;
+		if (!sound_file_stamp(filename, mtime, fsize) || mtime != pre->mtime || fsize != pre->fsize) {
+			sound_preload_invalidate(pre);
+			pre = NULL;
+		}
+	}
 	if (pre != NULL) {
-		preload_ref = pre;
-		pre->ref += 1;
-		pre->t = ticks(false);
+		preload_ref = pre; // get_sound_preload already took a reference for us
 		if (pre->data && pre->size)
 			channel = BASS_StreamCreateFile(TRUE, pre->data, 0, pre->size, BASS_SAMPLE_FLOAT | BASS_STREAM_DECODE);
+		if (!channel) {
+			sound_preload_release(pre);
+			preload_ref = NULL;
+		}
+	}
+	if (!channel && allow_preloads && containing_pack && containing_pack->is_active()) {
+		// First play of a pack member: read its bytes once, here, on the loading thread, and
+		// play from memory. The audio thread then never touches the pack, its FILE*, or the
+		// de-obfuscation loop, and the very same bytes become the cache entry for next time.
+		// A member too large to read inside a frame is handed to the background filler: this
+		// play streams, and the one after it comes from memory like everything else.
+		unsigned int member_size = containing_pack->get_file_size(filename);
+		if (member_size > SOUND_PRELOAD_SYNC_MAX && member_size <= SOUND_PRELOAD_MAX_ITEM)
+			sound_preload_fill_later(filename, containing_pack);
+		unsigned int size = 0;
+		unsigned char* data = sound_read_pack_member(containing_pack, filename, size, SOUND_PRELOAD_SYNC_MAX);
+		if (data) {
+			data = sound_promote_short(data, size);
+			pre = sound_preload_insert(filename, data, size);
+			if (pre) {
+				preload_ref = pre;
+				channel = BASS_StreamCreateFile(TRUE, pre->data, 0, pre->size, BASS_SAMPLE_FLOAT | BASS_STREAM_DECODE);
+				if (!channel) {
+					sound_preload_release(pre);
+					preload_ref = NULL;
+				}
+			}
+		}
+	}
+	if (!channel && allow_preloads && (!containing_pack || !containing_pack->is_active() || !containing_pack->file_exists(filename))) {
+		// Not a pack member: read the file from disk once, here, and play it from memory. Without
+		// this a sound loaded by path would be re-read by the audio thread on every single play.
+		unsigned int stamp_size = 0;
+		unsigned long long stamp_mtime = 0;
+		if (sound_file_stamp(filename, stamp_mtime, stamp_size) && stamp_size > SOUND_PRELOAD_SYNC_MAX && stamp_size <= SOUND_PRELOAD_MAX_ITEM)
+			sound_preload_fill_later(filename, NULL);
+		unsigned int size = 0;
+		unsigned long long mtime = 0;
+		unsigned char* data = sound_read_disk_file(filename, size, mtime, SOUND_PRELOAD_SYNC_MAX);
+		if (data) {
+			unsigned int on_disk = size;
+			data = sound_promote_short(data, size);
+			pre = sound_preload_insert(filename, data, size, true, mtime, on_disk);
+			if (pre) {
+				preload_ref = pre;
+				channel = BASS_StreamCreateFile(TRUE, pre->data, 0, pre->size, BASS_SAMPLE_FLOAT | BASS_STREAM_DECODE);
+				if (!channel) {
+					sound_preload_release(pre);
+					preload_ref = NULL;
+				}
+			}
+		}
 	}
 	if (!channel) {
 		pack_stream* stream = NULL;
@@ -923,6 +1370,7 @@ BOOL legacy_sound::load(const string& filename, legacy_pack* containing_pack, BO
 			channel = BASS_StreamCreateFile(FALSE, filename.c_str(), 0, 0, BASS_STREAM_DECODE | BASS_SAMPLE_FLOAT);
 			#endif
 		} else {
+			// Too large for the cache (or caching disabled): stream it straight from the pack.
 			script_loading = TRUE;
 			BASS_FILEPROCS prox;
 			prox.close = bass_closeproc_pack;
@@ -934,13 +1382,6 @@ BOOL legacy_sound::load(const string& filename, legacy_pack* containing_pack, BO
 			s->s = stream;
 			s->snd = this;
 			channel = BASS_StreamCreateFileUser(STREAMFILE_NOBUFFER, BASS_STREAM_DECODE | BASS_SAMPLE_FLOAT, &prox, s);
-		}
-		if (channel && allow_preloads && !pre) {
-			sound_preload_transport* t = (sound_preload_transport*)malloc(sizeof(sound_preload_transport));
-			memset(t, 0, sizeof(sound_preload_transport));
-			t->filename += filename;
-			t->p = containing_pack;
-			thread_create(sound_preload_thread, t, THREAD_STACK_SIZE_DEFAULT);
 		}
 	}
 	if (containing_pack) containing_pack->Release();
@@ -956,11 +1397,13 @@ BOOL legacy_sound::load_script(asIScriptFunction* close, asIScriptFunction* len,
 		this->close();
 	sound_preload* pre = (preload_filename != "" ? get_sound_preload(preload_filename) : NULL);
 	if (pre != NULL) {
-		preload_ref = pre;
-		pre->ref += 1;
-		pre->t = ticks(false);
+		preload_ref = pre; // get_sound_preload already took a reference for us
 		if (pre->data && pre->size)
 			channel = BASS_StreamCreateFile(TRUE, pre->data, 0, pre->size, BASS_SAMPLE_FLOAT | BASS_STREAM_DECODE);
+		if (!channel) {
+			sound_preload_release(pre);
+			preload_ref = NULL;
+		}
 		if (channel) {
 			if (close) close->Release();
 			if (len) len->Release();
@@ -985,7 +1428,7 @@ BOOL legacy_sound::load_script(asIScriptFunction* close, asIScriptFunction* len,
 		script_loading = TRUE;
 		channel = BASS_StreamCreateFileUser(STREAMFILE_NOBUFFER, BASS_STREAM_DECODE | BASS_SAMPLE_FLOAT, &prox, this);
 		if (preload_filename != "" && channel && !pre)
-			sound_preload_perform(channel, preload_filename);
+			sound_preload_capture_pcm(channel, preload_filename);
 	}
 	return postload(preload_filename != "" ? preload_filename : "script_stream");
 }
@@ -999,11 +1442,13 @@ BOOL legacy_sound::load_memstream(string& data, unsigned int size, const std::st
 		this->close();
 	sound_preload* pre = (preload_filename != "" ? get_sound_preload(preload_filename) : NULL);
 	if (pre != NULL) {
-		preload_ref = pre;
-		pre->ref += 1;
-		pre->t = ticks(false);
+		preload_ref = pre; // get_sound_preload already took a reference for us
 		if (pre->data && pre->size)
 			channel = BASS_StreamCreateFile(TRUE, pre->data, 0, pre->size, BASS_SAMPLE_FLOAT | BASS_STREAM_DECODE);
+		if (!channel) {
+			sound_preload_release(pre);
+			preload_ref = NULL;
+		}
 	}
 	if (!channel) {
 		BASS_FILEPROCS prox;
@@ -1018,7 +1463,7 @@ BOOL legacy_sound::load_memstream(string& data, unsigned int size, const std::st
 		script_loading = TRUE;
 		channel = BASS_StreamCreateFileUser(STREAMFILE_NOBUFFER, BASS_STREAM_DECODE | BASS_SAMPLE_FLOAT, &prox, this);
 		if (preload_filename != "" && channel && !pre)
-			sound_preload_perform(channel, preload_filename);
+			sound_preload_capture_pcm(channel, preload_filename);
 	}
 	return postload(preload_filename != "" ? preload_filename : "script_stream");
 }
@@ -1089,9 +1534,11 @@ BOOL legacy_sound::postload(const string& filename) {
 	LOCK_MIXER_GRAPH();
 	if (!channel)
 		return FALSE;
+	closing.store(false, std::memory_order_release); // every load path ends here, so a reused object is live again
+	silent_frames = 0;
 	BASS_ChannelGetInfo(channel, &channel_info);
 	loaded_filename = filename;
-	if (hrtf && !hrtf_effect) {
+	if (hrtf && phonon_context && !hrtf_effect) {
 		IPLBinauralEffectSettings effect_settings{};
 		effect_settings.hrtf = phonon_hrtf;
 		iplBinauralEffectCreate(phonon_context, &phonon_audio_settings, &effect_settings, &hrtf_effect);
@@ -1121,28 +1568,35 @@ BOOL legacy_sound::close() {
 	read_callback = NULL;
 	seek_callback = NULL;
 	if (channel) {
+		closing.store(true, std::memory_order_release);
 		stop();
 		thread_mutex_lock(&close_mutex);
+		HSTREAM dead_mixer = 0;
+		if (output_mixer) {
+			// Detaching from the parent mixer is what actually silences the sound, and BASSmix
+			// synchronises that with its own processing, so after this point the audio thread
+			// no longer runs this sound's DSP and the effect below can be released safely.
+			// Internal removal: the non-internal path would re-attach the about-to-be-deleted mixer to the global output, leaving a dangling entry there.
+			if (parent_mixer)
+				parent_mixer->remove_mixer(output_mixer, TRUE);
+			output_mixer->remove_sound(*this, TRUE);
+			BASS_Mixer_ChannelRemove(channel);
+			dead_mixer = output_mixer->channel;
+			output_mixer->channel = 0;
+			delete output_mixer;
+			output_mixer = NULL;
+		}
+		pos_effect = 0; // dies with the mixer stream it was set on
 		if (hrtf_effect) {
-			if (output_mixer && pos_effect)
-				BASS_ChannelRemoveDSP(output_mixer->channel, pos_effect);
-			pos_effect = 0;
 			iplBinauralEffectReset(hrtf_effect);
 			iplBinauralEffectRelease(&hrtf_effect);
 		}
 		hrtf_effect = NULL;
 		if (env) env->detach(this);
-		if (output_mixer) {
-			// Internal removal: the non-internal path would re-attach the about-to-be-deleted mixer to the global output, leaving a dangling entry there.
-			if (parent_mixer)
-				parent_mixer->remove_mixer(output_mixer, TRUE);
-			output_mixer->remove_sound(*this, TRUE);
-			BASS_StreamFree(output_mixer->channel); // Can't do in mixer destructor, it's being called when I don't want it to and I don't know why.
-			output_mixer->channel = 0;
-			delete output_mixer;
-			output_mixer = NULL;
-		}
-		BASS_StreamFree(channel);
+		// Freeing the BASS streams waits for the audio thread; do it off the game thread.
+		sound_reaper_push(dead_mixer);
+		sound_reaper_push(channel, preload_ref);
+		preload_ref = NULL; // released by the reaper once the stream that reads it is gone
 		unregister_hstream(store_channel);
 		store_channel = NULL; // that node is freed now: leaving the pointer behind lets a close() landing before the next postload re-registers free the very same node a second time, which corrupts the heap and takes down some later, unrelated free()
 		channel = 0;
@@ -1156,10 +1610,6 @@ BOOL legacy_sound::close() {
 		memstream_pos = 0;
 		memstream_legacy_encrypt = false;
 		pitch = 1.0;
-		if (preload_ref) {
-			sound_preload_release(preload_ref);
-			preload_ref = NULL;
-		}
 		sound_preloads_clean();
 		return TRUE;
 	}
@@ -1192,6 +1642,17 @@ BOOL legacy_sound::set_mixer(legacy_mixer* m) {
 	return m != NULL;
 }
 
+void sound_base::set_hrtf(BOOL enable) {
+	use_hrtf = enable;
+	// The binaural effect must exist before the audio thread wants it (creating it there meant a
+	// malloc inside the callback), so make it here, on the caller's thread, if it is being enabled
+	// after the sound was loaded - which is exactly what sound_pool does.
+	if (enable && hrtf && phonon_context && !hrtf_effect) {
+		IPLBinauralEffectSettings effect_settings{};
+		effect_settings.hrtf = phonon_hrtf;
+		iplBinauralEffectCreate(phonon_context, &phonon_audio_settings, &effect_settings, &hrtf_effect);
+	}
+}
 BOOL sound_base::set_position(float listener_x, float listener_y, float listener_z, float sound_x, float sound_y, float sound_z, float rotation, float pan_step, float volume_step) {
 	this->listener_x = listener_x;
 	this->listener_y = listener_y;
@@ -1486,8 +1947,18 @@ legacy_mixer::legacy_mixer(legacy_mixer* parent, BOOL for_single_sound, BOOL for
 
 	if (!parent) {
 		channel = BASS_Mixer_StreamCreate(44100, 2, BASS_MIXER_NONSTOP | (floatingpoint ? BASS_SAMPLE_FLOAT : 0));
+		// No playback buffering on any platform: sounds start the instant they are played.
 		BASS_ChannelSetAttribute(channel, BASS_ATTRIB_BUFFER, 0);
-		//BASS_ChannelSetAttribute(channel, BASS_ATTRIB_MIXER_THREADS, 16);
+		// Do NOT enable BASS_ATTRIB_MIXER_THREADS here. With the buffer at 0 this mixer is
+		// generated inside the output device's real-time callback, and that attribute makes the
+		// callback hand its sources to ordinary-priority worker threads and then wait for them.
+		// On a phone one of those workers only has to be preempted or scheduled onto a little
+		// core for the callback to miss its deadline, which is a dropout - and the more sources
+		// are playing, the likelier that is. Tried on Android: quiet areas were fine while busy
+		// ones (a crowded map, several instruments at once) cut out on devices that had never
+		// stuttered before, including where the audio work itself was nowhere near the limit.
+		// Splitting mixing across cores is only safe for a mixer that is NOT generated in the
+		// device callback, so it would have to come with buffering, which costs start latency.
 		BASS_ChannelPlay(channel, TRUE);
 		store_channel = register_hstream(channel);
 	} else {
@@ -2071,7 +2542,7 @@ void RegisterScriptSound(asIScriptEngine* engine) {
 	engine->RegisterObjectBehaviour("sound", asBEHAVE_RELEASE, "void f()", asMETHOD(legacy_sound, Release), asCALL_THISCALL);
 	engine->RegisterObjectProperty("sound", "const string loaded_filename", asOFFSET(legacy_sound, loaded_filename));
 	engine->RegisterObjectMethod("sound", "bool close()", asMETHOD(legacy_sound, close), asCALL_THISCALL);
-	engine->RegisterObjectMethod("sound", "bool load(const string &in filename, pack@ packfile = @sound_default_pack, bool allow_preloads = !system_is_mobile)", asMETHOD(legacy_sound, load), asCALL_THISCALL);
+	engine->RegisterObjectMethod("sound", "bool load(const string &in filename, pack@ packfile = @sound_default_pack, bool allow_preloads = true)", asMETHOD(legacy_sound, load), asCALL_THISCALL);
 	engine->RegisterObjectMethod("sound", "bool load(sound_close_callback@, sound_length_callback@, sound_read_callback@, sound_seek_callback@, const string &in, const string&in = \"\")", asMETHOD(legacy_sound, load_script), asCALL_THISCALL);
 	engine->RegisterObjectMethod("sound", "bool load(string& data, uint size, const string&in preload_filename = \"\", bool legacy_encrypt = false)", asMETHOD(legacy_sound, load_memstream), asCALL_THISCALL);
 	engine->RegisterObjectMethod("sound", "bool load_url(const string &in url)", asMETHOD(legacy_sound, load_url), asCALL_THISCALL);

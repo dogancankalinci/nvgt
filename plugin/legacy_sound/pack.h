@@ -18,6 +18,7 @@
 #include <unordered_map>
 #include <string>
 #include <vector>
+#include <mutex>
 #include <Poco/BinaryReader.h>
 #include <Poco/BinaryWriter.h>
 #include <scriptarray.h>
@@ -42,6 +43,9 @@ typedef struct {
 	bool reading;
 	bool close;
 	unsigned int stridx;
+	unsigned int item_offset; // Cached pack_item.offset so reads skip the per-call name lookup.
+	unsigned int namelen; // Cached pack_item.namelen for the pack_char_decrypt calls.
+	long read_pos; // Current position of reader within the pack file, -1 = unknown.
 } pack_stream;
 
 typedef enum { PACK_OPEN_MODE_NONE, PACK_OPEN_MODE_APPEND, PACK_OPEN_MODE_CREATE, PACK_OPEN_MODE_READ, PACK_OPEN_MODES_TOTAL } pack_open_mode;
@@ -56,6 +60,10 @@ class legacy_pack {
 	std::string pack_ident;
 	uint64_t file_offset; // Offset into opened file where pack is contained, used for embedding packs into executables.
 	int RefCount;
+	// stream_open/stream_close mutate pack_streams from whichever thread creates or frees a sound (the
+	// deferred BASS teardown runs on its own thread), so the registry needs a lock. Reads of an already
+	// opened stream do not touch the map and stay lock-free.
+	std::mutex streams_mutex;
 public:
 	unsigned int next_stream_idx;
 	bool delay_close;
@@ -77,6 +85,7 @@ public:
 	unsigned int get_file_size(const std::string& pack_filename);
 	unsigned int get_file_offset(const std::string& pack_filename);
 	unsigned int read_file(const std::string& pack_filename, unsigned int offset, unsigned char* buffer, unsigned int size, FILE* reader = NULL);
+	unsigned int read_file_locked(const std::string& pack_filename, unsigned int offset, unsigned char* buffer, unsigned int size);
 	std::string read_file_string(const std::string& pack_filename, unsigned int offset, unsigned int size);
 	bool raw_seek(int offset);
 	bool stream_close(pack_stream* stream, bool while_reading = false);
@@ -85,6 +94,7 @@ public:
 		return stream->offset;
 	}
 	unsigned int stream_read(pack_stream* stream, unsigned char* buffer, unsigned int size);
+	unsigned int stream_read_fast(pack_stream* stream, unsigned char* buffer, unsigned int size);
 	bool stream_seek(pack_stream* stream, unsigned int offset, int origen = SEEK_SET);
 	unsigned int stream_size(pack_stream* stream) {
 		return stream->filesize;
