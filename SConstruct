@@ -3,7 +3,7 @@
 # Copyright (c) 2022-2026 Sam Tupy
 # license: zlib
 
-import os, multiprocessing, tempfile
+import os, multiprocessing, subprocess, tempfile
 
 Help("""
 	Available custom build switches for NVGT:
@@ -136,7 +136,22 @@ if env["NVGT_TARGET"] != "android" and "android.cpp" in sources:
 if env["NVGT_TARGET"] != "windows" and "win.cpp" in sources: sources.remove("win.cpp")
 if env["NVGT_TARGET"] != "linux" and "linux.cpp" in sources: sources.remove("linux.cpp")
 if "version.cpp" in sources: sources.remove("version.cpp")
-env.Command(target = "src/version.cpp", source = ["src/" + i for i in sources], action = env["generate_version"])
+# version.cpp records the commit and the version the binaries are built from, but the only
+# dependencies it can be given here are the C++ sources, and those do not change when the
+# revision does: after a commit, an amend, a checkout or a cherry-pick the file still holds the
+# previous hash, so the binaries misreport what they were built from and a stub can ship claiming
+# a commit it does not contain. (It happened to look reliable because the source list differs
+# between targets, so alternating platform builds regenerated it by accident.) Depend on the
+# revision itself, and on the version file the generator reads, so it is rebuilt exactly when it
+# has gone stale - rather than on every build, which would relink everything each time.
+def nvgt_current_revision():
+	try:
+		if not os.path.isdir(".git"): return "release" # matches what the generator writes without a repository
+		return subprocess.check_output(["git", "rev-parse", "HEAD"], stderr = subprocess.DEVNULL).decode().strip()
+	except Exception:
+		return "release" # git missing or not runnable: leave the generator to decide
+version_source = env.Command(target = "src/version.cpp", source = ["src/" + i for i in sources], action = env["generate_version"])
+env.Depends(version_source, [env.Value(nvgt_current_revision()), File("version")])
 version_object = env.Object("build/obj_src/version", "src/version.cpp") # Things get weird if we do this after VariantDir.
 VariantDir("build/obj_src", "src", duplicate = 0)
 env.Append(CPPDEFINES = ["NVGT_BUILDING", "NO_OBFUSCATE"])
