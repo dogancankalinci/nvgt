@@ -14,6 +14,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <mutex>
 #include <vector>
 #include <Poco/FileStream.h>
 #include <Poco/Format.h>
@@ -61,7 +62,9 @@ void wait(int ms);
 static ma_context g_sound_context;
 audio_engine *g_audio_engine = nullptr;
 mixer* g_audio_mixer = nullptr;
-static std::atomic_flag g_soundsystem_initialized;
+static std::atomic_flag g_soundsystem_initialized; // The initialization body has begun; used only to let init_sound() recognise a call re-entering it from its own engine construction.
+static std::atomic_flag g_soundsystem_ready; // The engine exists. Set last so that no other thread can be told "initialized" while g_audio_engine is still null.
+static std::recursive_mutex g_soundsystem_init_mutex; // Recursive because constructing the engine re-enters init_sound() on this same thread.
 std::atomic<ma_result> g_soundsystem_last_error = MA_SUCCESS;
 static unordered_map<ma_data_source*, audio_data_source*> g_data_sources_map; // Only allow one audio_data_source wrapper per ma_data_source, should never be populated enough to be a performance hit.
 static std::unique_ptr<sound_service> g_sound_service;
@@ -80,7 +83,11 @@ bool add_decoder(ma_decoding_backend_vtable *vtable) {
 	}
 }
 bool init_sound() {
-	if (g_soundsystem_initialized.test()) return true;
+	if (g_soundsystem_ready.test()) return true;
+	// Everything below runs under the lock: a second thread must wait for the engine to exist rather than be told the system is ready while it is still being built.
+	std::lock_guard<std::recursive_mutex> lock(g_soundsystem_init_mutex);
+	if (g_soundsystem_ready.test()) return true; // another thread finished initializing while we waited for the lock
+	if (g_soundsystem_initialized.test()) return true; // re-entrant call from the engine construction below, on this very thread; the engine is not assigned yet but everything it needs already is
 	#ifdef __linux__
 	// Attempt to silence ALSA's verbose error output on headless servers; libasound may not be present so load it dynamically and ignore failure.
 	typedef int (*snd_lib_error_set_handler_t)(void (*)(const char*, int, const char*, int, const char*, ...));
@@ -115,6 +122,7 @@ bool init_sound() {
 	g_soundsystem_initialized.test_and_set();
 	refresh_audio_devices();
 	g_audio_engine = new_audio_engine(audio_engine::PERCENTAGE_ATTRIBUTES | audio_engine::NO_CLIP);
+	g_soundsystem_ready.test_and_set(); // only now may other threads use the default engine
 	return true;
 }
 void uninit_sound() {

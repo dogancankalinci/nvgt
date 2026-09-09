@@ -28,6 +28,8 @@ public:
 	audio_node_impl(ma_node_base *node, audio_engine *engine) : audio_node(), node(node), engine(engine), refcount(1) {
 		if (!init_sound()) throw std::runtime_error("sound system was not initialized");
 		if (!engine) this->engine = g_audio_engine;
+		// Defense in depth: without an engine there is nothing to attach to, and the duplicate() below would dereference null. uninit_sound() can also leave g_audio_engine cleared behind us.
+		if (!this->engine) throw std::runtime_error("no audio engine available");
 		if (dynamic_cast<audio_node_impl*>(this->engine) != this) this->engine->duplicate();
 	}
 	~audio_node_impl() {
