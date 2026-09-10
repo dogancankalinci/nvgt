@@ -40,6 +40,25 @@ class sound_pool_item {
 	bool persistent;
 	timer last_memory_push;
 	string extra_data;
+	// Last values actually written to the sound. update_listener_position runs for every slot on
+	// every listener update and wrote the pitch, the rolloff, the attenuation factor and the
+	// spatialization flag each time, even when neither the sound nor the listener had changed.
+	// Those writes reach the audio engine and take the locks it uses while mixing that sound, so
+	// with a few dozen sounds playing they add up to thousands of contentions a second with the
+	// audio callback - the situation where audio breaks up. Remembering the values makes an
+	// unchanged one cost nothing.
+	float applied_pitch;
+	float applied_volume;
+	float applied_rolloff;
+	float applied_attenuation;
+	bool applied_spatialization;
+	audio_positioning_mode applied_positioning;
+	bool positioning_applied;
+	bool pitch_applied;
+	bool volume_applied;
+	bool rolloff_applied;
+	bool attenuation_applied;
+	bool spatialization_applied;
 
 	sound_pool_item() {
 		reset();
@@ -77,6 +96,66 @@ class sound_pool_item {
 		persistent = false;
 		last_memory_push.restart();
 		extra_data = "";
+		invalidate_applied();
+	}
+
+	// A load creates a new sound, so what was written to the old one means nothing: the next
+	// apply must reach the engine.
+	void invalidate_applied() {
+		pitch_applied = false;
+		volume_applied = false;
+		rolloff_applied = false;
+		attenuation_applied = false;
+		spatialization_applied = false;
+		applied_pitch = 0.0;
+		applied_volume = 0.0;
+		applied_rolloff = 0.0;
+		applied_attenuation = 0.0;
+		applied_spatialization = false;
+		applied_positioning = AUDIO_POSITIONING_ABSOLUTE;
+		positioning_applied = false;
+	}
+	void apply_pitch(float p) {
+		if (@handle == null) return;
+		if (pitch_applied and p == applied_pitch) return;
+		handle.pitch = p;
+		applied_pitch = p;
+		pitch_applied = true;
+	}
+	void apply_volume(float v) {
+		if (@handle == null) return;
+		if (volume_applied and v == applied_volume) return;
+		handle.set_volume(v);
+		applied_volume = v;
+		volume_applied = true;
+	}
+	void apply_rolloff(float r) {
+		if (@handle == null) return;
+		if (rolloff_applied and r == applied_rolloff) return;
+		handle.rolloff = r;
+		applied_rolloff = r;
+		rolloff_applied = true;
+	}
+	void apply_attenuation(float a) {
+		if (@handle == null) return;
+		if (attenuation_applied and a == applied_attenuation) return;
+		handle.directional_attenuation_factor = a;
+		applied_attenuation = a;
+		attenuation_applied = true;
+	}
+	void apply_positioning(audio_positioning_mode mode) {
+		if (@handle == null) return;
+		if (positioning_applied and mode == applied_positioning) return;
+		handle.positioning = mode;
+		applied_positioning = mode;
+		positioning_applied = true;
+	}
+	void apply_spatialization(bool e) {
+		if (@handle == null) return;
+		if (spatialization_applied and e == applied_spatialization) return;
+		handle.spatialization_enabled = e;
+		applied_spatialization = e;
+		spatialization_applied = true;
 	}
 
 	/*
@@ -93,12 +172,13 @@ class sound_pool_item {
 			}
 			if (total_distance <= max_distance and handle.active == false) {
 				handle.load(filename, @packfile != null ? @packfile : @sound_default_pack);
+				invalidate_applied();
 				if (handle.active == true) {
 					if (start_offset > 0)
 						handle.seek(start_offset);
 					update_listener_position(listener_x, listener_y, listener_z, rotation);
 					handle.set_pan(start_pan);
-					handle.set_volume(start_volume);
+					apply_volume(start_volume);
 					if (paused == false)
 						handle.play_looped();
 				}
@@ -115,9 +195,9 @@ class sound_pool_item {
 		if (handle.active == false)
 			return;
 		if (stationary == true) {
-			if (handle.spatialization_enabled) handle.spatialization_enabled = false;
+			apply_spatialization(false);
 			return;
-		} else handle.positioning = AUDIO_POSITIONING_ABSOLUTE; // We wish to simulate our own listener.
+		} else apply_positioning(AUDIO_POSITIONING_ABSOLUTE); // We wish to simulate our own listener.
 		float delta_left = x - left_range;
 		float delta_right = x + right_range;
 		float delta_backward = y - backward_range;
@@ -137,9 +217,10 @@ class sound_pool_item {
 			true_pos.z = delta_lower;
 		else if (listener_z >= delta_upper)
 			true_pos.z = delta_upper;
-		handle.spatialization_enabled = true_pos != vector(listener_x, listener_y, listener_z);
-		if (!handle.spatialization_enabled) {
-			handle.pitch = start_pitch; // Insure no behind_pitch_decrease is still applied if we hit this branch.
+		bool spatialize = true_pos != vector(listener_x, listener_y, listener_z);
+		apply_spatialization(spatialize);
+		if (!spatialize) {
+			apply_pitch(start_pitch); // Insure no behind_pitch_decrease is still applied if we hit this branch.
 			return;
 		}
 		true_pos -= vector(listener_x, listener_y, listener_z);
@@ -149,13 +230,13 @@ class sound_pool_item {
 			true_pos.z = true_pos.y - true_pos.z;
 			true_pos.y -= true_pos.z;
 		}
-		handle.directional_attenuation_factor = pan_step;
-		handle.rolloff = volume_step;
+		apply_attenuation(pan_step);
+		apply_rolloff(volume_step);
 		handle.set_position_3d(true_pos.x, true_pos.y, true_pos.z);
 		float pitch = start_pitch;
 		if (true_pos.y < 0) pitch -= behind_pitch_decrease;
 		if (true_pos.z < 0) pitch -= behind_pitch_decrease;
-		handle.pitch = pitch;
+		apply_pitch(pitch);
 	}
 
 
@@ -310,6 +391,7 @@ class sound_pool {
 				}
 			}
 			items[slot].handle.load(items[slot].filename, @items[slot].packfile != null ? @items[slot].packfile : @sound_default_pack);
+			items[slot].invalidate_applied();
 			if (items[slot].handle.active == false) {
 				items[slot].reset();
 				return -1;
@@ -319,8 +401,8 @@ class sound_pool {
 			if (start_pan != 0.0)
 				items[slot].handle.set_pan(start_pan);
 			if (start_volume < 0.0)
-				items[slot].handle.set_volume(start_volume);
-			items[slot].handle.set_pitch(start_pitch);
+				items[slot].apply_volume(start_volume);
+			items[slot].apply_pitch(start_pitch);
 		}
 		if (dimension > 0)
 			last_listener_x = listener_x;
@@ -639,12 +721,12 @@ class sound_pool {
 		items[slot].start_pitch = start_pitch;
 		if (@items[slot].handle != null) {
 			items[slot].handle.set_pan(start_pan);
-			items[slot].handle.set_volume(start_volume);
-			items[slot].handle.set_pitch(start_pitch);
+			items[slot].apply_volume(start_volume);
+			items[slot].apply_pitch(start_pitch);
 			return true;
 		}
-		if (items[slot].is_3d == false and items[slot].handle.get_pitch() != start_pitch)
-			items[slot].handle.set_pitch(start_pitch);
+		if (items[slot].is_3d == false)
+			items[slot].apply_pitch(start_pitch);
 		return true;
 	}
 
