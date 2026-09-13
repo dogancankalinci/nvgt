@@ -225,28 +225,51 @@ bool map_area::is_in_area_range(float minx, float maxx, float miny, float maxy, 
 	return this->minz >= minz - d && this->maxz < maxz + d + 1.0 && this->miny >= miny - d && this->maxy < maxy + d + 1.0 && this->minx >= minx - d && this->maxx < maxx + d + 1.0 && is_unfiltered(filter_callback);
 }
 
+// The filter callback runs script, which may add areas, or reset() the map and delete this very frame, while we iterate. So iterate over a snapshot that holds its own references: whatever the callback does to the live vector, the areas we are visiting stay valid until we are done.
+static std::vector<map_area*> snapshot_areas(const std::vector<map_area*>& areas) {
+	std::vector<map_area*> copy(areas);
+	for (map_area* a : copy) a->add_ref();
+	return copy;
+}
+static void release_snapshot(std::vector<map_area*>& copy) {
+	for (map_area* a : copy) a->release();
+}
 int map_frame::add_areas_for_point(std::vector<map_area*>& local_areas, float x, float y, float z, float d, int p, asIScriptFunction* filter_callback, asINT64 flags, asINT64 excluded_flags) {
-	for (int i = 0; i < areas.size(); i++) {
-		if (areas[i]->priority >= p && areas[i]->is_in_area(x, y, z, d, filter_callback, flags, excluded_flags)) {
-			p = areas[i]->priority;
-			local_areas.push_back(areas[i]);
+	std::vector<map_area*> snap = snapshot_areas(areas);
+	for (map_area* a : snap) {
+		if (a->priority >= p && a->is_in_area(x, y, z, d, filter_callback, flags, excluded_flags)) {
+			p = a->priority;
+			a->add_ref(); // the result list owns a reference; the callers below release it
+			local_areas.push_back(a);
 		}
 	}
+	release_snapshot(snap);
 	return p;
 }
 int map_frame::add_areas_for_range(std::vector<map_area*>& local_areas, float minx, float maxx, float miny, float maxy, float minz, float maxz, float d, int p, asIScriptFunction* filter_callback, asINT64 flags, asINT64 excluded_flags) {
-	for (int i = 0; i < areas.size(); i++) {
-		if (!areas[i]->tmp_adding_to_result && areas[i]->priority >= p && areas[i]->is_in_area_range(minx, maxx, miny, maxy, minz, maxz, d, 0, filter_callback, flags, excluded_flags)) {
-			//p=areas[i]->priority; // Object can be reframed at the end of frame with lower priority than something that is higher in the frame, such item will not be included in list if p keeps getting reset.
-			local_areas.push_back(areas[i]);
-			areas[i]->tmp_adding_to_result = true;
+	std::vector<map_area*> snap = snapshot_areas(areas);
+	for (map_area* a : snap) {
+		if (!a->tmp_adding_to_result && a->priority >= p && a->is_in_area_range(minx, maxx, miny, maxy, minz, maxz, d, 0, filter_callback, flags, excluded_flags)) {
+			//p=a->priority; // Object can be reframed at the end of frame with lower priority than something that is higher in the frame, such item will not be included in list if p keeps getting reset.
+			a->add_ref(); // the result list owns a reference; the callers below release it
+			local_areas.push_back(a);
+			a->tmp_adding_to_result = true;
 		}
 	}
+	release_snapshot(snap);
 	return p;
 }
 void map_frame::reset() {
-	for (auto i : areas)
+	// An area can outlive this frame (script keeps a handle, or a filter callback reset the map mid-query). Drop the back links first, otherwise its later unframe() writes into this freed frame.
+	for (auto i : areas) {
+		auto it = std::find(i->frames.begin(), i->frames.end(), this);
+		while (it != i->frames.end()) {
+			i->frames.erase(it);
+			it = std::find(i->frames.begin(), i->frames.end(), this);
+		}
+		if (i->frames.empty()) i->framed = false;
 		i->release();
+	}
 	areas.clear();
 }
 
@@ -330,8 +353,10 @@ CScriptArray* coordinate_map::get_areas_script(float x, float y, float z, float 
 	CScriptArray* array = CScriptArray::Create(g_MapAreaArrayType);
 	get_areas(x, x, y, y, z, z, d, local_areas, false, filter_callback, flags, excluded_flags);
 	array->Reserve(local_areas.size());
-	for (int i = 0; i < local_areas.size(); i++)
-		array->InsertLast(&local_areas[i]);
+	for (int i = 0; i < local_areas.size(); i++) {
+		array->InsertLast(&local_areas[i]); // the array takes its own reference
+		local_areas[i]->release();
+	}
 	return array;
 }
 CScriptArray* coordinate_map::get_areas_in_range_script(float minx, float maxx, float miny, float maxy, float minz, float maxz, float d, asIScriptFunction* filter_callback, asINT64 flags, asINT64 excluded_flags) {
@@ -341,24 +366,28 @@ CScriptArray* coordinate_map::get_areas_in_range_script(float minx, float maxx, 
 	CScriptArray* array = CScriptArray::Create(g_MapAreaArrayType);
 	get_areas(minx, maxx, miny, maxy, minz, maxz, d, local_areas, false, filter_callback, flags, excluded_flags);
 	array->Reserve(local_areas.size());
-	for (int i = 0; i < local_areas.size(); i++)
-		array->InsertLast(&local_areas[i]);
+	for (int i = 0; i < local_areas.size(); i++) {
+		array->InsertLast(&local_areas[i]); // the array takes its own reference
+		local_areas[i]->release();
+	}
 	return array;
 }
 map_area* coordinate_map::get_area(float x, float y, float z, int max_priority, float d, asIScriptFunction* filter_callback, asINT64 flags, asINT64 excluded_flags) {
 	std::vector<map_area*> local_areas;
 	get_areas(x, x, y, y, z, z, d, local_areas, max_priority < 0, filter_callback, flags, excluded_flags);
 	if (local_areas.size() < 1)return NULL;
-	if (max_priority < 0) {
-		local_areas[local_areas.size() - 1]->add_ref();
-		return local_areas[local_areas.size() - 1];
+	map_area* result = NULL;
+	if (max_priority < 0) result = local_areas[local_areas.size() - 1];
+	else {
+		for (int i = local_areas.size() - 1; i >= 0; i--) {
+			if (local_areas[i]->priority >= max_priority) continue;
+			result = local_areas[i];
+			break;
+		}
 	}
-	for (int i = local_areas.size() - 1; i >= 0; i--) {
-		if (local_areas[i]->priority >= max_priority) continue;
-		local_areas[i]->add_ref();
-		return local_areas[i];
-	}
-	return NULL;
+	// Every entry holds a reference taken by get_areas; the chosen one is handed to the caller as its returned reference, the others are dropped.
+	for (map_area* a : local_areas) if (a != result) a->release();
+	return result;
 }
 void coordinate_map::reset() {
 	for (int i = 0; i < total_frame_sizes; i++) {
