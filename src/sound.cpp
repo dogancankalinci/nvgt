@@ -610,7 +610,7 @@ protected:
 				auto it = g_data_sources_map.find(src->pDataSource);
 				if (it != g_data_sources_map.end()) g_data_sources_map.erase(it);
 			}
-			if (node) ma_data_source_node_uninit(&*src, nullptr);
+			if (node) { std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); ma_data_source_node_uninit(&*src, nullptr); }
 			node = nullptr;
 			src.reset();
 		}
@@ -1233,7 +1233,7 @@ public:
 		node_chain->set_endpoint(e->get_endpoint());
 		if (!sound_group) return;
 		snd = make_unique<ma_sound>();
-		ma_sound_group_init(e->get_ma_engine(), 0, nullptr, &*snd);
+		{ std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); ma_sound_group_init(e->get_ma_engine(), 0, nullptr, &*snd); } // with no parent group miniaudio attaches the new group to the endpoint here, editing the same input list as every concurrent attach/detach
 		node = (ma_node_base *)&*snd;
 		set_max_distance(70);
 		ma_sound_group_set_rolloff(&*snd, 0); // Our own spatializer controls attenuation.
@@ -1256,8 +1256,7 @@ public:
 			if (shape->connected_sound) unregister_blocking_sound_shape(shape);
 			shape->release();
 		}
-		if (snd)
-			ma_sound_group_uninit(&*snd);
+		if (snd) { std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); ma_sound_group_uninit(&*snd); } // a sound group is a graph node: its uninit edits the endpoint's input list
 	}
 	audio_spatializer* get_spatializer() const {
 		if (!spatializer) {
@@ -1687,7 +1686,7 @@ public:
 		I'll raise an issue with MA to see if he'd be okay with this change. For now we'll just wait a few milliseconds for the backlog to clear and fail permanently if we see multiple MA_OUT_OF_MEMORY conditions back  to back. This should give the job queue time
 		*/
 		for (int i = 0; i < 10; i++) {
-			g_soundsystem_last_error = ma_sound_init_ex(engine->get_ma_engine(), &cfg, &*snd);
+			{ std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); g_soundsystem_last_error = ma_sound_init_ex(engine->get_ma_engine(), &cfg, &*snd); } // auto-attaches to the endpoint
 			if (g_soundsystem_last_error == MA_OUT_OF_MEMORY) {
 				// See above; this is probably job queue backlog rather than an actual out of memory. Take a break and try again.
 				wait(5);
@@ -1698,7 +1697,7 @@ public:
 		// For the time being, give it one more try without any flags if we got -10 (MA_INVALID_FILE) because MA's support for loading mp3 is limited.
 		if (g_soundsystem_last_error == MA_INVALID_FILE) {
 			cfg.flags = 0;
-			g_soundsystem_last_error = ma_sound_init_ex(engine->get_ma_engine(), &cfg, &*snd);
+			{ std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); g_soundsystem_last_error = ma_sound_init_ex(engine->get_ma_engine(), &cfg, &*snd); } // auto-attaches to the endpoint
 		}
 
 		if (g_soundsystem_last_error != MA_SUCCESS)
@@ -1769,6 +1768,7 @@ public:
 			}
 			ma_pcm_rb_set_sample_rate(&*pcm_stream, sample_rate);
 			snd = make_unique<ma_sound>();
+			std::unique_lock<std::recursive_mutex> graph_lock(g_node_graph_mutex); // auto-attaches to the endpoint
 			if ((g_soundsystem_last_error = ma_sound_init_from_data_source(get_engine()->get_ma_engine(), &*pcm_stream, 0, nullptr, &*snd)) != MA_SUCCESS) {
 				snd.reset();
 				ma_pcm_rb_uninit(&*pcm_stream);
@@ -1816,6 +1816,7 @@ public:
 		}
 		if (snd) close();
 		snd = make_unique<ma_sound>();
+		std::unique_lock<std::recursive_mutex> graph_lock(g_node_graph_mutex); // auto-attaches to the endpoint
 		if ((g_soundsystem_last_error = ma_sound_init_from_data_source(get_engine()->get_ma_engine(), ds->get_ma_data_source(), 0, nullptr, &*snd)) != MA_SUCCESS) {
 			snd.reset();
 			ds->release();
@@ -1838,7 +1839,7 @@ public:
 			spatializer->release();
 			spatializer = nullptr;
 		}
-		ma_sound_uninit(&*snd);
+		{ std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); ma_sound_uninit(&*snd); }
 		snd.reset();
 		if (datasource) {
 			datasource->release();

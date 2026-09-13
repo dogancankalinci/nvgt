@@ -14,6 +14,7 @@
 #include <exception>
 #include <memory>
 #include <unordered_set>
+#include <mutex>
 #include <Poco/NotificationQueue.h>
 #include <Poco/Thread.h>
 #include <ma_reverb_node.h>
@@ -48,7 +49,12 @@ effect_node_impl::effect_node_impl(audio_engine* e, ma_uint8 input_channel_count
 }
 effect_node_impl::~effect_node_impl() { destroy_node(); }
 void effect_node_impl::destroy_node() {
+	
+	// ma_node_uninit detaches from every input bus it is attached to, editing the same lists a concurrent attach on another script thread is editing; keep it under the graph lock like the attach/detach wrappers.
+	std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex);
+	
 	if (n) ma_node_uninit((ma_node_base*)&*n, nullptr);
+	
 	n.reset();
 }
 void effect_node_impl::process(const float** frames_in, unsigned int* frame_count_in, float** frames_out, unsigned int* frame_count_out) {} // override in subclasses.
@@ -133,6 +139,7 @@ public:
 		return success;
 	}
 	void set_endpoint(audio_node* node, unsigned int input_bus_index) override {
+		std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); // detach-then-attach must be one graph mutation, not two that another thread can interleave
 		// Ownership of endpoint is not tracked here; it is taken/released automatically by whichever node's attach_output_bus/detach_output_bus is actually called below (audio_node_impl's own bookkeeping).
 		if (endpoint) {
 			if (!nodes.empty()) last()->detach_output_bus(0);
@@ -576,6 +583,7 @@ class plugin_node_impl : public audio_node_impl, public virtual plugin_node {
 		node = (ma_node_base*)&*pn;
 	}
 	~plugin_node_impl() {
+		std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex);
 		if (pn) ma_node_uninit(&*pn, nullptr);
 	}
 	audio_plugin_node_interface* get_plugin_interface() const override { return impl; }
@@ -591,7 +599,9 @@ static int g_next_panner_id = 0;
 static int g_next_attenuator_id = 0;
 static int g_default_3d_panner = -1;
 static int g_default_3d_attenuator = -1;
+std::recursive_mutex g_node_graph_mutex;
 static std::unordered_set<audio_spatializer*> g_tracked_spatializers;
+static std::mutex g_tracked_spatializers_mutex; // every mixer/sound constructs a spatializer on whatever script thread creates it, while sound_set_spatialization iterates the set from another
 
 int register_audio_panner(spatializer_component_node_factory factory, bool default_enabled) {
 	int id = g_next_panner_id++;
@@ -623,6 +633,7 @@ void set_audio_panner_enabled(int id, bool enabled) {
 		bool was_enabled = it->second.enabled;
 		it->second.enabled = enabled;
 		if (was_enabled != enabled) {
+			std::lock_guard<std::mutex> lock(g_tracked_spatializers_mutex);
 			for (auto* spatializer : g_tracked_spatializers) {
 				if (spatializer) spatializer->on_panner_enabled_changed(id, enabled);
 			}
@@ -636,6 +647,7 @@ void set_audio_attenuator_enabled(int id, bool enabled) {
 		bool was_enabled = it->second.enabled;
 		it->second.enabled = enabled;
 		if (was_enabled != enabled) {
+			std::lock_guard<std::mutex> lock(g_tracked_spatializers_mutex);
 			for (auto* spatializer : g_tracked_spatializers) {
 				if (spatializer) spatializer->on_attenuator_enabled_changed(id, enabled);
 			}
@@ -752,11 +764,11 @@ public:
 		if (!mixer) throw std::invalid_argument("mixer cannot be null");
 		spatialization_params.rolloff = 1.0f;
 		spatialization_params.directional_attenuation_factor = 1.0f;
-		g_tracked_spatializers.insert(this);
+		{ std::lock_guard<std::mutex> lock(g_tracked_spatializers_mutex); g_tracked_spatializers.insert(this); }
 	}
 	~audio_spatializer_impl() {
 		destroy_node();
-		g_tracked_spatializers.erase(this);
+		{ std::lock_guard<std::mutex> lock(g_tracked_spatializers_mutex); g_tracked_spatializers.erase(this); }
 		if (panner) panner->release();
 		if (attenuator) attenuator->release();
 		if (reverb_attachment) reverb_attachment->release();
