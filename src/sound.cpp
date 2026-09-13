@@ -578,7 +578,10 @@ class audio_data_source_impl : public audio_node_impl, public virtual audio_data
 	audio_data_source* src_cur;
 	audio_data_source* src_next;
 protected:
+	// One script thread may be reading from or closing this object while another opens it (a shared decoder handle, or a wrapper destroyed by its owner mid-read). The members below are unique_ptrs that get reset on close, so those paths must not interleave. Recursive because open() re-enters close(), and set_ma_data_source() re-enters reset().
+	mutable std::recursive_mutex source_mutex;
 	bool set_ma_data_source(ma_data_source* new_src) {
+		std::lock_guard<std::recursive_mutex> guard(source_mutex);
 		reset();
 		if (!new_src) return true;
 		src = make_unique<ma_data_source_node>();
@@ -600,6 +603,7 @@ protected:
 		return true;
 	}
 	void reset() {
+		std::lock_guard<std::recursive_mutex> guard(source_mutex);
 		if (src) {
 			{
 				std::lock_guard<std::mutex> lock(g_data_sources_map_mutex);
@@ -620,6 +624,7 @@ public:
 	ma_data_source* get_ma_data_source() const override { return src? src->pDataSource : nullptr; }
 	unsigned int get_advised_read_frame_count() const override { return SOUNDSYSTEM_FRAMESIZE; }
 	unsigned long long read(void* buffer, unsigned long long frame_count) override {
+		std::lock_guard<std::recursive_mutex> guard(source_mutex);
 		if (!src || !detach_all_output_buses()) return 0;
 		if (!frame_count) frame_count = get_advised_read_frame_count();
 		if (!frame_count) return 0;
@@ -628,6 +633,7 @@ public:
 		return frames_read;
 	}
 	CScriptArray* read_script(unsigned long long frame_count) override {
+		std::lock_guard<std::recursive_mutex> guard(source_mutex);
 		if (!frame_count) frame_count = get_advised_read_frame_count();
 		CScriptArray* array = CScriptArray::Create(get_array_type("array<float>"), frame_count * get_channels());
 		if (!frame_count) return array;
@@ -893,6 +899,7 @@ public:
 	audio_decoder_impl(audio_engine* e) : audio_data_source_impl(e), decoder(nullptr), datastream_ref(nullptr) {}
 	~audio_decoder_impl() { close(); }
 	virtual bool open(const std::string& filename, const pack_interface* pack_file, unsigned int sample_rate, unsigned int channels) override {
+		std::lock_guard<std::recursive_mutex> guard(source_mutex);
 		if (decoder && !close()) return false;
 		ma_decoder_config cfg = decoder_config_init(sample_rate, channels);
 		std::string triplet = g_sound_service->prepare_triplet(filename, pack_file && pack_file->get_is_active()? g_pack_protocol_slot : 0, pack_file && pack_file->get_is_active()? std::shared_ptr < const pack_interface > (pack_file->make_immutable()) : nullptr, 0, nullptr);
@@ -902,6 +909,7 @@ public:
 		return g_soundsystem_last_error == MA_SUCCESS;
 	}
 	virtual bool open_stream(datastream* ds, unsigned int sample_rate = 0, unsigned int channels = 0) override {
+		std::lock_guard<std::recursive_mutex> guard(source_mutex);
 		if (!ds || !ds->get_istr() || decoder && !close()) {
 			if (ds) ds->release();
 			return false;
@@ -927,6 +935,7 @@ public:
 		return g_soundsystem_last_error == MA_SUCCESS;
 	}
 	virtual bool close() override {
+		std::lock_guard<std::recursive_mutex> guard(source_mutex);
 		reset();
 		if (!decoder) return false;
 		if (datastream_ref) {
