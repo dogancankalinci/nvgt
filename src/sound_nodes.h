@@ -48,7 +48,7 @@ public:
 	unsigned int get_input_channels(unsigned int bus) { return node ? ma_node_get_input_channels(node, bus) : 0; }
 	unsigned int get_output_channels(unsigned int bus) { return node ? ma_node_get_output_channels(node, bus) : 0; }
 	bool attach_output_bus(unsigned int output_bus, audio_node *destination, unsigned int destination_input_bus) {
-		if (!node) return false;
+		if (!node || !destination) return false; // A null destination reaches here straight from script (attach_output_bus(bus, null, bus)); miniaudio would dereference it.
 		if ((g_soundsystem_last_error = ma_node_attach_output_bus(node, output_bus, destination->get_ma_node(), destination_input_bus)) != MA_SUCCESS) return false;
 		if (output_bus >= output_connections.size()) output_connections.resize(output_bus + 1, nullptr);
 		if (output_connections[output_bus]) output_connections[output_bus]->release();
