@@ -99,6 +99,7 @@ void timer_queue::release() {
 	}
 }
 void timer_queue::reset() {
+	std::lock_guard<std::recursive_mutex> l(mtx);
 	for (auto it = timer_objects.begin(); it != timer_objects.end(); it++) {
 		if (it->second->callback) it->second->callback->Release();
 		if (it->second->is_scheduled) it->second->cancel();
@@ -108,6 +109,7 @@ void timer_queue::reset() {
 	flush();
 }
 CScriptArray* timer_queue::list_timers() {
+	std::lock_guard<std::recursive_mutex> l(mtx);
 	asIScriptContext *context = asGetActiveContext();
 	if (context == nullptr) return nullptr;
 	asIScriptEngine *engine = context->GetEngine();
@@ -123,6 +125,7 @@ CScriptArray* timer_queue::list_timers() {
 	return array;
 }
 void timer_queue::set(const std::string &id, asIScriptFunction *callback, const std::string &callback_data, uint64_t timeout, bool repeating) {
+	std::lock_guard<std::recursive_mutex> l(mtx);
 	if (timeout < 1) timeout = 1;
 	auto it = timer_objects.find(id);
 	if (it != timer_objects.end()) {
@@ -140,16 +143,19 @@ void timer_queue::set(const std::string &id, asIScriptFunction *callback, const 
 	timers.schedule(timer_objects[id], timeout);
 }
 uint64_t timer_queue::elapsed(const std::string &id) {
+	std::lock_guard<std::recursive_mutex> l(mtx);
 	auto it = timer_objects.find(id);
 	if (it == timer_objects.end()) return 0;
 	return timers.now() - it->second->scheduled_at();
 }
 uint64_t timer_queue::timeout(const std::string &id) {
+	std::lock_guard<std::recursive_mutex> l(mtx);
 	auto it = timer_objects.find(id);
 	if (it == timer_objects.end()) return 0;
 	return it->second->timeout;
 }
 bool timer_queue::restart(const std::string &id) {
+	std::lock_guard<std::recursive_mutex> l(mtx);
 	auto it = timer_objects.find(id);
 	if (it == timer_objects.end()) return false;
 	it->second->is_scheduled = true;
@@ -158,11 +164,13 @@ bool timer_queue::restart(const std::string &id) {
 	return true;
 }
 bool timer_queue::is_repeating(const std::string &id) {
+	std::lock_guard<std::recursive_mutex> l(mtx);
 	auto it = timer_objects.find(id);
 	if (it == timer_objects.end()) return false;
 	return it->second->repeating;
 }
 bool timer_queue::set_timeout(const std::string &id, uint64_t timeout, bool repeating) {
+	std::lock_guard<std::recursive_mutex> l(mtx);
 	auto it = timer_objects.find(id);
 	if (it == timer_objects.end()) return false;
 	it->second->timeout = timeout;
@@ -174,6 +182,7 @@ bool timer_queue::set_timeout(const std::string &id, uint64_t timeout, bool repe
 	return true;
 }
 bool timer_queue::erase(const std::string &id) {
+	std::lock_guard<std::recursive_mutex> l(mtx);
 	auto it = timer_objects.find(id);
 	if (it == timer_objects.end()) return false;
 	it->second->cancel();
@@ -182,6 +191,7 @@ bool timer_queue::erase(const std::string &id) {
 	return true;
 }
 void timer_queue::flush() {
+	std::lock_guard<std::recursive_mutex> l(mtx);
 	for (auto i : deleting_timers) {
 		if (i->callback) i->callback->Release();
 		delete i;
@@ -190,6 +200,7 @@ void timer_queue::flush() {
 	last_looped = ticks();
 }
 bool timer_queue::loop(int max_timers, int max_catchup) {
+	std::lock_guard<std::recursive_mutex> l(mtx);
 	for (auto i : deleting_timers) {
 		if (i->callback) i->callback->Release();
 		delete i;

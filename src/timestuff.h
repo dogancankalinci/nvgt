@@ -17,6 +17,7 @@
 #include <Poco/RefCountedObject.h>
 #include <timer-wheel.h>
 #include <unordered_map>
+#include <mutex>
 #include <unordered_set>
 #include <string>
 
@@ -38,6 +39,8 @@ public:
 	void execute();
 };
 class timer_queue {
+	// Script threads may set/erase timers while another thread runs loop(); the maps and wheel are not thread safe. Recursive because a timer callback re-enters erase()/schedule() on the looping thread.
+	std::recursive_mutex mtx;
 	TimerWheel timers;
 	std::unordered_map<std::string, timer_queue_item*> timer_objects;
 	std::unordered_set<timer_queue_item*> deleting_timers;
@@ -57,6 +60,7 @@ public:
 	uint64_t timeout(const std::string& id);
 	bool is_repeating(const std::string& id);
 	bool exists(const std::string& id) {
+		std::lock_guard<std::recursive_mutex> l(mtx);
 		return timer_objects.find(id) != timer_objects.end();
 	}
 	bool restart(const std::string& id);
@@ -66,9 +70,11 @@ public:
 	CScriptArray* list_timers();
 	void reset();
 	void schedule(timer_queue_item* t, Tick delta) {
+		std::lock_guard<std::recursive_mutex> l(mtx);
 		return timers.schedule(t, delta);
 	}
 	int size() {
+		std::lock_guard<std::recursive_mutex> l(mtx);
 		return timer_objects.size();
 	}
 	bool loop(int max_timers = 0, int max_catchup = 100);
