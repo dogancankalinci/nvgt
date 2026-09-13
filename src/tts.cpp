@@ -15,6 +15,7 @@
 #include <limits>
 #include <algorithm>
 #include <unordered_map>
+#include <mutex>
 #include <thread>
 #include <miniaudio.h>
 #include <Poco/FileStream.h>
@@ -113,17 +114,19 @@ public:
 };
 
 // Engine factory registry
+static std::recursive_mutex g_tts_registry_mutex; // guards engine_registry, engine_names and g_shared_engines: tts_voice objects are created and used from any script thread and lazily populate all three
 static vector<string> engine_names;
 static unordered_map<string, tts_engine_factory> engine_registry;
 static string preferred_engine_name;
 bool tts_engine_register(const string &name, tts_engine_factory factory) {
+	std::lock_guard<std::recursive_mutex> lock(g_tts_registry_mutex); // recursive: register_builtin_engines() calls this while the constructor already holds the lock
 	if (engine_registry.find(name) != engine_registry.end()) return false;
 	engine_registry[name] = factory;
 	engine_names.push_back(name);
 	return true;
 }
 
-vector<string> tts_get_engine_names() { return engine_names; }
+vector<string> tts_get_engine_names() { std::lock_guard<std::recursive_mutex> lock(g_tts_registry_mutex); return engine_names; }
 void tts_set_preferred_engine(const string &name) { preferred_engine_name = name; }
 
 shared_ptr<tts_engine> tts_create_engine(const string &name) {
@@ -140,6 +143,7 @@ struct shared_engine_entry {
 };
 static unordered_map<string, shared_engine_entry> g_shared_engines;
 static shared_engine_entry& tts_get_shared_engine(const string &name) {
+	std::lock_guard<std::recursive_mutex> lock(g_tts_registry_mutex);
 	auto it = g_shared_engines.find(name);
 	if (it != g_shared_engines.end()) return it->second;
 	shared_engine_entry entry;
@@ -162,7 +166,10 @@ static void register_builtin_engines() {
 
 // tts_voice implementation
 tts_voice::tts_voice(const string &engine_list) : RefCount(1), voice_state(VOICES_NONE), current_voice_index(-1), nvgt_rate(0), nvgt_pitch(0), nvgt_volume(0), params_initialized(false) {
-	if (engine_registry.empty()) register_builtin_engines();
+	{
+		std::lock_guard<std::recursive_mutex> lock(g_tts_registry_mutex);
+		if (engine_registry.empty()) register_builtin_engines();
+	}
 	speaking.clear();
 	if (engine_list.empty()) engine_names = tts_get_engine_names();
 	else {
