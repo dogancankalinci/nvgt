@@ -89,7 +89,18 @@ AABB aabb_from_triangle(CScriptArray* points) {
 	return result;
 }
 
+// reactphysics3d is iterating its own contact/overlap lists while a callback runs; destroying a body, joint or the world from inside one frees memory that iteration still reads. Track callback depth per thread so the destroy wrappers can refuse instead.
+static thread_local int g_physics_callback_depth = 0;
+struct physics_callback_scope {
+	physics_callback_scope() { g_physics_callback_depth++; }
+	~physics_callback_scope() { g_physics_callback_depth--; }
+};
+static void check_not_in_physics_callback(const char* what) {
+	if (g_physics_callback_depth > 0) throw runtime_error(string(what) + " cannot be destroyed from inside a physics callback; defer it until the callback returns");
+}
+
 void simple_void_callback(asIScriptFunction* callback, const void* data) {
+	physics_callback_scope in_callback;
 	asIScriptContext* ACtx = asGetActiveContext();
 	bool new_context = ACtx == NULL || ACtx->PushState() < 0;
 	asIScriptContext* ctx = (new_context ? g_ScriptEngine->RequestContext() : ACtx);
@@ -125,6 +136,7 @@ public:
 				ctx->PopState();
 			return 0;
 		}
+		physics_callback_scope in_callback;
 		ctx->SetArgObject(0, (void*)&info);
 		if (ctx->Execute() != asEXECUTION_FINISHED) {
 			if (new_context)
@@ -256,8 +268,15 @@ static void check_shape_destroyable(const CollisionShape* shape) {
 	if (shape_in_use(shape)) throw runtime_error("collision shape is still attached to a body; remove the collider or destroy the body first");
 }
 
+void world_destroy_joint(PhysicsWorld* world, Joint* joint) {
+	if (!joint) throw runtime_error("joint cannot be null");
+	check_not_in_physics_callback("a joint");
+	world->destroyJoint(joint);
+}
+
 void world_destroy(PhysicsWorld* world) {
 	if (!world) return;
+	check_not_in_physics_callback("a world");
 	world_destroy_listener(world);
 	g_physics_worlds.erase(world);
 	g_physics.destroyPhysicsWorld(world);
@@ -718,6 +737,7 @@ CScriptAny* body_get_user_data(Body* body) {
 // Must have this, otherwise we leak memory
 void world_destroy_rigid_body(PhysicsWorld* world, RigidBody* body) {
 	if (!body) throw runtime_error("body cannot be null");
+	check_not_in_physics_callback("a body");
 	body_cleanup_user_data(body);
 	world->destroyRigidBody(body);
 }
@@ -1436,7 +1456,7 @@ void RegisterPhysicsWorldAndCallbacks(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("physics_world", "physics_rigid_body@ create_rigid_body(const physics_transform&in transform)", asMETHOD(PhysicsWorld, createRigidBody), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_world", "void destroy_rigid_body(physics_rigid_body& body)", asFUNCTION(world_destroy_rigid_body), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_world", "physics_joint@ create_joint(const physics_joint_info&in joint_info)", asMETHOD(PhysicsWorld, createJoint), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_world", "void destroy_joint(physics_joint& joint)", asMETHOD(PhysicsWorld, destroyJoint), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_world", "void destroy_joint(physics_joint& joint)", asFUNCTION(world_destroy_joint), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_world", "vector get_gravity() const property", asMETHOD(PhysicsWorld, getGravity), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_world", "void set_gravity(const vector&in gravity) property", asMETHOD(PhysicsWorld, setGravity), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_world", "bool get_is_gravity_enabled() const property", asMETHOD(PhysicsWorld, isGravityEnabled), asCALL_THISCALL);
