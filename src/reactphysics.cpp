@@ -12,6 +12,7 @@
 
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <angelscript.h>
 #include <reactphysics3d/reactphysics3d.h>
@@ -50,12 +51,14 @@ CScriptArray* transform_get_opengl_matrix(const Transform& t) {
 }
 
 void transform_set_from_opengl_matrix(Transform& t, CScriptArray* matrix) {
+	if (!matrix) throw runtime_error("opengl matrix cannot be null");
 	if (matrix->GetSize() != 16) { matrix->Release(); throw runtime_error("opengl matrix must have length of 16"); }
 	t.setFromOpenGL(reinterpret_cast<decimal*>(matrix->GetBuffer()));
 	matrix->Release();
 }
 
 bool aabb_test_collision_triangle(const AABB& aabb, CScriptArray* points) {
+	if (!points) throw runtime_error("triangle points cannot be null");
 	if (points->GetSize() != 3) { points->Release(); throw runtime_error("triangle must have 3 points"); }
 	Vector3 tri[3];
 	for (int i = 0; i < 3; i++) {
@@ -79,6 +82,7 @@ CollisionCallback::ContactPoint contact_pair_get_contact_point(const CollisionCa
 }
 
 AABB aabb_from_triangle(CScriptArray* points) {
+	if (!points) throw runtime_error("triangle points cannot be null");
 	if (points->GetSize() != 3) { points->Release(); throw runtime_error("triangle must have 3 points"); }
 	AABB result = AABB::createAABBForTriangle(reinterpret_cast<const Vector3*>(points->GetBuffer()));
 	points->Release();
@@ -169,6 +173,7 @@ void world_raycast(PhysicsWorld& world, const Ray& ray, asIScriptFunction* callb
 }
 
 void world_test_overlap_body(PhysicsWorld& world, Body* body, asIScriptFunction* callback) {
+	if (!body) { if (callback) callback->Release(); throw runtime_error("body cannot be null"); }
 	overlap_callback cb(callback);
 	world.testOverlap(body, cb);
 	if (callback) callback->Release();
@@ -181,12 +186,14 @@ void world_test_overlap(PhysicsWorld& world, asIScriptFunction* callback) {
 }
 
 void world_test_collision_bodies(PhysicsWorld& world, Body* body1, Body* body2, asIScriptFunction* callback) {
+	if (!body1 || !body2) { if (callback) callback->Release(); throw runtime_error("body cannot be null"); }
 	collision_callback cb(callback);
 	world.testCollision(body1, body2, cb);
 	if (callback) callback->Release();
 }
 
 void world_test_collision_body(PhysicsWorld& world, Body* body, asIScriptFunction* callback) {
+	if (!body) { if (callback) callback->Release(); throw runtime_error("body cannot be null"); }
 	collision_callback cb(callback);
 	world.testCollision(body, cb);
 	if (callback) callback->Release();
@@ -196,6 +203,21 @@ void world_test_collision(PhysicsWorld& world, asIScriptFunction* callback) {
 	collision_callback cb(callback);
 	world.testCollision(cb);
 	if (callback) callback->Release();
+}
+
+bool world_test_overlap_bodies(PhysicsWorld& world, Body* body1, Body* body2) {
+	if (!body1 || !body2) throw runtime_error("body cannot be null");
+	return world.testOverlap(body1, body2);
+}
+
+AABB world_get_aabb(PhysicsWorld& world, const Collider* collider) {
+	if (!collider) throw runtime_error("collider cannot be null");
+	return world.getWorldAABB(collider);
+}
+
+template <class T> Collider* body_add_collider(T& body, CollisionShape* shape, const Transform& transform) {
+	if (!shape) throw runtime_error("collision shape cannot be null");
+	return body.addCollider(shape, transform);
 }
 
 void world_destroy_listener(PhysicsWorld* world) {
@@ -213,49 +235,88 @@ void world_set_callbacks(PhysicsWorld* world, asIScriptFunction* on_contact, asI
 	world->setEventListener(g_physics_event_listeners[world]);
 }
 
+// reactphysics3d requires a collision shape to outlive every collider that uses it, but from script the shape can be destroyed while a body still holds it; the dangling pointer is then dereferenced when the world (or PhysicsCommon at exit) tears its colliders down. PhysicsCommon keeps its world list private, so we track the worlds we create and scan their colliders before destroying a shape.
+static std::unordered_set<PhysicsWorld*> g_physics_worlds;
+PhysicsWorld* world_create(const PhysicsWorld::WorldSettings& settings) {
+	PhysicsWorld* world = g_physics.createPhysicsWorld(settings);
+	if (world) g_physics_worlds.insert(world);
+	return world;
+}
+static bool shape_in_use(const CollisionShape* shape) {
+	for (PhysicsWorld* world : g_physics_worlds) {
+		for (uint32 b = 0; b < world->getNbRigidBodies(); b++) {
+			const RigidBody* body = world->getRigidBody(b);
+			for (uint32 c = 0; c < body->getNbColliders(); c++)
+				if (body->getCollider(c)->getCollisionShape() == shape) return true;
+		}
+	}
+	return false;
+}
+static void check_shape_destroyable(const CollisionShape* shape) {
+	if (shape_in_use(shape)) throw runtime_error("collision shape is still attached to a body; remove the collider or destroy the body first");
+}
+
 void world_destroy(PhysicsWorld* world) {
+	if (!world) return;
 	world_destroy_listener(world);
+	g_physics_worlds.erase(world);
 	g_physics.destroyPhysicsWorld(world);
 }
 
 // Shape destruction functions
 void sphere_shape_destroy(SphereShape* shape) {
+	if (!shape) return;
+	check_shape_destroyable(shape);
 	g_physics.destroySphereShape(shape);
 }
 
 void box_shape_destroy(BoxShape* shape) {
+	if (!shape) return;
+	check_shape_destroyable(shape);
 	g_physics.destroyBoxShape(shape);
 }
 
 void capsule_shape_destroy(CapsuleShape* shape) {
+	if (!shape) return;
+	check_shape_destroyable(shape);
 	g_physics.destroyCapsuleShape(shape);
 }
 
 void convex_mesh_shape_destroy(ConvexMeshShape* shape) {
+	if (!shape) return;
+	check_shape_destroyable(shape);
 	g_physics.destroyConvexMeshShape(shape);
 }
 
 void height_field_shape_destroy(HeightFieldShape* shape) {
+	if (!shape) return;
+	check_shape_destroyable(shape);
 	g_physics.destroyHeightFieldShape(shape);
 }
 
 void concave_mesh_shape_destroy(ConcaveMeshShape* shape) {
+	if (!shape) return;
+	check_shape_destroyable(shape);
 	g_physics.destroyConcaveMeshShape(shape);
 }
 
 void convex_mesh_destroy(ConvexMesh* mesh) {
+	if (!mesh) return;
 	g_physics.destroyConvexMesh(mesh);
 }
 
 void triangle_mesh_destroy(TriangleMesh* mesh) {
+	if (!mesh) return;
 	g_physics.destroyTriangleMesh(mesh);
 }
 
 void height_field_destroy(HeightField* heightField) {
+	if (!heightField) return;
 	g_physics.destroyHeightField(heightField);
 }
 
 void default_logger_destroy(DefaultLogger* logger) {
+	if (!logger) return;
 	g_physics.destroyDefaultLogger(logger);
 }
 
@@ -344,6 +405,7 @@ CScriptArray* face_get_vertices(const HalfEdgeStructure::Face& f) {
 
 void face_set_vertices(HalfEdgeStructure::Face& f, CScriptArray* array) {
 	f.faceVertices.clear();
+	if (!array) return;
 	if (!array->GetSize()) { array->Release(); return; }
 	const uint32* vertices = static_cast<const uint32*>(array->GetBuffer());
 	for (asUINT i = 0; i < array->GetSize(); i++)
@@ -655,6 +717,7 @@ CScriptAny* body_get_user_data(Body* body) {
 
 // Must have this, otherwise we leak memory
 void world_destroy_rigid_body(PhysicsWorld* world, RigidBody* body) {
+	if (!body) throw runtime_error("body cannot be null");
 	body_cleanup_user_data(body);
 	world->destroyRigidBody(body);
 }
@@ -783,8 +846,8 @@ void RegisterPhysicsBody(asIScriptEngine* engine, const string& type) {
 	engine->RegisterObjectMethod(
 	    type.c_str(),
 	    "physics_collider@ add_collider(physics_collision_shape@ shape, const physics_transform&in transform)",
-	    asMETHOD(T, addCollider),
-	    asCALL_THISCALL);
+	    asFUNCTION(body_add_collider<T>),
+	    asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "void remove_collider(physics_collider&in collider)", asMETHOD(T, removeCollider), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "bool test_point_inside(const vector&in point) const", asMETHOD(T, testPointInside), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "bool raycast(const ray& point, raycast_info& raycast_info) const", asMETHOD(T, raycast), asCALL_THISCALL);
@@ -1352,17 +1415,17 @@ void RegisterPhysicsWorldAndCallbacks(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("physics_world_settings", "string opImplConv()", asMETHOD(PhysicsWorld::WorldSettings, to_string), asCALL_THISCALL);
 	engine->RegisterObjectType("physics_world", 0, asOBJ_REF);
 	engine->RegisterGlobalFunction("void physics_world_destroy(physics_world& world)", asFUNCTION(world_destroy), asCALL_CDECL);
-	engine->RegisterObjectBehaviour("physics_world", asBEHAVE_FACTORY, "physics_world@ w(const physics_world_settings&in world_settings)", asMETHOD(PhysicsCommon, createPhysicsWorld), asCALL_THISCALL_ASGLOBAL, &g_physics);
+	engine->RegisterObjectBehaviour("physics_world", asBEHAVE_FACTORY, "physics_world@ w(const physics_world_settings&in world_settings)", asFUNCTION(world_create), asCALL_CDECL);
 	engine->RegisterObjectBehaviour("physics_world", asBEHAVE_ADDREF, "void f()", asFUNCTION(no_refcount), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectBehaviour("physics_world", asBEHAVE_RELEASE, "void f()", asFUNCTION(no_refcount), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_world", "bool test_overlap(physics_body@ body1, physics_body@ body2)", asMETHODPR(PhysicsWorld, testOverlap, (Body*, Body*), bool), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_world", "bool test_overlap(physics_body@ body1, physics_body@ body2)", asFUNCTION(world_test_overlap_bodies), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_world", "void raycast(const ray&in ray, physics_raycast_callback@ callback, uint16 category_mask = 0xffff)", asFUNCTION(world_raycast), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_world", "void test_overlap(physics_body@ body, physics_overlap_callback@ callback)", asFUNCTION(world_test_overlap_body), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_world", "void test_overlap(physics_overlap_callback@ callback)", asFUNCTION(world_test_overlap), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_world", "void test_collision(physics_body@ body1, physics_body@ body2, physics_collision_callback@ callback)", asFUNCTION(world_test_collision_bodies), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_world", "void test_collision(physics_body@ body, physics_collision_callback@ callback)", asFUNCTION(world_test_collision_body), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_world", "void test_collision(physics_collision_callback@ callback)", asFUNCTION(world_test_collision), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_world", "aabb get_world_aabb(const physics_collider@ collider) const", asMETHOD(PhysicsWorld, getWorldAABB), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_world", "aabb get_world_aabb(const physics_collider@ collider) const", asFUNCTION(world_get_aabb), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_world", "const string& get_name() const property", asMETHOD(PhysicsWorld, getName), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_world", "void update(float time_step)", asMETHOD(PhysicsWorld, update), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_world", "uint16 get_nb_iterations_velocity_solver() const property", asMETHOD(PhysicsWorld, getNbIterationsVelocitySolver), asCALL_THISCALL);
