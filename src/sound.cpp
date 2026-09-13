@@ -67,6 +67,7 @@ static std::atomic_flag g_soundsystem_ready; // The engine exists. Set last so t
 static std::recursive_mutex g_soundsystem_init_mutex; // Recursive because constructing the engine re-enters init_sound() on this same thread.
 std::atomic<ma_result> g_soundsystem_last_error = MA_SUCCESS;
 static unordered_map<ma_data_source*, audio_data_source*> g_data_sources_map; // Only allow one audio_data_source wrapper per ma_data_source, should never be populated enough to be a performance hit.
+static std::mutex g_data_sources_map_mutex; // Every decoder open/close inserts into or erases from this map, from whichever script thread does it; an unlocked unordered_map rehashing under a concurrent erase corrupts the heap.
 static std::unique_ptr<sound_service> g_sound_service;
 // These slots are what you use to refer to protocols (which are data sources like archives) and filters (which are transformations like encryption) after they've been plugged into the sound service.
 static size_t g_encryption_filter_slot = 0;
@@ -592,13 +593,19 @@ protected:
 			return false;
 		}
 		if (format == ma_format_f32) node = (ma_node_base*)&*src;
-		g_data_sources_map[new_src] = this;
+		{
+			std::lock_guard<std::mutex> lock(g_data_sources_map_mutex);
+			g_data_sources_map[new_src] = this;
+		}
 		return true;
 	}
 	void reset() {
 		if (src) {
-			auto it = g_data_sources_map.find(src->pDataSource);
-			if (it != g_data_sources_map.end()) g_data_sources_map.erase(it);
+			{
+				std::lock_guard<std::mutex> lock(g_data_sources_map_mutex);
+				auto it = g_data_sources_map.find(src->pDataSource);
+				if (it != g_data_sources_map.end()) g_data_sources_map.erase(it);
+			}
 			if (node) ma_data_source_node_uninit(&*src, nullptr);
 			node = nullptr;
 			src.reset();
@@ -696,10 +703,14 @@ public:
 audio_data_source* audio_data_source_get(ma_data_source* ptr, audio_engine* engine) {
 	if (!ptr) return nullptr;
 	if (!engine) engine = g_audio_engine;
-	auto it = g_data_sources_map.find(ptr);
-	if (it != g_data_sources_map.end()) {
-		it->second->duplicate();
-		return it->second;
+	{
+		// The reference is taken while still holding the lock, so a concurrent reset() cannot erase and free the wrapper between our lookup and our duplicate().
+		std::lock_guard<std::mutex> lock(g_data_sources_map_mutex);
+		auto it = g_data_sources_map.find(ptr);
+		if (it != g_data_sources_map.end()) {
+			it->second->duplicate();
+			return it->second;
+		}
 	}
 	return new audio_data_source_impl(engine, ptr);
 }
