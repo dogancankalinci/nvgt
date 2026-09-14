@@ -24,7 +24,11 @@ vcpkg_extract_source_archive(
     ARCHIVE "${ARCHIVE}"
     NO_REMOVE_ONE_LEVEL
 )
-file(INSTALL "${SOURCE_PATH}/c/bass.h" DESTINATION "${CURRENT_PACKAGES_DIR}/include")
+if(VCPKG_TARGET_IS_IOS)
+	file(INSTALL "${SOURCE_PATH}/bass.h" DESTINATION "${CURRENT_PACKAGES_DIR}/include") # the iOS package keeps its header at the root rather than under c/
+else()
+	file(INSTALL "${SOURCE_PATH}/c/bass.h" DESTINATION "${CURRENT_PACKAGES_DIR}/include")
+endif()
 if(VCPKG_TARGET_IS_WINDOWS)
 	file(INSTALL "${SOURCE_PATH}/c/x64/bass.lib" DESTINATION "${CURRENT_PACKAGES_DIR}/lib")
 	file(INSTALL "${SOURCE_PATH}/x64/bass.dll" DESTINATION "${CURRENT_PACKAGES_DIR}/bin")
