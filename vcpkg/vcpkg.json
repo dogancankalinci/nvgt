@@ -68,18 +68,9 @@
       "name": "universalspeech",
       "platform": "windows"
     },
-    {
-      "name": "bass",
-      "platform": "!ios"
-    },
-    {
-      "name": "bass-fx",
-      "platform": "!ios"
-    },
-    {
-      "name": "bassmix",
-      "platform": "!ios"
-    },
+    "bass",
+    "bass-fx",
+    "bassmix",
     {
       "name": "libmysofa",
       "platform": "ios"

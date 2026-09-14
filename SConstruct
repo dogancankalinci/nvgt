@@ -3,7 +3,7 @@
 # Copyright (c) 2022-2026 Sam Tupy
 # license: zlib
 
-import os, multiprocessing, subprocess, tempfile
+import os, multiprocessing, re, subprocess, tempfile
 
 Help("""
 	Available custom build switches for NVGT:
@@ -63,7 +63,9 @@ if env["NVGT_TARGET"] == "macos":
 elif env["NVGT_TARGET"] == "ios":
 	import subprocess
 	env["ENV"]["SDKROOT"] = subprocess.check_output(["xcrun", "-sdk", "iphoneos", "--show-sdk-path"]).decode().strip()
-	env.Append(CCFLAGS = ["-arch", "arm64", "-xobjective-c++"], LINKFLAGS = ["-arch", "arm64"], LIBS=["mysofa", "pffft"])
+	# The deployment target belongs here, before plugin_env is cloned below, so plugin objects and dylibs carry the same
+	# minimum OS as the stubs that load them instead of defaulting to whatever SDK the build machine has.
+	env.Append(CCFLAGS = ["-arch", "arm64", "-xobjective-c++", "-miphoneos-version-min=16.0"], LINKFLAGS = ["-arch", "arm64", "-miphoneos-version-min=16.0"], LIBS=["mysofa", "pffft"])
 	env["FRAMEWORKPREFIX"] = "-weak_framework"
 elif env["NVGT_TARGET"] == "linux":
 	# enable the gold linker, strip the resulting binaries, and add /usr/local/lib to the libpath because it seems we aren't finding libraries unless we do manually.
@@ -83,14 +85,167 @@ env["PLUGIN_DEST_DIR"] = "#release/lib_android/arm64-v8a" if env["NVGT_TARGET"] 
 static_plugins = []
 static_plugins_object = None
 plugin_env = env.Clone()
+all_plugin_scripts = Glob("plugin/*/_SConscript") + Glob("plugin/*/SConscript") + Glob("extra/plugin/integrated/*/_SConscript") + Glob("extra/plugin/integrated/*/SConscript")
+def plugin_identity(script):
+	"""Returns (folder, load name, entry symbol suffix) of a plugin by reading its SConscript, without running it.
+	A plugin is loaded by the name of its shared library (#pragma plugin nvgt_curl) while its static entry point is
+	named after the NVGT_PLUGIN_STATIC define (nvgt_plugin_nvgt_curl), and neither has to match the folder
+	(extra/plugin/integrated/curl). Registering by folder name, as this file used to, made every static build of
+	the extra plugins fail to link, and would have registered them under names no script ever asks for."""
+	folder = str(script).split(os.path.sep)[-2]
+	try:
+		with open(str(script), "r", encoding = "utf-8", errors = "replace") as f: text = f.read()
+	except OSError: text = ""
+	m = re.search(r'\(\s*"NVGT_PLUGIN_STATIC"\s*,\s*"([A-Za-z0-9_]+)"\s*\)', text)
+	symbol = m.group(1) if m else folder
+	m = re.search(r'PLUGIN_DEST_DIR"\]\s*\+\s*"/([A-Za-z0-9_]+)"', text)
+	load_name = m.group(1) if m else symbol
+	return folder, load_name, symbol
+plugin_identities = {} # folder -> (load name, entry symbol suffix)
+for s in all_plugin_scripts:
+	folder, load_name, symbol = plugin_identity(s)
+	plugin_identities[folder] = (load_name, symbol)
+plugin_shared_deps = {} # folder -> redistributable shared libraries a statically embedded plugin still needs at runtime (bass for legacy_sound, git2 for git2nvgt)
+def plugin_folder(name):
+	"""user/static_plugins and the static_<name>_plugin switches accept either a plugin's folder or its load name."""
+	for folder, (load_name, symbol) in plugin_identities.items():
+		if name in (folder, load_name): return folder
+	return name
+def static_plugin_requested(folder):
+	load_name = plugin_identities.get(folder, (folder, folder))[0]
+	return ARGUMENTS.get(f"static_{folder}_plugin", "0") == "1" or ARGUMENTS.get(f"static_{load_name}_plugin", "0") == "1"
+def write_static_plugins_source(path, folders):
+	"""Generates the translation unit registering every statically embedded plugin. The load name is decoupled from
+	the entry symbol (see plugin_identity), and a marker string names the shared libraries the plugin still depends
+	on, so the bundler can learn them by scanning a stub that carries the plugin (see src/bundling.cpp)."""
+	with open(path, "w") as f:
+		f.write("#define NVGT_LOAD_STATIC_PLUGINS\n#include <nvgt_plugin.h>\n")
+		for folder in folders:
+			load_name, symbol = plugin_identities.get(folder, (folder, folder))
+			deps = ",".join(plugin_shared_deps.get(folder, []))
+			f.write(f"extern bool nvgt_plugin_{symbol}(nvgt_plugin_shared*);\n")
+			f.write(f"extern int nvgt_plugin_version_{symbol}();\n")
+			f.write(f'static_plugin_loader nvgt_plugin_static_{symbol}("{load_name}", &nvgt_plugin_{symbol}, &nvgt_plugin_version_{symbol}, "nvgt_static_plugin_libs:{load_name}={deps}");\n')
+def split_plugin_link_list(plug):
+	"""A plugin SConscript returns its static archive(s) followed by plain names of shared libraries to link."""
+	nodes, names = [], []
+	for item in Flatten(plug):
+		if isinstance(item, str): names.append(item)
+		else: nodes.append(item)
+	return nodes, names
+def windows_import_dll_name(target_env, name):
+	"""The DLL an import library binds to, spelled the way the linker sees it (bass_fx.lib imports BASS_FX.dll);
+	/delayload only matches that exact spelling."""
+	for d in target_env["LIBPATH"]:
+		p = os.path.join(target_env.Dir(d).abspath, name + ".lib")
+		if not os.path.isfile(p): continue
+		with open(p, "rb") as f: data = f.read()
+		for m in re.finditer(rb"[A-Za-z0-9_.\-]+\.dll", data):
+			found = m.group(0).decode("ascii", "replace")
+			if found.lower() == (name + ".dll").lower(): return found
+	return name + ".dll"
+def ios_xcframework_slice(target_env, name):
+	"""Path of the device slice inside <iosdev>/lib/<name>.xcframework, or None when <name> is not an xcframework.
+	un4seen ships BASS for iOS only as dynamic frameworks packaged this way."""
+	# Absolute on purpose: this runs from inside plugin SConscripts, which SCons executes with the working directory
+	# moved into each plugin's variant dir, and the linker receives the path as-is through -F.
+	base = os.path.join(target_env.Dir("#").abspath, target_env["NVGT_OSDEV_PATH"], "lib", name + ".xcframework")
+	if not os.path.isdir(base): return None
+	for entry in sorted(os.listdir(base)):
+		if entry.startswith("ios-") and "simulator" not in entry and os.path.isdir(os.path.join(base, entry, name + ".framework")): return os.path.join(base, entry)
+	return None
+IOS_TRANSITIVE_LIBS = {"git2": ["pcre2-8", "iconv"]} # iOS deps are static archives; libgit2.a does not carry what the desktop libgit2 dylib links on its own.
+IOS_PLUGIN_FRAMEWORKS = ["Accelerate", "AudioToolbox", "AVFoundation", "CoreAudio", "CoreFoundation", "Foundation", "Security", "SystemConfiguration"]
+def link_static_plugin(target_env, folder, plug):
+	"""Links a statically embedded plugin into nvgt and the stubs. The archive is linked as usual; the shared
+	libraries it depends on are made lazy or weak wherever the platform allows, so that a stub carrying the plugin
+	still starts a game that never loads it and, on Windows, so that the DLLs can live in lib/ like every other
+	shared library (an ordinary import is resolved by the loader before SetDllDirectory ever runs)."""
+	nodes, names = split_plugin_link_list(plug)
+	plugin_shared_deps[folder] = [n for n in names if n in target_env["NVGT_OSDEV_REDIST_LIBS"]]
+	target_env.Append(LIBS = nodes)
+	for name in names:
+		redist = name in target_env["NVGT_OSDEV_REDIST_LIBS"]
+		if target_env["NVGT_TARGET"] == "windows" and redist:
+			target_env.Append(LIBS = [name], LINKFLAGS = ["/delayload:" + windows_import_dll_name(target_env, name)])
+		elif target_env["NVGT_TARGET"] == "macos" and redist:
+			target_env.Append(LINKFLAGS = ["-weak-l" + name])
+		elif target_env["NVGT_TARGET"] == "ios" and ios_xcframework_slice(target_env, name):
+			# SCons' applelink always emits -framework whatever FRAMEWORKPREFIX says, so the weak form goes through LINKFLAGS.
+			target_env.Append(FRAMEWORKPATH = [ios_xcframework_slice(target_env, name)], LINKFLAGS = ["-weak_framework", name])
+		else:
+			target_env.Append(LIBS = [name] + (IOS_TRANSITIVE_LIBS.get(name, []) if target_env["NVGT_TARGET"] == "ios" else []))
+def ios_plugin_env(base_env):
+	"""Environment the plugin SConscripts (some in the read-only extra submodule) run with on iOS. As with
+	android_plugin_env below, every difference is applied by wrapping builders rather than by editing a plugin:
+	plugins are plain C/C++ so the engine's -xobjective-c++ is dropped (sqlite3.c is not valid Objective-C++);
+	x86-only flags a SConscript adds unconditionally are stripped (clang refuses -mavx for arm64-apple-ios); GNU ld
+	spellings from the linux branches are translated; static archives go to build/lib_ios so a macOS build in the
+	same tree is left alone; and dynamic plugins become @rpath dylibs that find their frameworks beside themselves."""
+	pe = base_env.Clone()
+	pe["CPPDEFINES"] = list(pe["CPPDEFINES"])
+	pe["CCFLAGS"] = [f for f in pe["CCFLAGS"] if f != "-xobjective-c++"]
+	pe["PLUGIN_DEST_DIR"] = "#release/lib_ios"
+	libdir = "#build/lib_ios"
+	banned_ccflags = {"-mavx", "-maes"}
+	def without_banned(environment, kw):
+		if "CCFLAGS" not in kw and any(f in banned_ccflags for f in environment["CCFLAGS"]): kw = dict(kw, CCFLAGS = [f for f in environment["CCFLAGS"] if f not in banned_ccflags])
+		return kw
+	orig_static = pe["BUILDERS"]["StaticLibrary"]
+	def static_redir(environment, target, source, *a, **kw):
+		if isinstance(target, str): target = target.replace("#build/lib/", libdir + "/")
+		return orig_static(environment, target, source, *a, **without_banned(environment, kw))
+	pe.AddMethod(static_redir, "StaticLibrary")
+	for bname in ("SharedObject", "Object", "StaticObject"):
+		def make(orig):
+			def obj_redir(environment, target, source = None, *a, **kw):
+				kw = without_banned(environment, kw)
+				if source is None: source, target = target, None
+				if target is not None: return orig(environment, target, source, *a, **kw)
+				# implicit target: name it after the source so #-rooted sources (extra/plugin/dep/...) are built inside this
+				# plugin's variant dir rather than beside the source, where the macOS build of the same tree keeps its own.
+				out = []
+				for s in (source if isinstance(source, list) else [source]): out += orig(environment, os.path.splitext(os.path.basename(str(s)))[0], s, *a, **kw)
+				return out
+			return obj_redir
+		pe.AddMethod(make(pe["BUILDERS"][bname]), bname)
+	orig_shlib = pe["BUILDERS"]["SharedLibrary"]
+	def shlib(environment, target, source, *a, **kw):
+		kw = without_banned(environment, kw) # sources handed straight to the builder are compiled with the environment's own flags
+		srcs = []
+		for s in (source if isinstance(source, list) else [source]):
+			ss = str(s)
+			if isinstance(s, str) and ss.startswith("#") and ss.rsplit(".", 1)[-1].lower() in ("c", "cpp", "cc", "cxx", "mm"): srcs += environment.SharedObject(os.path.splitext(os.path.basename(ss))[0], s)
+			else: srcs.append(s)
+		libs, frameworkpath = [], list(kw.get("FRAMEWORKPATH", environment.get("FRAMEWORKPATH", [])))
+		# A LINKFLAGS keyword replaces the environment's flags outright, which would drop -arch and the deployment target
+		# (the linux-style branches pass only --no-undefined); merge instead, translating that GNU ld flag on the way.
+		linkflags = list(environment["LINKFLAGS"]) + [f for f in kw.get("LINKFLAGS", []) if f not in environment["LINKFLAGS"]]
+		linkflags = [f for f in linkflags if f != "-Wl,--no-undefined"]
+		for l in kw.get("LIBS", environment["LIBS"]):
+			if isinstance(l, str) and l.startswith(":lib") and l.endswith(".a"): l = l[4:-2] # -l:libx.a is a GNU ld spelling
+			if isinstance(l, str) and ios_xcframework_slice(environment, l):
+				frameworkpath.append(ios_xcframework_slice(environment, l))
+				linkflags += ["-framework", l]
+			else:
+				libs.append(l)
+				if isinstance(l, str): libs += IOS_TRANSITIVE_LIBS.get(l, [])
+		name = environment.subst("$SHLIBPREFIX") + os.path.basename(str(target)) + environment.subst("$SHLIBSUFFIX")
+		linkflags += ["-install_name", "@rpath/" + name, "-Wl,-rpath,@loader_path", "-Wl,-undefined,error"]
+		given = kw.get("FRAMEWORKS", environment.get("FRAMEWORKS", []))
+		frameworks = list(given) + [f for f in IOS_PLUGIN_FRAMEWORKS if f not in given]
+		kw = dict(kw, LIBS = libs, LINKFLAGS = linkflags, FRAMEWORKPATH = frameworkpath, FRAMEWORKS = frameworks)
+		return orig_shlib(environment, target, srcs, *a, **kw)
+	pe.AddMethod(shlib, "SharedLibrary")
+	return pe
 if  ARGUMENTS.get("no_plugins", "0") == "0":
 	try:
 		# First, read the list of static plugins we wish to link if available.
 		with open(os.path.join("user", "static_plugins"), "r") as f:
 			lines = f.readlines()
 			for l in lines:
-				if not l or l.startswith("#"): continue
-				static_plugins.append(l.strip())
+				if not l.strip() or l.startswith("#"): continue
+				static_plugins.append(plugin_folder(l.strip()))
 	except FileNotFoundError: pass
 	# plugin_env is cloned above (before these defines diverge). Normalise CPPDEFINES to a plain list here: SCons keeps it as
 	# a deque after Append, and some plugin SConscripts (e.g. sqlite) do `env["CPPDEFINES"] + [...]`, which throws
@@ -100,27 +255,26 @@ if  ARGUMENTS.get("no_plugins", "0") == "0":
 	if env["NVGT_TARGET"] == "android":
 		plugin_env.Append(CXXFLAGS = ["-fPIC"])
 		plugin_env["SHLIBPREFIX"] = ""
+	elif env["NVGT_TARGET"] == "ios": plugin_env = ios_plugin_env(plugin_env)
 	# Then loop through all known plugins and build them.
 	# Android skips the top-level (arm64/base-env) plugin build entirely: each plugin must be compiled per ABI against its
 	# own droidev/<abi> headers, which the android build loop does separately. Building them here with the base env would
 	# fail (there is no flat droidev/include once deps are laid out per-ABI) and produce arm64-only libs anyway.
-	plugin_scripts = [] if env["NVGT_TARGET"] == "android" else Glob("plugin/*/_SConscript") + Glob("plugin/*/SConscript") + Glob("extra/plugin/integrated/*/_SConscript") + Glob("extra/plugin/integrated/*/SConscript")
+	plugin_scripts = [] if env["NVGT_TARGET"] == "android" else all_plugin_scripts
 	for s in plugin_scripts:
 		plugname = str(s).split(os.path.sep)[-2]
 		if ARGUMENTS.get(f"no_{plugname}_plugin", "0") == "1": continue
-		if ARGUMENTS.get(f"static_{plugname}_plugin", "0") == "1" and not plugname in static_plugins: static_plugins.append(plugname)
+		if static_plugin_requested(plugname) and not plugname in static_plugins: static_plugins.append(plugname)
 		# Build the plugin.
 		# A list of static libraries NVGT should link with is returned if the plugin generates any.
-		plug = SConscript(s, variant_dir = f"build/obj_plugin/{plugname}", duplicate = 0, exports = {"env": plugin_env, "nvgt_env": env})
-		if plug and plugname in static_plugins: env.Append(LIBS = plug)
+		plug = SConscript(s, variant_dir = f"build/obj_plugin{'_ios' if env['NVGT_TARGET'] == 'ios' else ''}/{plugname}", duplicate = 0, exports = {"env": plugin_env, "nvgt_env": env})
+		if plug and plugname in static_plugins: link_static_plugin(env, plugname, plug)
 	# Finally generate nvgt_plugins.cpp
 	static_plugins_path = os.path.join(tempfile.gettempdir(), "nvgt_plugins")
 	if len(static_plugins) > 0:
-		with open(static_plugins_path + ".cpp", "w") as f:
-			f.write("#define NVGT_LOAD_STATIC_PLUGINS\n#include <nvgt_plugin.h>\n")
-			for plugin in static_plugins: f.write(f"static_plugin({plugin})" + "\n")
-			# The android build never links this base-env object; it compiles its own per-ABI copies instead (see android_static_plugins).
-			if env["NVGT_TARGET"] != "android": static_plugins_object = env.Object(static_plugins_path, static_plugins_path + ".cpp", CPPPATH = env["CPPPATH"] + ["#src"])
+		write_static_plugins_source(static_plugins_path + ".cpp", static_plugins)
+		# The android build never links this base-env object; it compiles its own per-ABI copies instead (see android_static_plugins).
+		if env["NVGT_TARGET"] != "android": static_plugins_object = env.Object(static_plugins_path, static_plugins_path + ".cpp", CPPPATH = env["CPPPATH"] + ["#src"])
 
 # Project libraries
 # Android does not use NVGT's own prebuilt static libs (deps/ASAddon) or the shared libpath here — its build loop compiles
@@ -169,7 +323,9 @@ elif env["NVGT_TARGET"] in ("macos", "ios"):
 	else:
 		sources.append("iap_apple.mm")
 		env.Append(FRAMEWORKS = ["CoreBluetooth", "CoreGraphics", "CoreMotion", "Foundation", "OpenGLES", "StoreKit", "UIKit"])
-		env.Append(CCFLAGS = ["-miphoneos-version-min=16.0"], LINKFLAGS = ["-miphoneos-version-min=16.0"])
+		# Dynamic plugins and the frameworks they need (BASS) are bundled into <app>/Frameworks by the bundler; this is
+		# where a stub looks for anything linked as @rpath, including the weakly linked frameworks of a static plugin.
+		env.Append(LINKFLAGS = ["-Wl,-rpath,@executable_path/Frameworks"])
 	env.Append(LIBS = ["objc"])
 elif env["NVGT_TARGET"] == "linux":
 	env.Append(LINKFLAGS = ["-Wl,-rpath,'$$ORIGIN/.',-rpath,'$$ORIGIN/lib'"])
@@ -303,11 +459,9 @@ elif env["NVGT_TARGET"] == "android":
 		for s in android_plugin_scripts:
 			plugname = str(s).split(os.path.sep)[-2]
 			if ARGUMENTS.get(f"no_{plugname}_plugin", "0") == "1": continue
-			if ARGUMENTS.get(f"static_{plugname}_plugin", "0") == "1" and plugname not in android_static_plugins: android_static_plugins.append(plugname)
-		if android_static_plugins:
-			with open(static_plugins_path + ".cpp", "w") as f:
-				f.write("#define NVGT_LOAD_STATIC_PLUGINS\n#include <nvgt_plugin.h>\n")
-				for plugin in android_static_plugins: f.write(f"static_plugin({plugin})" + "\n")
+			if static_plugin_requested(plugname) and plugname not in android_static_plugins: android_static_plugins.append(plugname)
+		# The registration unit itself is written inside the ABI loop below, once the plugin SConscripts have reported
+		# which shared libraries their archives depend on.
 	# NVGT's own code compiled directly into every native lib (the old ndk-build LOCAL_SRC_FILES_COMMON): AngelScript addons,
 	# a selected set of dep/ C/C++ sources, and all of src/. It is NOT linked as prebuilt static libs (those are arm64-only);
 	# only the per-ABI droidev deps + SDL3/phonon + Android system libs are linked below.
@@ -345,13 +499,16 @@ elif env["NVGT_TARGET"] == "android":
 			plugname = str(s).split(os.path.sep)[-2]
 			if ARGUMENTS.get(f"no_{plugname}_plugin", "0") == "1": continue
 			plug = SConscript(s, variant_dir = f"build/obj_plugin_android/{abi}/{plugname}", duplicate = 0, exports = {"env": android_plugin_env(abi_env, abi), "nvgt_env": abi_env})
-			if plug and plugname in android_static_plugins: abi_static_libs.append(plug)
+			if plug and plugname in android_static_plugins:
+				abi_static_libs.append(plug)
+				plugin_shared_deps[plugname] = [n for n in split_plugin_link_list(plug)[1] if n in env["NVGT_OSDEV_REDIST_LIBS"]]
 		# version + lzfse (bundling.cpp's Assets.car encoder) are arch-specific but variant-independent: build once per ABI.
 		shared_objs = [abi_env.Object(f"build/obj_android/{abi}/version", "src/version.cpp")]
 		shared_objs += [abi_env.Object(f"build/obj_android/{abi}/lzfse/{s}", "dep/lzfse/" + s + ".c") for s in lzfse_srcs]
 		if android_static_plugins:
 			# Archives go first so their own shared deps (e.g. BASS for legacy_sound) resolve left to right at link time.
 			abi_env.Prepend(LIBS = abi_static_libs)
+			write_static_plugins_source(static_plugins_path + ".cpp", android_static_plugins)
 			shared_objs.append(abi_env.Object(f"build/obj_android/{abi}/nvgt_plugins", static_plugins_path + ".cpp", CPPPATH = abi_env["CPPPATH"] + ["#src"]))
 		# The three variants differ only by their defines: runner + regular stub disable IAP, the IAP stub enables it.
 		for variant, extra_defines in [("runner", ["NVGT_NO_IAP"]), ("stub", ["NVGT_STUB", "NVGT_NO_IAP"]), ("stub_iap", ["NVGT_STUB"])]:
@@ -462,4 +619,11 @@ if ARGUMENTS.get("no_stubs", "0") == "0" and env["NVGT_TARGET"] not in ("android
 					env.Install("c:/nvgt/stub", stub_nc_u)
 
 if ARGUMENTS.get("copylibs", "1") == "1":
-	env["NVGT_OSDEV_COPY_LIBS"](env)
+	if env["NVGT_TARGET"] == "ios":
+		# iOS has no loose dylibs to copy: the redistributables that exist for it (BASS) are dynamic frameworks inside
+		# xcframeworks. Stage each device slice's framework in release/lib_ios, where the bundler picks up whatever a
+		# game's plugins ask for and embeds it in the .app next to the plugin dylibs built into the same directory.
+		for name in env["NVGT_OSDEV_REDIST_LIBS"]:
+			slice_dir = ios_xcframework_slice(env, name)
+			if slice_dir: env.Install("#release/lib_ios", Dir(os.path.join(slice_dir, name + ".framework")))
+	else: env["NVGT_OSDEV_COPY_LIBS"](env)

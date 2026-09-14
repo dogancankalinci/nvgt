@@ -21,6 +21,6 @@ else
 fi
 scons -s
 echo Building NVGT IOS stubs...
-scons -s no_plugins=1 target=ios
+scons -s target=ios
 echo NVGT built.
 deactivate

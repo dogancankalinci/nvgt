@@ -16,6 +16,7 @@
 #include <Poco/BinaryReader.h>
 #include <Poco/BinaryWriter.h>
 #include <Poco/Format.h>
+#include <Poco/Path.h>
 #include <SDL3/SDL.h>
 #include "datastreams.h"
 #include "nvgt.h"
@@ -36,6 +37,7 @@ typedef struct {
 } static_plugin_vtable;
 std::unordered_map<std::string, SDL_SharedObject*> loaded_plugins; // Contains handles to sdl objects.
 std::unordered_map<std::string, static_plugin_vtable>* static_plugins = NULL; // Contains pointers to static plugin entry points. This doesn't contain entry points for plugins loaded from a dll, rather those that have been linked statically into the executable produced by a custom build of nvgt. This is a pointer because the map is initialized the first time register_static_plugin is called so that we are not trusting in global initialization order.
+std::vector<const char*>* static_plugin_lib_markers = NULL; // Same lifetime rules; see register_static_plugin_libs.
 
 bool load_nvgt_plugin(const std::string& name, std::string* errmsg, void* user) {
 	nvgt_plugin_entry* entry = NULL;
@@ -57,6 +59,14 @@ bool load_nvgt_plugin(const std::string& name, std::string* errmsg, void* user) 
 		#endif
 		obj = SDL_LoadObject(dllname.c_str());
 		if (!obj) obj = SDL_LoadObject(Poco::format("lib%s", dllname).c_str());
+		#if defined(__APPLE__) && defined(NVGT_MOBILE)
+		// dlopen never searches the app bundle for a bare name; the bundler places plugins in <app>/Frameworks next to the executable.
+		if (!obj) {
+			Poco::Path frameworks = Poco::Path(Poco::Path::self()).makeParent().pushDirectory("Frameworks");
+			obj = SDL_LoadObject(Poco::Path(frameworks).setFileName(dllname).toString().c_str());
+			if (!obj) obj = SDL_LoadObject(Poco::Path(frameworks).setFileName("lib" + dllname).toString().c_str());
+		}
+		#endif
 		if (!obj) return false;
 		entry = (nvgt_plugin_entry*)SDL_LoadFunction(obj, "nvgt_plugin");
 		version = (nvgt_plugin_version_func*)SDL_LoadFunction(obj, "nvgt_plugin_version");
@@ -88,6 +98,11 @@ bool load_nvgt_plugin(const std::string& name, std::string* errmsg, void* user) 
 bool register_static_plugin(const std::string& name, nvgt_plugin_entry* e, nvgt_plugin_version_func* v) {
 	if (!static_plugins) static_plugins = new std::unordered_map<std::string, static_plugin_vtable>;
 	static_plugins->insert(std::make_pair(name, static_plugin_vtable {e, v}));
+	return true;
+}
+bool register_static_plugin_libs(const char* marker) {
+	if (!static_plugin_lib_markers) static_plugin_lib_markers = new std::vector<const char*>;
+	static_plugin_lib_markers->push_back(marker);
 	return true;
 }
 void list_loaded_nvgt_plugins(std::vector<std::string>& output) {

@@ -192,6 +192,8 @@ inline void prepare_plugin_shared(nvgt_plugin_shared* shared, asIScriptEngine* e
 namespace Poco { class BinaryReader; class BinaryWriter; }
 bool load_nvgt_plugin(const std::string& name, std::string* errmsg = nullptr, void* user = NULL);
 bool register_static_plugin(const std::string& name, nvgt_plugin_entry* e, nvgt_plugin_version_func* v);
+// Records a "nvgt_static_plugin_libs:<plugin>=<lib>,<lib>" marker naming the shared libraries a statically embedded plugin still needs at runtime; the bundler finds these by scanning a stub (see drop_static_plugins_found_in in bundling.cpp), and keeping the pointer is what keeps the string in the binary.
+bool register_static_plugin_libs(const char* marker);
 bool load_serialized_nvgt_plugins(Poco::BinaryReader& br);
 void serialize_nvgt_plugins(Poco::BinaryWriter& bw);
 void list_loaded_nvgt_plugins(std::vector<std::string>& output);
@@ -203,8 +205,9 @@ void unload_nvgt_plugins();
 #else
 class static_plugin_loader {
 public:
-	static_plugin_loader(const std::string& name, nvgt_plugin_entry* e, nvgt_plugin_version_func* v) {
+	static_plugin_loader(const std::string& name, nvgt_plugin_entry* e, nvgt_plugin_version_func* v, const char* shared_libs_marker = nullptr) {
 		register_static_plugin(name, e, v);
+		if (shared_libs_marker) register_static_plugin_libs(shared_libs_marker);
 	}
 };
 #define static_plugin(name) \

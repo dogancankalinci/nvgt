@@ -493,20 +493,33 @@ static string requirements(const string& bundleid, const string& cn){
 	string sup; sup.append("\xfa\xde\x0c\x01",4); be32(sup,(uint32_t)(8+inner.size())); sup+=inner;
 	return sup;
 }
-// CodeResources plist. `files` maps each bundle resource to its base64 SHA-1; `files2` maps each
-// (except Info.plist) to its base64 SHA-256 under hash2. The rules/rules2 are codesign's fixed
-// defaults, reproduced verbatim. `entries` is the sorted list of (name, file bytes).
-static string code_resources(const vector<pair<string,string>>& entries){
+// One nested code item (a framework or dylib under Frameworks/) is sealed into the bundle's CodeResources by the
+// hash of its own code directory and its designated requirement rather than by its bytes.
+struct nested_code { string path; string cdhash; string requirement; };
+// CodeResources plist. `files` (the legacy seal) maps every regular file in the bundle, nested code's contents
+// included, to its base64 SHA-1; `files2` maps each regular file outside nested code (except Info.plist) to its
+// base64 SHA-256 under hash2, and each nested code item to its cdhash and requirement. The rules/rules2 are
+// codesign's fixed defaults, reproduced verbatim; the nested rule is only emitted for bundles that carry nested
+// code, so every other bundle stays byte-identical to what this produced before. Entry lists are sorted by name.
+static string code_resources(const vector<pair<string,string>>& files_v1, const vector<pair<string,string>>& files_v2, const vector<nested_code>& nested){
 	string x=PLIST_HEADER; x+="<dict>\n";
 	x+="\t<key>files</key>\n\t<dict>\n";
-	for (auto& e : entries){ x+="\t\t<key>"+e.first+"</key>\n\t\t<data>\n\t\t"+b64(sha1b(e.second))+"\n\t\t</data>\n"; }
+	for (auto& e : files_v1){ x+="\t\t<key>"+xmlesc(e.first)+"</key>\n\t\t<data>\n\t\t"+b64(sha1b(e.second))+"\n\t\t</data>\n"; }
 	x+="\t</dict>\n\t<key>files2</key>\n\t<dict>\n";
-	for (auto& e : entries){ if (e.first=="Info.plist") continue; x+="\t\t<key>"+e.first+"</key>\n\t\t<dict>\n\t\t\t<key>hash2</key>\n\t\t\t<data>\n\t\t\t"+b64(sha256b(e.second))+"\n\t\t\t</data>\n\t\t</dict>\n"; }
+	vector<pair<string,string>> f2; // (key, xml)
+	for (auto& e : files_v2){ if (e.first=="Info.plist") continue; f2.push_back({e.first, "\t\t<key>"+xmlesc(e.first)+"</key>\n\t\t<dict>\n\t\t\t<key>hash2</key>\n\t\t\t<data>\n\t\t\t"+b64(sha256b(e.second))+"\n\t\t\t</data>\n\t\t</dict>\n"}); }
+	for (auto& n : nested) f2.push_back({n.path, "\t\t<key>"+xmlesc(n.path)+"</key>\n\t\t<dict>\n\t\t\t<key>cdhash</key>\n\t\t\t<data>\n\t\t\t"+b64(n.cdhash)+"\n\t\t\t</data>\n\t\t\t<key>requirement</key>\n\t\t\t<string>"+xmlesc(n.requirement)+"</string>\n\t\t</dict>\n"});
+	sort(f2.begin(),f2.end(),[](const pair<string,string>&a,const pair<string,string>&b){return a.first<b.first;});
+	for (auto& e : f2) x+=e.second;
 	x+="\t</dict>\n";
 	x+="\t<key>rules</key>\n\t<dict>\n\t\t<key>^.*</key>\n\t\t<true/>\n\t\t<key>^.*\\.lproj/</key>\n\t\t<dict>\n\t\t\t<key>optional</key>\n\t\t\t<true/>\n\t\t\t<key>weight</key>\n\t\t\t<real>1000</real>\n\t\t</dict>\n\t\t<key>^.*\\.lproj/locversion.plist$</key>\n\t\t<dict>\n\t\t\t<key>omit</key>\n\t\t\t<true/>\n\t\t\t<key>weight</key>\n\t\t\t<real>1100</real>\n\t\t</dict>\n\t\t<key>^Base\\.lproj/</key>\n\t\t<dict>\n\t\t\t<key>weight</key>\n\t\t\t<real>1010</real>\n\t\t</dict>\n\t\t<key>^version.plist$</key>\n\t\t<true/>\n\t</dict>\n";
-	x+="\t<key>rules2</key>\n\t<dict>\n\t\t<key>.*\\.dSYM($|/)</key>\n\t\t<dict>\n\t\t\t<key>weight</key>\n\t\t\t<real>11</real>\n\t\t</dict>\n\t\t<key>^(.*/)?\\.DS_Store$</key>\n\t\t<dict>\n\t\t\t<key>omit</key>\n\t\t\t<true/>\n\t\t\t<key>weight</key>\n\t\t\t<real>2000</real>\n\t\t</dict>\n\t\t<key>^.*</key>\n\t\t<true/>\n\t\t<key>^.*\\.lproj/</key>\n\t\t<dict>\n\t\t\t<key>optional</key>\n\t\t\t<true/>\n\t\t\t<key>weight</key>\n\t\t\t<real>1000</real>\n\t\t</dict>\n\t\t<key>^.*\\.lproj/locversion.plist$</key>\n\t\t<dict>\n\t\t\t<key>omit</key>\n\t\t\t<true/>\n\t\t\t<key>weight</key>\n\t\t\t<real>1100</real>\n\t\t</dict>\n\t\t<key>^Base\\.lproj/</key>\n\t\t<dict>\n\t\t\t<key>weight</key>\n\t\t\t<real>1010</real>\n\t\t</dict>\n\t\t<key>^Info\\.plist$</key>\n\t\t<dict>\n\t\t\t<key>omit</key>\n\t\t\t<true/>\n\t\t\t<key>weight</key>\n\t\t\t<real>20</real>\n\t\t</dict>\n\t\t<key>^PkgInfo$</key>\n\t\t<dict>\n\t\t\t<key>omit</key>\n\t\t\t<true/>\n\t\t\t<key>weight</key>\n\t\t\t<real>20</real>\n\t\t</dict>\n\t\t<key>^embedded\\.provisionprofile$</key>\n\t\t<dict>\n\t\t\t<key>weight</key>\n\t\t\t<real>20</real>\n\t\t</dict>\n\t\t<key>^version\\.plist$</key>\n\t\t<dict>\n\t\t\t<key>weight</key>\n\t\t\t<real>20</real>\n\t\t</dict>\n\t</dict>\n";
+	x+="\t<key>rules2</key>\n\t<dict>\n\t\t<key>.*\\.dSYM($|/)</key>\n\t\t<dict>\n\t\t\t<key>weight</key>\n\t\t\t<real>11</real>\n\t\t</dict>\n\t\t<key>^(.*/)?\\.DS_Store$</key>\n\t\t<dict>\n\t\t\t<key>omit</key>\n\t\t\t<true/>\n\t\t\t<key>weight</key>\n\t\t\t<real>2000</real>\n\t\t</dict>\n";
+	if (!nested.empty()) x+="\t\t<key>^(Frameworks|SharedFrameworks|PlugIns|Plug-ins|XPCServices|Helpers|MacOS|Library/(Automator|Spotlight|LoginItems))/</key>\n\t\t<dict>\n\t\t\t<key>nested</key>\n\t\t\t<true/>\n\t\t\t<key>weight</key>\n\t\t\t<real>10</real>\n\t\t</dict>\n";
+	x+="\t\t<key>^.*</key>\n\t\t<true/>\n\t\t<key>^.*\\.lproj/</key>\n\t\t<dict>\n\t\t\t<key>optional</key>\n\t\t\t<true/>\n\t\t\t<key>weight</key>\n\t\t\t<real>1000</real>\n\t\t</dict>\n\t\t<key>^.*\\.lproj/locversion.plist$</key>\n\t\t<dict>\n\t\t\t<key>omit</key>\n\t\t\t<true/>\n\t\t\t<key>weight</key>\n\t\t\t<real>1100</real>\n\t\t</dict>\n\t\t<key>^Base\\.lproj/</key>\n\t\t<dict>\n\t\t\t<key>weight</key>\n\t\t\t<real>1010</real>\n\t\t</dict>\n\t\t<key>^Info\\.plist$</key>\n\t\t<dict>\n\t\t\t<key>omit</key>\n\t\t\t<true/>\n\t\t\t<key>weight</key>\n\t\t\t<real>20</real>\n\t\t</dict>\n\t\t<key>^PkgInfo$</key>\n\t\t<dict>\n\t\t\t<key>omit</key>\n\t\t\t<true/>\n\t\t\t<key>weight</key>\n\t\t\t<real>20</real>\n\t\t</dict>\n\t\t<key>^embedded\\.provisionprofile$</key>\n\t\t<dict>\n\t\t\t<key>weight</key>\n\t\t\t<real>20</real>\n\t\t</dict>\n\t\t<key>^version\\.plist$</key>\n\t\t<dict>\n\t\t\t<key>weight</key>\n\t\t\t<real>20</real>\n\t\t</dict>\n\t</dict>\n";
 	x+="</dict>\n</plist>\n"; return x;
 }
+// A bundle without nested code: the same files seal both dictionaries.
+static string code_resources(const vector<pair<string,string>>& entries){ return code_resources(entries, entries, {}); }
 // Build the CodeDirectory blob. `tbs` is the to-be-signed Mach-O image (0..codeLimit, with the
 // LC_CODE_SIGNATURE load command already present). specials are slot hashes -1..-7 (empty => zero).
 static string code_directory(const string& tbs, const string& identifier, const string& team,
@@ -590,73 +603,64 @@ static string cms_sign(const string& cd, EVP_PKEY* pkey, const string& leafDer, 
 }
 // Sign a built .app directory in place (modifies the Mach-O, writes _CodeSignature/CodeResources and
 // embedded.mobileprovision), producing output byte-identical to Apple's codesign.
-static void sign_app(const string& app_dir, const string& exe_name, const string& bundle_id,
-		const string& p12_data, const string& password, const string& provision_data, uint64_t signtime){
-	using ioscs::be32; using ioscs::sha256b; using ioscs::slurp;
-	// --- load .p12 (works with the developer's original file via OpenSSL) ---
-	BIO* bio=BIO_new_mem_buf(p12_data.data(),(int)p12_data.size());
-	PKCS12* p12=d2i_PKCS12_bio(bio,nullptr); BIO_free(bio);
-	if(!p12) throw Exception("could not read signing .p12");
-	EVP_PKEY* pkey=nullptr; X509* leaf=nullptr; STACK_OF(X509)* ca=nullptr;
-	if(!PKCS12_parse(p12,password.c_str(),&pkey,&leaf,&ca)) throw Exception("could not decrypt .p12 (wrong password?)");
-	unsigned char* dp=nullptr; int dl=i2d_X509(leaf,&dp); string leafDer((char*)dp,dl); OPENSSL_free(dp);
-	dp=nullptr; dl=i2d_X509_NAME(X509_get_issuer_name(leaf),&dp); string issuerDer((char*)dp,dl); OPENSSL_free(dp);
-	dp=nullptr; dl=i2d_ASN1_INTEGER(X509_get_serialNumber(leaf),&dp); string serialDer((char*)dp,dl); OPENSSL_free(dp);
-	char cn[256]={0}; X509_NAME_get_text_by_NID(X509_get_subject_name(leaf),NID_commonName,cn,sizeof(cn));
-	// --- entitlements from the provisioning profile ---
-	size_t xs=provision_data.find("<?xml"), xe=provision_data.find("</plist>");
-	if(xs==string::npos||xe==string::npos) throw Exception("invalid provisioning profile");
-	string pplist=provision_data.substr(xs,xe-xs+8);
-	plist_t prov=nullptr; plist_from_xml(pplist.data(),(uint32_t)pplist.size(),&prov);
-	plist_t entd=plist_dict_get_item(prov,"Entitlements");
-	vector<pair<string,plist_t>> items;
-	{ plist_dict_iter di=nullptr; plist_dict_new_iter(entd,&di); for(;;){ char* k=nullptr; plist_t v=nullptr; plist_dict_next_item(entd,di,&k,&v); if(!v){ if(k) free(k); break;} items.push_back({string(k),v}); free(k);} free(di); }
-	sort(items.begin(),items.end(),[](const pair<string,plist_t>&a,const pair<string,plist_t>&b){return a.first<b.first;});
-	string team;
-	for(auto& kv: items){ if(kv.first=="com.apple.developer.team-identifier"){ char* s=nullptr; plist_get_string_val(kv.second,&s); if(s){ team=s; free(s);} } }
-	// --- blobs that don't depend on the Mach-O ---
-	string entxml=ioscs::entitlements_xml(items);
-	string entBlob; entBlob.append("\xfa\xde\x71\x71",4); be32(entBlob,(uint32_t)(8+entxml.size())); entBlob+=entxml;
-	string derent=ioscs::der_entitlements(items);
-	string derBlob; derBlob.append("\xfa\xde\x71\x72",4); be32(derBlob,(uint32_t)(8+derent.size())); derBlob+=derent;
-	string reqBlob=ioscs::requirements(bundle_id,string(cn));
-	// --- write embedded.mobileprovision + build CodeResources over the bundle files ---
-	FileOutputStream(app_dir+"/embedded.mobileprovision").write(provision_data.data(),provision_data.size());
-	vector<pair<string,string>> entries; // (name, bytes) sorted, excluding the executable and _CodeSignature
-	{ vector<File> fl; File(app_dir).list(fl); vector<string> names;
-	  for(const File& f: fl){ string n=Path(f.path()).makeFile().getFileName(); if(f.isDirectory()||n==exe_name||n=="_CodeSignature") continue; names.push_back(n);} sort(names.begin(),names.end());
-	  for(const string& n: names) entries.push_back({n, slurp(app_dir+"/"+n)}); }
-	string cr=ioscs::code_resources(entries);
-	File(app_dir+"/_CodeSignature").createDirectories();
-	FileOutputStream(app_dir+"/_CodeSignature/CodeResources").write(cr.data(),cr.size());
-	// --- parse the Mach-O, build the to-be-signed image (insert LC_CODE_SIGNATURE) ---
-	string exe=slurp(app_dir+"/"+exe_name);
+// Loads an Info.plist in either XML or binary form (vendor frameworks ship binary plists).
+static plist_t plist_load(const string& data){ plist_t p=nullptr; if (data.empty()) return p; if (plist_is_binary(data.data(),(uint32_t)data.size())) plist_from_bin(data.data(),(uint32_t)data.size(),&p); else plist_from_xml(data.data(),(uint32_t)data.size(),&p); return p; }
+// Returns the arm64 slice of a fat Mach-O; a thin image is returned unchanged. un4seen's iOS frameworks are fat
+// (armv7/armv7s/arm64) and the signer below only understands one 64-bit image at a time.
+static string macho_thin_arm64(const string& img){
+	auto rdbe32=[&](size_t o){ return ((uint32_t)(unsigned char)img[o]<<24)|((uint32_t)(unsigned char)img[o+1]<<16)|((uint32_t)(unsigned char)img[o+2]<<8)|(uint32_t)(unsigned char)img[o+3]; };
+	if (img.size()<8 || rdbe32(0)!=0xCAFEBABE) return img;
+	uint32_t n=rdbe32(4);
+	for (uint32_t i=0;i<n;i++){ size_t e=8+(size_t)i*20; if (e+20>img.size()) break; uint32_t cputype=rdbe32(e), off=rdbe32(e+8), size=rdbe32(e+12); if (cputype==0x0100000C && (size_t)off+size<=img.size()) return img.substr(off,size); } // CPU_TYPE_ARM64
+	throw Exception("fat Mach-O has no arm64 slice");
+}
+// Everything from the signing identity that every image in a bundle shares.
+struct signer { EVP_PKEY* pkey=nullptr; string leafDer, issuerDer, serialDer, cn, team; uint64_t signtime=0; };
+// The designated requirement of requirements() in requirement language; the app's CodeResources records this for nested code.
+static string requirement_text(const string& identifier, const string& cn){
+	auto q=[](const string& s){ string o; for(char c: s){ if(c=='"'||c=='\\') o.push_back('\\'); o.push_back(c);} return o; };
+	return "identifier \""+q(identifier)+"\" and anchor apple generic and certificate leaf[subject.CN] = \""+q(cn)+"\" and certificate 1[field.1.2.840.113635.100.6.2.1] /* exists */";
+}
+// Signs one thin 64-bit Mach-O image (executable or dylib): the bytes in, the signed bytes out. An unsigned image
+// gets an LC_CODE_SIGNATURE appended to its load commands, which needs 16 free bytes of header padding; an image
+// already signed by its vendor has that signature dropped (it is always the last thing in the file) and its load
+// command reused. `extra_blobs` are the superblob entries besides the code directory and the CMS signature.
+static string sign_macho(const signer& s, const string& image, const string& identifier, bool main_binary,
+		const string& infoHash, const string& reqHash, const string& resHash, const string& entHash, const string& derHash,
+		const vector<pair<uint32_t,string>>& extra_blobs, string* cdhash_out){
+	string exe=image;
 	auto rd32=[&](const string& b,size_t o){ return (uint32_t)(unsigned char)b[o]|((uint32_t)(unsigned char)b[o+1]<<8)|((uint32_t)(unsigned char)b[o+2]<<16)|((uint32_t)(unsigned char)b[o+3]<<24); };
 	auto rd64=[&](const string& b,size_t o){ uint64_t v=0; for(int i=7;i>=0;i--) v=(v<<8)|(unsigned char)b[o+i]; return v; };
+	if (exe.size()<32 || rd32(exe,0)!=0xFEEDFACF) throw Exception("not a 64-bit Mach-O image");
 	uint32_t ncmds=rd32(exe,16), szcmds=rd32(exe,20);
-	uint64_t execBase=0,execLim=0,execFlags=0; size_t linkeditCmd=0; uint64_t leFileSize=0;
-	{ size_t o=32; for(uint32_t i=0;i<ncmds;i++){ uint32_t cmd=rd32(exe,o),cs=rd32(exe,o+8-8+4); cs=rd32(exe,o+4);
-		string seg=exe.substr(o+8,16); size_t z=seg.find('\0'); if(z!=string::npos) seg=seg.substr(0,z);
-		if(cmd==0x19 && seg=="__TEXT"){ execBase=rd64(exe,o+40); execLim=rd64(exe,o+48); execFlags=1; } // fileoff, filesize
-		if(cmd==0x19 && seg=="__LINKEDIT"){ linkeditCmd=o; leFileSize=rd64(exe,o+48); }
+	uint64_t execBase=0,execLim=0,execFlags=0,leFileOff=0,leFileSize=0; size_t linkeditCmd=0, sigCmd=0; uint32_t sigOff=0;
+	{ size_t o=32; for(uint32_t i=0;i<ncmds;i++){ uint32_t cmd=rd32(exe,o), cs=rd32(exe,o+4);
+		if(cmd==0x19){ string seg=exe.substr(o+8,16); size_t z=seg.find('\0'); if(z!=string::npos) seg=seg.substr(0,z);
+			if(seg=="__TEXT"){ execBase=rd64(exe,o+40); execLim=rd64(exe,o+48); execFlags=main_binary?1:0; } // fileoff, filesize
+			else if(seg=="__LINKEDIT"){ linkeditCmd=o; leFileOff=rd64(exe,o+40); leFileSize=rd64(exe,o+48); } }
+		else if(cmd==0x1d){ sigCmd=o; sigOff=rd32(exe,o+8); }
 		o+=cs; } }
+	if(!linkeditCmd) throw Exception("Mach-O image has no __LINKEDIT segment");
+	if(sigCmd) exe.resize(sigOff);
+	else { size_t lc=32+szcmds; if(lc+16>exe.size()) throw Exception("Mach-O header too small for a code signature"); for(size_t i=0;i<16;i++) if(exe[lc+i]!=0) throw Exception("Mach-O image has no header padding left for a code signature"); }
 	uint32_t codeLimit=(uint32_t)exe.size();
-	string infoplist=slurp(app_dir+"/Info.plist");
+	uint64_t leBase=sigCmd? (uint64_t)codeLimit-leFileOff : leFileSize; // __LINKEDIT size before the signature is appended
 	uint32_t supsize=0;
 	auto build_signed=[&](uint32_t datasize)->string{
-		string tbs(exe); // to-be-signed with LC_CODE_SIGNATURE inserted
+		string tbs(exe); // to-be-signed with LC_CODE_SIGNATURE in place
 		auto wr32=[&](string& b,size_t o,uint32_t v){ b[o]=(char)v;b[o+1]=(char)(v>>8);b[o+2]=(char)(v>>16);b[o+3]=(char)(v>>24); };
 		auto wr64=[&](string& b,size_t o,uint64_t v){ for(int i=0;i<8;i++) b[o+i]=(char)(v>>(8*i)); };
-		wr32(tbs,16,ncmds+1); wr32(tbs,20,szcmds+16);
-		uint64_t newfs=leFileSize+datasize, newvs=((newfs+16383)/16384)*16384;
+		size_t lc=sigCmd;
+		if(!lc){ lc=32+szcmds; wr32(tbs,16,ncmds+1); wr32(tbs,20,szcmds+16); }
+		uint64_t newfs=leBase+datasize, newvs=((newfs+16383)/16384)*16384;
 		wr64(tbs,linkeditCmd+32,newvs); wr64(tbs,linkeditCmd+48,newfs);
-		size_t lc=32+szcmds; wr32(tbs,lc,0x1d); wr32(tbs,lc+4,16); wr32(tbs,lc+8,codeLimit); wr32(tbs,lc+12,datasize);
+		wr32(tbs,lc,0x1d); wr32(tbs,lc+4,16); wr32(tbs,lc+8,codeLimit); wr32(tbs,lc+12,datasize);
 		string tbsimg=tbs.substr(0,codeLimit);
-		string cd=ioscs::code_directory(tbsimg,bundle_id,team,execBase,execLim,execFlags,
-			sha256b(infoplist),sha256b(reqBlob),sha256b(cr),sha256b(entBlob),sha256b(derBlob));
-		string cmsb=ioscs::cms_sign(cd,pkey,leafDer,issuerDer,serialDer,signtime);
+		string cd=code_directory(tbsimg,identifier,s.team,execBase,execLim,execFlags,infoHash,reqHash,resHash,entHash,derHash);
+		if(cdhash_out) *cdhash_out=sha256b(cd).substr(0,20);
+		string cmsb=cms_sign(cd,s.pkey,s.leafDer,s.issuerDer,s.serialDer,s.signtime);
 		string cmsBlob; cmsBlob.append("\xfa\xde\x0b\x01",4); be32(cmsBlob,(uint32_t)(8+cmsb.size())); cmsBlob+=cmsb;
-		vector<pair<uint32_t,string>> blobs={{0,cd},{2,reqBlob},{5,entBlob},{7,derBlob},{0x10000,cmsBlob}};
+		vector<pair<uint32_t,string>> blobs={{0,cd}}; for(auto& b: extra_blobs) blobs.push_back(b); blobs.push_back({0x10000,cmsBlob});
 		uint32_t idxsz=12+(uint32_t)blobs.size()*8, cur=idxsz; string body; vector<pair<uint32_t,uint32_t>> idx;
 		for(auto&b:blobs){ idx.push_back({b.first,cur}); body+=b.second; cur+=(uint32_t)b.second.size(); }
 		string sup; sup.append("\xfa\xde\x0c\xc0",4); be32(sup,idxsz+(uint32_t)body.size()); be32(sup,(uint32_t)blobs.size());
@@ -669,7 +673,90 @@ static void sign_app(const string& app_dir, const string& exe_name, const string
 	// timestamp it does not add), leaving that many trailing zero bytes. Measure the superblob (its size
 	// is independent of the datasize value), then reserve that plus the slot.
 	build_signed(0);
-	string signed_exe=build_signed(supsize+13242);
+	return build_signed(supsize+13242);
+}
+// Signs one nested code item under <app>/Frameworks: a shallow framework (<n>.framework/<n> beside its Info.plist,
+// sealed with a CodeResources of its own) or a bare dylib (identified by its file name, as codesign does). Returns
+// the entry the app's CodeResources must carry for it.
+static nested_code sign_nested(const signer& s, const string& app_dir, const string& rel_path){
+	nested_code n; n.path=rel_path;
+	string full=app_dir+"/"+rel_path, bin_path, identifier, infoHash, resHash;
+	if (string_has_suffix(rel_path,".framework")){
+		string name=Path(rel_path).makeFile().getBaseName();
+		bin_path=full+"/"+name; identifier=name;
+		string info=File(full+"/Info.plist").exists()? slurp(full+"/Info.plist") : "";
+		if (plist_t p=plist_load(info)){ char* sv=nullptr; if (plist_t idn=plist_dict_get_item(p,"CFBundleIdentifier")) plist_get_string_val(idn,&sv); if(sv){ identifier=sv; free(sv);} plist_free(p); }
+		vector<string> rel; collect_relative_files_recursive(full,"",rel); sort(rel.begin(),rel.end());
+		vector<pair<string,string>> entries;
+		for (const string& r: rel){ if (r==name || r.rfind("_CodeSignature/",0)==0) continue; entries.push_back({r, slurp(full+"/"+r)}); }
+		string cr=code_resources(entries);
+		File(full+"/_CodeSignature").createDirectories();
+		FileOutputStream(full+"/_CodeSignature/CodeResources").write(cr.data(),cr.size());
+		if (!info.empty()) infoHash=sha256b(info);
+		resHash=sha256b(cr);
+	} else { bin_path=full; identifier=Path(rel_path).makeFile().getBaseName(); }
+	string req=requirements(identifier,s.cn);
+	string signed_bin=sign_macho(s, macho_thin_arm64(slurp(bin_path)), identifier, false, infoHash, sha256b(req), resHash, "", "", {{2,req}}, &n.cdhash);
+	FileOutputStream(bin_path).write(signed_bin.data(),signed_bin.size());
+	n.requirement=requirement_text(identifier,s.cn);
+	return n;
+}
+static void sign_app(const string& app_dir, const string& exe_name, const string& bundle_id,
+		const string& p12_data, const string& password, const string& provision_data, uint64_t signtime){
+	using ioscs::be32; using ioscs::sha256b; using ioscs::slurp;
+	// --- load .p12 (works with the developer's original file via OpenSSL) ---
+	BIO* bio=BIO_new_mem_buf(p12_data.data(),(int)p12_data.size());
+	PKCS12* p12=d2i_PKCS12_bio(bio,nullptr); BIO_free(bio);
+	if(!p12) throw Exception("could not read signing .p12");
+	EVP_PKEY* pkey=nullptr; X509* leaf=nullptr; STACK_OF(X509)* ca=nullptr;
+	if(!PKCS12_parse(p12,password.c_str(),&pkey,&leaf,&ca)) throw Exception("could not decrypt .p12 (wrong password?)");
+	signer s; s.pkey=pkey; s.signtime=signtime;
+	unsigned char* dp=nullptr; int dl=i2d_X509(leaf,&dp); s.leafDer.assign((char*)dp,dl); OPENSSL_free(dp);
+	dp=nullptr; dl=i2d_X509_NAME(X509_get_issuer_name(leaf),&dp); s.issuerDer.assign((char*)dp,dl); OPENSSL_free(dp);
+	dp=nullptr; dl=i2d_ASN1_INTEGER(X509_get_serialNumber(leaf),&dp); s.serialDer.assign((char*)dp,dl); OPENSSL_free(dp);
+	char cn[256]={0}; X509_NAME_get_text_by_NID(X509_get_subject_name(leaf),NID_commonName,cn,sizeof(cn)); s.cn=cn;
+	// --- entitlements from the provisioning profile ---
+	size_t xs=provision_data.find("<?xml"), xe=provision_data.find("</plist>");
+	if(xs==string::npos||xe==string::npos) throw Exception("invalid provisioning profile");
+	string pplist=provision_data.substr(xs,xe-xs+8);
+	plist_t prov=nullptr; plist_from_xml(pplist.data(),(uint32_t)pplist.size(),&prov);
+	plist_t entd=plist_dict_get_item(prov,"Entitlements");
+	vector<pair<string,plist_t>> items;
+	{ plist_dict_iter di=nullptr; plist_dict_new_iter(entd,&di); for(;;){ char* k=nullptr; plist_t v=nullptr; plist_dict_next_item(entd,di,&k,&v); if(!v){ if(k) free(k); break;} items.push_back({string(k),v}); free(k);} free(di); }
+	sort(items.begin(),items.end(),[](const pair<string,plist_t>&a,const pair<string,plist_t>&b){return a.first<b.first;});
+	for(auto& kv: items){ if(kv.first=="com.apple.developer.team-identifier"){ char* sv=nullptr; plist_get_string_val(kv.second,&sv); if(sv){ s.team=sv; free(sv);} } }
+	// --- blobs that don't depend on the Mach-O ---
+	string entxml=ioscs::entitlements_xml(items);
+	string entBlob; entBlob.append("\xfa\xde\x71\x71",4); be32(entBlob,(uint32_t)(8+entxml.size())); entBlob+=entxml;
+	string derent=ioscs::der_entitlements(items);
+	string derBlob; derBlob.append("\xfa\xde\x71\x72",4); be32(derBlob,(uint32_t)(8+derent.size())); derBlob+=derent;
+	string reqBlob=ioscs::requirements(bundle_id,s.cn);
+	// --- nested code first: the app's seal covers their signed bytes ---
+	vector<nested_code> nested;
+	string fwdir=app_dir+"/Frameworks";
+	if (File(fwdir).exists()){
+		vector<File> fl; File(fwdir).list(fl); vector<string> names;
+		for(const File& f: fl){ string nm=Path(f.path()).makeFile().getFileName(); if ((f.isDirectory() && string_has_suffix(nm,".framework")) || (!f.isDirectory() && string_has_suffix(nm,".dylib"))) names.push_back(nm); }
+		sort(names.begin(),names.end());
+		for(const string& nm: names) nested.push_back(sign_nested(s, app_dir, "Frameworks/"+nm));
+	}
+	// --- write embedded.mobileprovision + build CodeResources over the bundle files ---
+	FileOutputStream(app_dir+"/embedded.mobileprovision").write(provision_data.data(),provision_data.size());
+	vector<string> rel; collect_relative_files_recursive(app_dir,"",rel); sort(rel.begin(),rel.end());
+	vector<pair<string,string>> v1, v2; // v1: every file but the executable and the seal itself; v2: the same minus nested code's contents
+	for (const string& r: rel){
+		if (r==exe_name || r.rfind("_CodeSignature/",0)==0) continue;
+		string bytes=slurp(app_dir+"/"+r);
+		v1.push_back({r,bytes});
+		bool inside_nested=false; for(auto& n: nested) if (r==n.path || r.rfind(n.path+"/",0)==0){ inside_nested=true; break; }
+		if (!inside_nested) v2.push_back({r,bytes});
+	}
+	string cr=ioscs::code_resources(v1,v2,nested);
+	File(app_dir+"/_CodeSignature").createDirectories();
+	FileOutputStream(app_dir+"/_CodeSignature/CodeResources").write(cr.data(),cr.size());
+	// --- the executable itself ---
+	string infoplist=slurp(app_dir+"/Info.plist");
+	string signed_exe=sign_macho(s, slurp(app_dir+"/"+exe_name), bundle_id, true, sha256b(infoplist), sha256b(reqBlob), sha256b(cr), sha256b(entBlob), sha256b(derBlob), {{2,reqBlob},{5,entBlob},{7,derBlob}}, nullptr);
 	FileOutputStream(app_dir+"/"+exe_name).write(signed_exe.data(),signed_exe.size());
 	if(ca) sk_X509_pop_free(ca,X509_free); if(leaf) X509_free(leaf); if(pkey) EVP_PKEY_free(pkey); PKCS12_free(p12);
 }
@@ -883,6 +970,32 @@ protected:
 			if (bytes.find(needle) != string::npos) names.erase(name);
 		}
 	}
+	void add_static_plugin_dependencies_found_in(const Path& binary, set<string>& names) {
+		// A plugin embedded in a stub may still depend on shared libraries (BASS for legacy_sound, libgit2 for git2nvgt).
+		// Where the loader resolves those at startup they must ship with every game built from that stub, whether or not
+		// the script loads the plugin; the registration unit scons generates records them in a marker string per plugin
+		// (see write_static_plugins_source in SConstruct), which is scanned for here the same way plugin names are above.
+		if (!File(binary).exists()) return;
+		string bytes;
+		FileInputStream binary_stream(binary.toString());
+		StreamCopier::copyToString(binary_stream, bytes);
+		const string prefix = "nvgt_static_plugin_libs:";
+		for (size_t pos = bytes.find(prefix); pos != string::npos; pos = bytes.find(prefix, pos + prefix.size())) {
+			size_t end = bytes.find('\0', pos);
+			if (end == string::npos) break;
+			string marker = bytes.substr(pos + prefix.size(), end - pos - prefix.size());
+			size_t eq = marker.find('=');
+			if (eq == string::npos) continue;
+			StringTokenizer libs(marker.substr(eq + 1), ",", StringTokenizer::TOK_IGNORE_EMPTY | StringTokenizer::TOK_TRIM);
+			names.insert(libs.begin(), libs.end());
+		}
+	}
+	virtual bool static_plugin_dependencies_load_at_startup() {
+		// Windows stubs delay-load a static plugin's DLLs and Apple stubs link its frameworks weakly, so those platforms only
+		// need the libraries when the script loads the plugin, which the plugin then registers itself. Linux and Android have
+		// no lazy or weak form: their loaders demand the libraries before main runs.
+		return false;
+	}
 	void select_bundle_libraries(const Path& stubpath) {
 		// Decide which libraries ship with the output package: the names registered via nvgt_bundle_shared_library
 		// (shared deps like BASS, plus plugins the compiling nvgt loaded from a dll) plus every loaded plugin the
@@ -895,6 +1008,7 @@ protected:
 		list_loaded_nvgt_plugins(plugins);
 		bundle_names.insert(plugins.begin(), plugins.end());
 		drop_static_plugins_found_in(stubpath, bundle_names); // A missing stub is reported by copy_stub right after.
+		if (static_plugin_dependencies_load_at_startup()) add_static_plugin_dependencies_found_in(stubpath, bundle_names);
 	}
 	virtual void alter_stub_path(Path& stubpath) {
 		// This method can be overwritten by subclasses to modify the location that stubs are selected from. Throw an exception to abort the compilation.
@@ -1176,6 +1290,42 @@ class nvgt_compilation_output_ios : public nvgt_compilation_output_impl {
 	Path final_output_path;
 	int bundle_mode;
 	using nvgt_compilation_output_impl::nvgt_compilation_output_impl;
+	// Paths, relative to the .app, of every Mach-O under Frameworks/: the binary of each framework and each bare dylib.
+	static vector<string> nested_binaries(const Path& frameworks_dir) {
+		vector<string> out;
+		if (!File(frameworks_dir).exists()) return out;
+		vector<File> entries;
+		File(frameworks_dir).list(entries);
+		for (const File& f : entries) {
+			string name = Path(f.path()).makeFile().getFileName();
+			if (f.isDirectory() && string_has_suffix(name, ".framework")) out.push_back(format("Frameworks/%s/%s", name, Path(name).getBaseName()));
+			else if (!f.isDirectory() && string_has_suffix(name, ".dylib")) out.push_back("Frameworks/" + name);
+		}
+		sort(out.begin(), out.end());
+		return out;
+	}
+	// Frameworks copied out of lib_ios arrive as un4seen ships them: fat armv7/armv7s/arm64 binaries, sometimes with a
+	// stale vendor signature directory. Only the arm64 slice can go into a modern app, and any signature is redone by
+	// sign_app below (or by whatever signs the .ipa when no identity was configured).
+	void prepare_frameworks(const Path& frameworks_dir) {
+		File dir(frameworks_dir);
+		if (!dir.exists()) return;
+		for (const string& rel : nested_binaries(frameworks_dir)) {
+			string bin = Path(workplace.path()).append(rel).toString();
+			string image = read_file_bytes(bin);
+			string thin = ioscs::macho_thin_arm64(image);
+			if (thin.size() != image.size()) {
+				FileOutputStream out(bin, std::ios::out | std::ios::binary | std::ios::trunc);
+				out.write(thin.data(), static_cast<std::streamsize>(thin.size()));
+				out.close();
+			}
+			File stale(Path(bin).makeParent().append("_CodeSignature").toString());
+			if (stale.exists()) stale.remove(true);
+		}
+		vector<File> entries;
+		dir.list(entries);
+		if (entries.empty()) dir.remove(); // no plugins in this game: Apple would rather not see an empty Frameworks directory
+	}
 protected:
 	void alter_output_path(Path& output_path) override {
 		bundle_mode = config.getInt("build.ios_bundle", 2); // 0 no bundle, 1 .app, 2 .ipa, 3 both .app and .ipa.
@@ -1351,6 +1501,12 @@ protected:
 		plist_free(plist);
 		// On iOS, resources and documents both live at the root of the app bundle (no Contents/ hierarchy).
 		bundle_assets(workplace.path(), workplace.path());
+		// Dynamic plugins the script loads and the frameworks any plugin needs (BASS for legacy_sound, whether the plugin
+		// is a dylib here or embedded in the stub) are the only shared libraries an iOS app can carry, and they live in
+		// Frameworks/ next to the executable, which the stub and the plugin dylibs both search through @rpath.
+		Path frameworks_dir = Path(workplace.path()).pushDirectory("Frameworks");
+		copy_shared_libraries(frameworks_dir);
+		prepare_frameworks(frameworks_dir);
 		// Code-sign the app in place if a signing identity (.p12 + provisioning profile) was provided,
 		// producing a signature byte-identical to Apple's codesign.
 		string sign_p12 = config.getString("build.ios_signing_p12", "");
@@ -1379,6 +1535,8 @@ protected:
 			// installs, which no longer apply.
 			string appbundle = Path(workplace.path()).makeFile().getFileName();
 			string ios_exec = format("Payload/%s/%s", appbundle, output_path.getFileName());
+			set<string> exec_paths = build_exec_paths(ios_exec, format("Payload/%s", appbundle));
+			for (const string& rel : nested_binaries(Path(workplace.path()).pushDirectory("Frameworks"))) exec_paths.insert(format("Payload/%s/%s", appbundle, rel)); // dyld refuses a framework binary without its execute bit
 			set<string> store_paths;
 			for (const game_asset& g : g_game_assets)
 				if (g.flags & GAME_ASSET_UNCOMPRESSED) store_paths.insert(format("Payload/%s/%s", appbundle, g.bundled_path));
@@ -1387,7 +1545,7 @@ protected:
 			archive_write_set_format_zip(a);
 			archive_write_zip_set_compression_deflate(a);
 			archive_write_open_filename(a, ipa_out.path().c_str());
-			archive_write_dir(a, ipa_root.toString(), "", build_exec_paths(ios_exec, format("Payload/%s", appbundle)), store_paths, true);
+			archive_write_dir(a, ipa_root.toString(), "", exec_paths, store_paths, true);
 			archive_write_close(a);
 			archive_write_free(a);
 			output_path = ipa_out.path();
@@ -1401,6 +1559,7 @@ class nvgt_compilation_output_linux : public nvgt_compilation_output_impl {
 	int bundle_mode;
 	using nvgt_compilation_output_impl::nvgt_compilation_output_impl;
 protected:
+	bool static_plugin_dependencies_load_at_startup() override { return true; }
 	void alter_output_path(Path& output_path) override {
 		bundle_mode = config.getInt("build.linux_bundle", 2); // 0 no bundle, 1 folder, 2 .zip, 3 both folder and .zip.
 		if (bundle_mode == 2) {
@@ -2090,6 +2249,7 @@ protected:
 			if (!File(plugin_src).exists()) continue;
 			set<string> abi_bundle_names = bundle_names;
 			drop_static_plugins_found_in(Path(plugin_dest).append("libgame.so"), abi_bundle_names);
+			add_static_plugin_dependencies_found_in(Path(plugin_dest).append("libgame.so"), abi_bundle_names); // no lazy loading on Android: a static plugin's libraries must always be in the APK.
 			set<string> libs;
 			Glob::glob(Path(plugin_src).append("*").toString(), libs, Glob::GLOB_DOT_SPECIAL | Glob::GLOB_FOLLOW_SYMLINKS | Glob::GLOB_CASELESS);
 			for (const string& library : libs) {

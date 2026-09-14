@@ -63,6 +63,9 @@
 #else
 	#define LEGACY_SOUND_MOBILE 0
 #endif
+#if defined(__APPLE__) && TARGET_OS_IPHONE && defined(NVGT_PLUGIN_STATIC)
+	#include <dlfcn.h> // see plugin_main
+#endif
 #include <new>
 #include <thread>
 #include <sys/types.h>
@@ -165,6 +168,11 @@ BOOL init_sound(unsigned int dev) {
 	BASS_SetConfig(BASS_CONFIG_UPDATEPERIOD, 50);
 	BASS_SetConfig(BASS_CONFIG_UPDATETHREADS, 8);
 	BASS_SetConfig(BASS_CONFIG_UNICODE, TRUE);
+	#if defined(__APPLE__) && TARGET_OS_IPHONE
+	// NVGT's own audio engine already configures the app's AVAudioSession (play and record, mixing with other apps).
+	// Left to its defaults BASS would reconfigure that shared session on its own terms whenever a device is initialised.
+	BASS_SetConfig(BASS_CONFIG_IOS_SESSION, BASS_IOS_SESSION_DISABLE);
+	#endif
 	if (BASS_Init(dev, 44100, 0, NULL, NULL))
 		sound_initialized = TRUE;
 	if (sound_initialized) {
@@ -2625,6 +2633,11 @@ void RegisterScriptSound(asIScriptEngine* engine) {
 }
 plugin_main(nvgt_plugin_shared* shared) {
 	prepare_plugin(shared);
+	#if defined(__APPLE__) && TARGET_OS_IPHONE && defined(NVGT_PLUGIN_STATIC)
+	// A stub that embeds this plugin links BASS weakly, since the frameworks are only bundled with games that load the
+	// plugin. A package that lacks them must fail here, with a message, rather than at the first call into nothing.
+	if (!dlsym(RTLD_DEFAULT, "BASS_GetVersion")) return false;
+	#endif
 	g_ScriptEngine = shared->script_engine;
 	CScriptArray::SetMemoryFunctions(std::malloc, std::free);
 	#ifdef _WIN32

@@ -7,4 +7,5 @@ if ARGUMENTS.get("no_shared_plugins", "0") == "0":
 	env.SharedLibrary(env["PLUGIN_DEST_DIR"] + "/redis", ["redis.cpp", scriptarray, scriptdictionary], LIBS = env["LIBS"] + libs)
 static = env.Object("redis_static", "redis.cpp", CPPDEFINES = list(env["CPPDEFINES"]) + [("NVGT_PLUGIN_STATIC", "redis")])
 static = env.StaticLibrary("#build/lib/redis", [static])
+static = [static, "PocoRedis"] # The static archive alone cannot link: nvgt itself never links Poco's Redis library.
 Return("static")
