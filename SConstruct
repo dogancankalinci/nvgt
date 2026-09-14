@@ -154,7 +154,7 @@ def ios_xcframework_slice(target_env, name):
 	for entry in sorted(os.listdir(base)):
 		if entry.startswith("ios-") and "simulator" not in entry and os.path.isdir(os.path.join(base, entry, name + ".framework")): return os.path.join(base, entry)
 	return None
-IOS_TRANSITIVE_LIBS = {"git2": ["pcre2-8", "iconv"]} # iOS deps are static archives; libgit2.a does not carry what the desktop libgit2 dylib links on its own.
+IOS_TRANSITIVE_LIBS = {"git2": ["pcre2-8", "iconv", "z", "ssl", "crypto"]} # iOS deps are static archives; libgit2.a does not carry what the desktop libgit2 dylib links on its own (archives that go unused cost nothing).
 IOS_PLUGIN_FRAMEWORKS = ["Accelerate", "AudioToolbox", "AVFoundation", "CoreAudio", "CoreFoundation", "Foundation", "Security", "SystemConfiguration"]
 def link_static_plugin(target_env, folder, plug):
 	"""Links a statically embedded plugin into nvgt and the stubs. The archive is linked as usual; the shared
