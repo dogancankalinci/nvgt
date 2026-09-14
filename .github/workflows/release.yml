@@ -53,18 +53,24 @@ jobs:
         openssl enc -d -aes-256-cbc -pbkdf2 -pass pass:"$PASS" -in nvgt_config.h.enc -out user/nvgt_config.h
     # restore + explicit save (instead of actions/cache@v4, whose post-job save only runs when the whole job succeeds):
     # this caches the built deps as soon as they exist, so a later build failure no longer forces a full deps rebuild next run.
-    # Every platform's key hashes only its own triplet files (vcpkg/triplets/*-<platform>.cmake), so changing
-    # one platform's triplet no longer invalidates every other platform's dependency cache.
+    # Every platform's key is computed by vcpkg/deps_cache_key.py from what can actually reach that platform's package:
+    # its own triplet files and the manifest as vcpkg reads it for those triplets, so neither another platform's
+    # triplet nor a dependency added only for another platform invalidates this platform's dependency cache.
+    - id: depkey
+      name: compute dependency cache keys
+      run: |
+        echo "macos=$(python3 vcpkg/deps_cache_key.py arm64-osx x64-osx)" >> "$GITHUB_OUTPUT"
+        echo "ios=$(python3 vcpkg/deps_cache_key.py arm64-ios arm64-ios-simulator)" >> "$GITHUB_OUTPUT"
     - id: cache_macos
       uses: actions/cache/restore@v4
       with:
         path: macosdev
-        key: macosdev-${{ hashFiles('vcpkg/ports/**', 'vcpkg/triplets/*-osx.cmake', 'vcpkg/*.json', '.git/modules/vcpkg/bin/HEAD') }}
+        key: macosdev-${{ steps.depkey.outputs.macos }}
     - id: cache_ios
       uses: actions/cache/restore@v4
       with:
         path: iosdev
-        key: iosdev-${{ hashFiles('vcpkg/ports/**', 'vcpkg/triplets/*-ios*.cmake', 'vcpkg/*.json', '.git/modules/vcpkg/bin/HEAD') }}
+        key: iosdev-${{ steps.depkey.outputs.ios }}
     - name: build macos dependencies
       if: ${{ steps.cache_macos.outputs.cache-hit != 'true' }}
       run: python3 vcpkg/build_dependencies.py --archive
@@ -73,7 +79,7 @@ jobs:
       uses: actions/cache/save@v4
       with:
         path: macosdev
-        key: macosdev-${{ hashFiles('vcpkg/ports/**', 'vcpkg/triplets/*-osx.cmake', 'vcpkg/*.json', '.git/modules/vcpkg/bin/HEAD') }}
+        key: macosdev-${{ steps.depkey.outputs.macos }}
     - name: build ios dependencies
       if: ${{ steps.cache_ios.outputs.cache-hit != 'true' }}
       run: python3 vcpkg/build_dependencies.py arm64-ios --archive
@@ -82,7 +88,7 @@ jobs:
       uses: actions/cache/save@v4
       with:
         path: iosdev
-        key: iosdev-${{ hashFiles('vcpkg/ports/**', 'vcpkg/triplets/*-ios*.cmake', 'vcpkg/*.json', '.git/modules/vcpkg/bin/HEAD') }}
+        key: iosdev-${{ steps.depkey.outputs.ios }}
     - name: publish macos dependencies
       if: ${{ steps.cache_macos.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' && github.event.repository.fork == false }}
       run: |
@@ -124,10 +130,13 @@ jobs:
         [ -z "$PASS" ] && PASS="nvgt_fork_build_passphrase"
         openssl enc -d -aes-256-cbc -pbkdf2 -pass pass:"$PASS" -in nvgt_config.h.enc -out user/nvgt_config.h
     # restore + explicit save so built deps are cached even if a later step (scons) fails; see mac_build for the rationale.
+    - id: depkey
+      name: compute dependency cache key
+      run: echo "key=$(python3 vcpkg/deps_cache_key.py x64-linux arm64-linux)" >> "$GITHUB_OUTPUT"
     - uses: actions/cache/restore@v4
       with:
         path: lindev
-        key: lindev-${{ hashFiles('vcpkg/ports/**', 'vcpkg/triplets/*-linux.cmake', 'vcpkg/*.json', '.git/modules/vcpkg/bin/HEAD') }}
+        key: lindev-${{ steps.depkey.outputs.key }}
       id: cache
     - name: build dependencies
       if: ${{ steps.cache.outputs.cache-hit != 'true' }}
@@ -141,7 +150,7 @@ jobs:
       uses: actions/cache/save@v4
       with:
         path: lindev
-        key: lindev-${{ hashFiles('vcpkg/ports/**', 'vcpkg/triplets/*-linux.cmake', 'vcpkg/*.json', '.git/modules/vcpkg/bin/HEAD') }}
+        key: lindev-${{ steps.depkey.outputs.key }}
     - name: publish dependencies
       if: ${{ steps.cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' && github.event.repository.fork == false }}
       run: |
@@ -192,10 +201,13 @@ jobs:
     - name: set ndk environ
       run: echo "ANDROID_NDK_HOME=${{steps.setup-ndk.outputs.ndk-path}}" >> $GITHUB_ENV
     # restore + explicit save so the (slow) per-ABI android deps are cached even when a later step (scons) fails; see mac_build.
+    - id: depkey
+      name: compute dependency cache key
+      run: echo "key=$(python3 vcpkg/deps_cache_key.py arm64-android armv7-android)" >> "$GITHUB_OUTPUT"
     - uses: actions/cache/restore@v4
       with:
         path: droidev
-        key: droidev-${{ env.NDK_VERSION }}-${{ hashFiles('vcpkg/ports/**', 'vcpkg/triplets/*-android.cmake', 'vcpkg/*.json', '.git/modules/vcpkg/bin/HEAD') }}
+        key: droidev-${{ env.NDK_VERSION }}-${{ steps.depkey.outputs.key }}
       id: cache
     - name: build dependencies
       if: ${{ steps.cache.outputs.cache-hit != 'true' }}
@@ -207,7 +219,7 @@ jobs:
       uses: actions/cache/save@v4
       with:
         path: droidev
-        key: droidev-${{ env.NDK_VERSION }}-${{ hashFiles('vcpkg/ports/**', 'vcpkg/triplets/*-android.cmake', 'vcpkg/*.json', '.git/modules/vcpkg/bin/HEAD') }}
+        key: droidev-${{ env.NDK_VERSION }}-${{ steps.depkey.outputs.key }}
     - name: publish dependencies
       if: ${{ steps.cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' && github.event.repository.fork == false }}
       run: |
@@ -262,10 +274,14 @@ jobs:
       with:
         cmake-version: '4.0.1'
     # restore + explicit save so built deps are cached even if a later step (scons) fails; see mac_build for the rationale.
+    - id: depkey
+      name: compute dependency cache key
+      shell: bash
+      run: echo "key=$(python3 vcpkg/deps_cache_key.py x64-windows arm64-windows)" >> "$GITHUB_OUTPUT"
     - uses: actions/cache/restore@v4
       with:
         path: windev
-        key: windev-${{ hashFiles('vcpkg/ports/**', 'vcpkg/triplets/*-windows.cmake', 'vcpkg/*.json', '.git/modules/vcpkg/bin/HEAD') }}
+        key: windev-${{ steps.depkey.outputs.key }}
       id: cache
     - name: build dependencies
       if: ${{ steps.cache.outputs.cache-hit != 'true' }}
@@ -275,7 +291,7 @@ jobs:
       uses: actions/cache/save@v4
       with:
         path: windev
-        key: windev-${{ hashFiles('vcpkg/ports/**', 'vcpkg/triplets/*-windows.cmake', 'vcpkg/*.json', '.git/modules/vcpkg/bin/HEAD') }}
+        key: windev-${{ steps.depkey.outputs.key }}
     - name: publish dependencies
       if: ${{ steps.cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' && github.event.repository.fork == false }}
       run: |
