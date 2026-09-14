@@ -37,6 +37,10 @@ jobs:
   mac_build:
     runs-on: macos-26
     needs: generate_config
+    env:
+      # vcpkg keeps a per-port binary cache here (each port keyed by its own ABI hash), restored below with a prefix
+      # match so that when a dependency does change only the ports it affects are rebuilt; everything else is unpacked.
+      VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}/vcpkg-binaries,readwrite
     steps:
     - uses: actions/checkout@v5
       with:
@@ -61,6 +65,14 @@ jobs:
       run: |
         echo "macos=$(python3 vcpkg/deps_cache_key.py arm64-osx x64-osx)" >> "$GITHUB_OUTPUT"
         echo "ios=$(python3 vcpkg/deps_cache_key.py arm64-ios arm64-ios-simulator)" >> "$GITHUB_OUTPUT"
+        mkdir -p vcpkg-binaries
+    - id: vcpkg_binaries
+      name: restore vcpkg binary cache
+      uses: actions/cache/restore@v4
+      with:
+        path: vcpkg-binaries
+        key: vcpkg-binaries-mac-${{ steps.depkey.outputs.macos }}-${{ steps.depkey.outputs.ios }}
+        restore-keys: vcpkg-binaries-mac-
     - id: cache_macos
       uses: actions/cache/restore@v4
       with:
@@ -89,6 +101,13 @@ jobs:
       with:
         path: iosdev
         key: iosdev-${{ steps.depkey.outputs.ios }}
+    - name: save vcpkg binary cache
+      # Saved even when the dependency build failed (but not when cancelled): the ports that did build are kept.
+      if: ${{ !cancelled() && (steps.cache_macos.outputs.cache-hit != 'true' || steps.cache_ios.outputs.cache-hit != 'true') && steps.vcpkg_binaries.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@v4
+      with:
+        path: vcpkg-binaries
+        key: vcpkg-binaries-mac-${{ steps.depkey.outputs.macos }}-${{ steps.depkey.outputs.ios }}
     - name: publish macos dependencies
       if: ${{ steps.cache_macos.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' && github.event.repository.fork == false }}
       run: |
@@ -115,6 +134,10 @@ jobs:
   linux_build:
     runs-on: ubuntu-22.04
     needs: generate_config
+    env:
+      # vcpkg keeps a per-port binary cache here (each port keyed by its own ABI hash), restored below with a prefix
+      # match so that when a dependency does change only the ports it affects are rebuilt; everything else is unpacked.
+      VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}/vcpkg-binaries,readwrite
     steps:
     - uses: actions/checkout@v5
       with:
@@ -132,7 +155,16 @@ jobs:
     # restore + explicit save so built deps are cached even if a later step (scons) fails; see mac_build for the rationale.
     - id: depkey
       name: compute dependency cache key
-      run: echo "key=$(python3 vcpkg/deps_cache_key.py x64-linux arm64-linux)" >> "$GITHUB_OUTPUT"
+      run: |
+        echo "key=$(python3 vcpkg/deps_cache_key.py x64-linux arm64-linux)" >> "$GITHUB_OUTPUT"
+        mkdir -p vcpkg-binaries
+    - id: vcpkg_binaries
+      name: restore vcpkg binary cache
+      uses: actions/cache/restore@v4
+      with:
+        path: vcpkg-binaries
+        key: vcpkg-binaries-linux-${{ steps.depkey.outputs.key }}
+        restore-keys: vcpkg-binaries-linux-
     - uses: actions/cache/restore@v4
       with:
         path: lindev
@@ -151,6 +183,13 @@ jobs:
       with:
         path: lindev
         key: lindev-${{ steps.depkey.outputs.key }}
+    - name: save vcpkg binary cache
+      # Saved even when the dependency build failed (but not when cancelled): the ports that did build are kept.
+      if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' && steps.vcpkg_binaries.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@v4
+      with:
+        path: vcpkg-binaries
+        key: vcpkg-binaries-linux-${{ steps.depkey.outputs.key }}
     - name: publish dependencies
       if: ${{ steps.cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' && github.event.repository.fork == false }}
       run: |
@@ -173,6 +212,9 @@ jobs:
       # Single source of truth: consumed by setup-ndk below and baked into the droidev
       # cache key, because the prebuilt deps are specific to the NDK that built them.
       NDK_VERSION: r27
+      # vcpkg keeps a per-port binary cache here (each port keyed by its own ABI hash), restored below with a prefix
+      # match so that when a dependency does change only the ports it affects are rebuilt; everything else is unpacked.
+      VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}/vcpkg-binaries,readwrite
     steps:
     - uses: actions/checkout@v5
       with:
@@ -203,7 +245,16 @@ jobs:
     # restore + explicit save so the (slow) per-ABI android deps are cached even when a later step (scons) fails; see mac_build.
     - id: depkey
       name: compute dependency cache key
-      run: echo "key=$(python3 vcpkg/deps_cache_key.py arm64-android armv7-android)" >> "$GITHUB_OUTPUT"
+      run: |
+        echo "key=$(python3 vcpkg/deps_cache_key.py arm64-android armv7-android)" >> "$GITHUB_OUTPUT"
+        mkdir -p vcpkg-binaries
+    - id: vcpkg_binaries
+      name: restore vcpkg binary cache
+      uses: actions/cache/restore@v4
+      with:
+        path: vcpkg-binaries
+        key: vcpkg-binaries-android-${{ env.NDK_VERSION }}-${{ steps.depkey.outputs.key }}
+        restore-keys: vcpkg-binaries-android-
     - uses: actions/cache/restore@v4
       with:
         path: droidev
@@ -220,6 +271,13 @@ jobs:
       with:
         path: droidev
         key: droidev-${{ env.NDK_VERSION }}-${{ steps.depkey.outputs.key }}
+    - name: save vcpkg binary cache
+      # Saved even when the dependency build failed (but not when cancelled): the ports that did build are kept.
+      if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' && steps.vcpkg_binaries.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@v4
+      with:
+        path: vcpkg-binaries
+        key: vcpkg-binaries-android-${{ env.NDK_VERSION }}-${{ steps.depkey.outputs.key }}
     - name: publish dependencies
       if: ${{ steps.cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' && github.event.repository.fork == false }}
       run: |
@@ -256,6 +314,10 @@ jobs:
   windows_build:
     runs-on: windows-latest
     needs: generate_config
+    env:
+      # vcpkg keeps a per-port binary cache here (each port keyed by its own ABI hash), restored below with a prefix
+      # match so that when a dependency does change only the ports it affects are rebuilt; everything else is unpacked.
+      VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}/vcpkg-binaries,readwrite
     steps:
     - uses: actions/checkout@v5
       with:
@@ -277,7 +339,16 @@ jobs:
     - id: depkey
       name: compute dependency cache key
       shell: bash
-      run: echo "key=$(python3 vcpkg/deps_cache_key.py x64-windows arm64-windows)" >> "$GITHUB_OUTPUT"
+      run: |
+        echo "key=$(python3 vcpkg/deps_cache_key.py x64-windows arm64-windows)" >> "$GITHUB_OUTPUT"
+        mkdir -p vcpkg-binaries
+    - id: vcpkg_binaries
+      name: restore vcpkg binary cache
+      uses: actions/cache/restore@v4
+      with:
+        path: vcpkg-binaries
+        key: vcpkg-binaries-windows-${{ steps.depkey.outputs.key }}
+        restore-keys: vcpkg-binaries-windows-
     - uses: actions/cache/restore@v4
       with:
         path: windev
@@ -292,6 +363,13 @@ jobs:
       with:
         path: windev
         key: windev-${{ steps.depkey.outputs.key }}
+    - name: save vcpkg binary cache
+      # Saved even when the dependency build failed (but not when cancelled): the ports that did build are kept.
+      if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' && steps.vcpkg_binaries.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@v4
+      with:
+        path: vcpkg-binaries
+        key: vcpkg-binaries-windows-${{ steps.depkey.outputs.key }}
     - name: publish dependencies
       if: ${{ steps.cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' && github.event.repository.fork == false }}
       run: |
