@@ -155,8 +155,12 @@ def ios_xcframework_slice(target_env, name):
 		if entry.startswith("ios-") and "simulator" not in entry and os.path.isdir(os.path.join(base, entry, name + ".framework")): return os.path.join(base, entry)
 	return None
 IOS_PLUGIN_FRAMEWORKS = ["Accelerate", "AudioToolbox", "AVFoundation", "CoreAudio", "CoreFoundation", "Foundation", "Security", "SystemConfiguration"]
-# What a plugin dylib must add to resolve a static archive it links on iOS (the engine's own link line already carries these).
-IOS_STATIC_DEPS = {"phonon": ["mysofa", "pffft"]}
+# What a plugin dylib must add to resolve a static archive it links on iOS (the engine's own link line already carries
+# these): Steam Audio needs libmysofa and pffft, and libmysofa in turn needs zlib.
+IOS_STATIC_DEPS = {"phonon": ["mysofa", "pffft", "z"]}
+# Archives every iOS plugin dylib gets: Poco's optional regex and compression paths resolve against them if a plugin
+# happens to pull them in, and an archive nothing references costs nothing.
+IOS_PLUGIN_COMMON_LIBS = ["z", "pcre2-8"]
 def ios_redist_dylib(target_env, name):
 	"""Path of <iosdev>/lib/lib<name>.dylib when a redistributable is built as a plain dylib for iOS (libgit2), else None."""
 	p = os.path.join(target_env.Dir("#").abspath, target_env["NVGT_OSDEV_PATH"], "lib", "lib" + name + ".dylib")
@@ -240,6 +244,7 @@ def ios_plugin_env(base_env):
 			else:
 				libs.append(l)
 				if isinstance(l, str): libs += [d for d in IOS_STATIC_DEPS.get(l, []) if d not in libs]
+		libs += [d for d in IOS_PLUGIN_COMMON_LIBS if d not in libs]
 		name = environment.subst("$SHLIBPREFIX") + os.path.basename(str(target)) + environment.subst("$SHLIBSUFFIX")
 		linkflags += ["-install_name", "@rpath/" + name, "-Wl,-rpath,@loader_path", "-Wl,-undefined,error"]
 		given = kw.get("FRAMEWORKS", environment.get("FRAMEWORKS", []))
