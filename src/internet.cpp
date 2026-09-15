@@ -10,6 +10,7 @@
  * 3. This notice may not be removed or altered from any source distribution.
 */
 
+#include <algorithm>
 #include <atomic>
 #include <string>
 #include <obfuscate.h>
@@ -66,6 +67,17 @@ string url_encode(const string& url, const string& reserved) {
 }
 string url_decode(const string& url, bool plus_as_space) {
 	string result;
+	// Poco turns a plus into a space only once it has passed a question mark, so decoding a bare query string or a
+	// single parameter value - the usual reason to ask for it - ignored the flag entirely. Convert those here before
+	// handing the text over, which is the order a form decoder uses: a plus that must survive arrives as %2B and is
+	// untouched by this pass. Text that carries its own question mark still goes to Poco unchanged, so a plus in the
+	// path of a full URL keeps its meaning.
+	if (plus_as_space && url.find('?') == string::npos) {
+		string tmp(url);
+		std::replace(tmp.begin(), tmp.end(), '+', ' ');
+		URI::decode(tmp, result, false);
+		return result;
+	}
 	URI::decode(url, result, plus_as_space);
 	return result;
 }
