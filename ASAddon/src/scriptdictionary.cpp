@@ -350,13 +350,19 @@ bool CScriptDictionary::Get(const dictKey_t &key, void *value, int typeId) const
 {
 	dictMap_t::const_iterator it;
 	it = dict.find(key);
-	if( it != dict.end() )
-		return it->second.Get(value, typeId);
+	if( it != dict.end() && it->second.Get(value, typeId) )
+		return true;
 
-	// AngelScript has already initialized the value with a default value,
-	// so we don't have to do anything if we don't find the element, or if
-	// the element is incompatible with the requested type.
-
+	// The ?&out temporary that AngelScript hands us for primitives and handles is NOT initialized, and it is copied back
+	// into the caller's variable whatever we return. Left untouched it delivers stack garbage (or whatever the previous
+	// call left there) to scripts that test the return value only afterwards, so give them a deterministic zero/null.
+	if( typeId & asTYPEID_OBJHANDLE )
+		*reinterpret_cast<void**>(value) = 0;
+	else if( !(typeId & asTYPEID_MASK_OBJECT) )
+	{
+		int size = engine->GetSizeOfPrimitiveType(typeId);
+		if( size > 0 ) memset(value, 0, size);
+	}
 	return false;
 }
 
