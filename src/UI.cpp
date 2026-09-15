@@ -121,7 +121,9 @@ std::string ClipboardGetText() {
 }
 bool ClipboardSetText(const std::string& text) {
 	InputInit();
-	return SDL_SetClipboardText(text.c_str()) == 0;
+	// SDL3 returns true on success here, unlike the SDL2 convention of 0, so comparing against 0 reported failure for
+	// every clipboard write that actually went through.
+	return SDL_SetClipboardText(text.c_str());
 }
 bool ClipboardSetRawText(const std::string& text) {
 	#ifdef _WIN32
