@@ -14,7 +14,7 @@ import sys
 # new library rename, a different directory structure, another duplicate removed). CI keys each platform's dependency
 # cache by this number rather than by this file's content, so an edit made for one platform does not throw away the
 # packages of the others. A change to code every platform runs through (fix_debug, the copy layout) needs every number bumped.
-PACKAGE_LAYOUT_VERSION = {"windev": 1, "macosdev": 1, "lindev": 1, "droidev": 1, "iosdev": 1}
+PACKAGE_LAYOUT_VERSION = {"windev": 1, "macosdev": 1, "lindev": 1, "droidev": 1, "iosdev": 2}
 
 vcpkg_path = Path(__file__, "..", "bin", "vcpkg" if sys.platform != "win32" else "vcpkg.exe").resolve()
 vcpkg_installed_path = Path(__file__, "..", "vcpkg_installed").resolve()
@@ -66,7 +66,7 @@ def build(triplet = "", do_archive = False, out_dir = ""):
 	fix_debug(out_dir)
 	if triplet == "arm64-osx": macos_fat_binaries(out_dir)
 	elif triplet == "x64-windows": windows_lib_rename(out_dir)
-	if triplet.endswith("osx") or triplet.endswith("linux") or "-ios" in triplet: remove_duplicates(out_dir)
+	if triplet.endswith("osx") or triplet.endswith("linux") or "-ios" in triplet: remove_duplicates(out_dir, ios = "-ios" in triplet)
 	try:
 		shutil.rmtree(out_dir / "lib" / "cmake")
 		shutil.rmtree(out_dir / "lib" / "pkgconfig")
@@ -128,15 +128,16 @@ def windows_lib_rename(out_dir):
 	for lib in ["debug/lib", "lib"]:
 		for r in renames:
 			if (out_dir / lib / (r[0] + ".lib")).exists(): (out_dir / lib / (r[0] + ".lib")).replace(out_dir / lib / (r[1] + ".lib"))
-def remove_duplicates(out_dir):
-	"""A couple libraries on Linux and MacOS might have created duplicate versions of themselves because of symlinks, lets get rid of them. We'll also perform install_name_tool fixes on MacOS."""
+def remove_duplicates(out_dir, ios = False):
+	"""A couple libraries on Linux and MacOS might have created duplicate versions of themselves because of symlinks, lets get rid of them. We'll also perform install_name_tool fixes on MacOS.
+	On iOS a dynamic library can only ship inside a framework bundle, so the install name already points where scons will wrap it: @rpath/<lib>.framework/<lib>."""
 	for lib in ["libarchive", "libgit2"]:
 		for libdir in ["debug/lib", "lib"]:
 			versions = list((out_dir / libdir).glob(lib + "*"))
 			if len(versions) < 2: continue
 			versions.sort(key = lambda v: len(v.name))
 			for v in versions[1:]: v.unlink()
-			if sys.platform == "darwin": subprocess.check_output(["install_name_tool", "-id", f"@rpath/{versions[0].name}", str(versions[0])])
+			if sys.platform == "darwin": subprocess.check_output(["install_name_tool", "-id", f"@rpath/{lib}.framework/{lib}" if ios else f"@rpath/{versions[0].name}", str(versions[0])])
 
 if __name__ == "__main__":
 	triplets = []

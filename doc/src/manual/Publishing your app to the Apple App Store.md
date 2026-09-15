@@ -656,7 +656,7 @@ What would go in there:
 
 Apple wants these declared because each one is separately signed, separately entitled, and separately reviewed. An app whose extension is misconfigured is rejected even if the app itself is perfect.
 
-For an NVGT game the array is empty, and here that is not a shortcut — it is simply the truth. NVGT builds a single, self contained `.app`: the executable, `Info.plist`, `Assets.car`, the icon PNGs, `embedded.mobileprovision`, `_CodeSignature`, and your packed game assets. There is no `PlugIns/` directory and no `Frameworks/` directory, because everything the engine needs is linked statically into the one binary. NVGT does not currently offer any way to add an app extension, so there is nothing this array could ever describe.
+For an NVGT game the array is empty, and here that is not a shortcut — it is simply the truth. NVGT builds a self contained `.app`: the executable, `Info.plist`, `Assets.car`, the icon PNGs, `embedded.mobileprovision`, `_CodeSignature`, and your packed game assets. Everything the engine itself needs is linked statically into the one binary. A game that loads plugins (`#pragma plugin legacy_sound` and friends) also gets a `Frameworks/` directory holding each plugin and the libraries it depends on (BASS for legacy_sound, libgit2 for git2nvgt), every one of them wrapped as a framework bundle and signed as nested code, because iOS accepts third-party dynamic code in no other form. There is never a `PlugIns/` directory: NVGT does not currently offer any way to add an app extension, so there is nothing this array could ever describe.
 
 So of the two empty arrays in the template, `icons` is a harmless omission and `bundles` is accurate.
 

@@ -3,7 +3,7 @@
 # Copyright (c) 2022-2026 Sam Tupy
 # license: zlib
 
-import os, multiprocessing, re, subprocess, tempfile
+import os, multiprocessing, re, shutil, subprocess, tempfile
 
 Help("""
 	Available custom build switches for NVGT:
@@ -165,6 +165,56 @@ def ios_redist_dylib(target_env, name):
 	"""Path of <iosdev>/lib/lib<name>.dylib when a redistributable is built as a plain dylib for iOS (libgit2), else None."""
 	p = os.path.join(target_env.Dir("#").abspath, target_env["NVGT_OSDEV_PATH"], "lib", "lib" + name + ".dylib")
 	return p if os.path.isfile(p) else None
+def ios_framework_version():
+	"""CFBundleShortVersionString for the frameworks below: Apple accepts up to three dot-separated integers, so the
+	pre-release suffix of NVGT's version (0.90.0-dev) is dropped."""
+	try: m = re.match(r"\d+(\.\d+){0,2}", open("version").read().strip())
+	except OSError: m = None
+	return m.group(0) if m else "1.0"
+def ios_framework_info_plist(name, identifier):
+	return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>{name}</string>
+	<key>CFBundleIdentifier</key>
+	<string>{identifier}</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>{name}</string>
+	<key>CFBundlePackageType</key>
+	<string>FMWK</string>
+	<key>CFBundleShortVersionString</key>
+	<string>{ios_framework_version()}</string>
+	<key>CFBundleSupportedPlatforms</key>
+	<array>
+		<string>iPhoneOS</string>
+	</array>
+	<key>CFBundleVersion</key>
+	<string>{ios_framework_version()}</string>
+	<key>MinimumOSVersion</key>
+	<string>16.0</string>
+</dict>
+</plist>
+"""
+def ios_framework(target_env, name, binary, identifier):
+	"""Wraps an iOS dylib as release/lib_ios/<name>.framework (the binary plus an Info.plist). iOS accepts third-party
+	dynamic code only as framework bundles, never as loose dylibs (Apple, "Placing content in a bundle"; App Store
+	Connect rejects a bare dylib with ITMS-90171), so this is the form the bundler embeds. The binary must already carry
+	@rpath/<name>.framework/<name> as its install name, which is how everything below links it."""
+	fwdir = f"#release/lib_ios/{name}.framework"
+	def wrap(target, source, env):
+		shutil.copyfile(str(source[0]), str(target[0]))
+		os.chmod(str(target[0]), 0o755)
+		with open(str(target[1]), "w") as f: f.write(ios_framework_info_plist(name, identifier))
+	return target_env.Command([f"{fwdir}/{name}", f"{fwdir}/Info.plist"], binary, Action(wrap, f"Wrapping {name} as an iOS framework"))
+def ios_bundle_identifier(prefix, name):
+	# A bundle identifier may only contain letters, digits, hyphens and periods.
+	return prefix + "." + re.sub(r"[^A-Za-z0-9.-]", "-", name)
 def link_static_plugin(target_env, folder, plug):
 	"""Links a statically embedded plugin into nvgt and the stubs. The archive is linked as usual; the shared
 	libraries it depends on are made lazy or weak wherever the platform allows, so that a stub carrying the plugin
@@ -196,7 +246,7 @@ def ios_plugin_env(base_env):
 	pe = base_env.Clone()
 	pe["CPPDEFINES"] = list(pe["CPPDEFINES"])
 	pe["CCFLAGS"] = [f for f in pe["CCFLAGS"] if f != "-xobjective-c++"]
-	pe["PLUGIN_DEST_DIR"] = "#release/lib_ios"
+	pe["PLUGIN_DEST_DIR"] = "#build/lib_ios/dylibs" # the raw dylib; only its framework form (see shlib below) reaches release/lib_ios
 	libdir = "#build/lib_ios"
 	banned_ccflags = {"-mavx", "-maes"}
 	def without_banned(environment, kw):
@@ -245,12 +295,13 @@ def ios_plugin_env(base_env):
 				libs.append(l)
 				if isinstance(l, str): libs += [d for d in IOS_STATIC_DEPS.get(l, []) if d not in libs]
 		libs += [d for d in IOS_PLUGIN_COMMON_LIBS if d not in libs]
-		name = environment.subst("$SHLIBPREFIX") + os.path.basename(str(target)) + environment.subst("$SHLIBSUFFIX")
-		linkflags += ["-install_name", "@rpath/" + name, "-Wl,-rpath,@loader_path", "-Wl,-undefined,error"]
+		name = os.path.basename(str(target))
+		linkflags += ["-install_name", f"@rpath/{name}.framework/{name}", "-Wl,-rpath,@loader_path", "-Wl,-undefined,error"]
 		given = kw.get("FRAMEWORKS", environment.get("FRAMEWORKS", []))
 		frameworks = list(given) + [f for f in IOS_PLUGIN_FRAMEWORKS if f not in given]
 		kw = dict(kw, LIBS = libs, LINKFLAGS = linkflags, FRAMEWORKPATH = frameworkpath, FRAMEWORKS = frameworks)
-		return orig_shlib(environment, target, srcs, *a, **kw)
+		lib = orig_shlib(environment, target, srcs, *a, **kw)
+		return lib + ios_framework(environment, name, lib[0], ios_bundle_identifier("dev.nvgt.plugin", name))
 	pe.AddMethod(shlib, "SharedLibrary")
 	return pe
 if  ARGUMENTS.get("no_plugins", "0") == "0":
@@ -641,5 +692,8 @@ if ARGUMENTS.get("copylibs", "1") == "1":
 		for name in env["NVGT_OSDEV_REDIST_LIBS"]:
 			slice_dir = ios_xcframework_slice(env, name)
 			if slice_dir: env.Install("#release/lib_ios", Dir(os.path.join(slice_dir, name + ".framework")))
-			elif ios_redist_dylib(env, name): env.Install("#release/lib_ios", File(ios_redist_dylib(env, name)))
+			elif ios_redist_dylib(env, name):
+				# build_dependencies.py already gave the dylib the install name @rpath/lib<name>.framework/lib<name>.
+				stem = "lib" + name
+				ios_framework(env, stem, File(ios_redist_dylib(env, name)), ios_bundle_identifier("dev.nvgt.lib", stem))
 	else: env["NVGT_OSDEV_COPY_LIBS"](env)

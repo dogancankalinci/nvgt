@@ -60,10 +60,12 @@ bool load_nvgt_plugin(const std::string& name, std::string* errmsg, void* user) 
 		obj = SDL_LoadObject(dllname.c_str());
 		if (!obj) obj = SDL_LoadObject(Poco::format("lib%s", dllname).c_str());
 		#if defined(__APPLE__) && defined(NVGT_MOBILE)
-		// dlopen never searches the app bundle for a bare name; the bundler places plugins in <app>/Frameworks next to the executable.
+		// dlopen never searches the app bundle for a bare name. The bundler embeds each plugin as <app>/Frameworks/<name>.framework/<name>,
+		// the only form of third-party dynamic code iOS accepts; the loose dylib spellings are kept for a developer's ad hoc build.
 		if (!obj) {
 			Poco::Path frameworks = Poco::Path(Poco::Path::self()).makeParent().pushDirectory("Frameworks");
-			obj = SDL_LoadObject(Poco::Path(frameworks).setFileName(dllname).toString().c_str());
+			obj = SDL_LoadObject(Poco::Path(frameworks).pushDirectory(name + ".framework").setFileName(name).toString().c_str());
+			if (!obj) obj = SDL_LoadObject(Poco::Path(frameworks).setFileName(dllname).toString().c_str());
 			if (!obj) obj = SDL_LoadObject(Poco::Path(frameworks).setFileName("lib" + dllname).toString().c_str());
 		}
 		#endif
