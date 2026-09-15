@@ -10,6 +10,12 @@ import shutil
 import subprocess
 import sys
 
+# Bump a platform's number whenever a change to this script alters what its package contains or how it is laid out (a
+# new library rename, a different directory structure, another duplicate removed). CI keys each platform's dependency
+# cache by this number rather than by this file's content, so an edit made for one platform does not throw away the
+# packages of the others. A change to code every platform runs through (fix_debug, the copy layout) needs every number bumped.
+PACKAGE_LAYOUT_VERSION = {"windev": 1, "macosdev": 1, "lindev": 1, "droidev": 1, "iosdev": 1}
+
 vcpkg_path = Path(__file__, "..", "bin", "vcpkg" if sys.platform != "win32" else "vcpkg.exe").resolve()
 vcpkg_installed_path = Path(__file__, "..", "vcpkg_installed").resolve()
 repo_path = Path(__file__).parents[1]

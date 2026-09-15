@@ -64,7 +64,7 @@ jobs:
       name: compute dependency cache keys
       run: |
         echo "macos=$(python3 vcpkg/deps_cache_key.py arm64-osx x64-osx)" >> "$GITHUB_OUTPUT"
-        echo "ios=$(python3 vcpkg/deps_cache_key.py arm64-ios arm64-ios-simulator)" >> "$GITHUB_OUTPUT"
+        echo "ios=$(python3 vcpkg/deps_cache_key.py arm64-ios)" >> "$GITHUB_OUTPUT"
         mkdir -p vcpkg-binaries
     - id: vcpkg_binaries
       name: restore vcpkg binary cache
@@ -156,7 +156,7 @@ jobs:
     - id: depkey
       name: compute dependency cache key
       run: |
-        echo "key=$(python3 vcpkg/deps_cache_key.py x64-linux arm64-linux)" >> "$GITHUB_OUTPUT"
+        echo "key=$(python3 vcpkg/deps_cache_key.py x64-linux)" >> "$GITHUB_OUTPUT"
         mkdir -p vcpkg-binaries
     - id: vcpkg_binaries
       name: restore vcpkg binary cache
@@ -340,7 +340,7 @@ jobs:
       name: compute dependency cache key
       shell: bash
       run: |
-        echo "key=$(python3 vcpkg/deps_cache_key.py x64-windows arm64-windows)" >> "$GITHUB_OUTPUT"
+        echo "key=$(python3 vcpkg/deps_cache_key.py x64-windows)" >> "$GITHUB_OUTPUT"
         mkdir -p vcpkg-binaries
     - id: vcpkg_binaries
       name: restore vcpkg binary cache

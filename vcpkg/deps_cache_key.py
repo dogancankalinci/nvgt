@@ -8,7 +8,9 @@
 # needs, threw away every other platform's cache and rebuilt hours of dependencies for nothing. This prints a digest
 # of only what can reach the given triplets: the manifest as vcpkg itself would read it for them (dependencies whose
 # "platform" expression excludes the triplet are dropped), the overlay ports those dependencies pull in, the triplet
-# files, the registry configuration, the vcpkg tool revision and build_dependencies.py, which lays the package out.
+# files actually built, the registry configuration, the vcpkg tool revision and the platform's package layout version
+# from build_dependencies.py (an explicit per-platform number, so an edit to that script for one platform leaves the
+# other platforms' keys alone).
 #
 # usage: deps_cache_key.py <triplet> [<triplet>...] [--manifest path] [--extra text]
 # Prints a hex digest; the workflow prefixes it with the package name.
@@ -114,6 +116,22 @@ def file_digests(root):
 		if p.is_file(): out.append([p.relative_to(root).as_posix(), hashlib.sha256(p.read_bytes()).hexdigest()])
 	return out
 
+def package_name(triplet):
+	"""The dependency package a triplet is exported into, mirroring build_dependencies.build."""
+	if "-windows" in triplet: return "windev"
+	if "-osx" in triplet: return "macosdev"
+	if "-linux" in triplet: return "lindev"
+	if "-android" in triplet: return "droidev"
+	if "-ios" in triplet: return "iosdev"
+	sys.exit(f"cannot tell which package {triplet} belongs to")
+
+def package_layout_version(name):
+	import importlib.util
+	spec = importlib.util.spec_from_file_location("build_dependencies", here / "build_dependencies.py")
+	module = importlib.util.module_from_spec(spec)
+	spec.loader.exec_module(module)
+	return module.PACKAGE_LAYOUT_VERSION[name]
+
 def vcpkg_tool_revision():
 	try: return subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD:vcpkg/bin"], stderr = subprocess.DEVNULL).decode().strip()
 	except Exception: pass
@@ -141,9 +159,11 @@ def main(argv):
 		material["triplets"][t] = {"manifest": projection, "triplet": hashlib.sha256(triplet_file.read_bytes()).hexdigest() if triplet_file.is_file() else None}
 		used_ports |= reachable_ports([d["name"] for d in projection["dependencies"]], ports, identifiers)
 	for name in sorted(used_ports): material["ports"][name] = file_digests(ports[name][0])
-	for f in ["vcpkg-configuration.json", "build_dependencies.py"]:
-		p = here / f
-		material["files"][f] = hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None
+	p = here / "vcpkg-configuration.json"
+	material["files"]["vcpkg-configuration.json"] = hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None
+	packages = {package_name(t) for t in triplets}
+	if len(packages) != 1: sys.exit(f"triplets {triplets} belong to different packages {sorted(packages)}")
+	material["package_layout"] = {next(iter(packages)): package_layout_version(next(iter(packages)))}
 	print(hashlib.sha256(json.dumps(material, sort_keys = True, separators = (",", ":")).encode()).hexdigest())
 
 if __name__ == "__main__":

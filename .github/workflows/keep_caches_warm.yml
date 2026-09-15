@@ -1,0 +1,31 @@
+# GitHub evicts any Actions cache that has not been accessed for seven days, so a quiet week would cost every platform
+# a full dependency rebuild on the next push. Restoring a cache counts as an access; this restores each dependency
+# package and each vcpkg binary cache by key prefix twice a week to keep them alive. Every cache is restored on the same
+# kind of runner that saved it and at the path it was saved from, because both are part of the cache's version.
+name: keep dependency caches warm
+on:
+  schedule:
+    - cron: '17 4 * * 1,4'
+  workflow_dispatch:
+jobs:
+  touch:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, prefix: windev-, path: windev }
+          - { os: windows-latest, prefix: vcpkg-binaries-windows-, path: vcpkg-binaries }
+          - { os: macos-26, prefix: macosdev-, path: macosdev }
+          - { os: macos-26, prefix: iosdev-, path: iosdev }
+          - { os: macos-26, prefix: vcpkg-binaries-mac-, path: vcpkg-binaries }
+          - { os: macos-14, prefix: droidev-, path: droidev }
+          - { os: macos-14, prefix: vcpkg-binaries-android-, path: vcpkg-binaries }
+          - { os: ubuntu-22.04, prefix: lindev-, path: lindev }
+          - { os: ubuntu-22.04, prefix: vcpkg-binaries-linux-, path: vcpkg-binaries }
+    steps:
+    - uses: actions/cache/restore@v4
+      with:
+        path: ${{ matrix.path }}
+        key: ${{ matrix.prefix }}warm-${{ github.run_id }}
+        restore-keys: ${{ matrix.prefix }}
