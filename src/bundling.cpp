@@ -934,17 +934,20 @@ protected:
 		set<string> libs;
 		Glob::glob(Path(source).append("*").toString(), libs, Glob::GLOB_DOT_SPECIAL | Glob::GLOB_FOLLOW_SYMLINKS | Glob::GLOB_CASELESS);
 		for (const string& library : libs) {
+			// Glob reports a directory (an iOS framework) with a trailing separator, which would leave it without a name here
+			// and, worse, make copyTo spill its contents straight into libpath; treat every entry as a named file or directory.
+			Path libp = Path(library).makeFile();
 			// First check if we wish to include this library.
 			bool included = false;
 			for (const string& l : bundle_names) {
-				if (Path(library).getBaseName().find(l) == string::npos) continue;
+				if (libp.getBaseName().find(l) == string::npos) continue;
 				included = true;
 				break;
 			}
 			if (!included) continue;
 			// Now check if the same or a newer version of this library has already been copied and skip it if so, in order to save time.
-			File lib = library;
-			File destF = Path(libpath).append(Path(library).getFileName()).toString();
+			File lib = libp.toString();
+			File destF = Path(libpath).append(libp.getFileName()).toString();
 			if (destF.exists() && destF.getLastModified() >= lib.getLastModified()) continue;
 			lib.copyTo(libpath.toString());
 		}
@@ -1504,7 +1507,9 @@ protected:
 		// Dynamic plugins the script loads and the frameworks any plugin needs (BASS for legacy_sound, whether the plugin
 		// is a dylib here or embedded in the stub) are the only shared libraries an iOS app can carry, and they live in
 		// Frameworks/ next to the executable, which the stub and the plugin dylibs both search through @rpath.
-		Path frameworks_dir = Path(workplace.path()).pushDirectory("Frameworks");
+		// append(), not pushDirectory(): a Path parsed from the workplace string treats the .app itself as a file name, and
+		// pushDirectory would slot Frameworks in front of it, outside the bundle.
+		Path frameworks_dir = Path(workplace.path()).append("Frameworks");
 		copy_shared_libraries(frameworks_dir);
 		prepare_frameworks(frameworks_dir);
 		// Code-sign the app in place if a signing identity (.p12 + provisioning profile) was provided,
@@ -1536,7 +1541,7 @@ protected:
 			string appbundle = Path(workplace.path()).makeFile().getFileName();
 			string ios_exec = format("Payload/%s/%s", appbundle, output_path.getFileName());
 			set<string> exec_paths = build_exec_paths(ios_exec, format("Payload/%s", appbundle));
-			for (const string& rel : nested_binaries(Path(workplace.path()).pushDirectory("Frameworks"))) exec_paths.insert(format("Payload/%s/%s", appbundle, rel)); // dyld refuses a framework binary without its execute bit
+			for (const string& rel : nested_binaries(Path(workplace.path()).append("Frameworks"))) exec_paths.insert(format("Payload/%s/%s", appbundle, rel)); // dyld refuses a framework binary without its execute bit
 			set<string> store_paths;
 			for (const game_asset& g : g_game_assets)
 				if (g.flags & GAME_ASSET_UNCOMPRESSED) store_paths.insert(format("Payload/%s/%s", appbundle, g.bundled_path));
