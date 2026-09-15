@@ -21,7 +21,10 @@
 
 class sapi5_engine : public tts_engine_impl {
 	sb_sapi *inst;
-	std::mutex inst_mutex; // one shared sb_sapi instance serves every tts_voice; the ISpVoice behind it is not safe to call from two threads at once even in the MTA
+	// One shared sb_sapi instance serves every tts_voice; the ISpVoice behind it is not safe to call from two threads at
+	// once even in the MTA. Recursive because these methods legitimately call one another on the same thread, which a
+	// plain mutex answered by throwing "resource deadlock would occur" instead of letting the call through.
+	std::recursive_mutex inst_mutex;
 public:
 	sapi5_engine();
 	virtual ~sapi5_engine();

@@ -52,7 +52,7 @@ sapi5_engine::~sapi5_engine() {
 bool sapi5_engine::is_available() { return true; }
 tts_pcm_generation_state sapi5_engine::get_pcm_generation_state() { return PCM_PREFERRED; }
 tts_audio_data* sapi5_engine::speak_to_pcm(const string &text) {
-	std::lock_guard<std::mutex> l(inst_mutex);
+	std::lock_guard<std::recursive_mutex> l(inst_mutex);
 	if (text.empty()) return nullptr;
 	void *temp = nullptr;
 	int bufsize = 0;
@@ -60,35 +60,35 @@ tts_audio_data* sapi5_engine::speak_to_pcm(const string &text) {
 	if (!temp || bufsize <= 0) return nullptr;
 	return new tts_audio_data(this, temp, bufsize, sb_sapi_get_sample_rate(inst), sb_sapi_get_channels(inst), sb_sapi_get_bit_depth(inst));
 }
-float sapi5_engine::get_rate() { std::lock_guard<std::mutex> l(inst_mutex); return sb_sapi_get_rate(inst); }
-float sapi5_engine::get_pitch() { std::lock_guard<std::mutex> l(inst_mutex); return sb_sapi_get_pitch(inst); }
-float sapi5_engine::get_volume() { std::lock_guard<std::mutex> l(inst_mutex); return sb_sapi_get_volume(inst); }
-void sapi5_engine::set_rate(float rate) { std::lock_guard<std::mutex> l(inst_mutex); sb_sapi_set_rate(inst, rate); }
-void sapi5_engine::set_pitch(float pitch) { std::lock_guard<std::mutex> l(inst_mutex); sb_sapi_set_pitch(inst, pitch); }
-void sapi5_engine::set_volume(float volume) { std::lock_guard<std::mutex> l(inst_mutex); sb_sapi_set_volume(inst, volume); }
+float sapi5_engine::get_rate() { std::lock_guard<std::recursive_mutex> l(inst_mutex); return sb_sapi_get_rate(inst); }
+float sapi5_engine::get_pitch() { std::lock_guard<std::recursive_mutex> l(inst_mutex); return sb_sapi_get_pitch(inst); }
+float sapi5_engine::get_volume() { std::lock_guard<std::recursive_mutex> l(inst_mutex); return sb_sapi_get_volume(inst); }
+void sapi5_engine::set_rate(float rate) { std::lock_guard<std::recursive_mutex> l(inst_mutex); sb_sapi_set_rate(inst, rate); }
+void sapi5_engine::set_pitch(float pitch) { std::lock_guard<std::recursive_mutex> l(inst_mutex); sb_sapi_set_pitch(inst, pitch); }
+void sapi5_engine::set_volume(float volume) { std::lock_guard<std::recursive_mutex> l(inst_mutex); sb_sapi_set_volume(inst, volume); }
 bool sapi5_engine::get_rate_range(float& minimum, float& midpoint, float& maximum) { minimum = -10; midpoint = 0; maximum = 10; return true; }
 bool sapi5_engine::get_pitch_range(float& minimum, float& midpoint, float& maximum) { minimum = -10; midpoint = 0; maximum = 10; return true; }
 bool sapi5_engine::get_volume_range(float& minimum, float& midpoint, float& maximum) { minimum = 0; midpoint = 50; maximum = 100; return true; }
-int sapi5_engine::get_voice_count() { std::lock_guard<std::mutex> l(inst_mutex); return inst->voice_count; }
+int sapi5_engine::get_voice_count() { std::lock_guard<std::recursive_mutex> l(inst_mutex); return inst->voice_count; }
 string sapi5_engine::get_voice_name(int index) {
-	std::lock_guard<std::mutex> l(inst_mutex);
+	std::lock_guard<std::recursive_mutex> l(inst_mutex);
 	if (index < 0 || index >= inst->voice_count) return "";
 	char *result = sb_sapi_get_voice_name(inst, index);
 	return result? string(result) : "";
 }
 string sapi5_engine::get_voice_language(int index) {
-	std::lock_guard<std::mutex> l(inst_mutex);
-	if (!inst || index < 0 || index >= get_voice_count()) return "";
+	std::lock_guard<std::recursive_mutex> l(inst_mutex);
+	if (!inst || index < 0 || index >= inst->voice_count) return "";
 	char *lang = sb_sapi_get_voice_language(inst, index);
 	return lang ? string(lang) : "";
 }
 bool sapi5_engine::set_voice(int voice) {
-	std::lock_guard<std::mutex> l(inst_mutex);
+	std::lock_guard<std::recursive_mutex> l(inst_mutex);
 	if (voice < 0 || voice >= inst->voice_count) return false;
 	if (!sb_sapi_set_voice(inst, voice)) return false;
 	return true;
 }
-int sapi5_engine::get_current_voice() { std::lock_guard<std::mutex> l(inst_mutex); return sb_sapi_get_voice(inst); }
+int sapi5_engine::get_current_voice() { std::lock_guard<std::recursive_mutex> l(inst_mutex); return sb_sapi_get_voice(inst); }
 
 static Poco::AtomicFlag g_sr_loaded;
 static Poco::AtomicFlag g_sr_available;
