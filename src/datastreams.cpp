@@ -402,6 +402,8 @@ std::string datastream::read_line() {
 	if (!_istr) return "";
 	std::string result;
 	std::getline(*_istr, result);
+	// getline only strips the LF; a file written on Windows (or any CRLF source) would otherwise hand every line back with a trailing CR, which silently breaks equality checks against the expected text.
+	if (!result.empty() && result.back() == '\r') result.pop_back();
 	return result;
 }
 UInt64 datastream::read_7bit_encoded() {
