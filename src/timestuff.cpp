@@ -146,7 +146,15 @@ uint64_t timer_queue::elapsed(const std::string &id) {
 	std::lock_guard<std::recursive_mutex> l(mtx);
 	auto it = timer_objects.find(id);
 	if (it == timer_objects.end()) return 0;
-	return timers.now() - it->second->scheduled_at();
+	// The wheel records the tick a timer is due to fire on, so the time it has been running is its timeout less
+	// whatever is left of the wait. Taking the due tick away from the current one gave back the wait still to come with
+	// its sign flipped, which as an unsigned value arrived as a number near the top of the range for every timer that
+	// had not fired yet.
+	uint64_t now = timers.now(), due = it->second->scheduled_at();
+	uint64_t timeout = it->second->timeout > 0 ? static_cast<uint64_t>(it->second->timeout) : 0;
+	if (now >= due) return timeout + (now - due);
+	uint64_t remaining = due - now;
+	return remaining >= timeout ? 0 : timeout - remaining;
 }
 uint64_t timer_queue::timeout(const std::string &id) {
 	std::lock_guard<std::recursive_mutex> l(mtx);
