@@ -69,14 +69,17 @@ static CScriptArray *StringSplit(const string &delim, bool full, bool allow_blan
 			prev = pos + delim.length();
 		else
 		{
-			prev = pos;
-			while (pos + delim.size() - prev > 0 && delim.find_first_of(str.substr(prev, pos + delim.size() - prev)) != string::npos)
-				prev++;
+			// One character of the set was matched, so step over exactly that character. Walking on while further
+			// delimiters follow collapsed a run of them into one and swallowed the empty parts between them even when
+			// the caller had asked for blanks, and it measured that run against the size of the delimiter set, which is
+			// a count of accepted characters rather than a length in the text.
+			prev = pos + 1;
 		}
 	}
 
-	// Add the remaining part if needed
-	if (array->GetSize() < 1 || str.size() - prev > 0)
+	// Add the remaining part if needed. A string ending on a delimiter leaves an empty part behind it, which counts
+	// when blanks were asked for; dropping it silently lost the last field of text like "a,b,".
+	if (array->GetSize() < 1 || str.size() - prev > 0 || allow_blanks)
 	{
 		array->Resize(array->GetSize() + 1);
 		((string *)array->At(count))->assign(&str[prev], str.size() - prev);
@@ -175,10 +178,14 @@ static string StringReplaceRange(asUINT start, int count, const string &replace,
 {
 	if (start >= str.size() || count < 1)
 		return str;
+	// A count that reaches past the end has to take only what is left, otherwise append is asked for a position beyond
+	// the string and throws, so replacing the rest of a string without measuring it first failed here while the same
+	// call on replace_range_this worked, std::string::replace having clamped it.
+	size_t removed = static_cast<size_t>(count) < str.size() - start ? static_cast<size_t>(count) : str.size() - start;
 	// Recreate the string so that the original stays in tact.
 	string ret(&str[0], start);
 	ret += replace;
-	ret.append(str, start + count, str.size() - (start + count));
+	ret.append(str, start + removed, str.size() - (start + removed));
 	return ret;
 }
 
