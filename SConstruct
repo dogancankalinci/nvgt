@@ -171,7 +171,27 @@ def ios_framework_version():
 	try: m = re.match(r"\d+(\.\d+){0,2}", open("version").read().strip())
 	except OSError: m = None
 	return m.group(0) if m else "1.0"
+_ios_toolchain_keys = None
+def ios_toolchain_plist_keys():
+	"""The build-environment keys Xcode stamps into every bundle it produces (DTXcode, DTSDKName, BuildMachineOSBuild, ...),
+	read from the Xcode this build actually runs under, the way un4seen's BASS frameworks carry them. Omitted, rather than
+	invented, when the tools are not available (a dry run on another host)."""
+	global _ios_toolchain_keys
+	if _ios_toolchain_keys is not None: return _ios_toolchain_keys
+	keys = {}
+	def run(*cmd): return subprocess.check_output(list(cmd), stderr = subprocess.DEVNULL).decode().strip()
+	try:
+		xcode = run("xcodebuild", "-version").splitlines() # "Xcode 26.6" / "Build version 17F42"
+		parts = (xcode[0].split()[1].split(".") + ["0", "0"])[:3]
+		keys["DTXcode"] = f"{int(parts[0]):02d}{int(parts[1])}{int(parts[2])}" # Xcode 26.6 -> 2660, the convention Xcode itself uses
+		keys["DTXcodeBuild"] = xcode[1].split()[-1]
+		sdk_version, sdk_build = run("xcrun", "--sdk", "iphoneos", "--show-sdk-version"), run("xcrun", "--sdk", "iphoneos", "--show-sdk-build-version")
+		keys.update({"DTCompiler": "com.apple.compilers.llvm.clang.1_0", "DTPlatformName": "iphoneos", "DTPlatformVersion": sdk_version, "DTPlatformBuild": sdk_build, "DTSDKName": "iphoneos" + sdk_version, "DTSDKBuild": sdk_build, "BuildMachineOSBuild": run("sw_vers", "-buildVersion")})
+	except Exception: keys = {}
+	_ios_toolchain_keys = keys
+	return keys
 def ios_framework_info_plist(name, identifier):
+	toolchain = "".join(f"\t<key>{k}</key>\n\t<string>{v}</string>\n" for k, v in sorted(ios_toolchain_plist_keys().items()))
 	return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -196,8 +216,13 @@ def ios_framework_info_plist(name, identifier):
 	</array>
 	<key>CFBundleVersion</key>
 	<string>{ios_framework_version()}</string>
-	<key>MinimumOSVersion</key>
+{toolchain}	<key>MinimumOSVersion</key>
 	<string>16.0</string>
+	<key>UIDeviceFamily</key>
+	<array>
+		<integer>1</integer>
+		<integer>2</integer>
+	</array>
 </dict>
 </plist>
 """
