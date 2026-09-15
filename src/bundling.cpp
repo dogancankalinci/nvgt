@@ -1397,24 +1397,26 @@ protected:
 			// irrelevant and MUST NOT drive these values: App Store review rejects apps whose
 			// build environment looks non-GM, and a plist-vs-stub mismatch is worse. This holds
 			// on every host, macOS included (many NVGT users' Macs have an old Xcode or none).
-			// Verified 2026-07-01 from a real minimal app built with GM Xcode 26.5 (the GitHub
-			// macos-26 runner's DEFAULT Xcode): xcodebuild Build 17F42, iOS SDK 26.5, SDK build
-			// 23F73. Xcode 26.5 is a public GM (released May 2026), not a beta/RC, and macos-26's
-			// default Xcode IS 26.5, so a stub built there already matches these values.
-			// Bump ALL of these in lockstep whenever the stub is rebuilt with a newer GM Xcode.
+			// Verified 2026-09-15 from the GitHub macos-26 runner that builds the stubs, by having
+			// the build itself report xcodebuild -version, xcrun --show-sdk-build-version and
+			// sw_vers while it ran: Xcode 26.6 (build 17F113), iOS SDK 26.5, SDK build 23F81a.
+			// Xcode 26.6 is the runner image's default, i.e. a public release, not a beta/RC.
+			// The iOS plugin frameworks read the same values live at build time (see
+			// ios_toolchain_plist_keys in SConstruct); these must be kept in lockstep with them
+			// and bumped whenever the stub is rebuilt with a newer GM Xcode.
 			const string dt_compiler       = "com.apple.compilers.llvm.clang.1_0";
-			const string dt_xcode          = "2650";          // Xcode 26.5
-			const string dt_xcode_build    = "17F42";         // xcodebuild Build version
+			const string dt_xcode          = "2660";          // Xcode 26.6
+			const string dt_xcode_build    = "17F113";        // xcodebuild Build version
 			const string dt_platform_ver   = "26.5";          // iOS SDK version (not the Xcode string)
-			const string dt_platform_build = "23F73";         // iOS SDK build (DISTINCT from DTXcodeBuild)
-			const string dt_sdk_build      = "23F73";         // same SDK build id
+			const string dt_platform_build = "23F81a";        // iOS SDK build (DISTINCT from DTXcodeBuild)
+			const string dt_sdk_build      = "23F81a";        // same SDK build id
 			const string dt_sdk_name       = "iphoneos26.5";
 			// BuildMachineOSBuild is also HARD-CODED (not read from the local Mac via sw_vers):
 			// a developer bundling on their own Mac would otherwise stamp whatever macOS build
 			// they happen to run, which need not match the runner that actually compiled the
 			// stub. Value = the macOS build of the GitHub macos-26 runner that builds the stub
-			// (verified 2026-07-01 from a real Xcode-26.5 app on that runner). Bump with the DTs.
-			const string dt_build_machine  = "25E246";
+			// (verified 2026-09-15 from sw_vers -buildVersion on that runner). Bump with the DTs.
+			const string dt_build_machine  = "25G83";
 			plist_dict_set_item(plist, "BuildMachineOSBuild", plist_new_string(dt_build_machine.c_str()));
 			plist_dict_set_item(plist, "DTCompiler",          plist_new_string(dt_compiler.c_str()));
 			plist_dict_set_item(plist, "DTPlatformBuild",     plist_new_string(dt_platform_build.c_str()));
