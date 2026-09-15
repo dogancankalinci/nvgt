@@ -337,11 +337,16 @@ void coordinate_map::get_areas(float minx, float maxx, float miny, float maxy, f
 	for (auto i : local_areas)
 		i->tmp_adding_to_result = false;
 	if (priority_check && local_areas.size() > 1) {
-		map_area* final = NULL;
-		for (auto i : local_areas) {
-			if (!final || i->priority > final->priority) final = i;
+		// Move the highest priority area to the end, where get_area looks for it. This has to swap two elements of the
+		// list: swapping a local pointer with the last element instead would overwrite the last area with a second copy
+		// of the highest priority one, and the area it displaced would never be released by the caller, so it stayed
+		// alive with everything its primary data holds. Areas that share the highest priority make that visible,
+		// because only then does the running priority check let more than the eventual winner onto the list.
+		size_t highest = 0;
+		for (size_t i = 1; i < local_areas.size(); i++) {
+			if (local_areas[i]->priority > local_areas[highest]->priority) highest = i;
 		}
-		if (final) std::swap(final, local_areas[local_areas.size() - 1]);
+		std::swap(local_areas[highest], local_areas[local_areas.size() - 1]);
 	} else if (local_areas.size() > 1)
 		sort(local_areas.begin(), local_areas.end(), map_area_sort);
 	if (filter_callback) filter_callback->Release();
