@@ -345,7 +345,7 @@ if  ARGUMENTS.get("no_plugins", "0") == "0":
 	plugin_env["CPPDEFINES"] = list(plugin_env["CPPDEFINES"])
 	if env["NVGT_TARGET"] == "android":
 		plugin_env.Append(CXXFLAGS = ["-fPIC"])
-		plugin_env["SHLIBPREFIX"] = ""
+		plugin_env["SHLIBPREFIX"] = "lib" # see android_plugin_env below for why the prefix matters on Android
 	elif env["NVGT_TARGET"] == "ios": plugin_env = ios_plugin_env(plugin_env)
 	# Then loop through all known plugins and build them.
 	# Android skips the top-level (arm64/base-env) plugin build entirely: each plugin must be compiled per ABI against its
@@ -498,6 +498,11 @@ elif env["NVGT_TARGET"] == "android":
 		_nvgt_only_defines = {"NVGT_BUILDING", "NO_OBFUSCATE", "NVGT_USER_CONFIG"}
 		pe["CPPDEFINES"] = [d for d in list(pe["CPPDEFINES"]) if (d[0] if isinstance(d, (tuple, list)) else d) not in _nvgt_only_defines]
 		pe["PLUGIN_DEST_DIR"] = "#release/lib_android/" + abi
+		# Plugins must be lib<name>.so: the Android package installer extracts a non-debuggable app's native libraries only
+		# when their names match lib*.so (AOSP NativeLibraryHelper), so a plugin shipped as legacy_sound.so stayed inside the
+		# APK on such devices and dlopen failed at startup with "Unable to load legacy_sound". The engine's own native libs
+		# are built from abi_env directly, whose empty SHLIBPREFIX keeps libmain.so / libgame.so spelled out in full.
+		pe["SHLIBPREFIX"] = "lib"
 		pe.Append(CXXFLAGS = ["-fPIC"])
 		libdir = "#build/lib_android/" + abi
 		orig_static = pe["BUILDERS"]["StaticLibrary"]

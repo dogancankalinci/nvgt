@@ -59,6 +59,14 @@ bool load_nvgt_plugin(const std::string& name, std::string* errmsg, void* user) 
 		#endif
 		obj = SDL_LoadObject(dllname.c_str());
 		if (!obj) obj = SDL_LoadObject(Poco::format("lib%s", dllname).c_str());
+		#ifdef __ANDROID__
+		// Plugins are shipped as lib<name>.so (the only spelling the package installer extracts) into the same directory the
+		// engine's own native library was extracted to; look there by full path in case the bare name is not resolvable.
+		if (!obj) {
+			std::string main_so = android_get_main_shared_object();
+			if (!main_so.empty()) obj = SDL_LoadObject(Poco::Path(main_so).makeParent().setFileName("lib" + dllname).toString().c_str());
+		}
+		#endif
 		#if defined(__APPLE__) && defined(NVGT_MOBILE)
 		// dlopen never searches the app bundle for a bare name. The bundler embeds each plugin as <app>/Frameworks/<name>.framework/<name>,
 		// the only form of third-party dynamic code iOS accepts; the loose dylib spellings are kept for a developer's ad hoc build.
