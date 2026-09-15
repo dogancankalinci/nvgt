@@ -89,53 +89,54 @@ public:
 	~text_font();
 	void duplicate() { asAtomicInc(_refcount); }
 	void release() { if (asAtomicDec(_refcount) < 1) delete this; }
-	unsigned int get_generation() const { return TTF_GetFontGeneration(_font); }
+	bool is_valid() const { return _font != nullptr; } // False when TTF_OpenFont failed; every method below is guarded against that case.
+	unsigned int get_generation() const { if (!_font) return 0; return TTF_GetFontGeneration(_font); }
 	bool add_fallback_font(text_font* font);
 	bool remove_fallback_font(text_font* font);
 	void clear_fallback_fonts();
-	bool set_size(float ptsize) { return TTF_SetFontSize(_font, ptsize); }
-	float get_size() const { return TTF_GetFontSize(_font); }
-	bool set_size_dpi(float ptsize, int hdpi, int vdpi) { return TTF_SetFontSizeDPI(_font, ptsize, hdpi, vdpi); }
+	bool set_size(float ptsize) { if (!_font) return false; return TTF_SetFontSize(_font, ptsize); }
+	float get_size() const { if (!_font) return 0.0f; return TTF_GetFontSize(_font); }
+	bool set_size_dpi(float ptsize, int hdpi, int vdpi) { if (!_font) return false; return TTF_SetFontSizeDPI(_font, ptsize, hdpi, vdpi); }
 	bool get_dpi(int& hdpi, int& vdpi) const;
-	void set_style(unsigned int style) { TTF_SetFontStyle(_font, (TTF_FontStyleFlags)style); }
-	unsigned int get_style() const { return TTF_GetFontStyle(_font); }
-	bool set_outline(int outline) { return TTF_SetFontOutline(_font, outline); }
-	int get_outline() const { return TTF_GetFontOutline(_font); }
-	int get_faces_count() const { return TTF_GetNumFontFaces(_font); }
-	bool set_sdf(bool enabled) { return TTF_SetFontSDF(_font, enabled); }
-	bool get_sdf() const { return TTF_GetFontSDF(_font); }
-	int get_weight() const { return TTF_GetFontWeight(_font); }
-	void set_wrap_alignment(unsigned int alignment) { TTF_SetFontWrapAlignment(_font, (TTF_HorizontalAlignment)alignment); }
-	unsigned int get_wrap_alignment() const { return (unsigned int)TTF_GetFontWrapAlignment(_font); }
-	int get_height() const { return TTF_GetFontHeight(_font); }
-	int get_ascent() const { return TTF_GetFontAscent(_font); }
-	int get_descent() const { return TTF_GetFontDescent(_font); }
-	void set_line_skip(int skip) { TTF_SetFontLineSkip(_font, skip); }
-	int get_line_skip() const { return TTF_GetFontLineSkip(_font); }
-	void set_kerning(bool enabled) { TTF_SetFontKerning(_font, enabled); }
-	bool get_kerning() const { return TTF_GetFontKerning(_font); }
-	bool is_fixed_width() const { return TTF_FontIsFixedWidth(_font); }
-	bool is_scalable() const { return TTF_FontIsScalable(_font); }
-	std::string get_family_name() const { return from_cstr(TTF_GetFontFamilyName(_font)); }
-	std::string get_style_name() const { return from_cstr(TTF_GetFontStyleName(_font)); }
-	bool set_direction(unsigned int dir) { return TTF_SetFontDirection(_font, (TTF_Direction)dir); }
-	unsigned int get_direction() const { return (unsigned int)TTF_GetFontDirection(_font); }
-	bool set_script(unsigned int script) { return TTF_SetFontScript(_font, script); }
-	unsigned int get_script() const { return TTF_GetFontScript(_font); }
-	bool set_language(const std::string& language_bcp47) { return TTF_SetFontLanguage(_font, language_bcp47.c_str()); }
-	bool has_glyph(unsigned int codepoint) { return TTF_FontHasGlyph(_font, codepoint); }
-	graphic* render_text_solid(const std::string& text, unsigned int r, unsigned int g, unsigned int b) { return new graphic(TTF_RenderText_Solid(_font, text.c_str(), text.size(), to_sdl_color(r, g, b))); }
-	graphic* render_text_solid_wrapped(const std::string& text, int wrap_width, unsigned int r, unsigned int g, unsigned int b) { return new graphic(TTF_RenderText_Solid_Wrapped(_font, text.c_str(), text.size(), to_sdl_color(r, g, b), wrap_width)); }
-	graphic* render_text_blended(const std::string& text, unsigned int r, unsigned int g, unsigned int b) { return new graphic(TTF_RenderText_Blended(_font, text.c_str(), text.size(), to_sdl_color(r, g, b))); }
-	graphic* render_text_blended_wrapped(const std::string& text, int wrap_width, unsigned int r, unsigned int g, unsigned int b) { return new graphic(TTF_RenderText_Blended_Wrapped(_font, text.c_str(), text.size(), to_sdl_color(r, g, b), wrap_width)); }
-	graphic* render_text_shaded(const std::string& text, unsigned int fg_r, unsigned int fg_g, unsigned int fg_b, unsigned int bg_r, unsigned int bg_g, unsigned int bg_b) { return new graphic(TTF_RenderText_Shaded(_font, text.c_str(), text.size(), to_sdl_color(fg_r, fg_g, fg_b), to_sdl_color(bg_r, bg_g, bg_b))); }
-	graphic* render_text_shaded_wrapped(const std::string& text, int wrap_width, unsigned int fg_r, unsigned int fg_g, unsigned int fg_b, unsigned int bg_r, unsigned int bg_g, unsigned int bg_b) { return new graphic(TTF_RenderText_Shaded_Wrapped(_font, text.c_str(), text.size(), to_sdl_color(fg_r, fg_g, fg_b), to_sdl_color(bg_r, bg_g, bg_b), wrap_width)); }
-	graphic* render_text_lcd(const std::string& text, unsigned int fg_r, unsigned int fg_g, unsigned int fg_b, unsigned int bg_r, unsigned int bg_g, unsigned int bg_b) { return new graphic(TTF_RenderText_LCD(_font, text.c_str(), text.size(), to_sdl_color(fg_r, fg_g, fg_b), to_sdl_color(bg_r, bg_g, bg_b))); }
-	graphic* render_text_lcd_wrapped(const std::string& text, int wrap_width, unsigned int fg_r, unsigned int fg_g, unsigned int fg_b, unsigned int bg_r, unsigned int bg_g, unsigned int bg_b) { return new graphic(TTF_RenderText_LCD_Wrapped(_font, text.c_str(), text.size(), to_sdl_color(fg_r, fg_g, fg_b), to_sdl_color(bg_r, bg_g, bg_b), wrap_width)); }
-	graphic* render_glyph_solid(unsigned int ch, unsigned int r, unsigned int g, unsigned int b) { return new graphic(TTF_RenderGlyph_Solid(_font, ch, to_sdl_color(r, g, b))); }
-	graphic* render_glyph_blended(unsigned int ch, unsigned int r, unsigned int g, unsigned int b) { return new graphic(TTF_RenderGlyph_Blended(_font, ch, to_sdl_color(r, g, b))); }
-	graphic* render_glyph_shaded(unsigned int ch, unsigned int fg_r, unsigned int fg_g, unsigned int fg_b, unsigned int bg_r, unsigned int bg_g, unsigned int bg_b) { return new graphic(TTF_RenderGlyph_Shaded(_font, ch, to_sdl_color(fg_r, fg_g, fg_b), to_sdl_color(bg_r, bg_g, bg_b))); }
-	graphic* render_glyph_lcd(unsigned int ch, unsigned int fg_r, unsigned int fg_g, unsigned int fg_b, unsigned int bg_r, unsigned int bg_g, unsigned int bg_b) { return new graphic(TTF_RenderGlyph_LCD(_font, ch, to_sdl_color(fg_r, fg_g, fg_b), to_sdl_color(bg_r, bg_g, bg_b))); }
+	void set_style(unsigned int style) { if (!_font) return; TTF_SetFontStyle(_font, (TTF_FontStyleFlags)style); }
+	unsigned int get_style() const { if (!_font) return 0; return TTF_GetFontStyle(_font); }
+	bool set_outline(int outline) { if (!_font) return false; return TTF_SetFontOutline(_font, outline); }
+	int get_outline() const { if (!_font) return 0; return TTF_GetFontOutline(_font); }
+	int get_faces_count() const { if (!_font) return 0; return TTF_GetNumFontFaces(_font); }
+	bool set_sdf(bool enabled) { if (!_font) return false; return TTF_SetFontSDF(_font, enabled); }
+	bool get_sdf() const { if (!_font) return false; return TTF_GetFontSDF(_font); }
+	int get_weight() const { if (!_font) return 0; return TTF_GetFontWeight(_font); }
+	void set_wrap_alignment(unsigned int alignment) { if (!_font) return; TTF_SetFontWrapAlignment(_font, (TTF_HorizontalAlignment)alignment); }
+	unsigned int get_wrap_alignment() const { if (!_font) return 0; return (unsigned int)TTF_GetFontWrapAlignment(_font); }
+	int get_height() const { if (!_font) return 0; return TTF_GetFontHeight(_font); }
+	int get_ascent() const { if (!_font) return 0; return TTF_GetFontAscent(_font); }
+	int get_descent() const { if (!_font) return 0; return TTF_GetFontDescent(_font); }
+	void set_line_skip(int skip) { if (!_font) return; TTF_SetFontLineSkip(_font, skip); }
+	int get_line_skip() const { if (!_font) return 0; return TTF_GetFontLineSkip(_font); }
+	void set_kerning(bool enabled) { if (!_font) return; TTF_SetFontKerning(_font, enabled); }
+	bool get_kerning() const { if (!_font) return false; return TTF_GetFontKerning(_font); }
+	bool is_fixed_width() const { if (!_font) return false; return TTF_FontIsFixedWidth(_font); }
+	bool is_scalable() const { if (!_font) return false; return TTF_FontIsScalable(_font); }
+	std::string get_family_name() const { if (!_font) return std::string(); return from_cstr(TTF_GetFontFamilyName(_font)); }
+	std::string get_style_name() const { if (!_font) return std::string(); return from_cstr(TTF_GetFontStyleName(_font)); }
+	bool set_direction(unsigned int dir) { if (!_font) return false; return TTF_SetFontDirection(_font, (TTF_Direction)dir); }
+	unsigned int get_direction() const { if (!_font) return 0; return (unsigned int)TTF_GetFontDirection(_font); }
+	bool set_script(unsigned int script) { if (!_font) return false; return TTF_SetFontScript(_font, script); }
+	unsigned int get_script() const { if (!_font) return 0; return TTF_GetFontScript(_font); }
+	bool set_language(const std::string& language_bcp47) { if (!_font) return false; return TTF_SetFontLanguage(_font, language_bcp47.c_str()); }
+	bool has_glyph(unsigned int codepoint) { if (!_font) return false; return TTF_FontHasGlyph(_font, codepoint); }
+	graphic* render_text_solid(const std::string& text, unsigned int r, unsigned int g, unsigned int b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderText_Solid(_font, text.c_str(), text.size(), to_sdl_color(r, g, b))); }
+	graphic* render_text_solid_wrapped(const std::string& text, int wrap_width, unsigned int r, unsigned int g, unsigned int b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderText_Solid_Wrapped(_font, text.c_str(), text.size(), to_sdl_color(r, g, b), wrap_width)); }
+	graphic* render_text_blended(const std::string& text, unsigned int r, unsigned int g, unsigned int b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderText_Blended(_font, text.c_str(), text.size(), to_sdl_color(r, g, b))); }
+	graphic* render_text_blended_wrapped(const std::string& text, int wrap_width, unsigned int r, unsigned int g, unsigned int b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderText_Blended_Wrapped(_font, text.c_str(), text.size(), to_sdl_color(r, g, b), wrap_width)); }
+	graphic* render_text_shaded(const std::string& text, unsigned int fg_r, unsigned int fg_g, unsigned int fg_b, unsigned int bg_r, unsigned int bg_g, unsigned int bg_b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderText_Shaded(_font, text.c_str(), text.size(), to_sdl_color(fg_r, fg_g, fg_b), to_sdl_color(bg_r, bg_g, bg_b))); }
+	graphic* render_text_shaded_wrapped(const std::string& text, int wrap_width, unsigned int fg_r, unsigned int fg_g, unsigned int fg_b, unsigned int bg_r, unsigned int bg_g, unsigned int bg_b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderText_Shaded_Wrapped(_font, text.c_str(), text.size(), to_sdl_color(fg_r, fg_g, fg_b), to_sdl_color(bg_r, bg_g, bg_b), wrap_width)); }
+	graphic* render_text_lcd(const std::string& text, unsigned int fg_r, unsigned int fg_g, unsigned int fg_b, unsigned int bg_r, unsigned int bg_g, unsigned int bg_b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderText_LCD(_font, text.c_str(), text.size(), to_sdl_color(fg_r, fg_g, fg_b), to_sdl_color(bg_r, bg_g, bg_b))); }
+	graphic* render_text_lcd_wrapped(const std::string& text, int wrap_width, unsigned int fg_r, unsigned int fg_g, unsigned int fg_b, unsigned int bg_r, unsigned int bg_g, unsigned int bg_b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderText_LCD_Wrapped(_font, text.c_str(), text.size(), to_sdl_color(fg_r, fg_g, fg_b), to_sdl_color(bg_r, bg_g, bg_b), wrap_width)); }
+	graphic* render_glyph_solid(unsigned int ch, unsigned int r, unsigned int g, unsigned int b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderGlyph_Solid(_font, ch, to_sdl_color(r, g, b))); }
+	graphic* render_glyph_blended(unsigned int ch, unsigned int r, unsigned int g, unsigned int b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderGlyph_Blended(_font, ch, to_sdl_color(r, g, b))); }
+	graphic* render_glyph_shaded(unsigned int ch, unsigned int fg_r, unsigned int fg_g, unsigned int fg_b, unsigned int bg_r, unsigned int bg_g, unsigned int bg_b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderGlyph_Shaded(_font, ch, to_sdl_color(fg_r, fg_g, fg_b), to_sdl_color(bg_r, bg_g, bg_b))); }
+	graphic* render_glyph_lcd(unsigned int ch, unsigned int fg_r, unsigned int fg_g, unsigned int fg_b, unsigned int bg_r, unsigned int bg_g, unsigned int bg_b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderGlyph_LCD(_font, ch, to_sdl_color(fg_r, fg_g, fg_b), to_sdl_color(bg_r, bg_g, bg_b))); }
 	graphic* get_glyph_image(unsigned int ch) const;
 	bool get_glyph_metrics(unsigned int ch, int& minx, int& maxx, int& miny, int& maxy, int& advance) const;
 	bool get_kerning_size(unsigned int prev_ch, unsigned int ch, int& kerning) const;

@@ -126,14 +126,14 @@ text_font::~text_font() {
 }
 
 bool text_font::add_fallback_font(text_font* font) {
-	if (!font || !font->_font) return false;
+	if (!_font || !font || !font->_font) return false;
 	font->duplicate();
 	_fallback_fonts.push_back(font);
 	return TTF_AddFallbackFont(_font, font->_font);
 }
 
 bool text_font::remove_fallback_font(text_font* font) {
-	if (!font || !font->_font) return false;
+	if (!_font || !font || !font->_font) return false;
 	TTF_RemoveFallbackFont(_font, font->_font);
 	for (auto it = _fallback_fonts.begin(); it != _fallback_fonts.end(); ++it) {
 		if (*it == font) {
@@ -146,38 +146,45 @@ bool text_font::remove_fallback_font(text_font* font) {
 }
 
 void text_font::clear_fallback_fonts() {
-	TTF_ClearFallbackFonts(_font);
+	if (_font) TTF_ClearFallbackFonts(_font);
 	for (text_font* f : _fallback_fonts) f->release();
 	_fallback_fonts.clear();
 }
 
 bool text_font::get_dpi(int& hdpi, int& vdpi) const {
+	if (!_font) return false;
 	return TTF_GetFontDPI(_font, &hdpi, &vdpi);
 }
 
 graphic* text_font::get_glyph_image(unsigned int ch) const {
+	if (!_font) return nullptr;
 	TTF_ImageType image_type;
 	SDL_Surface* s = TTF_GetGlyphImage(_font, ch, &image_type);
 	return s ? new graphic(s) : nullptr;
 }
 
 bool text_font::get_glyph_metrics(unsigned int ch, int& minx, int& maxx, int& miny, int& maxy, int& advance) const {
+	if (!_font) return false;
 	return TTF_GetGlyphMetrics(_font, ch, &minx, &maxx, &miny, &maxy, &advance);
 }
 
 bool text_font::get_kerning_size(unsigned int prev_ch, unsigned int ch, int& kerning) const {
+	if (!_font) return false;
 	return TTF_GetGlyphKerning(_font, prev_ch, ch, &kerning);
 }
 
 bool text_font::get_string_size(const std::string& text, int& w, int& h) const {
+	if (!_font) { w = h = 0; return false; }
 	return TTF_GetStringSize(_font, text.c_str(), text.size(), &w, &h);
 }
 
 bool text_font::get_string_size_wrapped(const std::string& text, int wrap_width, int& w, int& h) const {
+	if (!_font) { w = h = 0; return false; }
 	return TTF_GetStringSizeWrapped(_font, text.c_str(), text.size(), wrap_width, &w, &h);
 }
 
 bool text_font::measure_string(const std::string& text, int max_width, int& measured_width, int& measured_length) const {
+	if (!_font) { measured_width = measured_length = 0; return false; }
 	size_t len = 0;
 	bool ok = TTF_MeasureString(_font, text.c_str(), text.size(), max_width, &measured_width, &len);
 	measured_length = (int)len;
@@ -197,6 +204,9 @@ text_font* get_font(const std::string& name, float size, unsigned int initial_st
 			return it->second;
 		}
 		text_font* font = new text_font(name, size, initial_style);
+		// Never cache a font that failed to open: the file may be installed later, and a cached
+		// failure would keep handing back the unusable object for the rest of the process.
+		if (!font->is_valid()) return font;
 		font->duplicate(); // held by cache
 		g_font_cache[key] = font;
 		return font; // refcount=2: one for cache, one for caller
@@ -467,6 +477,7 @@ void RegisterGraphics(asIScriptEngine* engine) {
 	engine->RegisterObjectBehaviour("text_font", asBEHAVE_ADDREF, "void f()", asMETHOD(text_font, duplicate), asCALL_THISCALL);
 	engine->RegisterObjectBehaviour("text_font", asBEHAVE_RELEASE, "void f()", asMETHOD(text_font, release), asCALL_THISCALL);
 	engine->RegisterObjectBehaviour("text_font", asBEHAVE_FACTORY, "text_font@ f(const string&in name, float size, uint style = FONT_STYLE_NORMAL)", asFUNCTION(text_font_factory), asCALL_CDECL);
+	engine->RegisterObjectMethod("text_font", "bool get_is_valid() const property", asMETHOD(text_font, is_valid), asCALL_THISCALL);
 	engine->RegisterObjectMethod("text_font", "uint get_generation() const property", asMETHOD(text_font, get_generation), asCALL_THISCALL);
 	engine->RegisterObjectMethod("text_font", "bool add_fallback_font(text_font@+ font)", asMETHOD(text_font, add_fallback_font), asCALL_THISCALL);
 	engine->RegisterObjectMethod("text_font", "bool remove_fallback_font(text_font@+ font)", asMETHOD(text_font, remove_fallback_font), asCALL_THISCALL);
