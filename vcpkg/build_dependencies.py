@@ -60,7 +60,7 @@ def build(triplet = "", do_archive = False, out_dir = ""):
 	fix_debug(out_dir)
 	if triplet == "arm64-osx": macos_fat_binaries(out_dir)
 	elif triplet == "x64-windows": windows_lib_rename(out_dir)
-	if triplet.endswith("osx") or triplet.endswith("linux"): remove_duplicates(out_dir)
+	if triplet.endswith("osx") or triplet.endswith("linux") or "-ios" in triplet: remove_duplicates(out_dir)
 	try:
 		shutil.rmtree(out_dir / "lib" / "cmake")
 		shutil.rmtree(out_dir / "lib" / "pkgconfig")

@@ -154,10 +154,13 @@ def ios_xcframework_slice(target_env, name):
 	for entry in sorted(os.listdir(base)):
 		if entry.startswith("ios-") and "simulator" not in entry and os.path.isdir(os.path.join(base, entry, name + ".framework")): return os.path.join(base, entry)
 	return None
-# iOS deps are static archives, so a plugin dylib must itself link what the desktop dylib of a library carries inside: vcpkg's
-# libgit2 is built against the system http-parser, zlib, pcre2 (our manifest's regex backend) and, on Apple, iconv.
-IOS_TRANSITIVE_LIBS = {"git2": ["http_parser", "pcre2-8", "iconv", "z"]}
 IOS_PLUGIN_FRAMEWORKS = ["Accelerate", "AudioToolbox", "AVFoundation", "CoreAudio", "CoreFoundation", "Foundation", "Security", "SystemConfiguration"]
+# What a plugin dylib must add to resolve a static archive it links on iOS (the engine's own link line already carries these).
+IOS_STATIC_DEPS = {"phonon": ["mysofa", "pffft"]}
+def ios_redist_dylib(target_env, name):
+	"""Path of <iosdev>/lib/lib<name>.dylib when a redistributable is built as a plain dylib for iOS (libgit2), else None."""
+	p = os.path.join(target_env.Dir("#").abspath, target_env["NVGT_OSDEV_PATH"], "lib", "lib" + name + ".dylib")
+	return p if os.path.isfile(p) else None
 def link_static_plugin(target_env, folder, plug):
 	"""Links a statically embedded plugin into nvgt and the stubs. The archive is linked as usual; the shared
 	libraries it depends on are made lazy or weak wherever the platform allows, so that a stub carrying the plugin
@@ -175,8 +178,10 @@ def link_static_plugin(target_env, folder, plug):
 		elif target_env["NVGT_TARGET"] == "ios" and ios_xcframework_slice(target_env, name):
 			# SCons' applelink always emits -framework whatever FRAMEWORKPREFIX says, so the weak form goes through LINKFLAGS.
 			target_env.Append(FRAMEWORKPATH = [ios_xcframework_slice(target_env, name)], LINKFLAGS = ["-weak_framework", name])
+		elif target_env["NVGT_TARGET"] == "ios" and ios_redist_dylib(target_env, name):
+			target_env.Append(LINKFLAGS = ["-weak-l" + name])
 		else:
-			target_env.Append(LIBS = [name] + (IOS_TRANSITIVE_LIBS.get(name, []) if target_env["NVGT_TARGET"] == "ios" else []))
+			target_env.Append(LIBS = [name])
 def ios_plugin_env(base_env):
 	"""Environment the plugin SConscripts (some in the read-only extra submodule) run with on iOS. As with
 	android_plugin_env below, every difference is applied by wrapping builders rather than by editing a plugin:
@@ -234,7 +239,7 @@ def ios_plugin_env(base_env):
 				linkflags += ["-framework", l]
 			else:
 				libs.append(l)
-				if isinstance(l, str): libs += IOS_TRANSITIVE_LIBS.get(l, [])
+				if isinstance(l, str): libs += [d for d in IOS_STATIC_DEPS.get(l, []) if d not in libs]
 		name = environment.subst("$SHLIBPREFIX") + os.path.basename(str(target)) + environment.subst("$SHLIBSUFFIX")
 		linkflags += ["-install_name", "@rpath/" + name, "-Wl,-rpath,@loader_path", "-Wl,-undefined,error"]
 		given = kw.get("FRAMEWORKS", environment.get("FRAMEWORKS", []))
@@ -631,4 +636,5 @@ if ARGUMENTS.get("copylibs", "1") == "1":
 		for name in env["NVGT_OSDEV_REDIST_LIBS"]:
 			slice_dir = ios_xcframework_slice(env, name)
 			if slice_dir: env.Install("#release/lib_ios", Dir(os.path.join(slice_dir, name + ".framework")))
+			elif ios_redist_dylib(env, name): env.Install("#release/lib_ios", File(ios_redist_dylib(env, name)))
 	else: env["NVGT_OSDEV_COPY_LIBS"](env)
