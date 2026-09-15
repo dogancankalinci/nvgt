@@ -189,7 +189,10 @@ def ios_plugin_env(base_env):
 	libdir = "#build/lib_ios"
 	banned_ccflags = {"-mavx", "-maes"}
 	def without_banned(environment, kw):
-		if "CCFLAGS" not in kw and any(f in banned_ccflags for f in environment["CCFLAGS"]): kw = dict(kw, CCFLAGS = [f for f in environment["CCFLAGS"] if f not in banned_ccflags])
+		# Always freeze CCFLAGS as they are at the call: SCons substitutes variables when a target is built, so flags a
+		# SConscript appends after creating its objects (sqlite adds -mavx after compiling scriptarray) would otherwise
+		# still reach them.
+		if "CCFLAGS" not in kw: kw = dict(kw, CCFLAGS = [f for f in environment["CCFLAGS"] if f not in banned_ccflags])
 		return kw
 	orig_static = pe["BUILDERS"]["StaticLibrary"]
 	def static_redir(environment, target, source, *a, **kw):
