@@ -82,7 +82,8 @@ std::string get_nvgt_lib_directory(const std::string& platform) {
 std::string get_data_location() {
 	std::string executable = Poco::Util::Application::instance().commandPath();
 	#if defined(__ANDROID__)
-	return android_get_main_shared_object();
+	// The payload is packaged as assets/bytecode.bin rather than appended to libgame.so, which is how the multi-ABI android build works. SDL routes a relative path through the asset manager, matching how LoadCompiledExecutable opens the same file.
+	return "bytecode.bin";
 	#elif defined(__APPLE__)
 		#ifndef NVGT_MOBILE
 		Path payload_file = Path(Util::Application::instance().commandPath()).makeParent().makeParent().append("Resources/exec");
