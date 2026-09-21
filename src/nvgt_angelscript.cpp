@@ -242,7 +242,7 @@ private:
 		char c;
 		if (stream->Read(&c, 1) != 1)
 			return char_traits::eof();
-		return c;
+		return charToInt(c); // A plain `return c` sign-extends byte 0xFF to -1 == eof() on signed-char platforms, truncating the read.
 	}
 	int writeToDevice(char c) { return stream->Write(&c, 1); }
 	NVGTBytecodeStream* stream;
