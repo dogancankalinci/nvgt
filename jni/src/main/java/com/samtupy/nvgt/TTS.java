@@ -6,7 +6,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.ResolveInfo;
-import android.media.AudioManager;
 import android.media.AudioAttributes;
 import android.os.Bundle;
 import android.provider.Settings;
@@ -122,6 +121,11 @@ public class TTS {
 	private float ttsVolume = 1.0f;
 	private float ttsRate = 1.0f;
 	private float ttsPitch = 1.0f;
+	// Nothing reaches the engine unless a script explicitly sets it. Until then an utterance carries no rate, pitch, volume or pan, so the TTS service fills them in from the user's own settings on every request, and the voice stays the one TextToSpeech took from the user's language setting while connecting (see defaultVoice).
+	private boolean rateExplicit = false, pitchExplicit = false, volumeExplicit = false, panExplicit = false;
+	// TextToSpeech cannot clear a rate or pitch once one has been set. After such a value is reset we therefore re-apply the current system value before each utterance instead (see followSystemSettings()).
+	private boolean ratePinned = false, pitchPinned = false;
+	private Voice defaultVoice; // The voice TextToSpeech selected from the user's settings when it connected, which resetVoice() restores.
 	private volatile boolean isTTSInitialized = false;
 	private volatile int ttsInitStatus = TextToSpeech.ERROR; // status handed off from onInit (main thread) to the constructor via the latch.
 	private CountDownLatch isTTSInitializedLatch;
@@ -138,7 +142,6 @@ public class TTS {
 
 	// Voice management fields
 	private List<Voice> availableVoices;
-	private int currentVoiceIndex;
 	public TTS(String enginePkg) {
 		Context context = SDL.getContext();
 		enginePackage = enginePkg;
@@ -150,8 +153,8 @@ public class TTS {
 		// (that caused the `setSpeechRate on null` NPE). The listener now only records
 		// the status and releases the latch; all engine setup that needs `tts` happens
 		// after await() on THIS thread, where `tts` is guaranteed assigned. As a bonus
-		// this moves the blocking setLanguage()/getVoices() binder calls off the main
-		// thread, eliminating the TTS-init ANRs.
+		// this moves the blocking getVoices() binder calls off the main thread,
+		// eliminating the TTS-init ANRs.
 		OnInitListener listener = new OnInitListener() {
 			@Override
 			public void onInit(int status) {
@@ -172,33 +175,23 @@ public class TTS {
 			// Wait for the async onInit callback (10s for slower devices / cold starts).
 			isTTSInitializedLatch.await(10, TimeUnit.SECONDS);
 		} catch (InterruptedException e) {}
-		// Configure the engine here, on the constructor thread, where `tts` is non-null.
-		// Anything that touches `tts` and used to live in onInit is now done here.
+		// Finish setting up here, on the constructor thread, where `tts` is non-null.
+		// No speech setting is applied (no language, voice, rate or pitch): while
+		// connecting, TextToSpeech has already selected the language and default voice
+		// from the user's TTS settings, and the service applies the user's rate and
+		// pitch to every request that doesn't carry its own. Setting any of them here
+		// would override those settings. The audio attributes are different: they only
+		// route speech through the accessibility stream, like a screen reader's.
 		if (ttsInitStatus == TextToSpeech.SUCCESS && tts != null) {
 			try {
-				tts.setLanguage(Locale.getDefault());
-			} catch (Exception e) {}
-			// Read system TTS rate and pitch from Android settings instead of hardcoding 1.0f
-			try {
-				int systemRate = Settings.Secure.getInt(context.getContentResolver(), "tts_default_rate", 100);
-				ttsRate = systemRate / 100.0f;
-			} catch (Exception e) {
-				ttsRate = 1.0f;
-			}
-			try {
-				int systemPitch = Settings.Secure.getInt(context.getContentResolver(), "tts_default_pitch", 100);
-				ttsPitch = systemPitch / 100.0f;
-			} catch (Exception e) {
-				ttsPitch = 1.0f;
-			}
-			try {
-				tts.setSpeechRate(ttsRate);
-				tts.setPitch(ttsPitch);
 				AudioAttributes audioAttributes = new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build();
 				tts.setAudioAttributes(audioAttributes);
 			} catch (Exception e) {}
 			// Must be true before initializeVoices(), which early-returns when !isActive().
 			isTTSInitialized = true;
+			try {
+				defaultVoice = tts.getVoice();
+			} catch (Exception e) {}
 			initializeVoices();
 			setupPcmListener();
 		} else {
@@ -212,11 +205,41 @@ public class TTS {
 
 	public boolean speak(String text, boolean interrupt) {
 		if (!isActive()) return false;
-		Bundle params = new Bundle();
-		params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, ttsVolume);
-		params.putFloat(TextToSpeech.Engine.KEY_PARAM_PAN, ttsPan);
 		if (text.length() > tts.getMaxSpeechInputLength()) return false;
-		return tts.speak(text, interrupt? TextToSpeech.QUEUE_FLUSH : TextToSpeech.QUEUE_ADD, params, null) == TextToSpeech.SUCCESS;
+		followSystemSettings();
+		return tts.speak(text, interrupt? TextToSpeech.QUEUE_FLUSH : TextToSpeech.QUEUE_ADD, utteranceParams(), null) == TextToSpeech.SUCCESS;
+	}
+	// Per-utterance parameters: only the ones a script set, so the service uses its own defaults for the rest.
+	private Bundle utteranceParams() {
+		Bundle params = new Bundle();
+		if (volumeExplicit) params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, ttsVolume);
+		if (panExplicit) params.putFloat(TextToSpeech.Engine.KEY_PARAM_PAN, ttsPan);
+		return params;
+	}
+	private static float systemRate() {
+		try {
+			return Settings.Secure.getInt(SDL.getContext().getContentResolver(), Settings.Secure.TTS_DEFAULT_RATE, 100) / 100.0f;
+		} catch (Exception e) {
+			return 1.0f;
+		}
+	}
+	private static float systemPitch() {
+		try {
+			return Settings.Secure.getInt(SDL.getContext().getContentResolver(), Settings.Secure.TTS_DEFAULT_PITCH, 100) / 100.0f;
+		} catch (Exception e) {
+			return 1.0f;
+		}
+	}
+	// A rate or pitch that was set and then reset stays stored in TextToSpeech, so bring it in line with the user's current setting before speaking, which is what the service would have used had it never been set.
+	private void followSystemSettings() {
+		if (!rateExplicit && ratePinned) {
+			float rate = systemRate();
+			if (rate != ttsRate && tts.setSpeechRate(rate) == TextToSpeech.SUCCESS) ttsRate = rate;
+		}
+		if (!pitchExplicit && pitchPinned) {
+			float pitch = systemPitch();
+			if (pitch != ttsPitch && tts.setPitch(pitch) == TextToSpeech.SUCCESS) ttsPitch = pitch;
+		}
 	}
 	public boolean silence() { return isActive()? tts.stop() == TextToSpeech.SUCCESS : false; }
 	public String getVoice() { 
@@ -228,6 +251,8 @@ public class TTS {
 		if (!isActive()) return false;
 		if (tts.setSpeechRate(rate) == TextToSpeech.SUCCESS) {
 			ttsRate = rate;
+			rateExplicit = true;
+			ratePinned = true;
 			return true;
 		}
 		return false;
@@ -236,12 +261,35 @@ public class TTS {
 		if (!isActive()) return false;
 		if (tts.setPitch(pitch) == TextToSpeech.SUCCESS) {
 			ttsPitch = pitch;
+			pitchExplicit = true;
+			pitchPinned = true;
 			return true;
 		}
 		return false;
 	}
-	public void setPan(float pan) { ttsPan = pan; }
-	public void setVolume(float volume) { ttsVolume = volume; }
+	public void setPan(float pan) { ttsPan = pan; panExplicit = true; }
+	public void setVolume(float volume) { ttsVolume = volume; volumeExplicit = true; }
+	// The reset methods go back to following the user's settings. They return false only when the engine is unusable.
+	public boolean resetRate() {
+		if (!isActive()) return false;
+		rateExplicit = false;
+		return true;
+	}
+	public boolean resetPitch() {
+		if (!isActive()) return false;
+		pitchExplicit = false;
+		return true;
+	}
+	public boolean resetVolume() {
+		if (!isActive()) return false;
+		ttsVolume = 1.0f;
+		volumeExplicit = false;
+		return true;
+	}
+	public boolean resetVoice() {
+		if (!isActive() || defaultVoice == null) return false;
+		return tts.setVoice(defaultVoice) == TextToSpeech.SUCCESS;
+	}
 
 	@Override
 	protected void finalize() throws Throwable {
@@ -280,8 +328,9 @@ public class TTS {
 		} catch (Exception e) {}
 		return enginePackage != null ? enginePackage : "";
 	}
-	public float getRate() { return ttsRate; }
-	public float getPitch() { return ttsPitch; }
+	// Unless a script set them, rate and pitch are the user's current system values, read on every call.
+	public float getRate() { return rateExplicit? ttsRate : systemRate(); }
+	public float getPitch() { return pitchExplicit? ttsPitch : systemPitch(); }
 	public float getVolume() { return ttsVolume; }
 	public float getPan() { return ttsPan; }
 
@@ -297,15 +346,16 @@ public class TTS {
 						availableVoices.add(voice);
 				}
 			}
-			currentVoiceIndex = 0;
-			if (!availableVoices.isEmpty() && tts.getVoice() != null) {
-				Voice currentVoice = tts.getVoice();
-				for (int i = 0; i < availableVoices.size(); i++) {
-					if (availableVoices.get(i).getName().equals(currentVoice.getName())) {
-						currentVoiceIndex = i;
+			// The voice the user's settings selected is listed even when the filter above would drop it (a network voice, for instance), so that the current voice can always be reported.
+			if (defaultVoice != null) {
+				boolean listed = false;
+				for (Voice voice : availableVoices) {
+					if (voice.getName().equals(defaultVoice.getName())) {
+						listed = true;
 						break;
 					}
 				}
+				if (!listed) availableVoices.add(defaultVoice);
 			}
 		} catch (Exception e) {}
 	}
@@ -374,14 +424,23 @@ public class TTS {
 	}
 	public boolean setVoiceByIndex(int index) {
 		if (!isActive() || availableVoices == null || index < 0 || index >= availableVoices.size()) return false;
-		Voice voice = availableVoices.get(index);
-		if (tts.setVoice(voice) == TextToSpeech.SUCCESS) {
-			currentVoiceIndex = index;
-			return true;
-		}
-		return false;
+		return tts.setVoice(availableVoices.get(index)) == TextToSpeech.SUCCESS;
 	}
-	public int getCurrentVoiceIndex() { return currentVoiceIndex; }
+	// The voice TextToSpeech is actually speaking with: the one a script set, otherwise the one it took from the user's settings. -1 if it has none, which happens when the engine doesn't support the language the settings name.
+	public int getCurrentVoiceIndex() {
+		if (!isActive() || availableVoices == null) return -1;
+		Voice current;
+		try {
+			current = tts.getVoice();
+		} catch (Exception e) {
+			return -1;
+		}
+		if (current == null) return -1;
+		for (int i = 0; i < availableVoices.size(); i++) {
+			if (availableVoices.get(i).getName().equals(current.getName())) return i;
+		}
+		return -1;
+	}
 
 	// Synthesize text to PCM audio buffer
 	public byte[] speakPcm(String text) {
@@ -399,14 +458,9 @@ public class TTS {
 		// Create utterance ID and set it as current
 		currentPcmUtteranceId = "nvgtts_" + System.currentTimeMillis();
 
-		// Create synthesis parameters
-		Bundle params = new Bundle();
-		params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, ttsVolume);
-		params.putFloat(TextToSpeech.Engine.KEY_PARAM_PAN, ttsPan);
-		params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_MUSIC);
-
 		// Start synthesis - using speak with synthesis callbacks
-		int result = tts.synthesizeToFile(text, params, new File(SDL.getContext().getCacheDir(), "nvgt_speech.wav"), currentPcmUtteranceId);
+		followSystemSettings();
+		int result = tts.synthesizeToFile(text, utteranceParams(), new File(SDL.getContext().getCacheDir(), "nvgt_speech.wav"), currentPcmUtteranceId);
 		if (result != TextToSpeech.SUCCESS) {
 			currentPcmUtteranceId = null;
 			return null;

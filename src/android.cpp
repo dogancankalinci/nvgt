@@ -447,7 +447,11 @@ android_tts_engine::android_tts_engine(const std::string& enginePkg) : tts_engin
 	midSetVoiceByIndex = env->GetMethodID(TTSClass, "setVoiceByIndex", "(I)Z");
 	midGetCurrentVoiceIndex = env->GetMethodID(TTSClass, "getCurrentVoiceIndex", "()I");
 	midGetEngineLabel = env->GetMethodID(TTSClass, "getEngineLabel", "()Ljava/lang/String;");
-	if (!midIsActive || !midIsSpeaking || !midSpeak || !midSilence || !midGetVoice || !midSetRate || !midSetPitch || !midSetPan || !midSetVolume || !midGetVoices || !midSetVoice || !midGetMaxSpeechInputLength || !midGetPitch || !midGetPan || !midGetRate || !midGetVolume || !midSpeakPcm || !midGetPcmSampleRate || !midGetPcmAudioFormat || !midGetPcmChannelCount || !midGetVoiceCount || !midGetVoiceName || !midGetVoiceLanguage || !midSetVoiceByIndex || !midGetCurrentVoiceIndex || !midGetEngineLabel) throw std::runtime_error("One or more methods on the TTS class could not be retrieved from JNI!");
+	midResetRate = env->GetMethodID(TTSClass, "resetRate", "()Z");
+	midResetPitch = env->GetMethodID(TTSClass, "resetPitch", "()Z");
+	midResetVolume = env->GetMethodID(TTSClass, "resetVolume", "()Z");
+	midResetVoice = env->GetMethodID(TTSClass, "resetVoice", "()Z");
+	if (!midIsActive || !midIsSpeaking || !midSpeak || !midSilence || !midGetVoice || !midSetRate || !midSetPitch || !midSetPan || !midSetVolume || !midGetVoices || !midSetVoice || !midGetMaxSpeechInputLength || !midGetPitch || !midGetPan || !midGetRate || !midGetVolume || !midSpeakPcm || !midGetPcmSampleRate || !midGetPcmAudioFormat || !midGetPcmChannelCount || !midGetVoiceCount || !midGetVoiceName || !midGetVoiceLanguage || !midSetVoiceByIndex || !midGetCurrentVoiceIndex || !midGetEngineLabel || !midResetRate || !midResetPitch || !midResetVolume || !midResetVoice) throw std::runtime_error("One or more methods on the TTS class could not be retrieved from JNI!");
 	if (!env->CallBooleanMethod(TTSObj, midIsActive)) { if (env->ExceptionCheck()) env->ExceptionClear(); throw std::runtime_error("TTS engine could not be initialized!"); }
 	jstring jlabel = (jstring)env->CallObjectMethod(TTSObj, midGetEngineLabel);
 	engine_label = from_jstring(env, jlabel);
@@ -508,8 +512,14 @@ void android_tts_engine::set_pitch(float pitch) {
 }
 
 void android_tts_engine::set_volume(float volume) {
-	if (env && TTSObj) env->CallBooleanMethod(TTSObj, midSetVolume, volume);
+	if (env && TTSObj) env->CallVoidMethod(TTSObj, midSetVolume, volume); // TTS.setVolume returns void.
 }
+
+// The reset calls hand rate, pitch, volume and voice back to the user's TTS settings (see the TTS class).
+bool android_tts_engine::reset_rate() { return env && TTSObj && env->CallBooleanMethod(TTSObj, midResetRate); }
+bool android_tts_engine::reset_pitch() { return env && TTSObj && env->CallBooleanMethod(TTSObj, midResetPitch); }
+bool android_tts_engine::reset_volume() { return env && TTSObj && env->CallBooleanMethod(TTSObj, midResetVolume); }
+bool android_tts_engine::reset_voice() { return env && TTSObj && env->CallBooleanMethod(TTSObj, midResetVoice); }
 
 bool android_tts_engine::get_rate_range(float& minimum, float& midpoint, float& maximum) { minimum = 0.1; midpoint = 1; maximum = 6; return true; }
 bool android_tts_engine::get_pitch_range(float& minimum, float& midpoint, float& maximum) { minimum = 0.25; midpoint = 1; maximum = 4; return true; }

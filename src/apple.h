@@ -56,6 +56,10 @@ public:
 	virtual std::string get_voice_language(int index) override;
 	virtual bool set_voice(int voice) override;
 	virtual int get_current_voice() override;
+	virtual bool reset_rate() override;
+	virtual bool reset_pitch() override;
+	virtual bool reset_volume() override;
+	virtual bool reset_voice() override;
 	bool speakWait(const std::string& text, bool interrupt);
 	bool stopSpeech();
 	bool pauseSpeech();

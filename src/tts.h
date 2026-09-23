@@ -19,6 +19,7 @@
 #include <queue>
 #include <mutex>
 #include <atomic>
+#include <cstdint>
 #include <sstream>
 #include <cstdlib>
 #include <angelscript.h>
@@ -67,6 +68,11 @@ public:
 	virtual bool set_voice(int voice) = 0;
 	virtual int get_current_voice() = 0;
 	virtual std::string get_engine_name() = 0;
+	// Return a parameter or the voice to whatever the platform itself would use (usually the user's system TTS settings), undoing an earlier set_* call. Engines are shared between tts_voice objects, so this is needed when a tts_voice that never set a value speaks on an engine another tts_voice changed. Returning false means the engine cannot do this itself; the caller then restores the value the engine reported when it was first bound.
+	virtual bool reset_rate() { return false; }
+	virtual bool reset_pitch() { return false; }
+	virtual bool reset_volume() { return false; }
+	virtual bool reset_voice() { return false; }
 };
 
 class tts_engine_impl : public tts_engine {
@@ -113,6 +119,8 @@ struct voice_info {
 	std::string language;
 };
 
+struct shared_engine_entry;
+
 class tts_voice {
 	int RefCount;
 	std::vector<std::string> engine_names; // Candidate engines this voice may draw from. Engine objects are NOT instantiated here; binding is deferred until a voice is actually selected/used.
@@ -123,8 +131,9 @@ class tts_voice {
 	std::vector<voice_info> voices;
 	int current_voice_index;
 	std::string current_language;
-	float nvgt_rate, nvgt_pitch, nvgt_volume; // This tts_voice's speech parameters in NVGT units. Owned here rather than in the engine, because engines are shared program-wide; they are pushed onto the shared engine right before each use.
-	bool params_initialized; // Whether nvgt_rate/pitch/volume have been seeded from the engine's system defaults yet.
+	float nvgt_rate, nvgt_pitch, nvgt_volume; // Speech parameters the script set on this tts_voice, in NVGT units. Only meaningful while the matching *_set flag is true.
+	bool rate_set, pitch_set, volume_set, voice_set; // Whether the script explicitly set each of these. Anything not set is never pushed onto the engine, so the platform keeps using the user's own TTS settings, and the getters report those settings.
+	uint64_t id; // Identifies this object as the one whose settings a shared engine currently carries. A counter rather than the pointer, so an object allocated at a freed address is never mistaken for the old one.
 	typedef std::shared_ptr<sound> soundptr;
 	typedef std::queue<soundptr> sound_queue;
 	sound_queue queue;
@@ -134,9 +143,9 @@ class tts_voice {
 	voice_info *get_voice_info(int voice_index);
 	void ensure_default(); // Bind only the default/preferred engine and select its default voice (enough to speak); does not touch other engines.
 	void ensure_enumerated(); // Build the full flattened voice list across all engines (needed to list or select voices).
-	void ensure_params(); // Seed nvgt_rate/pitch/volume from the current engine's system defaults on first use.
-	void apply_params(tts_engine *engine); // Push this tts_voice's parameters onto the (shared) engine.
-	tts_engine *active_engine(); // Resolves the program-wide shared engine for the current voice, re-asserts our voice + parameters on it, and returns it (or null on failure).
+	void sync_engine(shared_engine_entry &entry, bool force); // Make the shared engine carry exactly this object's settings: the values the script set, and the platform defaults for everything else. Does nothing when the engine already carries them, unless forced.
+	tts_engine *active_engine(bool force_sync = false); // Resolves the program-wide shared engine for the current voice, syncs our settings onto it, and returns it (or null on failure).
+	int platform_voice_index(); // When the script has not chosen a voice: the index in voices of the voice the engine is actually speaking with, or -1 if the engine cannot say or that voice is not in the list.
 	void *speak_to_pcm(const std::string &text, tts_audio_data** datablock); // Returns pointer to trimmed sample.
 	bool schedule(soundptr &s, bool interrupt);
 	void clear();

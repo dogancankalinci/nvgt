@@ -38,46 +38,64 @@ void register_native_tts() { tts_engine_register("avspeech", []() -> std::shared
 // AVTTSVoice::impl class created by Gruia Chiscop on 6/6/24.
 class AVTTSVoice::Impl {
 public:
-	float rate;
-	float volume;
-	float pitch;
+	// Values a script set. Nothing is written to an utterance unless its flag is set, so an untouched utterance speaks with the system's own defaults; the default* fields hold what those defaults are, for the getters.
+	float rate, volume, pitch;
+	float defaultRate, defaultVolume, defaultPitch;
+	bool rateSet = false, volumeSet = false, pitchSet = false;
 	AVSpeechSynthesizer* synth;
-	AVSpeechSynthesisVoice* currentVoice;
+	AVSpeechSynthesisVoice* currentVoice; // Only non-nil once a voice was chosen; while nil, the system's default voice speaks.
 	NSArray<AVSpeechSynthesisVoice *> *voices;
-	Impl() {
+	Impl() : currentVoice(nil) {
 		voices = [[AVSpeechSynthesisVoice speechVoices] retain];
-		currentVoice = [AVSpeechSynthesisVoice voiceWithLanguage:[AVSpeechSynthesisVoice currentLanguageCode]];
-		if (!currentVoice && voices.count > 0) currentVoice = voices[0];
-		AVSpeechUtterance* utterance = [[AVSpeechUtterance alloc] initWithString:@""];
-		rate = utterance.rate;
-		volume = utterance.volume;
-		pitch = utterance.pitchMultiplier;
+		readDefaults();
 		synth = [[AVSpeechSynthesizer alloc] init];
 	}
-	Impl(const std::string& language) {
+	Impl(const std::string& language) : currentVoice(nil) {
 		voices = [[AVSpeechSynthesisVoice speechVoices] retain];
 		NSString *nslanguage = [NSString stringWithUTF8String:language.c_str()];
-		AVSpeechSynthesisVoice *voice = [AVSpeechSynthesisVoice voiceWithLanguage:nslanguage];
-		if (!voice) voice = [AVSpeechSynthesisVoice voiceWithLanguage:[AVSpeechSynthesisVoice currentLanguageCode]];
-		currentVoice = voice? voice : (voices.count > 0? voices[0] : nil);
-		AVSpeechUtterance* utterance = [[AVSpeechUtterance alloc] init];
-		rate = utterance.rate;
-		volume = utterance.volume;
-		pitch = utterance.pitchMultiplier;
+		currentVoice = [AVSpeechSynthesisVoice voiceWithLanguage:nslanguage]; // nil if there is none, which leaves the system default voice in charge.
+		readDefaults();
 		synth = [[AVSpeechSynthesizer alloc] init];
 	}
 	~Impl() {
 		if (voices) [voices release];
 	}
+	void readDefaults() {
+		AVSpeechUtterance* utterance = [[AVSpeechUtterance alloc] initWithString:@""];
+		defaultRate = rate = utterance.rate;
+		defaultVolume = volume = utterance.volume;
+		defaultPitch = pitch = utterance.pitchMultiplier;
+		[utterance release];
+	}
+	// Writes only what a script set onto an utterance.
+	void apply(AVSpeechUtterance* utterance) const {
+		if (rateSet) utterance.rate = rate;
+		if (volumeSet) utterance.volume = volume;
+		if (pitchSet) utterance.pitchMultiplier = pitch;
+		if (currentVoice) utterance.voice = currentVoice;
+	}
+	// The voice that actually speaks: the chosen one, otherwise the system default, which Apple documents as the default voice for the system's language and region.
+	AVSpeechSynthesisVoice* effectiveVoice() const { return currentVoice? currentVoice : [AVSpeechSynthesisVoice voiceWithLanguage:nil]; }
+	int effectiveVoiceIndex() const {
+		@autoreleasepool {
+			AVSpeechSynthesisVoice* voice = effectiveVoice();
+			if (!voice) return -1;
+			for (NSUInteger i = 0; i < voices.count; i++) {
+				if ([voices[i].identifier isEqualToString:voice.identifier]) return (int)i;
+			}
+			return -1;
+		}
+	}
+	void resetRate() { rate = defaultRate; rateSet = false; }
+	void resetVolume() { volume = defaultVolume; volumeSet = false; }
+	void resetPitch() { pitch = defaultPitch; pitchSet = false; }
+	void resetVoice() { currentVoice = nil; }
 	bool speak(const std::string& text, bool interrupt) {
 		if ((interrupt || text.empty()) && synth.isSpeaking)[synth stopSpeakingAtBoundary:AVSpeechBoundaryImmediate];
 		if (text.empty()) return interrupt;
 		NSString *nstext = [NSString stringWithUTF8String:text.c_str()];
 		AVSpeechUtterance *utterance = [[AVSpeechUtterance alloc] initWithString:nstext];
-		utterance.rate = rate;
-		utterance.volume = volume;
-		utterance.pitchMultiplier = pitch;
-		utterance.voice = currentVoice;
+		apply(utterance);
 		[synth speakUtterance:utterance];
 		return synth.isSpeaking;
 	}
@@ -94,7 +112,12 @@ public:
 	}
 	bool isPaused() const { return synth.isPaused; }
 	bool isSpeaking() const { return synth.isSpeaking; }
-	std::string getCurrentVoice() const { return [currentVoice.name UTF8String]; }
+	std::string getCurrentVoice() const {
+		@autoreleasepool {
+			AVSpeechSynthesisVoice* voice = effectiveVoice();
+			return voice && voice.name? std::string([voice.name UTF8String]) : std::string();
+		}
+	}
 	CScriptArray* getAllVoices() const {
 		asITypeInfo* arrayTipe = asGetActiveContext()->GetEngine()->GetTypeInfoByDecl("array<string>");
 		CScriptArray* voiceNames = CScriptArray::Create(arrayTipe, (int)0);
@@ -133,7 +156,12 @@ public:
 			break;
 		}
 	}
-	std::string getCurrentLanguage() const { return [currentVoice.language UTF8String]; }
+	std::string getCurrentLanguage() const {
+		@autoreleasepool {
+			AVSpeechSynthesisVoice* voice = effectiveVoice();
+			return voice && voice.language? std::string([voice.language UTF8String]) : std::string();
+		}
+	}
 	NSUInteger getVoicesCount() const { return voices.count; }
 	int getVoiceIndex(const std::string& name) {
 		AVSpeechSynthesisVoice *voice = getVoiceObject([NSString stringWithUTF8String:name.c_str()]);
@@ -213,9 +241,13 @@ float AVTTSVoice::get_pitch() { return impl->pitch; }
 float AVTTSVoice::get_volume() { return impl->volume; }
 bool AVTTSVoice::isPaused() const { return impl->isPaused(); }
 bool AVTTSVoice::is_speaking() { return impl->isSpeaking(); }
-void AVTTSVoice::set_rate(float rate) { impl->rate = rate; }
-void AVTTSVoice::set_pitch(float pitch) { impl->pitch = pitch; }
-void AVTTSVoice::set_volume(float volume) { impl->volume = volume; }
+void AVTTSVoice::set_rate(float rate) { impl->rate = rate; impl->rateSet = true; }
+void AVTTSVoice::set_pitch(float pitch) { impl->pitch = pitch; impl->pitchSet = true; }
+void AVTTSVoice::set_volume(float volume) { impl->volume = volume; impl->volumeSet = true; }
+bool AVTTSVoice::reset_rate() { if (!impl) return false; impl->resetRate(); return true; }
+bool AVTTSVoice::reset_pitch() { if (!impl) return false; impl->resetPitch(); return true; }
+bool AVTTSVoice::reset_volume() { if (!impl) return false; impl->resetVolume(); return true; }
+bool AVTTSVoice::reset_voice() { if (!impl) return false; impl->resetVoice(); return true; }
 std::string AVTTSVoice::getCurrentLanguage() const {
 	return impl->getCurrentLanguage();
 }
@@ -260,8 +292,7 @@ bool AVTTSVoice::set_voice(int voice_index) {
 
 int AVTTSVoice::get_current_voice() {
 	if (!impl) return -1;
-	std::string currentVoiceName = impl->getCurrentVoice();
-	return impl->getVoiceIndex(currentVoiceName);
+	return impl->effectiveVoiceIndex();
 }
 
 tts_audio_data* AVTTSVoice::speak_to_pcm(const std::string &text) {
@@ -273,10 +304,7 @@ tts_audio_data* AVTTSVoice::speak_to_pcm(const std::string &text) {
 	__block AVAudioConverter *converter = nil;
 	NSString *nstext = [NSString stringWithUTF8String:text.c_str()];
 	AVSpeechUtterance *utterance = [[AVSpeechUtterance alloc] initWithString:nstext];
-	utterance.rate = impl->rate;
-	utterance.volume = impl->volume;
-	utterance.pitchMultiplier = impl->pitch;
-	utterance.voice = impl->currentVoice;
+	impl->apply(utterance);
 	[impl->synth writeUtterance:utterance toBufferCallback:^(AVAudioBuffer * _Nonnull buffer) {
 		@autoreleasepool {
 			if (![buffer isKindOfClass:[AVAudioPCMBuffer class]]) return;
