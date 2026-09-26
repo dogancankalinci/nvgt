@@ -11,6 +11,7 @@
 */
 
 #pragma once
+#include <cstdint>
 #include <string>
 #include <ankerl/unordered_dense.h>
 #include <vector>
@@ -18,6 +19,24 @@
 #include <reactphysics3d/mathematics/Vector3.h>
 #include <scriptany.h>
 #include "pathfinder.h"
+// Hash for the keys of coordinate_map's frame tables. Those keys are frame origins, so every coordinate is a multiple of
+// the frame size (32, 256 or 8192) and its low bits are always zero. hashpoint_hash builds a Morton code from only the
+// low 10 bits of each coordinate, which for these keys throws away everything that tells two frames apart: every frame
+// of an area that runs along one axis landed on the same hash, and each insertion then walked all of the colliding
+// entries, so registering one long area took time that grew with the square of its length. This mixes all 96 bits.
+struct map_frame_key_hash {
+	using is_avalanching = void;
+	static std::uint64_t mix(std::uint64_t v) {
+		v += 0x9e3779b97f4a7c15ULL;
+		v = (v ^ (v >> 30)) * 0xbf58476d1ce4e5b9ULL;
+		v = (v ^ (v >> 27)) * 0x94d049bb133111ebULL;
+		return v ^ (v >> 31);
+	}
+	std::uint64_t operator()(const hashpoint& p) const noexcept {
+		std::uint64_t xy = static_cast<std::uint64_t>(static_cast<std::uint32_t>(p.x)) | (static_cast<std::uint64_t>(static_cast<std::uint32_t>(p.y)) << 32);
+		return mix(mix(xy) ^ static_cast<std::uint64_t>(static_cast<std::uint32_t>(p.z)));
+	}
+};
 #define total_frame_sizes 3
 
 class coordinate_map;
@@ -66,7 +85,7 @@ public:
 	void reset();
 };
 class coordinate_map {
-	ankerl::unordered_dense::map<hashpoint, map_frame*, hashpoint_hash, hashpoint_equals> frames[total_frame_sizes];
+	ankerl::unordered_dense::map<hashpoint, map_frame*, map_frame_key_hash, hashpoint_equals> frames[total_frame_sizes];
 	int ref_count;
 public:
 	coordinate_map() : ref_count(1) {}
