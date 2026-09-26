@@ -260,14 +260,16 @@ int map_frame::add_areas_for_range(std::vector<map_area*>& local_areas, float mi
 	return p;
 }
 void map_frame::reset() {
-	// An area can outlive this frame (script keeps a handle, or a filter callback reset the map mid-query). Drop the back links first, otherwise its later unframe() writes into this freed frame.
+	// An area can outlive this frame (script keeps a handle, or a filter callback reset the map mid-query), so it must not
+	// keep links to frames that are about to be freed or its later unframe() writes into them. Only coordinate_map::reset
+	// calls this, and it frees every frame of the map, which are all the frames any of its areas can be in, so an area's
+	// links can be dropped in one go the first time one of its frames is reached. Searching the list for each frame in
+	// turn instead made resetting a map cost the square of the number of frames its largest area spans.
 	for (auto i : areas) {
-		auto it = std::find(i->frames.begin(), i->frames.end(), this);
-		while (it != i->frames.end()) {
-			i->frames.erase(it);
-			it = std::find(i->frames.begin(), i->frames.end(), this);
+		if (!i->frames.empty()) {
+			i->frames.clear();
+			i->framed = false;
 		}
-		if (i->frames.empty()) i->framed = false;
 		i->release();
 	}
 	areas.clear();
