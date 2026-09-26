@@ -232,6 +232,22 @@ template <class T> Collider* body_add_collider(T& body, CollisionShape* shape, c
 	return body.addCollider(shape, transform);
 }
 
+// RigidBody::setType disables a body's components while it is static, and checkForDisabledOverlappingPairs then disables
+// its overlapping pairs with other disabled bodies such as a static floor. Leaving STATIC is meant to undo that through
+// setIsSleeping(false), but a static body is never marked as sleeping, so that call returns at once and never reaches
+// enableOverlappingPairs or askForBroadPhaseCollisionCheck. The body is simulated again while its pairs stay disabled,
+// and contact processing a few steps later works on inconsistent state and faults. Both functions are private to
+// RigidBody; putting the body to sleep and waking it runs exactly them, and costs nothing else here because a static
+// body's velocities are already zero and setType has just cleared its forces.
+void rigid_body_set_type(RigidBody& body, BodyType type) {
+	const BodyType old_type = body.getType();
+	body.setType(type);
+	if (old_type == BodyType::STATIC && type != BodyType::STATIC && body.isActive()) {
+		body.setIsSleeping(true);
+		body.setIsSleeping(false);
+	}
+}
+
 void world_destroy_listener(PhysicsWorld* world) {
 	if (!g_physics_event_listeners.contains(world)) return;
 	event_listener* l = g_physics_event_listeners[world];
@@ -1221,7 +1237,7 @@ void RegisterPhysicsBodies(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("physics_rigid_body", "void update_mass_from_colliders()", asMETHOD(RigidBody, updateMassFromColliders), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_rigid_body", "void update_mass_properties_from_colliders()", asMETHOD(RigidBody, updateMassPropertiesFromColliders), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_rigid_body", "physics_body_type get_type() const property", asMETHOD(RigidBody, getType), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_rigid_body", "void set_type(physics_body_type type) property", asMETHOD(RigidBody, setType), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_rigid_body", "void set_type(physics_body_type type) property", asFUNCTION(rigid_body_set_type), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_rigid_body", "bool get_is_gravity_enabled() const property", asMETHOD(RigidBody, isGravityEnabled), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_rigid_body", "void set_is_gravity_enabled(bool enabled) property", asMETHOD(RigidBody, enableGravity), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_rigid_body", "void set_is_sleeping(bool enabled)", asMETHOD(RigidBody, setIsSleeping), asCALL_THISCALL);
