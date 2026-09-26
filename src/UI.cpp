@@ -473,7 +473,15 @@ void refresh_window() {
 	// peek_renderer (non-creating): only present once graphics have actually been drawn, so audio-only
 	// games never enter Android's eglSwapBuffers-under-ActivityMutex path. Using get_renderer() here
 	// would lazily create the renderer and defeat the purpose.
-	if (g_window) { graphics_renderer* _r = g_window->peek_renderer(); if (_r) _r->present(); }
+	if (g_window) {
+		graphics_renderer* _r = g_window->peek_renderer();
+		if (_r) {
+			#ifdef __APPLE__
+			apple_wait_for_display_refresh(); // Keeps answering VoiceOver instead of blocking in present, see apple.mm.
+			#endif
+			_r->present();
+		}
+	}
 	SDL_Event evt;
 	std::unordered_set<int> keys_pressed_this_frame;
 	while (SDL_PollEvent(&evt)) {
@@ -502,7 +510,11 @@ void wait(int ms) {
 		int MS = (ms > 25 ? 25 : ms);
 		if (g_GCMode == 2)
 			garbage_collect_action();
+		#ifdef __APPLE__
+		apple_run_loop_sleep(MS); // Sleeps inside the run loop so VoiceOver is still answered, see apple.mm.
+		#else
 		Poco::Thread::sleep(MS);
+		#endif
 		SDL_PumpEvents();
 		ms -= MS;
 		if (ms < 1) break;

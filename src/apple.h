@@ -27,6 +27,8 @@ void voice_over_speech_shutdown();
 #if defined(TARGET_OS_IOS) && TARGET_OS_IOS
 void ios_set_direct_interaction(bool enabled);
 #endif
+void apple_run_loop_sleep(int ms);
+void apple_wait_for_display_refresh();
 std::string apple_input_box(const std::string& title, const std::string& message, const std::string& default_value = "", bool secure = false, bool readonly = false);
 std::string apple_get_identifier_for_vendor();
 

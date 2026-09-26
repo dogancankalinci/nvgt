@@ -15,6 +15,7 @@
 #import <Foundation/Foundation.h>
 #if TARGET_OS_IOS
 #import <UIKit/UIKit.h>
+#import <QuartzCore/QuartzCore.h>
 #else
 #import <AppKit/AppKit.h>
 #endif
@@ -471,6 +472,66 @@ void ios_set_direct_interaction(bool enabled) {
 			ios_focus_game_view();
 		} else
 			view.accessibilityTraits &= ~UIAccessibilityTraitAllowsDirectInteraction;
+	#endif
+}
+
+#if TARGET_OS_IOS
+// VoiceOver lives in its own process and asks us about every touch and every keyboard key (what is
+// under the finger, does it allow direct interaction, what is it called), one question at a time,
+// and UIKit answers each of them on the main thread's run loop. The script owns the main thread, so
+// that run loop only turns inside SDL_PumpEvents, for a couple of microseconds per wait(). Through
+// the rest of every frame -- the sleep in wait() and, for a game that draws, the wait for the next
+// display refresh inside the Metal present -- VoiceOver's questions sit in the queue, each one costs
+// up to a frame, and with VoiceOver on every gesture, menu item and key arrives late. The two
+// functions below do that same waiting inside the run loop instead, so questions are answered as
+// they arrive.
+static CADisplayLink* g_refresh_link = nil;
+static bool g_refresh_ticked = false;
+@interface NVGTRefreshTarget : NSObject
+- (void)tick:(CADisplayLink*)link;
+@end
+@implementation NVGTRefreshTarget
+- (void)tick:(CADisplayLink*)link { g_refresh_ticked = true; }
+@end
+#endif
+
+void apple_run_loop_sleep(int ms) {
+	#if TARGET_OS_IOS
+		CFAbsoluteTime deadline = CFAbsoluteTimeGetCurrent() + ms / 1000.0;
+		CFTimeInterval left;
+		while ((left = deadline - CFAbsoluteTimeGetCurrent()) > 0) {
+			// Finished means the mode has nothing in it that could wake us; sleep the rest rather than spin.
+			if (CFRunLoopRunInMode(kCFRunLoopDefaultMode, left, false) == kCFRunLoopRunFinished) {
+				Poco::Thread::sleep((long)(left * 1000));
+				return;
+			}
+		}
+	#else
+		Poco::Thread::sleep(ms);
+	#endif
+}
+
+void apple_wait_for_display_refresh() {
+	#if TARGET_OS_IOS
+		// The display link is paused while we are in the background; keep the old behaviour there.
+		if (![NSThread isMainThread] || [UIApplication sharedApplication].applicationState != UIApplicationStateActive) return;
+		if (!g_refresh_link) {
+			// The display link retains its target, so ours can be released straight away.
+			NVGTRefreshTarget* target = [[NVGTRefreshTarget alloc] init];
+			g_refresh_link = [[CADisplayLink displayLinkWithTarget:target selector:@selector(tick:)] retain];
+			[target release];
+			[g_refresh_link addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+		}
+		// Presenting just after a refresh finds a drawable already free, so the present that follows no
+		// longer blocks in nextDrawable. If a refresh went by while the script was busy, present at once.
+		// Short slices notice the tick within a couple of milliseconds even where the run loop doesn't
+		// count it as a handled source, and the deadline keeps a tick that never comes from hanging us.
+		CFAbsoluteTime deadline = CFAbsoluteTimeGetCurrent() + 0.05;
+		CFTimeInterval left;
+		while (!g_refresh_ticked && (left = deadline - CFAbsoluteTimeGetCurrent()) > 0) {
+			if (CFRunLoopRunInMode(kCFRunLoopDefaultMode, left < 0.002 ? left : 0.002, true) == kCFRunLoopRunFinished) break;
+		}
+		g_refresh_ticked = false;
 	#endif
 }
 
