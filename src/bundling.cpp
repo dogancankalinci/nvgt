@@ -49,6 +49,7 @@
 #include <openssl/pkcs12.h>
 #include <openssl/sha.h>
 #include <openssl/x509.h>
+#include <openssl/x509v3.h>
 #include <plist/plist.h>
 #ifdef _WIN32
 #include <windows.h>
@@ -238,6 +239,15 @@ static void collect_relative_files_recursive(const string& root_dir, const strin
 		string rel = relative_dir.empty() ? name : relative_dir + "/" + name;
 		if (f.isDirectory()) collect_relative_files_recursive(root_dir, rel, out_files);
 		else out_files.push_back(rel);
+	}
+}
+// Finder leaves a .DS_Store in every folder it opens. It is not game data, and Xcode's resource copy leaves it out too.
+static void remove_finder_metadata(const File& dir) {
+	vector<File> entries;
+	dir.list(entries);
+	for (File& f : entries) {
+		if (f.isDirectory()) remove_finder_metadata(f);
+		else if (Path(f.path()).makeFile().getFileName() == ".DS_Store") f.remove();
 	}
 }
 	static bool string_has_suffix(const string& value, const string& suffix) {
@@ -496,18 +506,25 @@ static string requirements(const string& bundleid, const string& cn){
 // One nested code item (a framework or dylib under Frameworks/) is sealed into the bundle's CodeResources by the
 // hash of its own code directory and its designated requirement rather than by its bytes.
 struct nested_code { string path; string cdhash; string requirement; };
+// Whether the omit rules below leave a bundle path out of the seal: rules2 omits .DS_Store anywhere and Info.plist and
+// PkgInfo at the root, and both rule sets omit a .lproj's locversion.plist. The verifier never visits an omitted file,
+// so sealing one anyway reads as a sealed file gone missing and invalidates the signature.
+static bool omitted_by_rules(const string& path, bool rules2){
+	if (string_has_suffix(path,".lproj/locversion.plist")) return true;
+	return rules2 && (path=="Info.plist" || path=="PkgInfo" || path.substr(path.rfind('/')+1)==".DS_Store");
+}
 // CodeResources plist. `files` (the legacy seal) maps every regular file in the bundle, nested code's contents
-// included, to its base64 SHA-1; `files2` maps each regular file outside nested code (except Info.plist) to its
-// base64 SHA-256 under hash2, and each nested code item to its cdhash and requirement. The rules/rules2 are
-// codesign's fixed defaults, reproduced verbatim; the nested rule is only emitted for bundles that carry nested
-// code, so every other bundle stays byte-identical to what this produced before. Entry lists are sorted by name.
+// included, to its base64 SHA-1; `files2` maps each regular file outside nested code to its base64 SHA-256 under
+// hash2, and each nested code item to its cdhash and requirement; each leaves out what its rules omit. The
+// rules/rules2 are codesign's fixed defaults, reproduced verbatim; the nested rule is only emitted for bundles that
+// carry nested code, so every other bundle stays byte-identical to what this produced before. Entry lists are sorted by name.
 static string code_resources(const vector<pair<string,string>>& files_v1, const vector<pair<string,string>>& files_v2, const vector<nested_code>& nested){
 	string x=PLIST_HEADER; x+="<dict>\n";
 	x+="\t<key>files</key>\n\t<dict>\n";
-	for (auto& e : files_v1){ x+="\t\t<key>"+xmlesc(e.first)+"</key>\n\t\t<data>\n\t\t"+b64(sha1b(e.second))+"\n\t\t</data>\n"; }
+	for (auto& e : files_v1){ if (omitted_by_rules(e.first,false)) continue; x+="\t\t<key>"+xmlesc(e.first)+"</key>\n\t\t<data>\n\t\t"+b64(sha1b(e.second))+"\n\t\t</data>\n"; }
 	x+="\t</dict>\n\t<key>files2</key>\n\t<dict>\n";
 	vector<pair<string,string>> f2; // (key, xml)
-	for (auto& e : files_v2){ if (e.first=="Info.plist") continue; f2.push_back({e.first, "\t\t<key>"+xmlesc(e.first)+"</key>\n\t\t<dict>\n\t\t\t<key>hash2</key>\n\t\t\t<data>\n\t\t\t"+b64(sha256b(e.second))+"\n\t\t\t</data>\n\t\t</dict>\n"}); }
+	for (auto& e : files_v2){ if (omitted_by_rules(e.first,true)) continue; f2.push_back({e.first, "\t\t<key>"+xmlesc(e.first)+"</key>\n\t\t<dict>\n\t\t\t<key>hash2</key>\n\t\t\t<data>\n\t\t\t"+b64(sha256b(e.second))+"\n\t\t\t</data>\n\t\t</dict>\n"}); }
 	for (auto& n : nested) f2.push_back({n.path, "\t\t<key>"+xmlesc(n.path)+"</key>\n\t\t<dict>\n\t\t\t<key>cdhash</key>\n\t\t\t<data>\n\t\t\t"+b64(n.cdhash)+"\n\t\t\t</data>\n\t\t\t<key>requirement</key>\n\t\t\t<string>"+xmlesc(n.requirement)+"</string>\n\t\t</dict>\n"});
 	sort(f2.begin(),f2.end(),[](const pair<string,string>&a,const pair<string,string>&b){return a.first<b.first;});
 	for (auto& e : f2) x+=e.second;
@@ -710,6 +727,15 @@ static void sign_app(const string& app_dir, const string& exe_name, const string
 	if(!p12) throw Exception("could not read signing .p12");
 	EVP_PKEY* pkey=nullptr; X509* leaf=nullptr; STACK_OF(X509)* ca=nullptr;
 	if(!PKCS12_parse(p12,password.c_str(),&pkey,&leaf,&ca)) throw Exception("could not decrypt .p12 (wrong password?)");
+	if(!leaf) throw Exception("the signing .p12 holds no certificate");
+	// The CMS carries the bundled WWDR G3 intermediate as the leaf's chain, as codesign does for the Apple Development and
+	// Distribution certificates G3 issues. For a leaf any other CA issued that chain cannot be built, and the signature
+	// would be rejected wherever it is checked, so refuse to sign with it.
+	{ const unsigned char* wp=ios_cert_wwdr; X509* wwdr=d2i_X509(nullptr,&wp,(long)ios_cert_wwdr_len);
+		int issued=wwdr? X509_check_issued(wwdr,leaf) : X509_V_ERR_UNSPECIFIED; if(wwdr) X509_free(wwdr);
+		if(issued!=X509_V_OK){ char in[512]={0}; X509_NAME_oneline(X509_get_issuer_name(leaf),in,sizeof(in));
+			if(ca) sk_X509_pop_free(ca,X509_free); X509_free(leaf); EVP_PKEY_free(pkey); PKCS12_free(p12);
+			throw Exception(format("the signing certificate was issued by %s, but iOS signing needs an Apple Development or Apple Distribution certificate issued by Apple's WWDR G3 intermediate", string(in))); } }
 	signer s; s.pkey=pkey; s.signtime=signtime;
 	unsigned char* dp=nullptr; int dl=i2d_X509(leaf,&dp); s.leafDer.assign((char*)dp,dl); OPENSSL_free(dp);
 	dp=nullptr; dl=i2d_X509_NAME(X509_get_issuer_name(leaf),&dp); s.issuerDer.assign((char*)dp,dl); OPENSSL_free(dp);
@@ -921,6 +947,7 @@ protected:
 			if (File(p).exists()) File(p).remove(true);
 			if (!File(p.parent()).exists()) File(p.parent()).createDirectories();
 			File(Path(g.filesystem_path).makeAbsolute(Path(get_input_file()).makeParent()).toString()).copyTo(p.toString());
+			if (File(p).isDirectory()) remove_finder_metadata(File(p));
 		}
 	}
 	void copy_shared_libraries(const Path& libpath) {
