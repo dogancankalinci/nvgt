@@ -13,6 +13,8 @@
 #pragma once
 #include <angelscript.h>
 #include <condition_variable>
+#include <cstdint>
+#include <map>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -56,11 +58,13 @@ struct iap_shared_state {
 	std::vector<iap_purchase_info> pending_purchases; // drained by iap_get_pending_purchases
 	std::string last_error;
 
-	// Synchronisation for blocking consume/acknowledge calls
+	// Synchronisation for blocking consume/acknowledge calls. Each call is numbered and its result is filed under
+	// that number, because a call that times out stops waiting while its result may still arrive, during a later
+	// call or one running on another thread.
 	std::mutex op_mtx;
 	std::condition_variable op_cv;
-	bool op_pending = false;
-	bool op_result = false;
+	int64_t op_last_id = 0;
+	std::map<int64_t, int> op_results; // Calls still waiting: -1 until the result arrives, then 1 or 0.
 };
 
 extern iap_shared_state g_iap;

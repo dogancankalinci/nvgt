@@ -196,10 +196,11 @@ Java_com_samtupy_nvgt_BillingManager_nativeFinishRestore(JNIEnv* env, jclass, js
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_samtupy_nvgt_BillingManager_nativeFinishOp(JNIEnv*, jclass, jboolean success) {
+Java_com_samtupy_nvgt_BillingManager_nativeFinishOp(JNIEnv*, jclass, jlong op_id, jboolean success) {
 	std::lock_guard<std::mutex> lk(g_iap.op_mtx);
-	g_iap.op_result = (bool)success;
-	g_iap.op_pending = false;
+	auto it = g_iap.op_results.find(op_id);
+	if (it == g_iap.op_results.end()) return; // The call gave up waiting; nobody wants this result any more.
+	it->second = success ? 1 : 0;
 	g_iap.op_cv.notify_all();
 }
 
@@ -247,8 +248,8 @@ static void iap_android_setup_jni() {
 			jmethodID mid_query_products    = get_mid("queryProducts",       "([Ljava/lang/String;)V");
 			jmethodID mid_purchase_product  = get_mid("purchaseProduct",     "(Ljava/lang/String;)Z");
 			jmethodID mid_restore_purchases = get_mid("restorePurchases",    "()V");
-			jmethodID mid_acknowledge       = get_mid("acknowledgePurchase", "(Ljava/lang/String;)V");
-			jmethodID mid_consume           = get_mid("consumePurchase",     "(Ljava/lang/String;)V");
+			jmethodID mid_acknowledge       = get_mid("acknowledgePurchase", "(Ljava/lang/String;J)V");
+			jmethodID mid_consume           = get_mid("consumePurchase",     "(Ljava/lang/String;J)V");
 
 			pi_local = android_find_app_class(env, "com/samtupy/nvgt/BillingManager$ProductInfo");
 			if (!pi_local) {
@@ -401,52 +402,38 @@ bool iap_platform_restore_purchases() {
 	return true;
 }
 
-bool iap_platform_acknowledge_purchase(const std::string& purchase_token) {
+// Starts an acknowledge or consume call and waits up to 15 seconds for its result. The call is numbered, and
+// BillingManager hands the number back with the result, so a result that arrives after its call stopped waiting is
+// dropped rather than taken as the answer to whichever call is waiting then. The method is taken by reference because
+// the setup below is what fills it in on first use.
+static bool iap_android_run_op(const jmethodID& method, const std::string& purchase_token, std::string_view context) {
 	try { iap_android_setup_jni(); } catch (...) { return false; }
 	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
 	if (!env) return false;
 	jstring js = to_jstring(env, purchase_token);
 	if (!js) return false;
+	int64_t id;
 	{
 		std::lock_guard<std::mutex> lk(g_iap.op_mtx);
-		g_iap.op_pending = true;
-		g_iap.op_result = false;
+		id = ++g_iap.op_last_id;
+		g_iap.op_results[id] = -1;
 	}
-	env->CallStaticVoidMethod(g_billing_class, g_mid_acknowledge, js);
+	env->CallStaticVoidMethod(g_billing_class, method, js, (jlong)id);
 	env->DeleteLocalRef(js);
-	if (jni_check_and_store_exception(env, "BillingManager.acknowledgePurchase")) {
-		std::lock_guard<std::mutex> lk(g_iap.op_mtx);
-		g_iap.op_pending = false;
-		return false;
-	}
+	bool threw = jni_check_and_store_exception(env, context);
 	std::unique_lock<std::mutex> lk(g_iap.op_mtx);
-	g_iap.op_cv.wait_for(lk, std::chrono::seconds(15), []{ return !g_iap.op_pending; });
-	g_iap.op_pending = false;
-	return g_iap.op_result;
+	if (!threw) g_iap.op_cv.wait_for(lk, std::chrono::seconds(15), [id] { return g_iap.op_results[id] >= 0; });
+	bool ok = g_iap.op_results[id] == 1;
+	g_iap.op_results.erase(id);
+	return ok;
+}
+
+bool iap_platform_acknowledge_purchase(const std::string& purchase_token) {
+	return iap_android_run_op(g_mid_acknowledge, purchase_token, "BillingManager.acknowledgePurchase");
 }
 
 bool iap_platform_consume_purchase(const std::string& purchase_token) {
-	try { iap_android_setup_jni(); } catch (...) { return false; }
-	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
-	if (!env) return false;
-	jstring js = to_jstring(env, purchase_token);
-	if (!js) return false;
-	{
-		std::lock_guard<std::mutex> lk(g_iap.op_mtx);
-		g_iap.op_pending = true;
-		g_iap.op_result = false;
-	}
-	env->CallStaticVoidMethod(g_billing_class, g_mid_consume, js);
-	env->DeleteLocalRef(js);
-	if (jni_check_and_store_exception(env, "BillingManager.consumePurchase")) {
-		std::lock_guard<std::mutex> lk(g_iap.op_mtx);
-		g_iap.op_pending = false;
-		return false;
-	}
-	std::unique_lock<std::mutex> lk(g_iap.op_mtx);
-	g_iap.op_cv.wait_for(lk, std::chrono::seconds(15), []{ return !g_iap.op_pending; });
-	g_iap.op_pending = false;
-	return g_iap.op_result;
+	return iap_android_run_op(g_mid_consume, purchase_token, "BillingManager.consumePurchase");
 }
 
 void iap_platform_init() {}

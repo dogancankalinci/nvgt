@@ -126,7 +126,7 @@ public class BillingManager implements PurchasesUpdatedListener {
 	private static native void nativeAddPendingPurchases(PurchaseInfo[] purchases, String error);
 	private static native void nativeSetLastError(String error);
 	private static native void nativeFinishRestore(String error);
-	private static native void nativeFinishOp(boolean success);
+	private static native void nativeFinishOp(long opId, boolean success);
 
 	public static BillingManager getInstance() {
 		if (sInstance == null) {
@@ -523,35 +523,37 @@ public class BillingManager implements PurchasesUpdatedListener {
 	/**
 	 * Acknowledges a non-consumable or subscription purchase.
 	 * Must be called within 3 days of a successful purchase to avoid refund.
+	 * opId identifies the native call waiting for the result and is handed back with it.
 	 */
-	public static void acknowledgePurchase(String token) {
+	public static void acknowledgePurchase(String token, long opId) {
 		BillingManager mgr = getInstance();
 		mgr.ensureConnected(() -> mgr.billingClient.acknowledgePurchase(
 				AcknowledgePurchaseParams.newBuilder().setPurchaseToken(token).build(),
 				result -> {
 					boolean ok = result.getResponseCode() == BillingClient.BillingResponseCode.OK;
 					if (!ok) mgr.reportError(result.getDebugMessage());
-					nativeFinishOp(ok);
+					nativeFinishOp(opId, ok);
 				}), () -> {
 			mgr.reportError("Billing client unavailable for acknowledge");
-			nativeFinishOp(false);
+			nativeFinishOp(opId, false);
 		});
 	}
 
 	/**
 	 * Consumes a consumable purchase so it can be bought again.
+	 * opId identifies the native call waiting for the result and is handed back with it.
 	 */
-	public static void consumePurchase(String token) {
+	public static void consumePurchase(String token, long opId) {
 		BillingManager mgr = getInstance();
 		mgr.ensureConnected(() -> mgr.billingClient.consumeAsync(
 				ConsumeParams.newBuilder().setPurchaseToken(token).build(),
 				(result, purchaseToken) -> {
 					boolean ok = result.getResponseCode() == BillingClient.BillingResponseCode.OK;
 					if (!ok) mgr.reportError(result.getDebugMessage());
-					nativeFinishOp(ok);
+					nativeFinishOp(opId, ok);
 				}), () -> {
 			mgr.reportError("Billing client unavailable for consume");
-			nativeFinishOp(false);
+			nativeFinishOp(opId, false);
 		});
 	}
 }
