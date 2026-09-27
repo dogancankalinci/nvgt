@@ -12,6 +12,7 @@
 
 #pragma once
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <vector>
 #include "tts.h"
@@ -47,6 +48,8 @@ public:
 	explicit JNIException(const std::string& msg): std::runtime_error(msg) {}
 };
 
+// A local reference, deleted when this goes out of scope. Like every local reference it is valid only on the
+// thread that obtained it, so it must never be stored beyond the call that made it.
 template<typename T>
 class LocalRef {
 	JNIEnv* env;
@@ -56,19 +59,30 @@ public:
 	~LocalRef() {
 		if (ref) env->DeleteLocalRef(ref);
 	}
+	LocalRef(const LocalRef&) = delete; // A copy would delete the same reference twice.
+	LocalRef& operator=(const LocalRef&) = delete;
 	T get() const { return ref; }
 	operator T() const { return ref; }
 };
 
+// Strings cross JNI as UTF-16 rather than through the char* functions, which use Java's modified UTF-8 (see
+// android.cpp). Both directions turn malformed input into U+FFFD, and a null jstring converts to "".
+std::string from_jstring(JNIEnv* env, jstring str);
+jstring to_jstring(JNIEnv* env, const std::string& str);
+// FindClass for a class of the app itself, one that also works on threads NVGT started. Returns a local
+// reference, or null with no exception left pending.
+jclass android_find_app_class(JNIEnv* env, const char* name);
+
+// Engines are shared by every tts_voice and driven from whichever script thread speaks, so no JNIEnv is kept:
+// each call uses its own thread's, and the Java object is held through a global reference.
 class android_tts_engine : public tts_engine_impl {
-	jclass TTSClass;
 	jmethodID constructor, midIsActive, midIsSpeaking, midSpeak, midSilence, midGetVoice, midSetRate, midSetPitch, midSetPan, midSetVolume, midGetVoices, midSetVoice, midGetMaxSpeechInputLength, midGetPitch, midGetPan, midGetRate, midGetVolume;
 	jmethodID midSpeakPcm, midGetPcmSampleRate, midGetPcmAudioFormat, midGetPcmChannelCount;
 	jmethodID midGetVoiceCount, midGetVoiceName, midGetVoiceLanguage, midSetVoiceByIndex, midGetCurrentVoiceIndex;
 	jmethodID midGetEngineLabel;
 	jmethodID midResetRate, midResetPitch, midResetVolume, midResetVoice;
-	JNIEnv *env;
-	jobject TTSObj;
+	jobject TTSObj = nullptr; // Global reference.
+	std::mutex pcm_mutex; // The Java side keeps one synthesis result at a time, read back over several calls.
 	std::string engine_package;
 	std::string engine_label;
 public:

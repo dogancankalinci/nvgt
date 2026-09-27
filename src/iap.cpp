@@ -46,6 +46,7 @@ iap_shared_state g_iap;
 #include <SDL3/SDL.h>
 #include <Poco/Exception.h>
 #include <string_view>
+#include "android.h" // from_jstring, to_jstring, android_find_app_class
 
 static jclass     g_billing_class         = nullptr;
 static jmethodID  g_mid_is_available      = nullptr;
@@ -84,11 +85,9 @@ static std::string jni_describe_and_clear_exception(JNIEnv* env, std::string_vie
 			if (to_string) {
 				jstring text = (jstring)env->CallObjectMethod(ex, to_string);
 				if (!env->ExceptionCheck()) {
-					const char* utf = text ? env->GetStringUTFChars(text, nullptr) : nullptr;
-					if (utf) {
+					if (text) {
 						details += ": ";
-						details += utf;
-						env->ReleaseStringUTFChars(text, utf);
+						details += from_jstring(env, text);
 					}
 				} else env->ExceptionClear();
 				if (text) env->DeleteLocalRef(text);
@@ -108,19 +107,10 @@ static bool jni_check_and_store_exception(JNIEnv* env, std::string_view context)
 	return true;
 }
 
-static std::string jstring_to_std(JNIEnv* env, jstring js) {
-	if (!js) return "";
-	const char* utf = env->GetStringUTFChars(js, nullptr);
-	if (!utf) return "";
-	std::string s(utf);
-	env->ReleaseStringUTFChars(js, utf);
-	return s;
-}
-
 // Read a String field from a JNI object.
 static std::string get_string_field(JNIEnv* env, jobject obj, jfieldID fid) {
 	jstring js = (jstring)env->GetObjectField(obj, fid);
-	std::string s = jstring_to_std(env, js);
+	std::string s = from_jstring(env, js);
 	if (js) env->DeleteLocalRef(js);
 	return s;
 }
@@ -178,7 +168,7 @@ Java_com_samtupy_nvgt_BillingManager_nativeSetProducts(JNIEnv* env, jclass, jobj
 	g_iap.products = std::move(converted);
 	g_iap.products_ready = true;
 	g_iap.querying_products = false;
-	std::string err = jstring_to_std(env, error);
+	std::string err = from_jstring(env, error);
 	if (!err.empty()) g_iap.last_error = err;
 }
 
@@ -187,13 +177,13 @@ Java_com_samtupy_nvgt_BillingManager_nativeAddPendingPurchases(JNIEnv* env, jcla
 	std::vector<iap_purchase_info> converted = purchase_array_to_vector(env, purchases);
 	std::lock_guard<std::mutex> lk(g_iap.mtx);
 	g_iap.pending_purchases.insert(g_iap.pending_purchases.end(), converted.begin(), converted.end());
-	std::string err = jstring_to_std(env, error);
+	std::string err = from_jstring(env, error);
 	if (!err.empty()) g_iap.last_error = err;
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_samtupy_nvgt_BillingManager_nativeSetLastError(JNIEnv* env, jclass, jstring error) {
-	iap_android_set_last_error(jstring_to_std(env, error));
+	iap_android_set_last_error(from_jstring(env, error));
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -201,7 +191,7 @@ Java_com_samtupy_nvgt_BillingManager_nativeFinishRestore(JNIEnv* env, jclass, js
 	std::lock_guard<std::mutex> lk(g_iap.mtx);
 	g_iap.restore_finished = true;
 	g_iap.restoring_purchases = false;
-	std::string err = jstring_to_std(env, error);
+	std::string err = from_jstring(env, error);
 	if (!err.empty()) g_iap.last_error = err;
 }
 
@@ -225,9 +215,10 @@ static void iap_android_setup_jni() {
 		jclass pi_local = nullptr;
 		jclass pur_local = nullptr;
 		try {
-			local = env->FindClass("com/samtupy/nvgt/BillingManager");
+			// Not plain FindClass, which can't see the app's classes from a thread NVGT started.
+			local = android_find_app_class(env, "com/samtupy/nvgt/BillingManager");
 			if (!local) {
-				jni_check_and_store_exception(env, "FindClass BillingManager");
+				iap_android_set_last_error("iap: cannot find BillingManager class");
 				throw Poco::Exception("iap: cannot find BillingManager class");
 			}
 
@@ -259,9 +250,9 @@ static void iap_android_setup_jni() {
 			jmethodID mid_acknowledge       = get_mid("acknowledgePurchase", "(Ljava/lang/String;)V");
 			jmethodID mid_consume           = get_mid("consumePurchase",     "(Ljava/lang/String;)V");
 
-			pi_local = env->FindClass("com/samtupy/nvgt/BillingManager$ProductInfo");
+			pi_local = android_find_app_class(env, "com/samtupy/nvgt/BillingManager$ProductInfo");
 			if (!pi_local) {
-				jni_check_and_store_exception(env, "FindClass BillingManager$ProductInfo");
+				iap_android_set_last_error("iap: cannot find BillingManager$ProductInfo class");
 				throw Poco::Exception("iap: cannot find BillingManager$ProductInfo class");
 			}
 			jfieldID fid_pi_product_id    = get_fid(pi_local, "productId",    "Ljava/lang/String;");
@@ -271,9 +262,9 @@ static void iap_android_setup_jni() {
 			jfieldID fid_pi_currency_code = get_fid(pi_local, "currencyCode", "Ljava/lang/String;");
 			jfieldID fid_pi_price_micros  = get_fid(pi_local, "priceMicros",  "J");
 
-			pur_local = env->FindClass("com/samtupy/nvgt/BillingManager$PurchaseInfo");
+			pur_local = android_find_app_class(env, "com/samtupy/nvgt/BillingManager$PurchaseInfo");
 			if (!pur_local) {
-				jni_check_and_store_exception(env, "FindClass BillingManager$PurchaseInfo");
+				iap_android_set_last_error("iap: cannot find BillingManager$PurchaseInfo class");
 				throw Poco::Exception("iap: cannot find BillingManager$PurchaseInfo class");
 			}
 			jfieldID fid_pur_product_id      = get_fid(pur_local, "productId",      "Ljava/lang/String;");
@@ -323,7 +314,8 @@ void iap_platform_set_public_key(const std::string& key) {
 	try { iap_android_setup_jni(); } catch (...) { return; }
 	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
 	if (!env) return;
-	jstring js = env->NewStringUTF(key.c_str());
+	jstring js = to_jstring(env, key);
+	if (!js) return;
 	env->CallStaticVoidMethod(g_billing_class, g_mid_set_public_key, js);
 	jni_check_and_store_exception(env, "BillingManager.setPublicKey");
 	env->DeleteLocalRef(js);
@@ -343,13 +335,21 @@ bool iap_platform_query_products(const std::vector<std::string>& ids) {
 	if (!env) return false;
 
 	jclass string_class = env->FindClass("java/lang/String");
-	jobjectArray arr = env->NewObjectArray((jsize)ids.size(), string_class, nullptr);
+	jobjectArray arr = string_class ? env->NewObjectArray((jsize)ids.size(), string_class, nullptr) : nullptr;
+	if (string_class) env->DeleteLocalRef(string_class);
+	if (!arr) {
+		jni_check_and_store_exception(env, "iap: cannot build the product id array");
+		return false;
+	}
 	for (size_t i = 0; i < ids.size(); i++) {
-		jstring js = env->NewStringUTF(ids[i].c_str());
+		jstring js = to_jstring(env, ids[i]);
+		if (!js) {
+			env->DeleteLocalRef(arr);
+			return false;
+		}
 		env->SetObjectArrayElement(arr, (jsize)i, js);
 		env->DeleteLocalRef(js);
 	}
-	env->DeleteLocalRef(string_class);
 
 	{
 		std::lock_guard<std::mutex> lk(g_iap.mtx);
@@ -374,7 +374,8 @@ bool iap_platform_purchase(const std::string& product_id) {
 	try { iap_android_setup_jni(); } catch (...) { return false; }
 	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
 	if (!env) return false;
-	jstring js = env->NewStringUTF(product_id.c_str());
+	jstring js = to_jstring(env, product_id);
+	if (!js) return false;
 	bool ok = (bool)env->CallStaticBooleanMethod(g_billing_class, g_mid_purchase_product, js);
 	if (jni_check_and_store_exception(env, "BillingManager.purchaseProduct")) ok = false;
 	env->DeleteLocalRef(js);
@@ -404,12 +405,13 @@ bool iap_platform_acknowledge_purchase(const std::string& purchase_token) {
 	try { iap_android_setup_jni(); } catch (...) { return false; }
 	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
 	if (!env) return false;
+	jstring js = to_jstring(env, purchase_token);
+	if (!js) return false;
 	{
 		std::lock_guard<std::mutex> lk(g_iap.op_mtx);
 		g_iap.op_pending = true;
 		g_iap.op_result = false;
 	}
-	jstring js = env->NewStringUTF(purchase_token.c_str());
 	env->CallStaticVoidMethod(g_billing_class, g_mid_acknowledge, js);
 	env->DeleteLocalRef(js);
 	if (jni_check_and_store_exception(env, "BillingManager.acknowledgePurchase")) {
@@ -427,12 +429,13 @@ bool iap_platform_consume_purchase(const std::string& purchase_token) {
 	try { iap_android_setup_jni(); } catch (...) { return false; }
 	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
 	if (!env) return false;
+	jstring js = to_jstring(env, purchase_token);
+	if (!js) return false;
 	{
 		std::lock_guard<std::mutex> lk(g_iap.op_mtx);
 		g_iap.op_pending = true;
 		g_iap.op_result = false;
 	}
-	jstring js = env->NewStringUTF(purchase_token.c_str());
 	env->CallStaticVoidMethod(g_billing_class, g_mid_consume, js);
 	env->DeleteLocalRef(js);
 	if (jni_check_and_store_exception(env, "BillingManager.consumePurchase")) {

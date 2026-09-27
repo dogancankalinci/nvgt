@@ -20,6 +20,7 @@
 #include <Poco/Exception.h>
 #include <Poco/Format.h>
 #include <SDL3/SDL.h>
+#include <algorithm>
 #include <mutex>
 #include <stdexcept>
 #include <memory>
@@ -27,6 +28,10 @@
 // Define global error variable so linker can find it
 extern int g_LastError;
 
+// A JNIEnv and a local reference belong to the thread that obtained them, and script code runs on any thread,
+// so neither is ever kept: every function fetches its own thread's JNIEnv from SDL, which also attaches a thread
+// the VM doesn't know yet, and whatever outlives a call is a global reference.
+static std::once_flag g_jni_setup_flag;
 static jclass TTSClass = nullptr;
 static jclass DialogUtilsClass = nullptr;
 static jmethodID midIsScreenReaderActive = nullptr;
@@ -37,44 +42,98 @@ static jmethodID midTTSGetEnginePackages = nullptr;
 static jmethodID midTTSGetDefaultEnginePackage = nullptr;
 static jmethodID midGetExceptionInfo = nullptr;
 
-void android_setup_jni() {
-	if (TTSClass && DialogUtilsClass) return;
-	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
-	if (!env) throw Poco::Exception("cannot retrieve JNI environment");
-	
-	TTSClass = env->FindClass("com/samtupy/nvgt/TTS");
-	if (!TTSClass) throw Poco::Exception("cannot find TTS class");
-	TTSClass = (jclass)env->NewGlobalRef(TTSClass);
-	
-	DialogUtilsClass = env->FindClass("com/samtupy/nvgt/DialogUtils");
-	if (!DialogUtilsClass) throw Poco::Exception("cannot find DialogUtils class");
-	DialogUtilsClass = (jclass)env->NewGlobalRef(DialogUtilsClass);
+// Clears the exception a call into Java left pending, printing it to the log, and reports whether there was one.
+// While an exception is pending, almost every JNI function is off limits and the VM may abort the process.
+static bool jni_clear_exception(JNIEnv* env) {
+	if (!env->ExceptionCheck()) return false;
+	env->ExceptionDescribe();
+	env->ExceptionClear();
+	return true;
+}
 
-	midIsScreenReaderActive = env->GetStaticMethodID(TTSClass, "isScreenReaderActive", "()Z");
-	midScreenReaderDetect = env->GetStaticMethodID(TTSClass, "screenReaderDetect", "()Ljava/lang/String;");
-	midScreenReaderSpeak = env->GetStaticMethodID(TTSClass, "screenReaderSpeak", "(Ljava/lang/String;Z)Z");
-	midScreenReaderSilence = env->GetStaticMethodID(TTSClass, "screenReaderSilence", "()Z");
-	midTTSGetEnginePackages = env->GetStaticMethodID(TTSClass, "getEnginePackages", "()Ljava/util/List;");
-	midTTSGetDefaultEnginePackage = env->GetStaticMethodID(TTSClass, "getDefaultEnginePackage", "()Ljava/lang/String;");
-	midGetExceptionInfo = env->GetStaticMethodID(DialogUtilsClass, "getExceptionInfo", "(Ljava/lang/Throwable;)Ljava/lang/String;");
+// FindClass searches with the class loader of the Java method that called into native code. On a thread NVGT
+// started itself there is no such method, so the VM falls back to the system class loader, which knows only the
+// platform's classes; there the class is loaded through the activity's class loader instead.
+jclass android_find_app_class(JNIEnv* env, const char* name) {
+	jclass cls = env->FindClass(name);
+	if (cls) return cls;
+	env->ExceptionClear();
+	LocalRef<jobject> activity(env, (jobject)SDL_GetAndroidActivity());
+	if (!activity.get()) { env->ExceptionClear(); return nullptr; }
+	LocalRef<jclass> contextClass(env, env->FindClass("android/content/Context"));
+	if (!contextClass.get()) { env->ExceptionClear(); return nullptr; }
+	jmethodID midGetClassLoader = env->GetMethodID(contextClass.get(), "getClassLoader", "()Ljava/lang/ClassLoader;");
+	if (!midGetClassLoader) { env->ExceptionClear(); return nullptr; }
+	LocalRef<jobject> loader(env, env->CallObjectMethod(activity.get(), midGetClassLoader));
+	if (env->ExceptionCheck() || !loader.get()) { env->ExceptionClear(); return nullptr; }
+	LocalRef<jclass> loaderClass(env, env->FindClass("java/lang/ClassLoader"));
+	if (!loaderClass.get()) { env->ExceptionClear(); return nullptr; }
+	jmethodID midLoadClass = env->GetMethodID(loaderClass.get(), "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+	if (!midLoadClass) { env->ExceptionClear(); return nullptr; }
+	std::string binary_name = name; // loadClass takes a binary name: dots between packages, $ before a nested class.
+	std::replace(binary_name.begin(), binary_name.end(), '/', '.');
+	LocalRef<jstring> jname(env, env->NewStringUTF(binary_name.c_str()));
+	if (!jname.get()) { env->ExceptionClear(); return nullptr; }
+	cls = (jclass)env->CallObjectMethod(loader.get(), midLoadClass, jname.get());
+	if (env->ExceptionCheck()) { env->ExceptionClear(); return nullptr; }
+	return cls;
+}
+
+// Thread-safe, and all or nothing: nothing is published unless every lookup succeeds, and a failed attempt throws
+// without marking the setup done, so the next call tries again.
+void android_setup_jni() {
+	std::call_once(g_jni_setup_flag, []() {
+		JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
+		if (!env) throw Poco::Exception("cannot retrieve JNI environment");
+		LocalRef<jclass> tts(env, android_find_app_class(env, "com/samtupy/nvgt/TTS"));
+		if (!tts.get()) throw Poco::Exception("cannot find TTS class");
+		LocalRef<jclass> dialogUtils(env, android_find_app_class(env, "com/samtupy/nvgt/DialogUtils"));
+		if (!dialogUtils.get()) throw Poco::Exception("cannot find DialogUtils class");
+		auto static_method = [env](jclass cls, const char* name, const char* sig) {
+			jmethodID mid = env->GetStaticMethodID(cls, name, sig);
+			if (!mid) {
+				env->ExceptionClear();
+				throw Poco::Exception("cannot find Java method", name);
+			}
+			return mid;
+		};
+		jmethodID isScreenReaderActive = static_method(tts, "isScreenReaderActive", "()Z");
+		jmethodID screenReaderDetect = static_method(tts, "screenReaderDetect", "()Ljava/lang/String;");
+		jmethodID screenReaderSpeak = static_method(tts, "screenReaderSpeak", "(Ljava/lang/String;Z)Z");
+		jmethodID screenReaderSilence = static_method(tts, "screenReaderSilence", "()Z");
+		jmethodID getEnginePackages = static_method(tts, "getEnginePackages", "()Ljava/util/List;");
+		jmethodID getDefaultEnginePackage = static_method(tts, "getDefaultEnginePackage", "()Ljava/lang/String;");
+		jmethodID getExceptionInfo = static_method(dialogUtils, "getExceptionInfo", "(Ljava/lang/Throwable;)Ljava/lang/String;");
+		jclass ttsGlobal = (jclass)env->NewGlobalRef(tts);
+		jclass dialogUtilsGlobal = (jclass)env->NewGlobalRef(dialogUtils);
+		if (!ttsGlobal || !dialogUtilsGlobal) {
+			if (ttsGlobal) env->DeleteGlobalRef(ttsGlobal);
+			if (dialogUtilsGlobal) env->DeleteGlobalRef(dialogUtilsGlobal);
+			env->ExceptionClear();
+			throw Poco::Exception("cannot create global references to the TTS and DialogUtils classes");
+		}
+		TTSClass = ttsGlobal;
+		DialogUtilsClass = dialogUtilsGlobal;
+		midIsScreenReaderActive = isScreenReaderActive;
+		midScreenReaderDetect = screenReaderDetect;
+		midScreenReaderSpeak = screenReaderSpeak;
+		midScreenReaderSilence = screenReaderSilence;
+		midTTSGetEnginePackages = getEnginePackages;
+		midTTSGetDefaultEnginePackage = getDefaultEnginePackage;
+		midGetExceptionInfo = getExceptionInfo;
+	});
 }
 
 std::string get_java_exception_details(JNIEnv* env, jthrowable ex) {
-	if (!midGetExceptionInfo) {
-		try {
-			android_setup_jni();
-		} catch(...) {
-			return "CRITICAL: Unable to setup JNI to print exception.";
-		}
+	try {
+		android_setup_jni();
+	} catch(...) {
+		return "CRITICAL: Unable to setup JNI to print exception.";
 	}
-	jstring jdetails = (jstring)env->CallStaticObjectMethod(DialogUtilsClass, midGetExceptionInfo, ex);
-	if (!jdetails) return "Unknown Java Exception (null details)";
-	
-	const char* utf = env->GetStringUTFChars(jdetails, nullptr);
-	if (!utf) return "Unknown Java Exception (utf error)";
-	std::string details(utf);
-	env->ReleaseStringUTFChars(jdetails, utf);
-	return details;
+	LocalRef<jstring> jdetails(env, (jstring)env->CallStaticObjectMethod(DialogUtilsClass, midGetExceptionInfo, ex));
+	if (jni_clear_exception(env)) return "Unknown Java Exception (describing it failed)";
+	if (!jdetails.get()) return "Unknown Java Exception (null details)";
+	return from_jstring(env, jdetails.get());
 }
 
 void check_jni_exception(JNIEnv* env, const std::string& context) {
@@ -86,18 +145,87 @@ void check_jni_exception(JNIEnv* env, const std::string& context) {
 	}
 }
 
-// Utility function to convert jstring to std::string
-// Removes duplicated code across many functions
-inline std::string from_jstring(JNIEnv* env, jstring jstr) {
-	if (!jstr) return "";
-	const char* utf = env->GetStringUTFChars(jstr, nullptr);
-	if (!utf) {
-		// If we can't get chars, clear exception if any and return empty
-		if (env->ExceptionCheck()) env->ExceptionClear();
-		return "";
+// Java strings are UTF-16. The JNI functions that take or return char* (NewStringUTF, GetStringUTFChars) instead
+// speak Java's modified UTF-8, which differs from UTF-8 in ways scripts do run into: a character outside the
+// Basic Multilingual Plane, such as an emoji, comes back as two 3-byte surrogate halves that no UTF-8 decoder
+// accepts, and NewStringUTF is only defined for valid modified UTF-8, so arbitrary bytes from a script can make a
+// VM running CheckJNI abort. Strings are therefore converted here and cross as UTF-16.
+static void append_utf8(std::string& out, char32_t c) {
+	if (c < 0x80) out += (char)c;
+	else if (c < 0x800) {
+		out += (char)(0xC0 | (c >> 6));
+		out += (char)(0x80 | (c & 0x3F));
+	} else if (c < 0x10000) {
+		out += (char)(0xE0 | (c >> 12));
+		out += (char)(0x80 | ((c >> 6) & 0x3F));
+		out += (char)(0x80 | (c & 0x3F));
+	} else {
+		out += (char)(0xF0 | (c >> 18));
+		out += (char)(0x80 | ((c >> 12) & 0x3F));
+		out += (char)(0x80 | ((c >> 6) & 0x3F));
+		out += (char)(0x80 | (c & 0x3F));
 	}
-	std::string result(utf);
-	env->ReleaseStringUTFChars(jstr, utf);
+}
+// A surrogate half that isn't part of a pair becomes U+FFFD.
+static std::string utf16_to_utf8(const char16_t* units, size_t length) {
+	std::string out;
+	out.reserve(length);
+	for (size_t i = 0; i < length; i++) {
+		char32_t c = units[i];
+		if (c >= 0xD800 && c <= 0xDBFF && i + 1 < length && units[i + 1] >= 0xDC00 && units[i + 1] <= 0xDFFF) {
+			c = 0x10000 + ((c - 0xD800) << 10) + (units[i + 1] - 0xDC00);
+			i++;
+		} else if (c >= 0xD800 && c <= 0xDFFF) c = 0xFFFD;
+		append_utf8(out, c);
+	}
+	return out;
+}
+// Each malformed sequence (a stray or truncated byte run, an overlong form, an encoded surrogate or a value past
+// U+10FFFF) becomes one U+FFFD, and decoding resumes at the first byte that can't belong to it.
+static std::u16string utf8_to_utf16(const std::string& str) {
+	std::u16string out;
+	out.reserve(str.size());
+	const unsigned char* s = (const unsigned char*)str.data();
+	size_t n = str.size();
+	for (size_t i = 0; i < n;) {
+		unsigned char lead = s[i];
+		char32_t c;
+		size_t length;
+		if (lead < 0x80) c = lead, length = 1;
+		else if (lead >= 0xC2 && lead <= 0xDF) c = lead & 0x1F, length = 2;
+		else if (lead >= 0xE0 && lead <= 0xEF) c = lead & 0x0F, length = 3;
+		else if (lead >= 0xF0 && lead <= 0xF4) c = lead & 0x07, length = 4;
+		else {
+			out += u'�';
+			i++;
+			continue;
+		}
+		size_t used = 1;
+		while (used < length && i + used < n && (s[i + used] & 0xC0) == 0x80) c = (c << 6) | (s[i + used++] & 0x3F);
+		i += used;
+		if (used < length || (length == 3 && c < 0x800) || (length == 4 && (c < 0x10000 || c > 0x10FFFF)) || (c >= 0xD800 && c <= 0xDFFF)) out += u'�';
+		else if (c >= 0x10000) {
+			out += (char16_t)(0xD800 + ((c - 0x10000) >> 10));
+			out += (char16_t)(0xDC00 + ((c - 0x10000) & 0x3FF));
+		} else out += (char16_t)c;
+	}
+	return out;
+}
+
+std::string from_jstring(JNIEnv* env, jstring jstr) {
+	if (!jstr) return "";
+	jsize length = env->GetStringLength(jstr);
+	if (length <= 0) return "";
+	std::u16string units(length, u'\0');
+	env->GetStringRegion(jstr, 0, length, (jchar*)&units[0]);
+	if (env->ExceptionCheck()) { env->ExceptionClear(); return ""; }
+	return utf16_to_utf8(units.data(), units.size());
+}
+
+jstring to_jstring(JNIEnv* env, const std::string& str) {
+	std::u16string units = utf8_to_utf16(str);
+	jstring result = env->NewString((const jchar*)units.data(), (jsize)units.size());
+	if (!result) env->ExceptionClear(); // OutOfMemoryError; callers treat a null jstring as a failure.
 	return result;
 }
 
@@ -169,8 +297,8 @@ static bool android_asset_list_raw(const std::string& path, std::vector<std::str
 	if (!assetsClass.get()) return false;
 	jmethodID midList = env->GetMethodID(assetsClass.get(), "list", "(Ljava/lang/String;)[Ljava/lang/String;");
 	if (!midList) { env->ExceptionClear(); return false; }
-	LocalRef<jstring> jpath(env, env->NewStringUTF(path.c_str()));
-	if (!jpath.get()) { env->ExceptionClear(); return false; }
+	LocalRef<jstring> jpath(env, to_jstring(env, path));
+	if (!jpath.get()) return false;
 	LocalRef<jobjectArray> entries(env, (jobjectArray)env->CallObjectMethod(assets, midList, jpath.get()));
 	if (env->ExceptionCheck()) { env->ExceptionClear(); return false; } // list throws IOException for paths it cannot read.
 	if (!entries.get()) return false;
@@ -242,53 +370,60 @@ std::string android_get_device_id() {
 	LocalRef<jclass> activityClass(env, env->GetObjectClass(activity.get()));
 	if (!activityClass.get()) return "";
 	jmethodID midGetCR = env->GetMethodID(activityClass.get(), "getContentResolver", "()Landroid/content/ContentResolver;");
-	if (!midGetCR) return "";
+	if (!midGetCR) { env->ExceptionClear(); return ""; }
 	LocalRef<jobject> cr(env, env->CallObjectMethod(activity.get(), midGetCR));
-	if (!cr.get()) return "";
+	if (jni_clear_exception(env) || !cr.get()) return "";
 	LocalRef<jclass> settingsClass(env, env->FindClass("android/provider/Settings$Secure"));
-	if (!settingsClass.get()) return "";
+	if (!settingsClass.get()) { env->ExceptionClear(); return ""; }
 	jmethodID midGetStr = env->GetStaticMethodID(settingsClass.get(), "getString", "(Landroid/content/ContentResolver;Ljava/lang/String;)Ljava/lang/String;");
-	if (!midGetStr) return "";
-	LocalRef<jstring> key(env, env->NewStringUTF("android_id"));
+	if (!midGetStr) { env->ExceptionClear(); return ""; }
+	LocalRef<jstring> key(env, to_jstring(env, "android_id"));
+	if (!key.get()) return "";
 	LocalRef<jstring> jresult(env, (jstring)env->CallStaticObjectMethod(settingsClass.get(), midGetStr, cr.get(), key.get()));
-	if (env->ExceptionCheck()) { env->ExceptionClear(); return ""; }
+	if (jni_clear_exception(env)) return "";
 	return from_jstring(env, jresult.get());
 }
 
 bool android_is_screen_reader_active() {
 	android_setup_jni();
 	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
-	return env->CallStaticBooleanMethod(TTSClass, midIsScreenReaderActive);
+	if (!env) return false;
+	jboolean result = env->CallStaticBooleanMethod(TTSClass, midIsScreenReaderActive);
+	return !jni_clear_exception(env) && result;
 }
 
 std::string android_screen_reader_detect() {
 	android_setup_jni();
 	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
-	jstring jreader = (jstring)env->CallStaticObjectMethod(TTSClass, midScreenReaderDetect);
-	std::string result = from_jstring(env, jreader);
-	if (jreader) env->DeleteLocalRef(jreader);
-	return result;
+	if (!env) return "";
+	LocalRef<jstring> jreader(env, (jstring)env->CallStaticObjectMethod(TTSClass, midScreenReaderDetect));
+	if (jni_clear_exception(env)) return "";
+	return from_jstring(env, jreader.get());
 }
 
 bool android_screen_reader_speak(const std::string& text, bool interrupt) {
 	android_setup_jni();
 	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
-	jstring jtext = env->NewStringUTF(text.c_str());
-	bool result = env->CallStaticBooleanMethod(TTSClass, midScreenReaderSpeak, jtext, interrupt);
-	env->DeleteLocalRef(jtext);
-	return result;
+	if (!env) return false;
+	LocalRef<jstring> jtext(env, to_jstring(env, text));
+	if (!jtext.get()) return false;
+	jboolean result = env->CallStaticBooleanMethod(TTSClass, midScreenReaderSpeak, jtext.get(), interrupt ? JNI_TRUE : JNI_FALSE);
+	return !jni_clear_exception(env) && result;
 }
 
 bool android_screen_reader_silence() {
 	android_setup_jni();
 	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
-	return env->CallStaticBooleanMethod(TTSClass, midScreenReaderSilence);
+	if (!env) return false;
+	jboolean result = env->CallStaticBooleanMethod(TTSClass, midScreenReaderSilence);
+	return !jni_clear_exception(env) && result;
 }
 
 std::string android_input_box(const std::string& title, const std::string& text, const std::string& default_value) {
 	android_setup_jni();
 	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
-	
+	if (!env) throw JNIException("Unable to retrieve the JNI environment");
+
 	jmethodID mid = env->GetStaticMethodID(DialogUtilsClass, "inputBoxSync", "(Landroid/app/Activity;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;");
 	if (!mid) {
 		check_jni_exception(env, "GetStaticMethodID inputBoxSync");
@@ -296,9 +431,9 @@ std::string android_input_box(const std::string& title, const std::string& text,
 	}
 
 	LocalRef<jobject> activity(env, (jobject)SDL_GetAndroidActivity());
-	LocalRef<jstring> caption(env, env->NewStringUTF(title.c_str()));
-	LocalRef<jstring> prompt(env, env->NewStringUTF(text.c_str()));
-	LocalRef<jstring> default_text(env, env->NewStringUTF(default_value.c_str()));
+	LocalRef<jstring> caption(env, to_jstring(env, title));
+	LocalRef<jstring> prompt(env, to_jstring(env, text));
+	LocalRef<jstring> default_text(env, to_jstring(env, default_value));
 
 	LocalRef<jstring> jresult(env, static_cast<jstring>(env->CallStaticObjectMethod(DialogUtilsClass, mid, activity.get(), caption.get(), prompt.get(), default_text.get())));
 	check_jni_exception(env, "CallStaticObjectMethod inputBoxSync");
@@ -316,6 +451,7 @@ std::string android_input_box(const std::string& title, const std::string& text,
 bool android_info_box(const std::string& title, const std::string& text, const std::string& value) {
 	android_setup_jni();
 	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
+	if (!env) throw JNIException("Unable to retrieve the JNI environment");
 
 	jmethodID mid = env->GetStaticMethodID(DialogUtilsClass, "infoBoxSync", "(Landroid/app/Activity;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V");
 	if (!mid) {
@@ -324,9 +460,9 @@ bool android_info_box(const std::string& title, const std::string& text, const s
 	}
 
 	LocalRef<jobject> activity(env, (jobject)SDL_GetAndroidActivity());
-	LocalRef<jstring> caption(env, env->NewStringUTF(title.c_str()));
-	LocalRef<jstring> prompt(env, env->NewStringUTF(text.c_str()));
-	LocalRef<jstring> info(env, env->NewStringUTF(value.c_str()));
+	LocalRef<jstring> caption(env, to_jstring(env, title));
+	LocalRef<jstring> prompt(env, to_jstring(env, text));
+	LocalRef<jstring> info(env, to_jstring(env, value));
 
 	env->CallStaticVoidMethod(DialogUtilsClass, mid, activity.get(), caption.get(), prompt.get(), info.get());
 	check_jni_exception(env, "CallStaticVoidMethod infoBoxSync");
@@ -336,6 +472,7 @@ bool android_info_box(const std::string& title, const std::string& text, const s
 bool android_is_window_active() {
 	android_setup_jni();
 	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
+	if (!env) return false;
 
 	jmethodID mid = env->GetStaticMethodID(DialogUtilsClass, "isWindowActive", "(Landroid/app/Activity;)Z");
 	if (!mid) {
@@ -357,48 +494,38 @@ std::vector<std::string> android_get_tts_engine_packages() {
 		return {};
 	}
 	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
-	if (!env || !midTTSGetEnginePackages) return {};
-	jobject jpackageList = env->CallStaticObjectMethod(TTSClass, midTTSGetEnginePackages);
-	if (env->ExceptionCheck()) {
+	if (!env) return {};
+	LocalRef<jobject> jpackageList(env, env->CallStaticObjectMethod(TTSClass, midTTSGetEnginePackages));
+	if (jni_clear_exception(env) || !jpackageList.get()) return {};
+	LocalRef<jclass> listClass(env, env->FindClass("java/util/List"));
+	if (!listClass.get()) {
 		env->ExceptionClear();
 		return {};
 	}
-	if (!jpackageList) return {};
-	jclass listClass = env->FindClass("java/util/List");
-	if (!listClass) {
-		env->DeleteLocalRef(jpackageList);
-		return {};
-	}
-	jmethodID midSize = env->GetMethodID(listClass, "size", "()I");
-	jmethodID midGet = env->GetMethodID(listClass, "get", "(I)Ljava/lang/Object;");
+	jmethodID midSize = env->GetMethodID(listClass.get(), "size", "()I");
+	jmethodID midGet = midSize ? env->GetMethodID(listClass.get(), "get", "(I)Ljava/lang/Object;") : nullptr;
 	if (!midSize || !midGet) {
-		env->DeleteLocalRef(listClass);
-		env->DeleteLocalRef(jpackageList);
+		env->ExceptionClear();
 		return {};
 	}
-	jint size = env->CallIntMethod(jpackageList, midSize);
+	jint size = env->CallIntMethod(jpackageList.get(), midSize);
+	if (jni_clear_exception(env)) return {};
 	std::vector<std::string> result;
-	for (int i = 0; i < size; i++) {
-		jstring jpackage = (jstring)env->CallObjectMethod(jpackageList, midGet, i);
-		if (jpackage) {
-			result.push_back(from_jstring(env, jpackage));
-			env->DeleteLocalRef(jpackage);
-		}
+	for (jint i = 0; i < size; i++) {
+		LocalRef<jstring> jpackage(env, (jstring)env->CallObjectMethod(jpackageList.get(), midGet, i));
+		if (jni_clear_exception(env)) break;
+		if (jpackage.get()) result.push_back(from_jstring(env, jpackage.get()));
 	}
-	env->DeleteLocalRef(listClass);
-	env->DeleteLocalRef(jpackageList);
 	return result;
 }
 
 std::string android_get_default_tts_engine_package() {
 	try { android_setup_jni(); } catch (...) { return ""; }
 	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
-	if (!env || !midTTSGetDefaultEnginePackage) return "";
-	jstring jresult = (jstring)env->CallStaticObjectMethod(TTSClass, midTTSGetDefaultEnginePackage);
-	if (env->ExceptionCheck()) { env->ExceptionClear(); return ""; }
-	std::string result = from_jstring(env, jresult);
-	if (jresult) env->DeleteLocalRef(jresult);
-	return result;
+	if (!env) return "";
+	LocalRef<jstring> jresult(env, (jstring)env->CallStaticObjectMethod(TTSClass, midTTSGetDefaultEnginePackage));
+	if (jni_clear_exception(env)) return "";
+	return from_jstring(env, jresult.get());
 }
 
 void register_native_tts() {
@@ -408,175 +535,185 @@ void register_native_tts() {
 	for (const auto& engine_pkg : android_engines) tts_engine_register(engine_pkg, [engine_pkg]() -> std::shared_ptr<tts_engine> { return std::make_shared<android_tts_engine>(engine_pkg); });
 }
 
+// Calls a method of a Java TTS object through the calling thread's JNIEnv, answering with the fallback if there is
+// no environment or the method throws. The arguments pass through JNI's variadic calls exactly as in a direct call.
+template<typename... Args> static bool tts_call_bool(jobject obj, jmethodID mid, Args... args) {
+	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
+	if (!env || !obj) return false;
+	jboolean result = env->CallBooleanMethod(obj, mid, args...);
+	return !jni_clear_exception(env) && result;
+}
+template<typename... Args> static int tts_call_int(jobject obj, int fallback, jmethodID mid, Args... args) {
+	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
+	if (!env || !obj) return fallback;
+	jint result = env->CallIntMethod(obj, mid, args...);
+	return jni_clear_exception(env) ? fallback : result;
+}
+static float tts_call_float(jobject obj, float fallback, jmethodID mid) {
+	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
+	if (!env || !obj) return fallback;
+	jfloat result = env->CallFloatMethod(obj, mid);
+	return jni_clear_exception(env) ? fallback : result;
+}
+template<typename... Args> static void tts_call_void(jobject obj, jmethodID mid, Args... args) {
+	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
+	if (!env || !obj) return;
+	env->CallVoidMethod(obj, mid, args...);
+	jni_clear_exception(env);
+}
+template<typename... Args> static std::string tts_call_string(jobject obj, jmethodID mid, Args... args) {
+	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
+	if (!env || !obj) return "";
+	LocalRef<jstring> result(env, (jstring)env->CallObjectMethod(obj, mid, args...));
+	if (jni_clear_exception(env)) return "";
+	return from_jstring(env, result.get());
+}
+
 android_tts_engine::android_tts_engine(const std::string& enginePkg) : tts_engine_impl(enginePkg.empty()? "Android" : enginePkg), engine_package(enginePkg) {
-	env = (JNIEnv *)SDL_GetAndroidJNIEnv();
+	android_setup_jni(); // Provides the TTS class, found in a way that also works on a thread NVGT started.
+	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
 	if (!env) throw std::runtime_error("Cannot retrieve JNI environment");
-	TTSClass = env->FindClass("com/samtupy/nvgt/TTS");
-	if (!TTSClass) throw std::runtime_error("Cannot find NVGT TTS class!");
-	constructor = env->GetMethodID(TTSClass, "<init>", "(Ljava/lang/String;)V");
-	if (!constructor) throw std::runtime_error("Cannot find NVGT TTS constructor!");
-	jstring jengine = engine_package.empty()? nullptr : env->NewStringUTF(engine_package.c_str());
-	TTSObj = env->NewObject(TTSClass, constructor, jengine);
-	if (jengine) env->DeleteLocalRef(jengine);
+	auto method = [env](const char* name, const char* sig) {
+		jmethodID mid = env->GetMethodID(TTSClass, name, sig);
+		if (!mid) {
+			env->ExceptionClear();
+			throw std::runtime_error(std::string("Cannot find method ") + name + " on the NVGT TTS class!");
+		}
+		return mid;
+	};
+	constructor = method("<init>", "(Ljava/lang/String;)V");
+	midIsActive = method("isActive", "()Z");
+	midIsSpeaking = method("isSpeaking", "()Z");
+	midSpeak = method("speak", "(Ljava/lang/String;Z)Z");
+	midSilence = method("silence", "()Z");
+	midGetVoice = method("getVoice", "()Ljava/lang/String;");
+	midSetRate = method("setRate", "(F)Z");
+	midSetPitch = method("setPitch", "(F)Z");
+	midSetPan = method("setPan", "(F)V");
+	midSetVolume = method("setVolume", "(F)V");
+	midGetVoices = method("getVoices", "()Ljava/util/List;");
+	midSetVoice = method("setVoice", "(Ljava/lang/String;)Z");
+	midGetMaxSpeechInputLength = method("getMaxSpeechInputLength", "()I");
+	midGetRate = method("getRate", "()F");
+	midGetPitch = method("getPitch", "()F");
+	midGetPan = method("getPan", "()F");
+	midGetVolume = method("getVolume", "()F");
+	midSpeakPcm = method("speakPcm", "(Ljava/lang/String;)[B");
+	midGetPcmSampleRate = method("getPcmSampleRate", "()I");
+	midGetPcmAudioFormat = method("getPcmAudioFormat", "()I");
+	midGetPcmChannelCount = method("getPcmChannelCount", "()I");
+	midGetVoiceCount = method("getVoiceCount", "()I");
+	midGetVoiceName = method("getVoiceName", "(I)Ljava/lang/String;");
+	midGetVoiceLanguage = method("getVoiceLanguage", "(I)Ljava/lang/String;");
+	midSetVoiceByIndex = method("setVoiceByIndex", "(I)Z");
+	midGetCurrentVoiceIndex = method("getCurrentVoiceIndex", "()I");
+	midGetEngineLabel = method("getEngineLabel", "()Ljava/lang/String;");
+	midResetRate = method("resetRate", "()Z");
+	midResetPitch = method("resetPitch", "()Z");
+	midResetVolume = method("resetVolume", "()Z");
+	midResetVoice = method("resetVoice", "()Z");
+	LocalRef<jstring> jengine(env, engine_package.empty()? nullptr : to_jstring(env, engine_package));
+	if (!engine_package.empty() && !jengine.get()) throw std::runtime_error("Can't pass the engine name to the TTS object!");
+	LocalRef<jobject> obj(env, env->NewObject(TTSClass, constructor, jengine.get()));
 	// A restricted engine (e.g. Sao Mai Myanmar TTS) can raise a SecurityException while binding to its service. Even though the Java side now swallows it, clear any pending Java exception here as well so it can never poison a subsequent JNI call and abort the process with "No pending exception expected".
-	if (env->ExceptionCheck()) env->ExceptionClear();
-	if (!TTSObj) throw std::runtime_error("Can't instantiate TTS object!");
-	midIsActive = env->GetMethodID(TTSClass, "isActive", "()Z");
-	midIsSpeaking = env->GetMethodID(TTSClass, "isSpeaking", "()Z");
-	midSpeak = env->GetMethodID(TTSClass, "speak", "(Ljava/lang/String;Z)Z");
-	midSilence = env->GetMethodID(TTSClass, "silence", "()Z");
-	midGetVoice = env->GetMethodID(TTSClass, "getVoice", "()Ljava/lang/String;");
-	midSetRate = env->GetMethodID(TTSClass, "setRate", "(F)Z");
-	midSetPitch = env->GetMethodID(TTSClass, "setPitch", "(F)Z");
-	midSetPan = env->GetMethodID(TTSClass, "setPan", "(F)V");
-	midSetVolume = env->GetMethodID(TTSClass, "setVolume", "(F)V");
-	midGetVoices = env->GetMethodID(TTSClass, "getVoices", "()Ljava/util/List;");
-	midSetVoice = env->GetMethodID(TTSClass, "setVoice", "(Ljava/lang/String;)Z");
-	midGetMaxSpeechInputLength = env->GetMethodID(TTSClass, "getMaxSpeechInputLength", "()I");
-	midGetRate = env->GetMethodID(TTSClass, "getRate", "()F");
-	midGetPitch = env->GetMethodID(TTSClass, "getPitch", "()F");
-	midGetPan = env->GetMethodID(TTSClass, "getPan", "()F");
-	midGetVolume = env->GetMethodID(TTSClass, "getVolume", "()F");
-	midSpeakPcm = env->GetMethodID(TTSClass, "speakPcm", "(Ljava/lang/String;)[B");
-	midGetPcmSampleRate = env->GetMethodID(TTSClass, "getPcmSampleRate", "()I");
-	midGetPcmAudioFormat = env->GetMethodID(TTSClass, "getPcmAudioFormat", "()I");
-	midGetPcmChannelCount = env->GetMethodID(TTSClass, "getPcmChannelCount", "()I");
-	midGetVoiceCount = env->GetMethodID(TTSClass, "getVoiceCount", "()I");
-	midGetVoiceName = env->GetMethodID(TTSClass, "getVoiceName", "(I)Ljava/lang/String;");
-	midGetVoiceLanguage = env->GetMethodID(TTSClass, "getVoiceLanguage", "(I)Ljava/lang/String;");
-	midSetVoiceByIndex = env->GetMethodID(TTSClass, "setVoiceByIndex", "(I)Z");
-	midGetCurrentVoiceIndex = env->GetMethodID(TTSClass, "getCurrentVoiceIndex", "()I");
-	midGetEngineLabel = env->GetMethodID(TTSClass, "getEngineLabel", "()Ljava/lang/String;");
-	midResetRate = env->GetMethodID(TTSClass, "resetRate", "()Z");
-	midResetPitch = env->GetMethodID(TTSClass, "resetPitch", "()Z");
-	midResetVolume = env->GetMethodID(TTSClass, "resetVolume", "()Z");
-	midResetVoice = env->GetMethodID(TTSClass, "resetVoice", "()Z");
-	if (!midIsActive || !midIsSpeaking || !midSpeak || !midSilence || !midGetVoice || !midSetRate || !midSetPitch || !midSetPan || !midSetVolume || !midGetVoices || !midSetVoice || !midGetMaxSpeechInputLength || !midGetPitch || !midGetPan || !midGetRate || !midGetVolume || !midSpeakPcm || !midGetPcmSampleRate || !midGetPcmAudioFormat || !midGetPcmChannelCount || !midGetVoiceCount || !midGetVoiceName || !midGetVoiceLanguage || !midSetVoiceByIndex || !midGetCurrentVoiceIndex || !midGetEngineLabel || !midResetRate || !midResetPitch || !midResetVolume || !midResetVoice) throw std::runtime_error("One or more methods on the TTS class could not be retrieved from JNI!");
-	if (!env->CallBooleanMethod(TTSObj, midIsActive)) { if (env->ExceptionCheck()) env->ExceptionClear(); throw std::runtime_error("TTS engine could not be initialized!"); }
-	jstring jlabel = (jstring)env->CallObjectMethod(TTSObj, midGetEngineLabel);
-	engine_label = from_jstring(env, jlabel);
-	if (jlabel) env->DeleteLocalRef(jlabel);
+	jni_clear_exception(env);
+	if (!obj.get()) throw std::runtime_error("Can't instantiate TTS object!");
+	TTSObj = env->NewGlobalRef(obj.get());
+	if (!TTSObj) {
+		env->ExceptionClear();
+		throw std::runtime_error("Can't create a global reference to the TTS object!");
+	}
+	// A constructor that throws never runs the destructor, so from here on a failure releases the reference itself.
+	if (!is_available()) {
+		env->DeleteGlobalRef(TTSObj);
+		TTSObj = nullptr;
+		throw std::runtime_error("TTS engine could not be initialized!");
+	}
+	engine_label = tts_call_string(TTSObj, midGetEngineLabel);
 	if (engine_label.empty()) engine_label = engine_package;
 }
 
+// Engines live in a program-wide cache, so this normally runs only as the program exits, on whichever thread that is.
 android_tts_engine::~android_tts_engine() {
-	if (env && TTSObj) {
-		env->DeleteLocalRef(TTSObj);
-		TTSObj = nullptr;
-	}
+	if (!TTSObj) return;
+	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
+	if (env) env->DeleteGlobalRef(TTSObj);
+	TTSObj = nullptr;
 }
 
-bool android_tts_engine::is_available() { return env && TTSObj && env->CallBooleanMethod(TTSObj, midIsActive); }
+bool android_tts_engine::is_available() { return tts_call_bool(TTSObj, midIsActive); }
 tts_pcm_generation_state android_tts_engine::get_pcm_generation_state() { return PCM_SUPPORTED; }
 
 bool android_tts_engine::speak(const std::string &text, bool interrupt, bool blocking) {
+	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
 	if (!env || !TTSObj || text.empty()) return false;
-	jstring jtext = env->NewStringUTF(text.c_str());
-	bool result = env->CallBooleanMethod(TTSObj, midSpeak, jtext, interrupt ? JNI_TRUE : JNI_FALSE);
-	env->DeleteLocalRef(jtext);
+	LocalRef<jstring> jtext(env, to_jstring(env, text));
+	if (!jtext.get()) return false;
+	bool result = tts_call_bool(TTSObj, midSpeak, jtext.get(), interrupt ? JNI_TRUE : JNI_FALSE);
 	if (blocking) while (is_speaking()) wait(10);
 	return result;
 }
 
-bool android_tts_engine::is_speaking() {
-	if (!env || !TTSObj) return false;
-	return env->CallBooleanMethod(TTSObj, midIsSpeaking) == JNI_TRUE;
-}
-
-bool android_tts_engine::stop() {
-	if (!env || !TTSObj) return false;
-	return env->CallBooleanMethod(TTSObj, midSilence);
-}
-
-float android_tts_engine::get_rate() {
-	if (!env || !TTSObj) return 1;
-	return env->CallFloatMethod(TTSObj, midGetRate);
-}
-
-float android_tts_engine::get_pitch() {
-	if (!env || !TTSObj) return 1;
-	return env->CallFloatMethod(TTSObj, midGetPitch);
-}
-
-float android_tts_engine::get_volume() {
-	if (!env || !TTSObj) return 0;
-	return env->CallFloatMethod(TTSObj, midGetVolume);
-}
-
-void android_tts_engine::set_rate(float rate) {
-	if (env && TTSObj) env->CallBooleanMethod(TTSObj, midSetRate, rate);
-}
-
-void android_tts_engine::set_pitch(float pitch) {
-	if (env && TTSObj) env->CallBooleanMethod(TTSObj, midSetPitch, pitch);
-}
-
-void android_tts_engine::set_volume(float volume) {
-	if (env && TTSObj) env->CallVoidMethod(TTSObj, midSetVolume, volume); // TTS.setVolume returns void.
-}
+bool android_tts_engine::is_speaking() { return tts_call_bool(TTSObj, midIsSpeaking); }
+bool android_tts_engine::stop() { return tts_call_bool(TTSObj, midSilence); }
+float android_tts_engine::get_rate() { return tts_call_float(TTSObj, 1, midGetRate); }
+float android_tts_engine::get_pitch() { return tts_call_float(TTSObj, 1, midGetPitch); }
+float android_tts_engine::get_volume() { return tts_call_float(TTSObj, 0, midGetVolume); }
+void android_tts_engine::set_rate(float rate) { tts_call_bool(TTSObj, midSetRate, rate); }
+void android_tts_engine::set_pitch(float pitch) { tts_call_bool(TTSObj, midSetPitch, pitch); }
+void android_tts_engine::set_volume(float volume) { tts_call_void(TTSObj, midSetVolume, volume); } // TTS.setVolume returns void.
 
 // The reset calls hand rate, pitch, volume and voice back to the user's TTS settings (see the TTS class).
-bool android_tts_engine::reset_rate() { return env && TTSObj && env->CallBooleanMethod(TTSObj, midResetRate); }
-bool android_tts_engine::reset_pitch() { return env && TTSObj && env->CallBooleanMethod(TTSObj, midResetPitch); }
-bool android_tts_engine::reset_volume() { return env && TTSObj && env->CallBooleanMethod(TTSObj, midResetVolume); }
-bool android_tts_engine::reset_voice() { return env && TTSObj && env->CallBooleanMethod(TTSObj, midResetVoice); }
+bool android_tts_engine::reset_rate() { return tts_call_bool(TTSObj, midResetRate); }
+bool android_tts_engine::reset_pitch() { return tts_call_bool(TTSObj, midResetPitch); }
+bool android_tts_engine::reset_volume() { return tts_call_bool(TTSObj, midResetVolume); }
+bool android_tts_engine::reset_voice() { return tts_call_bool(TTSObj, midResetVoice); }
 
 bool android_tts_engine::get_rate_range(float& minimum, float& midpoint, float& maximum) { minimum = 0.1; midpoint = 1; maximum = 6; return true; }
 bool android_tts_engine::get_pitch_range(float& minimum, float& midpoint, float& maximum) { minimum = 0.25; midpoint = 1; maximum = 4; return true; }
 bool android_tts_engine::get_volume_range(float& minimum, float& midpoint, float& maximum) { minimum = 0; midpoint = 0.5; maximum = 1; return true; }
 
-int android_tts_engine::get_voice_count() {
-	if (!env || !TTSObj) return 0;
-	return env->CallIntMethod(TTSObj, midGetVoiceCount);
-}
+int android_tts_engine::get_voice_count() { return tts_call_int(TTSObj, 0, midGetVoiceCount); }
 
 std::string android_tts_engine::get_voice_name(int index) {
-	if (!env || !TTSObj) return "";
-	jstring jvoiceName = (jstring)env->CallObjectMethod(TTSObj, midGetVoiceName, index);
-	std::string result = from_jstring(env, jvoiceName);
-	if (jvoiceName) env->DeleteLocalRef(jvoiceName);
-	return engine_label + ": " + result;
+	if (!TTSObj) return "";
+	return engine_label + ": " + tts_call_string(TTSObj, midGetVoiceName, (jint)index);
 }
 
-std::string android_tts_engine::get_voice_language(int index) {
-	if (!env || !TTSObj) return "";
-	jstring jlang = (jstring)env->CallObjectMethod(TTSObj, midGetVoiceLanguage, index);
-	std::string result = from_jstring(env, jlang);
-	if (jlang) env->DeleteLocalRef(jlang);
-	return result;
-}
-
-bool android_tts_engine::set_voice(int voice) {
-	if (!env || !TTSObj) return false;
-	bool result = env->CallBooleanMethod(TTSObj, midSetVoiceByIndex, voice);
-	return result;
-}
-
-int android_tts_engine::get_current_voice() {
-	if (!env || !TTSObj) return -1;
-	return env->CallIntMethod(TTSObj, midGetCurrentVoiceIndex);
-}
+std::string android_tts_engine::get_voice_language(int index) { return tts_call_string(TTSObj, midGetVoiceLanguage, (jint)index); }
+bool android_tts_engine::set_voice(int voice) { return tts_call_bool(TTSObj, midSetVoiceByIndex, (jint)voice); }
+int android_tts_engine::get_current_voice() { return tts_call_int(TTSObj, -1, midGetCurrentVoiceIndex); }
 
 tts_audio_data* android_tts_engine::speak_to_pcm(const std::string &text) {
+	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
 	if (!env || !TTSObj || text.empty()) return nullptr;
+	LocalRef<jstring> jtext(env, to_jstring(env, text));
+	if (!jtext.get()) return nullptr;
 
-	jstring jtext = env->NewStringUTF(text.c_str());
-	jbyteArray jpcmData = (jbyteArray)env->CallObjectMethod(TTSObj, midSpeakPcm, jtext);
-	env->DeleteLocalRef(jtext);
-
-	if (!jpcmData) return nullptr;
+	// speakPcm leaves the format of what it synthesized in fields that the getters below read back afterwards, so
+	// no other thread may synthesize on this shared engine in between.
+	std::lock_guard<std::mutex> lock(pcm_mutex);
+	LocalRef<jbyteArray> jpcmData(env, (jbyteArray)env->CallObjectMethod(TTSObj, midSpeakPcm, jtext.get()));
+	if (jni_clear_exception(env) || !jpcmData.get()) return nullptr;
 
 	// Get audio format information
-	int pcmSampleRate = env->CallIntMethod(TTSObj, midGetPcmSampleRate);
-	int pcmAudioFormat = env->CallIntMethod(TTSObj, midGetPcmAudioFormat);
-	int pcmChannelCount = env->CallIntMethod(TTSObj, midGetPcmChannelCount);
+	int pcmSampleRate = tts_call_int(TTSObj, 0, midGetPcmSampleRate);
+	int pcmAudioFormat = tts_call_int(TTSObj, 0, midGetPcmAudioFormat);
+	int pcmChannelCount = tts_call_int(TTSObj, 0, midGetPcmChannelCount);
 
-	// Get PCM data
-	jsize dataSize = env->GetArrayLength(jpcmData);
-	jbyte* pcmBytes = env->GetByteArrayElements(jpcmData, NULL);
-
-	if (!pcmBytes || dataSize <= 0) {
-		env->DeleteLocalRef(jpcmData);
+	// Get PCM data. The bytes stay pinned until free_pcm, which may run on another thread, so they are taken through
+	// a global reference to the array.
+	jsize dataSize = env->GetArrayLength(jpcmData.get());
+	if (dataSize <= 0) return nullptr;
+	jbyteArray globalRef = (jbyteArray)env->NewGlobalRef(jpcmData.get());
+	if (!globalRef) {
+		env->ExceptionClear();
+		return nullptr;
+	}
+	jbyte* pcmBytes = env->GetByteArrayElements(globalRef, NULL);
+	if (!pcmBytes) {
+		env->ExceptionClear();
+		env->DeleteGlobalRef(globalRef);
 		return nullptr;
 	}
 
@@ -590,18 +727,17 @@ tts_audio_data* android_tts_engine::speak_to_pcm(const std::string &text) {
 		default: bitsize = 16; break;
 	}
 
-	// Create audio data with context as global reference to JNI array
-	jobject globalRef = env->NewGlobalRef(jpcmData);
-	env->DeleteLocalRef(jpcmData);
-
 	return new tts_audio_data(this, pcmBytes, dataSize, pcmSampleRate, pcmChannelCount, bitsize, globalRef);
 }
 
 void android_tts_engine::free_pcm(tts_audio_data* data) {
 	if (!data || !data->context) return;
-	env->ReleaseByteArrayElements((jbyteArray)data->context, (jbyte*)data->data, 0);
-	data->data = nullptr;
-	env->DeleteGlobalRef((jbyteArray)data->context);
+	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
+	if (env) {
+		env->ReleaseByteArrayElements((jbyteArray)data->context, (jbyte*)data->data, 0);
+		env->DeleteGlobalRef((jobject)data->context);
+	}
+	data->data = nullptr; // The VM's memory, never to be passed to free().
 	data->context = nullptr;
 	tts_engine_impl::free_pcm(data);
 }
