@@ -1,0 +1,106 @@
+# private_legacy_sound.yml -- builds the legacy_sound plugin for iOS with the PRIVATE
+# plugin/legacy_sound/config.h (pack encryption) and publishes it ENCRYPTED.
+#
+# Why a separate workflow: this repository is public, and so are the artifacts of its normal release workflow. A
+# public NVGT build made with the private config.h would let anyone open the game's sound packs. So the normal release
+# keeps the public config.h, and this workflow builds ONLY the iOS legacy_sound plugin (lib_ios/legacy_sound.framework:
+# on iOS the plugin is a framework next to the stub, not part of it) with the private one.
+#
+# Start it with plain git:   git push -f origin HEAD:private-plugin
+# (or Actions > private legacy sound > Run workflow). It never runs on main, tags or pull requests.
+# The result is pushed, AES-256 encrypted, to the branch private-plugin-out (one commit, replaced every run):
+#   legacy_sound_ios.tgz.enc   the framework, encrypted with PRIVATE_PLUGIN_PASSPHRASE
+#   BUILD.txt                  which commit it was built from, and when
+# get_private_legacy_sound.bat fetches that branch with git, decrypts and installs it.
+#
+# Two repository secrets (Settings > Secrets and variables > Actions > New repository secret):
+#   LEGACY_SOUND_CONFIG_H     the full text of the private plugin/legacy_sound/config.h
+#   PRIVATE_PLUGIN_PASSPHRASE a long random passphrase (the .bat asks for it)
+name: private legacy sound
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - private-plugin
+concurrency:
+  group: private-legacy-sound
+  cancel-in-progress: true
+permissions:
+  contents: write
+jobs:
+  ios:
+    runs-on: macos-26
+    env:
+      VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}/vcpkg-binaries,readwrite
+    steps:
+    - uses: actions/checkout@v5
+      with:
+        submodules: true
+    - name: generate config
+      run: python3 build/nvgt_config_gen.py
+    - name: private legacy_sound config
+      shell: bash
+      env:
+        CFG: ${{ secrets.LEGACY_SOUND_CONFIG_H }}
+        PASS: ${{ secrets.PRIVATE_PLUGIN_PASSPHRASE }}
+      run: |
+        if [ -z "$CFG" ] || [ -z "$PASS" ]; then echo "::error::LEGACY_SOUND_CONFIG_H or PRIVATE_PLUGIN_PASSPHRASE is not set; refusing to build a plugin with the public config.h"; exit 1; fi
+        printf '%s\n' "$CFG" > plugin/legacy_sound/config.h
+        echo "private config.h written ($(wc -c < plugin/legacy_sound/config.h) bytes)"
+    - id: depkey
+      name: compute dependency cache keys
+      run: |
+        echo "macos=$(python3 vcpkg/deps_cache_key.py arm64-osx x64-osx)" >> "$GITHUB_OUTPUT"
+        echo "ios=$(python3 vcpkg/deps_cache_key.py arm64-ios)" >> "$GITHUB_OUTPUT"
+        mkdir -p vcpkg-binaries
+    - uses: actions/cache/restore@v4
+      with:
+        path: vcpkg-binaries
+        key: vcpkg-binaries-mac-${{ steps.depkey.outputs.macos }}-${{ steps.depkey.outputs.ios }}
+        restore-keys: vcpkg-binaries-mac-
+    - id: cache_macos
+      uses: actions/cache/restore@v4
+      with:
+        path: macosdev
+        key: macosdev-${{ steps.depkey.outputs.macos }}
+    - id: cache_ios
+      uses: actions/cache/restore@v4
+      with:
+        path: iosdev
+        key: iosdev-${{ steps.depkey.outputs.ios }}
+    - name: build macos dependencies
+      if: ${{ steps.cache_macos.outputs.cache-hit != 'true' }}
+      run: python3 vcpkg/build_dependencies.py --archive
+    - name: build ios dependencies
+      if: ${{ steps.cache_ios.outputs.cache-hit != 'true' }}
+      run: python3 vcpkg/build_dependencies.py arm64-ios --archive
+    - name: build
+      run: |
+        echo "Xcode: $(xcodebuild -version | head -1) | iOS SDK: $(xcrun --sdk iphoneos --show-sdk-version)"
+        cp build/build_macos.sh .
+        chmod +x build_macos.sh
+        ./build_macos.sh ci
+    - name: encrypt the plugin
+      shell: bash
+      env:
+        PASS: ${{ secrets.PRIVATE_PLUGIN_PASSPHRASE }}
+      run: |
+        test -d release/lib_ios/legacy_sound.framework || { echo "::error::release/lib_ios/legacy_sound.framework was not built"; exit 1; }
+        mkdir -p out/lib_ios
+        cp -R release/lib_ios/legacy_sound.framework out/lib_ios/
+        tar -C out -czf ios.tgz lib_ios
+        OSSL=$(brew --prefix openssl@3 2>/dev/null)/bin/openssl; [ -x "$OSSL" ] || OSSL=openssl; "$OSSL" version
+        "$OSSL" enc -aes-256-cbc -md sha256 -pbkdf2 -iter 200000 -salt -pass env:PASS -in ios.tgz -out legacy_sound_ios.tgz.enc
+        rm -rf out ios.tgz plugin/legacy_sound/config.h
+    - name: publish to branch private-plugin-out
+      shell: bash
+      env:
+        TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        mkdir pub && cp legacy_sound_ios.tgz.enc pub/ && cd pub
+        echo "legacy_sound for iOS, private config.h, built from ${GITHUB_SHA} at $(date -u +%Y-%m-%dT%H:%M:%SZ)" > BUILD.txt
+        git init -q -b private-plugin-out
+        git add legacy_sound_ios.tgz.enc BUILD.txt
+        git -c user.name="private legacy sound" -c user.email="actions@users.noreply.github.com" commit -q -m "encrypted iOS legacy_sound (${GITHUB_SHA::7})"
+        git push -q -f "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" private-plugin-out
+        echo "published to branch private-plugin-out"
