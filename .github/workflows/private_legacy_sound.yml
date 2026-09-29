@@ -13,8 +13,11 @@
 #   BUILD.txt                  which commit it was built from, and when
 # get_private_legacy_sound.bat fetches that branch with git, decrypts and installs it.
 #
-# Two repository secrets (Settings > Secrets and variables > Actions > New repository secret):
+# Three repository secrets (Settings > Secrets and variables > Actions > New repository secret):
 #   LEGACY_SOUND_CONFIG_H     the full text of the private plugin/legacy_sound/config.h
+#   NVGT_CONFIG_H             the full text of user/nvgt_config.h of the NVGT clone you build your nvgt.exe from, or
+#                             the word NONE if that clone has no user/nvgt_config.h (29.09.2026: the iOS stubs are
+#                             built here with it, so they can run what your nvgt.exe compiles)
 #   PRIVATE_PLUGIN_PASSPHRASE a long random passphrase (the .bat asks for it)
 name: private legacy sound
 on:
@@ -36,8 +39,20 @@ jobs:
     - uses: actions/checkout@v5
       with:
         submodules: true
-    - name: generate config
-      run: python3 build/nvgt_config_gen.py
+    # 29.09.2026: the iOS STUBS are built here too, with YOUR user/nvgt_config.h (bytecode encryption keys). A stub only
+    # runs bytecode made by a compiler with the same nvgt_config.h; the public release CI generates a random one per
+    # run, so its iOS stub cannot read what your own locally built nvgt.exe compiles ("Unable to load , exiting." on
+    # the device, with an empty plugin name, because the header decrypts to garbage).
+    - name: private nvgt config
+      shell: bash
+      env:
+        NCFG: ${{ secrets.NVGT_CONFIG_H }}
+      run: |
+        if [ -z "$NCFG" ]; then echo "::error::NVGT_CONFIG_H is not set (the content of user/nvgt_config.h of the NVGT you compile with)"; exit 1; fi
+        if [ "$NCFG" = "NONE" ]; then echo "NVGT_CONFIG_H=NONE: building with NVGT's default src/nvgt_config.h (your nvgt has no user/nvgt_config.h)"; exit 0; fi
+        mkdir -p user
+        printf '%s\n' "$NCFG" > user/nvgt_config.h
+        echo "private nvgt_config.h written ($(wc -c < user/nvgt_config.h) bytes)"
     - name: private legacy_sound config
       shell: bash
       env:
@@ -86,19 +101,22 @@ jobs:
         PASS: ${{ secrets.PRIVATE_PLUGIN_PASSPHRASE }}
       run: |
         test -d release/lib_ios/legacy_sound.framework || { echo "::error::release/lib_ios/legacy_sound.framework was not built"; exit 1; }
-        mkdir -p out/lib_ios
+        ls release/stub/nvgt_ios*.bin || { echo "::error::no iOS stubs in release/stub"; exit 1; }
+        mkdir -p out/lib_ios out/stub
         cp -R release/lib_ios/legacy_sound.framework out/lib_ios/
-        tar -C out -czf ios.tgz lib_ios
+        cp release/stub/nvgt_ios*.bin out/stub/
+        # no AppleDouble ._ files in the archive (they would end up inside the framework on Windows)
+        COPYFILE_DISABLE=1 tar -C out -czf ios.tgz lib_ios stub
         OSSL=$(brew --prefix openssl@3 2>/dev/null)/bin/openssl; [ -x "$OSSL" ] || OSSL=openssl; "$OSSL" version
         "$OSSL" enc -aes-256-cbc -md sha256 -pbkdf2 -iter 200000 -salt -pass env:PASS -in ios.tgz -out legacy_sound_ios.tgz.enc
-        rm -rf out ios.tgz plugin/legacy_sound/config.h
+        rm -rf out ios.tgz plugin/legacy_sound/config.h user/nvgt_config.h
     - name: publish to branch private-plugin-out
       shell: bash
       env:
         TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         mkdir pub && cp legacy_sound_ios.tgz.enc pub/ && cd pub
-        echo "legacy_sound for iOS, private config.h, built from ${GITHUB_SHA} at $(date -u +%Y-%m-%dT%H:%M:%SZ)" > BUILD.txt
+        echo "iOS stubs + legacy_sound for iOS, private nvgt_config.h and legacy_sound config.h, built from ${GITHUB_SHA} at $(date -u +%Y-%m-%dT%H:%M:%SZ)" > BUILD.txt
         git init -q -b private-plugin-out
         git add legacy_sound_ios.tgz.enc BUILD.txt
         git -c user.name="private legacy sound" -c user.email="actions@users.noreply.github.com" commit -q -m "encrypted iOS legacy_sound (${GITHUB_SHA::7})"
