@@ -6,8 +6,9 @@
 # keeps the public config.h, and this workflow builds ONLY the iOS legacy_sound plugin (lib_ios/legacy_sound.framework:
 # on iOS the plugin is a framework next to the stub, not part of it) with the private one.
 #
-# Start it with plain git:   git push -f origin HEAD:private-plugin
-# (or Actions > private legacy sound > Run workflow). It never runs on main, tags or pull requests.
+# 29.09.2026: it runs by itself on every push to main (about 6-8 minutes with the dependency caches), so the private
+# stubs and framework always match the latest main. Also by hand: git push -f origin HEAD:private-plugin, or
+# Actions > private legacy sound > Run workflow. It never runs on tags or pull requests (secrets never reach forks).
 # The result is pushed, AES-256 encrypted, to the branch private-plugin-out (one commit, replaced every run):
 #   legacy_sound_ios.tgz.enc   the framework, encrypted with PRIVATE_PLUGIN_PASSPHRASE
 #   BUILD.txt                  which commit it was built from, and when
@@ -24,6 +25,7 @@ on:
   workflow_dispatch:
   push:
     branches:
+      - main
       - private-plugin
 concurrency:
   group: private-legacy-sound
