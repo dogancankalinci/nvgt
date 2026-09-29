@@ -115,6 +115,7 @@
 	#endif
 	#ifdef have_ios_stubs
 		source: "release\stub\nvgt_ios*.bin"; DestDir: "{app}\stub"; components: stubs\ios
+		source: "release\lib_ios\*"; DestDir: "{app}\lib_ios"; components: stubs\ios; Flags: recursesubdirs createallsubdirs
 	#endif
 	; Includes
 	source: "release\include\*.nvgt"; DestDir: "{app}\include"; components: includes

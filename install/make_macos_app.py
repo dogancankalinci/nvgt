@@ -26,6 +26,8 @@ def make_app_bundle(bundle_name, release_path, version):
 	os.rename(bundle_basename + "/MacOS/stub", bundle_basename + "/Resources/stub")
 	if os.path.isdir(bundle_basename + "/MacOS/lib_linux"): os.rename(bundle_basename + "/MacOS/lib_linux", bundle_basename + "/Resources/lib_linux")
 	if os.path.isdir(bundle_basename + "/MacOS/lib_windows"): os.rename(bundle_basename + "/MacOS/lib_windows", bundle_basename + "/Resources/lib_windows")
+	if os.path.isdir(bundle_basename + "/MacOS/lib_android"): os.rename(bundle_basename + "/MacOS/lib_android", bundle_basename + "/Resources/lib_android")
+	if os.path.isdir(bundle_basename + "/MacOS/lib_ios"): os.rename(bundle_basename + "/MacOS/lib_ios", bundle_basename + "/Resources/lib_ios")
 
 	# create an info.plist file for the app
 	plist_path = os.path.join(bundle_basename, "Info.plist")

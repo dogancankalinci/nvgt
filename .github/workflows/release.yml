@@ -424,6 +424,7 @@ jobs:
         cp -r linux_release/lib release/lib_linux
         cp linux_release/stub/* release/stub
         cp -r mac_release/lib release/lib_mac
+        cp -r mac_release/lib_ios release
         cp mac_release/stub/* release/stub
         cp release/stub/nvgt_windows.bin release/stub/nvgt_windows_iap.bin
         cp release/stub/nvgt_windows_nc.bin release/stub/nvgt_windows_nc_iap.bin
@@ -484,6 +485,7 @@ jobs:
         cd ..
         python3 docgen.py
         cd ..
+        cp -r android_release/lib_android release
         cp android_release/stub/* release/stub
         cp -r linux_release/lib release/lib_linux
         cp linux_release/stub/* release/stub
@@ -545,8 +547,10 @@ jobs:
         cd ..
         python3 docgen.py
         cd ..
+        cp -r android_release/lib_android release
         cp android_release/stub/* release/stub
         cp -r mac_release/lib release/lib_mac
+        cp -r mac_release/lib_ios release
         cp mac_release/stub/* release/stub
         cp -r windows_release/lib release/lib_windows
         cp windows_release/stub/* release/stub
