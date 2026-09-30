@@ -433,31 +433,41 @@ static void ios_focus_game_view(game_window* window) {
 	UIView* view = ios_configure_game_view(window);
 	if (view) UIAccessibilityPostNotification(UIAccessibilityScreenChangedNotification, view);
 }
+
+// Whether the cursor is ours to take right now. It is not while we gave it up on purpose -- during
+// text input the on screen keyboard needs it, and so does an alert (apple_input_box) while one is up
+// -- nor while another app is in front.
+static bool ios_may_take_cursor(game_window* window) {
+	if (!g_ios_direct_interaction || !window) return false;
+	if ([UIApplication sharedApplication].applicationState != UIApplicationStateActive) return false;
+	UIWindow* win = (UIWindow*)window->get_native_window();
+	return win && !win.rootViewController.presentedViewController;
+}
 #endif
 
 void voice_over_window_created(game_window* window) {
 	#if TARGET_OS_IOS
 		ios_focus_game_view(window);
-		// Coming back from the background drops the cursor wherever UIKit likes, so claim it again.
+		// Coming back from the background drops the cursor wherever UIKit likes, so claim it again --
+		// unless text input or an alert was up when the app left, in which case the keyboard or the
+		// alert gets it back and taking it from them would leave the player unable to finish.
 		static BOOL observing_activation = NO;
 		if (!observing_activation) {
 			observing_activation = YES;
-			[[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification* notification) { ios_focus_game_view(g_window.get()); }];
+			[[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification* notification) {
+				if (ios_may_take_cursor(g_window.get())) ios_focus_game_view(g_window.get());
+			}];
 		}
 		// The cursor can also drift off mid session -- a tap on the status bar, a notification banner,
 		// anything the system focuses -- and direct interaction stops passing touches the instant it
 		// does, so the game goes deaf while it is still speaking and looks frozen. Take it back
-		// whenever it lands elsewhere, except where we gave it up on purpose: during text input, while
-		// an alert (apple_input_box) is up, and while we are not the active app.
+		// whenever it lands elsewhere, as long as it is ours to take (see ios_may_take_cursor).
 		static BOOL observing_focus = NO;
 		if (!observing_focus) {
 			observing_focus = YES;
 			[[NSNotificationCenter defaultCenter] addObserverForName:UIAccessibilityElementFocusedNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification* notification) {
-				if (!g_ios_direct_interaction || !g_window) return;
-				if ([UIApplication sharedApplication].applicationState != UIApplicationStateActive) return;
-				UIWindow* focus_win = (UIWindow*)g_window->get_native_window();
-				if (!focus_win || focus_win.rootViewController.presentedViewController) return;
-				UIView* focus_view = focus_win.rootViewController.view;
+				if (!ios_may_take_cursor(g_window.get())) return;
+				UIView* focus_view = ((UIWindow*)g_window->get_native_window()).rootViewController.view;
 				if (!focus_view || notification.userInfo[UIAccessibilityFocusedElementKey] == focus_view) return;
 				// If something insists on stealing focus back, lose the fight quietly rather than spin.
 				NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
@@ -479,10 +489,8 @@ void voice_over_renderer_created(SDL_Window* window) {
 	#if TARGET_OS_IOS
 		if (!g_window || g_window->get_sdl_window() != window) return;
 		// The window's view may just have been replaced (see ios_configure_game_view), taking VoiceOver's
-		// cursor with it. Set the new view up, and put the cursor on it unless the cursor is not ours to
-		// take right now, for the same reasons the focus observer above stands back.
-		UIWindow* win = (UIWindow*)g_window->get_native_window();
-		if (g_ios_direct_interaction && win && !win.rootViewController.presentedViewController && [UIApplication sharedApplication].applicationState == UIApplicationStateActive)
+		// cursor with it. Set the new view up, and put the cursor on it if the cursor is ours to take.
+		if (ios_may_take_cursor(g_window.get()))
 			ios_focus_game_view(g_window.get());
 		else
 			ios_configure_game_view(g_window.get());
