@@ -1100,6 +1100,12 @@ protected:
 			fs.seekp(subsystem_offset);
 			bw << UInt16(3);
 		}
+		// The icon must be embedded before the payload is appended: EndUpdateResource rebuilds the PE from its section table and silently drops everything past the last section, which is exactly where the payload lives and where LoadCompiledExecutable looks for it. This also has to happen after the MZ fix above, as BeginUpdateResource refuses a file that isn't a valid executable.
+		if (!get_custom_icon_path().empty()) {
+			fs.close();
+			apply_windows_icon(output_path.toString());
+			nvgt_compilation_output_impl::open_output_stream(output_path); // Reopen so that stub_size and the write position reflect the rebuilt PE.
+		}
 	}
 	void finalize_output_stream() override {} // Don't write payload offset on this platform.
 	// Embed a custom launcher icon (via #pragma icon) into the compiled .exe's PE resource table.
@@ -1145,7 +1151,6 @@ protected:
 #endif
 	}
 	void finalize_product(Path& output_path) override {
-		apply_windows_icon(output_path.toString()); // Applies to the .exe whether or not we go on to build a bundle.
 		if (!bundle_mode) return; // We are not creating a bundle in this condition.
 		bundle_assets(workplace.path(), workplace.path());
 		copy_shared_libraries(Path(workplace.path()).append("lib"));

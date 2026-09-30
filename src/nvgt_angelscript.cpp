@@ -906,6 +906,11 @@ int LoadCompiledExecutable(asIScriptEngine *engine) {
 	code_size ^= NVGT_BYTECODE_NUMBER_XOR;
 	unsigned char* code = (unsigned char*)malloc(code_size);
 	br.readRaw((char*)code, code_size);
+	if (!fs.good()) {
+		// The payload is missing or truncated, for example because a resource editor rewrote the executable and dropped the data after its last section. Decrypting whatever is in the buffer would write past it and corrupt the heap, so fail cleanly instead.
+		free(code);
+		return -1;
+	}
 	fs.close();
 	int r = LoadCompiledScript(engine, code, code_size);
 	free(code);
