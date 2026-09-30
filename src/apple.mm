@@ -402,33 +402,47 @@ void vo_speech_thread(void* extra) {
 static bool g_ios_direct_interaction = true;
 static NSTimeInterval g_ios_last_focus_grab = 0;
 
-static void ios_focus_game_view() {
-	if (!g_window) return;
-	UIView* view = ((UIWindow*)g_window->get_native_window()).rootViewController.view;
-	if (!view) return;
-	UIAccessibilityPostNotification(UIAccessibilityScreenChangedNotification, view);
+// The setup direct interaction depends on lives on the view object, and the root view controller's
+// view is not one fixed object: the first renderer created for the window makes SDL replace it with a
+// Metal view. Renderers are only created on first draw, so for any game that draws this happens
+// partway into the session, and the replacement starts out as a plain container VoiceOver cannot even
+// focus -- every touch is swallowed again, and each attempt to put the cursor on it goes nowhere. So
+// the setup is applied to whichever view is current every time the game view is about to be used,
+// rather than once when the window is created.
+static UIView* ios_configure_game_view(game_window* window) {
+	if (!window) return nil;
+	UIView* view = ((UIWindow*)window->get_native_window()).rootViewController.view;
+	if (!view) return nil;
+	view.isAccessibilityElement = YES;
+	if (g_ios_direct_interaction)
+		view.accessibilityTraits |= UIAccessibilityTraitAllowsDirectInteraction;
+	else
+		view.accessibilityTraits &= ~UIAccessibilityTraitAllowsDirectInteraction;
+	// Direct interaction keeps VoiceOver silent on this element, so with no label there is nothing
+	// at all to tell the player that the cursor has landed on the game.
+	if (!view.accessibilityLabel) {
+		NSString* name = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleDisplayName"];
+		if (!name) name = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleName"];
+		if (name) view.accessibilityLabel = name;
+	}
+	return view;
+}
+
+// Takes the window explicitly because g_window is still unset while its window is being constructed.
+static void ios_focus_game_view(game_window* window) {
+	UIView* view = ios_configure_game_view(window);
+	if (view) UIAccessibilityPostNotification(UIAccessibilityScreenChangedNotification, view);
 }
 #endif
 
 void voice_over_window_created(game_window* window) {
 	#if TARGET_OS_IOS
-		UIWindow* win = (UIWindow*)window->get_native_window();
-		UIView* view = win.rootViewController.view;
-		view.isAccessibilityElement = YES;
-		view.accessibilityTraits |= UIAccessibilityTraitAllowsDirectInteraction;
-		// Direct interaction keeps VoiceOver silent on this element, so with no label there is nothing
-		// at all to tell the player that the cursor has landed on the game.
-		if (!view.accessibilityLabel) {
-			NSString* name = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleDisplayName"];
-			if (!name) name = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleName"];
-			if (name) view.accessibilityLabel = name;
-		}
-		ios_focus_game_view();
+		ios_focus_game_view(window);
 		// Coming back from the background drops the cursor wherever UIKit likes, so claim it again.
 		static BOOL observing_activation = NO;
 		if (!observing_activation) {
 			observing_activation = YES;
-			[[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification* notification) { ios_focus_game_view(); }];
+			[[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification* notification) { ios_focus_game_view(g_window.get()); }];
 		}
 		// The cursor can also drift off mid session -- a tap on the status bar, a notification banner,
 		// anything the system focuses -- and direct interaction stops passing touches the instant it
@@ -449,7 +463,7 @@ void voice_over_window_created(game_window* window) {
 				NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
 				if (now - g_ios_last_focus_grab < 0.25) return;
 				g_ios_last_focus_grab = now;
-				ios_focus_game_view();
+				ios_focus_game_view(g_window.get());
 			}];
 		}
 	#else
@@ -461,17 +475,29 @@ void voice_over_window_created(game_window* window) {
 	#endif
 }
 
+void voice_over_renderer_created(SDL_Window* window) {
+	#if TARGET_OS_IOS
+		if (!g_window || g_window->get_sdl_window() != window) return;
+		// The window's view may just have been replaced (see ios_configure_game_view), taking VoiceOver's
+		// cursor with it. Set the new view up, and put the cursor on it unless the cursor is not ours to
+		// take right now, for the same reasons the focus observer above stands back.
+		UIWindow* win = (UIWindow*)g_window->get_native_window();
+		if (g_ios_direct_interaction && win && !win.rootViewController.presentedViewController && [UIApplication sharedApplication].applicationState == UIApplicationStateActive)
+			ios_focus_game_view(g_window.get());
+		else
+			ios_configure_game_view(g_window.get());
+	#endif
+}
+
 void ios_set_direct_interaction(bool enabled) {
 	#if TARGET_OS_IOS
 		g_ios_direct_interaction = enabled;
 		if (!g_window) return;
-		UIView* view = ((UIWindow*)g_window->get_native_window()).rootViewController.view;
-		if (enabled) {
-			view.accessibilityTraits |= UIAccessibilityTraitAllowsDirectInteraction;
-			// The on screen keyboard has just gone away and took the cursor with it; take it back.
-			ios_focus_game_view();
-		} else
-			view.accessibilityTraits &= ~UIAccessibilityTraitAllowsDirectInteraction;
+		// The on screen keyboard has just gone away and took the cursor with it; take it back.
+		if (enabled)
+			ios_focus_game_view(g_window.get());
+		else
+			ios_configure_game_view(g_window.get());
 	#endif
 }
 

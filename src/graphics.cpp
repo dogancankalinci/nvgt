@@ -13,6 +13,9 @@
 #include "graphics.h"
 #include "UI.h"
 #include "nvgt_plugin.h"
+#ifdef __APPLE__
+#include "apple.h"
+#endif
 std::string get_font_path(const std::string& name); // defined in xplatform.cpp
 
 // graphic
@@ -230,10 +233,16 @@ graphics_renderer::graphics_renderer() : _renderer(nullptr), _refcount(1) {
 	// Default renderer attaches to whichever window SDL currently considers the focused one, if any.
 	SDL_Window* win = SDL_GetKeyboardFocus();
 	if (win) _renderer = SDL_CreateRenderer(win, nullptr);
+	#ifdef __APPLE__
+	if (_renderer) voice_over_renderer_created(win);
+	#endif
 }
 
 graphics_renderer::graphics_renderer(game_window* window) : _renderer(nullptr), _refcount(1) {
 	if (window) _renderer = SDL_CreateRenderer(window->get_sdl_window(), nullptr);
+	#ifdef __APPLE__
+	if (_renderer) voice_over_renderer_created(window->get_sdl_window());
+	#endif
 }
 
 graphics_renderer::~graphics_renderer() {
