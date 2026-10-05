@@ -606,6 +606,14 @@ elif env["NVGT_TARGET"] == "android":
 			abi_env.Prepend(LIBS = abi_static_libs)
 			write_static_plugins_source(static_plugins_path + ".cpp", android_static_plugins)
 			shared_objs.append(abi_env.Object(f"build/obj_android/{abi}/nvgt_plugins", static_plugins_path + ".cpp", CPPPATH = abi_env["CPPPATH"] + ["#src"]))
+		# libc++_shared has to be the first shared library libgame and libmain depend on. The dynamic linker binds every
+		# symbol to the first library in that list which defines it, and libphonon.so ships a statically linked copy of
+		# libc++ and libc++abi that it exports. With phonon ahead of libc++_shared, which the compiler driver appends last,
+		# the exception runtime, the std::exception type information and part of std::string were taken from phonon's copy
+		# while the rest came from libc++_shared, and a C++ exception crossing into a script could crash inside phonon's
+		# personality routine. lld resolves shared libraries independently of their position, so moving it changes
+		# nothing but the order recorded in the binary.
+		abi_env.Prepend(LIBS = ["c++_shared"])
 		# The three variants differ only by their defines: runner + regular stub disable IAP, the IAP stub enables it.
 		for variant, extra_defines in [("runner", ["NVGT_NO_IAP"]), ("stub", ["NVGT_STUB", "NVGT_NO_IAP"]), ("stub_iap", ["NVGT_STUB"])]:
 			venv = abi_env.Clone()
