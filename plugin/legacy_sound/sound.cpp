@@ -1273,6 +1273,18 @@ legacy_sound::~legacy_sound() {
 	if (!sound_initialized)
 		return;
 	close();
+	// close() only tears down what a loaded sound owns and keeps the rest for the next load. set_hrtf() and set_fx() can create the binaural effect and the per-sound mixer before anything was ever loaded (or after a load failed), and nothing else frees them once the object goes away.
+	LOCK_MIXER_GRAPH();
+	if (output_mixer) {
+		// The mixer's destructor detaches its stream from the parent while the handle is still set, so the audio thread stops pulling it (and running a positioning DSP that points at this sound) before the stream itself is freed.
+		HSTREAM dead_mixer = output_mixer->channel;
+		delete output_mixer;
+		output_mixer = NULL;
+		sound_reaper_push(dead_mixer);
+	}
+	if (hrtf_effect)
+		iplBinauralEffectRelease(&hrtf_effect);
+	hrtf_effect = NULL;
 }
 void sound_base::AddRef() {
 	asAtomicInc(RefCount);
@@ -2013,6 +2025,10 @@ legacy_mixer::~legacy_mixer() {
 	}
 	mixers.clear();
 	sounds.clear();
+	// set_hrtf() on a mixer creates its own binaural effect; Release() has already freed the stream whose DSP used it.
+	if (hrtf_effect)
+		iplBinauralEffectRelease(&hrtf_effect);
+	hrtf_effect = NULL;
 }
 
 void legacy_mixer::AddRef() {
