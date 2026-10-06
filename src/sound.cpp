@@ -83,6 +83,32 @@ bool add_decoder(ma_decoding_backend_vtable *vtable) {
 		return false;
 	}
 }
+#ifdef MA_SUPPORT_AAUDIO
+// AAudio's error callback hands a disconnected or rerouted stream to the context's job thread as a reroute job that holds a raw pointer to the device, and ma_device_uninit only waits for a reroute that is already running, not for one still sitting in the queue. Such a job then runs after the device is gone: it locks the destroyed reroute mutex and reopens streams through freed memory. So before a device is uninitialized, raise its tear-down flag (the error callback then queues nothing new and a queued reroute returns at once), and wait until the job thread has worked through what is already queued. The thread runs its jobs one at a time in order, so once a job posted now has run, every reroute queued before it has finished. The second pass covers an error callback that read the flag just before it was raised and posted its job just after the first marker.
+static ma_result aaudio_job_queue_marker(ma_job* job) {
+	ma_event_signal((ma_event*)job->data.custom.data0);
+	return MA_SUCCESS;
+}
+static void drain_aaudio_reroutes(ma_device* device) {
+	if (!device || !device->pContext || device->pContext->backend != ma_backend_aaudio || ma_device_get_state(device) == ma_device_state_uninitialized) return;
+	__atomic_store_n(&device->aaudio.isTearingDown.value, MA_TRUE, __ATOMIC_SEQ_CST);
+	for (int pass = 0; pass < 2; pass++) {
+		ma_event done;
+		if (ma_event_init(&done) != MA_SUCCESS) return;
+		ma_job job = ma_job_init(MA_JOB_TYPE_CUSTOM);
+		job.data.custom.proc = aaudio_job_queue_marker;
+		job.data.custom.data0 = (ma_uintptr)&done;
+		if (ma_device_job_thread_post(&device->pContext->aaudio.jobThread, &job) == MA_SUCCESS) ma_event_wait(&done);
+		ma_event_uninit(&done);
+	}
+}
+#endif
+static void uninit_device(ma_device* device) {
+	#ifdef MA_SUPPORT_AAUDIO
+	drain_aaudio_reroutes(device);
+	#endif
+	ma_device_uninit(device);
+}
 bool init_sound() {
 	if (g_soundsystem_ready.test()) return true;
 	// Everything below runs under the lock: a second thread must wait for the engine to exist rather than be told the system is ready while it is still being built.
@@ -375,7 +401,7 @@ public:
 			cfg.jobThreadCount = std::thread::hardware_concurrency();
 			resource_manager = std::make_unique<ma_resource_manager>();
 			if ((g_soundsystem_last_error = ma_resource_manager_init(&cfg, &*resource_manager)) != MA_SUCCESS) {
-				ma_device_uninit(&*device);
+				uninit_device(&*device);
 				device.reset();
 				engine.reset();
 				resource_manager.reset();
@@ -396,7 +422,7 @@ public:
 		if ((g_soundsystem_last_error = ma_engine_init(&cfg, &*engine)) != MA_SUCCESS) {
 			engine.reset();
 			if (resource_manager) { ma_resource_manager_uninit(&*resource_manager); resource_manager.reset(); }
-			if (device) { ma_device_uninit(&*device); device.reset(); }
+			if (device) { uninit_device(&*device); device.reset(); }
 			throw runtime_error(Poco::format("failed to initialize sound engine %d", int(g_soundsystem_last_error)));
 		}
 		node = (ma_node_base*)&*engine;
@@ -412,7 +438,7 @@ public:
 		}
 		if (device) {
 			ma_device_stop(&*device);
-			ma_device_uninit(&*device);
+			uninit_device(&*device);
 		}
 		if (engine_endpoint)
 			engine_endpoint->release();
@@ -458,7 +484,7 @@ public:
 		cfg.dataCallback = old_dev->onData;
 		cfg.pUserData = old_dev->pUserData;
 		ma_device_stop(old_dev);
-		ma_device_uninit(old_dev);
+		uninit_device(old_dev);
 		if ((g_soundsystem_last_error = ma_device_init(&g_sound_context, &cfg, old_dev)) != MA_SUCCESS) {
 			cfg.playback.pDeviceID = nullptr;
 			g_soundsystem_last_error = ma_device_init(&g_sound_context, &cfg, old_dev); // Try to at least initialize the default device so as not to leave useless engine.
@@ -2035,14 +2061,14 @@ public:
 		if ((g_soundsystem_last_error = ma_device_start(&*capture_device)) != MA_SUCCESS) audio_node_impl::set_state(ma_node_state_stopped);
 	}
 	~microphone_impl() {
-		if (capture_device) ma_device_uninit(&*capture_device);
+		if (capture_device) uninit_device(&*capture_device);
 	}
 	bool set_device(int device) override {
 		if (device == device_index) return true;
 		if (device < -1 || device >= int(g_sound_input_devices.size())) return false;
 		if (capture_device) {
 			ma_device_stop(&*capture_device);
-			ma_device_uninit(&*capture_device);
+			uninit_device(&*capture_device);
 		}
 		ma_device_config device_config = ma_device_config_init(ma_device_type_capture);
 		device_config.capture.format = ma_format_f32;
@@ -2060,7 +2086,7 @@ public:
 		if ((g_soundsystem_last_error = ma_device_start(&*capture_device)) != MA_SUCCESS) {
 			audio_node_impl::set_state(ma_node_state_stopped);
 			device_index = -1;
-			ma_device_uninit(&*capture_device);
+			uninit_device(&*capture_device);
 			capture_device.reset();
 			return false;
 		}
