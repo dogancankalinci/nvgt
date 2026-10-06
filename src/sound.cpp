@@ -1138,7 +1138,12 @@ protected:
 			OpusEncCallbacks callbacks = {write_callback, close_callback};
 			encoder = ope_encoder_create_callbacks(&callbacks, ds->get_ostr(), comments, sample_rate, channels, 0, &error);
 		} else if (!filename.empty()) encoder = ope_encoder_create_file(filename.c_str(), comments, sample_rate, channels, 0, &error);
-		if (!encoder) return false;
+		if (!encoder) {
+			// close_impl() only runs its cleanup for an open encoder, so the comments made above would never be freed.
+			ope_comments_destroy(comments);
+			comments = nullptr;
+			return false;
+		}
 		ope_encoder_ctl(encoder, OPUS_SET_BITRATE(bitrate));
 		ope_encoder_ctl(encoder, OPUS_SET_COMPLEXITY(complexity));
 		ope_encoder_ctl(encoder, OPUS_SET_SIGNAL(signal_type));
