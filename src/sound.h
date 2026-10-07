@@ -39,7 +39,7 @@ enum audio_spatializer_reverb3d_placement {
 };
 
 extern audio_engine *g_audio_engine;
-extern std::atomic<ma_result> g_soundsystem_last_error;
+extern thread_local ma_result g_soundsystem_last_error; // Per thread, like errno: the audio device thread and other script threads must not overwrite a result before the thread that produced it reads it back.
 // Add support for a new audio format by plugging in a ma_decoding_backend_vtable.
 bool add_decoder(ma_decoding_backend_vtable *vtable);
 bool init_sound();

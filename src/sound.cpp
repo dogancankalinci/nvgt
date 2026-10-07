@@ -65,7 +65,7 @@ mixer* g_audio_mixer = nullptr;
 static std::atomic_flag g_soundsystem_initialized; // The initialization body has begun; used only to let init_sound() recognise a call re-entering it from its own engine construction.
 static std::atomic_flag g_soundsystem_ready; // The engine exists. Set last so that no other thread can be told "initialized" while g_audio_engine is still null.
 static std::recursive_mutex g_soundsystem_init_mutex; // Recursive because constructing the engine re-enters init_sound() on this same thread.
-std::atomic<ma_result> g_soundsystem_last_error = MA_SUCCESS;
+thread_local ma_result g_soundsystem_last_error = MA_SUCCESS;
 static unordered_map<ma_data_source*, audio_data_source*> g_data_sources_map; // Only allow one audio_data_source wrapper per ma_data_source, should never be populated enough to be a performance hit.
 static std::mutex g_data_sources_map_mutex; // Every decoder open/close inserts into or erases from this map, from whichever script thread does it; an unlocked unordered_map rehashing under a concurrent erase corrupts the heap.
 static std::unique_ptr<sound_service> g_sound_service;
