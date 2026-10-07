@@ -250,6 +250,13 @@ public:
 		delete this; // Poco wants us to keep these Runnable objects alive as long as the thread is running, meaning we must delete ourself from within the thread to avoid some other sort of cleanup machinery.
 		return;
 	}
+	// For a start that threw before any thread could run us (a pool with no free thread, a thread that is already running): run() will never come to release what we were handed, so the starter does it here.
+	void discard() {
+		if (args) args->Release();
+		if (func) func->Release();
+		if (thread) angelscript_refcounted_release<Thread>(thread);
+		delete this;
+	}
 };
 
 void thread_begin(Thread* thread, asIScriptFunction* func, CScriptDictionary* args) {
@@ -257,24 +264,47 @@ void thread_begin(Thread* thread, asIScriptFunction* func, CScriptDictionary* ar
 		if (args) args->Release();
 		return;
 	}
+	// Refused here instead of by Poco, whose start() does not give back all of the memory it took when it throws for a thread that is still running.
+	if (thread->isRunning()) {
+		if (args) args->Release();
+		func->Release();
+		throw SystemException("thread already running");
+	}
 	angelscript_refcounted_duplicate<Thread>(thread);
-	thread->start(*new script_runnable(func, args, thread));
+	script_runnable* runnable = new script_runnable(func, args, thread);
+	try {
+		thread->start(*runnable);
+	} catch (...) {
+		// Poco throws after creating the thread only when it fails to apply a priority other than normal, and that thread then runs and frees the runnable itself; at normal priority every failure comes before a thread exists.
+		if (thread->getPriority() == Thread::PRIO_NORMAL) runnable->discard();
+		throw;
+	}
+}
+// ThreadPool throws, if at all, before it hands the runnable to a worker, so a failed start can always discard it.
+template <class F> void pooled_thread_start(asIScriptFunction* func, CScriptDictionary* args, F start) {
+	if (!func) {
+		if (args) args->Release();
+		return;
+	}
+	script_runnable* runnable = new script_runnable(func, args);
+	try {
+		start(*runnable);
+	} catch (...) {
+		runnable->discard();
+		throw;
+	}
 }
 void pooled_thread_begin(ThreadPool* pool, asIScriptFunction* func, CScriptDictionary* args) {
-	if (func) pool->start(*new script_runnable(func, args));
-	else if (args) args->Release();
+	pooled_thread_start(func, args, [pool](Runnable& r) { pool->start(r); });
 }
 void pooled_thread_begin(ThreadPool* pool, asIScriptFunction* func, CScriptDictionary* args, const std::string& name) {
-	if (func) pool->start(*new script_runnable(func, args), name);
-	else if (args) args->Release();
+	pooled_thread_start(func, args, [pool, &name](Runnable& r) { pool->start(r, name); });
 }
 void pooled_thread_begin(ThreadPool* pool, asIScriptFunction* func, CScriptDictionary* args, Thread::Priority priority) {
-	if (func) pool->startWithPriority(priority, *new script_runnable(func, args));
-	else if (args) args->Release();
+	pooled_thread_start(func, args, [pool, priority](Runnable& r) { pool->startWithPriority(priority, r); });
 }
 void pooled_thread_begin(ThreadPool* pool, asIScriptFunction* func, CScriptDictionary* args, const std::string& name, Thread::Priority priority) {
-	if (func) pool->startWithPriority(priority, *new script_runnable(func, args), name);
-	else if (args) args->Release();
+	pooled_thread_start(func, args, [pool, priority, &name](Runnable& r) { pool->startWithPriority(priority, r, name); });
 }
 
 // STL atomics support (thanks @ethindp)!
