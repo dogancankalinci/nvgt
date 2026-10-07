@@ -88,9 +88,9 @@ int message_box(const std::string& title, const std::string& text, const std::ve
 	return ret;
 }
 int message_box_script(const std::string& title, const std::string& text, CScriptArray* buttons, unsigned int flags) {
+	if (!buttons) return -1;
 	std::vector<std::string> v_buttons(buttons->GetSize());
 	for (unsigned int i = 0; i < buttons->GetSize(); i++) v_buttons[i] = (*(std::string*)(buttons->At(i)));
-	buttons->Release();
 	return message_box(title, text, v_buttons, flags);
 }
 int alert(const std::string& title, const std::string& text, bool can_cancel, unsigned int flags) {
@@ -372,7 +372,6 @@ void game_window::draw_menu(CScriptArray* items, float x, float y) {
 		}
 		current_y += line_height;
 	}
-	items->Release();
 }
 
 Poco::AutoPtr<game_window> g_window;
@@ -575,7 +574,7 @@ bool sdl_set_hint(const std::string& hint, const std::string& value, int priorit
 	return SDL_SetHintWithPriority(hint.c_str(), value.c_str(), SDL_HintPriority(priority));
 }
 std::string sdl_get_hint(const std::string& hint) {
-	return SDL_GetHint(hint.c_str());
+	return from_cstr(SDL_GetHint(hint.c_str()));
 }
 
 static game_window* game_window_factory(const std::string& title, unsigned int w, unsigned int h, unsigned int flags) { return new game_window(title, w, h, flags); }
@@ -591,9 +590,10 @@ system_tray_menu_item::~system_tray_menu_item() {
 void system_tray_menu_item::set_callback(asIScriptFunction* func) {
 	if (_callback) _callback->Release();
 	_callback = func;
-	if (_callback)
+	if (_callback) {
+		_callback->AddRef();
 		SDL_SetTrayEntryCallback(_entry, tray_entry_sdl_callback, this);
-	else SDL_SetTrayEntryCallback(_entry, nullptr, nullptr);
+	} else SDL_SetTrayEntryCallback(_entry, nullptr, nullptr);
 }
 void system_tray_menu_item::invoke_callback() {
 	if (!_callback || !_entry) return;
@@ -633,14 +633,12 @@ system_tray_menu_item* system_tray_menu::make_entry(int pos, const char* label, 
 system_tray_menu_item* system_tray_menu::insert_item(const std::string& label, asIScriptFunction* callback, bool disabled, int pos) {
 	system_tray_menu_item* item = make_entry(pos, label.c_str(), SDL_TRAYENTRY_BUTTON | (disabled ? SDL_TRAYENTRY_DISABLED : 0), SYSTEM_TRAY_ITEM);
 	if (item && callback) item->set_callback(callback);
-	else if (callback) callback->Release();
 	return item;
 }
 system_tray_menu_item* system_tray_menu::insert_checkbox(const std::string& label, bool checked, asIScriptFunction* callback, bool disabled, int pos) {
 	SDL_TrayEntryFlags flags = SDL_TRAYENTRY_CHECKBOX | (disabled ? SDL_TRAYENTRY_DISABLED : 0) | (checked ? SDL_TRAYENTRY_CHECKED : 0);
 	system_tray_menu_item* item = make_entry(pos, label.c_str(), flags, SYSTEM_TRAY_CHECKBOX);
 	if (item && callback) item->set_callback(callback);
-	else if (callback) callback->Release();
 	return item;
 }
 system_tray_menu_item* system_tray_menu::insert_submenu(const std::string& label, bool disabled, int pos) {
@@ -719,7 +717,7 @@ void RegisterUI(asIScriptEngine* engine) {
 	engine->RegisterEnumValue("window_flags", "WINDOW_FLAG_ALWAYS_ON_TOP", SDL_WINDOW_ALWAYS_ON_TOP);
 	engine->RegisterGlobalFunction(_O("bool sdl_set_hint(const string&in hint, const string&in value, int priority = SDL_HINT_NORMAL)"), asFUNCTION(sdl_set_hint), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("string sdl_get_hint(const string&in hint)"), asFUNCTION(sdl_get_hint), asCALL_CDECL);
-	engine->RegisterGlobalFunction(_O("int message_box(const string& in title, const string& in message, string[]@ buttons, uint flags = 0)"), asFUNCTION(message_box_script), asCALL_CDECL);
+	engine->RegisterGlobalFunction(_O("int message_box(const string& in title, const string& in message, string[]@+ buttons, uint flags = 0)"), asFUNCTION(message_box_script), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("int alert(const string &in title, const string &in text, bool can_cancel = false, uint flags = 0)"), asFUNCTION(alert), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("int question(const string& in title, const string& in text, bool can_cancel = false, uint flags = 0)"), asFUNCTION(question), asCALL_CDECL);
 	engine->SetDefaultAccessMask(NVGT_SUBSYSTEM_OS);
@@ -815,7 +813,7 @@ void RegisterUI(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("game_window", "void draw_circle(float cx, float cy, int radius, uint r, uint g, uint b, bool filled = false)", asMETHOD(game_window, draw_circle), asCALL_THISCALL);
 	engine->RegisterObjectMethod("game_window", "void draw_line(float x1, float y1, float x2, float y2, uint r, uint g, uint b)", asMETHOD(game_window, draw_line), asCALL_THISCALL);
 	engine->RegisterObjectMethod("game_window", "bool render_graphic(graphic@+ gfx, float x, float y)", asMETHOD(game_window, render_graphic), asCALL_THISCALL);
-	engine->RegisterObjectMethod("game_window", "void draw_menu(string[]@ items, float x, float y)", asMETHOD(game_window, draw_menu), asCALL_THISCALL);
+	engine->RegisterObjectMethod("game_window", "void draw_menu(string[]@+ items, float x, float y)", asMETHOD(game_window, draw_menu), asCALL_THISCALL);
 	engine->RegisterObjectMethod("game_window", "uint64 get_native_window() const property", asMETHOD(game_window, get_native_window), asCALL_THISCALL);
 	engine->RegisterGlobalFunction("game_window@ show_window(const string& in title, uint flags = 0)", asFUNCTION(ShowNVGTWindow), asCALL_CDECL);
 	engine->RegisterGlobalFunction("bool destroy_window()", asFUNCTION(DestroyNVGTWindow), asCALL_CDECL);
@@ -856,13 +854,13 @@ void RegisterUI(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("system_tray_menu_item", "void set_enabled(bool enabled) property", asMETHOD(system_tray_menu_item, set_enabled), asCALL_THISCALL);
 	engine->RegisterObjectMethod("system_tray_menu_item", "bool get_enabled() const property", asMETHOD(system_tray_menu_item, get_enabled), asCALL_THISCALL);
 	engine->RegisterObjectMethod("system_tray_menu_item", "void click()", asMETHOD(system_tray_menu_item, click), asCALL_THISCALL);
-	engine->RegisterObjectMethod("system_tray_menu_item", "void set_callback(system_tray_callback@ func)", asMETHOD(system_tray_menu_item, set_callback), asCALL_THISCALL);
+	engine->RegisterObjectMethod("system_tray_menu_item", "void set_callback(system_tray_callback@+ func)", asMETHOD(system_tray_menu_item, set_callback), asCALL_THISCALL);
 	engine->RegisterObjectMethod("system_tray_menu_item", "system_tray_menu@+ get_submenu() property", asMETHOD(system_tray_menu_item, get_submenu), asCALL_THISCALL);
 	// system_tray_menu
 	engine->RegisterObjectBehaviour("system_tray_menu", asBEHAVE_ADDREF, "void f()", asMETHOD(system_tray_menu, duplicate), asCALL_THISCALL);
 	engine->RegisterObjectBehaviour("system_tray_menu", asBEHAVE_RELEASE, "void f()", asMETHOD(system_tray_menu, release), asCALL_THISCALL);
-	engine->RegisterObjectMethod("system_tray_menu", "system_tray_menu_item@+ insert_item(const string&in label, system_tray_callback@ callback = null, bool disabled = false, int pos = -1)", asMETHOD(system_tray_menu, insert_item), asCALL_THISCALL);
-	engine->RegisterObjectMethod("system_tray_menu", "system_tray_menu_item@+ insert_checkbox(const string&in label, bool checked = false, system_tray_callback@ callback = null, bool disabled = false, int pos = -1)", asMETHOD(system_tray_menu, insert_checkbox), asCALL_THISCALL);
+	engine->RegisterObjectMethod("system_tray_menu", "system_tray_menu_item@+ insert_item(const string&in label, system_tray_callback@+ callback = null, bool disabled = false, int pos = -1)", asMETHOD(system_tray_menu, insert_item), asCALL_THISCALL);
+	engine->RegisterObjectMethod("system_tray_menu", "system_tray_menu_item@+ insert_checkbox(const string&in label, bool checked = false, system_tray_callback@+ callback = null, bool disabled = false, int pos = -1)", asMETHOD(system_tray_menu, insert_checkbox), asCALL_THISCALL);
 	engine->RegisterObjectMethod("system_tray_menu", "system_tray_menu_item@+ insert_submenu(const string&in label, bool disabled = false, int pos = -1)", asMETHOD(system_tray_menu, insert_submenu), asCALL_THISCALL);
 	engine->RegisterObjectMethod("system_tray_menu", "system_tray_menu_item@+ insert_separator(int pos = -1)", asMETHOD(system_tray_menu, insert_separator), asCALL_THISCALL);
 	engine->RegisterObjectMethod("system_tray_menu", "void remove_entry(system_tray_menu_item@+ item)", asMETHOD(system_tray_menu, remove_entry), asCALL_THISCALL);
@@ -871,7 +869,7 @@ void RegisterUI(asIScriptEngine* engine) {
 	// system_tray
 	engine->RegisterObjectBehaviour("system_tray", asBEHAVE_ADDREF, "void f()", asMETHOD(system_tray, duplicate), asCALL_THISCALL);
 	engine->RegisterObjectBehaviour("system_tray", asBEHAVE_RELEASE, "void f()", asMETHOD(system_tray, release), asCALL_THISCALL);
-	engine->RegisterObjectBehaviour("system_tray", asBEHAVE_FACTORY, "system_tray@ f(const string&in tooltip, graphic@ icon = null)", asFUNCTION(system_tray_factory), asCALL_CDECL);
+	engine->RegisterObjectBehaviour("system_tray", asBEHAVE_FACTORY, "system_tray@ f(const string&in tooltip, graphic@+ icon = null)", asFUNCTION(system_tray_factory), asCALL_CDECL);
 	engine->RegisterObjectMethod("system_tray", "bool get_valid() const property", asMETHOD(system_tray, is_valid), asCALL_THISCALL);
 	engine->RegisterObjectMethod("system_tray", "void set_icon(graphic@+ icon)", asMETHOD(system_tray, set_icon), asCALL_THISCALL);
 	engine->RegisterObjectMethod("system_tray", "void set_tooltip(const string&in tooltip)", asMETHOD(system_tray, set_tooltip), asCALL_THISCALL);

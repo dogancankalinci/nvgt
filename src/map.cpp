@@ -108,6 +108,7 @@ void map_area::release() {
 	if (asAtomicDec(ref_count) < 1) {
 		if (primary_data)
 			primary_data->Release();
+		if (parent) parent->areas.erase(this);
 		delete this;
 	}
 }
@@ -237,7 +238,8 @@ static void release_snapshot(std::vector<map_area*>& copy) {
 int map_frame::add_areas_for_point(std::vector<map_area*>& local_areas, float x, float y, float z, float d, int p, asIScriptFunction* filter_callback, asINT64 flags, asINT64 excluded_flags) {
 	std::vector<map_area*> snap = snapshot_areas(areas);
 	for (map_area* a : snap) {
-		if (a->priority >= p && a->is_in_area(x, y, z, d, filter_callback, flags, excluded_flags)) {
+		// framed is checked after the callback, which may have removed this area from the map.
+		if (a->priority >= p && a->is_in_area(x, y, z, d, filter_callback, flags, excluded_flags) && a->framed) {
 			p = a->priority;
 			a->add_ref(); // the result list owns a reference; the callers below release it
 			local_areas.push_back(a);
@@ -249,7 +251,7 @@ int map_frame::add_areas_for_point(std::vector<map_area*>& local_areas, float x,
 int map_frame::add_areas_for_range(std::vector<map_area*>& local_areas, float minx, float maxx, float miny, float maxy, float minz, float maxz, float d, int p, asIScriptFunction* filter_callback, asINT64 flags, asINT64 excluded_flags) {
 	std::vector<map_area*> snap = snapshot_areas(areas);
 	for (map_area* a : snap) {
-		if (!a->tmp_adding_to_result && a->priority >= p && a->is_in_area_range(minx, maxx, miny, maxy, minz, maxz, d, 0, filter_callback, flags, excluded_flags)) {
+		if (!a->tmp_adding_to_result && a->priority >= p && a->is_in_area_range(minx, maxx, miny, maxy, minz, maxz, d, 0, filter_callback, flags, excluded_flags) && a->framed) {
 			//p=a->priority; // Object can be reframed at the end of frame with lower priority than something that is higher in the frame, such item will not be included in list if p keeps getting reset.
 			a->add_ref(); // the result list owns a reference; the callers below release it
 			local_areas.push_back(a);
@@ -280,6 +282,8 @@ void coordinate_map::add_ref() {
 }
 void coordinate_map::release() {
 	if (asAtomicDec(ref_count) < 1) {
+		for (map_area* a : areas) a->parent = nullptr;
+		areas.clear();
 		reset();
 		delete this;
 	}
@@ -311,7 +315,9 @@ map_frame* coordinate_map::get_frame(int x, int y, int z, int size, bool create)
 	return it->second;
 }
 map_area* coordinate_map::add_area(float minx, float maxx, float miny, float maxy, float minz, float maxz, float rotation, CScriptAny* primary_data, const std::string& data1, const std::string& data2, const std::string& data3, int priority, asINT64 flags) {
-	return new map_area(this, minx, maxx, miny, maxy, minz, maxz, rotation, primary_data, data1, data2, data3, priority, flags);
+	map_area* a = new map_area(this, minx, maxx, miny, maxy, minz, maxz, rotation, primary_data, data1, data2, data3, priority, flags);
+	areas.insert(a);
+	return a;
 }
 void coordinate_map::get_areas(float minx, float maxx, float miny, float maxy, float minz, float maxz, float d, std::vector<map_area*>& local_areas, bool priority_check, asIScriptFunction* filter_callback, asINT64 flags, asINT64 excluded_flags) {
 	int p = -1;
@@ -413,11 +419,11 @@ coordinate_map* new_coordinate_map() {
 void RegisterScriptMap(asIScriptEngine* engine) {
 	engine->SetDefaultAccessMask(NVGT_SUBSYSTEM_GENERAL);
 	engine->RegisterGlobalFunction(_O("vector rotate(const vector&in point, const vector&in origin, double theta, bool maintain_z = true)"), asFUNCTION(rotate), asCALL_CDECL);
-	engine->RegisterGlobalFunction(_O("bool boxes_intersect(float, float, float, float, float, float, float, float, float, float)"), asFUNCTION(boxes_intersect), asCALL_CDECL);
+	engine->RegisterGlobalFunction(_O("bool boxes_intersect(float minx1, float maxx1, float miny1, float maxy1, float r1, float minx2, float maxx2, float miny2, float maxy2, float r2)"), asFUNCTION(boxes_intersect), asCALL_CDECL);
 	engine->SetDefaultAccessMask(NVGT_SUBSYSTEM_MAP);
 	engine->RegisterObjectType(_O("coordinate_map"), 0, asOBJ_REF);
 	engine->RegisterObjectType(_O("coordinate_map_area"), 0, asOBJ_REF);
-	engine->RegisterFuncdef(_O("bool coordinate_map_filter_callback(coordinate_map_area@)"));
+	engine->RegisterFuncdef(_O("bool coordinate_map_filter_callback(coordinate_map_area@ area)"));
 	engine->RegisterObjectBehaviour(_O("coordinate_map_area"), asBEHAVE_ADDREF, _O("void f()"), asMETHOD(map_area, add_ref), asCALL_THISCALL);
 	engine->RegisterObjectBehaviour(_O("coordinate_map_area"), asBEHAVE_RELEASE, _O("void f()"), asMETHOD(map_area, release), asCALL_THISCALL);
 	engine->RegisterObjectProperty(_O("coordinate_map_area"), _O("const coordinate_map@ map"), asOFFSET(map_area, parent));
@@ -440,13 +446,13 @@ void RegisterScriptMap(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod(_O("coordinate_map_area"), _O("void set(float minx, float maxx, float miny, float maxy, float minz, float maxz, float theta)"), asMETHOD(map_area, set), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("coordinate_map_area"), _O("void set_area(float minx, float maxx, float miny, float maxy, float minz, float maxz)"), asMETHOD(map_area, set_area), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("coordinate_map_area"), _O("void set_rotation(float theta)"), asMETHOD(map_area, set_rotation), asCALL_THISCALL);
-	engine->RegisterObjectMethod(_O("coordinate_map_area"), _O("bool is_in_area(float x, float y, float z, float d = 0.0, coordinate_map_filter_callback@+ = null, int64 required_flags = 0, int64 excluded_flags = 0) const"), asMETHOD(map_area, is_in_area), asCALL_THISCALL);
+	engine->RegisterObjectMethod(_O("coordinate_map_area"), _O("bool is_in_area(float x, float y, float z, float d = 0.0, coordinate_map_filter_callback@+ filter_callback = null, int64 required_flags = 0, int64 excluded_flags = 0) const"), asMETHOD(map_area, is_in_area), asCALL_THISCALL);
 	engine->RegisterObjectBehaviour(_O("coordinate_map"), asBEHAVE_FACTORY, _O("coordinate_map @m()"), asFUNCTION(new_coordinate_map), asCALL_CDECL);
 	engine->RegisterObjectBehaviour(_O("coordinate_map"), asBEHAVE_ADDREF, _O("void f()"), asMETHOD(coordinate_map, add_ref), asCALL_THISCALL);
 	engine->RegisterObjectBehaviour(_O("coordinate_map"), asBEHAVE_RELEASE, _O("void f()"), asMETHOD(coordinate_map, release), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("coordinate_map"), _O("coordinate_map_area@ add_area(float minx, float maxx, float miny, float maxy, float minz, float maxz, float rotation, any@ primary_data, const string&in data1, const string&in data2, const string&in data3, int priority, int64 flags = 0)"), asMETHOD(coordinate_map, add_area), asCALL_THISCALL);
-	engine->RegisterObjectMethod(_O("coordinate_map"), _O("coordinate_map_area@[]@ get_areas(float x, float y, float z, float d = 0.0, coordinate_map_filter_callback@ = null, int64 required_flags = 0, int64 excluded_flags = 0) const"), asMETHOD(coordinate_map, get_areas_script), asCALL_THISCALL);
-	engine->RegisterObjectMethod(_O("coordinate_map"), _O("coordinate_map_area@[]@ get_areas(float minx, float maxx, float miny, float maxy, float minz, float maxz, float d = 0.0, coordinate_map_filter_callback@ = null, int64 required_flags = 0, int64 excluded_flags = 0) const"), asMETHOD(coordinate_map, get_areas_in_range_script), asCALL_THISCALL);
-	engine->RegisterObjectMethod(_O("coordinate_map"), _O("coordinate_map_area@ get_area(float x, float y, float z, int priority = -1, float d = 0.0, coordinate_map_filter_callback@ = null, int64 required_flags = 0, int64 excluded_flags = 0) const"), asMETHOD(coordinate_map, get_area), asCALL_THISCALL);
+	engine->RegisterObjectMethod(_O("coordinate_map"), _O("coordinate_map_area@[]@ get_areas(float x, float y, float z, float d = 0.0, coordinate_map_filter_callback@ filter_callback = null, int64 required_flags = 0, int64 excluded_flags = 0) const"), asMETHOD(coordinate_map, get_areas_script), asCALL_THISCALL);
+	engine->RegisterObjectMethod(_O("coordinate_map"), _O("coordinate_map_area@[]@ get_areas(float minx, float maxx, float miny, float maxy, float minz, float maxz, float d = 0.0, coordinate_map_filter_callback@ filter_callback = null, int64 required_flags = 0, int64 excluded_flags = 0) const"), asMETHOD(coordinate_map, get_areas_in_range_script), asCALL_THISCALL);
+	engine->RegisterObjectMethod(_O("coordinate_map"), _O("coordinate_map_area@ get_area(float x, float y, float z, int priority = -1, float d = 0.0, coordinate_map_filter_callback@ filter_callback = null, int64 required_flags = 0, int64 excluded_flags = 0) const"), asMETHOD(coordinate_map, get_area), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("coordinate_map"), _O("void reset()"), asMETHOD(coordinate_map, reset), asCALL_THISCALL);
 }

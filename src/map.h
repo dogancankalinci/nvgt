@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <string>
 #include <ankerl/unordered_dense.h>
+#include <unordered_set>
 #include <vector>
 #include <angelscript.h>
 #include <reactphysics3d/mathematics/Vector3.h>
@@ -88,6 +89,7 @@ class coordinate_map {
 	ankerl::unordered_dense::map<hashpoint, map_frame*, map_frame_key_hash, hashpoint_equals> frames[total_frame_sizes];
 	int ref_count;
 public:
+	std::unordered_set<map_area*> areas;
 	coordinate_map() : ref_count(1) {}
 	void add_ref();
 	void release();

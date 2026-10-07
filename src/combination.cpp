@@ -177,13 +177,12 @@ bool combination_api::generate_permutations(int items) {
 }
 bool combination_api::next(CScriptArray* list) {
 	if (!list) return false;
-	if (!is_active()) { list->Release(); return false; }
-	if (!gen->advance()) { list->Release(); return false; }
+	if (!is_active()) return false;
+	if (!gen->advance()) return false;
 	std::vector<int>& temp = gen->data();
 	list->Resize(temp.size());
 	for (int i = 0; i < temp.size(); i++)
 		list->SetValue(i, &temp[i]);
-	list->Release();
 	return true;
 }
 bool combination_api::is_active() {
@@ -211,6 +210,6 @@ void RegisterScriptCombination(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("combination", "bool generate_unique_combinations(int items, int size)", asMETHODPR(combination_api, generate_unique_combinations, (int, int), bool), asCALL_THISCALL);
 	engine->RegisterObjectMethod("combination", "bool generate_unique_combinations(int items, int min_size, int max_size)", asMETHODPR(combination_api, generate_unique_combinations, (int, int, int), bool), asCALL_THISCALL);
 	engine->RegisterObjectMethod("combination", "bool generate_permutations(int items)", asMETHOD(combination_api, generate_permutations), asCALL_THISCALL);
-	engine->RegisterObjectMethod("combination", "bool next(int[]@ list)", asMETHOD(combination_api, next), asCALL_THISCALL);
+	engine->RegisterObjectMethod("combination", "bool next(int[]@+ list)", asMETHOD(combination_api, next), asCALL_THISCALL);
 	engine->RegisterObjectMethod("combination", "bool get_active() property", asMETHOD(combination_api, is_active), asCALL_THISCALL);
 }

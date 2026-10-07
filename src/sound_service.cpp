@@ -203,12 +203,12 @@ public:
 		return std::atomic_load(&default_protocol)->get();
 	}
 	bool is_default_protocol(size_t slot) {
-		if (slot < 0 || slot >= filters.size())
+		if (slot < 0 || slot >= protocols.size())
 			return false;
 		return protocols[slot] == std::atomic_load(&default_protocol);
 	}
 	bool set_default_filter(size_t slot) {
-		if (slot < 0 || slot > filters.size())
+		if (slot < 0 || slot >= filters.size())
 			return false;
 		std::atomic_store(&default_filter, filters[slot]);
 		return true;
@@ -409,7 +409,7 @@ std::istream *encryption_filter::wrap(std::istream &source, const directive_t di
 	if (key == nullptr)
 		return &source;
 	try {
-		return new chacha_istream(source, *key);
+		return &(new chacha_istream(source, *key))->own_source(true);
 	} catch (std::exception &) {
 		// Not encrypted or not valid.
 		return nullptr;

@@ -12,11 +12,13 @@
 
 #pragma once
 
+#include <cstdint>
 #include <unordered_map>
 #include <string>
 #include <vector>
 #include <angelscript.h>
 #include <micropather.h>
+#include <ankerl/unordered_dense.h>
 #include "scriptarray.h"
 #include "scriptany.h"
 #include "nvgt.h"
@@ -68,7 +70,7 @@ struct hashpoint_equals {
 	}
 };
 typedef std::unordered_map<hashpoint, void*, hashpoint_hash, hashpoint_equals> hashpoint_map;
-typedef std::unordered_map<hashpoint, float, hashpoint_hash, hashpoint_equals> hashpoint_float_map;
+typedef ankerl::unordered_dense::map<hashpoint, float, hashpoint_hash, hashpoint_equals> hashpoint_float_map;
 class pathfinder : public micropather::Graph {
 	hashpoint_float_map difficulty_cache[11];
 	micropather::MicroPather* pf;
@@ -80,6 +82,11 @@ class pathfinder : public micropather::Graph {
 	bool gc_flag;
 	bool cache; // Because Micropather doesn't expose a method to determine if path caching is enabled, and disabling of cache should disable our local cache too.
 	callback_modes callback_mode;
+	// Only used where a pointer is narrower than a packed state key (32-bit builds): MicroPather is handed the key's index in state_keys.
+	std::vector<uint64_t> state_keys;
+	ankerl::unordered_dense::map<uint64_t, uint32_t> state_indices;
+	void* encode_state(int64_t x, int64_t y, int64_t z, int64_t d);
+	void decode_state(void* st, int* x, int* y, int* z) const;
 
 public:
 	bool solving;

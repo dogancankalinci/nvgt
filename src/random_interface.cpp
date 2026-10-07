@@ -167,7 +167,7 @@ void cleanup_default_random() {
 void set_default_random(random_interface* rng) {
 	if (g_default_random && g_default_random != g_default_script_wrapper)
 		g_default_random->release();
-	if (g_default_script_wrapper) {
+	if (g_default_script_wrapper && g_default_random == g_default_script_wrapper) {
 		g_default_script_wrapper->release();
 		g_default_script_wrapper = nullptr;
 	}
@@ -181,9 +181,8 @@ void set_default_random_script(asIScriptObject* scriptObj) {
 		g_default_random->release();
 	if (g_default_script_wrapper)
 		g_default_script_wrapper->release();
-	// Create wrapper (AddRefs scriptObj internally); release the AS-added ref
+	// Create wrapper and set as default
 	g_default_script_wrapper = new script_random_wrapper(scriptObj);
-	scriptObj->Release();
 	g_default_random = g_default_script_wrapper;
 }
 
@@ -469,6 +468,11 @@ void random_array_shuffle(CScriptArray* array, random_interface* rng) {
 	array->Resize(array->GetSize() + 1);
 	for (uint32 i = array->GetSize() - 2; i > 0; i--) {
 		int32 j = rng->range(0, i);
+		if (j < 0 || j > int64_t(i)) {
+			array->Resize(array->GetSize() - 1);
+			if (asIScriptContext* active = asGetActiveContext()) active->SetException("random generator returned an index out of range");
+			return;
+		}
 		array->SetValue(array->GetSize() - 1, array->At(i));
 		array->SetValue(i, array->At(j));
 		array->SetValue(j, array->At(array->GetSize() - 1));
@@ -534,6 +538,12 @@ void random_script_array_shuffle(CScriptArray* array, asIScriptObject* scriptRng
 			ctx->SetArgDWord(1, i);
 			ctx->Execute();
 			int32 j = ctx->GetReturnDWord();
+			if (j < 0 || j > int64_t(i)) {
+				array->Resize(array->GetSize() - 1);
+				ctx->Release();
+				if (asIScriptContext* active = asGetActiveContext()) active->SetException("random generator returned an index out of range");
+				return;
+			}
 			array->SetValue(array->GetSize() - 1, array->At(i));
 			array->SetValue(i, array->At(j));
 			array->SetValue(j, array->At(array->GetSize() - 1));
