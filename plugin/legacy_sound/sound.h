@@ -46,7 +46,6 @@ typedef struct {
 typedef struct {
 	legacy_pack* p;
 	pack_stream* s;
-	legacy_sound* snd;
 } packed_sound;
 
 typedef struct hstream_entry {
