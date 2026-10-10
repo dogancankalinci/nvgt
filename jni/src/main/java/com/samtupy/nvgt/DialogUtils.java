@@ -14,7 +14,10 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.io.StringWriter;
 import java.io.PrintWriter;
+import android.os.Build;
 import android.os.PowerManager;
+import android.text.method.PasswordTransformationMethod;
+import android.view.accessibility.AccessibilityNodeInfo;
 import android.content.Context;
 import org.libsdl.app.SDLActivity;
 
@@ -25,6 +28,27 @@ public final class DialogUtils {
 		PrintWriter pw = new PrintWriter(sw);
 		t.printStackTrace(pw);
 		return sw.toString();
+	}
+
+	/**
+	 * Adds what a focused TextView puts in its accessibility node, except for the clipboard query. TalkBack asks for the
+	 * node whenever it moves through the views, and a focused TextView answers by calling
+	 * ClipboardManager.hasPrimaryClip() over binder on the UI thread to decide whether to offer Paste; a clipboard
+	 * service that is slow to reply then freezes the UI thread long enough to be reported as not responding. A view
+	 * that builds its node as if unfocused skips that query and calls this to restore the rest. Paste is offered
+	 * without asking: performing it checks the clipboard itself and does nothing when it is empty.
+	 */
+	public static void addFocusedAccessibilityActions(TextView view, AccessibilityNodeInfo info) {
+		info.setFocused(true);
+		info.removeAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_FOCUS);
+		info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_CLEAR_FOCUS);
+		if (Build.VERSION.SDK_INT >= 30) info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER);
+		boolean secret = view.getTransformationMethod() instanceof PasswordTransformationMethod;
+		if (!secret && view.length() > 0 && view.hasSelection()) {
+			info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_COPY);
+			info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_CUT);
+		}
+		info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_PASTE);
 	}
 
 	public static CompletableFuture<String> inputBox(Activity activity, String caption, String prompt, String defaultText) {
@@ -38,7 +62,27 @@ public final class DialogUtils {
 			// system's own resources or the activity's window is already gone. Uncaught on the UI thread that ends the
 			// process, and inputBoxSync would otherwise wait on this future forever, so report it as a cancelled input.
 			try {
-			EditText edit = new EditText(activity);
+			EditText edit = new EditText(activity) {
+				// Builds its accessibility node as if unfocused; see addFocusedAccessibilityActions.
+				private boolean buildingNode;
+
+				@Override
+				public boolean isFocused() {
+					return !buildingNode && super.isFocused();
+				}
+
+				@Override
+				public void onInitializeAccessibilityNodeInfo(AccessibilityNodeInfo info) {
+					boolean focused = super.isFocused();
+					buildingNode = true;
+					try {
+						super.onInitializeAccessibilityNodeInfo(info);
+					} finally {
+						buildingNode = false;
+					}
+					if (focused) addFocusedAccessibilityActions(this, info);
+				}
+			};
 			edit.setSingleLine(true);
 			edit.setText(initial);
 			edit.setSelection(initial.length());
