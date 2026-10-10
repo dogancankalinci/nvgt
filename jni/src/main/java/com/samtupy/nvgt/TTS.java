@@ -8,11 +8,13 @@ import android.content.IntentFilter;
 import android.content.pm.ResolveInfo;
 import android.media.AudioAttributes;
 import android.os.Bundle;
+import android.os.Looper;
 import android.provider.Settings;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.TextToSpeech.OnInitListener;
 import android.speech.tts.UtteranceProgressListener;
 import android.speech.tts.Voice;
+import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityManager;
 import java.io.File;
@@ -142,7 +144,36 @@ public class TTS {
 
 	// Voice management fields
 	private List<Voice> availableVoices;
+
+	// TextToSpeech finishes connecting to an engine on an AsyncTask that catches only RemoteException. When the engine's
+	// own setCallback or default language code throws, the exception comes back through binder (a NullPointerException,
+	// for example) and escapes that background thread, which ends the app. Only that failure is absorbed: TextToSpeech
+	// then never calls onInit, and the constructor gives up after its wait as it does for an engine that never answers.
+	private static final String CONNECTION_SETUP_TASK = "android.speech.tts.TextToSpeech$Connection$SetupConnectionAsyncTask";
+	private static boolean connectionGuardInstalled = false;
+	private static synchronized void installConnectionGuard() {
+		if (connectionGuardInstalled) return;
+		connectionGuardInstalled = true;
+		final Thread.UncaughtExceptionHandler previous = Thread.getDefaultUncaughtExceptionHandler();
+		Thread.setDefaultUncaughtExceptionHandler((thread, error) -> {
+			if (thread != Looper.getMainLooper().getThread() && isConnectionSetupFailure(error)) {
+				Log.w("NVGT", "The text to speech engine failed while connecting", error);
+				return;
+			}
+			if (previous != null) previous.uncaughtException(thread, error);
+		});
+	}
+	private static boolean isConnectionSetupFailure(Throwable error) {
+		for (Throwable t = error; t != null; t = t.getCause() == t ? null : t.getCause()) {
+			for (StackTraceElement frame : t.getStackTrace()) {
+				if (CONNECTION_SETUP_TASK.equals(frame.getClassName()) && "doInBackground".equals(frame.getMethodName())) return true;
+			}
+		}
+		return false;
+	}
+
 	public TTS(String enginePkg) {
+		installConnectionGuard();
 		Context context = SDL.getContext();
 		enginePackage = enginePkg;
 		isTTSInitializedLatch = new CountDownLatch(1);
