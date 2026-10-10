@@ -22,8 +22,11 @@ import android.text.Spannable;
 import android.text.method.PasswordTransformationMethod;
 import android.text.style.SuggestionSpan;
 import android.view.accessibility.AccessibilityNodeInfo;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.ContextWrapper;
+import android.graphics.Rect;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.libsdl.app.SDLActivity;
 
 public final class DialogUtils {
@@ -41,9 +44,9 @@ public final class DialogUtils {
 	 * ClipboardManager.hasPrimaryClip() over binder on the UI thread to decide whether to offer Paste; a clipboard
 	 * service that is slow to reply then freezes the UI thread long enough to be reported as not responding. A view
 	 * that builds its node as if unfocused skips that query and calls this to restore the rest, with the conditions
-	 * TextView uses on every version from Android 5 to 16. Paste is offered without the clipboard check: performing it
-	 * checks the clipboard itself and does nothing when it is empty. Process text and smart actions are left out, as
-	 * TextView only offers them for a view that has an id.
+	 * TextView uses on every version from Android 5 to 16. Whether the clipboard holds anything comes from
+	 * refreshClipboardState, which asks off the UI thread. Process text and smart actions are left out, as TextView
+	 * only offers them for a view that has an id.
 	 */
 	public static void addFocusedAccessibilityActions(TextView view, AccessibilityNodeInfo info) {
 		info.setFocused(true);
@@ -58,7 +61,7 @@ public final class DialogUtils {
 		}
 		boolean canCopy = !(view.getTransformationMethod() instanceof PasswordTransformationMethod) && text.length() > 0 && view.hasSelection();
 		if (canCopy) info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_COPY);
-		if (keys && view.getSelectionStart() >= 0 && view.getSelectionEnd() >= 0) info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_PASTE);
+		if (keys && view.getSelectionStart() >= 0 && view.getSelectionEnd() >= 0 && clipboardHasClip) info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_PASTE);
 		if (canCopy && keys) info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_CUT);
 		if (Build.VERSION.SDK_INT >= 33 && canShowSuggestions(view)) {
 			info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_TEXT_SUGGESTIONS);
@@ -66,6 +69,45 @@ public final class DialogUtils {
 		if (Build.VERSION.SDK_INT >= 23 && canCopy && canShare(view)) {
 			CharSequence label = systemString(view, "share");
 			if (label != null) info.addAction(new AccessibilityNodeInfo.AccessibilityAction(ACCESSIBILITY_ACTION_SHARE, label));
+		}
+	}
+
+	// Whether the clipboard holds anything, as last asked by refreshClipboardState.
+	private static volatile boolean clipboardHasClip = false;
+	private static final AtomicInteger clipboardRequests = new AtomicInteger();
+	private static boolean clipboardListening = false; // only used by the clipboard thread
+
+	/**
+	 * Asks the clipboard service, on a background thread, whether the clipboard holds anything, for the Paste action
+	 * of addFocusedAccessibilityActions. Call it from the UI thread when an input field gains focus or its window
+	 * does; the first call also starts listening for clipboard changes, which ask again. Only one query runs at a
+	 * time, and a request made while one is running makes it ask once more before it ends.
+	 */
+	public static void refreshClipboardState(Context context) {
+		if (clipboardRequests.getAndIncrement() != 0) return;
+		final Context app = context.getApplicationContext();
+		Thread thread = new Thread(() -> {
+			ClipboardManager clipboard = (ClipboardManager) app.getSystemService(Context.CLIPBOARD_SERVICE);
+			int seen;
+			do {
+				seen = clipboardRequests.get();
+				boolean hasClip = false;
+				try {
+					if (clipboard != null && !clipboardListening) {
+						clipboard.addPrimaryClipChangedListener(() -> refreshClipboardState(app));
+						clipboardListening = true;
+					}
+					hasClip = clipboard != null && clipboard.hasPrimaryClip();
+				} catch (RuntimeException e) {}
+				clipboardHasClip = hasClip;
+			} while (!clipboardRequests.compareAndSet(seen, 0));
+		}, "NVGT clipboard");
+		thread.setDaemon(true);
+		try {
+			thread.start();
+		} catch (OutOfMemoryError | RuntimeException e) {
+			// No thread could be started; the next request tries again.
+			clipboardRequests.set(0);
 		}
 	}
 
@@ -160,6 +202,18 @@ public final class DialogUtils {
 						buildingNode = false;
 					}
 					if (focused) addFocusedAccessibilityActions(this, info);
+				}
+
+				@Override
+				protected void onFocusChanged(boolean gainFocus, int direction, Rect previouslyFocusedRect) {
+					super.onFocusChanged(gainFocus, direction, previouslyFocusedRect);
+					if (gainFocus) refreshClipboardState(getContext());
+				}
+
+				@Override
+				public void onWindowFocusChanged(boolean hasWindowFocus) {
+					super.onWindowFocusChanged(hasWindowFocus);
+					if (hasWindowFocus && isFocused()) refreshClipboardState(getContext());
 				}
 			};
 			edit.setSingleLine(true);
