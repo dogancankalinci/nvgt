@@ -26,6 +26,11 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.ContextWrapper;
 import android.graphics.Rect;
+import android.os.SystemClock;
+import android.view.View;
+import android.view.ViewParent;
+import android.view.accessibility.AccessibilityEvent;
+import java.lang.ref.WeakReference;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.libsdl.app.SDLActivity;
 
@@ -61,7 +66,7 @@ public final class DialogUtils {
 		}
 		boolean canCopy = !(view.getTransformationMethod() instanceof PasswordTransformationMethod) && text.length() > 0 && view.hasSelection();
 		if (canCopy) info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_COPY);
-		if (keys && view.getSelectionStart() >= 0 && view.getSelectionEnd() >= 0 && clipboardHasClip) info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_PASTE);
+		if (keys && view.getSelectionStart() >= 0 && view.getSelectionEnd() >= 0 && clipboardHasClipForNode(view)) info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_PASTE);
 		if (canCopy && keys) info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_CUT);
 		if (Build.VERSION.SDK_INT >= 33 && canShowSuggestions(view)) {
 			info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_TEXT_SUGGESTIONS);
@@ -76,12 +81,43 @@ public final class DialogUtils {
 	private static volatile boolean clipboardHasClip = false;
 	private static final AtomicInteger clipboardRequests = new AtomicInteger();
 	private static boolean clipboardListening = false; // only used by the clipboard thread
+	// Signalled when a query ends. It also guards the two fields below.
+	private static final Object clipboardAnswered = new Object();
+	// A focused input whose node was built while a query was still running, to be refreshed once it has the answer.
+	private static WeakReference<View> clipboardStaleView = null;
+	// Set when a node stopped waiting for the running query, so that further nodes do not wait for it again.
+	private static boolean clipboardWaitGaveUp = false;
+	private static final long CLIPBOARD_WAIT_MS = 100;
+
+	// The answer a node offers Paste on. TextView asks the clipboard service on the UI thread and waits for as long as
+	// it takes, which is what freezes the UI thread when the service is slow. A query that is already running is
+	// waited for here up to CLIPBOARD_WAIT_MS, so the node normally carries the same answer TextView would give. Only
+	// a service slower than that leaves the previous answer in the node, which is then refreshed when the new one
+	// arrives; and only one node waits for any one query.
+	private static boolean clipboardHasClipForNode(View view) {
+		synchronized (clipboardAnswered) {
+			if (clipboardRequests.get() != 0 && !clipboardWaitGaveUp) {
+				long deadline = SystemClock.uptimeMillis() + CLIPBOARD_WAIT_MS, left;
+				while (clipboardRequests.get() != 0 && (left = deadline - SystemClock.uptimeMillis()) > 0) {
+					try {
+						clipboardAnswered.wait(left);
+					} catch (InterruptedException e) {
+						break;
+					}
+				}
+				if (clipboardRequests.get() != 0) clipboardWaitGaveUp = true;
+			}
+			if (clipboardRequests.get() != 0) clipboardStaleView = new WeakReference<>(view);
+			return clipboardHasClip;
+		}
+	}
 
 	/**
 	 * Asks the clipboard service, on a background thread, whether the clipboard holds anything, for the Paste action
-	 * of addFocusedAccessibilityActions. Call it from the UI thread when an input field gains focus or its window
-	 * does; the first call also starts listening for clipboard changes, which ask again. Only one query runs at a
-	 * time, and a request made while one is running makes it ask once more before it ends.
+	 * of addFocusedAccessibilityActions. Call it from the UI thread when an input field gains focus, and when the
+	 * window of a focused input field gains or loses focus; the first call also starts listening for clipboard
+	 * changes, which ask again. Only one query runs at a time, and a request made while one is running makes it ask
+	 * once more before it ends.
 	 */
 	public static void refreshClipboardState(Context context) {
 		if (clipboardRequests.getAndIncrement() != 0) return;
@@ -101,6 +137,18 @@ public final class DialogUtils {
 				} catch (RuntimeException e) {}
 				clipboardHasClip = hasClip;
 			} while (!clipboardRequests.compareAndSet(seen, 0));
+			final View stale;
+			synchronized (clipboardAnswered) {
+				stale = clipboardStaleView != null ? clipboardStaleView.get() : null;
+				clipboardStaleView = null;
+				clipboardWaitGaveUp = false;
+				clipboardAnswered.notifyAll();
+			}
+			// Have accessibility services fetch the node again, now that it can carry the answer.
+			if (stale != null) stale.post(() -> {
+				ViewParent parent = stale.getParent();
+				if (parent != null && stale.isFocused()) parent.notifySubtreeAccessibilityStateChanged(stale, stale, AccessibilityEvent.CONTENT_CHANGE_TYPE_UNDEFINED);
+			});
 		}, "NVGT clipboard");
 		thread.setDaemon(true);
 		try {
@@ -213,7 +261,8 @@ public final class DialogUtils {
 				@Override
 				public void onWindowFocusChanged(boolean hasWindowFocus) {
 					super.onWindowFocusChanged(hasWindowFocus);
-					if (hasWindowFocus && isFocused()) refreshClipboardState(getContext());
+					// Also on losing it: from Android 10 an app without focus is told the clipboard is empty.
+					if (isFocused()) refreshClipboardState(getContext());
 				}
 			};
 			edit.setSingleLine(true);
