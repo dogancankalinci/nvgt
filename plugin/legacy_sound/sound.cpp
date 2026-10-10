@@ -415,10 +415,9 @@ DWORD CALLBACK bass_readproc_pack(void* buffer, DWORD length, void* user) {
 	packed_sound* snd = (packed_sound*)user;
 	if (!snd->p || !snd->p->next_stream_idx)
 		return 0;
-	// This path is only used for pack members too large for the in-memory cache, opened with
-	// BASS_ASYNCFILE, so BASS calls this from its own file thread and may keep reading ahead
-	// after close() has detached the channel, until the reaper frees the stream. Only the pack
-	// (held by the stream) and the pack_stream (closed in the close callback, after BASS has
+	// This path is only used for pack members too large for the in-memory cache. BASS may still read
+	// from it after close() has detached the channel, until the reaper frees the stream, so only the
+	// pack (held by the stream) and the pack_stream (closed in the close callback, after BASS has
 	// stopped reading) are touched here, never the sound object, which can already be gone.
 	return snd->p->stream_read(snd->s, (BYTE *)buffer, length);
 }
@@ -1383,18 +1382,18 @@ BOOL legacy_sound::load(const string& filename, legacy_pack* containing_pack, BO
 		if (!containing_pack || !containing_pack->is_active() || (stream = containing_pack->stream_open(filename, 0)) == NULL) {
 			#ifdef WIN32
 			// aww I guess bass decided to contribute to the pain of the no UTF8 paths on windows rather than helping developers work around it like everyone else seems to do, so manually convert the UTF8 sound path to UTF16 here. Ugh ugh!
-			// BASS_ASYNCFILE: these streams are decoded inside the output callback (the root mixer has
-			// no playback buffer), so a synchronous read would stall all audio whenever storage is
-			// slow; BASS reads ahead on its own thread instead.
+			// These streams are read synchronously, inside the output callback. BASS_ASYNCFILE would move the
+			// reads to a reader thread of BASS's own, and on Android that thread has been seen locking its
+			// stream's mutex after BASS had already destroyed it, which bionic aborts the process for.
 			std::wstring filename_u;
 			Poco::UnicodeConverter::convert(filename, filename_u);
-			channel = BASS_StreamCreateFile(FALSE, filename_u.c_str(), 0, 0, BASS_STREAM_DECODE | BASS_SAMPLE_FLOAT | BASS_UNICODE | BASS_ASYNCFILE);
+			channel = BASS_StreamCreateFile(FALSE, filename_u.c_str(), 0, 0, BASS_STREAM_DECODE | BASS_SAMPLE_FLOAT | BASS_UNICODE);
 			#else
-			channel = BASS_StreamCreateFile(FALSE, filename.c_str(), 0, 0, BASS_STREAM_DECODE | BASS_SAMPLE_FLOAT | BASS_ASYNCFILE);
+			channel = BASS_StreamCreateFile(FALSE, filename.c_str(), 0, 0, BASS_STREAM_DECODE | BASS_SAMPLE_FLOAT);
 			#endif
 		} else {
 			// Too large for the cache (or caching disabled): stream it straight from the pack, read
-			// ahead on BASS's file thread for the same reason as the disk stream above.
+			// synchronously for the same reason as the disk stream above.
 			script_loading = TRUE;
 			BASS_FILEPROCS prox;
 			prox.close = bass_closeproc_pack;
@@ -1404,7 +1403,7 @@ BOOL legacy_sound::load(const string& filename, legacy_pack* containing_pack, BO
 			packed_sound* s = (packed_sound*)malloc(sizeof(packed_sound));
 			s->p = containing_pack;
 			s->s = stream;
-			channel = BASS_StreamCreateFileUser(STREAMFILE_NOBUFFER, BASS_STREAM_DECODE | BASS_SAMPLE_FLOAT | BASS_ASYNCFILE, &prox, s);
+			channel = BASS_StreamCreateFileUser(STREAMFILE_NOBUFFER, BASS_STREAM_DECODE | BASS_SAMPLE_FLOAT, &prox, s);
 		}
 	}
 	if (containing_pack) containing_pack->Release();
