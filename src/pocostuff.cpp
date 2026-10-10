@@ -497,9 +497,61 @@ std::string poco_regular_expression_extract(RegularExpression* exp, const std::s
 std::string poco_regular_expression_extract(RegularExpression* exp, const std::string& subject, std::string::size_type offset) {
 	return poco_regular_expression_extract(exp, subject, offset, 0);
 }
+// Finds the next match from offset together with its groups. Poco 1.14's MatchVec overload of match() hands its options to PCRE2 untranslated, so a match option such as RE_NOT_EMPTY fails as a bad option or selects an unrelated PCRE2 flag. With such an option the match is found by the single-match overload, which does translate them, and its groups are read by matching again at that position without options.
+static int regexp_match_groups(const RegularExpression& exp, const std::string& subject, std::string::size_type offset, RegularExpression::MatchVec& groups, int options) {
+	const int match_options = RegularExpression::RE_ANCHORED | RegularExpression::RE_NOTBOL | RegularExpression::RE_NOTEOL | RegularExpression::RE_NOTEMPTY | RegularExpression::RE_NO_AUTO_CAPTURE | RegularExpression::RE_NO_UTF8_CHECK;
+	if (!(options & match_options)) return exp.match(subject, offset, groups, 0);
+	RegularExpression::Match whole;
+	groups.clear();
+	if (exp.match(subject, offset, whole, options) < 1) return 0;
+	if (exp.match(subject, whole.offset, groups, 0) < 1 || groups[0].offset != whole.offset || groups[0].length != whole.length) groups.assign(1, whole);
+	return int(groups.size());
+}
+// Poco's RegularExpression::subst is not used: an empty match never moves it forward, so it appends the replacement until memory runs out, an empty match at the end of the text is never replaced, and $n for a group that took no part in the match throws std::out_of_range. Its replacement syntax is kept: $0-$9 insert a group (empty if it did not participate), a $ before any other character stays literal, and RE_NO_VARS takes the replacement as is. Returns the number of replacements.
+static int regexp_substitute(const RegularExpression& exp, std::string& subject, std::string::size_type offset, const std::string& replacement, int options) {
+	if (offset > subject.length()) return 0;
+	const bool vars = !(options & RegularExpression::RE_NO_VARS) && replacement.find('$') != std::string::npos;
+	std::string result(subject, 0, offset);
+	RegularExpression::MatchVec groups;
+	std::string::size_type pos = offset;
+	int count = 0;
+	while (regexp_match_groups(exp, subject, pos, groups, options) > 0) {
+		const std::string::size_type start = groups[0].offset, length = groups[0].length;
+		result.append(subject, pos, start - pos);
+		if (vars) {
+			for (std::string::size_type i = 0; i < replacement.length(); i++) {
+				if (replacement[i] != '$' || i + 1 == replacement.length()) {
+					result += replacement[i];
+					continue;
+				}
+				const char d = replacement[++i];
+				if (d < '0' || d > '9') {
+					result += '$';
+					result += d;
+					continue;
+				}
+				const std::size_t g = d - '0';
+				if (g < groups.size() && groups[g].offset != std::string::npos) result.append(subject, groups[g].offset, groups[g].length);
+			}
+		} else result += replacement;
+		count++;
+		pos = start + length;
+		if (length == 0) {
+			// The same empty match would be found here again, so step over one character (a whole UTF-8 sequence) before searching on.
+			if (pos == subject.length()) break;
+			do result += subject[pos++];
+			while (pos < subject.length() && (static_cast<unsigned char>(subject[pos]) & 0xC0) == 0x80);
+		}
+		if (!(options & RegularExpression::RE_GLOBAL)) break;
+	}
+	if (count == 0) return 0;
+	result.append(subject, pos, std::string::npos);
+	subject = std::move(result);
+	return count;
+}
 int poco_regular_expression_subst(RegularExpression* exp, std::string& subject, std::string::size_type offset, const std::string& replacement, int options) {
 	try {
-		return exp->subst(subject, offset, replacement, options);
+		return regexp_substitute(*exp, subject, offset, replacement, options);
 	} catch (RegularExpressionException& e) {
 		return -1;
 	}
@@ -543,7 +595,7 @@ std::string poco_regular_expression_replace(const std::string& subject, const st
 	try {
 		std::string ret = subject;
 		RegularExpression re(pattern, RegularExpression::RE_UTF8 | options);
-		re.subst(ret, replacement, RegularExpression::RE_GLOBAL);
+		regexp_substitute(re, ret, 0, replacement, RegularExpression::RE_GLOBAL);
 		return ret;
 	} catch (RegularExpressionException) {
 		return "";

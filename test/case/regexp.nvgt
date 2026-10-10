@@ -8,4 +8,16 @@ void test_regexp() {
 	assert(regexp_replace("this is 1 huge test of 3 numbers", "\\d", "the") == "this is the huge test of the numbers");
 	assert(regexp_replace("hello world", "o", "0") == "hell0 w0rld");
 	assert(regexp_replace("test123test", "[0-9]+", "-") == "test-test");
+	
+	// Empty matches are replaced and stepped over instead of hanging, including one at the end of the text
+	assert(regexp_replace("abc", "x*", "-") == "-a-b-c-");
+	assert(regexp_replace("a b  c", "\\s*", "") == "abc");
+	assert(regexp_replace("abc", "$", "!") == "abc!");
+	assert(regexp_replace("\u00e7\u011f", "x*", "|") == "|\u00e7|\u011f|");
+	// A group that took no part in the match inserts nothing
+	assert(regexp_replace("b", "(a)|(b)", "<$1>") == "<>");
+	assert(regexp_replace("hello world", "(\\w+) (\\w+)", "$2 $1") == "world hello");
+	regexp r("x*");
+	string s = "axb";
+	assert(r.subst(s, "-", RE_GLOBAL | RE_NOT_EMPTY) == 1 && s == "a-b");
 }
