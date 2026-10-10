@@ -14,12 +14,20 @@ class SDLInputConnection extends BaseInputConnection
 
     SDLInputConnection(View targetView, boolean fullEditor) {
         super(targetView, fullEditor);
-        mEditText = new EditText(SDL.getContext());
+        // The framework calls onCreateInputConnection on the UI thread whenever a keyboard connects, and the EditText
+        // constructor runs framework code that can throw, for example when the text selection helper cannot load
+        // one of the system's own resources. Uncaught that ends the process; fall back to the plain Editable
+        // BaseInputConnection keeps for itself instead.
+        try {
+            mEditText = new EditText(SDL.getContext());
+        } catch (RuntimeException e) {
+            mEditText = null;
+        }
     }
 
     @Override
     public Editable getEditable() {
-        return mEditText.getEditableText();
+        return mEditText != null ? mEditText.getEditableText() : super.getEditable();
     }
 
     @Override
