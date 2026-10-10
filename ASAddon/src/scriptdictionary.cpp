@@ -1,11 +1,24 @@
 #include <assert.h>
 #include <string.h>
+#include <mutex>
 #include "scriptdictionary.h"
 #include "scriptarray.h"
 
 BEGIN_AS_NAMESPACE
 
 using namespace std;
+
+// The garbage collector runs on whichever thread is executing script code when it is due, or on a thread of its own,
+// so EnumReferences can walk a dictionary while another thread adds or removes keys, which reallocates the hash table
+// and frees nodes. Changing the set of keys and walking it therefore take the dictionary's lock. The locks are shared
+// out by address so that the dictionary object keeps its size, and they are never destroyed, as a collection can
+// still run while static objects are being torn down.
+static std::mutex &StructureLock(const void *dictionary)
+{
+	static std::mutex *locks = new std::mutex[64];
+	asPWORD address = reinterpret_cast<asPWORD>(dictionary);
+	return locks[((address >> 4) ^ (address >> 12)) & 63];
+}
 
 //------------------------------------------------------------------------
 // Object types are cached as user data to avoid costly runtime lookups
@@ -233,8 +246,8 @@ bool CScriptDictionary::GetGCFlag()
 
 void CScriptDictionary::EnumReferences(asIScriptEngine *inEngine)
 {
-	// TODO: If garbage collection can be done from a separate thread, then this method must be
-	//       protected so that it doesn't get lost during the iteration if the dictionary is modified
+	// The collector may run on another thread than the one using this dictionary, see StructureLock
+	std::lock_guard<std::mutex> guard(StructureLock(this));
 
 	// Call the gc enum callback for each of the objects
 	dictMap_t::iterator it;
@@ -288,7 +301,13 @@ CScriptDictionary &CScriptDictionary::operator =(const CScriptDictionary &other)
 CScriptDictValue *CScriptDictionary::operator[](const dictKey_t &key)
 {
 	// Return the existing value if it exists, else insert an empty value
-	CScriptDictValue &val = dict[key];
+	dictMap_t::iterator it = dict.find(key);
+	if( it == dict.end() )
+	{
+		std::lock_guard<std::mutex> guard(StructureLock(this));
+		it = dict.insert(dictMap_t::value_type(key, CScriptDictValue())).first;
+	}
+	CScriptDictValue &val = it->second;
 	
 	// Ensure the dictionary value has the engine pointer set (it will be null if newly created in above operation)
 	if (val.m_engine == 0)
@@ -322,6 +341,7 @@ void CScriptDictionary::Set(const dictKey_t &key, void *value, int typeId)
 	it = dict.find(key);
 	if (it == dict.end())
 	{
+		std::lock_guard<std::mutex> guard(StructureLock(this));
 		it = dict.insert(dictMap_t::value_type(key, CScriptDictValue(engine))).first;
 		iterGuard++;
 	}
@@ -420,7 +440,10 @@ bool CScriptDictionary::Delete(const dictKey_t &key)
 	if( it != dict.end() )
 	{
 		it->second.FreeValue();
-		dict.erase(it);
+		{
+			std::lock_guard<std::mutex> guard(StructureLock(this));
+			dict.erase(it);
+		}
 		iterGuard++;
 		return true;
 	}
@@ -434,7 +457,10 @@ void CScriptDictionary::DeleteAll()
 	for( it = dict.begin(); it != dict.end(); it++ )
 		it->second.FreeValue();
 
-	dict.clear();
+	{
+		std::lock_guard<std::mutex> guard(StructureLock(this));
+		dict.clear();
+	}
 	iterGuard++;
 }
 
