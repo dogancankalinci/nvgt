@@ -20,4 +20,11 @@ void test_regexp() {
 	regexp r("x*");
 	string s = "axb";
 	assert(r.subst(s, "-", RE_GLOBAL | RE_NOT_EMPTY) == 1 && s == "a-b");
+	
+	// split honours match options
+	regexp mail("(\\w+)@(\\w+)");
+	string[]@ parts = mail.split("mail bob@host now", 0, RE_NOT_EMPTY);
+	assert(parts.length() == 3 && parts[1] == "bob" && parts[2] == "host");
+	assert(mail.split("mail bob@host now", 0, RE_ANCHORED).length() == 0);
+	assert(mail.split("mail bob@host now", 5, RE_ANCHORED).length() == 3);
 }

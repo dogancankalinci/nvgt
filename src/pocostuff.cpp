@@ -562,14 +562,16 @@ int poco_regular_expression_subst(RegularExpression* exp, std::string& subject, 
 CScriptArray* poco_regular_expression_split(RegularExpression* exp, const std::string& subject, std::string::size_type offset, int options) {
 	if (!StringArrayType) StringArrayType = g_ScriptEngine->GetTypeInfoByDecl("array<string>");
 	CScriptArray* array = CScriptArray::Create(StringArrayType);
-	std::vector<std::string> strings;
+	RegularExpression::MatchVec groups;
 	try {
-		if (!exp->split(subject, offset, strings, options)) return array;
+		if (regexp_match_groups(*exp, subject, offset, groups, options) < 1) return array;
 	} catch (RegularExpressionException& e) {
 		return array;
 	}
-	array->Resize(strings.size());
-	for (int i = 0; i < strings.size(); i++)(*(std::string*)array->At(i)) = strings[i];
+	array->Resize(groups.size());
+	for (asUINT i = 0; i < groups.size(); i++) {
+		if (groups[i].offset != std::string::npos) (*(std::string*)array->At(i)) = subject.substr(groups[i].offset, groups[i].length);
+	}
 	return array;
 }
 CScriptArray* poco_regular_expression_split(RegularExpression* exp, const std::string& subject, std::string::size_type offset) {
