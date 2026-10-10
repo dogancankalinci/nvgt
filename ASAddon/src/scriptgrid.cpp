@@ -3,6 +3,7 @@
 #include <string.h>
 #include <assert.h>
 #include <stdio.h> // sprintf
+#include <mutex>
 
 #include "scriptgrid.h"
 
@@ -14,6 +15,16 @@ BEGIN_AS_NAMESPACE
 // Use the angelscript engine's memory routines by default
 static asALLOCFUNC_t userAlloc = asAllocMem;
 static asFREEFUNC_t  userFree  = asFreeMem;
+
+// The garbage collector runs on whichever thread is executing script code when it is due, or on a thread of its own,
+// so EnumReferences can walk a grid that another thread is resizing. Installing the resized buffer and walking the
+// buffer therefore share this lock, and the old buffer is only released once it is no longer installed. The lock is
+// never destroyed, as a collection can still run while static objects are being torn down.
+static std::mutex &BufferSwapLock()
+{
+	static std::mutex *lock = new std::mutex;
+	return *lock;
+}
 
 // Allows the application to set which memory routines should be used by the array object
 void CScriptGrid::SetMemoryFunctions(asALLOCFUNC_t allocFunc, asFREEFUNC_t freeFunc)
@@ -458,12 +469,18 @@ void CScriptGrid::Resize(asUINT width, asUINT height)
 		for( asUINT y = 0; y < h; y++ )
 			for( asUINT x = 0; x < w; x++ )
 				SetValue(tmpBuffer, x, y, At(buffer, x, y));
-
-		// Replace the internal buffer
-		DeleteBuffer(buffer);
 	}
 
-	buffer = tmpBuffer;
+	// Install the new buffer before releasing the old one, see BufferSwapLock. Only a grid the garbage collector
+	// tracks can be walked by it.
+	SGridBuffer *oldBuffer = buffer;
+	{
+		std::unique_lock<std::mutex> guard(BufferSwapLock(), std::defer_lock);
+		if( objType->GetFlags() & asOBJ_GC ) guard.lock();
+		buffer = tmpBuffer;
+	}
+	if( oldBuffer )
+		DeleteBuffer(oldBuffer);
 }
 
 CScriptGrid::CScriptGrid(asUINT width, asUINT height, void *defVal, asITypeInfo *ti)
@@ -727,6 +744,9 @@ void CScriptGrid::Destruct(SGridBuffer *buf)
 // GC behaviour
 void CScriptGrid::EnumReferences(asIScriptEngine *engine)
 {
+	// The collector may run on another thread than the one using this grid, so hold the buffer in place while it is
+	// walked, see BufferSwapLock
+	std::lock_guard<std::mutex> guard(BufferSwapLock());
 	if( buffer == 0 ) return;
 
 	// If the grid is holding handles, then we need to notify the GC of them
