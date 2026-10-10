@@ -34,6 +34,10 @@ public final class DialogUtils {
 		final String initial = defaultText != null ? defaultText : "";
 		final CompletableFuture<String> result = new CompletableFuture<>();
 		activity.runOnUiThread(() -> {
+			// Building the dialog runs framework code that can throw, for example when a widget cannot load one of the
+			// system's own resources or the activity's window is already gone. Uncaught on the UI thread that ends the
+			// process, and inputBoxSync would otherwise wait on this future forever, so report it as a cancelled input.
+			try {
 			EditText edit = new EditText(activity);
 			edit.setSingleLine(true);
 			edit.setText(initial);
@@ -64,6 +68,9 @@ public final class DialogUtils {
 				}
 				return false;
 			});
+			} catch (RuntimeException e) {
+				result.complete("\u00FF");
+			}
 		});
 		return result;
 	}
@@ -81,6 +88,8 @@ public final class DialogUtils {
 		Objects.requireNonNull(text, "text");
 		final CompletableFuture<Void> done = new CompletableFuture<>();
 		activity.runOnUiThread(() -> {
+			// Same reasoning as inputBox: a framework failure while building the dialog must resolve the future.
+			try {
 			LinearLayout container = new LinearLayout(activity);
 			container.setOrientation(LinearLayout.VERTICAL);
 			int padding = (int)(16 * activity.getResources().getDisplayMetrics().density);
@@ -104,6 +113,9 @@ public final class DialogUtils {
 				})
 				.setOnCancelListener(dlg -> done.complete(null))
 				.show();
+			} catch (RuntimeException e) {
+				done.complete(null);
+			}
 		});
 		return done;
 	}
