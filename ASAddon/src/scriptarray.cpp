@@ -5,6 +5,7 @@
 #include <stdio.h> // sprintf
 #include <string>
 #include <algorithm> // std::sort
+#include <mutex>
 
 #include "scriptarray.h"
 
@@ -20,6 +21,17 @@ BEGIN_AS_NAMESPACE
 // Use the angelscript engine's memory routines by default
 static asALLOCFUNC_t userAlloc = asAllocMem;
 static asFREEFUNC_t  userFree  = asFreeMem;
+
+// The garbage collector runs on whichever thread is executing script code when it is due, or on a thread of its own,
+// so EnumReferences can walk an array that another thread is growing. Installing a reallocated buffer and walking the
+// buffer therefore share this lock, and the old buffer is only freed once it is no longer installed. Everything else a
+// resize does stays inside memory the array still owns. The lock is never destroyed, as a collection can still run
+// while static objects are being torn down.
+static std::mutex &BufferSwapLock()
+{
+	static std::mutex *lock = new std::mutex;
+	return *lock;
+}
 
 // Allows the application to set which memory routines should be used by the array object
 void CScriptArray::SetMemoryFunctions(asALLOCFUNC_t allocFunc, asFREEFUNC_t freeFunc)
@@ -702,10 +714,15 @@ void CScriptArray::Reserve(asUINT maxElements)
 	// since we're just copying the pointers to objects and not the actual objects.
 	memcpy(newBuffer->data, buffer->data, buffer->numElements*elementSize);
 
-	// Release the old buffer
-	userFree(buffer);
-
-	buffer = newBuffer;
+	// Install the new buffer before releasing the old one, see BufferSwapLock. Only an array the garbage collector
+	// tracks can be walked by it.
+	SArrayBuffer *oldBuffer = buffer;
+	{
+		std::unique_lock<std::mutex> guard(BufferSwapLock(), std::defer_lock);
+		if( objType->GetFlags() & asOBJ_GC ) guard.lock();
+		buffer = newBuffer;
+	}
+	userFree(oldBuffer);
 }
 
 void CScriptArray::Resize(asUINT numElements)
@@ -793,10 +810,15 @@ void CScriptArray::Resize(int delta, asUINT at)
 		// Initialize the new elements with default values
 		Construct(newBuffer, at, at+delta);
 
-		// Release the old buffer
-		userFree(buffer);
-
-		buffer = newBuffer;
+		// Install the new buffer before releasing the old one, see BufferSwapLock. Only an array the garbage collector
+		// tracks can be walked by it.
+		SArrayBuffer *oldBuffer = buffer;
+		{
+			std::unique_lock<std::mutex> guard(BufferSwapLock(), std::defer_lock);
+			if( objType->GetFlags() & asOBJ_GC ) guard.lock();
+			buffer = newBuffer;
+		}
+		userFree(oldBuffer);
 	}
 	else if( delta < 0 )
 	{
@@ -1930,8 +1952,9 @@ void CScriptArray::Precache()
 // GC behaviour
 void CScriptArray::EnumReferences(asIScriptEngine *engine)
 {
-	// TODO: If garbage collection can be done from a separate thread, then this method must be
-	//       protected so that it doesn't get lost during the iteration if the array is modified
+	// The collector may run on another thread than the one using this array, so hold the buffer in place while it
+	// is walked, see BufferSwapLock
+	std::lock_guard<std::mutex> guard(BufferSwapLock());
 
 	// If the array is holding handles, then we need to notify the GC of them
 	if( subTypeId & asTYPEID_MASK_OBJECT )
