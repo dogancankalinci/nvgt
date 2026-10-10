@@ -16,11 +16,14 @@ import java.io.StringWriter;
 import java.io.PrintWriter;
 import android.os.Build;
 import android.os.PowerManager;
+import android.provider.Settings;
+import android.text.Editable;
 import android.text.Spannable;
 import android.text.method.PasswordTransformationMethod;
 import android.text.style.SuggestionSpan;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.content.Context;
+import android.content.ContextWrapper;
 import org.libsdl.app.SDLActivity;
 
 public final class DialogUtils {
@@ -37,24 +40,62 @@ public final class DialogUtils {
 	 * node whenever it moves through the views, and a focused TextView answers by calling
 	 * ClipboardManager.hasPrimaryClip() over binder on the UI thread to decide whether to offer Paste; a clipboard
 	 * service that is slow to reply then freezes the UI thread long enough to be reported as not responding. A view
-	 * that builds its node as if unfocused skips that query and calls this to restore the rest. Paste is offered
-	 * without asking: performing it checks the clipboard itself and does nothing when it is empty. Show suggestions is
-	 * restored with Android's own test. Share is not, because its action id is private to TextView.
+	 * that builds its node as if unfocused skips that query and calls this to restore the rest, with the conditions
+	 * TextView uses on every version from Android 5 to 16. Paste is offered without the clipboard check: performing it
+	 * checks the clipboard itself and does nothing when it is empty. Process text and smart actions are left out, as
+	 * TextView only offers them for a view that has an id.
 	 */
 	public static void addFocusedAccessibilityActions(TextView view, AccessibilityNodeInfo info) {
 		info.setFocused(true);
 		info.removeAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_FOCUS);
 		info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_CLEAR_FOCUS);
-		if (Build.VERSION.SDK_INT >= 30) info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER);
-		boolean secret = view.getTransformationMethod() instanceof PasswordTransformationMethod;
-		if (!secret && view.length() > 0 && view.hasSelection()) {
-			info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_COPY);
-			info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_CUT);
+		CharSequence text = view.getText();
+		boolean editable = text instanceof Editable, keys = editable && view.getKeyListener() != null;
+		if (Build.VERSION.SDK_INT >= 30 && editable && view.onCheckIsTextEditor() && view.isEnabled()) {
+			CharSequence label = view.getImeActionLabel();
+			if (label == null) label = systemString(view, "keyboardview_keycode_enter");
+			info.addAction(new AccessibilityNodeInfo.AccessibilityAction(android.R.id.accessibilityActionImeEnter, label));
 		}
-		info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_PASTE);
+		boolean canCopy = !(view.getTransformationMethod() instanceof PasswordTransformationMethod) && text.length() > 0 && view.hasSelection();
+		if (canCopy) info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_COPY);
+		if (keys && view.getSelectionStart() >= 0 && view.getSelectionEnd() >= 0) info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_PASTE);
+		if (canCopy && keys) info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_CUT);
 		if (Build.VERSION.SDK_INT >= 33 && canShowSuggestions(view)) {
 			info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_TEXT_SUGGESTIONS);
 		}
+		if (Build.VERSION.SDK_INT >= 23 && canCopy && canShare(view)) {
+			CharSequence label = systemString(view, "share");
+			if (label != null) info.addAction(new AccessibilityNodeInfo.AccessibilityAction(ACCESSIBILITY_ACTION_SHARE, label));
+		}
+	}
+
+	// TextView's own id for its Share action (TextView.ACCESSIBILITY_ACTION_SHARE, unchanged since Android 6). TextView
+	// performs it itself, after checking again that the view is focused and that sharing is allowed.
+	private static final int ACCESSIBILITY_ACTION_SHARE = 0x10000000;
+	private static volatile boolean deviceProvisioned = false;
+
+	// TextView.canShare without its canCopy part. canStartActivityForResult is hidden, but only an Activity answers true.
+	static boolean canShare(TextView view) {
+		Context context = view.getContext();
+		if (Build.VERSION.SDK_INT >= 24) {
+			boolean activity = false;
+			for (Context c = context; c != null && !activity; c = c instanceof ContextWrapper ? ((ContextWrapper) c).getBaseContext() : null) activity = c instanceof Activity;
+			if (!activity) return false;
+			// Like TextView, remember a provisioned device instead of asking settings again; provisioning is not undone.
+			if (!deviceProvisioned) deviceProvisioned = Settings.Global.getInt(context.getContentResolver(), Settings.Global.DEVICE_PROVISIONED, 0) != 0;
+			if (!deviceProvisioned) return false;
+		}
+		if (Build.VERSION.SDK_INT >= 35) {
+			int id = view.getResources().getIdentifier("config_textShareSupported", "bool", "android");
+			if (id != 0 && !view.getResources().getBoolean(id)) return false;
+		}
+		return true;
+	}
+
+	// A string from Android's own resources, which TextView uses for these action labels, or null if there is none.
+	private static CharSequence systemString(TextView view, String name) {
+		int id = view.getResources().getIdentifier(name, "string", "android");
+		return id != 0 ? view.getResources().getText(id) : null;
 	}
 
 	// Android's own test for offering text suggestions to accessibility services, TextView.canReplace together with
