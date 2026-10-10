@@ -330,27 +330,30 @@ void game_window::draw_circle(float cx, float cy, int radius, unsigned int r, un
 	if (!ensure_renderer()) return;
 	_renderer->set_draw_color(r, g, b, 255);
 	SDL_Renderer* rend = _renderer->get_renderer();
+	if (!rend) return;
 	int offsetx = 0, offsety = radius, d = radius - 1, status = 0;
+	bool drew = false;
 	while (offsety >= offsetx) {
 		if (filled) {
-			SDL_RenderLine(rend, cx - offsety, cy + offsetx, cx + offsety, cy + offsetx);
-			SDL_RenderLine(rend, cx - offsetx, cy + offsety, cx + offsetx, cy + offsety);
-			SDL_RenderLine(rend, cx - offsetx, cy - offsety, cx + offsetx, cy - offsety);
-			SDL_RenderLine(rend, cx - offsety, cy - offsetx, cx + offsety, cy - offsetx);
+			drew |= SDL_RenderLine(rend, cx - offsety, cy + offsetx, cx + offsety, cy + offsetx);
+			drew |= SDL_RenderLine(rend, cx - offsetx, cy + offsety, cx + offsetx, cy + offsety);
+			drew |= SDL_RenderLine(rend, cx - offsetx, cy - offsety, cx + offsetx, cy - offsety);
+			drew |= SDL_RenderLine(rend, cx - offsety, cy - offsetx, cx + offsety, cy - offsetx);
 		} else {
-			SDL_RenderPoint(rend, cx + offsetx, cy + offsety);
-			SDL_RenderPoint(rend, cx + offsety, cy + offsetx);
-			SDL_RenderPoint(rend, cx - offsetx, cy + offsety);
-			SDL_RenderPoint(rend, cx - offsety, cy + offsetx);
-			SDL_RenderPoint(rend, cx + offsetx, cy - offsety);
-			SDL_RenderPoint(rend, cx + offsety, cy - offsetx);
-			SDL_RenderPoint(rend, cx - offsetx, cy - offsety);
-			SDL_RenderPoint(rend, cx - offsety, cy - offsetx);
+			drew |= SDL_RenderPoint(rend, cx + offsetx, cy + offsety);
+			drew |= SDL_RenderPoint(rend, cx + offsety, cy + offsetx);
+			drew |= SDL_RenderPoint(rend, cx - offsetx, cy + offsety);
+			drew |= SDL_RenderPoint(rend, cx - offsety, cy + offsetx);
+			drew |= SDL_RenderPoint(rend, cx + offsetx, cy - offsety);
+			drew |= SDL_RenderPoint(rend, cx + offsety, cy - offsetx);
+			drew |= SDL_RenderPoint(rend, cx - offsetx, cy - offsety);
+			drew |= SDL_RenderPoint(rend, cx - offsety, cy - offsetx);
 		}
 		if (status >= 2 * offsetx) { status -= 2 * offsetx + 1; offsetx++; }
 		else if (d < 2 * radius) { status += 2 * offsety - 1; offsety--; }
 		else { status -= 2 * (offsetx - offsety + 1); offsety--; offsetx++; }
 	}
+	if (drew) _renderer->mark_dirty();
 }
 void game_window::draw_menu(CScriptArray* items, float x, float y) {
 	if (!ensure_renderer() || !_font || !items) return;
@@ -471,14 +474,23 @@ void refresh_window() {
 	update_joysticks(); // Update all active joystick instances
 	// peek_renderer (non-creating): only present once graphics have actually been drawn, so audio-only
 	// games never enter Android's eglSwapBuffers-under-ActivityMutex path. Using get_renderer() here
-	// would lazily create the renderer and defeat the purpose.
-	if (g_window) {
-		graphics_renderer* _r = g_window->peek_renderer();
-		if (_r) {
-			#ifdef __APPLE__
-			apple_wait_for_display_refresh(); // Keeps answering VoiceOver instead of blocking in present, see apple.mm.
-			#endif
-			_r->present();
+	// would lazily create the renderer and defeat the purpose. Desktop Linux is the exception: Wayland
+	// shows a window only after its first buffer, so there even an audio-only game needs that one frame.
+	if (g_window && !(g_window->get_flags() & SDL_WINDOW_HIDDEN)) {
+		#if defined(__linux__) && !defined(__ANDROID__)
+		graphics_renderer* renderer = g_window->get_renderer();
+		#else
+		graphics_renderer* renderer = g_window->peek_renderer();
+		#endif
+		if (renderer && renderer->is_valid()) {
+			// Wayland needs one buffer before a new window appears. Let existing drawing be that first frame.
+			if (!renderer->has_presented() && !renderer->has_pending_frame()) g_window->clear(0, 0, 0);
+			if (renderer->has_pending_frame()) {
+				#ifdef __APPLE__
+				apple_wait_for_display_refresh(); // Keeps answering VoiceOver instead of blocking in present, see apple.mm.
+				#endif
+				renderer->present();
+			}
 		}
 	}
 	SDL_Event evt;

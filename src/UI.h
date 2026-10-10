@@ -73,7 +73,12 @@ public:
 	graphics_renderer* peek_renderer() { return _renderer.get(); } // non-creating; used by the per-frame present check so it does not itself trigger renderer creation
 	graphics_renderer* get_renderer() { return ensure_renderer(); }
 	text_font* get_font() { return _font.get(); }
-	bool show() { return SDL_ShowWindow(_window); }
+	bool show() {
+		bool was_hidden = (SDL_GetWindowFlags(_window) & SDL_WINDOW_HIDDEN) != 0;
+		bool ok = SDL_ShowWindow(_window);
+		if (ok && was_hidden && _renderer) _renderer->require_initial_frame();
+		return ok;
+	}
 	bool hide() { return SDL_HideWindow(_window); }
 	bool raise() { return SDL_RaiseWindow(_window); }
 	bool maximize() { return SDL_MaximizeWindow(_window); }
