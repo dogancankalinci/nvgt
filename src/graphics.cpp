@@ -504,11 +504,11 @@ void RegisterGraphics(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("graphic", "graphic@ duplicate() const", asMETHOD(graphic, duplicate_surface), asCALL_THISCALL);
 	// graphic free functions
 	engine->RegisterGlobalFunction("graphic@ load_bmp(const string&in file)", asFUNCTIONPR(load_bmp, (const std::string&), graphic*), asCALL_CDECL);
-	engine->RegisterGlobalFunction("graphic@ load_bmp(const string&in file, const pack_interface@ pack_file)", asFUNCTIONPR(load_bmp, (const std::string&, const pack_interface*), graphic*), asCALL_CDECL);
+	engine->RegisterGlobalFunction("graphic@ load_bmp(const string&in file, const pack_interface@+ pack_file)", asFUNCTIONPR(load_bmp, (const std::string&, const pack_interface*), graphic*), asCALL_CDECL);
 	engine->RegisterGlobalFunction("graphic@ load_png(const string&in file)", asFUNCTIONPR(load_png, (const std::string&), graphic*), asCALL_CDECL);
-	engine->RegisterGlobalFunction("graphic@ load_png(const string&in file, const pack_interface@ pack_file)", asFUNCTIONPR(load_png, (const std::string&, const pack_interface*), graphic*), asCALL_CDECL);
+	engine->RegisterGlobalFunction("graphic@ load_png(const string&in file, const pack_interface@+ pack_file)", asFUNCTIONPR(load_png, (const std::string&, const pack_interface*), graphic*), asCALL_CDECL);
 	engine->RegisterGlobalFunction("graphic@ load_surface(const string&in file)", asFUNCTIONPR(load_surface, (const std::string&), graphic*), asCALL_CDECL);
-	engine->RegisterGlobalFunction("graphic@ load_surface(const string&in file, const pack_interface@ pack_file)", asFUNCTIONPR(load_surface, (const std::string&, const pack_interface*), graphic*), asCALL_CDECL);
+	engine->RegisterGlobalFunction("graphic@ load_surface(const string&in file, const pack_interface@+ pack_file)", asFUNCTIONPR(load_surface, (const std::string&, const pack_interface*), graphic*), asCALL_CDECL);
 	engine->RegisterGlobalFunction("graphic@ create_surface(int width, int height, pixel_format pixel_format)", asFUNCTION(create_surface), asCALL_CDECL);
 	
 	// graphics_texture
