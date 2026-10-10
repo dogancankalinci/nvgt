@@ -278,7 +278,12 @@ class SDLJoystickHandler {
                             joystick.lightsSession = lightsManager.openSession();
                             has_rgb_led = true;
                         }
-                        SensorManager sensorManager = joystickDevice.getSensorManager();
+                        // The first getSensorManager() call creates the framework's InputDeviceSensorManager, which
+                        // listens for input device changes on its own thread. On Android 12 its handler looks the
+                        // changed device up and calls hasSensor() on it without a null check, so a device that is
+                        // gone by then throws a NullPointerException there and takes the process down. Android 13
+                        // added the check; on 12 controller motion sensors are left unused instead.
+                        SensorManager sensorManager = Build.VERSION.SDK_INT >= 33 /* Android 13 (T) */ ? joystickDevice.getSensorManager() : null;
                         if (sensorManager != null) {
                             joystick.sensorManager = sensorManager;
                             joystick.sensorListener = new SDLJoySensorListener(joystick.device_id);
