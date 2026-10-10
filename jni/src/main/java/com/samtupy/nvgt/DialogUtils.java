@@ -16,7 +16,9 @@ import java.io.StringWriter;
 import java.io.PrintWriter;
 import android.os.Build;
 import android.os.PowerManager;
+import android.text.Spannable;
 import android.text.method.PasswordTransformationMethod;
+import android.text.style.SuggestionSpan;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.content.Context;
 import org.libsdl.app.SDLActivity;
@@ -36,7 +38,8 @@ public final class DialogUtils {
 	 * ClipboardManager.hasPrimaryClip() over binder on the UI thread to decide whether to offer Paste; a clipboard
 	 * service that is slow to reply then freezes the UI thread long enough to be reported as not responding. A view
 	 * that builds its node as if unfocused skips that query and calls this to restore the rest. Paste is offered
-	 * without asking: performing it checks the clipboard itself and does nothing when it is empty.
+	 * without asking: performing it checks the clipboard itself and does nothing when it is empty. Show suggestions is
+	 * restored with Android's own test. Share is not, because its action id is private to TextView.
 	 */
 	public static void addFocusedAccessibilityActions(TextView view, AccessibilityNodeInfo info) {
 		info.setFocused(true);
@@ -49,6 +52,41 @@ public final class DialogUtils {
 			info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_CUT);
 		}
 		info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_PASTE);
+		if (Build.VERSION.SDK_INT >= 33 && canShowSuggestions(view)) {
+			info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_TEXT_SUGGESTIONS);
+		}
+	}
+
+	// Android's own test for offering text suggestions to accessibility services, TextView.canReplace together with
+	// Editor.shouldOfferToShowSuggestions; both are written against public API, so it can be reproduced exactly.
+	static boolean canShowSuggestions(TextView view) {
+		if (view.getTransformationMethod() instanceof PasswordTransformationMethod) return false;
+		CharSequence text = view.getText();
+		if (text.length() == 0 || !(text instanceof Spannable) || !view.isSuggestionsEnabled()) return false;
+		Spannable spannable = (Spannable) text;
+		int selectionStart = view.getSelectionStart(), selectionEnd = view.getSelectionEnd();
+		SuggestionSpan[] spans = spannable.getSpans(selectionStart, selectionEnd, SuggestionSpan.class);
+		if (spans.length == 0) return false;
+		if (selectionStart == selectionEnd) {
+			for (SuggestionSpan span : spans) {
+				if (span.getSuggestions().length > 0) return true;
+			}
+			return false;
+		}
+		int minSpanStart = text.length(), maxSpanEnd = 0;
+		int coverStart = text.length(), coverEnd = 0;
+		boolean hasValidSuggestions = false;
+		for (SuggestionSpan span : spans) {
+			int spanStart = spannable.getSpanStart(span), spanEnd = spannable.getSpanEnd(span);
+			minSpanStart = Math.min(minSpanStart, spanStart);
+			maxSpanEnd = Math.max(maxSpanEnd, spanEnd);
+			if (selectionStart < spanStart || selectionStart > spanEnd) continue;
+			hasValidSuggestions = hasValidSuggestions || span.getSuggestions().length > 0;
+			coverStart = Math.min(coverStart, spanStart);
+			coverEnd = Math.max(coverEnd, spanEnd);
+		}
+		if (!hasValidSuggestions || coverStart >= coverEnd) return false;
+		return minSpanStart >= coverStart && maxSpanEnd <= coverEnd;
 	}
 
 	public static CompletableFuture<String> inputBox(Activity activity, String caption, String prompt, String defaultText) {
