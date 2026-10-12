@@ -474,7 +474,8 @@ bool android_is_window_active() {
 	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
 	if (!env) return false;
 
-	jmethodID mid = env->GetStaticMethodID(DialogUtilsClass, "isWindowActive", "(Landroid/app/Activity;)Z");
+	// Looked up once, as scripts commonly ask this every frame.
+	static const jmethodID mid = env->GetStaticMethodID(DialogUtilsClass, "isWindowActive", "(Landroid/app/Activity;)Z");
 	if (!mid) {
 		check_jni_exception(env, "GetStaticMethodID isWindowActive");
 		return false;
