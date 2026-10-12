@@ -487,6 +487,44 @@ bool android_is_window_active() {
 	return result;
 }
 
+// Looked up on first use rather than in android_setup_jni, which throws for a missing method and would then take the
+// other Java features down with it. Both are needed: without them renderers are simply created without the guard.
+struct renderer_creation_methods {
+	jmethodID begin = nullptr, end = nullptr;
+	explicit renderer_creation_methods(JNIEnv* env) {
+		begin = env->GetStaticMethodID(DialogUtilsClass, "beginRendererCreation", "()V");
+		if (begin) end = env->GetStaticMethodID(DialogUtilsClass, "endRendererCreation", "()V");
+		if (!begin || !end) {
+			env->ExceptionClear();
+			begin = end = nullptr;
+		}
+	}
+};
+static const renderer_creation_methods* get_renderer_creation_methods(JNIEnv* env) {
+	static const renderer_creation_methods methods(env);
+	return methods.begin ? &methods : nullptr;
+}
+android_renderer_creation_guard::android_renderer_creation_guard() : held(false) {
+	try {
+		android_setup_jni();
+	} catch (...) {
+		return;
+	}
+	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
+	if (!env) return;
+	const renderer_creation_methods* methods = get_renderer_creation_methods(env);
+	if (!methods) return;
+	env->CallStaticVoidMethod(DialogUtilsClass, methods->begin);
+	held = !jni_clear_exception(env);
+}
+android_renderer_creation_guard::~android_renderer_creation_guard() {
+	if (!held) return;
+	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
+	if (!env) return;
+	env->CallStaticVoidMethod(DialogUtilsClass, get_renderer_creation_methods(env)->end);
+	jni_clear_exception(env);
+}
+
 std::vector<std::string> android_get_tts_engine_packages() {
 	try {
 		android_setup_jni();

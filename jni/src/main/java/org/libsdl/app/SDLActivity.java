@@ -844,6 +844,8 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
         // Try a transition to paused state
         if (mNextNativeState == NativeState.PAUSED) {
             if (mSDLThread != null) {
+                // A pause that reaches SDL while it creates a renderer deadlocks both threads, see DialogUtils.
+                com.samtupy.nvgt.DialogUtils.waitForRendererCreation();
                 nativePause();
             }
             if (mSurface != null) {

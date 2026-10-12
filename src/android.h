@@ -41,6 +41,16 @@ bool android_asset_list(const std::string& path, bool directories, std::vector<s
 std::string android_input_box(const std::string& title, const std::string& text, const std::string& default_value);
 bool android_info_box(const std::string& title, const std::string& text, const std::string& value);
 bool android_is_window_active();
+// Holds DialogUtils' renderer creation lock for its lifetime, so that SDLActivity does not report a pause to SDL while a
+// renderer is being created (see DialogUtils.beginRendererCreation). Does nothing if the lock cannot be reached.
+class android_renderer_creation_guard {
+	bool held;
+public:
+	android_renderer_creation_guard();
+	~android_renderer_creation_guard();
+	android_renderer_creation_guard(const android_renderer_creation_guard&) = delete;
+	android_renderer_creation_guard& operator=(const android_renderer_creation_guard&) = delete;
+};
 
 // JNI Helpers
 class JNIException : public std::runtime_error {

@@ -31,7 +31,9 @@ import android.view.View;
 import android.view.ViewParent;
 import android.view.accessibility.AccessibilityEvent;
 import java.lang.ref.WeakReference;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantLock;
 import org.libsdl.app.SDLActivity;
 
 public final class DialogUtils {
@@ -366,6 +368,31 @@ public final class DialogUtils {
 		try {
 			infoBox(activity, caption, prompt, text).get();
 		} catch (Exception ignored) { }
+	}
+
+	// SDL_CreateRenderer holds SDL's activity lock and, deeper inside, waits for the activity to resume if a pause has
+	// arrived in the meantime. Only the UI thread can resume it, and the UI thread first needs that same lock to release
+	// the surface, so both threads then wait for ever. NVGT holds rendererCreation while it creates a renderer, and
+	// SDLActivity calls waitForRendererCreation before it tells native code that the activity pauses, so a pause reaches
+	// SDL before or after a renderer is created, never in the middle. The wait is bounded so that a renderer creation
+	// held up for some other reason cannot stall the UI thread.
+	private static final ReentrantLock rendererCreation = new ReentrantLock();
+	private static final long RENDERER_CREATION_WAIT_MS = 2000;
+
+	public static void beginRendererCreation() {
+		rendererCreation.lock();
+	}
+
+	public static void endRendererCreation() {
+		if (rendererCreation.isHeldByCurrentThread()) rendererCreation.unlock();
+	}
+
+	public static void waitForRendererCreation() {
+		try {
+			if (rendererCreation.tryLock(RENDERER_CREATION_WAIT_MS, TimeUnit.MILLISECONDS)) rendererCreation.unlock();
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+		}
 	}
 
 	public static boolean isWindowActive(Activity activity) {

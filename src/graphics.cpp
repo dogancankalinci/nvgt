@@ -18,6 +18,9 @@
 #ifdef __APPLE__
 #include "apple.h"
 #endif
+#ifdef __ANDROID__
+#include "android.h"
+#endif
 std::string get_font_path(const std::string& name); // defined in xplatform.cpp
 
 // graphic
@@ -263,14 +266,24 @@ std::string font_tag_to_string(unsigned int tag) {
 graphics_renderer::graphics_renderer() : _renderer(nullptr), _refcount(1), _dirty(false), _presented_once(false) {
 	// Default renderer attaches to whichever window SDL currently considers the focused one, if any.
 	SDL_Window* win = SDL_GetKeyboardFocus();
-	if (win) _renderer = SDL_CreateRenderer(win, nullptr);
+	if (win) {
+		#ifdef __ANDROID__
+		android_renderer_creation_guard pause_guard; // A pause must not reach SDL while it creates the renderer, see android.h.
+		#endif
+		_renderer = SDL_CreateRenderer(win, nullptr);
+	}
 	#ifdef __APPLE__
 	if (_renderer) voice_over_renderer_created(win);
 	#endif
 }
 
 graphics_renderer::graphics_renderer(game_window* window) : _renderer(nullptr), _refcount(1), _dirty(false), _presented_once(false) {
-	if (window) _renderer = SDL_CreateRenderer(window->get_sdl_window(), nullptr);
+	if (window) {
+		#ifdef __ANDROID__
+		android_renderer_creation_guard pause_guard; // A pause must not reach SDL while it creates the renderer, see android.h.
+		#endif
+		_renderer = SDL_CreateRenderer(window->get_sdl_window(), nullptr);
+	}
 	#ifdef __APPLE__
 	if (_renderer) voice_over_renderer_created(window->get_sdl_window());
 	#endif
