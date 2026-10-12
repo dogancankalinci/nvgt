@@ -122,8 +122,16 @@ public final class DialogUtils {
 	public static void refreshClipboardState(Context context) {
 		if (clipboardRequests.getAndIncrement() != 0) return;
 		final Context app = context.getApplicationContext();
+		// Up to Android 8.1 a ClipboardManager creates a Handler on the thread that first asks for it, which throws on a
+		// thread without a Looper and would deliver clipboard changes there, so it is fetched here on the UI thread.
+		final ClipboardManager clipboard;
+		try {
+			clipboard = (ClipboardManager) app.getSystemService(Context.CLIPBOARD_SERVICE);
+		} catch (RuntimeException e) {
+			clipboardRequests.set(0);
+			return;
+		}
 		Thread thread = new Thread(() -> {
-			ClipboardManager clipboard = (ClipboardManager) app.getSystemService(Context.CLIPBOARD_SERVICE);
 			int seen;
 			do {
 				seen = clipboardRequests.get();
