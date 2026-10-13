@@ -499,9 +499,9 @@ bool tts_voice::refresh() {
 		if (chosen_engine.empty()) for (const auto &v : voices) if (v.engine_name != "fallback") { chosen_engine = v.engine_name; break; }
 		if (chosen_engine.empty()) chosen_engine = voices.front().engine_name;
 		int target = engine_default_voice.count(chosen_engine)? engine_default_voice[chosen_engine] : -1;
-		current_voice_index = 0;
 		for (size_t i = 0; i < voices.size(); i++) {
 			if (voices[i].engine_name != chosen_engine) continue;
+			if (current_voice_index < 0) current_voice_index = i; // The engine's first voice, kept when its own default isn't in the list, for example because the language filter left it out.
 			if (target < 0 || voices[i].engine_voice_index == target) { current_voice_index = i; break; }
 		}
 	}
