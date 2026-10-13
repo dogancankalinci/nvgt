@@ -20,6 +20,7 @@ import android.view.accessibility.AccessibilityManager;
 import java.io.File;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -148,7 +149,8 @@ public class TTS {
 	// TextToSpeech finishes connecting to an engine on an AsyncTask that catches only RemoteException. When the engine's
 	// own setCallback or default language code throws, the exception comes back through binder (a NullPointerException,
 	// for example) and escapes that background thread, which ends the app. Only that failure is absorbed: TextToSpeech
-	// then never calls onInit, and the constructor gives up after its wait as it does for an engine that never answers.
+	// then never calls onInit, and the constructor waiting for it is released at once when the failure can only be its
+	// own (see connectionFailed()), or else gives up after its wait as it does for an engine that never answers.
 	private static final String CONNECTION_SETUP_TASK = "android.speech.tts.TextToSpeech$Connection$SetupConnectionAsyncTask";
 	private static boolean connectionGuardInstalled = false;
 	private static synchronized void installConnectionGuard() {
@@ -158,6 +160,7 @@ public class TTS {
 		Thread.setDefaultUncaughtExceptionHandler((thread, error) -> {
 			if (thread != Looper.getMainLooper().getThread() && isConnectionSetupFailure(error)) {
 				Log.w("NVGT", "The text to speech engine failed while connecting", error);
+				connectionFailed();
 				return;
 			}
 			if (previous != null) previous.uncaughtException(thread, error);
@@ -170,6 +173,19 @@ public class TTS {
 			}
 		}
 		return false;
+	}
+	// The TTS objects whose TextToSpeech has neither called onInit nor been released by a connection failure, including
+	// ones whose constructor already gave up waiting. A failure doesn't say which TextToSpeech it came from, so it is only
+	// taken as a waiting constructor's own when that is the one connection still open; with more, that constructor waits.
+	private static final Set<TTS> unresolvedConnections = new HashSet<>();
+	private static void connectionFailed() {
+		TTS failed;
+		synchronized (unresolvedConnections) {
+			if (unresolvedConnections.size() != 1) return;
+			failed = unresolvedConnections.iterator().next();
+			unresolvedConnections.clear();
+		}
+		failed.isTTSInitializedLatch.countDown(); // ttsInitStatus is still ERROR, since onInit never came.
 	}
 
 	public TTS(String enginePkg) {
@@ -189,14 +205,18 @@ public class TTS {
 		OnInitListener listener = new OnInitListener() {
 			@Override
 			public void onInit(int status) {
+				synchronized (unresolvedConnections) { unresolvedConnections.remove(TTS.this); }
 				ttsInitStatus = status;
 				isTTSInitializedLatch.countDown();
 			}
 		};
+		// Registered before TextToSpeech exists, since its connection can fail or call onInit before the constructor returns.
+		synchronized (unresolvedConnections) { unresolvedConnections.add(this); }
 		try {
 			tts = enginePackage != null ? new TextToSpeech(context, listener, enginePackage) : new TextToSpeech(context, listener);
 		} catch (Exception e) {
 			// Some restricted engines (e.g. Sao Mai Myanmar TTS, org.saomaicenter.myanmartts) refuse to let third-party apps bind to their service and throw a SecurityException straight from the constructor. If we let that propagate it leaves a pending Java exception that aborts the process on the next JNI call. Swallow it here and mark this engine as unavailable instead.
+			synchronized (unresolvedConnections) { unresolvedConnections.remove(this); }
 			tts = null;
 			isTTSInitialized = false;
 			isTTSInitializedLatch.countDown();
