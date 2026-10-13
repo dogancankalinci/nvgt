@@ -7,6 +7,7 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.ResolveInfo;
 import android.media.AudioAttributes;
+import android.media.AudioFormat;
 import android.os.Bundle;
 import android.os.Looper;
 import android.provider.Settings;
@@ -18,6 +19,10 @@ import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityManager;
 import java.io.File;
+import java.io.RandomAccessFile;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.util.Arrays;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.HashSet;
@@ -505,7 +510,6 @@ public class TTS {
 				trackedEnded(utteranceId);
 				if (currentPcmUtteranceId != null && currentPcmUtteranceId.equals(utteranceId)) {
 					pcmSynthesisSuccessful = true;
-					new File(SDL.getContext().getCacheDir(), "nvgt_speech.wav").delete();
 					if (pcmSynthesisLatch != null) {
 						pcmSynthesisLatch.countDown();
 					}
@@ -517,7 +521,6 @@ public class TTS {
 				trackedEnded(utteranceId);
 				if (currentPcmUtteranceId != null && currentPcmUtteranceId.equals(utteranceId)) {
 					pcmSynthesisSuccessful = false;
-					new File(SDL.getContext().getCacheDir(), "nvgt_speech.wav").delete();
 					if (pcmSynthesisLatch != null) {
 						pcmSynthesisLatch.countDown();
 					}
@@ -527,6 +530,12 @@ public class TTS {
 			@Override
 			public void onStop(String utteranceId, boolean interrupted) {
 				trackedEnded(utteranceId);
+				if (currentPcmUtteranceId != null && currentPcmUtteranceId.equals(utteranceId)) {
+					pcmSynthesisSuccessful = false;
+					if (pcmSynthesisLatch != null) {
+						pcmSynthesisLatch.countDown();
+					}
+				}
 			}
 		});
 	}
@@ -580,9 +589,11 @@ public class TTS {
 		// Create utterance ID and set it as current
 		currentPcmUtteranceId = "nvgtts_" + System.currentTimeMillis();
 
-		// Start synthesis - using speak with synthesis callbacks
+		// Start synthesis - using speak with synthesis callbacks. Each engine has its own file: synthesis on one engine is
+		// serialized by the caller, and a file that a timed out request writes late is replaced by the next request.
+		File file = new File(SDL.getContext().getCacheDir(), "nvgt_speech_" + (enginePackage != null ? enginePackage : "default") + ".wav");
 		followSystemSettings();
-		int result = tts.synthesizeToFile(text, utteranceParams(), new File(SDL.getContext().getCacheDir(), "nvgt_speech.wav"), currentPcmUtteranceId);
+		int result = tts.synthesizeToFile(text, utteranceParams(), file, currentPcmUtteranceId);
 		if (result != TextToSpeech.SUCCESS) {
 			currentPcmUtteranceId = null;
 			return null;
@@ -593,13 +604,50 @@ public class TTS {
 			pcmSynthesisLatch.await(10000, TimeUnit.MILLISECONDS); // 10 second timeout
 		} catch (InterruptedException e) {
 			currentPcmUtteranceId = null;
+			file.delete();
 			return null;
 		}
 
 		// Clean up and return the audio data if successful
 		currentPcmUtteranceId = null;
+		byte[] audio = null;
 		if (pcmSynthesisSuccessful) {
-			return pcmAudioBuffer.toByteArray();
+			audio = pcmAudioBuffer.toByteArray();
+			// Before Android 7.0 TextToSpeech gives the listener no audio, only the finished file.
+			if (audio.length == 0) audio = readWavFile(file);
+		}
+		file.delete();
+		return audio;
+	}
+	// The samples in a WAV file TextToSpeech wrote, with the format fields set from its header as onBeginSynthesis would
+	// set them. TextToSpeech writes 8 and 16-bit samples, and floats as 32-bit ones, all under the PCM format tag.
+	private byte[] readWavFile(File file) {
+		byte[] data;
+		try (RandomAccessFile in = new RandomAccessFile(file, "r")) {
+			data = new byte[(int) in.length()];
+			in.readFully(data);
+		} catch (IOException e) {
+			return null;
+		}
+		ByteBuffer wav = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
+		if (data.length < 12 || wav.getInt(0) != 0x46464952 || wav.getInt(8) != 0x45564157) return null; // "RIFF", "WAVE"
+		int channels = 0, sampleRate = 0, bits = 0;
+		for (int chunk = 12; chunk <= data.length - 8;) {
+			int id = wav.getInt(chunk), size = wav.getInt(chunk + 4), body = chunk + 8;
+			if (size < 0 || size > data.length - body) size = data.length - body;
+			if (id == 0x20746d66 && size >= 16) { // "fmt "
+				channels = wav.getShort(body + 2);
+				sampleRate = wav.getInt(body + 4);
+				bits = wav.getShort(body + 14);
+			} else if (id == 0x61746164) { // "data"
+				int encoding = bits == 8? AudioFormat.ENCODING_PCM_8BIT : bits == 16? AudioFormat.ENCODING_PCM_16BIT : bits == 32? AudioFormat.ENCODING_PCM_FLOAT : 0;
+				if (channels <= 0 || sampleRate <= 0 || encoding == 0) return null;
+				pcmSampleRate = sampleRate;
+				pcmChannelCount = channels;
+				pcmAudioFormat = encoding;
+				return Arrays.copyOfRange(data, body, body + size);
+			}
+			chunk = body + size + (size & 1);
 		}
 		return null;
 	}
