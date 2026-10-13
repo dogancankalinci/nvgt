@@ -482,10 +482,10 @@ bool tts_voice::refresh() {
 	}
 	if (current_voice_index < 0) voice_set = false; // The chosen voice is gone, so fall back to the platform default rather than forcing whichever voice lands on its old index.
 	if (current_voice_index < 0 && !voices.empty()) {
-		// Pick an initial voice: prefer the configured/default engine, then the first non-fallback engine, then anything.
+		// Pick an initial voice: prefer the configured/default engine, then the first non-fallback engine, then anything. Only an engine with a voice in the list counts: one that could not be bound, or whose voices the language filter left out, would match nothing below and leave the selection on the first voice, the builtin fallback.
 		string chosen_engine;
 		if (!preferred_engine_name.empty()) {
-			for (const string &name : engine_names) if (name == preferred_engine_name) { chosen_engine = name; break; }
+			for (const auto &v : voices) if (v.engine_name == preferred_engine_name) { chosen_engine = v.engine_name; break; }
 		}
 		if (chosen_engine.empty()) for (const auto &v : voices) if (v.engine_name != "fallback") { chosen_engine = v.engine_name; break; }
 		if (chosen_engine.empty()) chosen_engine = voices.front().engine_name;
