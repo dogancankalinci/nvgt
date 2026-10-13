@@ -162,6 +162,9 @@ static shared_engine_entry& tts_get_shared_engine(const string &name) {
 	return g_shared_engines.emplace(name, std::move(entry)).first->second;
 }
 static std::atomic<uint64_t> g_next_tts_voice_id{0};
+// The end of each queued utterance is handled by a resource manager job, which can run after the tts_voice that queued it has been released. Jobs therefore carry the voice's id and find the voice here, under the lock; a voice removes itself before it is destroyed, so it is never freed while a job is using it, and a job that comes after finds nothing. On 32-bit platforms the id is truncated to the width of a pointer.
+static std::mutex g_live_tts_voices_mutex;
+static unordered_map<uintptr_t, tts_voice*> g_live_tts_voices;
 
 static void register_builtin_engines() {
 	tts_engine_register("fallback", []() -> shared_ptr<tts_engine> { return make_shared<fallback_voice_engine>(); });
@@ -181,6 +184,12 @@ tts_voice::tts_voice(const string &engine_list) : RefCount(1), voice_state(VOICE
 		for (const string& e : tokens) engine_names.push_back(Poco::trim(e));
 	}
 	// Engines are bound lazily. We deliberately do NOT instantiate any engine here, nor enumerate voices yet: a tts_voice that is created but never used (e.g. a global object on a device where a screen reader handles speech instead) must never bind to any TTS engine. This is what avoids the "bind to every installed engine at startup" problem, including crashing on restricted engines like Sao Mai Myanmar TTS.
+	std::lock_guard<std::mutex> lock(g_live_tts_voices_mutex);
+	g_live_tts_voices[(uintptr_t)id] = this;
+}
+tts_voice::~tts_voice() {
+	std::lock_guard<std::mutex> lock(g_live_tts_voices_mutex);
+	g_live_tts_voices.erase((uintptr_t)id);
 }
 void tts_voice::AddRef() { asAtomicInc(RefCount); }
 void tts_voice::Release() { if (asAtomicDec(RefCount) < 1) delete this; }
@@ -551,7 +560,7 @@ string tts_voice::get_language() {
 bool tts_voice::schedule(soundptr &s, bool interrupt) {
 	try {
 		cleanup_completed_fades();
-		ma_sound_set_end_callback(s->get_ma_sound(), at_end, this);
+		ma_sound_set_end_callback(s->get_ma_sound(), at_end, (void*)(uintptr_t)id); // The id rather than this, see g_live_tts_voices.
 		unique_lock<mutex> lock(queue_mtx);
 		if (interrupt) clear();
 		queue.push(s);
@@ -578,15 +587,18 @@ void tts_voice::cleanup_completed_fades() {
 	while (!fade_queue.empty() && fade_queue.front()->is_load_completed()) fade_queue.pop();
 }
 void tts_voice::at_end(void *pUserData, ma_sound *pSound) {
-	tts_voice *voice = static_cast<tts_voice *>(pUserData);
 	ma_job job = ma_job_init(MA_JOB_TYPE_CUSTOM);
-	job.data.custom.data0 = (ma_uintptr)voice;
+	job.data.custom.data0 = (ma_uintptr)pUserData; // The voice's id.
 	job.data.custom.data1 = (ma_uintptr)pSound;
 	job.data.custom.proc = job_proc;
 	ma_resource_manager_post_job(g_audio_engine->get_ma_engine()->pResourceManager, &job);
 }
 ma_result tts_voice::job_proc(ma_job *pJob) {
-	tts_voice *voice = (tts_voice *)pJob->data.custom.data0;
+	// Held until the voice's queue lock below is released, so the voice can't be destroyed in between.
+	std::lock_guard<std::mutex> live_lock(g_live_tts_voices_mutex);
+	auto live = g_live_tts_voices.find((uintptr_t)pJob->data.custom.data0);
+	if (live == g_live_tts_voices.end()) return MA_CANCELLED;
+	tts_voice *voice = live->second;
 	ma_sound *expected_front = (ma_sound *)pJob->data.custom.data1;
 	unique_lock<mutex> lock(voice->queue_mtx);
 	if (voice->queue.empty() || voice->queue.front()->get_ma_sound() != expected_front) return MA_CANCELLED;

@@ -155,6 +155,7 @@ class tts_voice {
 	static ma_result job_proc(ma_job *pJob);
 public:
 	tts_voice(const std::string &engine_list = "");
+	~tts_voice();
 	void AddRef();
 	void Release();
 	bool speak(const std::string &text, bool interrupt = false);
