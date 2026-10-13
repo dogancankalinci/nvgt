@@ -132,6 +132,9 @@ public class TTS {
 	private volatile boolean isTTSInitialized = false;
 	private volatile int ttsInitStatus = TextToSpeech.ERROR; // status handed off from onInit (main thread) to the constructor via the latch.
 	private CountDownLatch isTTSInitializedLatch;
+	private final Object setupLock = new Object();
+	private boolean gaveUp = false; // The constructor stopped waiting without a working connection. Guarded by setupLock.
+	private volatile boolean setupEnded = false; // onInit came, or a connection failure was matched to this object.
 	private String enginePackage;
 
 	// PCM synthesis fields
@@ -174,18 +177,44 @@ public class TTS {
 		}
 		return false;
 	}
-	// The TTS objects whose TextToSpeech has neither called onInit nor been released by a connection failure, including
-	// ones whose constructor already gave up waiting. A failure doesn't say which TextToSpeech it came from, so it is only
-	// taken as a waiting constructor's own when that is the one connection still open; with more, that constructor waits.
-	private static final Set<TTS> unresolvedConnections = new HashSet<>();
+	// The TTS objects whose TextToSpeech could still report a failed connection: from construction until onInit reports
+	// success, or, for one given up on, until shutdown() has released a connection whose setup is known to have ended
+	// (before that, on Android 12 and later, shutdown() cannot stop a connection that is still being made). A failure
+	// doesn't say which TextToSpeech it came from, so it is only taken as an object's own when that object is the one
+	// left here; with more, a waiting constructor waits out its timeout. A connection that succeeded and is set up again
+	// after its engine restarts can't be tracked, since TextToSpeech reports nothing about it.
+	private static final Set<TTS> openConnections = new HashSet<>();
 	private static void connectionFailed() {
 		TTS failed;
-		synchronized (unresolvedConnections) {
-			if (unresolvedConnections.size() != 1) return;
-			failed = unresolvedConnections.iterator().next();
-			unresolvedConnections.clear();
+		synchronized (openConnections) {
+			if (openConnections.size() != 1) return;
+			failed = openConnections.iterator().next();
+		}
+		boolean late;
+		synchronized (failed.setupLock) {
+			failed.setupEnded = true;
+			late = failed.gaveUp;
 		}
 		failed.isTTSInitializedLatch.countDown(); // ttsInitStatus is still ERROR, since onInit never came.
+		if (late) failed.release();
+	}
+	// Shuts down a TextToSpeech this object gave up on, on a thread of its own: an engine that never answered can hold
+	// TextToSpeech's lock indefinitely, and one that failed can throw again before the connection is released, which then
+	// stays open.
+	private void release() {
+		final TextToSpeech unusable = tts;
+		if (unusable == null) return;
+		Thread thread = new Thread(() -> {
+			boolean ended = setupEnded;
+			try {
+				unusable.shutdown();
+			} catch (RuntimeException e) {
+				return;
+			}
+			if (ended) synchronized (openConnections) { openConnections.remove(this); }
+		}, "NVGT TTS shutdown");
+		thread.setDaemon(true);
+		thread.start();
 	}
 
 	public TTS(String enginePkg) {
@@ -205,18 +234,24 @@ public class TTS {
 		OnInitListener listener = new OnInitListener() {
 			@Override
 			public void onInit(int status) {
-				synchronized (unresolvedConnections) { unresolvedConnections.remove(TTS.this); }
-				ttsInitStatus = status;
+				boolean late;
+				synchronized (setupLock) {
+					ttsInitStatus = status;
+					setupEnded = true;
+					late = gaveUp;
+				}
+				if (status == TextToSpeech.SUCCESS && !late) synchronized (openConnections) { openConnections.remove(TTS.this); }
 				isTTSInitializedLatch.countDown();
+				if (late) release(); // The connection came up, or failed, after the constructor stopped waiting for it.
 			}
 		};
 		// Registered before TextToSpeech exists, since its connection can fail or call onInit before the constructor returns.
-		synchronized (unresolvedConnections) { unresolvedConnections.add(this); }
+		synchronized (openConnections) { openConnections.add(this); }
 		try {
 			tts = enginePackage != null ? new TextToSpeech(context, listener, enginePackage) : new TextToSpeech(context, listener);
 		} catch (Exception e) {
 			// Some restricted engines (e.g. Sao Mai Myanmar TTS, org.saomaicenter.myanmartts) refuse to let third-party apps bind to their service and throw a SecurityException straight from the constructor. If we let that propagate it leaves a pending Java exception that aborts the process on the next JNI call. Swallow it here and mark this engine as unavailable instead.
-			synchronized (unresolvedConnections) { unresolvedConnections.remove(this); }
+			synchronized (openConnections) { openConnections.remove(this); }
 			tts = null;
 			isTTSInitialized = false;
 			isTTSInitializedLatch.countDown();
@@ -233,7 +268,12 @@ public class TTS {
 		// pitch to every request that doesn't carry its own. Setting any of them here
 		// would override those settings. The audio attributes are different: they only
 		// route speech through the accessibility stream, like a screen reader's.
-		if (ttsInitStatus == TextToSpeech.SUCCESS && tts != null) {
+		boolean ready;
+		synchronized (setupLock) {
+			ready = ttsInitStatus == TextToSpeech.SUCCESS && tts != null;
+			gaveUp = !ready;
+		}
+		if (ready) {
 			try {
 				AudioAttributes audioAttributes = new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build();
 				tts.setAudioAttributes(audioAttributes);
@@ -247,6 +287,7 @@ public class TTS {
 			setupPcmListener();
 		} else {
 			isTTSInitialized = false;
+			release();
 		}
 	}
 	public TTS() { this(null); }
