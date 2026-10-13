@@ -739,6 +739,7 @@ tts_audio_data* android_tts_engine::speak_to_pcm(const std::string &text) {
 	int pcmSampleRate = tts_call_int(TTSObj, 0, midGetPcmSampleRate);
 	int pcmAudioFormat = tts_call_int(TTSObj, 0, midGetPcmAudioFormat);
 	int pcmChannelCount = tts_call_int(TTSObj, 0, midGetPcmChannelCount);
+	if (pcmSampleRate <= 0 || pcmChannelCount <= 0) return nullptr; // No format was reported, so the samples can't be read.
 
 	// Get PCM data. The bytes stay pinned until free_pcm, which may run on another thread, so they are taken through
 	// a global reference to the array.

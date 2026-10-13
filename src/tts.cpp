@@ -78,6 +78,13 @@ static void* tts_trim(tts_audio_data* data, float begin_db = -60, float end_db =
 	}
 }
 
+// The sample format of the PCM an engine produced. 32-bit samples come only from Android engines that synthesize floats.
+static ma_format tts_pcm_format(const tts_audio_data* data) {
+	if (data->bitsize == 16) return ma_format_s16;
+	if (data->bitsize == 32) return ma_format_f32;
+	return ma_format_u8;
+}
+
 tts_audio_data::tts_audio_data(tts_engine* eng, void* dat, unsigned int size, unsigned int rate, unsigned int chans, unsigned int bits, void* ctx) : engine(eng), data(dat), size_in_bytes(size), sample_rate(rate), channels(chans), bitsize(bits), context(ctx) {}
 void tts_audio_data::free() { if (engine) engine->free_pcm(this); }
 
@@ -302,7 +309,7 @@ bool tts_voice::speak(const string &text, bool interrupt) {
 		void *trimmed_data = speak_to_pcm(text, &datablock);
 		if (!trimmed_data || !datablock) return false;
 		soundptr s(new_global_sound());
-		ma_format format = (datablock->bitsize == 16) ? ma_format_s16 : ma_format_u8;
+		ma_format format = tts_pcm_format(datablock);
 		if (!s->load_pcm(trimmed_data, datablock->size_in_bytes, format, datablock->sample_rate, datablock->channels)) {
 			datablock->free();
 			return false;
@@ -318,7 +325,7 @@ bool tts_voice::speak_to_file(const string &filename, const string &text) {
 	try {
 		string output;
 		output.resize(datablock->size_in_bytes + 44);
-		ma_format format = (datablock->bitsize == 16)? ma_format_s16 : ma_format_u8;
+		ma_format format = tts_pcm_format(datablock);
 		if (!sound::pcm_to_wav(trimmed_data, datablock->size_in_bytes, format, datablock->sample_rate, datablock->channels, &output[0])) {
 			datablock->free();
 			return false;
@@ -339,7 +346,7 @@ string tts_voice::speak_to_memory(const string &text) {
 	if (!trimmed_data || !datablock) return "";
 	string output;
 	output.resize(datablock->size_in_bytes + 44);
-	ma_format format = (datablock->bitsize == 16)? ma_format_s16 : ma_format_u8;
+	ma_format format = tts_pcm_format(datablock);
 	if (!sound::pcm_to_wav(trimmed_data, datablock->size_in_bytes, format, datablock->sample_rate, datablock->channels, &output[0])) {
 		datablock->free();
 		return "";
@@ -362,7 +369,7 @@ sound *tts_voice::speak_to_sound(const string &text) {
 	void *trimmed_data = speak_to_pcm(text, &datablock);
 	if (!trimmed_data || !datablock) return nullptr;
 	sound *s = new_global_sound();
-	ma_format format = (datablock->bitsize == 16)? ma_format_s16 : ma_format_u8;
+	ma_format format = tts_pcm_format(datablock);
 	if (!s->load_pcm(trimmed_data, datablock->size_in_bytes, format, datablock->sample_rate, datablock->channels)) {
 		datablock->free();
 		s->release();
