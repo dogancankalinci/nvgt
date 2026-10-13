@@ -134,7 +134,6 @@ public class TTS {
 	private CountDownLatch isTTSInitializedLatch;
 	private final Object setupLock = new Object();
 	private boolean gaveUp = false; // The constructor stopped waiting without a working connection. Guarded by setupLock.
-	private volatile boolean setupEnded = false; // onInit came, or a connection failure was matched to this object.
 	private String enginePackage;
 
 	// PCM synthesis fields
@@ -177,24 +176,20 @@ public class TTS {
 		}
 		return false;
 	}
-	// The TTS objects whose TextToSpeech could still report a failed connection: from construction until onInit reports
-	// success, or, for one given up on, until shutdown() has released a connection whose setup is known to have ended
-	// (before that, on Android 12 and later, shutdown() cannot stop a connection that is still being made). A failure
-	// doesn't say which TextToSpeech it came from, so it is only taken as an object's own when that object is the one
-	// left here; with more, a waiting constructor waits out its timeout. A connection that succeeded and is set up again
-	// after its engine restarts can't be tracked, since TextToSpeech reports nothing about it.
-	private static final Set<TTS> openConnections = new HashSet<>();
+	// Every TTS object that created a TextToSpeech, added just before it does. A failure doesn't say which TextToSpeech it
+	// came from, and any TextToSpeech, even one that was shut down or had connected, can set its connection up again when
+	// its engine restarts, which public API gives no sign of. So a failure is only known to be an object's own while that
+	// object's TextToSpeech is the only one the app has ever created; with more, a waiting constructor waits out its
+	// timeout as it does for an engine that never answers.
+	private static final Set<TTS> textToSpeechOwners = new HashSet<>();
 	private static void connectionFailed() {
 		TTS failed;
-		synchronized (openConnections) {
-			if (openConnections.size() != 1) return;
-			failed = openConnections.iterator().next();
+		synchronized (textToSpeechOwners) {
+			if (textToSpeechOwners.size() != 1) return;
+			failed = textToSpeechOwners.iterator().next();
 		}
 		boolean late;
-		synchronized (failed.setupLock) {
-			failed.setupEnded = true;
-			late = failed.gaveUp;
-		}
+		synchronized (failed.setupLock) { late = failed.gaveUp; }
 		failed.isTTSInitializedLatch.countDown(); // ttsInitStatus is still ERROR, since onInit never came.
 		if (late) failed.release();
 	}
@@ -205,13 +200,9 @@ public class TTS {
 		final TextToSpeech unusable = tts;
 		if (unusable == null) return;
 		Thread thread = new Thread(() -> {
-			boolean ended = setupEnded;
 			try {
 				unusable.shutdown();
-			} catch (RuntimeException e) {
-				return;
-			}
-			if (ended) synchronized (openConnections) { openConnections.remove(this); }
+			} catch (RuntimeException e) {}
 		}, "NVGT TTS shutdown");
 		thread.setDaemon(true);
 		thread.start();
@@ -237,21 +228,19 @@ public class TTS {
 				boolean late;
 				synchronized (setupLock) {
 					ttsInitStatus = status;
-					setupEnded = true;
 					late = gaveUp;
 				}
-				if (status == TextToSpeech.SUCCESS && !late) synchronized (openConnections) { openConnections.remove(TTS.this); }
 				isTTSInitializedLatch.countDown();
 				if (late) release(); // The connection came up, or failed, after the constructor stopped waiting for it.
 			}
 		};
 		// Registered before TextToSpeech exists, since its connection can fail or call onInit before the constructor returns.
-		synchronized (openConnections) { openConnections.add(this); }
+		synchronized (textToSpeechOwners) { textToSpeechOwners.add(this); }
 		try {
 			tts = enginePackage != null ? new TextToSpeech(context, listener, enginePackage) : new TextToSpeech(context, listener);
 		} catch (Exception e) {
 			// Some restricted engines (e.g. Sao Mai Myanmar TTS, org.saomaicenter.myanmartts) refuse to let third-party apps bind to their service and throw a SecurityException straight from the constructor. If we let that propagate it leaves a pending Java exception that aborts the process on the next JNI call. Swallow it here and mark this engine as unavailable instead.
-			synchronized (openConnections) { openConnections.remove(this); }
+			synchronized (textToSpeechOwners) { textToSpeechOwners.remove(this); }
 			tts = null;
 			isTTSInitialized = false;
 			isTTSInitializedLatch.countDown();
