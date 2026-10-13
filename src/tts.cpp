@@ -200,7 +200,8 @@ voice_info *tts_voice::get_voice_info(int voice_index) {
 void tts_voice::ensure_default() {
 	if (voice_state != VOICES_NONE) return;
 	// Fast path for the common case (speak with the default voice): bind ONLY the preferred/default engine and select its default voice, so we never instantiate or bind every installed engine just to start speaking. Full cross-engine enumeration is deferred until the script actually lists or selects voices.
-	string pref = preferred_engine_name;
+	string pref;
+	if (find(engine_names.begin(), engine_names.end(), preferred_engine_name) != engine_names.end()) pref = preferred_engine_name; // Only if this object may use it: an engine list given to the constructor can leave it out.
 	if (pref.empty()) for (const string &name : engine_names) if (name != "fallback") { pref = name; break; }
 	if (pref.empty() && !engine_names.empty()) pref = engine_names.front();
 	shared_engine_entry *entry = pref.empty()? nullptr : &tts_get_shared_engine(pref);
