@@ -507,46 +507,44 @@ static int regexp_match_groups(const RegularExpression& exp, const std::string& 
 	if (exp.match(subject, whole.offset, groups, 0) < 1 || groups[0].offset != whole.offset || groups[0].length != whole.length) groups.assign(1, whole);
 	return int(groups.size());
 }
-// Poco's RegularExpression::subst is not used: an empty match never moves it forward, so it appends the replacement until memory runs out, an empty match at the end of the text is never replaced, and $n for a group that took no part in the match throws std::out_of_range. Its replacement syntax is kept: $0-$9 insert a group (empty if it did not participate), a $ before any other character stays literal, and RE_NO_VARS takes the replacement as is. Returns the number of replacements.
+// Poco's RegularExpression::subst is not used: an empty match before the end of the text never moves it forward, so it appends the replacement until memory runs out, and $n for a group that took no part in the match throws std::out_of_range. Everything else matches what Poco does, so scripts get the results they always got: later matches are searched for in the text as already changed, starting right after the last replacement, an empty match at the end of the text is not replaced, and nothing is searched for from an offset at or past the end. $0-$9 insert a group (empty if it did not participate), a $ before any other character stays literal, and RE_NO_VARS takes the replacement as is. An empty match before the end is replaced and the search goes on after the next character (a whole UTF-8 sequence). Returns the number of replacements.
 static int regexp_substitute(const RegularExpression& exp, std::string& subject, std::string::size_type offset, const std::string& replacement, int options) {
-	if (offset > subject.length()) return 0;
+	if (offset >= subject.length()) return 0;
 	const bool vars = !(options & RegularExpression::RE_NO_VARS) && replacement.find('$') != std::string::npos;
-	std::string result(subject, 0, offset);
+	std::string text = subject;
 	RegularExpression::MatchVec groups;
 	std::string::size_type pos = offset;
 	int count = 0;
-	while (regexp_match_groups(exp, subject, pos, groups, options) > 0) {
+	while (pos < text.length() && regexp_match_groups(exp, text, pos, groups, options) > 0) {
 		const std::string::size_type start = groups[0].offset, length = groups[0].length;
-		result.append(subject, pos, start - pos);
+		if (length == 0 && start >= text.length()) break;
+		std::string expanded;
 		if (vars) {
 			for (std::string::size_type i = 0; i < replacement.length(); i++) {
 				if (replacement[i] != '$' || i + 1 == replacement.length()) {
-					result += replacement[i];
+					expanded += replacement[i];
 					continue;
 				}
 				const char d = replacement[++i];
 				if (d < '0' || d > '9') {
-					result += '$';
-					result += d;
+					expanded += '$';
+					expanded += d;
 					continue;
 				}
 				const std::size_t g = d - '0';
-				if (g < groups.size() && groups[g].offset != std::string::npos) result.append(subject, groups[g].offset, groups[g].length);
+				if (g < groups.size() && groups[g].offset != std::string::npos) expanded.append(text, groups[g].offset, groups[g].length);
 			}
-		} else result += replacement;
+		} else expanded = replacement;
+		text.replace(start, length, expanded);
 		count++;
-		pos = start + length;
+		pos = start + expanded.length();
 		if (length == 0) {
-			// The same empty match would be found here again, so step over one character (a whole UTF-8 sequence) before searching on.
-			if (pos == subject.length()) break;
-			do result += subject[pos++];
-			while (pos < subject.length() && (static_cast<unsigned char>(subject[pos]) & 0xC0) == 0x80);
+			do pos++;
+			while (pos < text.length() && (static_cast<unsigned char>(text[pos]) & 0xC0) == 0x80);
 		}
 		if (!(options & RegularExpression::RE_GLOBAL)) break;
 	}
-	if (count == 0) return 0;
-	result.append(subject, pos, std::string::npos);
-	subject = std::move(result);
+	if (count > 0) subject = std::move(text);
 	return count;
 }
 int poco_regular_expression_subst(RegularExpression* exp, std::string& subject, std::string::size_type offset, const std::string& replacement, int options) {
