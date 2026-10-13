@@ -290,6 +290,39 @@ public class TTS {
 		followSystemSettings();
 		return tts.speak(text, interrupt? TextToSpeech.QUEUE_FLUSH : TextToSpeech.QUEUE_ADD, utteranceParams(), null) == TextToSpeech.SUCCESS;
 	}
+	// speak() passes no utterance id, so TextToSpeech reports nothing about that speech, and isSpeaking() only turns true
+	// once the service has picked a request up, which can be after speak() returns. Speech a caller waits for is spoken
+	// with an id holding a serial number instead, and the listener records the highest serial that ended. This object's
+	// utterances end in the order they were queued, or are dropped by a flush, so every lower serial has ended too.
+	private static final String TRACKED_UTTERANCE = "nvgt_tracked_";
+	private final Object trackedLock = new Object();
+	private long trackedSerial = 0; // Guarded by trackedLock, which is held while queueing, so serials follow queue order.
+	private volatile long endedSerial = 0; // Written under endedLock.
+	private final Object endedLock = new Object();
+	public long speakTracked(String text, boolean interrupt) {
+		if (!isActive()) return -1;
+		if (text.length() > tts.getMaxSpeechInputLength()) return -1;
+		synchronized (trackedLock) {
+			followSystemSettings();
+			long serial = trackedSerial + 1;
+			if (tts.speak(text, interrupt? TextToSpeech.QUEUE_FLUSH : TextToSpeech.QUEUE_ADD, utteranceParams(), TRACKED_UTTERANCE + serial) != TextToSpeech.SUCCESS) return -1;
+			trackedSerial = serial;
+			return serial;
+		}
+	}
+	public boolean isTrackedDone(long serial) { return endedSerial >= serial; }
+	private void trackedEnded(String utteranceId) {
+		if (utteranceId == null || !utteranceId.startsWith(TRACKED_UTTERANCE)) return;
+		long serial;
+		try {
+			serial = Long.parseLong(utteranceId.substring(TRACKED_UTTERANCE.length()));
+		} catch (NumberFormatException e) {
+			return;
+		}
+		synchronized (endedLock) {
+			if (serial > endedSerial) endedSerial = serial;
+		}
+	}
 	// Per-utterance parameters: only the ones a script set, so the service uses its own defaults for the rest.
 	private Bundle utteranceParams() {
 		Bundle params = new Bundle();
@@ -466,8 +499,10 @@ public class TTS {
 				}
 			}
 
+			// Before Android 6.0 a stopped utterance also ends here.
 			@Override
 			public void onDone(String utteranceId) {
+				trackedEnded(utteranceId);
 				if (currentPcmUtteranceId != null && currentPcmUtteranceId.equals(utteranceId)) {
 					pcmSynthesisSuccessful = true;
 					new File(SDL.getContext().getCacheDir(), "nvgt_speech.wav").delete();
@@ -479,6 +514,7 @@ public class TTS {
 
 			@Override
 			public void onError(String utteranceId) {
+				trackedEnded(utteranceId);
 				if (currentPcmUtteranceId != null && currentPcmUtteranceId.equals(utteranceId)) {
 					pcmSynthesisSuccessful = false;
 					new File(SDL.getContext().getCacheDir(), "nvgt_speech.wav").delete();
@@ -486,6 +522,11 @@ public class TTS {
 						pcmSynthesisLatch.countDown();
 					}
 				}
+			}
+
+			@Override
+			public void onStop(String utteranceId, boolean interrupted) {
+				trackedEnded(utteranceId);
 			}
 		});
 	}

@@ -651,6 +651,8 @@ android_tts_engine::android_tts_engine(const std::string& enginePkg) : tts_engin
 	midResetPitch = method("resetPitch", "()Z");
 	midResetVolume = method("resetVolume", "()Z");
 	midResetVoice = method("resetVoice", "()Z");
+	midSpeakTracked = method("speakTracked", "(Ljava/lang/String;Z)J");
+	midIsTrackedDone = method("isTrackedDone", "(J)Z");
 	LocalRef<jstring> jengine(env, engine_package.empty()? nullptr : to_jstring(env, engine_package));
 	if (!engine_package.empty() && !jengine.get()) throw std::runtime_error("Can't pass the engine name to the TTS object!");
 	LocalRef<jobject> obj(env, env->NewObject(TTSClass, constructor, jengine.get()));
@@ -688,9 +690,22 @@ bool android_tts_engine::speak(const std::string &text, bool interrupt, bool blo
 	if (!env || !TTSObj || text.empty()) return false;
 	LocalRef<jstring> jtext(env, to_jstring(env, text));
 	if (!jtext.get()) return false;
-	bool result = tts_call_bool(TTSObj, midSpeak, jtext.get(), interrupt ? JNI_TRUE : JNI_FALSE);
-	if (blocking) while (is_speaking()) wait(10);
-	return result;
+	if (!blocking) return tts_call_bool(TTSObj, midSpeak, jtext.get(), interrupt ? JNI_TRUE : JNI_FALSE);
+	// The service reports speaking only once it has picked the request up, which can be after the call returns, so a
+	// blocking call waits for the end of its own utterance instead.
+	jlong utterance = env->CallLongMethod(TTSObj, midSpeakTracked, jtext.get(), interrupt ? JNI_TRUE : JNI_FALSE);
+	if (jni_clear_exception(env) || utterance < 0) {
+		while (is_speaking()) wait(10);
+		return false;
+	}
+	// No end is reported for an utterance that a flush dropped before it started, or that an engine was speaking when it
+	// died, so the wait also stops once a second has passed and nothing is being spoken.
+	Uint64 started = SDL_GetTicks();
+	while (!tts_call_bool(TTSObj, midIsTrackedDone, utterance)) {
+		if (SDL_GetTicks() - started > 1000 && !is_speaking()) break;
+		wait(10);
+	}
+	return true;
 }
 
 bool android_tts_engine::is_speaking() { return tts_call_bool(TTSObj, midIsSpeaking); }
