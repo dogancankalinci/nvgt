@@ -84,7 +84,10 @@ CollisionCallback::ContactPoint contact_pair_get_contact_point(const CollisionCa
 AABB aabb_from_triangle(CScriptArray* points) {
 	if (!points) throw runtime_error("triangle points cannot be null");
 	if (points->GetSize() != 3) { points->Release(); throw runtime_error("triangle must have 3 points"); }
-	AABB result = AABB::createAABBForTriangle(reinterpret_cast<const Vector3*>(points->GetBuffer()));
+	// An array of vectors holds a pointer to each element, not the vectors themselves side by side.
+	Vector3 triangle[3];
+	for (asUINT i = 0; i < 3; i++) triangle[i] = *static_cast<const Vector3*>(points->At(i));
+	AABB result = AABB::createAABBForTriangle(triangle);
 	points->Release();
 	return result;
 }
