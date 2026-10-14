@@ -701,8 +701,9 @@ bool voice_over_speak(const std::string& text, bool interrupt) {
 		#if TARGET_OS_IOS
 			return UIAccessibilityIsVoiceOverRunning();
 		#else
+			// VoiceOver speaks announcements only from the focused application, so they reach it while our window is the key one; without a window, nothing does.
 			NSWindow* win = g_window ? (NSWindow*)g_window->get_native_window() : nullptr;
-			return key == win;
+			return win && key == win;
 		#endif
 	}
 }
