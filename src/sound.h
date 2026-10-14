@@ -244,6 +244,7 @@ public:
 	reactphysics3d::Vector3 get_position() const { return position; }
 	bool is_in_shape(const reactphysics3d::Vector3& listener_position, reactphysics3d::Vector3& sound_position) { position = sound_position; return contains(listener_position, sound_position); }
 	virtual bool contains(const reactphysics3d::Vector3&  listener_position, reactphysics3d::Vector3& sound_position) { return sound_position == listener_position; }
+	virtual ~sound_shape() = default; // release() deletes subclasses through this class. Declared after contains so that keeps its place in the vtable.
 };
 class mixer : public virtual audio_node {
 public:
