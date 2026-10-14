@@ -168,6 +168,7 @@ public class TTS {
 	private boolean ratePinned = false, pitchPinned = false;
 	private Voice defaultVoice; // The voice TextToSpeech selected from the user's settings when it connected, which resetVoice() restores.
 	private volatile Voice chosenVoice; // The voice a script set, if any, which a replacement TextToSpeech is given too.
+	private Locale defaultLanguage; // The language TextToSpeech took from the user's settings when it connected.
 	private volatile boolean isTTSInitialized = false;
 	private volatile int ttsInitStatus = TextToSpeech.ERROR; // status handed off from onInit (main thread) to the constructor via the latch.
 	private CountDownLatch isTTSInitializedLatch;
@@ -335,6 +336,7 @@ public class TTS {
 			isTTSInitialized = true;
 			try {
 				defaultVoice = tts.getVoice();
+				defaultLanguage = tts.getLanguage();
 			} catch (Exception e) {}
 			initializeVoices();
 			setupPcmListener(tts);
@@ -486,6 +488,8 @@ public class TTS {
 			try {
 				Voice settingsVoice = replacement.getVoice();
 				if (settingsVoice != null) defaultVoice = settingsVoice;
+				Locale settingsLanguage = replacement.getLanguage();
+				if (settingsLanguage != null) defaultLanguage = settingsLanguage;
 				Voice voice = chosenVoice;
 				if (voice != null) replacement.setVoice(voice);
 			} catch (Exception e) {}
@@ -578,8 +582,13 @@ public class TTS {
 		return true;
 	}
 	public boolean resetVoice() {
-		if (!isActive() || defaultVoice == null) return false;
-		if (tts.setVoice(defaultVoice) != TextToSpeech.SUCCESS) return false;
+		if (!isActive()) return false;
+		boolean reset;
+		if (defaultVoice != null) reset = tts.setVoice(defaultVoice) == TextToSpeech.SUCCESS;
+		// An engine can name no voice for the settings' language and still speak it; asking for that language again then
+		// brings its default back.
+		else reset = defaultLanguage != null && tts.setLanguage(defaultLanguage) >= TextToSpeech.LANG_AVAILABLE;
+		if (!reset) return false;
 		chosenVoice = null;
 		return true;
 	}
