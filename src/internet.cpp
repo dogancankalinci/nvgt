@@ -501,6 +501,11 @@ template <class T> void RegisterSocket(asIScriptEngine* engine, const std::strin
 	engine->RegisterObjectMethod(type.c_str(), "bool get_secure() const property", asMETHOD(T, secure), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "void init(int af)", asMETHOD(T, init), asCALL_THISCALL);
 }
+// Poco's bind() returns nothing and throws on failure, so a call that returns has bound the socket.
+template <class T> bool socket_bind(T* socket, const SocketAddress& address, bool reuse_address, bool ipv6_only) {
+	socket->bind(address, reuse_address, ipv6_only);
+	return true;
+}
 template <class T> void RegisterStreamSocket(asIScriptEngine* engine, const std::string& type) {
 	RegisterSocket<T>(engine, type);
 	if constexpr(!std::is_same_v<T, WebSocket>) {
@@ -509,7 +514,7 @@ template <class T> void RegisterStreamSocket(asIScriptEngine* engine, const std:
 		engine->RegisterObjectMethod(type.c_str(), "void connect(const socket_address&in address)", asMETHODPR(T, connect, (const SocketAddress&), void), asCALL_THISCALL);
 		engine->RegisterObjectMethod(type.c_str(), "void connect(const socket_address&in address, const timespan&in timeout)", asMETHODPR(T, connect, (const SocketAddress&, const Timespan&), void), asCALL_THISCALL);
 		engine->RegisterObjectMethod(type.c_str(), "void connect_nonblocking(const socket_address&in address)", asMETHOD(T, connectNB), asCALL_THISCALL);
-		engine->RegisterObjectMethod(type.c_str(), "bool bind(const socket_address&in address, bool reuse_address = false, bool IPv6_only = false)", asMETHOD(T, bind), asCALL_THISCALL);
+		engine->RegisterObjectMethod(type.c_str(), "bool bind(const socket_address&in address, bool reuse_address = false, bool IPv6_only = false)", asFUNCTION(socket_bind<T>), asCALL_CDECL_OBJFIRST);
 	}
 	engine->RegisterObjectMethod(type.c_str(), "void shutdown_receive()", asMETHOD(T, shutdownReceive), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "int shutdown_send()", asMETHOD(T, shutdownSend), asCALL_THISCALL);
