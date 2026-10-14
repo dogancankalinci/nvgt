@@ -679,7 +679,8 @@ void tts_voice::at_end(void *pUserData, ma_sound *pSound) {
 	job.data.custom.data0 = (ma_uintptr)pUserData; // The voice's id.
 	job.data.custom.data1 = (ma_uintptr)pSound;
 	job.data.custom.proc = job_proc;
-	ma_resource_manager_post_job(g_audio_engine->get_ma_engine()->pResourceManager, &job); // A job that can't be posted is made up for by queue_speaking().
+	ma_engine *engine = ma_sound_get_engine(pSound); // Rather than g_audio_engine, which is cleared when sound shuts down while sounds still hold the engine.
+	if (engine && engine->pResourceManager) ma_resource_manager_post_job(engine->pResourceManager, &job); // A job that can't be posted is made up for by queue_speaking().
 }
 ma_result tts_voice::job_proc(ma_job *pJob) {
 	// Held until the voice's queue lock below is released, so the voice can't be destroyed in between.
