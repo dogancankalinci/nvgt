@@ -39,6 +39,7 @@ static jmethodID midScreenReaderDetect = nullptr;
 static jmethodID midScreenReaderSpeak = nullptr;
 static jmethodID midScreenReaderSilence = nullptr;
 static jmethodID midTTSGetEnginePackages = nullptr;
+static jmethodID midTTSGetRankedEnginePackages = nullptr;
 static jmethodID midTTSGetDefaultEnginePackage = nullptr;
 static jmethodID midGetExceptionInfo = nullptr;
 
@@ -102,6 +103,7 @@ void android_setup_jni() {
 		jmethodID screenReaderSpeak = static_method(tts, "screenReaderSpeak", "(Ljava/lang/String;Z)Z");
 		jmethodID screenReaderSilence = static_method(tts, "screenReaderSilence", "()Z");
 		jmethodID getEnginePackages = static_method(tts, "getEnginePackages", "()Ljava/util/List;");
+		jmethodID getRankedEnginePackages = static_method(tts, "getRankedEnginePackages", "()Ljava/util/List;");
 		jmethodID getDefaultEnginePackage = static_method(tts, "getDefaultEnginePackage", "()Ljava/lang/String;");
 		jmethodID getExceptionInfo = static_method(dialogUtils, "getExceptionInfo", "(Ljava/lang/Throwable;)Ljava/lang/String;");
 		jclass ttsGlobal = (jclass)env->NewGlobalRef(tts);
@@ -119,6 +121,7 @@ void android_setup_jni() {
 		midScreenReaderSpeak = screenReaderSpeak;
 		midScreenReaderSilence = screenReaderSilence;
 		midTTSGetEnginePackages = getEnginePackages;
+		midTTSGetRankedEnginePackages = getRankedEnginePackages;
 		midTTSGetDefaultEnginePackage = getDefaultEnginePackage;
 		midGetExceptionInfo = getExceptionInfo;
 	});
@@ -526,7 +529,8 @@ android_renderer_creation_guard::~android_renderer_creation_guard() {
 	jni_clear_exception(env);
 }
 
-std::vector<std::string> android_get_tts_engine_packages() {
+// The package names one of the TTS class's static engine listings returns.
+static std::vector<std::string> tts_engine_package_list(bool ranked) {
 	try {
 		android_setup_jni();
 	} catch (...) {
@@ -534,7 +538,7 @@ std::vector<std::string> android_get_tts_engine_packages() {
 	}
 	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
 	if (!env) return {};
-	LocalRef<jobject> jpackageList(env, env->CallStaticObjectMethod(TTSClass, midTTSGetEnginePackages));
+	LocalRef<jobject> jpackageList(env, env->CallStaticObjectMethod(TTSClass, ranked? midTTSGetRankedEnginePackages : midTTSGetEnginePackages));
 	if (jni_clear_exception(env) || !jpackageList.get()) return {};
 	LocalRef<jclass> listClass(env, env->FindClass("java/util/List"));
 	if (!listClass.get()) {
@@ -557,6 +561,8 @@ std::vector<std::string> android_get_tts_engine_packages() {
 	}
 	return result;
 }
+std::vector<std::string> android_get_tts_engine_packages() { return tts_engine_package_list(false); }
+std::vector<std::string> android_get_ranked_tts_engine_packages() { return tts_engine_package_list(true); }
 
 std::string android_get_default_tts_engine_package() {
 	try { android_setup_jni(); } catch (...) { return ""; }
@@ -571,6 +577,7 @@ void register_native_tts() {
 	std::vector<std::string> android_engines = android_get_tts_engine_packages();
 	std::string default_pkg = android_get_default_tts_engine_package();
 	if (!default_pkg.empty()) tts_set_preferred_engine(default_pkg);
+	tts_set_engine_ranking(android_get_ranked_tts_engine_packages());
 	for (const auto& engine_pkg : android_engines) tts_engine_register(engine_pkg, [engine_pkg]() -> std::shared_ptr<tts_engine> { return std::make_shared<android_tts_engine>(engine_pkg); });
 }
 

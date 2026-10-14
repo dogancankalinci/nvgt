@@ -125,6 +125,7 @@ static std::recursive_mutex g_tts_registry_mutex; // guards engine_registry, eng
 static vector<string> engine_names;
 static unordered_map<string, tts_engine_factory> engine_registry;
 static string preferred_engine_name;
+static vector<string> engine_ranking; // Engines in the order the platform falls back through them, set where it has such an order; voices keep the registration order.
 bool tts_engine_register(const string &name, tts_engine_factory factory) {
 	std::lock_guard<std::recursive_mutex> lock(g_tts_registry_mutex); // recursive: register_builtin_engines() calls this while the constructor already holds the lock
 	if (engine_registry.find(name) != engine_registry.end()) return false;
@@ -135,6 +136,7 @@ bool tts_engine_register(const string &name, tts_engine_factory factory) {
 
 vector<string> tts_get_engine_names() { std::lock_guard<std::recursive_mutex> lock(g_tts_registry_mutex); return engine_names; }
 void tts_set_preferred_engine(const string &name) { preferred_engine_name = name; }
+void tts_set_engine_ranking(const vector<string> &names) { engine_ranking = names; }
 
 shared_ptr<tts_engine> tts_create_engine(const string &name) {
 	auto it = engine_registry.find(name);
@@ -206,27 +208,37 @@ voice_info *tts_voice::get_voice_info(int voice_index) {
 }
 void tts_voice::ensure_default() {
 	if (voice_state != VOICES_NONE) return;
-	// Fast path for the common case (speak with the default voice): bind ONLY the preferred/default engine and select its default voice, so we never instantiate or bind every installed engine just to start speaking. Full cross-engine enumeration is deferred until the script actually lists or selects voices.
-	string pref;
-	if (find(engine_names.begin(), engine_names.end(), preferred_engine_name) != engine_names.end()) pref = preferred_engine_name; // Only if this object may use it: an engine list given to the constructor can leave it out.
-	if (pref.empty()) for (const string &name : engine_names) if (name != "fallback") { pref = name; break; }
-	if (pref.empty() && !engine_names.empty()) pref = engine_names.front();
-	shared_engine_entry *entry = pref.empty()? nullptr : &tts_get_shared_engine(pref);
-	if (!entry || !entry->engine || !entry->engine->is_available()) { refresh(); return; } // Preferred engine unavailable: fall back to a full search for anything usable.
-	tts_engine *engine = entry->engine.get();
-	voices.clear();
-	int default_voice = engine->get_current_voice();
-	int voice_count = engine->get_voice_count();
-	for (int i = 0; i < voice_count; i++) {
-		string lang = engine->get_voice_language(i);
-		if (current_language.empty() || lang == current_language) voices.emplace_back(voice_info{pref, i, engine->get_voice_name(i), lang});
+	// Fast path for the common case (speak with the default voice): bind engines one at a time, the preferred/default engine first and then the others in the platform's own order, and select the default voice of the first one that can speak, so we never instantiate or bind every installed engine just to start speaking. Only engines in this object's list count, and the fallback voice is left to refresh() unless it is all the list holds. Full cross-engine enumeration is deferred until the script actually lists or selects voices.
+	vector<string> candidates;
+	auto consider = [&](const string &name) {
+		if (name.empty() || name == "fallback" || find(engine_names.begin(), engine_names.end(), name) == engine_names.end() || find(candidates.begin(), candidates.end(), name) != candidates.end()) return;
+		candidates.push_back(name);
+	};
+	consider(preferred_engine_name);
+	for (const string &name : engine_ranking) consider(name);
+	for (const string &name : engine_names) consider(name);
+	if (candidates.empty() && !engine_names.empty()) candidates.push_back(engine_names.front());
+	for (const string &name : candidates) {
+		shared_engine_entry &entry = tts_get_shared_engine(name);
+		if (!entry.engine || !entry.engine->is_available()) continue;
+		tts_engine *engine = entry.engine.get();
+		voices.clear();
+		int default_voice = engine->get_current_voice();
+		int voice_count = engine->get_voice_count();
+		for (int i = 0; i < voice_count; i++) {
+			string lang = engine->get_voice_language(i);
+			if (current_language.empty() || lang == current_language) voices.emplace_back(voice_info{name, i, engine->get_voice_name(i), lang});
+		}
+		if (voices.empty()) continue; // e.g. a language filter excluded everything from this engine
+		current_voice_index = 0;
+		for (size_t i = 0; i < voices.size(); i++) if (voices[i].engine_voice_index == default_voice) { current_voice_index = i; break; }
+		current_engine = entry.engine;
+		current_engine_name = name;
+		voice_state = VOICES_DEFAULT_ONLY;
+		return;
 	}
-	if (voices.empty()) { refresh(); return; } // e.g. a language filter excluded everything from this engine; search the rest.
-	current_voice_index = 0;
-	for (size_t i = 0; i < voices.size(); i++) if (voices[i].engine_voice_index == default_voice) { current_voice_index = i; break; }
-	current_engine = entry->engine;
-	current_engine_name = pref;
-	voice_state = VOICES_DEFAULT_ONLY;
+	voices.clear();
+	refresh(); // No candidate could speak: fall back to a full search for anything usable.
 }
 void tts_voice::ensure_enumerated() { if (voice_state != VOICES_FULL) refresh(); }
 void tts_voice::sync_engine(shared_engine_entry &entry, bool force) {
@@ -499,11 +511,11 @@ bool tts_voice::refresh() {
 	}
 	if (current_voice_index < 0) voice_set = false; // The chosen voice is gone, so fall back to the platform default rather than forcing whichever voice lands on its old index.
 	if (current_voice_index < 0 && !voices.empty()) {
-		// Pick an initial voice: prefer the configured/default engine, then the first non-fallback engine, then anything. Only an engine with a voice in the list counts: one that could not be bound, or whose voices the language filter left out, would match nothing below and leave the selection on the first voice, the builtin fallback.
+		// Pick an initial voice: prefer the configured/default engine, then the platform's own order, then the first non-fallback engine, then anything, as ensure_default() does. Only an engine with a voice in the list counts: one that could not be bound, or whose voices the language filter left out, would match nothing below and leave the selection on the first voice, the builtin fallback.
+		auto has_voice = [&](const string &name) { for (const auto &v : voices) if (v.engine_name == name) return true; return false; };
 		string chosen_engine;
-		if (!preferred_engine_name.empty()) {
-			for (const auto &v : voices) if (v.engine_name == preferred_engine_name) { chosen_engine = v.engine_name; break; }
-		}
+		if (!preferred_engine_name.empty() && has_voice(preferred_engine_name)) chosen_engine = preferred_engine_name;
+		if (chosen_engine.empty()) for (const string &name : engine_ranking) if (name != "fallback" && has_voice(name)) { chosen_engine = name; break; }
 		if (chosen_engine.empty()) for (const auto &v : voices) if (v.engine_name != "fallback") { chosen_engine = v.engine_name; break; }
 		if (chosen_engine.empty()) chosen_engine = voices.front().engine_name;
 		int target = engine_default_voice.count(chosen_engine)? engine_default_voice[chosen_engine] : -1;

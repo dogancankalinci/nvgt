@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.ApplicationInfo;
 import android.content.pm.ResolveInfo;
 import android.media.AudioAttributes;
 import android.media.AudioFormat;
@@ -23,6 +24,7 @@ import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.HashSet;
@@ -110,6 +112,33 @@ public class TTS {
 			}
 		} catch (Exception e) {}
 		return packages;
+	}
+
+	// The same engines in the order Android itself falls back through them (TtsEngines.getEngines): those that are part of
+	// the system image first, then by the priority their intent filter declares. getEnginePackages() keeps the package
+	// manager's order, which voice indices depend on.
+	public static List<String> getRankedEnginePackages() {
+		Context context = SDL.getContext();
+		List<String> packages = new ArrayList<>();
+		try {
+			Intent intent = new Intent(TextToSpeech.Engine.INTENT_ACTION_TTS_SERVICE);
+			List<ResolveInfo> services = context.getPackageManager().queryIntentServices(intent, 0);
+			if (services == null) return packages;
+			List<ResolveInfo> ranked = new ArrayList<>(services);
+			Collections.sort(ranked, (a, b) -> {
+				boolean aSystem = isSystemEngine(a), bSystem = isSystemEngine(b);
+				if (aSystem != bSystem) return aSystem? -1 : 1;
+				return b.priority - a.priority;
+			});
+			for (ResolveInfo info : ranked) {
+				if (info.serviceInfo != null && info.serviceInfo.packageName != null) packages.add(info.serviceInfo.packageName);
+			}
+		} catch (Exception e) {}
+		return packages;
+	}
+	private static boolean isSystemEngine(ResolveInfo info) {
+		ApplicationInfo app = info.serviceInfo != null? info.serviceInfo.applicationInfo : null;
+		return app != null && (app.flags & ApplicationInfo.FLAG_SYSTEM) != 0;
 	}
 
 	public static String getDefaultEnginePackage() {

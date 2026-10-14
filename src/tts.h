@@ -111,6 +111,7 @@ bool tts_engine_register(const std::string &name, tts_engine_factory factory);
 std::vector<std::string> tts_get_engine_names();
 std::shared_ptr<tts_engine> tts_create_engine(const std::string &name);
 void tts_set_preferred_engine(const std::string &name);
+void tts_set_engine_ranking(const std::vector<std::string> &names); // The order a platform falls back through its engines when the preferred one can't be used.
 
 struct voice_info {
 	std::string engine_name; // Which registered engine this voice belongs to; the engine object itself is created lazily (see tts_voice::active_engine).
