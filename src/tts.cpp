@@ -176,6 +176,12 @@ static shared_engine_entry& tts_get_shared_engine(const string &name) {
 	}
 	return g_shared_engines.emplace(name, std::move(entry)).first->second;
 }
+// The engine's own default voice: its current voice, unless a tts_voice set one on this shared engine, in which case the voice it had when it was first bound, which is also what resetting it restores.
+static int tts_engine_default_voice(shared_engine_entry &entry) {
+	std::lock_guard<std::recursive_mutex> lock(g_tts_registry_mutex);
+	if (!entry.engine) return -1;
+	return entry.voice_changed? entry.init_voice : entry.engine->get_current_voice();
+}
 static std::atomic<uint64_t> g_next_tts_voice_id{0};
 // The end of each queued utterance is handled by a resource manager job, which can run after the tts_voice that queued it has been released. Jobs therefore carry the voice's id and find the voice here, under the lock; a voice removes itself before it is destroyed, so it is never freed while a job is using it, and a job that comes after finds nothing. On 32-bit platforms the id is truncated to the width of a pointer.
 static std::mutex g_live_tts_voices_mutex;
@@ -229,7 +235,7 @@ void tts_voice::ensure_default() {
 		if (!entry.engine || !entry.engine->is_available()) continue;
 		tts_engine *engine = entry.engine.get();
 		voices.clear();
-		int default_voice = engine->get_current_voice();
+		int default_voice = tts_engine_default_voice(entry);
 		int voice_count = engine->get_voice_count();
 		for (int i = 0; i < voice_count; i++) {
 			string lang = engine->get_voice_language(i);
@@ -497,9 +503,10 @@ bool tts_voice::refresh() {
 	unordered_map<string, int> engine_default_voice;
 	for (const string &name : engine_names) {
 		// Resolve through the program-wide cache: each engine is bound at most once, ever, and reused here. An engine that refuses to bind is cached as unavailable and simply contributes no voices instead of taking down the whole list.
-		tts_engine *engine = tts_get_shared_engine(name).engine.get();
+		shared_engine_entry &entry = tts_get_shared_engine(name);
+		tts_engine *engine = entry.engine.get();
 		if (!engine || !engine->is_available()) continue;
-		engine_default_voice[name] = engine->get_current_voice();
+		engine_default_voice[name] = tts_engine_default_voice(entry);
 		int voice_count = engine->get_voice_count();
 		for (int i = 0; i < voice_count; i++) {
 			std::string lang = engine->get_voice_language(i);
