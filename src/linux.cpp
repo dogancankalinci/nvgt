@@ -13,8 +13,15 @@
 #if !defined(__ANDROID__) && (defined(__linux__) || defined(__unix__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__))
 #include "linux.h"
 #include "tts.h"
+#include "UI.h"
+#include <cerrno>
+#include <csignal>
 #include <cstdlib>
 #include <memory>
+#include <mutex>
+#include <set>
+#include <pthread.h>
+#include <sys/socket.h>
 #include <time.h>
 #include <Poco/SharedLibrary.h>
 #include <stdexcept>
@@ -26,6 +33,7 @@ using namespace std;
 #define spd_say (*spd_say)
 #define spd_stop (*spd_stop)
 #define spd_cancel (*spd_cancel)
+#define spd_set_notification_on (*spd_set_notification_on)
 #include <speech-dispatcher/libspeechd.h>
 #undef spd_get_default_address
 #undef spd_open2
@@ -33,6 +41,7 @@ using namespace std;
 #undef spd_say
 #undef spd_stop
 #undef spd_cancel
+#undef spd_set_notification_on
 
 static Poco::SharedLibrary g_speechd_lib;
 static bool g_speechd_lib_loaded = false;
@@ -51,6 +60,9 @@ static bool load_speechd_library() {
 		*(void**)&spd_say = g_speechd_lib.getSymbol("spd_say");
 		*(void**)&spd_stop = g_speechd_lib.getSymbol("spd_stop");
 		*(void**)&spd_cancel = g_speechd_lib.getSymbol("spd_cancel");
+		try {
+			*(void**)&spd_set_notification_on = g_speechd_lib.getSymbol("spd_set_notification_on");
+		} catch (Poco::Exception&) {} // Then nothing reports when speech ends.
 		g_speechd_lib_loaded = true;
 		return true;
 	} catch (Poco::Exception&) {
@@ -58,48 +70,179 @@ static bool load_speechd_library() {
 	}
 }
 
-speechd_engine::speechd_engine() : tts_engine_impl("Speech Dispatcher"), connection(nullptr), loaded(false) {
+// libspeechd writes to its socket with write(), and a write after the server went away raises SIGPIPE, which ends the process. Every call into it is made with SIGPIPE blocked in the calling thread, and a SIGPIPE the call raised, which is directed at that thread, is taken off before the old mask returns.
+class speechd_call_guard {
+	sigset_t old_mask;
+	bool was_pending;
+public:
+	speechd_call_guard() {
+		sigset_t sigpipe, pending;
+		sigemptyset(&sigpipe);
+		sigaddset(&sigpipe, SIGPIPE);
+		pthread_sigmask(SIG_BLOCK, &sigpipe, &old_mask);
+		sigpending(&pending);
+		was_pending = sigismember(&pending, SIGPIPE);
+	}
+	~speechd_call_guard() {
+		sigset_t sigpipe, pending;
+		sigemptyset(&sigpipe);
+		sigaddset(&sigpipe, SIGPIPE);
+		sigpending(&pending);
+		if (!was_pending && sigismember(&pending, SIGPIPE)) {
+			int signal_number;
+			sigwait(&sigpipe, &signal_number);
+		}
+		pthread_sigmask(SIG_SETMASK, &old_mask, nullptr);
+	}
+};
+
+// The server reports the end or cancellation of each message to callbacks that get no context, on libspeechd's event thread. Message numbers come from the server, so one table serves any connection.
+static std::mutex g_speechd_messages_mutex;
+static std::set<int> g_speechd_pending; // Said, and neither ended nor cancelled yet.
+static std::set<int> g_speechd_ended_early; // Reported before spd_say returned their number.
+static void speechd_message_ended(size_t msg_id, size_t client_id, SPDNotificationType state) {
+	std::lock_guard<std::mutex> lock(g_speechd_messages_mutex);
+	if (!g_speechd_pending.erase((int)msg_id)) g_speechd_ended_early.insert((int)msg_id);
+}
+static bool speechd_message_pending(int msg_id) {
+	std::lock_guard<std::mutex> lock(g_speechd_messages_mutex);
+	return g_speechd_pending.count(msg_id) > 0;
+}
+
+static unsigned long long monotonic_milliseconds() {
+	struct timespec ts;
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+	return (unsigned long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+speechd_engine::speechd_engine() : tts_engine_impl("Speech Dispatcher"), connection(nullptr), loaded(false), notifying(false), last_open(0) {
 	if (!load_speechd_library()) return;
-	// When it fails, libspeechd writes a message through the error pointer without checking it for null, so one must be given. Without an address spd_open2 looks up, and frees, the default one itself.
-	char *error = nullptr;
-	connection = spd_open2("NVGT", nullptr, nullptr, SPD_MODE_THREADED, nullptr, true, &error);
-	free(error);
-	if (!connection) return;
-	loaded = true;
+	loaded = open_connection();
 }
 
 speechd_engine::~speechd_engine() {
-	if (connection) {
-		spd_close((SPDConnection*)connection);
-		connection = nullptr;
-	}
+	std::lock_guard<std::mutex> lock(state_mutex);
+	drop_connection();
 }
 
-bool speechd_engine::is_available() { return loaded && connection != nullptr; }
+bool speechd_engine::open_connection() {
+	last_open = monotonic_milliseconds();
+	// When it fails, libspeechd writes a message through the error pointer without checking it for null, so one must be given. Without an address spd_open2 looks up, and frees, the default one itself.
+	char *error = nullptr;
+	SPDConnection *opened;
+	{
+		speechd_call_guard guard;
+		opened = spd_open2("NVGT", nullptr, nullptr, SPD_MODE_THREADED, nullptr, true, &error);
+	}
+	free(error);
+	if (!opened) return false;
+	opened->callback_end = opened->callback_cancel = speechd_message_ended;
+	{
+		speechd_call_guard guard;
+		notifying = spd_set_notification_on && spd_set_notification_on(opened, SPD_END) == 0 && spd_set_notification_on(opened, SPD_CANCEL) == 0;
+	}
+	if (!notifying) opened->callback_end = opened->callback_cancel = nullptr; // Ends that can't all be reported are not tracked.
+	connection = opened;
+	return true;
+}
+
+// libspeechd reports nothing when the server goes away; its event thread just closes the socket, and newer versions set it to -1. So the socket is checked instead: reading end of file, or failing other than for want of data, means the connection is gone.
+static bool speechd_socket_closed(int fd) {
+	if (fd < 0) return true;
+	char byte;
+	ssize_t result = recv(fd, &byte, 1, MSG_PEEK | MSG_DONTWAIT);
+	return result == 0 || (result < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR);
+}
+bool speechd_engine::connection_closed() { return speechd_socket_closed(((SPDConnection*)connection)->socket); }
+
+// Messages of a connection that is dropped will never be reported, so they stop counting. A connection whose socket libspeechd already set to -1 is closed; one whose socket it closed without that (libspeechd before 0.9), or is about to close, is left alone, because spd_close would close that descriptor again, and by then the number may belong to another file.
+void speechd_engine::drop_connection() {
+	if (!connection) return;
+	SPDConnection *dropped = (SPDConnection*)connection;
+	connection = nullptr;
+	if (dropped->socket < 0 || !speechd_socket_closed(dropped->socket)) {
+		speechd_call_guard guard;
+		spd_close(dropped);
+	}
+	std::lock_guard<std::mutex> lock(g_speechd_messages_mutex);
+	g_speechd_pending.clear();
+	g_speechd_ended_early.clear();
+}
+
+// Whether there is a working connection, after dropping one whose server went away and, at most every three seconds, opening a new one, which also starts the server again when it can.
+bool speechd_engine::connected() {
+	if (connection && !connection_closed()) return true;
+	drop_connection();
+	if (monotonic_milliseconds() - last_open < 3000) return false;
+	return open_connection();
+}
+
+bool speechd_engine::is_available() { return loaded; }
 
 bool speechd_engine::speak(const std::string &text, bool interrupt, bool blocking) {
-	if (!is_available() || text.empty()) return false;
-	if (interrupt) {
-		spd_stop((SPDConnection*)connection);
-		spd_cancel((SPDConnection*)connection);
+	if (!loaded || text.empty()) return false;
+	int msg_id;
+	{
+		std::lock_guard<std::mutex> lock(state_mutex);
+		if (!connected()) return false;
+		SPDConnection *speaking_connection = (SPDConnection*)connection;
+		{
+			speechd_call_guard guard;
+			if (interrupt) {
+				spd_stop(speaking_connection);
+				spd_cancel(speaking_connection);
+			}
+			msg_id = spd_say(speaking_connection, interrupt ? SPD_IMPORTANT : SPD_MESSAGE, text.c_str());
+		}
+		if (msg_id < 0) return false;
+		if (!notifying) return true; // Nothing would say when it ended, so a blocking call can't wait either.
+		std::lock_guard<std::mutex> messages_lock(g_speechd_messages_mutex);
+		if (!g_speechd_ended_early.erase(msg_id)) g_speechd_pending.insert(msg_id);
 	}
-	return spd_say((SPDConnection*)connection, interrupt ? SPD_IMPORTANT : SPD_MESSAGE, text.c_str()) >= 0;
+	if (!blocking) return true;
+	// The message stops pending when it ends, is cancelled, or its connection is dropped, here or by another thread.
+	while (speechd_message_pending(msg_id)) {
+		{
+			std::lock_guard<std::mutex> lock(state_mutex);
+			if (!connection || connection_closed()) {
+				drop_connection();
+				break;
+			}
+		}
+		wait(10);
+	}
+	return true;
 }
 
-bool speechd_engine::is_speaking() { return false; }
+bool speechd_engine::is_speaking() {
+	std::lock_guard<std::mutex> lock(state_mutex);
+	if (!connection || !notifying) return false;
+	if (connection_closed()) {
+		drop_connection();
+		return false;
+	}
+	std::lock_guard<std::mutex> messages_lock(g_speechd_messages_mutex);
+	return !g_speechd_pending.empty();
+}
 
 bool speechd_engine::stop() {
-	if (!is_available()) return false;
+	if (!loaded) return false;
+	std::lock_guard<std::mutex> lock(state_mutex);
+	if (!connection || connection_closed()) {
+		drop_connection(); // Nothing is speaking on a connection that is gone.
+		return true;
+	}
+	speechd_call_guard guard;
 	spd_cancel((SPDConnection*)connection);
 	spd_stop((SPDConnection*)connection);
 	return true;
 }
 
-bool screen_reader_is_speaking() { return false; }
-
 void register_native_tts() { tts_engine_register("speechd", []() -> shared_ptr<tts_engine> { return make_shared<speechd_engine>(); }); }
 
 static tts_voice* g_screen_reader_voice = nullptr;
+
+bool screen_reader_is_speaking() { return g_screen_reader_voice && g_screen_reader_voice->get_speaking(); }
 
 bool screen_reader_load() {
 	if (g_screen_reader_voice) return true;

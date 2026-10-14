@@ -11,14 +11,22 @@
  */
 
 #pragma once
+#include <mutex>
 #include <string>
 #include "tts.h"
 
 bool screen_reader_is_speaking();
 
 class speechd_engine : public tts_engine_impl {
-	void* connection;
-	bool loaded;
+	std::mutex state_mutex; // Guards the members below, which every script thread speaking on the shared engine uses; the private methods expect it held.
+	void* connection; // The SPDConnection, null while there is none.
+	bool loaded; // A first connection succeeded; the engine stays available while it reconnects after that.
+	bool notifying; // The server reports when the messages of this connection end or are cancelled.
+	unsigned long long last_open; // When a connection was last opened or tried, in monotonic milliseconds.
+	bool open_connection();
+	bool connection_closed();
+	void drop_connection();
+	bool connected();
 public:
 	speechd_engine();
 	virtual ~speechd_engine();
