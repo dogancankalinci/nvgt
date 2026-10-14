@@ -593,17 +593,21 @@ void tts_voice::clear() {
 	while (!queue.empty()) queue.pop();
 	speaking.clear();
 }
+// Fades interrupted speech out over 20 ms and stops it then, rather than letting it play on silently to its end.
 bool tts_voice::fade(soundptr &item) {
-	ma_sound_set_fade_in_milliseconds(item->get_ma_sound(), -1, 0, 20);
+	ma_sound_stop_with_fade_in_milliseconds(item->get_ma_sound(), 20);
 	try {
 		fade_queue.push(item);
 		return true;
 	} catch (const exception &) { return false; }
 }
+// Releases faded sounds from the front of the queue once they are silent. The fade volume is read from miniaudio, linear whatever units the sound reports its attributes in: with the percentage attributes of the default engine, the sound's own getter reports decibels, never above 0.
 void tts_voice::cleanup_completed_fades() {
-	if (fade_queue.empty()) return;
-	if ((fade_queue.front()->get_playing() && fade_queue.front()->get_current_fade_volume() > 0)) return;
-	while (!fade_queue.empty() && fade_queue.front()->is_load_completed()) fade_queue.pop();
+	while (!fade_queue.empty()) {
+		sound *front = fade_queue.front().get();
+		if (!front->is_load_completed() || (front->get_playing() && ma_sound_get_current_fade_volume(front->get_ma_sound()) > 0)) break;
+		fade_queue.pop();
+	}
 }
 void tts_voice::at_end(void *pUserData, ma_sound *pSound) {
 	ma_job job = ma_job_init(MA_JOB_TYPE_CUSTOM);
