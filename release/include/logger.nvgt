@@ -81,7 +81,7 @@ class logger {
 		if (DATE_MONTH < 10)
 			month = "0" + month;
 		year = "" + DATE_YEAR;
-		year = string_trim_left(year, 2);
+		year = year.substr(2);
 		hour24 = "" + TIME_HOUR;
 		if (TIME_HOUR < 10)
 			hour24 = "0" + hour24;
@@ -121,31 +121,31 @@ class logger {
 			second = "0" + second;
 		if (date_format != "") {
 			result = date_format;
-			result = string_replace(result, "<d>", "" + DATE_DAY + "", true);
-			result = string_replace(result, "<D>", "" + DATE_DAY + "", true);
-			result = string_replace(result, "<dd>", date, true);
-			result = string_replace(result, "<DD>", date, true);
-			result = string_replace(result, "<w>", "" + DATE_WEEKDAY, true);
-			result = string_replace(result, "<W>", DATE_WEEKDAY_NAME, true);
-			result = string_replace(result, "<m>", "" + DATE_MONTH, true);
-			result = string_replace(result, "<M>", DATE_MONTH_NAME, true);
-			result = string_replace(result, "<mm>", month, true);
-			result = string_replace(result, "<y>", "" + DATE_YEAR, true);
-			result = string_replace(result, "<Y>", year, true);
-			result = string_replace(result, "<h>", hour12x0, true);
-			result = string_replace(result, "<hh>", hour12, true);
-			result = string_replace(result, "<H>", "" + TIME_HOUR, true);
-			result = string_replace(result, "<HH>", hour24, true);
-			result = string_replace(result, "<n>", "" + TIME_MINUTE, true);
-			result = string_replace(result, "<N>", "" + TIME_MINUTE, true);
-			result = string_replace(result, "<nn>", minute, true);
-			result = string_replace(result, "<NN>", minute, true);
-			result = string_replace(result, "<s>", "" + TIME_SECOND, true);
-			result = string_replace(result, "<S>", "" + TIME_SECOND, true);
-			result = string_replace(result, "<ss>", second, true);
-			result = string_replace(result, "<SS>", second, true);
-			result = string_replace(result, "<tt>", daytime_lc, true);
-			result = string_replace(result, "<TT>", daytime, true);
+			result = result.replace("<d>", "" + DATE_DAY + "", true);
+			result = result.replace("<D>", "" + DATE_DAY + "", true);
+			result = result.replace("<dd>", date, true);
+			result = result.replace("<DD>", date, true);
+			result = result.replace("<w>", "" + DATE_WEEKDAY, true);
+			result = result.replace("<W>", DATE_WEEKDAY_NAME, true);
+			result = result.replace("<m>", "" + DATE_MONTH, true);
+			result = result.replace("<M>", DATE_MONTH_NAME, true);
+			result = result.replace("<mm>", month, true);
+			result = result.replace("<y>", "" + DATE_YEAR, true);
+			result = result.replace("<Y>", year, true);
+			result = result.replace("<h>", hour12x0, true);
+			result = result.replace("<hh>", hour12, true);
+			result = result.replace("<H>", "" + TIME_HOUR, true);
+			result = result.replace("<HH>", hour24, true);
+			result = result.replace("<n>", "" + TIME_MINUTE, true);
+			result = result.replace("<N>", "" + TIME_MINUTE, true);
+			result = result.replace("<nn>", minute, true);
+			result = result.replace("<NN>", minute, true);
+			result = result.replace("<s>", "" + TIME_SECOND, true);
+			result = result.replace("<S>", "" + TIME_SECOND, true);
+			result = result.replace("<ss>", second, true);
+			result = result.replace("<SS>", second, true);
+			result = result.replace("<tt>", daytime_lc, true);
+			result = result.replace("<TT>", daytime, true);
 		}
 		return result;
 	}
