@@ -70,10 +70,12 @@ public:
 	nvgt_speech_wait_state waitState;
 	NVGTSpeechWaiter* waiter; // The synthesizer's delegate, which it doesn't retain.
 	Impl() : currentVoice(nil) {
-		voices = [[AVSpeechSynthesisVoice speechVoices] retain];
-		readDefaults();
-		synth = [[AVSpeechSynthesizer alloc] init];
-		setDelegate();
+		@autoreleasepool {
+			voices = [[AVSpeechSynthesisVoice speechVoices] retain];
+			readDefaults();
+			synth = [[AVSpeechSynthesizer alloc] init];
+			setDelegate();
+		}
 	}
 	~Impl() {
 		synth.delegate = nil;
@@ -117,32 +119,40 @@ public:
 	void resetPitch() { pitch = defaultPitch; pitchSet = false; }
 	void resetVoice() { currentVoice = nil; }
 	// Speech starts asynchronously, so the synthesizer can still report that it isn't speaking when this returns. Empty text neither speaks nor interrupts anything, as on the other platforms.
+	// Nothing drains autorelease pools around the script, so every Objective-C call made for it runs in a pool of its own.
 	bool speak(const std::string& text, bool interrupt) {
 		if (text.empty()) return false;
-		if (interrupt && synth.isSpeaking) [synth stopSpeakingAtBoundary:AVSpeechBoundaryImmediate];
-		NSString *nstext = [NSString stringWithUTF8String:text.c_str()];
-		AVSpeechUtterance *utterance = [[AVSpeechUtterance alloc] initWithString:nstext];
-		apply(utterance);
-		[synth speakUtterance:utterance];
-		[utterance release]; // The synthesizer keeps it while it is queued.
+		@autoreleasepool {
+			if (interrupt && synth.isSpeaking) [synth stopSpeakingAtBoundary:AVSpeechBoundaryImmediate];
+			NSString *nstext = [NSString stringWithUTF8String:text.c_str()];
+			AVSpeechUtterance *utterance = [[AVSpeechUtterance alloc] initWithString:nstext];
+			apply(utterance);
+			[synth speakUtterance:utterance];
+			[utterance release]; // The synthesizer keeps it while it is queued.
+		}
 		return true;
 	}
 	// Waits for the end of its own utterance, which the delegate reports. Speech can start seconds after it is queued, and some iOS versions report no cancellation, so the wait also ends once the synthesizer stops after it was seen speaking, or when it hasn't started in ten seconds.
 	bool speakWait(const std::string& text, bool interrupt) {
 		if (text.empty()) return false;
-		if (interrupt && synth.isSpeaking) [synth stopSpeakingAtBoundary:AVSpeechBoundaryImmediate];
-		NSString *nstext = [NSString stringWithUTF8String:text.c_str()];
-		AVSpeechUtterance *utterance = [[AVSpeechUtterance alloc] initWithString:nstext];
-		apply(utterance);
-		waitState.ended = false;
-		waitState.utterance = (void*)utterance;
-		[synth speakUtterance:utterance];
+		AVSpeechUtterance *utterance;
+		@autoreleasepool {
+			if (interrupt && synth.isSpeaking) [synth stopSpeakingAtBoundary:AVSpeechBoundaryImmediate];
+			NSString *nstext = [NSString stringWithUTF8String:text.c_str()];
+			utterance = [[AVSpeechUtterance alloc] initWithString:nstext];
+			apply(utterance);
+			waitState.ended = false;
+			waitState.utterance = (void*)utterance;
+			[synth speakUtterance:utterance];
+		}
 		bool seenSpeaking = false;
 		auto giveUp = std::chrono::steady_clock::now() + std::chrono::seconds(10);
 		while (!waitState.ended) {
-			if (synth.isSpeaking) seenSpeaking = true;
-			else if (seenSpeaking || std::chrono::steady_clock::now() >= giveUp) break;
-			wait(5);
+			@autoreleasepool {
+				if (synth.isSpeaking) seenSpeaking = true;
+				else if (seenSpeaking || std::chrono::steady_clock::now() >= giveUp) break;
+				wait(5);
+			}
 		}
 		waitState.utterance = nullptr;
 		[utterance release]; // Held until here, so its address can't be reused by another utterance while it is compared.
@@ -164,39 +174,47 @@ public:
 	CScriptArray* getAllVoices() const {
 		asITypeInfo* arrayTipe = asGetActiveContext()->GetEngine()->GetTypeInfoByDecl("array<string>");
 		CScriptArray* voiceNames = CScriptArray::Create(arrayTipe, (int)0);
-		for (AVSpeechSynthesisVoice *voice in voices) {
-			std::string voiceName([voice.name UTF8String]);
-			voiceNames->Resize(voiceNames->GetSize() + 1);
-			*(std::string*)voiceNames->At(voiceNames->GetSize() - 1) = voiceName;
+		@autoreleasepool {
+			for (AVSpeechSynthesisVoice *voice in voices) {
+				std::string voiceName([voice.name UTF8String]);
+				voiceNames->Resize(voiceNames->GetSize() + 1);
+				*(std::string*)voiceNames->At(voiceNames->GetSize() - 1) = voiceName;
+			}
 		}
 		return voiceNames;
 	}
 	CScriptArray* getVoicesByLanguage(const std::string& language) const {
-		NSString *nslanguage = [NSString stringWithUTF8String:language.c_str()];
 		asITypeInfo* arrayTipe = asGetActiveContext()->GetEngine()->GetTypeInfoByDecl("array<string>");
 		CScriptArray* voiceNames = CScriptArray::Create(arrayTipe, (int)0);
-		for (AVSpeechSynthesisVoice *voice in voices) {
-			if (![voice.language isEqualToString:nslanguage]) continue;
-			std::string voiceName([voice.name UTF8String]);
-			voiceNames->Resize(voiceNames->GetSize() + 1);
-			*(std::string*)voiceNames->At(voiceNames->GetSize() - 1) = voiceName;
+		@autoreleasepool {
+			NSString *nslanguage = [NSString stringWithUTF8String:language.c_str()];
+			for (AVSpeechSynthesisVoice *voice in voices) {
+				if (![voice.language isEqualToString:nslanguage]) continue;
+				std::string voiceName([voice.name UTF8String]);
+				voiceNames->Resize(voiceNames->GetSize() + 1);
+				*(std::string*)voiceNames->At(voiceNames->GetSize() - 1) = voiceName;
+			}
 		}
 		return voiceNames;
 	}
 	void selectVoiceByName(const std::string& name) {
-		NSString *nsname = [NSString stringWithUTF8String:name.c_str()];
-		for (AVSpeechSynthesisVoice *voice in voices) {
-			if (![voice.name isEqualToString:nsname]) continue;
-			currentVoice = voice;
-			break;
+		@autoreleasepool {
+			NSString *nsname = [NSString stringWithUTF8String:name.c_str()];
+			for (AVSpeechSynthesisVoice *voice in voices) {
+				if (![voice.name isEqualToString:nsname]) continue;
+				currentVoice = voice;
+				break;
+			}
 		}
 	}
 	void selectVoiceByLanguage(const std::string& language) {
-		NSString *nslanguage = [NSString stringWithUTF8String:language.c_str()];
-		for (AVSpeechSynthesisVoice *voice in voices) {
-			if (![voice.language isEqualToString:nslanguage]) continue;
-			currentVoice = voice;
-			break;
+		@autoreleasepool {
+			NSString *nslanguage = [NSString stringWithUTF8String:language.c_str()];
+			for (AVSpeechSynthesisVoice *voice in voices) {
+				if (![voice.language isEqualToString:nslanguage]) continue;
+				currentVoice = voice;
+				break;
+			}
 		}
 	}
 	std::string getCurrentLanguage() const {
@@ -207,32 +225,40 @@ public:
 	}
 	NSUInteger getVoicesCount() const { return voices.count; }
 	int getVoiceIndex(const std::string& name) {
-		AVSpeechSynthesisVoice *voice = getVoiceObject([NSString stringWithUTF8String:name.c_str()]);
-		if (!voice) return -1;
-		NSUInteger result = [voices indexOfObject:voice];
-		return result == NSNotFound? -1 : result;
+		@autoreleasepool {
+			AVSpeechSynthesisVoice *voice = getVoiceObject([NSString stringWithUTF8String:name.c_str()]);
+			if (!voice) return -1;
+			NSUInteger result = [voices indexOfObject:voice];
+			return result == NSNotFound? -1 : result;
+		}
 	}
 	bool setVoiceByIndex(NSUInteger index) {
 		AVSpeechSynthesisVoice *oldVoice = currentVoice;
-		@try {
-			currentVoice = [voices objectAtIndex:index];
-			return true;
-		} @catch (NSException *exception) {
-			currentVoice = oldVoice;
-			return false;
+		@autoreleasepool {
+			@try {
+				currentVoice = [voices objectAtIndex:index];
+				return true;
+			} @catch (NSException *exception) {
+				currentVoice = oldVoice;
+				return false;
+			}
 		}
 	}
 	std::string getVoiceName(NSUInteger index) {
-		@try { return [[voices objectAtIndex:index].name UTF8String]; }
-		@catch (NSException *exception) { return ""; }
+		@autoreleasepool {
+			@try { return [[voices objectAtIndex:index].name UTF8String]; }
+			@catch (NSException *exception) { return ""; }
+		}
 	}
 	std::string getVoiceLanguage(NSUInteger index) {
-		@try {
-			AVSpeechSynthesisVoice *voice = [voices objectAtIndex:index];
-			std::string lang([voice.language UTF8String]);
-			std::transform(lang.begin(), lang.end(), lang.begin(), ::tolower);
-			return lang;
-		} @catch (NSException *exception) { return ""; }
+		@autoreleasepool {
+			@try {
+				AVSpeechSynthesisVoice *voice = [voices objectAtIndex:index];
+				std::string lang([voice.language UTF8String]);
+				std::transform(lang.begin(), lang.end(), lang.begin(), ::tolower);
+				return lang;
+			} @catch (NSException *exception) { return ""; }
+		}
 	}
 private:
 	AVSpeechSynthesisVoice *getVoiceObject(NSString *name) {
@@ -341,58 +367,62 @@ int AVTTSVoice::get_current_voice() {
 tts_audio_data* AVTTSVoice::speak_to_pcm(const std::string &text) {
 	if (!impl || text.empty()) return nullptr;
 	if (@available(iOS 13.0, macOS 10.15, *)) {} else return nullptr;
-	__block NSMutableData *audioData = [[NSMutableData alloc] init];
-	__block BOOL synthesisDone = NO;
-	__block AVAudioFormat *targetFormat = nil;
-	__block AVAudioConverter *converter = nil;
-	NSString *nstext = [NSString stringWithUTF8String:text.c_str()];
-	AVSpeechUtterance *utterance = [[AVSpeechUtterance alloc] initWithString:nstext];
-	impl->apply(utterance);
-	[impl->synth writeUtterance:utterance toBufferCallback:^(AVAudioBuffer * _Nonnull buffer) {
-		@autoreleasepool {
-			if (![buffer isKindOfClass:[AVAudioPCMBuffer class]]) return;
-			AVAudioPCMBuffer *pcmBuffer = (AVAudioPCMBuffer *)buffer;
-			if (pcmBuffer.frameLength == 0) { synthesisDone = YES; return; }
-			if (!converter) {
-				AVAudioFormat *sourceFormat = pcmBuffer.format;
-				if (!sourceFormat) return;
-				targetFormat = [[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatInt16 sampleRate:sourceFormat.sampleRate channels:sourceFormat.channelCount interleaved:YES];
-				if (!targetFormat) return;
-				converter = [[AVAudioConverter alloc] initFromFormat:sourceFormat toFormat:targetFormat];
-				if (!converter) { [targetFormat release]; targetFormat = nil; return; }
+	@autoreleasepool {
+		__block NSMutableData *audioData = [[NSMutableData alloc] init];
+		__block BOOL synthesisDone = NO;
+		__block AVAudioFormat *targetFormat = nil;
+		__block AVAudioConverter *converter = nil;
+		NSString *nstext = [NSString stringWithUTF8String:text.c_str()];
+		AVSpeechUtterance *utterance = [[AVSpeechUtterance alloc] initWithString:nstext];
+		impl->apply(utterance);
+		[impl->synth writeUtterance:utterance toBufferCallback:^(AVAudioBuffer * _Nonnull buffer) {
+			@autoreleasepool {
+				if (![buffer isKindOfClass:[AVAudioPCMBuffer class]]) return;
+				AVAudioPCMBuffer *pcmBuffer = (AVAudioPCMBuffer *)buffer;
+				if (pcmBuffer.frameLength == 0) { synthesisDone = YES; return; }
+				if (!converter) {
+					AVAudioFormat *sourceFormat = pcmBuffer.format;
+					if (!sourceFormat) return;
+					targetFormat = [[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatInt16 sampleRate:sourceFormat.sampleRate channels:sourceFormat.channelCount interleaved:YES];
+					if (!targetFormat) return;
+					converter = [[AVAudioConverter alloc] initFromFormat:sourceFormat toFormat:targetFormat];
+					if (!converter) { [targetFormat release]; targetFormat = nil; return; }
+				}
+				AVAudioPCMBuffer *convertedBuffer = [[AVAudioPCMBuffer alloc] initWithPCMFormat:targetFormat frameCapacity:pcmBuffer.frameLength];
+				if (!convertedBuffer) return;
+				__block BOOL inputProvided = NO;
+				AVAudioConverterInputBlock inputBlock = ^AVAudioBuffer *(AVAudioPacketCount inNumberOfPackets, AVAudioConverterInputStatus *outStatus) {
+					if (inputProvided) { *outStatus = AVAudioConverterInputStatus_NoDataNow; return nil; }
+					inputProvided = YES;
+					*outStatus = AVAudioConverterInputStatus_HaveData;
+					return pcmBuffer;
+				};
+				NSError *error = nil;
+				AVAudioConverterOutputStatus status = [converter convertToBuffer:convertedBuffer error:&error withInputFromBlock:inputBlock];
+				if (status == AVAudioConverterOutputStatus_HaveData && convertedBuffer.frameLength > 0) {
+					NSUInteger bytesToAppend = convertedBuffer.frameLength * targetFormat.channelCount * sizeof(int16_t);
+					[audioData appendBytes:convertedBuffer.int16ChannelData[0] length:bytesToAppend];
+				}
+				[convertedBuffer release];
 			}
-			AVAudioPCMBuffer *convertedBuffer = [[AVAudioPCMBuffer alloc] initWithPCMFormat:targetFormat frameCapacity:pcmBuffer.frameLength];
-			if (!convertedBuffer) return;
-			__block BOOL inputProvided = NO;
-			AVAudioConverterInputBlock inputBlock = ^AVAudioBuffer *(AVAudioPacketCount inNumberOfPackets, AVAudioConverterInputStatus *outStatus) {
-				if (inputProvided) { *outStatus = AVAudioConverterInputStatus_NoDataNow; return nil; }
-				inputProvided = YES;
-				*outStatus = AVAudioConverterInputStatus_HaveData;
-				return pcmBuffer;
-			};
-			NSError *error = nil;
-			AVAudioConverterOutputStatus status = [converter convertToBuffer:convertedBuffer error:&error withInputFromBlock:inputBlock];
-			if (status == AVAudioConverterOutputStatus_HaveData && convertedBuffer.frameLength > 0) {
-				NSUInteger bytesToAppend = convertedBuffer.frameLength * targetFormat.channelCount * sizeof(int16_t);
-				[audioData appendBytes:convertedBuffer.int16ChannelData[0] length:bytesToAppend];
-			}
-			[convertedBuffer release];
+		}];
+		[utterance release]; // The synthesizer keeps it while it writes.
+		NSDate *timeout = [NSDate dateWithTimeIntervalSinceNow:10.0];
+		while (!synthesisDone && [[NSDate date] compare:timeout] == NSOrderedAscending) {
+			@autoreleasepool { [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]]; }
 		}
-	}];
-	[utterance release]; // The synthesizer keeps it while it writes.
-	NSDate *timeout = [NSDate dateWithTimeIntervalSinceNow:10.0];
-	while (!synthesisDone && [[NSDate date] compare:timeout] == NSOrderedAscending) [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
-	// A synthesis that timed out can still call the block, which uses these objects, so they are kept.
-	if (!synthesisDone) return nullptr;
-	unsigned int sampleRate = targetFormat ? (unsigned int)targetFormat.sampleRate : 22050;
-	unsigned int channelCount = targetFormat ? (unsigned int)targetFormat.channelCount : 1;
-	if (converter) [converter release];
-	if (targetFormat) [targetFormat release];
-	if (audioData.length == 0) {
-		[audioData release];
-		return nullptr;
+		// A synthesis that timed out can still call the block, which uses these objects, so they are kept.
+		if (!synthesisDone) return nullptr;
+		unsigned int sampleRate = targetFormat ? (unsigned int)targetFormat.sampleRate : 22050;
+		unsigned int channelCount = targetFormat ? (unsigned int)targetFormat.channelCount : 1;
+		if (converter) [converter release];
+		if (targetFormat) [targetFormat release];
+		if (audioData.length == 0) {
+			[audioData release];
+			return nullptr;
+		}
+		return new tts_audio_data(this, (void*)audioData.bytes, (unsigned int)audioData.length, sampleRate, channelCount, 16, (void*)audioData); // free_pcm releases audioData.
 	}
-	return new tts_audio_data(this, (void*)audioData.bytes, (unsigned int)audioData.length, sampleRate, channelCount, 16, (void*)audioData); // free_pcm releases audioData.
 }
 
 void AVTTSVoice::free_pcm(tts_audio_data* data) {
@@ -409,15 +439,17 @@ AVTTSVoice* init() {
 }
 
 bool voice_over_announce(const std::string& message) {
-	NSString* nsmsg = [NSString stringWithUTF8String:message.c_str()];
-#if TARGET_OS_IOS
-	UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, nsmsg);
-	return UIAccessibilityIsVoiceOverRunning();
-#else
-	NSWindow* win = g_window? (NSWindow*)g_window->get_native_window() : nullptr;
-	NSAccessibilityPostNotificationWithUserInfo([NSApp keyWindow], NSAccessibilityAnnouncementRequestedNotification, @{NSAccessibilityAnnouncementKey: nsmsg, NSAccessibilityPriorityKey: @(NSAccessibilityPriorityHigh)});
-	return [NSApp keyWindow] == win;
-#endif
+	@autoreleasepool {
+		NSString* nsmsg = [NSString stringWithUTF8String:message.c_str()];
+	#if TARGET_OS_IOS
+		UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, nsmsg);
+		return UIAccessibilityIsVoiceOverRunning();
+	#else
+		NSWindow* win = g_window? (NSWindow*)g_window->get_native_window() : nullptr;
+		NSAccessibilityPostNotificationWithUserInfo([NSApp keyWindow], NSAccessibilityAnnouncementRequestedNotification, @{NSAccessibilityAnnouncementKey: nsmsg, NSAccessibilityPriorityKey: @(NSAccessibilityPriorityHigh)});
+		return [NSApp keyWindow] == win;
+	#endif
+	}
 }
 
 std::string speech_text = "";
@@ -635,20 +667,22 @@ bool voice_over_is_running() {
 bool voice_over_speak(const std::string& text, bool interrupt) {
 	if (!voice_over_is_running()) return false;
 	std::string message = tts_valid_utf8(text); // NSString makes nil of malformed UTF-8, which the announcement dictionary on macOS rejects with an exception.
-	if (!speech_thread.isRunning()) speech_thread.start(vo_speech_thread);
-	Poco::FastMutex::ScopedLock exclusive(speech_text_mutex);
-	if (interrupt || speech_text == "") speech_text = message;
-	else {
-		speech_text += " . ";
-		speech_text += message;
+	@autoreleasepool {
+		if (!speech_thread.isRunning()) speech_thread.start(vo_speech_thread);
+		Poco::FastMutex::ScopedLock exclusive(speech_text_mutex);
+		if (interrupt || speech_text == "") speech_text = message;
+		else {
+			speech_text += " . ";
+			speech_text += message;
+		}
+		speech_new_event.set();
+		#if TARGET_OS_IOS
+			return UIAccessibilityIsVoiceOverRunning();
+		#else
+			NSWindow* win = g_window ? (NSWindow*)g_window->get_native_window() : nullptr;
+			return [NSApp keyWindow] == win;
+		#endif
 	}
-	speech_new_event.set();
-	#if TARGET_OS_IOS
-		return UIAccessibilityIsVoiceOverRunning();
-	#else
-		NSWindow* win = g_window ? (NSWindow*)g_window->get_native_window() : nullptr;
-		return [NSApp keyWindow] == win;
-	#endif
 }
 
 void voice_over_speech_shutdown() {
