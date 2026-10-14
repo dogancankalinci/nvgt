@@ -638,6 +638,13 @@ bool tts_voice::schedule(soundptr &s, bool interrupt) {
 		return true;
 	} catch (exception &) { return false; }
 }
+// Moves the queue past its front utterance once that has played to its end. Expects queue_mtx held.
+void tts_voice::advance_queue() {
+	if (queue.empty() || !ma_sound_at_end(queue.front()->get_ma_sound())) return;
+	queue.pop();
+	if (queue.empty()) speaking.clear();
+	else queue.front()->play();
+}
 void tts_voice::clear() {
 	if (!queue.empty() && queue.front()->get_playing()) fade(queue.front());
 	while (!queue.empty()) queue.pop();
@@ -674,13 +681,9 @@ ma_result tts_voice::job_proc(ma_job *pJob) {
 	tts_voice *voice = live->second;
 	ma_sound *expected_front = (ma_sound *)pJob->data.custom.data1;
 	unique_lock<mutex> lock(voice->queue_mtx);
+	// The utterance can already be gone, removed by stop() or by an interrupting speak(), and the sound now at the front can sit at its freed address, so only one that has played to its end is moved past.
 	if (voice->queue.empty() || voice->queue.front()->get_ma_sound() != expected_front) return MA_CANCELLED;
-	voice->queue.pop();
-	if (voice->queue.size() == 0) {
-		voice->speaking.clear();
-		return MA_SUCCESS;
-	}
-	voice->queue.front()->play();
+	voice->advance_queue();
 	return MA_SUCCESS;
 }
 

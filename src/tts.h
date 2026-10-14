@@ -151,6 +151,7 @@ class tts_voice {
 	void *speak_to_pcm(const std::string &text, tts_audio_data** datablock); // Returns pointer to trimmed sample.
 	bool schedule(soundptr &s, bool interrupt);
 	void clear();
+	void advance_queue();
 	bool fade(soundptr &item);
 	void cleanup_completed_fades();
 	static void at_end(void *pUserData, ma_sound *pSound);
