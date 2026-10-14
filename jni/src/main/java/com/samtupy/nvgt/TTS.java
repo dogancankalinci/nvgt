@@ -204,8 +204,10 @@ public class TTS {
 			if (previous != null) previous.uncaughtException(thread, error);
 		});
 	}
+	// A chain of causes can loop (initCause only refuses a throwable as its own cause), so at most 32 links are looked at.
 	private static boolean isConnectionSetupFailure(Throwable error) {
-		for (Throwable t = error; t != null; t = t.getCause() == t ? null : t.getCause()) {
+		int links = 0;
+		for (Throwable t = error; t != null && links < 32; t = t.getCause(), links++) {
 			for (StackTraceElement frame : t.getStackTrace()) {
 				if (CONNECTION_SETUP_TASK.equals(frame.getClassName()) && "doInBackground".equals(frame.getMethodName())) return true;
 			}
