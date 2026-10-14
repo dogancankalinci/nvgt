@@ -30,14 +30,14 @@
 #include "xplatform.h"
 using namespace std;
 
-// Trim prenormalized TTS based on minimum thresholds in dB. Size is in frames.
-template <class t> static t *tts_trim_internal(t *data, unsigned int* size_in_frames, int channels, float begin_db, float end_db) {
-	t min_begin_sample = ceil(ma_volume_db_to_linear(begin_db) * (double)numeric_limits<t>::max());
-	t min_end_sample = ceil(ma_volume_db_to_linear(end_db) * (double)numeric_limits<t>::max());
+// Trim prenormalized TTS based on minimum thresholds in dB. Size is in frames. A sample's level is its distance from silence, which is 128 for unsigned 8-bit samples and 0 for signed ones, relative to the largest such distance.
+template <class t> static t *tts_trim_internal(t *data, unsigned int* size_in_frames, int channels, float begin_db, float end_db, double silence = 0, double peak = numeric_limits<t>::max()) {
+	double min_begin_sample = ceil(ma_volume_db_to_linear(begin_db) * peak);
+	double min_end_sample = ceil(ma_volume_db_to_linear(end_db) * peak);
 	for (unsigned long i = 0; i < *size_in_frames; i++) {
 		double mean = 0;
 		for (int c = 0; c < channels; c++)
-			mean += abs(data[(i * channels) + c]);
+			mean += fabs(data[(i * channels) + c] - silence);
 		mean /= channels;
 		if (mean >= min_begin_sample) {
 			*size_in_frames -= i;
@@ -48,11 +48,10 @@ template <class t> static t *tts_trim_internal(t *data, unsigned int* size_in_fr
 	for (int i = *size_in_frames -1; i >= 0; i--) {
 		double mean = 0;
 		for (int c = 0; c < channels; c++)
-			mean += abs(data[(i * channels) + c]);
+			mean += fabs(data[(i * channels) + c] - silence);
 		mean /= channels;
 		if (mean > min_end_sample) {
-			if (i < *size_in_frames - 1) i++;
-			*size_in_frames -= (*size_in_frames - i);
+			*size_in_frames = i + 1; // Up to and including the last frame that is loud enough.
 			break;
 		}
 	}
@@ -70,7 +69,7 @@ static void* tts_trim(tts_audio_data* data, float begin_db = -60, float end_db =
 			return trimmed_data;
 		case 8:
 			size_in_frames = data->size_in_bytes / data->channels;
-			trimmed_data = tts_trim_internal<char>((char*)data->data, &size_in_frames, data->channels, begin_db, end_db);
+			trimmed_data = tts_trim_internal<uint8_t>((uint8_t*)data->data, &size_in_frames, data->channels, begin_db, end_db, 128, 127);
 			data->size_in_bytes = size_in_frames * data->channels;
 			return trimmed_data;
 		default:
