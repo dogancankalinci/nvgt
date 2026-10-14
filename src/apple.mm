@@ -75,16 +75,9 @@ public:
 		synth = [[AVSpeechSynthesizer alloc] init];
 		setDelegate();
 	}
-	Impl(const std::string& language) : currentVoice(nil) {
-		voices = [[AVSpeechSynthesisVoice speechVoices] retain];
-		NSString *nslanguage = [NSString stringWithUTF8String:language.c_str()];
-		currentVoice = [AVSpeechSynthesisVoice voiceWithLanguage:nslanguage]; // nil if there is none, which leaves the system default voice in charge.
-		readDefaults();
-		synth = [[AVSpeechSynthesizer alloc] init];
-		setDelegate();
-	}
 	~Impl() {
 		synth.delegate = nil;
+		[synth release];
 		[waiter release];
 		if (voices) [voices release];
 	}
