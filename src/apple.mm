@@ -438,21 +438,24 @@ AVTTSVoice* init() {
 	return new AVTTSVoice;
 }
 
-bool voice_over_announce(const std::string& message) {
+// On macOS the announcement comes from the window that was key when the text was given: AppKit's windows aren't to be used from this thread while the main thread may be using them, so that is read where the text is given.
+#if TARGET_OS_IOS
+static void voice_over_announce(const std::string& message) {
+	@autoreleasepool { UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, [NSString stringWithUTF8String:message.c_str()]); }
+}
+#else
+static void voice_over_announce(const std::string& message, NSWindow* window) {
 	@autoreleasepool {
 		NSString* nsmsg = [NSString stringWithUTF8String:message.c_str()];
-	#if TARGET_OS_IOS
-		UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, nsmsg);
-		return UIAccessibilityIsVoiceOverRunning();
-	#else
-		NSWindow* win = g_window? (NSWindow*)g_window->get_native_window() : nullptr;
-		NSAccessibilityPostNotificationWithUserInfo([NSApp keyWindow], NSAccessibilityAnnouncementRequestedNotification, @{NSAccessibilityAnnouncementKey: nsmsg, NSAccessibilityPriorityKey: @(NSAccessibilityPriorityHigh)});
-		return [NSApp keyWindow] == win;
-	#endif
+		NSAccessibilityPostNotificationWithUserInfo(window, NSAccessibilityAnnouncementRequestedNotification, @{NSAccessibilityAnnouncementKey: nsmsg, NSAccessibilityPriorityKey: @(NSAccessibilityPriorityHigh)});
 	}
 }
+#endif
 
 std::string speech_text = "";
+#if !TARGET_OS_IOS
+NSWindow* speech_window = nil; // The key window when the text was last given, retained, under speech_text_mutex.
+#endif
 Poco::FastMutex speech_text_mutex;
 Poco::Event speech_new_event;
 Poco::Thread speech_thread;
@@ -468,12 +471,24 @@ void vo_speech_thread(void* extra) {
 		}
 		while (speech_new_event.tryWait(10)) continue;
 		std::string text;
+		#if !TARGET_OS_IOS
+			NSWindow* window;
+		#endif
 		{
 			Poco::FastMutex::ScopedLock exclusive(speech_text_mutex);
 			text = speech_text;
 			speech_text = "";
+			#if !TARGET_OS_IOS
+				window = speech_window; // Now released here.
+				speech_window = nil;
+			#endif
 		}
-		voice_over_announce(text);
+		#if TARGET_OS_IOS
+			voice_over_announce(text);
+		#else
+			voice_over_announce(text, window);
+			[window release];
+		#endif
 	}
 }
 
@@ -669,18 +684,25 @@ bool voice_over_speak(const std::string& text, bool interrupt) {
 	std::string message = tts_valid_utf8(text); // NSString makes nil of malformed UTF-8, which the announcement dictionary on macOS rejects with an exception.
 	@autoreleasepool {
 		if (!speech_thread.isRunning()) speech_thread.start(vo_speech_thread);
+		#if !TARGET_OS_IOS
+			NSWindow* key = [NSApp keyWindow];
+		#endif
 		Poco::FastMutex::ScopedLock exclusive(speech_text_mutex);
 		if (interrupt || speech_text == "") speech_text = message;
 		else {
 			speech_text += " . ";
 			speech_text += message;
 		}
+		#if !TARGET_OS_IOS
+			[speech_window release];
+			speech_window = [key retain];
+		#endif
 		speech_new_event.set();
 		#if TARGET_OS_IOS
 			return UIAccessibilityIsVoiceOverRunning();
 		#else
 			NSWindow* win = g_window ? (NSWindow*)g_window->get_native_window() : nullptr;
-			return [NSApp keyWindow] == win;
+			return key == win;
 		#endif
 	}
 }
