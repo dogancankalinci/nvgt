@@ -375,8 +375,12 @@ bool tts_voice::speak(const string &text, bool interrupt) {
 			return false;
 		}
 		datablock->free();
+		if (interrupt) interrupt_other_speech(engine);
 		return schedule(s, interrupt);
-	} else return engine->speak(tts_valid_utf8(text), interrupt, false);
+	}
+	if (interrupt && !text.empty()) interrupt_other_speech(engine);
+	native_engine = current_engine;
+	return engine->speak(tts_valid_utf8(text), interrupt, false);
 }
 bool tts_voice::speak_to_file(const string &filename, const string &text) {
 	tts_audio_data* datablock;
@@ -420,9 +424,12 @@ bool tts_voice::speak_wait(const string &text, bool interrupt) {
 	if (!engine) return false;
 	if (engine->get_pcm_generation_state() == PCM_PREFERRED) {
 		if (!speak(text, interrupt)) return false;
-		while (get_speaking()) wait(10);
+		while (queue_speaking()) wait(10);
 		return true;
-	} else return engine->speak(tts_valid_utf8(text), interrupt, true);
+	}
+	if (interrupt && !text.empty()) interrupt_other_speech(engine);
+	native_engine = current_engine;
+	return engine->speak(tts_valid_utf8(text), interrupt, true);
 }
 sound *tts_voice::speak_to_sound(const string &text) {
 	tts_audio_data* datablock;
@@ -520,10 +527,11 @@ bool tts_voice::set_voice(int voice) {
 	}
 	return true;
 }
+// The queue of speech played through the sound system belongs to this object rather than to an engine, so it is reported and stopped whichever voice is selected now, as is speech on an engine this object spoke on before another voice was selected.
 bool tts_voice::get_speaking() {
-	if (!current_engine) return false; // Nothing has been bound/spoken yet.
-	if (current_engine->get_pcm_generation_state() == PCM_PREFERRED) return queue_speaking();
-	else return current_engine->is_speaking();
+	if (queue_speaking()) return true;
+	if (current_engine && current_engine->get_pcm_generation_state() != PCM_PREFERRED && current_engine->is_speaking()) return true;
+	return native_engine && native_engine != current_engine && native_engine->is_speaking();
 }
 bool tts_voice::refresh() {
 	voice_state = VOICES_FULL;
@@ -586,12 +594,17 @@ bool tts_voice::refresh() {
 	return !voices.empty();
 }
 bool tts_voice::stop() {
-	if (!current_engine) return true; // Nothing bound yet, so nothing to stop.
-	if (current_engine->get_pcm_generation_state() == PCM_PREFERRED) {
+	{
 		unique_lock<mutex> lock(queue_mtx);
 		clear();
-		return true;
-	} else return current_engine->stop();
+	}
+	bool stopped = true;
+	if (native_engine && native_engine != current_engine) {
+		stopped = native_engine->stop();
+		native_engine.reset();
+	}
+	if (current_engine && current_engine->get_pcm_generation_state() != PCM_PREFERRED) stopped = current_engine->stop() && stopped;
+	return stopped;
 }
 string tts_voice::get_engine_name() {
 	ensure_default();
@@ -638,6 +651,17 @@ bool tts_voice::schedule(soundptr &s, bool interrupt) {
 		if (queue.size() == 1) s->play();
 		return true;
 	} catch (exception &) { return false; }
+}
+// Interrupting speech also silences what this object started on another path: the queue played through the sound system when the engine about to speak plays its own speech, and an engine selected before.
+void tts_voice::interrupt_other_speech(tts_engine *engine) {
+	if (engine->get_pcm_generation_state() != PCM_PREFERRED) {
+		unique_lock<mutex> lock(queue_mtx);
+		if (!queue.empty()) clear();
+	}
+	if (native_engine && native_engine.get() != engine) {
+		native_engine->stop();
+		native_engine.reset();
+	}
 }
 // Moves the queue past its front utterance once that has played to its end. Expects queue_mtx held.
 void tts_voice::advance_queue() {
