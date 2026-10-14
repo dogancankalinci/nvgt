@@ -157,6 +157,17 @@ class database_object {
 				updating_props[i].retrieved = true;
 			}
 			int r = s.step();
+			if (r == SQLITE_CONSTRAINT and !integer_primary) {
+				// Unless a row with this primary text column already exists, another constraint failed and nothing was written.
+				string constraint_error = "db step: " + database.get_last_error_text();
+				sqlite3statement@ existing = database.prepare("SELECT 1 FROM '" + table + "' WHERE " + row_filter + ";");
+				if (@existing == null or existing.step() != SQLITE_ROW) {
+					for (uint i = 0; i < updating_props.length(); i++)
+						updating_props[i].modified = true;
+					_last_query_error = constraint_error;
+					return false;
+				}
+			}
 			bool ret = r == SQLITE_DONE or r == SQLITE_CONSTRAINT and !integer_primary; // The hope is that if a database object with a primary text column is created and committed but a row with the primary column already exists, replace that row's contents with that of the new object.
 			if (!ret) {
 				_last_query_error = "db step: " + database.get_last_error_text();
