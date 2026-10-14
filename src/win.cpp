@@ -106,9 +106,10 @@ std::string screen_reader_detect() {
 	if (!screen_reader_load()) return "";
 	int engine = speechGetValue(SP_ENGINE);
 	if (engine < 0) return "";
-	const std::wstring srname = speechGetString(SP_ENGINE + engine);
+	const wchar_t* srname = speechGetString(SP_ENGINE + engine); // Null for an index that names no engine.
+	if (!srname) return "";
 	std::string result;
-	Poco::UnicodeConverter::convert(srname, result);
+	Poco::UnicodeConverter::convert(std::wstring(srname), result);
 	return result;
 }
 bool screen_reader_has_speech() {
