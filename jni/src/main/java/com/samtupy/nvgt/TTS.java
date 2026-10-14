@@ -9,6 +9,7 @@ import android.content.pm.ApplicationInfo;
 import android.content.pm.ResolveInfo;
 import android.media.AudioAttributes;
 import android.media.AudioFormat;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Looper;
 import android.provider.Settings;
@@ -113,7 +114,6 @@ public class TTS {
 		} catch (Exception e) {}
 		return packages;
 	}
-
 	// The same engines in the order Android itself falls back through them (TtsEngines.getEngines): those that are part of
 	// the system image first, then by the priority their intent filter declares. getEnginePackages() keeps the package
 	// manager's order, which voice indices depend on.
@@ -320,26 +320,61 @@ public class TTS {
 
 	public boolean speak(String text, boolean interrupt) {
 		if (!isActive()) return false;
-		if (text.length() > tts.getMaxSpeechInputLength()) return false;
-		followSystemSettings();
-		return tts.speak(text, interrupt? TextToSpeech.QUEUE_FLUSH : TextToSpeech.QUEUE_ADD, utteranceParams(), null) == TextToSpeech.SUCCESS;
+		synchronized (queueLock) {
+			followSystemSettings();
+			return queueText(text, interrupt, null);
+		}
+	}
+	// The service refuses a text longer than getMaxSpeechInputLength() characters, and before Android 10 one of exactly
+	// that length too, so longer text is queued, or synthesized, in parts.
+	private static int maxRequestLength() { return TextToSpeech.getMaxSpeechInputLength() - (Build.VERSION.SDK_INT < 29? 1 : 0); }
+	// Parts of at most max characters, each ending after the last sentence end or line break within the limit, else after
+	// the last whitespace, else at the limit, but never between the halves of a surrogate pair. Text that fits stays whole.
+	private static List<String> splitForSpeech(String text, int max) {
+		List<String> parts = new ArrayList<>();
+		int start = 0;
+		while (text.length() - start > max) {
+			int limit = start + max, cut = -1;
+			for (int i = limit - 1; i > start && cut < 0; i--) {
+				char c = text.charAt(i);
+				if (c == '\n' || ((c == '.' || c == '!' || c == '?') && Character.isWhitespace(text.charAt(i + 1)))) cut = i + 1;
+			}
+			for (int i = limit - 1; i > start && cut < 0; i--) {
+				if (Character.isWhitespace(text.charAt(i))) cut = i + 1;
+			}
+			if (cut < 0) cut = Character.isHighSurrogate(text.charAt(limit - 1))? limit - 1 : limit;
+			parts.add(text.substring(start, cut));
+			start = cut;
+		}
+		parts.add(text.substring(start));
+		return parts;
+	}
+	// Queues text, the first part as interrupt asks and any others after it; only the last part carries lastUtteranceId.
+	// Called with queueLock held, so the parts of one text can't be interleaved with another text being queued.
+	private boolean queueText(String text, boolean interrupt, String lastUtteranceId) {
+		List<String> parts = splitForSpeech(text, maxRequestLength());
+		Bundle params = utteranceParams();
+		for (int i = 0; i < parts.size(); i++) {
+			int mode = interrupt && i == 0? TextToSpeech.QUEUE_FLUSH : TextToSpeech.QUEUE_ADD;
+			if (tts.speak(parts.get(i), mode, params, i == parts.size() - 1? lastUtteranceId : null) != TextToSpeech.SUCCESS) return false;
+		}
+		return true;
 	}
 	// speak() passes no utterance id, so TextToSpeech reports nothing about that speech, and isSpeaking() only turns true
 	// once the service has picked a request up, which can be after speak() returns. Speech a caller waits for is spoken
 	// with an id holding a serial number instead, and the listener records the highest serial that ended. This object's
 	// utterances end in the order they were queued, or are dropped by a flush, so every lower serial has ended too.
 	private static final String TRACKED_UTTERANCE = "nvgt_tracked_";
-	private final Object trackedLock = new Object();
-	private long trackedSerial = 0; // Guarded by trackedLock, which is held while queueing, so serials follow queue order.
+	private final Object queueLock = new Object();
+	private long trackedSerial = 0; // Guarded by queueLock, which is held while queueing, so serials follow queue order.
 	private volatile long endedSerial = 0; // Written under endedLock.
 	private final Object endedLock = new Object();
 	public long speakTracked(String text, boolean interrupt) {
 		if (!isActive()) return -1;
-		if (text.length() > tts.getMaxSpeechInputLength()) return -1;
-		synchronized (trackedLock) {
+		synchronized (queueLock) {
 			followSystemSettings();
 			long serial = trackedSerial + 1;
-			if (tts.speak(text, interrupt? TextToSpeech.QUEUE_FLUSH : TextToSpeech.QUEUE_ADD, utteranceParams(), TRACKED_UTTERANCE + serial) != TextToSpeech.SUCCESS) return -1;
+			if (!queueText(text, interrupt, TRACKED_UTTERANCE + serial)) return -1;
 			trackedSerial = serial;
 			return serial;
 		}
@@ -602,11 +637,32 @@ public class TTS {
 		return -1;
 	}
 
-	// Synthesize text to PCM audio buffer
+	// Synthesize text to PCM audio buffer. Text too long for one request is synthesized in parts whose samples are joined;
+	// a part that produced no samples is skipped, and parts in different formats fail the whole text.
 	public byte[] speakPcm(String text) {
 		if (!isActive() || text.isEmpty()) return null;
-		if (text.length() > tts.getMaxSpeechInputLength()) return null;
-
+		List<String> parts = splitForSpeech(text, maxRequestLength());
+		if (parts.size() == 1) return synthesizePart(text);
+		ByteArrayOutputStream joined = new ByteArrayOutputStream();
+		int sampleRate = 0, audioFormat = 0, channelCount = 0;
+		for (String part : parts) {
+			byte[] audio = synthesizePart(part);
+			if (audio == null) return null;
+			if (audio.length == 0) continue;
+			if (joined.size() == 0) {
+				sampleRate = pcmSampleRate;
+				audioFormat = pcmAudioFormat;
+				channelCount = pcmChannelCount;
+			} else if (pcmSampleRate != sampleRate || pcmAudioFormat != audioFormat || pcmChannelCount != channelCount) return null;
+			joined.write(audio, 0, audio.length);
+		}
+		pcmSampleRate = sampleRate;
+		pcmAudioFormat = audioFormat;
+		pcmChannelCount = channelCount;
+		return joined.toByteArray();
+	}
+	private long pcmSerial = 0; // Numbers PCM requests, which the caller makes one at a time.
+	private byte[] synthesizePart(String text) {
 		// Prepare for PCM synthesis
 		pcmAudioBuffer = new ByteArrayOutputStream();
 		pcmSynthesisLatch = new CountDownLatch(1);
@@ -616,7 +672,7 @@ public class TTS {
 		pcmChannelCount = 0;
 
 		// Create utterance ID and set it as current
-		currentPcmUtteranceId = "nvgtts_" + System.currentTimeMillis();
+		currentPcmUtteranceId = "nvgtts_" + (++pcmSerial);
 
 		// Start synthesis - using speak with synthesis callbacks. Each engine has its own file: synthesis on one engine is
 		// serialized by the caller, and a file that a timed out request writes late is replaced by the next request.
