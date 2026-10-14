@@ -297,18 +297,8 @@ if(!utf8)
 token->lpVtbl->Release(token);
 continue;
 }
-WCHAR* lang_str=NULL;
-char* lang=NULL;
 LANGID langid=0x0409;
-if(SUCCEEDED(token->lpVtbl->GetStringValue(token, L"Language", &lang_str)))
-{
-if(lang_str)
-{
-langid=(LANGID)wcstoul(lang_str, NULL, 16);
-lang=sbz_wchar_to_char(lang_str);
-sbz_com_free_memory(&sapi->com, lang_str);
-}
-}
+char* lang=sbz_sapi_voice_language(sapi, token, &langid);
 voice[written].token=token;
 voice[written].default_token=NULL;
 voice[written].name=utf8;
@@ -324,6 +314,35 @@ return 0;
 sapi->voices=voice;
 sapi->voice_count=written;
 return 1;
+}
+/* The language of a voice as a lowercase locale name such as "en-us", from its Language attribute, a list of hex LCIDs such as "409;9". A voice without one may put a Language value on its token itself, which is passed on as it is. */
+char* sbz_sapi_voice_language(sb_sapi* sapi, ISpObjectToken* token, LANGID* langid)
+{
+WCHAR* value=NULL;
+ISpDataKey* attributes=NULL;
+if(SUCCEEDED(token->lpVtbl->OpenKey(token, L"Attributes", &attributes))&&attributes)
+{
+if(FAILED(attributes->lpVtbl->GetStringValue(attributes, L"Language", &value))) value=NULL;
+attributes->lpVtbl->Release(attributes);
+}
+if(value)
+{
+LANGID id=(LANGID)wcstoul(value, NULL, 16);
+sbz_com_free_memory(&sapi->com, value);
+WCHAR name[LOCALE_NAME_MAX_LENGTH];
+if(id&&LCIDToLocaleName(MAKELCID(id, SORT_DEFAULT), name, LOCALE_NAME_MAX_LENGTH, 0)>0)
+{
+*langid=id;
+for(WCHAR* c=name; *c; c++) *c=towlower(*c);
+return sbz_wchar_to_char(name);
+}
+}
+value=NULL;
+if(FAILED(token->lpVtbl->GetStringValue(token, L"Language", &value))||!value) return NULL;
+*langid=(LANGID)wcstoul(value, NULL, 16);
+char* lang=sbz_wchar_to_char(value);
+sbz_com_free_memory(&sapi->com, value);
+return lang;
 }
 int sbz_sapi_speak_to_memory(sb_sapi* sapi, char* text, void** buffer, int* size)
 {

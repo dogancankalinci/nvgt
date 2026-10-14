@@ -95,6 +95,7 @@ int sbz_sapi_set_init_flag(sb_sapi* sapi);
 int sbz_sapi_refresh_voices(sb_sapi* sapi);
 int sbz_sapi_get_voice_enum(sb_sapi* sapi, IEnumSpObjectTokens** enum_tokens);
 int sbz_sapi_populate_voices_from_tokens(sb_sapi* sapi, IEnumSpObjectTokens** enum_tokens, int count);
+char* sbz_sapi_voice_language(sb_sapi* sapi, ISpObjectToken* token, LANGID* langid);
 int sbz_sapi_speak_to_memory(sb_sapi* sapi, char* text, void** buffer, int* size);
 int sbz_sapi_create_memory_stream(sb_sapi* sapi);
 int sbz_sapi_capture_stream_output(sb_sapi* sapi, void** buffer, int* size);
