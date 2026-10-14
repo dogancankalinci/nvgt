@@ -321,7 +321,7 @@ tts_pcm_generation_state AVTTSVoice::get_pcm_generation_state() { return !runnin
 bool AVTTSVoice::stop() { return impl ? impl->stopSpeech() : false; }
 
 bool AVTTSVoice::get_rate_range(float& minimum, float& midpoint, float& maximum) { minimum = AVSpeechUtteranceMinimumSpeechRate; midpoint = AVSpeechUtteranceDefaultSpeechRate; maximum = AVSpeechUtteranceMaximumSpeechRate; return true; }
-bool AVTTSVoice::get_pitch_range(float& minimum, float& midpoint, float& maximum) { minimum = 0.2; midpoint = 1; maximum = 4; return true; }
+bool AVTTSVoice::get_pitch_range(float& minimum, float& midpoint, float& maximum) { minimum = 0.5; midpoint = 1; maximum = 2; return true; } // The range Apple documents for pitchMultiplier.
 bool AVTTSVoice::get_volume_range(float& minimum, float& midpoint, float& maximum) { minimum = 0; midpoint = 0.5; maximum = 1; return true; }
 
 int AVTTSVoice::get_voice_count() { return impl ? static_cast<int>(impl->getVoicesCount()) : 0; }
