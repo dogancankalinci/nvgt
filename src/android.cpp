@@ -738,7 +738,8 @@ int android_tts_engine::get_voice_count() { return tts_call_int(TTSObj, 0, midGe
 
 std::string android_tts_engine::get_voice_name(int index) {
 	if (!TTSObj) return "";
-	return engine_label + ": " + tts_call_string(TTSObj, midGetVoiceName, (jint)index);
+	std::string name = tts_call_string(TTSObj, midGetVoiceName, (jint)index);
+	return name.empty()? "" : engine_label + ": " + name; // Empty, like other engines, for an index that names no voice.
 }
 
 std::string android_tts_engine::get_voice_language(int index) { return tts_call_string(TTSObj, midGetVoiceLanguage, (jint)index); }
