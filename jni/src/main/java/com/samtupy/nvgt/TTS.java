@@ -242,6 +242,17 @@ public class TTS {
 		thread.start();
 	}
 
+	// Before Android 12, TextToSpeech binds to the default or highest ranked engine instead of one it can't find, which
+	// would then pose as the engine asked for, so an engine whose service can't be found is treated as unusable.
+	private boolean engineFound(Context context) {
+		if (enginePackage == null) return true;
+		try {
+			return context.getPackageManager().resolveService(new Intent(TextToSpeech.Engine.INTENT_ACTION_TTS_SERVICE).setPackage(enginePackage), 0) != null;
+		} catch (Exception e) {
+			return true; // Unknown, so left to TextToSpeech as before.
+		}
+	}
+
 	public TTS(String enginePkg) {
 		installConnectionGuard();
 		Context context = SDL.getContext();
@@ -268,6 +279,11 @@ public class TTS {
 				if (late) release(); // The connection came up, or failed, after the constructor stopped waiting for it.
 			}
 		};
+		if (!engineFound(context)) {
+			isTTSInitialized = false;
+			isTTSInitializedLatch.countDown();
+			return;
+		}
 		// Registered before TextToSpeech exists, since its connection can fail or call onInit before the constructor returns.
 		synchronized (textToSpeechOwners) { textToSpeechOwners.add(this); }
 		try {
