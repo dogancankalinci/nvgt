@@ -34,4 +34,5 @@ public:
 	virtual bool speak(const std::string &text, bool interrupt = false, bool blocking = false) override;
 	virtual bool is_speaking() override;
 	virtual bool stop() override;
+	virtual std::string get_voice_language(int index) override;
 };

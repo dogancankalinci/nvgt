@@ -14,6 +14,7 @@
 #include "linux.h"
 #include "tts.h"
 #include "UI.h"
+#include <cctype>
 #include <cerrno>
 #include <csignal>
 #include <cstdlib>
@@ -34,6 +35,7 @@ using namespace std;
 #define spd_stop (*spd_stop)
 #define spd_cancel (*spd_cancel)
 #define spd_set_notification_on (*spd_set_notification_on)
+#define spd_get_language (*spd_get_language)
 #include <speech-dispatcher/libspeechd.h>
 #undef spd_get_default_address
 #undef spd_open2
@@ -42,6 +44,7 @@ using namespace std;
 #undef spd_stop
 #undef spd_cancel
 #undef spd_set_notification_on
+#undef spd_get_language
 
 static Poco::SharedLibrary g_speechd_lib;
 static bool g_speechd_lib_loaded = false;
@@ -63,6 +66,9 @@ static bool load_speechd_library() {
 		try {
 			*(void**)&spd_set_notification_on = g_speechd_lib.getSymbol("spd_set_notification_on");
 		} catch (Poco::Exception&) {} // Then nothing reports when speech ends.
+		try {
+			*(void**)&spd_get_language = g_speechd_lib.getSymbol("spd_get_language");
+		} catch (Poco::Exception&) {} // Then the language is unknown.
 		g_speechd_lib_loaded = true;
 		return true;
 	} catch (Poco::Exception&) {
@@ -236,6 +242,22 @@ bool speechd_engine::stop() {
 	spd_cancel((SPDConnection*)connection);
 	spd_stop((SPDConnection*)connection);
 	return true;
+}
+
+// The language the server speaks, such as "en-us", lowercased as other platforms report theirs; empty when it can't be asked.
+std::string speechd_engine::get_voice_language(int index) {
+	if (index != 0 || !spd_get_language) return "";
+	std::lock_guard<std::mutex> lock(state_mutex);
+	if (!connected()) return "";
+	char *language;
+	{
+		speechd_call_guard guard;
+		language = spd_get_language((SPDConnection*)connection);
+	}
+	std::string result = language? language : "";
+	free(language);
+	for (char &c : result) c = tolower((unsigned char)c);
+	return result;
 }
 
 void register_native_tts() { tts_engine_register("speechd", []() -> shared_ptr<tts_engine> { return make_shared<speechd_engine>(); }); }

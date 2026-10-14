@@ -77,6 +77,13 @@ static void* tts_trim(tts_audio_data* data, float begin_db = -60, float end_db =
 	}
 }
 
+// Whether a voice of the given language serves a request for a language: any voice when none is requested, one with the same code, or one whose code names a language without a region when the request is for that language in some region ("en" serves "en-us"), since not every engine reports a region.
+static bool tts_language_matches(const string &voice_language, const string &requested) {
+	if (requested.empty() || voice_language == requested) return true;
+	if (voice_language.empty() || voice_language.find('-') != string::npos || requested.size() <= voice_language.size()) return false;
+	return requested.compare(0, voice_language.size(), voice_language) == 0 && requested[voice_language.size()] == '-';
+}
+
 // The sample format of the PCM an engine produced. 32-bit samples come only from Android engines that synthesize floats.
 static ma_format tts_pcm_format(const tts_audio_data* data) {
 	if (data->bitsize == 16) return ma_format_s16;
@@ -226,7 +233,7 @@ void tts_voice::ensure_default() {
 		int voice_count = engine->get_voice_count();
 		for (int i = 0; i < voice_count; i++) {
 			string lang = engine->get_voice_language(i);
-			if (current_language.empty() || lang == current_language) voices.emplace_back(voice_info{name, i, engine->get_voice_name(i), lang});
+			if (tts_language_matches(lang, current_language)) voices.emplace_back(voice_info{name, i, engine->get_voice_name(i), lang});
 		}
 		if (voices.empty()) continue; // e.g. a language filter excluded everything from this engine
 		current_voice_index = 0;
@@ -496,7 +503,7 @@ bool tts_voice::refresh() {
 		int voice_count = engine->get_voice_count();
 		for (int i = 0; i < voice_count; i++) {
 			std::string lang = engine->get_voice_language(i);
-			if (current_language.empty() || lang == current_language) voices.emplace_back(voice_info{name, i, engine->get_voice_name(i), lang});
+			if (tts_language_matches(lang, current_language)) voices.emplace_back(voice_info{name, i, engine->get_voice_name(i), lang});
 		}
 	}
 	current_voice_index = -1;
