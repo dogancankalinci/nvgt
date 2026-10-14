@@ -11,6 +11,7 @@ import android.media.AudioAttributes;
 import android.media.AudioFormat;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.os.Looper;
 import android.provider.Settings;
 import android.speech.tts.TextToSpeech;
@@ -163,6 +164,7 @@ public class TTS {
 	// TextToSpeech cannot clear a rate or pitch once one has been set. After such a value is reset we therefore re-apply the current system value before each utterance instead (see followSystemSettings()).
 	private boolean ratePinned = false, pitchPinned = false;
 	private Voice defaultVoice; // The voice TextToSpeech selected from the user's settings when it connected, which resetVoice() restores.
+	private volatile Voice chosenVoice; // The voice a script set, if any, which a replacement TextToSpeech is given too.
 	private volatile boolean isTTSInitialized = false;
 	private volatile int ttsInitStatus = TextToSpeech.ERROR; // status handed off from onInit (main thread) to the constructor via the latch.
 	private CountDownLatch isTTSInitializedLatch;
@@ -216,7 +218,11 @@ public class TTS {
 	// object's TextToSpeech is the only one the app has ever created; with more, a waiting constructor waits out its
 	// timeout as it does for an engine that never answers.
 	private static final Set<TTS> textToSpeechOwners = new HashSet<>();
+	// Set once an object replaced its TextToSpeech (see recoverConnection()), after which no failure can be shown to come
+	// from only one TextToSpeech.
+	private static volatile boolean textToSpeechReplaced = false;
 	private static void connectionFailed() {
+		if (textToSpeechReplaced) return;
 		TTS failed;
 		synchronized (textToSpeechOwners) {
 			if (textToSpeechOwners.size() != 1) return;
@@ -230,8 +236,8 @@ public class TTS {
 	// Shuts down a TextToSpeech this object gave up on, on a thread of its own: an engine that never answered can hold
 	// TextToSpeech's lock indefinitely, and one that failed can throw again before the connection is released, which then
 	// stays open.
-	private void release() {
-		final TextToSpeech unusable = tts;
+	private void release() { shutDown(tts); }
+	private static void shutDown(final TextToSpeech unusable) {
 		if (unusable == null) return;
 		Thread thread = new Thread(() -> {
 			try {
@@ -241,7 +247,6 @@ public class TTS {
 		thread.setDaemon(true);
 		thread.start();
 	}
-
 	// Before Android 12, TextToSpeech binds to the default or highest ranked engine instead of one it can't find, which
 	// would then pose as the engine asked for, so an engine whose service can't be found is treated as unusable.
 	private boolean engineFound(Context context) {
@@ -251,6 +256,13 @@ public class TTS {
 		} catch (Exception e) {
 			return true; // Unknown, so left to TextToSpeech as before.
 		}
+	}
+	// Routes speech through the accessibility stream, like a screen reader's. This sets no speech parameter.
+	private static void useAccessibilityStream(TextToSpeech target) {
+		try {
+			AudioAttributes audioAttributes = new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build();
+			target.setAudioAttributes(audioAttributes);
+		} catch (Exception e) {}
 	}
 
 	public TTS(String enginePkg) {
@@ -313,17 +325,14 @@ public class TTS {
 			gaveUp = !ready;
 		}
 		if (ready) {
-			try {
-				AudioAttributes audioAttributes = new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build();
-				tts.setAudioAttributes(audioAttributes);
-			} catch (Exception e) {}
+			useAccessibilityStream(tts);
 			// Must be true before initializeVoices(), which early-returns when !isActive().
 			isTTSInitialized = true;
 			try {
 				defaultVoice = tts.getVoice();
 			} catch (Exception e) {}
 			initializeVoices();
-			setupPcmListener();
+			setupPcmListener(tts);
 		} else {
 			isTTSInitialized = false;
 			release();
@@ -337,6 +346,10 @@ public class TTS {
 	public boolean speak(String text, boolean interrupt) {
 		if (!isActive()) return false;
 		synchronized (queueLock) {
+			TextToSpeech speaking = tts;
+			followSystemSettings();
+			if (queueText(text, interrupt, null)) return true;
+			if (!recoverConnection(speaking)) return false;
 			followSystemSettings();
 			return queueText(text, interrupt, null);
 		}
@@ -390,7 +403,12 @@ public class TTS {
 		synchronized (queueLock) {
 			followSystemSettings();
 			long serial = trackedSerial + 1;
-			if (!queueText(text, interrupt, TRACKED_UTTERANCE + serial)) return -1;
+			TextToSpeech speaking = tts;
+			if (!queueText(text, interrupt, TRACKED_UTTERANCE + serial)) {
+				if (!recoverConnection(speaking)) return -1;
+				followSystemSettings();
+				if (!queueText(text, interrupt, TRACKED_UTTERANCE + serial)) return -1;
+			}
 			trackedSerial = serial;
 			return serial;
 		}
@@ -406,6 +424,65 @@ public class TTS {
 		}
 		synchronized (endedLock) {
 			if (serial > endedSerial) endedSerial = serial;
+		}
+	}
+	// On Android 12 and later, once its engine's process dies a TextToSpeech has no engine for good: the system ends its
+	// session with the engine and TextToSpeech never asks for another, so everything it is asked to do fails. When a request
+	// fails on a TextToSpeech that has no working connection any more (getVoices() is null only then), a new one is made for
+	// the same engine and given what the script set, and the old one is shut down. The voice list is kept, so voice indices
+	// stay as they were. One attempt is made at most every 30 seconds, because a failed one waits out the connection timeout.
+	private long lastRecovery = 0; // Guarded by queueLock.
+	private boolean recoverConnection(TextToSpeech failed) {
+		synchronized (queueLock) {
+			if (tts != failed) return true; // Another request already replaced it.
+			Set<Voice> voices;
+			try {
+				voices = failed.getVoices();
+			} catch (Exception e) {
+				voices = null;
+			}
+			if (voices != null) return false; // The connection works, so the request failed for another reason.
+			long now = SystemClock.elapsedRealtime();
+			if (lastRecovery != 0 && now - lastRecovery < 30000) return false;
+			lastRecovery = now;
+			Context context = SDL.getContext();
+			if (!engineFound(context)) return false;
+			textToSpeechReplaced = true;
+			final CountDownLatch connected = new CountDownLatch(1);
+			final int[] status = { TextToSpeech.ERROR };
+			OnInitListener listener = result -> {
+				status[0] = result;
+				connected.countDown();
+			};
+			TextToSpeech replacement;
+			try {
+				replacement = enginePackage != null ? new TextToSpeech(context, listener, enginePackage) : new TextToSpeech(context, listener);
+			} catch (Exception e) {
+				return false;
+			}
+			try {
+				connected.await(10, TimeUnit.SECONDS);
+			} catch (InterruptedException e) {}
+			if (status[0] != TextToSpeech.SUCCESS) {
+				shutDown(replacement);
+				return false;
+			}
+			useAccessibilityStream(replacement);
+			setupPcmListener(replacement);
+			try {
+				Voice settingsVoice = replacement.getVoice();
+				if (settingsVoice != null) defaultVoice = settingsVoice;
+				Voice voice = chosenVoice;
+				if (voice != null) replacement.setVoice(voice);
+			} catch (Exception e) {}
+			// A fresh TextToSpeech holds no rate or pitch, so only those a script set are given to it.
+			if (rateExplicit) replacement.setSpeechRate(ttsRate);
+			else ratePinned = false;
+			if (pitchExplicit) replacement.setPitch(ttsPitch);
+			else pitchPinned = false;
+			tts = replacement;
+			shutDown(failed);
+			return true;
 		}
 	}
 	// Per-utterance parameters: only the ones a script set, so the service uses its own defaults for the rest.
@@ -487,7 +564,9 @@ public class TTS {
 	}
 	public boolean resetVoice() {
 		if (!isActive() || defaultVoice == null) return false;
-		return tts.setVoice(defaultVoice) == TextToSpeech.SUCCESS;
+		if (tts.setVoice(defaultVoice) != TextToSpeech.SUCCESS) return false;
+		chosenVoice = null;
+		return true;
 	}
 
 	@Override
@@ -509,8 +588,10 @@ public class TTS {
 		Set<Voice> voices = tts.getVoices();
 		if (voices == null) return false;
 		for (Voice voice : voices) {
-			if (voice.getName().equals(name))
-				return tts.setVoice(voice) == TextToSpeech.SUCCESS;
+			if (!voice.getName().equals(name)) continue;
+			if (tts.setVoice(voice) != TextToSpeech.SUCCESS) return false;
+			chosenVoice = voice;
+			return true;
 		}
 		return false;
 	}
@@ -560,8 +641,8 @@ public class TTS {
 	}
 
 	// Set up permanent UtteranceProgressListener for PCM synthesis
-	private void setupPcmListener() {
-		tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+	private void setupPcmListener(TextToSpeech target) {
+		target.setOnUtteranceProgressListener(new UtteranceProgressListener() {
 			@Override
 			public void onStart(String utteranceId) {}
 			@Override
@@ -635,7 +716,10 @@ public class TTS {
 	}
 	public boolean setVoiceByIndex(int index) {
 		if (!isActive() || availableVoices == null || index < 0 || index >= availableVoices.size()) return false;
-		return tts.setVoice(availableVoices.get(index)) == TextToSpeech.SUCCESS;
+		Voice voice = availableVoices.get(index);
+		if (tts.setVoice(voice) != TextToSpeech.SUCCESS) return false;
+		chosenVoice = voice;
+		return true;
 	}
 	// The voice TextToSpeech is actually speaking with: the one a script set, otherwise the one it took from the user's settings. -1 if it has none, which happens when the engine doesn't support the language the settings name.
 	public int getCurrentVoiceIndex() {
@@ -694,7 +778,12 @@ public class TTS {
 		// serialized by the caller, and a file that a timed out request writes late is replaced by the next request.
 		File file = new File(SDL.getContext().getCacheDir(), "nvgt_speech_" + (enginePackage != null ? enginePackage : "default") + ".wav");
 		followSystemSettings();
-		int result = tts.synthesizeToFile(text, utteranceParams(), file, currentPcmUtteranceId);
+		TextToSpeech synthesizing = tts;
+		int result = synthesizing.synthesizeToFile(text, utteranceParams(), file, currentPcmUtteranceId);
+		if (result != TextToSpeech.SUCCESS && recoverConnection(synthesizing)) {
+			followSystemSettings();
+			result = tts.synthesizeToFile(text, utteranceParams(), file, currentPcmUtteranceId);
+		}
 		if (result != TextToSpeech.SUCCESS) {
 			currentPcmUtteranceId = null;
 			return null;
