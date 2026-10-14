@@ -128,7 +128,10 @@ bool screen_reader_output(const std::string& text, bool interrupt) {
 	if (!screen_reader_load()) return false;
 	std::wstring textW;
 	Poco::UnicodeConverter::convert(text, textW);
-	return speechSay(textW.c_str(), interrupt) != 0 && brailleDisplay(textW.c_str()) != 0;
+	// Both are always tried, so braille still gets the text when speech fails, and the text counts as output when either took it, so a screen reader that speaks it but can't braille it doesn't make the call look failed.
+	bool spoken = speechSay(textW.c_str(), interrupt) != 0;
+	bool brailled = brailleDisplay(textW.c_str()) != 0;
+	return spoken || brailled;
 }
 bool screen_reader_speak(const std::string& text, bool interrupt) {
 	if (!screen_reader_load()) return false;
