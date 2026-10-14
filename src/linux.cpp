@@ -13,6 +13,7 @@
 #if !defined(__ANDROID__) && (defined(__linux__) || defined(__unix__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__))
 #include "linux.h"
 #include "tts.h"
+#include <cstdlib>
 #include <memory>
 #include <time.h>
 #include <Poco/SharedLibrary.h>
@@ -59,9 +60,10 @@ static bool load_speechd_library() {
 
 speechd_engine::speechd_engine() : tts_engine_impl("Speech Dispatcher"), connection(nullptr), loaded(false) {
 	if (!load_speechd_library()) return;
-	const auto *addr = spd_get_default_address(nullptr);
-	if (!addr) return;
-	connection = spd_open2("NVGT", nullptr, nullptr, SPD_MODE_THREADED, addr, true, nullptr);
+	// When it fails, libspeechd writes a message through the error pointer without checking it for null, so one must be given. Without an address spd_open2 looks up, and frees, the default one itself.
+	char *error = nullptr;
+	connection = spd_open2("NVGT", nullptr, nullptr, SPD_MODE_THREADED, nullptr, true, &error);
+	free(error);
 	if (!connection) return;
 	loaded = true;
 }
