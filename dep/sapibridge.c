@@ -355,7 +355,8 @@ if(!speak) return 0;
 HRESULT hr=sapi->voice->lpVtbl->Speak(sapi->voice, speak, SPF_IS_NOT_XML, NULL);
 free(speak);
 if(FAILED(hr)) return 0;
-sbz_sapi_cache_audio_attributes(sapi);
+/* The audio is in the voice's own format, so a voice whose format can't be read or isn't supported fails here rather than having its audio read in the format of the voice before. */
+if(!sbz_sapi_cache_audio_attributes(sapi)) return 0;
 int ok=sbz_sapi_capture_stream_output(sapi, buffer, size);
 return ok;
 }
