@@ -89,7 +89,14 @@ public class TTS {
 		AvoidDuplicateSpeechHack += " ";
 		if (AvoidDuplicateSpeechHack.length() > 20) AvoidDuplicateSpeechHack = "";
 		accessibilityManager.sendAccessibilityEvent(e);
-		return true;
+		return hasSpokenFeedback(accessibilityManager);
+	}
+
+	// Any accessibility service turns accessibility on, a password manager for instance, but only one that gives spoken
+	// feedback, a screen reader, speaks announcements, so the calls report success only while one is enabled.
+	private static boolean hasSpokenFeedback(AccessibilityManager accessibilityManager) {
+		List<AccessibilityServiceInfo> services = accessibilityManager.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_SPOKEN);
+		return services != null && !services.isEmpty();
 	}
 
 	// With accessibility off nothing would receive an announcement or interruption: Android 5.0 throws when asked for one,
@@ -100,7 +107,7 @@ public class TTS {
 		AccessibilityManager accessibilityManager = (AccessibilityManager) context.getSystemService(Context.ACCESSIBILITY_SERVICE);
 		if (accessibilityManager == null || !accessibilityManager.isEnabled()) return false;
 		accessibilityManager.interrupt();
-		return true;
+		return hasSpokenFeedback(accessibilityManager);
 	}
 
 	public static List<String> getEnginePackages() {
