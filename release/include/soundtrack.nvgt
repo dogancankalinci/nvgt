@@ -17,6 +17,8 @@ int transpose;
 tone_synth synth;
 string channel_input;
 int channel_count;
+string tied_note; // A note tied with & to the next one, waiting to see whether that one continues it.
+int[] tied_steps; // How far each of the notes tied into tied_note moves the position, empty when no note is waiting.
 
 soundtrack() {
 channel_count = 0;
@@ -32,9 +34,11 @@ volume = 100;
 attack = 1;
 release = 1;
 transpose = 0;
+tied_steps.resize(0);
 channel_count++;
 synth.seek(0);
 uint cursor = process_commands(commands, 0);
+finish_tie();
 if(cursor < commands.length()) {
 signal_error("End of string expected", cursor);
 }
@@ -43,6 +47,10 @@ signal_error("End of string expected", cursor);
 uint process_commands(string commands, uint cursor) {
 while(cursor < commands.length()) {
 string command = commands[cursor];
+// A note waiting for the note it is tied to is written before anything that changes how notes sound or moves the position.
+if(command == "p" || command == "@" || command == "v" || command == "a" || command == "r" || command == "n" || command == "u" || command == "d") {
+finish_tie();
+}
 if(command == "o") {
 cursor = cmd_o(commands, cursor);
 }
@@ -173,19 +181,64 @@ beats *= 1.5;
 }
 double ms = (60000.0 / tempo) * beats;
 to_generate += default_octave;
+// A note tied with & to one of the same pitch continues it as one longer note. Tied to a different one, it sounds for its
+// whole length instead of being shortened by the quantization, so that the next note follows it without a gap.
+bool tied = cursor < channel_input.length() && channel_input[cursor] == "&";
+if(tied) {
+cursor++;
+}
+int[] steps;
+if(tied_steps.length() > 0) {
+if(tied_note == to_generate) {
+steps = tied_steps;
+tied_steps.resize(0);
+}
+else {
+finish_tie();
+}
+}
+if(tied) {
+// rest_ms() takes whole milliseconds and rounds each call to whole frames, so every tied note keeps its own step to move
+// the position exactly as far as it would without the tie.
+steps.insert_last(int(ms));
+tied_note = to_generate;
+tied_steps = steps;
+return cursor;
+}
+double note_length = ms;
+for(uint i = 0; i < steps.length(); i++) {
+note_length += steps[i];
+}
+write_note(to_generate, note_length*quantization/8.0);
+for(uint i = 0; i < steps.length(); i++) {
+synth.rest_ms(steps[i]);
+}
+synth.rest_ms(ms);
+return cursor;
+}
+
+void finish_tie() {
+if(tied_steps.length() < 1) {
+return;
+}
+int note_length = 0;
+for(uint i = 0; i < tied_steps.length(); i++) {
+note_length += tied_steps[i];
+}
+write_note(tied_note, note_length);
+for(uint i = 0; i < tied_steps.length(); i++) {
+synth.rest_ms(tied_steps[i]);
+}
+tied_steps.resize(0);
+}
+
+// Writes a note at the current position, which note_ms() doesn't move.
+void write_note(string note, double ms) {
 synth.waveform_type = instrument;
 synth.volume = volume - 100;
 synth.set_edge_fades(attack*10, release*10);
 synth.note_transpose = transpose;
-// A note tied to the next one with & sounds for its whole length instead of being shortened by the quantization, so
-// the next note follows it without a gap. note_ms() doesn't move the cursor, so rest_ms() always moves it past the note.
-bool tied = cursor < channel_input.length() && channel_input[cursor] == "&";
-synth.note_ms(to_generate, tied? ms : ms*quantization/8.0);
-synth.rest_ms(ms);
-if(tied) {
-cursor++;
-}
-return cursor;
+synth.note_ms(note, ms);
 }
 
 void signal_error(string message, uint cursor) {
