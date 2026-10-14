@@ -499,6 +499,33 @@ void poco_json_array::stringify(datastream* ds, unsigned int indent, int step) c
 
 // Some functions needed to wrap poco regular expression.
 static asITypeInfo* StringArrayType = NULL;
+// Poco reads the newline options one bit at a time, but RE_NEWLINE_CRLF is RE_NEWLINE_CR | RE_NEWLINE_LF and RE_NEWLINE_ANYCRLF is RE_NEWLINE_ANY | RE_NEWLINE_CR, so it compiles RE_NEWLINE_CR as CRLF, RE_NEWLINE_CRLF as LF and RE_NEWLINE_ANYCRLF as CRLF. Those three are given to PCRE2 as a newline setting at the start of the pattern instead, which takes precedence over the one Poco sets.
+static RegularExpression regexp_compile(const std::string& pattern, int options, bool study = true) {
+	const int newline_options = RegularExpression::RE_NEWLINE_CRLF | RegularExpression::RE_NEWLINE_ANY;
+	std::string setting;
+	switch (options & newline_options) {
+		case RegularExpression::RE_NEWLINE_CR: setting = "(*CR)"; break;
+		case RegularExpression::RE_NEWLINE_CRLF: setting = "(*CRLF)"; break;
+		case RegularExpression::RE_NEWLINE_ANYCRLF: setting = "(*ANYCRLF)"; break;
+		default: return RegularExpression(pattern, options, study);
+	}
+	try {
+		return RegularExpression(setting + pattern, options & ~newline_options, study);
+	} catch (RegularExpressionException& e) {
+		// Poco ends the message with " (at offset n)", which should count from the start of the pattern as given.
+		const std::string& message = e.message();
+		std::string::size_type at = message.rfind(" (at offset ");
+		if (at == std::string::npos || message.back() != ')') throw;
+		std::string digits = message.substr(at + 12, message.size() - at - 13);
+		if (digits.empty() || digits.size() > 18 || digits.find_first_not_of("0123456789") != std::string::npos) throw;
+		unsigned long long offset = std::stoull(digits);
+		if (offset < setting.size()) throw;
+		throw RegularExpressionException(message.substr(0, at + 12) + std::to_string(offset - setting.size()) + ")");
+	}
+}
+static void regexp_construct(RegularExpression* mem, const std::string& pattern, int options) {
+	new (mem) RegularExpression(regexp_compile(pattern, options));
+}
 std::string poco_regular_expression_extract(RegularExpression* exp, const std::string& subject, std::string::size_type offset, int options) {
 	std::string str;
 	try {
@@ -591,14 +618,17 @@ CScriptArray* poco_regular_expression_split(RegularExpression* exp, const std::s
 }
 bool poco_regular_expression_match(const std::string& subject, const std::string& pattern, int options) {
 	try {
-		return RegularExpression::match(subject, pattern, options);
+		// The same as Poco's static RegularExpression::match, which also leaves the newline options out.
+		typedef RegularExpression RE;
+		RegularExpression re = regexp_compile(pattern, options & (RE::RE_CASELESS | RE::RE_MULTILINE | RE::RE_DOTALL | RE::RE_EXTENDED | RE::RE_ANCHORED | RE::RE_DOLLAR_ENDONLY | RE::RE_EXTRA | RE::RE_UNGREEDY | RE::RE_UTF8 | RE::RE_NO_AUTO_CAPTURE | RE::RE_NEWLINE_CRLF | RE::RE_NEWLINE_ANY), false);
+		return re.match(subject, 0, options & (RE::RE_ANCHORED | RE::RE_NOTBOL | RE::RE_NOTEOL | RE::RE_NOTEMPTY | RE::RE_NO_AUTO_CAPTURE | RE::RE_NO_UTF8_CHECK));
 	} catch (RegularExpressionException) {
 		return false;
 	}
 }
 bool poco_regular_expression_search(const std::string& subject, const std::string& pattern, int options) {
 	try {
-		RegularExpression re(pattern, options);
+		RegularExpression re = regexp_compile(pattern, options);
 		RegularExpression::Match tmp;
 		return re.match(subject, tmp, 0) > 0;
 	} catch (RegularExpressionException) {
@@ -608,7 +638,7 @@ bool poco_regular_expression_search(const std::string& subject, const std::strin
 std::string poco_regular_expression_replace(const std::string& subject, const std::string& pattern, const std::string& replacement, int options) {
 	try {
 		std::string ret = subject;
-		RegularExpression re(pattern, RegularExpression::RE_UTF8 | options);
+		RegularExpression re = regexp_compile(pattern, RegularExpression::RE_UTF8 | options);
 		regexp_substitute(re, ret, 0, replacement, RegularExpression::RE_GLOBAL);
 		return ret;
 	} catch (RegularExpressionException) {
@@ -932,7 +962,7 @@ void RegisterPocostuff(asIScriptEngine* engine) {
 	engine->RegisterEnumValue("regexp_options", _O("RE_GLOBAL"), RegularExpression::RE_GLOBAL);
 	engine->RegisterEnumValue("regexp_options", _O("RE_NO_VARS"), RegularExpression::RE_NO_VARS);
 	engine->RegisterObjectType("regexp", sizeof(RegularExpression), asOBJ_VALUE | asGetTypeTraits<RegularExpression>());
-	engine->RegisterObjectBehaviour("regexp", asBEHAVE_CONSTRUCT, _O("void f(const string&in pattern, regexp_options options = RE_UTF8)"), asFUNCTION((poco_value_construct<RegularExpression, const std::string&, RegularExpression::Options>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectBehaviour("regexp", asBEHAVE_CONSTRUCT, _O("void f(const string&in pattern, regexp_options options = RE_UTF8)"), asFUNCTION(regexp_construct), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectBehaviour("regexp", asBEHAVE_DESTRUCT, _O("void f()"), asFUNCTION(poco_value_destruct<RegularExpression>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("regexp", _O("bool match(const string&in text, uint64 offset = 0) const"), asMETHODPR(RegularExpression, match, (const std::string&, std::string::size_type) const, bool), asCALL_THISCALL);
 	engine->RegisterObjectMethod("regexp", _O("bool match(const string&in text, uint64 offset, int options) const"), asMETHODPR(RegularExpression, match, (const std::string&, std::string::size_type, int) const, bool), asCALL_THISCALL);
