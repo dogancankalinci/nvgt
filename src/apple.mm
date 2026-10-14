@@ -123,10 +123,10 @@ public:
 	void resetVolume() { volume = defaultVolume; volumeSet = false; }
 	void resetPitch() { pitch = defaultPitch; pitchSet = false; }
 	void resetVoice() { currentVoice = nil; }
-	// Speech starts asynchronously, so the synthesizer can still report that it isn't speaking when this returns.
+	// Speech starts asynchronously, so the synthesizer can still report that it isn't speaking when this returns. Empty text neither speaks nor interrupts anything, as on the other platforms.
 	bool speak(const std::string& text, bool interrupt) {
-		if ((interrupt || text.empty()) && synth.isSpeaking)[synth stopSpeakingAtBoundary:AVSpeechBoundaryImmediate];
-		if (text.empty()) return interrupt;
+		if (text.empty()) return false;
+		if (interrupt && synth.isSpeaking) [synth stopSpeakingAtBoundary:AVSpeechBoundaryImmediate];
 		NSString *nstext = [NSString stringWithUTF8String:text.c_str()];
 		AVSpeechUtterance *utterance = [[AVSpeechUtterance alloc] initWithString:nstext];
 		apply(utterance);
@@ -136,8 +136,8 @@ public:
 	}
 	// Waits for the end of its own utterance, which the delegate reports. Speech can start seconds after it is queued, and some iOS versions report no cancellation, so the wait also ends once the synthesizer stops after it was seen speaking, or when it hasn't started in ten seconds.
 	bool speakWait(const std::string& text, bool interrupt) {
-		if ((interrupt || text.empty()) && synth.isSpeaking)[synth stopSpeakingAtBoundary:AVSpeechBoundaryImmediate];
-		if (text.empty()) return interrupt;
+		if (text.empty()) return false;
+		if (interrupt && synth.isSpeaking) [synth stopSpeakingAtBoundary:AVSpeechBoundaryImmediate];
 		NSString *nstext = [NSString stringWithUTF8String:text.c_str()];
 		AVSpeechUtterance *utterance = [[AVSpeechUtterance alloc] initWithString:nstext];
 		apply(utterance);
