@@ -191,6 +191,7 @@ public class TTS {
 	private int pcmChannelCount;
 	private boolean pcmSynthesisSuccessful;
 	private String currentPcmUtteranceId;
+	private volatile boolean pcmStarted; // The engine has started on the current PCM request.
 
 	// Voice management fields
 	private List<Voice> availableVoices;
@@ -675,10 +676,13 @@ public class TTS {
 	private void setupPcmListener(TextToSpeech target) {
 		target.setOnUtteranceProgressListener(new UtteranceProgressListener() {
 			@Override
-			public void onStart(String utteranceId) {}
+			public void onStart(String utteranceId) {
+				if (currentPcmUtteranceId != null && currentPcmUtteranceId.equals(utteranceId)) pcmStarted = true;
+			}
 			@Override
 			public void onBeginSynthesis(String utteranceId, int sampleRateInHz, int audioFormat, int channelCount) {
 				if (currentPcmUtteranceId != null && currentPcmUtteranceId.equals(utteranceId)) {
+					pcmStarted = true;
 					pcmSampleRate = sampleRateInHz;
 					pcmAudioFormat = audioFormat;
 					pcmChannelCount = channelCount;
@@ -798,6 +802,7 @@ public class TTS {
 		pcmAudioBuffer = new ByteArrayOutputStream();
 		pcmSynthesisLatch = new CountDownLatch(1);
 		pcmSynthesisSuccessful = false;
+		pcmStarted = false;
 		pcmSampleRate = 0;
 		pcmAudioFormat = 0;
 		pcmChannelCount = 0;
@@ -820,9 +825,16 @@ public class TTS {
 			return null;
 		}
 
-		// Wait for synthesis to complete
+		// Wait for synthesis to complete. The engine takes requests one at a time, from every app using it, and one that
+		// speaks holds the next until its speech has nearly been played, so the ten seconds count from when the engine was
+		// last seen speaking before synthesis started; they are pushed back like that for at most a minute.
 		try {
-			pcmSynthesisLatch.await(10000, TimeUnit.MILLISECONDS); // 10 second timeout
+			long now = SystemClock.elapsedRealtime(), limit = now + 10000, stopExtending = now + 60000;
+			while (!pcmSynthesisLatch.await(100, TimeUnit.MILLISECONDS)) {
+				now = SystemClock.elapsedRealtime();
+				if (!pcmStarted && now < stopExtending && tts.isSpeaking()) limit = now + 10000;
+				if (now >= limit) break;
+			}
 		} catch (InterruptedException e) {
 			currentPcmUtteranceId = null;
 			file.delete();
