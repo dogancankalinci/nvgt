@@ -237,13 +237,16 @@
 	procedure DownloadAndroidSDK;
 	var
 		ErrorCode: Integer;
+		Downloaded: Boolean;
 	begin
+		Downloaded := False;
 		AndroidSdkDownloadPage.Clear;
 		AndroidSdkDownloadPage.Add('https://nvgt.dev/downloads/android-tools.exe', 'android-tools.exe', '');
 		AndroidSdkDownloadPage.Show;
 		try
 			try
 				AndroidSdkDownloadPage.Download;
+				Downloaded := True;
 			except
 				if AndroidSdkDownloadPage.AbortedByUser then
 					SuppressibleMsgBox('The Android tools installation was aborted. You will not be able to create Android apps with this installation unless you download the tools in the future.', mbInformation, MB_OK, IDOK)
@@ -252,6 +255,10 @@
 			end;
 		finally
 			AndroidSdkDownloadPage.Hide;
+		end;
+		// A failed or aborted download leaves nothing to extract, and has already been reported.
+		if Downloaded then
+		begin
 			if not ShellExec('', ExpandConstant('{tmp}\android-tools.exe'), ExpandConstant('-o{app}\android-tools -y'), '', SW_SHOWNORMAL, ewWaitUntilTerminated, ErrorCode) then
 			begin
 				SuppressibleMsgBox(Format('An error occurred when extracting the android tools: %s', [SysErrorMessage(ErrorCode)]), mbCriticalError, MB_OK, IDOK);
