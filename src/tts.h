@@ -152,6 +152,7 @@ class tts_voice {
 	bool schedule(soundptr &s, bool interrupt);
 	void clear();
 	void advance_queue();
+	bool queue_speaking();
 	bool fade(soundptr &item);
 	void cleanup_completed_fades();
 	static void at_end(void *pUserData, ma_sound *pSound);

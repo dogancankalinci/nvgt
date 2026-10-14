@@ -522,7 +522,7 @@ bool tts_voice::set_voice(int voice) {
 }
 bool tts_voice::get_speaking() {
 	if (!current_engine) return false; // Nothing has been bound/spoken yet.
-	if (current_engine->get_pcm_generation_state() == PCM_PREFERRED) return speaking.test();
+	if (current_engine->get_pcm_generation_state() == PCM_PREFERRED) return queue_speaking();
 	else return current_engine->is_speaking();
 }
 bool tts_voice::refresh() {
@@ -632,6 +632,7 @@ bool tts_voice::schedule(soundptr &s, bool interrupt) {
 		ma_sound_set_end_callback(s->get_ma_sound(), at_end, (void*)(uintptr_t)id); // The id rather than this, see g_live_tts_voices.
 		unique_lock<mutex> lock(queue_mtx);
 		if (interrupt) clear();
+		else advance_queue(); // See queue_speaking().
 		queue.push(s);
 		speaking.test_and_set();
 		if (queue.size() == 1) s->play();
@@ -644,6 +645,13 @@ void tts_voice::advance_queue() {
 	queue.pop();
 	if (queue.empty()) speaking.clear();
 	else queue.front()->play();
+}
+// Whether speech queued through the sound system is still playing. The end of each utterance is handled by a job that its end callback posts, and also here, so the queue still moves on when the resource manager's job queue was full and the job was lost.
+bool tts_voice::queue_speaking() {
+	if (!speaking.test()) return false;
+	unique_lock<mutex> lock(queue_mtx);
+	advance_queue();
+	return speaking.test();
 }
 void tts_voice::clear() {
 	if (!queue.empty() && queue.front()->get_playing()) fade(queue.front());
@@ -671,7 +679,7 @@ void tts_voice::at_end(void *pUserData, ma_sound *pSound) {
 	job.data.custom.data0 = (ma_uintptr)pUserData; // The voice's id.
 	job.data.custom.data1 = (ma_uintptr)pSound;
 	job.data.custom.proc = job_proc;
-	ma_resource_manager_post_job(g_audio_engine->get_ma_engine()->pResourceManager, &job);
+	ma_resource_manager_post_job(g_audio_engine->get_ma_engine()->pResourceManager, &job); // A job that can't be posted is made up for by queue_speaking().
 }
 ma_result tts_voice::job_proc(ma_job *pJob) {
 	// Held until the voice's queue lock below is released, so the voice can't be destroyed in between.
