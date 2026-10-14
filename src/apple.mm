@@ -19,6 +19,8 @@
 #else
 #import <AppKit/AppKit.h>
 #endif
+#include <atomic>
+#include <chrono>
 #include <memory>
 #include <vector>
 #include <string>
@@ -36,6 +38,25 @@
 
 void register_native_tts() { tts_engine_register("avspeech", []() -> std::shared_ptr<tts_engine> { return std::make_shared<AVTTSVoice>(); }); }
 
+// What a blocking speak waits for: the end of its own utterance. The synthesizer calls its delegate on a thread of its choosing, so the state is atomic.
+struct nvgt_speech_wait_state {
+	std::atomic<void*> utterance{nullptr};
+	std::atomic<bool> ended{false};
+};
+@interface NVGTSpeechWaiter : NSObject <AVSpeechSynthesizerDelegate> {
+@public
+	nvgt_speech_wait_state* state;
+}
+@end
+@implementation NVGTSpeechWaiter
+- (void)speechSynthesizer:(AVSpeechSynthesizer *)synthesizer didFinishSpeechUtterance:(AVSpeechUtterance *)utterance {
+	if (state && state->utterance.load() == (void*)utterance) state->ended = true;
+}
+- (void)speechSynthesizer:(AVSpeechSynthesizer *)synthesizer didCancelSpeechUtterance:(AVSpeechUtterance *)utterance {
+	if (state && state->utterance.load() == (void*)utterance) state->ended = true;
+}
+@end
+
 // AVTTSVoice::impl class created by Gruia Chiscop on 6/6/24.
 class AVTTSVoice::Impl {
 public:
@@ -46,10 +67,13 @@ public:
 	AVSpeechSynthesizer* synth;
 	AVSpeechSynthesisVoice* currentVoice; // Only non-nil once a voice was chosen; while nil, the system's default voice speaks.
 	NSArray<AVSpeechSynthesisVoice *> *voices;
+	nvgt_speech_wait_state waitState;
+	NVGTSpeechWaiter* waiter; // The synthesizer's delegate, which it doesn't retain.
 	Impl() : currentVoice(nil) {
 		voices = [[AVSpeechSynthesisVoice speechVoices] retain];
 		readDefaults();
 		synth = [[AVSpeechSynthesizer alloc] init];
+		setDelegate();
 	}
 	Impl(const std::string& language) : currentVoice(nil) {
 		voices = [[AVSpeechSynthesisVoice speechVoices] retain];
@@ -57,9 +81,17 @@ public:
 		currentVoice = [AVSpeechSynthesisVoice voiceWithLanguage:nslanguage]; // nil if there is none, which leaves the system default voice in charge.
 		readDefaults();
 		synth = [[AVSpeechSynthesizer alloc] init];
+		setDelegate();
 	}
 	~Impl() {
+		synth.delegate = nil;
+		[waiter release];
 		if (voices) [voices release];
+	}
+	void setDelegate() {
+		waiter = [[NVGTSpeechWaiter alloc] init];
+		waiter->state = &waitState;
+		synth.delegate = waiter;
 	}
 	void readDefaults() {
 		AVSpeechUtterance* utterance = [[AVSpeechUtterance alloc] initWithString:@""];
@@ -91,6 +123,7 @@ public:
 	void resetVolume() { volume = defaultVolume; volumeSet = false; }
 	void resetPitch() { pitch = defaultPitch; pitchSet = false; }
 	void resetVoice() { currentVoice = nil; }
+	// Speech starts asynchronously, so the synthesizer can still report that it isn't speaking when this returns.
 	bool speak(const std::string& text, bool interrupt) {
 		if ((interrupt || text.empty()) && synth.isSpeaking)[synth stopSpeakingAtBoundary:AVSpeechBoundaryImmediate];
 		if (text.empty()) return interrupt;
@@ -99,13 +132,28 @@ public:
 		apply(utterance);
 		[synth speakUtterance:utterance];
 		[utterance release]; // The synthesizer keeps it while it is queued.
-		return synth.isSpeaking;
+		return true;
 	}
+	// Waits for the end of its own utterance, which the delegate reports. Speech can start seconds after it is queued, and some iOS versions report no cancellation, so the wait also ends once the synthesizer stops after it was seen speaking, or when it hasn't started in ten seconds.
 	bool speakWait(const std::string& text, bool interrupt) {
-		bool result = speak(text, interrupt);
-		if (!result) return result;
-		while (synth.isSpeaking) wait(5);
-		return result;
+		if ((interrupt || text.empty()) && synth.isSpeaking)[synth stopSpeakingAtBoundary:AVSpeechBoundaryImmediate];
+		if (text.empty()) return interrupt;
+		NSString *nstext = [NSString stringWithUTF8String:text.c_str()];
+		AVSpeechUtterance *utterance = [[AVSpeechUtterance alloc] initWithString:nstext];
+		apply(utterance);
+		waitState.ended = false;
+		waitState.utterance = (void*)utterance;
+		[synth speakUtterance:utterance];
+		bool seenSpeaking = false;
+		auto giveUp = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+		while (!waitState.ended) {
+			if (synth.isSpeaking) seenSpeaking = true;
+			else if (seenSpeaking || std::chrono::steady_clock::now() >= giveUp) break;
+			wait(5);
+		}
+		waitState.utterance = nullptr;
+		[utterance release]; // Held until here, so its address can't be reused by another utterance while it is compared.
+		return true;
 	}
 	bool stopSpeech() { return [synth stopSpeakingAtBoundary:AVSpeechBoundaryImmediate]; }
 	bool pauseSpeech() {
