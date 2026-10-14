@@ -388,7 +388,7 @@ std::string android_get_device_id() {
 }
 
 bool android_is_screen_reader_active() {
-	android_setup_jni();
+	try { android_setup_jni(); } catch (...) { return false; } // A failed setup is reported as nothing done, not as an exception crossing the script engine.
 	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
 	if (!env) return false;
 	jboolean result = env->CallStaticBooleanMethod(TTSClass, midIsScreenReaderActive);
@@ -396,7 +396,7 @@ bool android_is_screen_reader_active() {
 }
 
 std::string android_screen_reader_detect() {
-	android_setup_jni();
+	try { android_setup_jni(); } catch (...) { return ""; } // A failed setup is reported as nothing done, not as an exception crossing the script engine.
 	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
 	if (!env) return "";
 	LocalRef<jstring> jreader(env, (jstring)env->CallStaticObjectMethod(TTSClass, midScreenReaderDetect));
@@ -405,7 +405,7 @@ std::string android_screen_reader_detect() {
 }
 
 bool android_screen_reader_speak(const std::string& text, bool interrupt) {
-	android_setup_jni();
+	try { android_setup_jni(); } catch (...) { return false; } // A failed setup is reported as nothing done, not as an exception crossing the script engine.
 	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
 	if (!env) return false;
 	LocalRef<jstring> jtext(env, to_jstring(env, text));
@@ -415,7 +415,7 @@ bool android_screen_reader_speak(const std::string& text, bool interrupt) {
 }
 
 bool android_screen_reader_silence() {
-	android_setup_jni();
+	try { android_setup_jni(); } catch (...) { return false; } // A failed setup is reported as nothing done, not as an exception crossing the script engine.
 	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
 	if (!env) return false;
 	jboolean result = env->CallStaticBooleanMethod(TTSClass, midScreenReaderSilence);
