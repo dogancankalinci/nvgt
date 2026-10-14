@@ -182,6 +182,11 @@ return -1;
 }
 char* utf8=sbz_wchar_to_char(name);
 sbz_com_free_memory(&sapi->com, name);
+if(!utf8)
+{
+current->lpVtbl->Release(current);
+return -1;
+}
 for(int x=0; x<sapi->voice_count; x++)
 {
 if(strcmp(sapi->voices[x].name, utf8)) continue;
