@@ -269,9 +269,12 @@ class dynamic_menu {
 
 			// Determine where the joystick is aimed.
 			if (@stick != null) {
-				if (stick.y < -150)
+				// The axis runs from 0 to 65535 with the centre at 32768, and reads 0 while no controller is connected,
+				// so it only counts while one is; a quarter of the way out from the centre counts as pushed.
+				int stick_y = stick.active? stick.y - 32768 : 0;
+				if (stick_y < -8192)
 					stick_aim = 1; // Up.
-				else if (stick.y > 150)
+				else if (stick_y > 8192)
 					stick_aim = 2; // Down.
 				else
 					stick_aim = 0;
