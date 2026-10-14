@@ -98,6 +98,7 @@ public:
 		AVSpeechUtterance *utterance = [[AVSpeechUtterance alloc] initWithString:nstext];
 		apply(utterance);
 		[synth speakUtterance:utterance];
+		[utterance release]; // The synthesizer keeps it while it is queued.
 		return synth.isSpeaking;
 	}
 	bool speakWait(const std::string& text, bool interrupt) {
@@ -334,17 +335,23 @@ tts_audio_data* AVTTSVoice::speak_to_pcm(const std::string &text) {
 				NSUInteger bytesToAppend = convertedBuffer.frameLength * targetFormat.channelCount * sizeof(int16_t);
 				[audioData appendBytes:convertedBuffer.int16ChannelData[0] length:bytesToAppend];
 			}
+			[convertedBuffer release];
 		}
 	}];
+	[utterance release]; // The synthesizer keeps it while it writes.
 	NSDate *timeout = [NSDate dateWithTimeIntervalSinceNow:10.0];
 	while (!synthesisDone && [[NSDate date] compare:timeout] == NSOrderedAscending) [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
-	if (converter) [converter release];
-	if (targetFormat) [targetFormat release];
-	if (!synthesisDone || audioData.length == 0) return nullptr;
+	// A synthesis that timed out can still call the block, which uses these objects, so they are kept.
+	if (!synthesisDone) return nullptr;
 	unsigned int sampleRate = targetFormat ? (unsigned int)targetFormat.sampleRate : 22050;
 	unsigned int channelCount = targetFormat ? (unsigned int)targetFormat.channelCount : 1;
-	[audioData retain];
-	return new tts_audio_data(this, (void*)audioData.bytes, (unsigned int)audioData.length, sampleRate, channelCount, 16, (void*)audioData);
+	if (converter) [converter release];
+	if (targetFormat) [targetFormat release];
+	if (audioData.length == 0) {
+		[audioData release];
+		return nullptr;
+	}
+	return new tts_audio_data(this, (void*)audioData.bytes, (unsigned int)audioData.length, sampleRate, channelCount, 16, (void*)audioData); // free_pcm releases audioData.
 }
 
 void AVTTSVoice::free_pcm(tts_audio_data* data) {
