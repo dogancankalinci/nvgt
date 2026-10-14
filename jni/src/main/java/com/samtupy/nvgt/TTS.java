@@ -746,6 +746,11 @@ public class TTS {
 		Locale locale = availableVoices.get(index).getLocale();
 		if (locale == null) return "";
 		String lang = locale.getLanguage();
+		// Before Android 15, or for an app targeting an earlier version, Locale keeps the codes ISO 639 replaced for Hebrew, Indonesian
+		// and Yiddish, which other platforms don't report.
+		if (lang.equals("iw")) lang = "he";
+		else if (lang.equals("in")) lang = "id";
+		else if (lang.equals("ji")) lang = "yi";
 		String country = locale.getCountry();
 		return country.isEmpty()? lang.toLowerCase(Locale.ROOT) : (lang + "-" + country).toLowerCase(Locale.ROOT);
 	}
