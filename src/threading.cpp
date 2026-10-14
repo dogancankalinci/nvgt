@@ -318,6 +318,9 @@ template<typename T> bool is_always_lock_free(T* obj) {
 	return obj->is_always_lock_free;
 }
 template<typename T> void atomic_notify_one(T* obj) { obj->notify_one(); }
+// AngelScript compiles a++ and a-- to opPostInc() and opPostDec() without arguments, unlike C++'s operator++(int).
+template<typename T> auto atomic_post_increment(T* obj) noexcept { return (*obj)++; }
+template<typename T> auto atomic_post_decrement(T* obj) noexcept { return (*obj)--; }
 template<typename T> void atomic_notify_all(T* obj) { obj->notify_all(); }
 template<typename T>
 consteval const char* as_script_int_name() {
@@ -379,9 +382,11 @@ if constexpr((std::is_integral_v<divisible_type>
 		engine->RegisterObjectMethod(type_name.c_str(), Poco::format("%s opSubAssign(%s arg)", regular_type_name, regular_type_name).c_str(), asMETHODPR(atomic_type, operator-=, (divisible_type) noexcept, divisible_type), asCALL_THISCALL);
 		if constexpr(std::is_integral_v<divisible_type>) {
 			engine->RegisterObjectMethod(type_name.c_str(), Poco::format("%s opPreInc()", regular_type_name).c_str(), asMETHODPR(atomic_type, operator++, () noexcept, divisible_type), asCALL_THISCALL);
-			engine->RegisterObjectMethod(type_name.c_str(), Poco::format("%s opPostInc(%s arg)", regular_type_name, regular_type_name).c_str(), asMETHODPR(atomic_type, operator++, (int) noexcept, divisible_type), asCALL_THISCALL);
+			engine->RegisterObjectMethod(type_name.c_str(), Poco::format("%s opPostInc()", regular_type_name).c_str(), asFUNCTION(atomic_post_increment<atomic_type>), asCALL_CDECL_OBJFIRST);
+			engine->RegisterObjectMethod(type_name.c_str(), Poco::format("%s opPostInc(%s arg)", regular_type_name, regular_type_name).c_str(), asMETHODPR(atomic_type, operator++, (int) noexcept, divisible_type), asCALL_THISCALL); // Kept for scripts that call it explicitly.
 			engine->RegisterObjectMethod(type_name.c_str(), Poco::format("%s opPreDec()", regular_type_name).c_str(), asMETHODPR(atomic_type, operator--, () noexcept, divisible_type), asCALL_THISCALL);
-			engine->RegisterObjectMethod(type_name.c_str(), Poco::format("%s opPostDec(%s arg)", regular_type_name, regular_type_name).c_str(), asMETHODPR(atomic_type, operator--, (int) noexcept, divisible_type), asCALL_THISCALL);
+			engine->RegisterObjectMethod(type_name.c_str(), Poco::format("%s opPostDec()", regular_type_name).c_str(), asFUNCTION(atomic_post_decrement<atomic_type>), asCALL_CDECL_OBJFIRST);
+			engine->RegisterObjectMethod(type_name.c_str(), Poco::format("%s opPostDec(%s arg)", regular_type_name, regular_type_name).c_str(), asMETHODPR(atomic_type, operator--, (int) noexcept, divisible_type), asCALL_THISCALL); // Kept for scripts that call it explicitly.
 			engine->RegisterObjectMethod(type_name.c_str(), Poco::format("%s fetch_and(%s arg, memory_order order = MEMORY_ORDER_SEQ_CST)", regular_type_name, regular_type_name).c_str(), asMETHODPR(atomic_type, fetch_and, (divisible_type, std::memory_order) noexcept, divisible_type), asCALL_THISCALL);
 			engine->RegisterObjectMethod(type_name.c_str(), Poco::format("%s fetch_or(%s arg, memory_order order = MEMORY_ORDER_SEQ_CST)", regular_type_name, regular_type_name).c_str(), asMETHODPR(atomic_type, fetch_or, (divisible_type, std::memory_order) noexcept, divisible_type), asCALL_THISCALL);
 			engine->RegisterObjectMethod(type_name.c_str(), Poco::format("%s fetch_xor(%s arg, memory_order order = MEMORY_ORDER_SEQ_CST)", regular_type_name, regular_type_name).c_str(), asMETHODPR(atomic_type, fetch_xor, (divisible_type, std::memory_order) noexcept, divisible_type), asCALL_THISCALL);
