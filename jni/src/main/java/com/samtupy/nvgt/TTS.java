@@ -437,6 +437,7 @@ public class TTS {
 	// the same engine and given what the script set, and the old one is shut down. The voice list is kept, so voice indices
 	// stay as they were. One attempt is made at most every 30 seconds, because a failed one waits out the connection timeout.
 	private long lastRecovery = 0; // Guarded by queueLock.
+	private long connectionLostAt = 0; // When a request first found the connection gone, 0 while it works. Guarded by queueLock.
 	private boolean recoverConnection(TextToSpeech failed) {
 		synchronized (queueLock) {
 			if (tts != failed) return true; // Another request already replaced it.
@@ -446,8 +447,16 @@ public class TTS {
 			} catch (Exception e) {
 				voices = null;
 			}
-			if (voices != null) return false; // The connection works, so the request failed for another reason.
+			if (voices != null) { // The connection works, so the request failed for another reason.
+				connectionLostAt = 0;
+				return false;
+			}
 			long now = SystemClock.elapsedRealtime();
+			// Before Android 12 TextToSpeech binds the engine itself and binds it again when the engine restarts, and while it
+			// waits for that, shutdown() can't unbind it, so a replacement would leave it bound for good. It gets five seconds
+			// to come back first.
+			if (connectionLostAt == 0) connectionLostAt = now;
+			if (Build.VERSION.SDK_INT < 31 && now - connectionLostAt < 5000) return false;
 			if (lastRecovery != 0 && now - lastRecovery < 30000) return false;
 			lastRecovery = now;
 			Context context = SDL.getContext();
@@ -486,6 +495,7 @@ public class TTS {
 			if (pitchExplicit) replacement.setPitch(ttsPitch);
 			else pitchPinned = false;
 			tts = replacement;
+			connectionLostAt = 0;
 			shutDown(failed);
 			return true;
 		}
