@@ -77,11 +77,15 @@ static void* tts_trim(tts_audio_data* data, float begin_db = -60, float end_db =
 	}
 }
 
-// Whether a voice of the given language serves a request for a language: any voice when none is requested, one with the same code, or one whose code names a language without a region when the request is for that language in some region ("en" serves "en-us"), since not every engine reports a region.
+// Whether a voice of the given language serves a request for a language: any voice when none is requested, one with the same code in any letter case, or, since not every engine reports a region and a request need not name one, one whose code names the same language where only one of the two codes names a region ("en" serves "en-us" and the other way around).
 static bool tts_language_matches(const string &voice_language, const string &requested) {
-	if (requested.empty() || voice_language == requested) return true;
-	if (voice_language.empty() || voice_language.find('-') != string::npos || requested.size() <= voice_language.size()) return false;
-	return requested.compare(0, voice_language.size(), voice_language) == 0 && requested[voice_language.size()] == '-';
+	if (requested.empty()) return true;
+	string voice = Poco::toLower(voice_language), request = Poco::toLower(requested);
+	if (voice == request) return true;
+	if (voice.empty()) return false;
+	const string &language = voice.size() < request.size()? voice : request, &regional = voice.size() < request.size()? request : voice;
+	if (language.find('-') != string::npos || regional.size() <= language.size()) return false;
+	return regional.compare(0, language.size(), language) == 0 && regional[language.size()] == '-';
 }
 
 // Text as valid UTF-8: each malformed sequence (a stray or truncated byte run, an overlong form, an encoded surrogate or a value past U+10FFFF) becomes one U+FFFD, and decoding resumes at the first byte that can't belong to it, as Android's conversion to UTF-16 does. Engines handle malformed text badly: SAPI refuses the whole text, Apple's speech throws an Objective-C exception, Speech Dispatcher rejects it. A string cut in the middle of a character, by substr for instance, is enough to produce it.
