@@ -632,8 +632,9 @@ bool voice_over_is_running() {
 	#endif
 }
 
-bool voice_over_speak(const std::string& message, bool interrupt) {
+bool voice_over_speak(const std::string& text, bool interrupt) {
 	if (!voice_over_is_running()) return false;
+	std::string message = tts_valid_utf8(text); // NSString makes nil of malformed UTF-8, which the announcement dictionary on macOS rejects with an exception.
 	if (!speech_thread.isRunning()) speech_thread.start(vo_speech_thread);
 	Poco::FastMutex::ScopedLock exclusive(speech_text_mutex);
 	if (interrupt || speech_text == "") speech_text = message;

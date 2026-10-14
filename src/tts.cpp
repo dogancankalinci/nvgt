@@ -84,6 +84,38 @@ static bool tts_language_matches(const string &voice_language, const string &req
 	return requested.compare(0, voice_language.size(), voice_language) == 0 && requested[voice_language.size()] == '-';
 }
 
+// Text as valid UTF-8: each malformed sequence (a stray or truncated byte run, an overlong form, an encoded surrogate or a value past U+10FFFF) becomes one U+FFFD, and decoding resumes at the first byte that can't belong to it, as Android's conversion to UTF-16 does. Engines handle malformed text badly: SAPI refuses the whole text, Apple's speech throws an Objective-C exception, Speech Dispatcher rejects it. A string cut in the middle of a character, by substr for instance, is enough to produce it.
+string tts_valid_utf8(const string &text) {
+	const unsigned char *s = (const unsigned char *)text.data();
+	size_t n = text.size(), i = 0;
+	string out;
+	bool copying = false; // Only once something had to be replaced; valid text is returned as it is.
+	while (i < n) {
+		unsigned char lead = s[i];
+		uint32_t c;
+		size_t length;
+		if (lead < 0x80) c = lead, length = 1;
+		else if (lead >= 0xC2 && lead <= 0xDF) c = lead & 0x1F, length = 2;
+		else if (lead >= 0xE0 && lead <= 0xEF) c = lead & 0x0F, length = 3;
+		else if (lead >= 0xF0 && lead <= 0xF4) c = lead & 0x07, length = 4;
+		else c = 0, length = 0;
+		size_t used = 1;
+		if (length > 1) while (used < length && i + used < n && (s[i + used] & 0xC0) == 0x80) c = (c << 6) | (s[i + used++] & 0x3F);
+		bool valid = length != 0 && used == length && !(length == 3 && c < 0x800) && !(length == 4 && (c < 0x10000 || c > 0x10FFFF)) && !(c >= 0xD800 && c <= 0xDFFF);
+		if (!valid && !copying) {
+			out.reserve(n + 2);
+			out.assign(text, 0, i);
+			copying = true;
+		}
+		if (copying) {
+			if (valid) out.append(text, i, used);
+			else out += "\xEF\xBF\xBD";
+		}
+		i += used;
+	}
+	return copying? out : text;
+}
+
 // The sample format of the PCM an engine produced. 32-bit samples come only from Android engines that synthesize floats.
 static ma_format tts_pcm_format(const tts_audio_data* data) {
 	if (data->bitsize == 16) return ma_format_s16;
@@ -320,7 +352,7 @@ void *tts_voice::speak_to_pcm(const string &text, tts_audio_data** datablock) {
 	ensure_default();
 	tts_engine *engine = active_engine();
 	if (!datablock || !engine || engine->get_pcm_generation_state() == PCM_UNSUPPORTED) return nullptr;
-	*datablock = engine->speak_to_pcm(text);
+	*datablock = engine->speak_to_pcm(tts_valid_utf8(text));
 	if (!*datablock) return nullptr;
 	return tts_trim(*datablock);
 }
@@ -340,7 +372,7 @@ bool tts_voice::speak(const string &text, bool interrupt) {
 		}
 		datablock->free();
 		return schedule(s, interrupt);
-	} else return engine->speak(text, interrupt, false);
+	} else return engine->speak(tts_valid_utf8(text), interrupt, false);
 }
 bool tts_voice::speak_to_file(const string &filename, const string &text) {
 	tts_audio_data* datablock;
@@ -386,7 +418,7 @@ bool tts_voice::speak_wait(const string &text, bool interrupt) {
 		if (!speak(text, interrupt)) return false;
 		while (get_speaking()) wait(10);
 		return true;
-	} else return engine->speak(text, interrupt, true);
+	} else return engine->speak(tts_valid_utf8(text), interrupt, true);
 }
 sound *tts_voice::speak_to_sound(const string &text) {
 	tts_audio_data* datablock;

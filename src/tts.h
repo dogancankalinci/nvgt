@@ -111,6 +111,7 @@ bool tts_engine_register(const std::string &name, tts_engine_factory factory);
 std::vector<std::string> tts_get_engine_names();
 std::shared_ptr<tts_engine> tts_create_engine(const std::string &name);
 void tts_set_preferred_engine(const std::string &name);
+std::string tts_valid_utf8(const std::string &text); // The text with every malformed UTF-8 sequence replaced by U+FFFD.
 void tts_set_engine_ranking(const std::vector<std::string> &names); // The order a platform falls back through its engines when the preferred one can't be used.
 
 struct voice_info {
