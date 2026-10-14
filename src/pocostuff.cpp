@@ -266,8 +266,22 @@ template<typename T> poco_shared<Dynamic::Var>* poco_var_assign_shared(poco_shar
 	var->ptr->operator=(val->shared);
 	return var;
 }
+// Poco 1.14 refuses to turn a negative integer into a floating point value whose mantissa is shorter than the integer type, such as any negative int64 into a double or a negative int into a float, as "Lost precision": it measures the value by its unsigned bit pattern rather than its magnitude. This converts such values itself, refusing only those whose magnitude really doesn't fit, as later Poco versions do, and leaves every other conversion to Poco. The operators below compute convert<T>() op value exactly as Poco's own operators do, but through this function.
+template<typename T> T poco_var_convert(const Dynamic::Var& var) {
+	if constexpr(std::is_floating_point<T>::value) {
+		if (var.isInteger() && var.isSigned()) {
+			Int64 value = var.convert<Int64>();
+			UInt64 magnitude = value < 0 ? UInt64(0) - UInt64(value) : UInt64(value);
+			int digits = 0;
+			while (magnitude >>= 1) digits++;
+			if (digits > std::numeric_limits<T>::digits) throw RangeException("Lost precision", var.convert<std::string>());
+			return static_cast<T>(value);
+		}
+	}
+	return var.convert<T>();
+}
 template<typename T> T poco_var_extract(poco_shared<Dynamic::Var>* var) {
-	return var->ptr->convert<T>();
+	return poco_var_convert<T>(*var->ptr);
 }
 template<typename T> poco_shared<T>* poco_var_extract_shared(poco_shared<Dynamic::Var>* var) {
 	try {
@@ -277,14 +291,14 @@ template<typename T> poco_shared<T>* poco_var_extract_shared(poco_shared<Dynamic
 	}
 }
 template<typename T> T poco_var_add_assign(poco_shared<Dynamic::Var>* var, const T& val) {
-	var->ptr->operator+=<T>(val);
-	return var->ptr->convert<T>();
+	*var->ptr = poco_var_convert<T>(*var->ptr) + val;
+	return poco_var_convert<T>(*var->ptr);
 }
 template<typename T> T poco_var_add(poco_shared<Dynamic::Var>* var, const T& val) {
-	return var->ptr->template operator+<T>(val).template convert<T>();
+	return poco_var_convert<T>(Dynamic::Var(poco_var_convert<T>(*var->ptr) + val));
 }
 template<typename T> T poco_var_add_r(poco_shared<Dynamic::Var>* var, const T& val) {
-	return val + var->ptr->template convert<T>();
+	return val + poco_var_convert<T>(*var->ptr);
 }
 poco_shared<Dynamic::Var>* poco_var_inc(poco_shared<Dynamic::Var>* var) {
 	var->ptr->operator++();
@@ -300,35 +314,35 @@ int poco_var_cmp(poco_shared<Dynamic::Var>* var, const poco_shared<Dynamic::Var>
 	else return 0;
 }
 template<typename T> T poco_var_sub_assign(poco_shared<Dynamic::Var>* var, const T& val) {
-	var->ptr->template operator-=<T>(val);
-	return var->ptr->template convert<T>();
+	*var->ptr = poco_var_convert<T>(*var->ptr) - val;
+	return poco_var_convert<T>(*var->ptr);
 }
 template<typename T> T poco_var_sub(poco_shared<Dynamic::Var>* var, const T& val) {
-	return var->ptr->template operator-<T>(val).template convert<T>();
+	return poco_var_convert<T>(Dynamic::Var(poco_var_convert<T>(*var->ptr) - val));
 }
 template<typename T> T poco_var_mul_assign(poco_shared<Dynamic::Var>* var, const T& val) {
-	var->ptr->template operator*=<T>(val);
-	return var->ptr->template convert<T>();
+	*var->ptr = poco_var_convert<T>(*var->ptr) * val;
+	return poco_var_convert<T>(*var->ptr);
 }
 template<typename T> T poco_var_mul(poco_shared<Dynamic::Var>* var, const T& val) {
-	return var->ptr->template operator*<T>(val).template convert<T>();
+	return poco_var_convert<T>(Dynamic::Var(poco_var_convert<T>(*var->ptr) * val));
 }
 template<typename T> void poco_var_check_div(poco_shared<Dynamic::Var>* var, const T& val) {
 	if constexpr(std::is_integral<T>::value) {
 		if (val == 0) throw RangeException("Divide by zero");
 		if constexpr(std::is_signed<T>::value) {
-			if (val == -1 && var->ptr->template convert<T>() == std::numeric_limits<T>::min()) throw RangeException("Overflow in integer division");
+			if (val == -1 && poco_var_convert<T>(*var->ptr) == std::numeric_limits<T>::min()) throw RangeException("Overflow in integer division");
 		}
 	}
 }
 template<typename T> T poco_var_div_assign(poco_shared<Dynamic::Var>* var, const T& val) {
 	poco_var_check_div<T>(var, val);
-	var->ptr->template operator/=<T>(val);
-	return var->ptr->template convert<T>();
+	*var->ptr = poco_var_convert<T>(*var->ptr) / val;
+	return poco_var_convert<T>(*var->ptr);
 }
 template<typename T> T poco_var_div(poco_shared<Dynamic::Var>* var, const T& val) {
 	poco_var_check_div<T>(var, val);
-	return var->ptr->template operator/<T>(val).template convert<T>();
+	return poco_var_convert<T>(Dynamic::Var(poco_var_convert<T>(*var->ptr) / val));
 }
 template<typename T> T poco_var_mod_assign(poco_shared<Dynamic::Var>* var, const T& val) {
 	poco_var_check_div<T>(var, val);
