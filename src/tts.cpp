@@ -386,11 +386,11 @@ bool tts_voice::speak_to_file(const string &filename, const string &text) {
 			datablock->free();
 			return false;
 		}
-		Poco::FileOutputStream file(filename, ios::binary);
+		Poco::FileOutputStream file(filename, ios::binary | ios::trunc); // Without trunc, Poco opens an existing file without cutting it, and a longer old file kept its tail.
 		file.write(output.data(), output.size());
 		file.close();
 		datablock->free();
-		return true;
+		return file.good();
 	} catch (...) {
 		datablock->free();
 		return false;
