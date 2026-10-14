@@ -85,7 +85,7 @@ public:
 	virtual tts_pcm_generation_state get_pcm_generation_state() override { return PCM_UNSUPPORTED; }
 	virtual bool speak(const std::string &text, bool interrupt = false, bool blocking = false) override { return false; }
 	virtual tts_audio_data* speak_to_pcm(const std::string &text) override { return nullptr; }
-	virtual void free_pcm(tts_audio_data* data) override { if (data->data) free(data->data); delete data; }
+	virtual void free_pcm(tts_audio_data* data) override { if (!data) return; if (data->data) free(data->data); delete data; }
 	virtual bool is_speaking() override { return false; }
 	virtual bool stop() override { return true; }
 	virtual float get_rate() override { return 0; }
