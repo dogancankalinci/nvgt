@@ -73,7 +73,7 @@ public class TTS {
 	public static boolean screenReaderSpeak(String text, boolean interrupt) {
 		Context context = SDL.getContext();
 		AccessibilityManager accessibilityManager = (AccessibilityManager) context.getSystemService(Context.ACCESSIBILITY_SERVICE);
-		if (accessibilityManager == null) return false;
+		if (accessibilityManager == null || !accessibilityManager.isEnabled()) return false; // See the comment on screenReaderSilence().
 		if (interrupt) accessibilityManager.interrupt();
 
 		AccessibilityEvent e;
@@ -92,10 +92,13 @@ public class TTS {
 		return true;
 	}
 
+	// With accessibility off nothing would receive an announcement or interruption: Android 5.0 throws when asked for one,
+	// and later versions throw on the main thread but only log on others, such as the script's, which then looked like
+	// success. So nothing is sent, and the call reports failure on every version.
 	public static boolean screenReaderSilence() {
 		Context context = SDL.getContext();
 		AccessibilityManager accessibilityManager = (AccessibilityManager) context.getSystemService(Context.ACCESSIBILITY_SERVICE);
-		if (accessibilityManager == null) return false;
+		if (accessibilityManager == null || !accessibilityManager.isEnabled()) return false;
 		accessibilityManager.interrupt();
 		return true;
 	}
