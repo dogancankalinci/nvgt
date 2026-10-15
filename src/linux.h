@@ -18,7 +18,7 @@
 bool screen_reader_is_speaking();
 
 class speechd_engine : public tts_engine_impl {
-	std::mutex state_mutex; // Guards the members below, which every script thread speaking on the shared engine uses; the private methods expect it held.
+	std::mutex state_mutex; // Guards the members below, which every script thread speaking with this engine uses; the private methods expect it held.
 	void* connection; // The SPDConnection, null while there is none.
 	bool loaded; // A first connection succeeded; the engine stays available while it reconnects after that.
 	bool notifying; // The server reports when the messages of this connection end or are cancelled.
