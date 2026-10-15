@@ -289,15 +289,17 @@ void tts_voice::ensure_default() {
 	refresh(); // No candidate could speak: fall back to a full search for anything usable.
 }
 void tts_voice::ensure_enumerated() { if (voice_state != VOICES_FULL) refresh(); }
-void tts_voice::sync_engine(shared_engine_entry &entry, bool force) {
+bool tts_voice::sync_engine(shared_engine_entry &entry, bool force) {
 	std::lock_guard<std::recursive_mutex> lock(g_tts_registry_mutex); // The entry is shared by every tts_voice, which may run on different script threads.
 	tts_engine *engine = entry.engine.get();
-	if (!engine || (!force && entry.owner == id)) return;
+	if (!engine) return false;
+	if (!force && entry.owner == id) return true;
 	// Push only what the script set on this object. Anything else is left alone, or, if another tts_voice changed it on this shared engine, returned to the platform default, so a script that never sets a parameter always hears the user's own TTS settings.
 	voice_info *voice = get_voice_info(current_voice_index);
+	bool voice_applied = true;
 	if (voice_set && voice) {
-		engine->set_voice(voice->engine_voice_index);
-		entry.voice_changed = true;
+		voice_applied = engine->set_voice(voice->engine_voice_index);
+		if (voice_applied) entry.voice_changed = true;
 	} else if (entry.voice_changed) {
 		if (!engine->reset_voice() && entry.init_voice >= 0) engine->set_voice(entry.init_voice);
 		entry.voice_changed = false;
@@ -324,9 +326,10 @@ void tts_voice::sync_engine(shared_engine_entry &entry, bool force) {
 		if (!engine->reset_volume()) engine->set_volume(entry.init_volume);
 		entry.volume_changed = false;
 	}
-	entry.owner = id;
+	entry.owner = voice_applied? id : 0; // A refused voice leaves the engine as it was, so the next use syncs it again.
+	return voice_applied;
 }
-tts_engine *tts_voice::active_engine(bool force_sync) {
+tts_engine *tts_voice::active_engine(bool force_sync, bool *voice_applied) {
 	voice_info *voice = get_voice_info(current_voice_index);
 	if (!voice) return nullptr;
 	// Resolve the program-wide shared engine (binds it at most once, ever). If it can't be bound (e.g. a restricted engine), report failure so the caller can fall back.
@@ -335,7 +338,8 @@ tts_engine *tts_voice::active_engine(bool force_sync) {
 	current_engine = entry.engine;
 	current_engine_name = voice->engine_name;
 	// Because engines are shared, another tts_voice may have left this one carrying its own voice or parameters; this puts ours back only when that happened, and costs nothing otherwise.
-	sync_engine(entry, force_sync);
+	bool applied = sync_engine(entry, force_sync);
+	if (voice_applied) *voice_applied = applied;
 	return entry.engine.get();
 }
 int tts_voice::platform_voice_index() {
@@ -515,12 +519,17 @@ bool tts_voice::set_voice(int voice) {
 	if (!get_voice_info(voice)) return false;
 	int previous_voice_index = current_voice_index;
 	bool previous_voice_set = voice_set;
+	shared_ptr<tts_engine> previous_engine = current_engine;
+	string previous_engine_name = current_engine_name;
 	current_voice_index = voice;
 	voice_set = true;
-	// Binding happens here, lazily, via active_engine(), which also applies whatever rate/pitch/volume the script set to the newly selected engine. If the engine backing this voice can't be bound (e.g. a restricted Android engine like Sao Mai Myanmar TTS), stay on whatever was selected before and report failure rather than leaving the object pointing at an unusable voice.
-	if (!active_engine(true)) {
+	// Binding happens here, lazily, via active_engine(), which also applies whatever rate/pitch/volume the script set to the newly selected engine. If the engine backing this voice can't be bound (e.g. a restricted Android engine like Sao Mai Myanmar TTS), or refuses the voice (one it can't load), stay on whatever was selected before and report failure rather than leaving the object pointing at an unusable voice.
+	bool applied = false;
+	if (!active_engine(true, &applied) || !applied) {
 		current_voice_index = previous_voice_index;
 		voice_set = previous_voice_set;
+		current_engine = previous_engine;
+		current_engine_name = previous_engine_name;
 		return false;
 	}
 	return true;
@@ -622,10 +631,18 @@ string tts_voice::get_voice_language(int index) {
 bool tts_voice::set_language(const string& language) {
 	current_language = language;
 	refresh();
-	// Asking for a language is asking for one of its voices, so the voice refresh() picked from the filtered list is pushed onto the engine like a set_voice() call. An empty language only lifts the filter and changes nothing about the selection.
+	// Asking for a language is asking for one of its voices, so the voice refresh() picked from the filtered list is pushed onto the engine like a set_voice() call, and when the engine refuses it, the other voices of the language are tried in turn. An empty language only lifts the filter and changes nothing about the selection.
 	if (!language.empty() && get_voice_info(current_voice_index)) {
 		voice_set = true;
-		active_engine(true);
+		int picked = current_voice_index;
+		for (size_t i = 0; i < voices.size(); i++) {
+			current_voice_index = (picked + i) % voices.size();
+			bool applied = false;
+			if (active_engine(true, &applied) && applied) return true;
+		}
+		current_voice_index = picked;
+		voice_set = false; // No voice of the language could be used, so the platform's default speaks.
+		return false;
 	}
 	return !voices.empty();
 }

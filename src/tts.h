@@ -146,8 +146,8 @@ class tts_voice {
 	voice_info *get_voice_info(int voice_index);
 	void ensure_default(); // Bind only the default/preferred engine and select its default voice (enough to speak); does not touch other engines.
 	void ensure_enumerated(); // Build the full flattened voice list across all engines (needed to list or select voices).
-	void sync_engine(shared_engine_entry &entry, bool force); // Make the shared engine carry exactly this object's settings: the values the script set, and the platform defaults for everything else. Does nothing when the engine already carries them, unless forced.
-	tts_engine *active_engine(bool force_sync = false); // Resolves the program-wide shared engine for the current voice, syncs our settings onto it, and returns it (or null on failure).
+	bool sync_engine(shared_engine_entry &entry, bool force); // Make the shared engine carry exactly this object's settings: the values the script set, and the platform defaults for everything else. Does nothing when the engine already carries them, unless forced. False when the engine refused the voice this object chose.
+	tts_engine *active_engine(bool force_sync = false, bool *voice_applied = nullptr); // Resolves the program-wide shared engine for the current voice, syncs our settings onto it, and returns it (or null on failure); voice_applied receives whether the engine took the chosen voice.
 	int platform_voice_index(); // When the script has not chosen a voice: the index in voices of the voice the engine is actually speaking with, or -1 if the engine cannot say or that voice is not in the list.
 	void *speak_to_pcm(const std::string &text, tts_audio_data** datablock); // Returns pointer to trimmed sample.
 	bool schedule(soundptr &s, bool interrupt);
