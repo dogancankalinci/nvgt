@@ -43,6 +43,11 @@ struct nvgt_speech_wait_state {
 	std::atomic<void*> utterance{nullptr};
 	std::atomic<bool> ended{false};
 	std::atomic<void*> queued{nullptr}; // The utterance last queued for speech until the synthesizer starts it.
+	std::atomic<std::chrono::steady_clock::rep> queuedAt{0}; // When queued was set, in steady_clock ticks.
+	void setQueued(void* utterance) {
+		queuedAt = std::chrono::steady_clock::now().time_since_epoch().count();
+		queued = utterance;
+	}
 };
 @interface NVGTSpeechWaiter : NSObject <AVSpeechSynthesizerDelegate> {
 @public
@@ -136,7 +141,7 @@ public:
 			NSString *nstext = [NSString stringWithUTF8String:text.c_str()];
 			AVSpeechUtterance *utterance = [[AVSpeechUtterance alloc] initWithString:nstext];
 			apply(utterance);
-			waitState.queued = (void*)utterance;
+			waitState.setQueued((void*)utterance);
 			[synth speakUtterance:utterance];
 			[utterance release]; // The synthesizer keeps it while it is queued.
 		}
@@ -153,7 +158,7 @@ public:
 			apply(utterance);
 			waitState.ended = false;
 			waitState.utterance = (void*)utterance;
-			waitState.queued = (void*)utterance;
+			waitState.setQueued((void*)utterance);
 			[synth speakUtterance:utterance];
 		}
 		bool seenSpeaking = false;
@@ -179,7 +184,12 @@ public:
 		return false;
 	}
 	bool isPaused() const { return synth.isPaused; }
-	bool isSpeaking() const { return synth.isSpeaking; }
+	// The synthesizer reports speaking only once it has started an utterance, which can be seconds after speak() returns, so one queued here that hasn't started counts too, for ten seconds at most, after which speakWait() gives up on it as well.
+	bool isSpeaking() const {
+		if (synth.isSpeaking) return true;
+		if (!waitState.queued.load()) return false;
+		return std::chrono::steady_clock::now().time_since_epoch().count() - waitState.queuedAt.load() < std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::seconds(10)).count();
+	}
 	std::string getCurrentVoice() const {
 		@autoreleasepool {
 			AVSpeechSynthesisVoice* voice = effectiveVoice();
