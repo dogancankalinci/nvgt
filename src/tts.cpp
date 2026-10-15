@@ -167,7 +167,7 @@ public:
 };
 
 // Engine factory registry
-static std::recursive_mutex g_tts_registry_mutex; // guards engine_registry, engine_names, g_unusable_engines and g_idle_engines: tts_voice objects are created and used from any script thread and lazily populate them
+static std::recursive_mutex g_tts_registry_mutex; // guards engine_registry and engine_names: tts_voice objects are created and used from any script thread and lazily populate them
 static vector<string> engine_names;
 static unordered_map<string, tts_engine_factory> engine_registry;
 static string preferred_engine_name;
@@ -185,13 +185,20 @@ void tts_set_preferred_engine(const string &name) { preferred_engine_name = name
 void tts_set_engine_ranking(const vector<string> &names) { engine_ranking = names; }
 
 shared_ptr<tts_engine> tts_create_engine(const string &name) {
-	auto it = engine_registry.find(name);
-	if (it == engine_registry.end()) return nullptr;
-	try { return it->second(); }
+	tts_engine_factory factory;
+	{
+		std::lock_guard<std::recursive_mutex> lock(g_tts_registry_mutex);
+		auto it = engine_registry.find(name);
+		if (it == engine_registry.end()) return nullptr;
+		factory = it->second;
+	}
+	try { return factory(); }
 	catch (...) { return nullptr; }
 }
 
-// Engines are bound for each tts_voice (see engine_entry). One that couldn't be bound is remembered and never tried again, and the engines of a tts_voice that goes away are kept, put back to the platform's settings, for the next tts_voice that wants them, since binding one can take long and costs a connection to the platform's speech service. Both under g_tts_registry_mutex.
+// Engines are bound for each tts_voice (see engine_entry). One that couldn't be bound is remembered and never tried again, and the engines of a tts_voice that goes away are kept, put back to the platform's settings, for the next tts_voice that wants them, since binding one can take long and costs a connection to the platform's speech service. Both under g_engine_pool_mutex. Binding takes g_engine_binding_mutex instead, so an engine slow to bind, which on Android can take seconds, holds up only other binding, as it always has, and not the creation or release of tts_voice objects.
+static std::mutex g_engine_pool_mutex;
+static std::mutex g_engine_binding_mutex;
 static unordered_set<string> g_unusable_engines;
 static unordered_map<string, vector<shared_ptr<tts_engine>>> g_idle_engines;
 // The engine's own default voice: its current voice, unless the object set one on it, in which case the voice it had when it was bound, which is also what resetting it restores.
@@ -245,7 +252,7 @@ tts_voice::~tts_voice() {
 		if (!entry.engine) continue;
 		entry.engine->stop();
 		tts_engine_restore_defaults(entry);
-		std::lock_guard<std::recursive_mutex> lock(g_tts_registry_mutex);
+		std::lock_guard<std::mutex> lock(g_engine_pool_mutex);
 		g_idle_engines[name].push_back(entry.engine);
 	}
 }
@@ -253,16 +260,24 @@ engine_entry &tts_voice::get_engine_entry(const string &name) {
 	auto it = engines.find(name);
 	if (it != engines.end()) return it->second;
 	engine_entry entry;
-	{
-		std::lock_guard<std::recursive_mutex> lock(g_tts_registry_mutex);
+	auto take_idle = [&]() {
+		std::lock_guard<std::mutex> lock(g_engine_pool_mutex);
+		if (g_unusable_engines.count(name)) return true;
 		auto idle = g_idle_engines.find(name);
-		if (idle != g_idle_engines.end() && !idle->second.empty()) {
-			entry.engine = idle->second.back();
-			idle->second.pop_back();
-		} else if (!g_unusable_engines.count(name)) {
+		if (idle == g_idle_engines.end() || idle->second.empty()) return false;
+		entry.engine = idle->second.back();
+		idle->second.pop_back();
+		return true;
+	};
+	if (!take_idle()) {
+		std::lock_guard<std::mutex> binding(g_engine_binding_mutex);
+		if (!take_idle()) { // Another object may have released one, or found the engine unusable, while this one waited.
 			shared_ptr<tts_engine> engine = tts_create_engine(name);
 			if (engine && engine->is_available()) entry.engine = engine;
-			else g_unusable_engines.insert(name);
+			else {
+				std::lock_guard<std::mutex> lock(g_engine_pool_mutex);
+				g_unusable_engines.insert(name);
+			}
 		}
 	}
 	if (entry.engine) {
