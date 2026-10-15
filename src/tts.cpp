@@ -636,8 +636,26 @@ string tts_voice::get_voice_language(int index) {
 	return voices[index].language;
 }
 bool tts_voice::set_language(const string& language) {
+	// A language no voice serves, or whose voices the engines all refuse, leaves the object as it was, as a failed set_voice() does, rather than without voices and unable to speak.
+	string previous_language = current_language, previous_engine_name = current_engine_name;
+	vector<voice_info> previous_voices = voices;
+	voice_enum_state previous_state = voice_state;
+	int previous_voice_index = current_voice_index;
+	bool previous_voice_set = voice_set;
+	shared_ptr<tts_engine> previous_engine = current_engine;
+	auto restore = [&]() {
+		current_language = previous_language;
+		voices = previous_voices;
+		voice_state = previous_state;
+		current_voice_index = previous_voice_index;
+		voice_set = previous_voice_set;
+		current_engine = previous_engine;
+		current_engine_name = previous_engine_name;
+		return false;
+	};
 	current_language = language;
 	refresh();
+	if (voices.empty()) return restore();
 	// Asking for a language is asking for one of its voices, so the voice refresh() picked from the filtered list is pushed onto the engine like a set_voice() call, and when the engine refuses it, the other voices of the language are tried in turn. An empty language only lifts the filter and changes nothing about the selection.
 	if (!language.empty() && get_voice_info(current_voice_index)) {
 		voice_set = true;
@@ -647,11 +665,9 @@ bool tts_voice::set_language(const string& language) {
 			bool applied = false;
 			if (active_engine(true, &applied) && applied) return true;
 		}
-		current_voice_index = picked;
-		voice_set = false; // No voice of the language could be used, so the platform's default speaks.
-		return false;
+		return restore();
 	}
-	return !voices.empty();
+	return true;
 }
 // The language filter the script set, or, without one, the language of the voice actually in use.
 string tts_voice::get_language() {
