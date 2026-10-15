@@ -198,12 +198,13 @@ bool speechd_engine::speak(const std::string &text, bool interrupt, bool blockin
 				spd_stop(speaking_connection);
 				spd_cancel(speaking_connection);
 			}
-			msg_id = spd_say(speaking_connection, interrupt ? SPD_IMPORTANT : SPD_MESSAGE, text.c_str());
+			// Priority message for all of it: one of priority important cancels what other connections are speaking, the user's screen reader's included, and holds up their speech after it. Interrupting stops this connection's own speech, above.
+			msg_id = spd_say(speaking_connection, SPD_MESSAGE, text.c_str());
 		}
 		if (msg_id < 0) return false;
 		if (!notifying) return true; // Nothing would say when it ended, so a blocking call can't wait either.
 		std::lock_guard<std::mutex> messages_lock(g_speechd_messages_mutex);
-		if (!g_speechd_ended_early.erase(msg_id)) g_speechd_pending.insert(msg_id);
+		if (!g_speechd_ended_early.erase(msg_id)) g_speechd_pending.emplace(msg_id, this);
 	}
 	if (!blocking) return true;
 	// The message stops pending when it ends, is cancelled, or its connection is dropped, here or by another thread.
