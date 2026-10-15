@@ -832,12 +832,19 @@ public class TTS {
 
 		// Wait for synthesis to complete. The engine takes requests one at a time, from every app using it, and one that
 		// speaks holds the next until its speech has nearly been played, so the ten seconds count from when the engine was
-		// last seen speaking before synthesis started; they are pushed back like that for at most a minute.
+		// last seen speaking before synthesis started, pushed back like that for at most a minute. Long text can take
+		// longer than ten seconds to synthesize, so they also count from the last audio written to the file, which the
+		// engine writes as it goes.
 		try {
-			long now = SystemClock.elapsedRealtime(), limit = now + 10000, stopExtending = now + 60000;
+			long now = SystemClock.elapsedRealtime(), limit = now + 10000, stopExtending = now + 60000, written = 0;
 			while (!pcmSynthesisLatch.await(100, TimeUnit.MILLISECONDS)) {
 				now = SystemClock.elapsedRealtime();
 				if (!pcmStarted && now < stopExtending && tts.isSpeaking()) limit = now + 10000;
+				long size = file.length();
+				if (size != written) {
+					written = size;
+					limit = now + 10000;
+				}
 				if (now >= limit) break;
 			}
 		} catch (InterruptedException e) {
