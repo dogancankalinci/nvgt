@@ -197,10 +197,7 @@ bool speechd_engine::speak(const std::string &text, bool interrupt, bool blockin
 		SPDConnection *speaking_connection = (SPDConnection*)connection;
 		{
 			speechd_call_guard guard;
-			if (interrupt) {
-				spd_stop(speaking_connection);
-				spd_cancel(speaking_connection);
-			}
+			if (interrupt) spd_cancel(speaking_connection); // Stops the message being spoken and drops the queued ones; a stop before it would let the next queued one start for a moment.
 			// Priority message for all of it: one of priority important cancels what other connections are speaking, the user's screen reader's included, and holds up their speech after it. Interrupting stops this connection's own speech, above.
 			msg_id = spd_say(speaking_connection, SPD_MESSAGE, text.c_str());
 		}
@@ -245,7 +242,6 @@ bool speechd_engine::stop() {
 	}
 	speechd_call_guard guard;
 	spd_cancel((SPDConnection*)connection);
-	spd_stop((SPDConnection*)connection);
 	return true;
 }
 
