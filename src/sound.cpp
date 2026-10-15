@@ -14,6 +14,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <condition_variable>
 #include <mutex>
 #include <vector>
 #include <Poco/FileStream.h>
@@ -1679,15 +1680,32 @@ public:
 	}
 };
 class sound_impl final : public mixer_impl, public virtual sound {
-	// The following is so that MiniAudio can notify us when it finishes loading a sound. We also use a fence, but sometimes we just want to check without having to commit to blocking.
-	typedef struct {
-		ma_async_notification_callbacks cb;
-		std::atomic_flag *pAtomicFlag;
-	} async_notification_callbacks;
+	// Tracks an asynchronous load, which MiniAudio reports done through a notification, the last thing its job thread does with it. A fence won't do: miniaudio still touches one after its counter reaches zero, which is all a waiter sees, so a sound destroyed just as its load finished had its memory written after it was freed. The state therefore lives on the heap, and whichever of the sound and the job thread lets go of it last frees it. Only asynchronous loads get one; the others complete before they return and are given no notification.
+	struct async_load_state;
+	struct async_load_notification {
+		ma_async_notification_callbacks cb; // First, as MiniAudio passes this struct as the notification.
+		async_load_state *state;
+	};
+	struct async_load_state {
+		async_load_notification notification;
+		std::mutex mtx;
+		std::condition_variable cv;
+		sound_impl *owner; // Under mtx; cleared when the sound lets go of the state.
+		bool done = false; // Under mtx.
+		std::atomic<int> refs{2}; // The sound's and the pending notification's.
+		async_load_state(sound_impl *o) : owner(o) { notification.cb.onSignal = &async_notification_callback; notification.state = this; }
+		void release() { if (--refs == 0) delete this; }
+		void abandon() {
+			{
+				std::lock_guard<std::mutex> lock(mtx);
+				owner = nullptr;
+			}
+			release();
+		}
+	};
+	async_load_state *load_state; // Of the current load while it is asynchronous, else null.
 	std::string pcm_buffer;      // When loading from raw PCM (like TTS) we store the intermediate wav data here so we can take advantage of async loading to return quickly. Makes a substantial difference in the responsiveness of TTS calls.
 	std::string loaded_filename; // Contains the loaded filename as passed in the load/stream method, used just for convenience.
-	ma_fence fence;
-	async_notification_callbacks notification_callbacks;
 	mutable std::atomic_flag load_completed;
 	unique_ptr<ma_pcm_rb> pcm_stream;
 	bool paused;
@@ -1706,19 +1724,21 @@ class sound_impl final : public mixer_impl, public virtual sound {
 	}
 public:
 	static void async_notification_callback(ma_async_notification *pNotification) {
-		async_notification_callbacks *anc = (async_notification_callbacks *)pNotification;
-		anc->pAtomicFlag->test_and_set();
+		async_load_state *state = ((async_load_notification *)pNotification)->state;
+		{
+			std::lock_guard<std::mutex> lock(state->mtx);
+			if (state->owner) state->owner->load_completed.test_and_set();
+			state->done = true;
+		}
+		state->cv.notify_all();
+		state->release();
 	}
-	sound_impl(audio_engine *e) : paused(false), should_autoclose(false), datasource(nullptr), pcm_stream(nullptr), mixer_impl(dynamic_cast <audio_engine_impl*> (e), false), pcm_buffer() {
+	sound_impl(audio_engine *e) : paused(false), should_autoclose(false), datasource(nullptr), pcm_stream(nullptr), mixer_impl(dynamic_cast <audio_engine_impl*> (e), false), load_state(nullptr), pcm_buffer() {
 		init_sound();
 		snd = nullptr;
-		ma_fence_init(&fence);
-		notification_callbacks.cb.onSignal = &async_notification_callback;
-		notification_callbacks.pAtomicFlag = &load_completed;
 	}
 	~sound_impl() {
 		close();
-		ma_fence_uninit(&fence);
 	}
 	inline void release() override {
 		if (asAtomicDec(refcount) < 1) {
@@ -1742,19 +1762,26 @@ public:
 			return false;
 		}
 		ma_sound_config cfg = ma_sound_config_init();
-		ma_resource_manager_pipeline_notifications notifications = ma_resource_manager_pipeline_notifications_init();
-		notifications.done.pFence = &fence;
-		notifications.done.pNotification = &notification_callbacks;
 		cfg.flags = ma_flags;
 		cfg.pFilePath = triplet.c_str();
-		cfg.initNotifications = notifications;
+		// Each attempt gets its own load state, so one a failed attempt left with MiniAudio can't be mistaken for the next.
+		auto attempt_init = [&]() {
+			async_load_state *state = (cfg.flags & MA_SOUND_FLAG_ASYNC)? new async_load_state(this) : nullptr;
+			ma_resource_manager_pipeline_notifications notifications = ma_resource_manager_pipeline_notifications_init();
+			if (state) notifications.done.pNotification = &state->notification;
+			cfg.initNotifications = notifications;
+			{ std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); g_soundsystem_last_error = ma_sound_init_ex(engine->get_ma_engine(), &cfg, &*snd); } // auto-attaches to the endpoint
+			if (!state) return;
+			if (g_soundsystem_last_error == MA_SUCCESS) load_state = state;
+			else state->abandon(); // The notification's reference stays with MiniAudio in case it still signals.
+		};
 		/*
 		MiniAudio currently returns an error code of MA_OUT_OF_MEMORY (-4) if sound initialization fails due to the job queue being at capacity.
 		IMHO this is a poor choice of error code; MA_BUSY would be better as it conveys the temporary nature of the situation.
 		I'll raise an issue with MA to see if he'd be okay with this change. For now we'll just wait a few milliseconds for the backlog to clear and fail permanently if we see multiple MA_OUT_OF_MEMORY conditions back  to back. This should give the job queue time
 		*/
 		for (int i = 0; i < 10; i++) {
-			{ std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); g_soundsystem_last_error = ma_sound_init_ex(engine->get_ma_engine(), &cfg, &*snd); } // auto-attaches to the endpoint
+			attempt_init();
 			if (g_soundsystem_last_error == MA_OUT_OF_MEMORY) {
 				// See above; this is probably job queue backlog rather than an actual out of memory. Take a break and try again.
 				wait(5);
@@ -1765,7 +1792,7 @@ public:
 		// For the time being, give it one more try without any flags if we got -10 (MA_INVALID_FILE) because MA's support for loading mp3 is limited.
 		if (g_soundsystem_last_error == MA_INVALID_FILE) {
 			cfg.flags = 0;
-			{ std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); g_soundsystem_last_error = ma_sound_init_ex(engine->get_ma_engine(), &cfg, &*snd); } // auto-attaches to the endpoint
+			attempt_init();
 		}
 
 		if (g_soundsystem_last_error != MA_SUCCESS)
@@ -1902,9 +1929,16 @@ public:
 		return load_completed.test();
 	}
 	bool close() override {
-		if (!snd) return false;
 		// It's possible that this sound could still be loading in a job thread when we try to destroy it. Unfortunately there isn't a way to cancel this, so we have to just wait.
-		if (!load_completed.test()) ma_fence_wait(&fence);
+		if (load_state) {
+			{
+				std::unique_lock<std::mutex> lock(load_state->mtx);
+				load_state->cv.wait(lock, [this]() { return load_state->done; });
+			}
+			load_state->abandon();
+			load_state = nullptr;
+		}
+		if (!snd) return false;
 		if (spatializer) {
 			unique_lock<mutex> lock(spatialization_params_mutex);
 			node_chain->remove_node(spatializer);
