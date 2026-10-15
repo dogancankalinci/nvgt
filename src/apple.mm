@@ -19,8 +19,10 @@
 #else
 #import <AppKit/AppKit.h>
 #endif
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <thread>
 #include <memory>
 #include <vector>
@@ -109,9 +111,10 @@ public:
 		[utterance release];
 	}
 	// Writes only what a script set onto an utterance.
-	void apply(AVSpeechUtterance* utterance) const {
+	// Synthesis to PCM leaves the volume out and scales the samples itself (see speak_to_pcm), since Apple documents no volume for written buffers.
+	void apply(AVSpeechUtterance* utterance, bool withVolume = true) const {
 		if (rateSet) utterance.rate = rate;
-		if (volumeSet) utterance.volume = volume;
+		if (volumeSet && withVolume) utterance.volume = volume;
 		if (pitchSet) utterance.pitchMultiplier = pitch;
 		if (currentVoice) utterance.voice = currentVoice;
 	}
@@ -408,7 +411,7 @@ tts_audio_data* AVTTSVoice::speak_to_pcm(const std::string &text) {
 		__block uint64_t buffersDelivered = 0; // Counted by the block, which runs on another thread, with atomic builtins; see the wait below.
 		NSString *nstext = [NSString stringWithUTF8String:text.c_str()];
 		AVSpeechUtterance *utterance = [[AVSpeechUtterance alloc] initWithString:nstext];
-		impl->apply(utterance);
+		impl->apply(utterance, false);
 		[impl->pcmSynthesizer() writeUtterance:utterance toBufferCallback:^(AVAudioBuffer * _Nonnull buffer) {
 			@autoreleasepool {
 				__atomic_fetch_add(&buffersDelivered, 1, __ATOMIC_RELAXED);
@@ -469,6 +472,11 @@ tts_audio_data* AVTTSVoice::speak_to_pcm(const std::string &text) {
 		if (audioData.length == 0) {
 			[audioData release];
 			return nullptr;
+		}
+		if (impl->volumeSet && impl->volume < 1) { // The same linear gain an utterance's volume applies when spoken.
+			int16_t *samples = (int16_t *)audioData.mutableBytes;
+			float gain = std::max(0.0f, impl->volume);
+			for (NSUInteger i = 0, count = audioData.length / sizeof(int16_t); i < count; i++) samples[i] = (int16_t)lrintf(samples[i] * gain);
 		}
 		return new tts_audio_data(this, (void*)audioData.bytes, (unsigned int)audioData.length, sampleRate, channelCount, 16, (void*)audioData); // free_pcm releases audioData.
 	}
