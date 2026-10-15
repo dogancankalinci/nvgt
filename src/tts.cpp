@@ -12,6 +12,7 @@
  * 3. This notice may not be removed or altered from any source distribution.
 */
 
+#include <cmath>
 #include <limits>
 #include <algorithm>
 #include <unordered_map>
@@ -483,18 +484,22 @@ int tts_voice::get_current_voice() {
 	return voice_set? current_voice_index : platform_voice_index();
 }
 void tts_voice::set_rate(float rate) {
+	if (std::isnan(rate)) return; // See set_volume().
 	ensure_default();
 	nvgt_rate = clamp(rate, -10.0f, 10.0f);
 	rate_set = true;
 	active_engine(true); // push the new parameter onto the (shared) engine
 }
 void tts_voice::set_pitch(float pitch) {
+	if (std::isnan(pitch)) return; // See set_volume().
 	ensure_default();
 	nvgt_pitch = clamp(pitch, -10.0f, 10.0f);
 	pitch_set = true;
 	active_engine(true);
 }
+// NaN is no value: clamp lets it through, and the builtin synthesizer crashes on it, so it leaves the setting as it was.
 void tts_voice::set_volume(float volume) {
+	if (std::isnan(volume)) return;
 	ensure_default();
 	nvgt_volume = clamp(volume, -100.0f, 0.0f);
 	volume_set = true;
