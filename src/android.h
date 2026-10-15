@@ -93,7 +93,7 @@ class android_tts_engine : public tts_engine_impl {
 	jmethodID midGetVoiceCount, midGetVoiceName, midGetVoiceLanguage, midSetVoiceByIndex, midGetCurrentVoiceIndex;
 	jmethodID midGetEngineLabel;
 	jmethodID midResetRate, midResetPitch, midResetVolume, midResetVoice;
-	jmethodID midSpeakTracked, midIsTrackedDone;
+	jmethodID midSpeakTracked, midIsTrackedDone, midHasPendingSpeech;
 	jobject TTSObj = nullptr; // Global reference.
 	std::mutex pcm_mutex; // The Java side keeps one synthesis result at a time, read back over several calls.
 	std::string engine_package;

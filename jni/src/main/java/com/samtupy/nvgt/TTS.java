@@ -352,18 +352,13 @@ public class TTS {
 
 	public boolean isActive() { return this.isTTSInitialized; }
 	public boolean isSpeaking() { return isActive()? tts.isSpeaking() : false; }
-
-	public boolean speak(String text, boolean interrupt) {
-		if (!isActive()) return false;
-		synchronized (queueLock) {
-			TextToSpeech speaking = tts;
-			followSystemSettings();
-			if (queueText(text, interrupt, null)) return true;
-			if (!recoverConnection(speaking)) return false;
-			followSystemSettings();
-			return queueText(text, interrupt, null);
-		}
+	// Speech this object queued that hasn't ended. The service reports speaking only once it has picked a request up, which
+	// can be after speak() returns, so that counts too, but for ten seconds at most, since an engine that dies reports no end.
+	public boolean hasPendingSpeech() {
+		return endedSerial < trackedSerial && SystemClock.elapsedRealtime() - lastQueuedAt < 10000;
 	}
+
+	public boolean speak(String text, boolean interrupt) { return speakTracked(text, interrupt) >= 0; }
 	// The service refuses a text longer than getMaxSpeechInputLength() characters, and before Android 10 one of exactly
 	// that length too, so longer text is queued, or synthesized, in parts.
 	private static int maxRequestLength() { return TextToSpeech.getMaxSpeechInputLength() - (Build.VERSION.SDK_INT < 29? 1 : 0); }
@@ -399,13 +394,13 @@ public class TTS {
 		}
 		return true;
 	}
-	// speak() passes no utterance id, so TextToSpeech reports nothing about that speech, and isSpeaking() only turns true
-	// once the service has picked a request up, which can be after speak() returns. Speech a caller waits for is spoken
-	// with an id holding a serial number instead, and the listener records the highest serial that ended. This object's
-	// utterances end in the order they were queued, or are dropped by a flush, so every lower serial has ended too.
+	// isSpeaking() only turns true once the service has picked a request up, which can be after speak() returns, so speech
+	// is spoken with an utterance id holding a serial number, and the listener records the highest serial that ended. This
+	// object's utterances end in the order they were queued, or are dropped by a flush, so every lower serial has ended too.
 	private static final String TRACKED_UTTERANCE = "nvgt_tracked_";
 	private final Object queueLock = new Object();
-	private long trackedSerial = 0; // Guarded by queueLock, which is held while queueing, so serials follow queue order.
+	private volatile long trackedSerial = 0; // Written under queueLock, which is held while queueing, so serials follow queue order.
+	private volatile long lastQueuedAt = 0; // When trackedSerial was last queued, in elapsedRealtime milliseconds.
 	private volatile long endedSerial = 0; // Written under endedLock.
 	private final Object endedLock = new Object();
 	public long speakTracked(String text, boolean interrupt) {
@@ -420,10 +415,17 @@ public class TTS {
 				if (!queueText(text, interrupt, TRACKED_UTTERANCE + serial)) return -1;
 			}
 			trackedSerial = serial;
+			lastQueuedAt = SystemClock.elapsedRealtime();
 			return serial;
 		}
 	}
 	public boolean isTrackedDone(long serial) { return endedSerial >= serial; }
+	// Stopped speech, and speech a replaced TextToSpeech had queued, reports no end of its own.
+	private void allTrackedEnded() {
+		synchronized (endedLock) {
+			endedSerial = Math.max(endedSerial, trackedSerial);
+		}
+	}
 	private void trackedEnded(String utteranceId) {
 		if (utteranceId == null || !utteranceId.startsWith(TRACKED_UTTERANCE)) return;
 		long serial;
@@ -503,6 +505,7 @@ public class TTS {
 			else pitchPinned = false;
 			tts = replacement;
 			connectionLostAt = 0;
+			allTrackedEnded();
 			shutDown(failed);
 			return true;
 		}
@@ -539,7 +542,11 @@ public class TTS {
 			if (pitch != ttsPitch && tts.setPitch(pitch) == TextToSpeech.SUCCESS) ttsPitch = pitch;
 		}
 	}
-	public boolean silence() { return isActive()? tts.stop() == TextToSpeech.SUCCESS : false; }
+	public boolean silence() {
+		if (!isActive()) return false;
+		allTrackedEnded();
+		return tts.stop() == TextToSpeech.SUCCESS;
+	}
 	public String getVoice() { 
 		if (!isActive() || tts.getVoice() == null) return null;
 		return tts.getVoice().getName(); 
