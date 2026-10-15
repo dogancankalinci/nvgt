@@ -605,6 +605,15 @@ public class TTS {
 		return true;
 	}
 
+	// Called by the native engine as it is destroyed: the static set of TextToSpeech owners and the connection's listeners
+	// keep this object reachable, so finalize() never comes. The object stays in that set, which counts every TextToSpeech
+	// the app has created.
+	public void shutdown() {
+		isTTSInitialized = false;
+		allTrackedEnded();
+		shutDown(tts);
+	}
+
 	@Override
 	protected void finalize() throws Throwable {
 		if (isActive())

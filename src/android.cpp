@@ -631,6 +631,7 @@ android_tts_engine::android_tts_engine(const std::string& enginePkg) : tts_engin
 	midIsActive = method("isActive", "()Z");
 	midIsSpeaking = method("isSpeaking", "()Z");
 	midHasPendingSpeech = method("hasPendingSpeech", "()Z");
+	midShutdown = method("shutdown", "()V");
 	midSpeak = method("speak", "(Ljava/lang/String;Z)Z");
 	midSilence = method("silence", "()Z");
 	midGetVoice = method("getVoice", "()Ljava/lang/String;");
@@ -682,9 +683,10 @@ android_tts_engine::android_tts_engine(const std::string& enginePkg) : tts_engin
 	if (engine_label.empty()) engine_label = engine_package;
 }
 
-// Engines live in a program-wide cache, so this normally runs only as the program exits, on whichever thread that is.
+// An engine is destroyed when a tts_voice lets go of one that can't be handed on, and as the program exits, on whichever thread that is. Its TextToSpeech is shut down, since nothing else would release the connection to the engine's service.
 android_tts_engine::~android_tts_engine() {
 	if (!TTSObj) return;
+	tts_call_void(TTSObj, midShutdown);
 	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
 	if (env) env->DeleteGlobalRef(TTSObj);
 	TTSObj = nullptr;
