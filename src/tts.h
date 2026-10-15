@@ -142,7 +142,7 @@ class tts_voice {
 	std::mutex queue_mtx;
 	sound_queue fade_queue;
 	std::atomic_flag speaking;
-	std::shared_ptr<tts_engine> native_engine; // The engine this object last spoke on without the sound system, so that speech can still be stopped and reported once another voice is selected.
+	std::vector<std::shared_ptr<tts_engine>> native_engines; // Engines this object spoke on without the sound system, so that their speech can still be reported and stopped once another voice is selected.
 	voice_info *get_voice_info(int voice_index);
 	void ensure_default(); // Bind only the default/preferred engine and select its default voice (enough to speak); does not touch other engines.
 	void ensure_enumerated(); // Build the full flattened voice list across all engines (needed to list or select voices).
@@ -152,6 +152,7 @@ class tts_voice {
 	void *speak_to_pcm(const std::string &text, tts_audio_data** datablock); // Returns pointer to trimmed sample.
 	bool schedule(soundptr &s, bool interrupt);
 	void clear();
+	void remember_native_engine();
 	void advance_queue();
 	bool queue_speaking();
 	void interrupt_other_speech(tts_engine *engine);
