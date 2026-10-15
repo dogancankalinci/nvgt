@@ -75,6 +75,7 @@ public:
 	float defaultRate, defaultVolume, defaultPitch;
 	bool rateSet = false, volumeSet = false, pitchSet = false;
 	AVSpeechSynthesizer* synth;
+	AVSpeechSynthesizer* pcmSynth = nil; // Made on first use, see pcmSynthesizer().
 	AVSpeechSynthesisVoice* currentVoice; // Only non-nil once a voice was chosen; while nil, the system's default voice speaks.
 	NSArray<AVSpeechSynthesisVoice *> *voices;
 	nvgt_speech_wait_state waitState;
@@ -90,6 +91,7 @@ public:
 	~Impl() {
 		synth.delegate = nil;
 		[synth release];
+		[pcmSynth release];
 		[waiter release];
 		if (voices) [voices release];
 	}
@@ -128,6 +130,11 @@ public:
 	void resetVolume() { volume = defaultVolume; volumeSet = false; }
 	void resetPitch() { pitch = defaultPitch; pitchSet = false; }
 	void resetVoice() { currentVoice = nil; }
+	// Synthesis to PCM gets a synthesizer of its own, so that it doesn't wait behind speech queued on the other.
+	AVSpeechSynthesizer* pcmSynthesizer() {
+		if (!pcmSynth) pcmSynth = [[AVSpeechSynthesizer alloc] init];
+		return pcmSynth;
+	}
 	// Interrupting stops the synthesizer while it speaks, and also while an utterance queued here hasn't started yet, which the synthesizer doesn't count as speaking. Stopping an idle synthesizer is avoided: reports have it ignore what is spoken next after stops in quick succession.
 	void interruptSpeech() {
 		if (waitState.queued.exchange(nullptr) || synth.isSpeaking) [synth stopSpeakingAtBoundary:AVSpeechBoundaryImmediate];
@@ -400,7 +407,7 @@ tts_audio_data* AVTTSVoice::speak_to_pcm(const std::string &text) {
 		NSString *nstext = [NSString stringWithUTF8String:text.c_str()];
 		AVSpeechUtterance *utterance = [[AVSpeechUtterance alloc] initWithString:nstext];
 		impl->apply(utterance);
-		[impl->synth writeUtterance:utterance toBufferCallback:^(AVAudioBuffer * _Nonnull buffer) {
+		[impl->pcmSynthesizer() writeUtterance:utterance toBufferCallback:^(AVAudioBuffer * _Nonnull buffer) {
 			@autoreleasepool {
 				if (![buffer isKindOfClass:[AVAudioPCMBuffer class]]) return;
 				AVAudioPCMBuffer *pcmBuffer = (AVAudioPCMBuffer *)buffer;
