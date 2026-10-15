@@ -4293,10 +4293,22 @@ short* speech_gen( int* samples_pairs_generated, char const* str, float rate, fl
     struct tts_klatt_t synth;
     tts_klatt_init( &synth, rate, freq, gain );
     
-    int sample_count = synth.mNspFr * frames;
+    // NVGT: the buffer size is worked out in 64 bits, and text whose samples an int count can't hold, or whose buffer can't
+    // be allocated, gives no speech rather than an overflowed size or writes through a null buffer. Text that makes no
+    // sound still gets an empty buffer, which malloc( 0 ) need not give.
+    long long sample_count_wide = (long long) synth.mNspFr * frames;
+    short* sample_pairs = NULL;
+    if( synth.mNspFr > 0 && frames >= 0 && sample_count_wide * 8 * (long long) sizeof( short ) <= 0x7fffffff )
+        sample_pairs = (short*) SPEECH_MALLOC( memctx, sample_count_wide? (size_t) sample_count_wide * 8 * sizeof( short ) : 1 );
+    if( !sample_pairs ) {
+        if( samples_pairs_generated ) *samples_pairs_generated = 0;
+        tts_darray_term( &phone );
+        tts_darray_term( &element );
+        return NULL;
+    }
+    int sample_count = (int) sample_count_wide;
 
     if( samples_pairs_generated ) *samples_pairs_generated = sample_count * 4;
-    short* sample_pairs = (short*) SPEECH_MALLOC( memctx, sample_count * 8 * sizeof( short ) );   
 
     short* samples = (short*) sample_pairs;
 
