@@ -821,6 +821,8 @@ public class TTS {
 		return audio;
 	}
 	private long pcmSerial = 0; // Numbers PCM requests, which the caller makes one at a time.
+	private static final java.util.concurrent.atomic.AtomicLong instanceSerials = new java.util.concurrent.atomic.AtomicLong();
+	private final long instanceSerial = instanceSerials.incrementAndGet(); // Tells this object's synthesis file apart from other objects'.
 	private byte[] synthesizePart(String text) {
 		// Prepare for PCM synthesis
 		pcmAudioBuffer = new ByteArrayOutputStream();
@@ -834,9 +836,10 @@ public class TTS {
 		// Create utterance ID and set it as current
 		currentPcmUtteranceId = "nvgtts_" + (++pcmSerial);
 
-		// Start synthesis - using speak with synthesis callbacks. Each engine has its own file: synthesis on one engine is
-		// serialized by the caller, and a file that a timed out request writes late is replaced by the next request.
-		File file = new File(SDL.getContext().getCacheDir(), "nvgt_speech_" + (enginePackage != null ? enginePackage : "default") + ".wav");
+		// Start synthesis - using speak with synthesis callbacks. Each TTS object has its own file, since several can use one
+		// engine at once: synthesis on one object is serialized by the caller, and a file that a timed out request writes
+		// late is replaced by the next request.
+		File file = new File(SDL.getContext().getCacheDir(), "nvgt_speech_" + (enginePackage != null ? enginePackage : "default") + "_" + instanceSerial + ".wav");
 		followSystemSettings();
 		TextToSpeech synthesizing = tts;
 		int result = synthesizing.synthesizeToFile(text, utteranceParams(), file, currentPcmUtteranceId);
