@@ -763,8 +763,14 @@ CScriptArray *tts_get_engines() {
 	asIScriptEngine *engine = ctx->GetEngine();
 	asITypeInfo *arrayType = engine->GetTypeInfoByDecl("array<string>");
 	CScriptArray *array = CScriptArray::Create(arrayType);
-	array->Reserve(engine_names.size());
-	for (const string &name : engine_names) array->InsertLast(&const_cast<string&>(name));
+	vector<string> names;
+	{
+		std::lock_guard<std::recursive_mutex> lock(g_tts_registry_mutex); // As in the tts_voice constructor, the engines register on first use.
+		if (engine_registry.empty()) register_builtin_engines();
+		names = engine_names;
+	}
+	array->Reserve(names.size());
+	for (string &name : names) array->InsertLast(&name);
 	return array;
 }
 
