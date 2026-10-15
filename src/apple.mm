@@ -430,6 +430,7 @@ void AVTTSVoice::free_pcm(tts_audio_data* data) {
 		NSMutableData* audioData = (NSMutableData*)data->context;
 		[audioData release];
 		data->context = nullptr;
+		data->data = nullptr; // audioData's own bytes, freed with it; the base would free() them again.
 	}
 	tts_engine_impl::free_pcm(data);
 }
