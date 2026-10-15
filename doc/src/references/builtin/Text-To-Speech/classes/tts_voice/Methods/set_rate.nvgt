@@ -1,8 +1,8 @@
 /**
 	Set the text to speech voice's playback rate (how fast it speaks).
-	void tts_voice::set_rate(int rate);
+	void tts_voice::set_rate(float rate);
 	## Arguments:
-		* int rate: the desired speech rate.
+		* float rate: the desired speech rate.
 	## Remarks:
 		-10 is slowest, 10 is fastest, with 0 being default speed, or 50 percent if you like. If this hasn't been manually assigned, it will use the OS setting which may not be 0. If moving in old bgt code, you may want to update it to use this method instead of the rate property.
 */
