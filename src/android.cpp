@@ -716,7 +716,7 @@ bool android_tts_engine::speak(const std::string &text, bool interrupt, bool blo
 	return true;
 }
 
-bool android_tts_engine::is_speaking() { return tts_call_bool(TTSObj, midIsSpeaking) || tts_call_bool(TTSObj, midHasPendingSpeech); }
+bool android_tts_engine::is_speaking() { return tts_call_bool(TTSObj, midHasPendingSpeech); } // This engine object's own speech, see TTS.hasPendingSpeech().
 bool android_tts_engine::stop() { return tts_call_bool(TTSObj, midSilence); }
 float android_tts_engine::get_rate() { return tts_call_float(TTSObj, 1, midGetRate); }
 float android_tts_engine::get_pitch() { return tts_call_float(TTSObj, 1, midGetPitch); }
@@ -754,7 +754,7 @@ tts_audio_data* android_tts_engine::speak_to_pcm(const std::string &text) {
 	if (!jtext.get()) return nullptr;
 
 	// speakPcm leaves the format of what it synthesized in fields that the getters below read back afterwards, so
-	// no other thread may synthesize on this shared engine in between.
+	// no other thread may synthesize on this engine in between.
 	std::lock_guard<std::mutex> lock(pcm_mutex);
 	LocalRef<jbyteArray> jpcmData(env, (jbyteArray)env->CallObjectMethod(TTSObj, midSpeakPcm, jtext.get()));
 	if (jni_clear_exception(env) || !jpcmData.get()) return nullptr;

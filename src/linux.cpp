@@ -18,6 +18,7 @@
 #include <cerrno>
 #include <csignal>
 #include <cstdlib>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -102,9 +103,9 @@ public:
 	}
 };
 
-// The server reports the end or cancellation of each message to callbacks that get no context, on libspeechd's event thread. Message numbers come from the server, so one table serves any connection.
+// The server reports the end or cancellation of each message to callbacks that get no context, on libspeechd's event thread. Message numbers come from the server, unique across its connections, so one table serves every engine, each of which has a connection of its own, and records whose message each one is.
 static std::mutex g_speechd_messages_mutex;
-static std::set<int> g_speechd_pending; // Said, and neither ended nor cancelled yet.
+static std::map<int, const speechd_engine*> g_speechd_pending; // Said, and neither ended nor cancelled yet, with the engine that said it.
 static std::set<int> g_speechd_ended_early; // Reported before spd_say returned their number.
 static void speechd_message_ended(size_t msg_id, size_t client_id, SPDNotificationType state) {
 	std::lock_guard<std::mutex> lock(g_speechd_messages_mutex);
@@ -171,8 +172,10 @@ void speechd_engine::drop_connection() {
 		spd_close(dropped);
 	}
 	std::lock_guard<std::mutex> lock(g_speechd_messages_mutex);
-	g_speechd_pending.clear();
-	g_speechd_ended_early.clear();
+	for (auto it = g_speechd_pending.begin(); it != g_speechd_pending.end();) {
+		if (it->second == this) it = g_speechd_pending.erase(it);
+		else ++it;
+	}
 }
 
 // Whether there is a working connection, after dropping one whose server went away and, at most every three seconds, opening a new one, which also starts the server again when it can.
@@ -229,7 +232,8 @@ bool speechd_engine::is_speaking() {
 		return false;
 	}
 	std::lock_guard<std::mutex> messages_lock(g_speechd_messages_mutex);
-	return !g_speechd_pending.empty();
+	for (const auto &message : g_speechd_pending) if (message.second == this) return true;
+	return false;
 }
 
 bool speechd_engine::stop() {

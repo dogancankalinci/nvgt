@@ -17,6 +17,7 @@
 #include <memory>
 #include <functional>
 #include <queue>
+#include <unordered_map>
 #include <mutex>
 #include <atomic>
 #include <cstdint>
@@ -68,7 +69,7 @@ public:
 	virtual bool set_voice(int voice) = 0;
 	virtual int get_current_voice() = 0;
 	virtual std::string get_engine_name() = 0;
-	// Return a parameter or the voice to whatever the platform itself would use (usually the user's system TTS settings), undoing an earlier set_* call. Engines are shared between tts_voice objects, so this is needed when a tts_voice that never set a value speaks on an engine another tts_voice changed. Returning false means the engine cannot do this itself; the caller then restores the value the engine reported when it was first bound.
+	// Return a parameter or the voice to whatever the platform itself would use (usually the user's system TTS settings), undoing an earlier set_* call. This is needed when a tts_voice stops using a voice it chose, and when it lets go of an engine, which then goes to the next tts_voice that wants one. Returning false means the engine cannot do this itself; the caller then restores the value the engine reported when it was first bound.
 	virtual bool reset_rate() { return false; }
 	virtual bool reset_pitch() { return false; }
 	virtual bool reset_volume() { return false; }
@@ -121,11 +122,19 @@ struct voice_info {
 	std::string language;
 };
 
-struct shared_engine_entry;
+// One engine bound for one tts_voice. Each object has engines of its own, so that its speech, interruptions and stops stay its own: Android keeps a queue per TextToSpeech, Apple platforms per synthesizer, Speech Dispatcher per connection. The entry records which of the values the object set replace the engine's defaults, so they can be put back.
+struct engine_entry {
+	std::shared_ptr<tts_engine> engine; // Null if this engine could not be bound.
+	float init_rate = 0, init_pitch = 0, init_volume = 0; // In engine units, as reported when bound. Used to undo a change on engines that cannot reset themselves.
+	int init_voice = -1;
+	bool rate_changed = false, pitch_changed = false, volume_changed = false, voice_changed = false; // Whether a value the object set is on the engine in place of its default.
+	bool synced = false; // Whether the engine carries the object's current settings.
+};
 
 class tts_voice {
 	int RefCount;
 	std::vector<std::string> engine_names; // Candidate engines this voice may draw from. Engine objects are NOT instantiated here; binding is deferred until a voice is actually selected/used.
+	std::unordered_map<std::string, engine_entry> engines; // This object's engines by name, bound as they are first needed; see engine_entry.
 	std::shared_ptr<tts_engine> current_engine; // The single live (bound) engine backing the currently selected voice, or null if nothing has been used yet.
 	std::string current_engine_name;
 	enum voice_enum_state { VOICES_NONE, VOICES_DEFAULT_ONLY, VOICES_FULL }; // How much of the voice list has been built so far.
@@ -135,7 +144,7 @@ class tts_voice {
 	std::string current_language;
 	float nvgt_rate, nvgt_pitch, nvgt_volume; // Speech parameters the script set on this tts_voice, in NVGT units. Only meaningful while the matching *_set flag is true.
 	bool rate_set, pitch_set, volume_set, voice_set; // Whether the script explicitly set each of these. Anything not set is never pushed onto the engine, so the platform keeps using the user's own TTS settings, and the getters report those settings.
-	uint64_t id; // Identifies this object as the one whose settings a shared engine currently carries. A counter rather than the pointer, so an object allocated at a freed address is never mistaken for the old one.
+	uint64_t id; // Identifies this object to the end-of-utterance jobs, see g_live_tts_voices. A counter rather than the pointer, so an object allocated at a freed address is never mistaken for the old one.
 	typedef std::shared_ptr<sound> soundptr;
 	typedef std::queue<soundptr> sound_queue;
 	sound_queue queue;
@@ -146,8 +155,9 @@ class tts_voice {
 	voice_info *get_voice_info(int voice_index);
 	void ensure_default(); // Bind only the default/preferred engine and select its default voice (enough to speak); does not touch other engines.
 	void ensure_enumerated(); // Build the full flattened voice list across all engines (needed to list or select voices).
-	bool sync_engine(shared_engine_entry &entry, bool force); // Make the shared engine carry exactly this object's settings: the values the script set, and the platform defaults for everything else. Does nothing when the engine already carries them, unless forced. False when the engine refused the voice this object chose.
-	tts_engine *active_engine(bool force_sync = false, bool *voice_applied = nullptr); // Resolves the program-wide shared engine for the current voice, syncs our settings onto it, and returns it (or null on failure); voice_applied receives whether the engine took the chosen voice.
+	engine_entry &get_engine_entry(const std::string &name); // This object's entry for an engine, binding the engine the first time.
+	bool sync_engine(engine_entry &entry, bool force); // Make the engine carry exactly this object's settings: the values the script set, and the platform defaults for everything else. Does nothing when the engine already carries them, unless forced. False when the engine refused the voice this object chose.
+	tts_engine *active_engine(bool force_sync = false, bool *voice_applied = nullptr); // Resolves this object's engine for the current voice, syncs our settings onto it, and returns it (or null on failure); voice_applied receives whether the engine took the chosen voice.
 	int platform_voice_index(); // When the script has not chosen a voice: the index in voices of the voice the engine is actually speaking with, or -1 if the engine cannot say or that voice is not in the list.
 	void *speak_to_pcm(const std::string &text, tts_audio_data** datablock); // Returns pointer to trimmed sample.
 	bool schedule(soundptr &s, bool interrupt);

@@ -16,6 +16,7 @@
 #include <limits>
 #include <algorithm>
 #include <unordered_map>
+#include <unordered_set>
 #include <mutex>
 #include <thread>
 #include <miniaudio.h>
@@ -166,7 +167,7 @@ public:
 };
 
 // Engine factory registry
-static std::recursive_mutex g_tts_registry_mutex; // guards engine_registry, engine_names and g_shared_engines: tts_voice objects are created and used from any script thread and lazily populate all three
+static std::recursive_mutex g_tts_registry_mutex; // guards engine_registry, engine_names, g_unusable_engines and g_idle_engines: tts_voice objects are created and used from any script thread and lazily populate them
 static vector<string> engine_names;
 static unordered_map<string, tts_engine_factory> engine_registry;
 static string preferred_engine_name;
@@ -190,36 +191,23 @@ shared_ptr<tts_engine> tts_create_engine(const string &name) {
 	catch (...) { return nullptr; }
 }
 
-// Program-wide cache of engine instances. Each engine is instantiated (and therefore bound to its OS service) AT MOST ONCE for the entire lifetime of the program; every tts_voice shares these instances. A failed bind is remembered as a null entry so it is never retried. Because the instance is shared, the entry also records whose settings the engine currently carries and which of them replace the engine's own defaults, so that a tts_voice which never set anything can put the engine back before it speaks.
-struct shared_engine_entry {
-	shared_ptr<tts_engine> engine; // null if this engine could not be bound (cached so we never retry).
-	float init_rate = 0, init_pitch = 0, init_volume = 0; // In engine units, as reported at first bind. Used to undo a change on engines that cannot reset themselves.
-	int init_voice = -1;
-	bool rate_changed = false, pitch_changed = false, volume_changed = false, voice_changed = false; // Whether a value some tts_voice set is currently on the engine in place of its default.
-	uint64_t owner = 0; // id of the tts_voice whose settings the engine currently carries, 0 if none has synced yet.
-};
-static unordered_map<string, shared_engine_entry> g_shared_engines;
-static shared_engine_entry& tts_get_shared_engine(const string &name) {
-	std::lock_guard<std::recursive_mutex> lock(g_tts_registry_mutex);
-	auto it = g_shared_engines.find(name);
-	if (it != g_shared_engines.end()) return it->second;
-	shared_engine_entry entry;
-	shared_ptr<tts_engine> engine = tts_create_engine(name);
-	if (engine && !engine->is_available()) engine = nullptr;
-	entry.engine = engine;
-	if (engine) {
-		entry.init_rate = engine->get_rate();
-		entry.init_pitch = engine->get_pitch();
-		entry.init_volume = engine->get_volume();
-		entry.init_voice = engine->get_current_voice();
-	}
-	return g_shared_engines.emplace(name, std::move(entry)).first->second;
-}
-// The engine's own default voice: its current voice, unless a tts_voice set one on this shared engine, in which case the voice it had when it was first bound, which is also what resetting it restores.
-static int tts_engine_default_voice(shared_engine_entry &entry) {
-	std::lock_guard<std::recursive_mutex> lock(g_tts_registry_mutex);
+// Engines are bound for each tts_voice (see engine_entry). One that couldn't be bound is remembered and never tried again, and the engines of a tts_voice that goes away are kept, put back to the platform's settings, for the next tts_voice that wants them, since binding one can take long and costs a connection to the platform's speech service. Both under g_tts_registry_mutex.
+static unordered_set<string> g_unusable_engines;
+static unordered_map<string, vector<shared_ptr<tts_engine>>> g_idle_engines;
+// The engine's own default voice: its current voice, unless the object set one on it, in which case the voice it had when it was bound, which is also what resetting it restores.
+static int tts_engine_default_voice(engine_entry &entry) {
 	if (!entry.engine) return -1;
 	return entry.voice_changed? entry.init_voice : entry.engine->get_current_voice();
+}
+// Puts back what an object set on an engine, so the engine speaks with the platform's settings again.
+static void tts_engine_restore_defaults(engine_entry &entry) {
+	tts_engine *engine = entry.engine.get();
+	if (!engine) return;
+	if (entry.voice_changed && !engine->reset_voice() && entry.init_voice >= 0) engine->set_voice(entry.init_voice);
+	if (entry.rate_changed && !engine->reset_rate()) engine->set_rate(entry.init_rate);
+	if (entry.pitch_changed && !engine->reset_pitch()) engine->set_pitch(entry.init_pitch);
+	if (entry.volume_changed && !engine->reset_volume()) engine->set_volume(entry.init_volume);
+	entry.voice_changed = entry.rate_changed = entry.pitch_changed = entry.volume_changed = false;
 }
 static std::atomic<uint64_t> g_next_tts_voice_id{0};
 // The end of each queued utterance is handled by a resource manager job, which can run after the tts_voice that queued it has been released. Jobs therefore carry the voice's id and find the voice here, under the lock; a voice removes itself before it is destroyed, so it is never freed while a job is using it, and a job that comes after finds nothing. On 32-bit platforms the id is truncated to the width of a pointer.
@@ -248,8 +236,42 @@ tts_voice::tts_voice(const string &engine_list) : RefCount(1), voice_state(VOICE
 	g_live_tts_voices[(uintptr_t)id] = this;
 }
 tts_voice::~tts_voice() {
-	std::lock_guard<std::mutex> lock(g_live_tts_voices_mutex);
-	g_live_tts_voices.erase((uintptr_t)id);
+	{
+		std::lock_guard<std::mutex> lock(g_live_tts_voices_mutex);
+		g_live_tts_voices.erase((uintptr_t)id);
+	}
+	// The engines go to the next tts_voice that wants them, silent and with the platform's settings.
+	for (auto &[name, entry] : engines) {
+		if (!entry.engine) continue;
+		entry.engine->stop();
+		tts_engine_restore_defaults(entry);
+		std::lock_guard<std::recursive_mutex> lock(g_tts_registry_mutex);
+		g_idle_engines[name].push_back(entry.engine);
+	}
+}
+engine_entry &tts_voice::get_engine_entry(const string &name) {
+	auto it = engines.find(name);
+	if (it != engines.end()) return it->second;
+	engine_entry entry;
+	{
+		std::lock_guard<std::recursive_mutex> lock(g_tts_registry_mutex);
+		auto idle = g_idle_engines.find(name);
+		if (idle != g_idle_engines.end() && !idle->second.empty()) {
+			entry.engine = idle->second.back();
+			idle->second.pop_back();
+		} else if (!g_unusable_engines.count(name)) {
+			shared_ptr<tts_engine> engine = tts_create_engine(name);
+			if (engine && engine->is_available()) entry.engine = engine;
+			else g_unusable_engines.insert(name);
+		}
+	}
+	if (entry.engine) {
+		entry.init_rate = entry.engine->get_rate();
+		entry.init_pitch = entry.engine->get_pitch();
+		entry.init_volume = entry.engine->get_volume();
+		entry.init_voice = entry.engine->get_current_voice();
+	}
+	return engines.emplace(name, std::move(entry)).first->second;
 }
 void tts_voice::AddRef() { asAtomicInc(RefCount); }
 void tts_voice::Release() { if (asAtomicDec(RefCount) < 1) delete this; }
@@ -270,7 +292,7 @@ void tts_voice::ensure_default() {
 	for (const string &name : engine_names) consider(name);
 	if (candidates.empty() && !engine_names.empty()) candidates.push_back(engine_names.front());
 	for (const string &name : candidates) {
-		shared_engine_entry &entry = tts_get_shared_engine(name);
+		engine_entry &entry = get_engine_entry(name);
 		if (!entry.engine || !entry.engine->is_available()) continue;
 		tts_engine *engine = entry.engine.get();
 		voices.clear();
@@ -292,12 +314,11 @@ void tts_voice::ensure_default() {
 	refresh(); // No candidate could speak: fall back to a full search for anything usable.
 }
 void tts_voice::ensure_enumerated() { if (voice_state != VOICES_FULL) refresh(); }
-bool tts_voice::sync_engine(shared_engine_entry &entry, bool force) {
-	std::lock_guard<std::recursive_mutex> lock(g_tts_registry_mutex); // The entry is shared by every tts_voice, which may run on different script threads.
+bool tts_voice::sync_engine(engine_entry &entry, bool force) {
 	tts_engine *engine = entry.engine.get();
 	if (!engine) return false;
-	if (!force && entry.owner == id) return true;
-	// Push only what the script set on this object. Anything else is left alone, or, if another tts_voice changed it on this shared engine, returned to the platform default, so a script that never sets a parameter always hears the user's own TTS settings.
+	if (!force && entry.synced) return true;
+	// Push only what the script set on this object. Anything else is left alone, or, if the object stopped using a value it set, returned to the platform default, so a script that never sets a parameter always hears the user's own TTS settings.
 	voice_info *voice = get_voice_info(current_voice_index);
 	bool voice_applied = true;
 	if (voice_set && voice) {
@@ -329,18 +350,18 @@ bool tts_voice::sync_engine(shared_engine_entry &entry, bool force) {
 		if (!engine->reset_volume()) engine->set_volume(entry.init_volume);
 		entry.volume_changed = false;
 	}
-	entry.owner = voice_applied? id : 0; // A refused voice leaves the engine as it was, so the next use syncs it again.
+	entry.synced = voice_applied; // A refused voice leaves the engine as it was, so the next use syncs it again.
 	return voice_applied;
 }
 tts_engine *tts_voice::active_engine(bool force_sync, bool *voice_applied) {
 	voice_info *voice = get_voice_info(current_voice_index);
 	if (!voice) return nullptr;
-	// Resolve the program-wide shared engine (binds it at most once, ever). If it can't be bound (e.g. a restricted engine), report failure so the caller can fall back.
-	shared_engine_entry &entry = tts_get_shared_engine(voice->engine_name);
+	// Resolve this object's engine for the voice, binding it on first use. If it can't be bound (e.g. a restricted engine), report failure so the caller can fall back.
+	engine_entry &entry = get_engine_entry(voice->engine_name);
 	if (!entry.engine) return nullptr;
 	current_engine = entry.engine;
 	current_engine_name = voice->engine_name;
-	// Because engines are shared, another tts_voice may have left this one carrying its own voice or parameters; this puts ours back only when that happened, and costs nothing otherwise.
+	// Puts the object's settings on the engine when they changed, and costs nothing otherwise.
 	bool applied = sync_engine(entry, force_sync);
 	if (voice_applied) *voice_applied = applied;
 	return entry.engine.get();
@@ -492,7 +513,7 @@ void tts_voice::set_rate(float rate) {
 	ensure_default();
 	nvgt_rate = clamp(rate, -10.0f, 10.0f);
 	rate_set = true;
-	active_engine(true); // push the new parameter onto the (shared) engine
+	active_engine(true); // push the new parameter onto the engine
 }
 void tts_voice::set_pitch(float pitch) {
 	if (std::isnan(pitch)) return; // See set_volume().
@@ -563,8 +584,8 @@ bool tts_voice::refresh() {
 	// Track each engine's own current/default voice index so we can preserve the platform default voice when picking an initial selection.
 	unordered_map<string, int> engine_default_voice;
 	for (const string &name : engine_names) {
-		// Resolve through the program-wide cache: each engine is bound at most once, ever, and reused here. An engine that refuses to bind is cached as unavailable and simply contributes no voices instead of taking down the whole list.
-		shared_engine_entry &entry = tts_get_shared_engine(name);
+		// An engine that refuses to bind is remembered as unusable and simply contributes no voices instead of taking down the whole list.
+		engine_entry &entry = get_engine_entry(name);
 		tts_engine *engine = entry.engine.get();
 		if (!engine || !engine->is_available()) continue;
 		engine_default_voice[name] = tts_engine_default_voice(entry);
@@ -599,15 +620,11 @@ bool tts_voice::refresh() {
 			if (target < 0 || voices[i].engine_voice_index == target) { current_voice_index = i; break; }
 		}
 	}
-	// If our cached active-engine pointer no longer matches the selected voice, drop it so the next use re-resolves through the shared cache. (This does not unbind anything; the program-wide cache keeps the engine alive.)
+	// If our cached active-engine pointer no longer matches the selected voice, drop it so the next use resolves it again. (This does not unbind anything; the object's engine entries keep the engine.)
 	voice_info *sel = get_voice_info(current_voice_index);
 	if (current_engine && (!sel || current_engine_name != sel->engine_name)) { current_engine.reset(); current_engine_name.clear(); }
 	// The list was rebuilt, so our selection may now sit on a different engine index; make the next use sync the engine again instead of assuming it already carries our settings.
-	if (sel) {
-		std::lock_guard<std::recursive_mutex> lock(g_tts_registry_mutex);
-		shared_engine_entry &entry = tts_get_shared_engine(sel->engine_name);
-		if (entry.owner == id) entry.owner = 0;
-	}
+	if (sel) get_engine_entry(sel->engine_name).synced = false;
 	return !voices.empty();
 }
 bool tts_voice::stop() {

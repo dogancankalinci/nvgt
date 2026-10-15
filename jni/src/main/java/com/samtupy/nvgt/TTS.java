@@ -352,10 +352,12 @@ public class TTS {
 
 	public boolean isActive() { return this.isTTSInitialized; }
 	public boolean isSpeaking() { return isActive()? tts.isSpeaking() : false; }
-	// Speech this object queued that hasn't ended. The service reports speaking only once it has picked a request up, which
-	// can be after speak() returns, so that counts too, but for ten seconds at most, since an engine that dies reports no end.
+	// Whether this object's own speech is still to be heard: speech it queued that hasn't ended, while the service speaks,
+	// or for ten seconds after it was queued until the service picks it up, since an engine that dies reports no end. The
+	// service's isSpeaking() alone answers for everyone using the engine, every app and every other TextToSpeech.
 	public boolean hasPendingSpeech() {
-		return endedSerial < trackedSerial && SystemClock.elapsedRealtime() - lastQueuedAt < 10000;
+		if (!isActive() || endedSerial >= trackedSerial) return false;
+		return SystemClock.elapsedRealtime() - lastQueuedAt < 10000 || tts.isSpeaking();
 	}
 
 	public boolean speak(String text, boolean interrupt) { return speakTracked(text, interrupt) >= 0; }

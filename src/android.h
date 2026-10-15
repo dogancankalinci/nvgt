@@ -85,8 +85,8 @@ jstring to_jstring(JNIEnv* env, const std::string& str);
 // reference, or null with no exception left pending.
 jclass android_find_app_class(JNIEnv* env, const char* name);
 
-// Engines are shared by every tts_voice and driven from whichever script thread speaks, so no JNIEnv is kept:
-// each call uses its own thread's, and the Java object is held through a global reference.
+// An engine is driven from whichever script thread speaks and passes to another tts_voice when its own goes away, so no
+// JNIEnv is kept: each call uses its own thread's, and the Java object is held through a global reference.
 class android_tts_engine : public tts_engine_impl {
 	jmethodID constructor, midIsActive, midIsSpeaking, midSpeak, midSilence, midGetVoice, midSetRate, midSetPitch, midSetPan, midSetVolume, midGetVoices, midSetVoice, midGetMaxSpeechInputLength, midGetPitch, midGetPan, midGetRate, midGetVolume;
 	jmethodID midSpeakPcm, midGetPcmSampleRate, midGetPcmAudioFormat, midGetPcmChannelCount;
