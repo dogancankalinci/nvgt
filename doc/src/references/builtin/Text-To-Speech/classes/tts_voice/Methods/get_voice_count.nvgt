@@ -4,7 +4,7 @@
 	## Returns:
 		* int: the number of tts voices.
 	## Remarks:
-		The default voice built into Nvgt is counted here so it's always one more than the available system voices.
+		The voice built into NVGT is counted here whenever the object's engine list includes "fallback", which it does by default, so the count is then one more than the voices of the system's engines. Speech Dispatcher on Linux counts as a single voice.
 */
 
 // Example:
