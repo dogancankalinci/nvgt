@@ -78,10 +78,12 @@ static void* tts_trim(tts_audio_data* data, float begin_db = -60, float end_db =
 	}
 }
 
-// Whether a voice of the given language serves a request for a language: any voice when none is requested, one with the same code in any letter case, or, since not every engine reports a region and a request need not name one, one whose code names the same language where only one of the two codes names a region ("en" serves "en-us" and the other way around).
+// Whether a voice of the given language serves a request for a language: any voice when none is requested, one with the same code in any letter case and with "-" or "_" before the region, or, since not every engine reports a region and a request need not name one, one whose code names the same language where only one of the two codes names a region ("en" serves "en-us" and the other way around).
 static bool tts_language_matches(const string &voice_language, const string &requested) {
 	if (requested.empty()) return true;
 	string voice = Poco::toLower(voice_language), request = Poco::toLower(requested);
+	replace(voice.begin(), voice.end(), '_', '-');
+	replace(request.begin(), request.end(), '_', '-');
 	if (voice == request) return true;
 	if (voice.empty()) return false;
 	const string &language = voice.size() < request.size()? voice : request, &regional = voice.size() < request.size()? request : voice;
