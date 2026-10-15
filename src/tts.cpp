@@ -388,9 +388,8 @@ bool tts_voice::speak_to_file(const string &filename, const string &text) {
 	if (!trimmed_data || !datablock) return false;
 	try {
 		string output;
-		output.resize(datablock->size_in_bytes + 44);
 		ma_format format = tts_pcm_format(datablock);
-		if (!sound::pcm_to_wav(trimmed_data, datablock->size_in_bytes, format, datablock->sample_rate, datablock->channels, &output[0])) {
+		if (!sound::pcm_to_wav(trimmed_data, datablock->size_in_bytes, format, datablock->sample_rate, datablock->channels, output)) {
 			datablock->free();
 			return false;
 		}
@@ -409,9 +408,8 @@ string tts_voice::speak_to_memory(const string &text) {
 	void *trimmed_data = speak_to_pcm(text, &datablock);
 	if (!trimmed_data || !datablock) return "";
 	string output;
-	output.resize(datablock->size_in_bytes + 44);
 	ma_format format = tts_pcm_format(datablock);
-	if (!sound::pcm_to_wav(trimmed_data, datablock->size_in_bytes, format, datablock->sample_rate, datablock->channels, &output[0])) {
+	if (!sound::pcm_to_wav(trimmed_data, datablock->size_in_bytes, format, datablock->sample_rate, datablock->channels, output)) {
 		datablock->free();
 		return "";
 	}

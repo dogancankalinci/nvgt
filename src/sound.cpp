@@ -248,10 +248,14 @@ float pan_db_to_linear(float db) {
 	float l = ma_volume_db_to_linear(fabs(db) * -1.0f);
 	return db > 0 ? 1.0f - l : -1.0f + l;
 }
-// Callbacks for MiniAudio to write raw PCM to wav in memory.
+// Callbacks for MiniAudio to write raw PCM to wav in memory. A write the stream didn't take is reported as such.
 ma_result wav_write_proc(ma_encoder *pEncoder, const void *pBufferIn, size_t bytesToWrite, size_t *pBytesWritten) {
 	std::ostream *stream = static_cast<std::ostream *>(pEncoder->pUserData);
 	stream->write((const char *)pBufferIn, bytesToWrite);
+	if (!stream->good()) {
+		*pBytesWritten = 0;
+		return MA_ERROR;
+	}
 	*pBytesWritten = bytesToWrite;
 	return MA_SUCCESS;
 }
@@ -1795,8 +1799,7 @@ public:
 		pcm_buffer.clear();
 		// At least for now, the strat here is just to write the PCM to wav and then load it the normal way.
 		// Should optimization become necessary (this does result in a couple of copies), a protocol could be written that simulates its input having a RIFF header on it.
-		pcm_buffer.resize(size + 44);
-		if (!pcm_to_wav(buffer, size, format, samplerate, channels, &pcm_buffer[0]))
+		if (!pcm_to_wav(buffer, size, format, samplerate, channels, pcm_buffer))
 			return false;
 		// At this point we can just use the sound service to load this. We use the low level API though because we need to be clear that no filters apply.
 		// Also, our PCM buffer is a permanent class property so we can enjoy the speed of async loading.
@@ -2241,7 +2244,8 @@ void set_sound_default_engine(audio_engine* engine) {
 	if (g_audio_engine) g_audio_engine->release();
 	g_audio_engine = engine;
 }
-bool sound::pcm_to_wav(const void *buffer, unsigned int size, ma_format format, int samplerate, int channels, void *output) {
+// The bytes in one frame of PCM, 0 for a format pcm_to_wav() can't write.
+static int pcm_frame_size(ma_format format, int channels) {
 	int frame_size = 0;
 	switch (format) {
 		case ma_format_u8:
@@ -2260,10 +2264,16 @@ bool sound::pcm_to_wav(const void *buffer, unsigned int size, ma_format format, 
 			frame_size = 4;
 			break;
 		default:
-			return false;
+			return 0;
 	}
-	frame_size *= channels;
-	Poco::MemoryOutputStream stream((char *)output, size + 44);
+	return channels > 0? frame_size * channels : 0;
+}
+// Writes PCM as a wav file into output, which holds capacity bytes. The encoder completes the header when it is closed, so the stream is checked after that.
+static bool write_pcm_as_wav(const void *buffer, unsigned int size, ma_format format, int samplerate, int channels, void *output, size_t capacity) {
+	int frame_size = pcm_frame_size(format, channels);
+	if (!frame_size)
+		return false;
+	Poco::MemoryOutputStream stream((char *)output, capacity);
 	ma_encoder_config cfg = ma_encoder_config_init(ma_encoding_format_wav, format, channels, samplerate);
 	ma_encoder encoder;
 	g_soundsystem_last_error = ma_encoder_init(wav_write_proc, wav_seek_proc, &stream, &cfg, &encoder);
@@ -2275,7 +2285,21 @@ bool sound::pcm_to_wav(const void *buffer, unsigned int size, ma_format format, 
 	ma_encoder_uninit(&encoder);
 	if (g_soundsystem_last_error != MA_SUCCESS)
 		return false;
-	return true;
+	return stream.good();
+}
+bool sound::pcm_to_wav(const void *buffer, unsigned int size, ma_format format, int samplerate, int channels, void *output) {
+	return write_pcm_as_wav(buffer, size, format, samplerate, channels, output, size + 44);
+}
+bool sound::pcm_to_wav(const void *buffer, unsigned int size, ma_format format, int samplerate, int channels, std::string &output) {
+	int frame_size = pcm_frame_size(format, channels);
+	if (!frame_size)
+		return false;
+	unsigned int data_size = size - size % frame_size; // Whole frames only.
+	output.resize(44 + data_size + data_size % 2); // RIFF pads an odd number of data bytes with one more.
+	if (write_pcm_as_wav(buffer, data_size, format, samplerate, channels, &output[0], output.size()))
+		return true;
+	output.clear();
+	return false;
 }
 
 template < class T, auto Function, typename ReturnType, typename... Args >
