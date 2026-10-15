@@ -169,9 +169,10 @@ public:
 		[utterance release]; // Held until here, so its address can't be reused by another utterance while it is compared.
 		return true;
 	}
+	// Nothing to stop counts as stopped.
 	bool stopSpeech() {
-		waitState.queued = nullptr;
-		return [synth stopSpeakingAtBoundary:AVSpeechBoundaryImmediate];
+		if (!waitState.queued.exchange(nullptr) && !synth.isSpeaking) return true;
+		return [synth stopSpeakingAtBoundary:AVSpeechBoundaryImmediate] || !synth.isSpeaking;
 	}
 	bool pauseSpeech() {
 		if (!synth.isPaused && synth.isSpeaking) return [synth pauseSpeakingAtBoundary:AVSpeechBoundaryImmediate];
