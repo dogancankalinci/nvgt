@@ -784,7 +784,7 @@ public class TTS {
 	public byte[] speakPcm(String text) {
 		if (!isActive() || text.isEmpty()) return null;
 		List<String> parts = splitForSpeech(text, maxRequestLength());
-		if (parts.size() == 1) return synthesizePart(text);
+		if (parts.size() == 1) return withVolume(synthesizePart(text));
 		ByteArrayOutputStream joined = new ByteArrayOutputStream();
 		int sampleRate = 0, audioFormat = 0, channelCount = 0;
 		for (String part : parts) {
@@ -801,7 +801,22 @@ public class TTS {
 		pcmSampleRate = sampleRate;
 		pcmAudioFormat = audioFormat;
 		pcmChannelCount = channelCount;
-		return joined.toByteArray();
+		return withVolume(joined.toByteArray());
+	}
+	// The service applies a request's volume only while it plays the speech, through the AudioTrack, and not to audio
+	// synthesized to a file, so the volume a script set is applied to the samples here, the same linear gain.
+	private byte[] withVolume(byte[] audio) {
+		if (audio == null || !volumeExplicit || ttsVolume >= 1.0f) return audio;
+		float volume = Math.max(0.0f, ttsVolume);
+		ByteBuffer samples = ByteBuffer.wrap(audio).order(ByteOrder.LITTLE_ENDIAN);
+		if (pcmAudioFormat == AudioFormat.ENCODING_PCM_16BIT) {
+			for (int i = 0; i + 1 < audio.length; i += 2) samples.putShort(i, (short) Math.round(samples.getShort(i) * volume));
+		} else if (pcmAudioFormat == AudioFormat.ENCODING_PCM_8BIT) {
+			for (int i = 0; i < audio.length; i++) audio[i] = (byte) Math.round(((audio[i] & 0xFF) - 128) * volume + 128);
+		} else if (pcmAudioFormat == AudioFormat.ENCODING_PCM_FLOAT) {
+			for (int i = 0; i + 3 < audio.length; i += 4) samples.putFloat(i, samples.getFloat(i) * volume);
+		}
+		return audio;
 	}
 	private long pcmSerial = 0; // Numbers PCM requests, which the caller makes one at a time.
 	private byte[] synthesizePart(String text) {
