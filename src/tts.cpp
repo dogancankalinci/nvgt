@@ -206,15 +206,17 @@ static int tts_engine_default_voice(engine_entry &entry) {
 	if (!entry.engine) return -1;
 	return entry.voice_changed? entry.init_voice : entry.engine->get_current_voice();
 }
-// Puts back what an object set on an engine, so the engine speaks with the platform's settings again.
-static void tts_engine_restore_defaults(engine_entry &entry) {
+// Puts back what an object set on an engine, so the engine speaks with the platform's settings again. False when the voice could not be put back, so the engine still speaks with the one the object chose.
+static bool tts_engine_restore_defaults(engine_entry &entry) {
 	tts_engine *engine = entry.engine.get();
-	if (!engine) return;
-	if (entry.voice_changed && !engine->reset_voice() && entry.init_voice >= 0) engine->set_voice(entry.init_voice);
+	if (!engine) return false;
+	bool voice_restored = true;
+	if (entry.voice_changed) voice_restored = engine->reset_voice() || (entry.init_voice >= 0 && engine->set_voice(entry.init_voice));
 	if (entry.rate_changed && !engine->reset_rate()) engine->set_rate(entry.init_rate);
 	if (entry.pitch_changed && !engine->reset_pitch()) engine->set_pitch(entry.init_pitch);
 	if (entry.volume_changed && !engine->reset_volume()) engine->set_volume(entry.init_volume);
 	entry.voice_changed = entry.rate_changed = entry.pitch_changed = entry.volume_changed = false;
+	return voice_restored;
 }
 static std::atomic<uint64_t> g_next_tts_voice_id{0};
 // The end of each queued utterance is handled by a resource manager job, which can run after the tts_voice that queued it has been released. Jobs therefore carry the voice's id and find the voice here, under the lock; a voice removes itself before it is destroyed, so it is never freed while a job is using it, and a job that comes after finds nothing. On 32-bit platforms the id is truncated to the width of a pointer.
@@ -247,11 +249,11 @@ tts_voice::~tts_voice() {
 		std::lock_guard<std::mutex> lock(g_live_tts_voices_mutex);
 		g_live_tts_voices.erase((uintptr_t)id);
 	}
-	// The engines go to the next tts_voice that wants them, silent and with the platform's settings.
+	// The engines go to the next tts_voice that wants them, silent and with the platform's settings; one whose voice can't be put back is let go instead, so it can't hand that voice on.
 	for (auto &[name, entry] : engines) {
 		if (!entry.engine) continue;
 		entry.engine->stop();
-		tts_engine_restore_defaults(entry);
+		if (!tts_engine_restore_defaults(entry)) continue;
 		std::lock_guard<std::mutex> lock(g_engine_pool_mutex);
 		g_idle_engines[name].push_back(entry.engine);
 	}
