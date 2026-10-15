@@ -6,11 +6,12 @@
 		* const string&in text: the text to synthesize.
 	## Returns:
 		bool: true if synthesis was successful and the file was written, false otherwise.
+	## Remarks:
+		An existing file is replaced. Engines that can't synthesize to memory, such as Speech Dispatcher on Linux, make this return false.
 */
 
 // Example:
 void main() {
-	// This is actually quite broken currently, it only ever writes  a 4 KB wav file. I think the problem is probably in speaking to memory in general, also see test/speak_to_file.nvgt.
 	string filename = input_box("Filename", "Enter the name of the file to save to (without the .wav extension).");
 	if (filename.is_empty()) {
 		alert("Error", "You didn't type a filename.");
