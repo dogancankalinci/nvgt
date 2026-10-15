@@ -21,6 +21,7 @@
 #endif
 #include <atomic>
 #include <chrono>
+#include <thread>
 #include <memory>
 #include <vector>
 #include <string>
@@ -404,11 +405,13 @@ tts_audio_data* AVTTSVoice::speak_to_pcm(const std::string &text) {
 		__block BOOL synthesisDone = NO;
 		__block AVAudioFormat *targetFormat = nil;
 		__block AVAudioConverter *converter = nil;
+		__block uint64_t buffersDelivered = 0; // Counted by the block, which runs on another thread, with atomic builtins; see the wait below.
 		NSString *nstext = [NSString stringWithUTF8String:text.c_str()];
 		AVSpeechUtterance *utterance = [[AVSpeechUtterance alloc] initWithString:nstext];
 		impl->apply(utterance);
 		[impl->pcmSynthesizer() writeUtterance:utterance toBufferCallback:^(AVAudioBuffer * _Nonnull buffer) {
 			@autoreleasepool {
+				__atomic_fetch_add(&buffersDelivered, 1, __ATOMIC_RELAXED);
 				if (![buffer isKindOfClass:[AVAudioPCMBuffer class]]) return;
 				AVAudioPCMBuffer *pcmBuffer = (AVAudioPCMBuffer *)buffer;
 				if (pcmBuffer.frameLength == 0) { synthesisDone = YES; return; }
@@ -439,12 +442,26 @@ tts_audio_data* AVTTSVoice::speak_to_pcm(const std::string &text) {
 			}
 		}];
 		[utterance release]; // The synthesizer keeps it while it writes.
-		NSDate *timeout = [NSDate dateWithTimeIntervalSinceNow:10.0];
-		while (!synthesisDone && [[NSDate date] compare:timeout] == NSOrderedAscending) {
-			@autoreleasepool { [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]]; }
+		// Long text or a slow voice can take more than ten seconds to synthesize, so the ten seconds count from the last buffer
+		// the synthesizer delivered. On a thread whose run loop has no sources, runMode returns at once, so the wait sleeps there.
+		auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+		uint64_t delivered = 0;
+		while (!synthesisDone) {
+			uint64_t now_delivered = __atomic_load_n(&buffersDelivered, __ATOMIC_RELAXED);
+			if (now_delivered != delivered) {
+				delivered = now_delivered;
+				limit = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+			}
+			if (std::chrono::steady_clock::now() >= limit) break;
+			@autoreleasepool {
+				if (![[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]]) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			}
 		}
-		// A synthesis that timed out can still call the block, which uses these objects, so they are kept.
-		if (!synthesisDone) return nullptr;
+		// A synthesis that timed out is cancelled, so it doesn't hold up the next, but it can still call the block, which uses these objects, so they are kept.
+		if (!synthesisDone) {
+			[impl->pcmSynthesizer() stopSpeakingAtBoundary:AVSpeechBoundaryImmediate];
+			return nullptr;
+		}
 		unsigned int sampleRate = targetFormat ? (unsigned int)targetFormat.sampleRate : 22050;
 		unsigned int channelCount = targetFormat ? (unsigned int)targetFormat.channelCount : 1;
 		if (converter) [converter release];
