@@ -266,7 +266,7 @@ static tts_voice* g_screen_reader_voice = nullptr;
 
 bool screen_reader_is_speaking() { return g_screen_reader_voice && g_screen_reader_voice->get_speaking(); }
 
-// Speech Dispatcher counts as a screen reader while it has voices, on every call rather than only the one that created the voice.
+// Speech Dispatcher counts as a screen reader when it has voices. Every call answers the same: the voice list is built the first time.
 bool screen_reader_load() {
 	if (!g_screen_reader_voice) g_screen_reader_voice = new tts_voice("speechd");
 	return g_screen_reader_voice->get_voice_count() > 0;
