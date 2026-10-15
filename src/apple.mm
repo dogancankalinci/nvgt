@@ -42,6 +42,7 @@ void register_native_tts() { tts_engine_register("avspeech", []() -> std::shared
 struct nvgt_speech_wait_state {
 	std::atomic<void*> utterance{nullptr};
 	std::atomic<bool> ended{false};
+	std::atomic<void*> queued{nullptr}; // The utterance last queued for speech until the synthesizer starts it.
 };
 @interface NVGTSpeechWaiter : NSObject <AVSpeechSynthesizerDelegate> {
 @public
@@ -49,6 +50,10 @@ struct nvgt_speech_wait_state {
 }
 @end
 @implementation NVGTSpeechWaiter
+- (void)speechSynthesizer:(AVSpeechSynthesizer *)synthesizer didStartSpeechUtterance:(AVSpeechUtterance *)utterance {
+	void* expected = (void*)utterance;
+	if (state) state->queued.compare_exchange_strong(expected, nullptr);
+}
 - (void)speechSynthesizer:(AVSpeechSynthesizer *)synthesizer didFinishSpeechUtterance:(AVSpeechUtterance *)utterance {
 	if (state && state->utterance.load() == (void*)utterance) state->ended = true;
 }
@@ -118,15 +123,20 @@ public:
 	void resetVolume() { volume = defaultVolume; volumeSet = false; }
 	void resetPitch() { pitch = defaultPitch; pitchSet = false; }
 	void resetVoice() { currentVoice = nil; }
+	// Interrupting stops the synthesizer while it speaks, and also while an utterance queued here hasn't started yet, which the synthesizer doesn't count as speaking. Stopping an idle synthesizer is avoided: reports have it ignore what is spoken next after stops in quick succession.
+	void interruptSpeech() {
+		if (waitState.queued.exchange(nullptr) || synth.isSpeaking) [synth stopSpeakingAtBoundary:AVSpeechBoundaryImmediate];
+	}
 	// Speech starts asynchronously, so the synthesizer can still report that it isn't speaking when this returns. Empty text neither speaks nor interrupts anything, as on the other platforms.
 	// Nothing drains autorelease pools around the script, so every Objective-C call made for it runs in a pool of its own.
 	bool speak(const std::string& text, bool interrupt) {
 		if (text.empty()) return false;
 		@autoreleasepool {
-			if (interrupt && synth.isSpeaking) [synth stopSpeakingAtBoundary:AVSpeechBoundaryImmediate];
+			if (interrupt) interruptSpeech();
 			NSString *nstext = [NSString stringWithUTF8String:text.c_str()];
 			AVSpeechUtterance *utterance = [[AVSpeechUtterance alloc] initWithString:nstext];
 			apply(utterance);
+			waitState.queued = (void*)utterance;
 			[synth speakUtterance:utterance];
 			[utterance release]; // The synthesizer keeps it while it is queued.
 		}
@@ -137,12 +147,13 @@ public:
 		if (text.empty()) return false;
 		AVSpeechUtterance *utterance;
 		@autoreleasepool {
-			if (interrupt && synth.isSpeaking) [synth stopSpeakingAtBoundary:AVSpeechBoundaryImmediate];
+			if (interrupt) interruptSpeech();
 			NSString *nstext = [NSString stringWithUTF8String:text.c_str()];
 			utterance = [[AVSpeechUtterance alloc] initWithString:nstext];
 			apply(utterance);
 			waitState.ended = false;
 			waitState.utterance = (void*)utterance;
+			waitState.queued = (void*)utterance;
 			[synth speakUtterance:utterance];
 		}
 		bool seenSpeaking = false;
@@ -158,7 +169,10 @@ public:
 		[utterance release]; // Held until here, so its address can't be reused by another utterance while it is compared.
 		return true;
 	}
-	bool stopSpeech() { return [synth stopSpeakingAtBoundary:AVSpeechBoundaryImmediate]; }
+	bool stopSpeech() {
+		waitState.queued = nullptr;
+		return [synth stopSpeakingAtBoundary:AVSpeechBoundaryImmediate];
+	}
 	bool pauseSpeech() {
 		if (!synth.isPaused && synth.isSpeaking) return [synth pauseSpeakingAtBoundary:AVSpeechBoundaryImmediate];
 		return false;
