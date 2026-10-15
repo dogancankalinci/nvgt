@@ -523,6 +523,7 @@ if(sbz_com_is_init(com)) return 0;
 sbz_com_reset(com);
 if(!sbz_com_load(com)) return 0;
 HRESULT hr=com->CoInitializeEx(NULL, COINIT_MULTITHREADED);
+com->init_thread=GetCurrentThreadId();
 if(hr==RPC_E_CHANGED_MODE) return sbz_com_set_init_flag(com, 0);
 if(FAILED(hr))
 {
@@ -605,12 +606,14 @@ com->CoTaskMemFree=NULL;
 com->CoUninitialize=NULL;
 com->begin=0;
 com->self_init=0;
+com->init_thread=0;
 com->end=0;
 }
 void sbz_com_cleanup(sbz_com* com)
 {
 if(!sbz_com_is_init(com)) return;
-if(com->self_init) com->CoUninitialize();
+/* CoUninitialize undoes the calling thread's own CoInitializeEx, so on another thread, where a tts_voice can be released, it would unbalance that thread's COM instead; the initialising thread keeps its count then. */
+if(com->self_init && GetCurrentThreadId()==com->init_thread) com->CoUninitialize();
 FreeLibrary(com->ole);
 sbz_com_reset(com);
 }

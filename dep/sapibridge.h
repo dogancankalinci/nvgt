@@ -60,6 +60,7 @@ HRESULT(WINAPI* CoCreateInstance)(REFCLSID, LPUNKNOWN, DWORD, REFIID, LPVOID*);
 void(WINAPI* CoTaskMemFree)(void*);
 void(WINAPI* CoUninitialize)(void);
 int self_init;
+DWORD init_thread; /* The thread that initialised COM, which alone may uninitialise it. */
 int end;
 }
 sbz_com;
