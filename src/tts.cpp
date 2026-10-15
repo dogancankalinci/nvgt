@@ -611,9 +611,10 @@ bool tts_voice::refresh() {
 	return !voices.empty();
 }
 bool tts_voice::stop() {
+	sound_queue removed; // Released after the lock, see clear().
 	{
 		unique_lock<mutex> lock(queue_mtx);
-		clear();
+		removed = clear();
 	}
 	bool stopped = true;
 	for (const auto &engine : native_engines) if (engine != current_engine && !engine->stop()) stopped = false;
@@ -682,8 +683,9 @@ bool tts_voice::schedule(soundptr &s, bool interrupt) {
 	try {
 		cleanup_completed_fades();
 		ma_sound_set_end_callback(s->get_ma_sound(), at_end, (void*)(uintptr_t)id); // The id rather than this, see g_live_tts_voices.
+		sound_queue removed; // Released after the lock, see clear().
 		unique_lock<mutex> lock(queue_mtx);
-		if (interrupt) clear();
+		if (interrupt) removed = clear();
 		else advance_queue(); // See queue_speaking().
 		queue.push(s);
 		speaking.test_and_set();
@@ -693,9 +695,10 @@ bool tts_voice::schedule(soundptr &s, bool interrupt) {
 }
 // Interrupting speech also silences what this object started on another path: the queue played through the sound system when the engine about to speak plays its own speech, and an engine selected before.
 void tts_voice::interrupt_other_speech(tts_engine *engine) {
+	sound_queue removed; // Released after the lock, see clear().
 	if (engine->get_pcm_generation_state() != PCM_PREFERRED) {
 		unique_lock<mutex> lock(queue_mtx);
-		if (!queue.empty()) clear();
+		if (!queue.empty()) removed = clear();
 	}
 	for (const auto &other : native_engines) if (other.get() != engine) other->stop();
 	native_engines.erase(remove_if(native_engines.begin(), native_engines.end(), [engine](const shared_ptr<tts_engine> &other) { return other.get() != engine; }), native_engines.end());
@@ -719,10 +722,13 @@ bool tts_voice::queue_speaking() {
 	advance_queue();
 	return speaking.test();
 }
-void tts_voice::clear() {
+// Empties the queue, fading out what plays, and hands the removed sounds to the caller to release once it has let go of queue_mtx: a sound still loading waits for the resource manager's job thread when it is destroyed, and that thread can be waiting for the lock in job_proc. Expects queue_mtx held.
+tts_voice::sound_queue tts_voice::clear() {
 	if (!queue.empty() && queue.front()->get_playing()) fade(queue.front());
-	while (!queue.empty()) queue.pop();
+	sound_queue removed;
+	removed.swap(queue);
 	speaking.clear();
+	return removed;
 }
 // Fades interrupted speech out over 20 ms and stops it then, rather than letting it play on silently to its end.
 bool tts_voice::fade(soundptr &item) {

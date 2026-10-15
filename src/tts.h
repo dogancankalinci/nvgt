@@ -151,7 +151,7 @@ class tts_voice {
 	int platform_voice_index(); // When the script has not chosen a voice: the index in voices of the voice the engine is actually speaking with, or -1 if the engine cannot say or that voice is not in the list.
 	void *speak_to_pcm(const std::string &text, tts_audio_data** datablock); // Returns pointer to trimmed sample.
 	bool schedule(soundptr &s, bool interrupt);
-	void clear();
+	sound_queue clear();
 	void remember_native_engine();
 	void advance_queue();
 	bool queue_speaking();
