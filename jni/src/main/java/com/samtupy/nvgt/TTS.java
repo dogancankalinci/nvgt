@@ -89,25 +89,20 @@ public class TTS {
 		AvoidDuplicateSpeechHack += " ";
 		if (AvoidDuplicateSpeechHack.length() > 20) AvoidDuplicateSpeechHack = "";
 		accessibilityManager.sendAccessibilityEvent(e);
-		return hasSpokenFeedback(accessibilityManager);
-	}
-
-	// Any accessibility service turns accessibility on, a password manager for instance, but only one that gives spoken
-	// feedback, a screen reader, speaks announcements, so the calls report success only while one is enabled.
-	private static boolean hasSpokenFeedback(AccessibilityManager accessibilityManager) {
-		List<AccessibilityServiceInfo> services = accessibilityManager.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_SPOKEN);
-		return services != null && !services.isEmpty();
+		return isScreenReaderActive(); // See screenReaderSilence().
 	}
 
 	// With accessibility off nothing would receive an announcement or interruption: Android 5.0 throws when asked for one,
 	// and later versions throw on the main thread but only log on others, such as the script's, which then looked like
-	// success. So nothing is sent, and the call reports failure on every version.
+	// success. So nothing is sent, and the call reports failure on every version. Any accessibility service turns
+	// accessibility on, a password manager for instance, so with it on the calls succeed when a screen reader is active by
+	// the same test as screen_reader_has_speech().
 	public static boolean screenReaderSilence() {
 		Context context = SDL.getContext();
 		AccessibilityManager accessibilityManager = (AccessibilityManager) context.getSystemService(Context.ACCESSIBILITY_SERVICE);
 		if (accessibilityManager == null || !accessibilityManager.isEnabled()) return false;
 		accessibilityManager.interrupt();
-		return hasSpokenFeedback(accessibilityManager);
+		return isScreenReaderActive();
 	}
 
 	public static List<String> getEnginePackages() {
