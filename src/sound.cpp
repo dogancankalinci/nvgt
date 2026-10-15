@@ -2287,9 +2287,6 @@ static bool write_pcm_as_wav(const void *buffer, unsigned int size, ma_format fo
 		return false;
 	return stream.good();
 }
-bool sound::pcm_to_wav(const void *buffer, unsigned int size, ma_format format, int samplerate, int channels, void *output) {
-	return write_pcm_as_wav(buffer, size, format, samplerate, channels, output, size + 44);
-}
 bool sound::pcm_to_wav(const void *buffer, unsigned int size, ma_format format, int samplerate, int channels, std::string &output) {
 	int frame_size = pcm_frame_size(format, channels);
 	if (!frame_size)

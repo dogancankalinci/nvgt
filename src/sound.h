@@ -362,9 +362,8 @@ public:
 	 * Create a wav file in memory from a raw PCM buffer.
 	 * Used internally by TTS.
 	 * Format is the format of the input data; it will not be converted.
-	 * The std::string overload sizes output itself. The other writes into output preallocated at least 44 bytes larger than the input buffer but uses only those 44, which leave no room for the pad byte RIFF puts after an odd number of data bytes, so it fails for those.
+	 * Output is sized to the wav file: the 44-byte header, the whole frames of the input, and the pad byte RIFF puts after an odd number of data bytes.
 	 */
-	static bool pcm_to_wav(const void *buffer, unsigned int size, ma_format format, int samplerate, int channels, void *output);
 	static bool pcm_to_wav(const void *buffer, unsigned int size, ma_format format, int samplerate, int channels, std::string &output);
 	virtual bool load_pcm(void *buffer, unsigned int size_in_bytes, ma_format format, int samplerate, int channels) = 0;
 	virtual bool load_pcm_script_array(CScriptArray *buffer, int samplerate, int channels) = 0;
