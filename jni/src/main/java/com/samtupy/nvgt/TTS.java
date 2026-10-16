@@ -403,7 +403,7 @@ public class TTS {
 	private static final int NOTHING_QUEUED = 0, PARTLY_QUEUED = 1, QUEUED = 2;
 	private int queueText(String text, boolean interrupt, String lastUtteranceId) {
 		List<String> parts = splitForSpeech(text, maxRequestLength());
-		Bundle params = utteranceParams();
+		Bundle params = utteranceParams(true);
 		for (int i = 0; i < parts.size(); i++) {
 			int mode = interrupt && i == 0? TextToSpeech.QUEUE_FLUSH : TextToSpeech.QUEUE_ADD;
 			if (tts.speak(parts.get(i), mode, params, i == parts.size() - 1? lastUtteranceId : null) == TextToSpeech.SUCCESS) continue;
@@ -530,10 +530,11 @@ public class TTS {
 			return true;
 		}
 	}
-	// Per-utterance parameters: only the ones a script set, so the service uses its own defaults for the rest.
-	private Bundle utteranceParams() {
+	// Per-utterance parameters: only the ones a script set, so the service uses its own defaults for the rest. Synthesis to a
+	// file leaves the volume out, as withVolume() applies it to the samples, and an engine that honoured it too would apply it twice.
+	private Bundle utteranceParams(boolean withVolume) {
 		Bundle params = new Bundle();
-		if (volumeExplicit) params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, ttsVolume);
+		if (volumeExplicit && withVolume) params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, ttsVolume);
 		if (panExplicit) params.putFloat(TextToSpeech.Engine.KEY_PARAM_PAN, ttsPan);
 		return params;
 	}
@@ -849,10 +850,10 @@ public class TTS {
 		File file = new File(SDL.getContext().getCacheDir(), "nvgt_speech_" + (enginePackage != null ? enginePackage : "default") + "_" + instanceSerial + ".wav");
 		followSystemSettings();
 		TextToSpeech synthesizing = tts;
-		int result = synthesizing.synthesizeToFile(text, utteranceParams(), file, request.id);
+		int result = synthesizing.synthesizeToFile(text, utteranceParams(false), file, request.id);
 		if (result != TextToSpeech.SUCCESS && recoverConnection(synthesizing)) {
 			followSystemSettings();
-			result = tts.synthesizeToFile(text, utteranceParams(), file, request.id);
+			result = tts.synthesizeToFile(text, utteranceParams(false), file, request.id);
 		}
 		if (result != TextToSpeech.SUCCESS) {
 			pcmRequest = null;
