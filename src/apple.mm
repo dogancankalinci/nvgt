@@ -549,7 +549,7 @@ void vo_speech_thread(void* extra) {
 			voice_over_announce(text);
 		#else
 			voice_over_announce(text, window);
-			dispatch_async(dispatch_get_main_queue(), ^{ [window release]; }); // On the main thread, as this can be the last reference once the window was destroyed meanwhile, and AppKit's windows are to be deallocated there.
+			if (window) dispatch_async(dispatch_get_main_queue(), ^{ [window release]; }); // On the main thread, as this can be the last reference once the window was destroyed meanwhile, and AppKit's windows are to be deallocated there. Without a window there is nothing to release, and a program without one may never run the main queue.
 		#endif
 	}
 }
