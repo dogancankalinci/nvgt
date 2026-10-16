@@ -568,7 +568,7 @@ string tts_voice::speak_to_memory(const string &text) {
 	datablock->free();
 	return output;
 }
-// The lock is not held while this waits, so held speech can be started meanwhile.
+// The lock is not held while this waits, so held speech can be started meanwhile and another script thread can stop the speech.
 bool tts_voice::speak_wait(const string &text, bool interrupt) {
 	tts_engine *engine;
 	bool pcm;
@@ -594,11 +594,12 @@ bool tts_voice::speak_wait(const string &text, bool interrupt) {
 		while (queue_speaking()) wait(10);
 		return true;
 	}
-	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
+	std::unique_lock<std::recursive_mutex> chain(chain_mtx);
 	if (interrupt && !text.empty()) interrupt_other_speech(engine);
-	bool spoken = engine->speak(tts_valid_utf8(text), interrupt, true);
-	if (!text.empty()) remember_native_engine(current_engine); // Even when it failed, as part of a long text can have been queued.
-	return spoken;
+	shared_ptr<tts_engine> speaking_engine = current_engine;
+	if (!text.empty()) remember_native_engine(speaking_engine); // Before it speaks, so speech the object is given meanwhile waits for it, and even when it fails, as part of a long text can have been queued.
+	chain.unlock();
+	return speaking_engine->speak(tts_valid_utf8(text), interrupt, true);
 }
 sound *tts_voice::speak_to_sound(const string &text) {
 	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
