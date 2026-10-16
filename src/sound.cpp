@@ -14,6 +14,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <algorithm>
 #include <condition_variable>
 #include <mutex>
 #include <vector>
@@ -403,7 +404,8 @@ public:
 				cfg.ppCustomDecodingBackendVTables = &g_decoders[0];
 				cfg.customDecodingBackendCount = g_decoders.size();
 			}
-			cfg.jobThreadCount = std::thread::hardware_concurrency();
+			// MiniAudio takes at most MA_RESOURCE_MANAGER_MAX_JOB_THREAD_COUNT job threads and won't start with more, and hardware_concurrency() reports 0 when it can't tell, which would leave asynchronous loads no thread to finish them.
+			cfg.jobThreadCount = std::clamp(std::thread::hardware_concurrency(), 1u, (unsigned int)MA_RESOURCE_MANAGER_MAX_JOB_THREAD_COUNT);
 			resource_manager = std::make_unique<ma_resource_manager>();
 			if ((g_soundsystem_last_error = ma_resource_manager_init(&cfg, &*resource_manager)) != MA_SUCCESS) {
 				uninit_device(&*device);
