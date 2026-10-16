@@ -167,7 +167,7 @@ static ma_format tts_pcm_format(const tts_audio_data* data) {
 tts_audio_data::tts_audio_data(tts_engine* eng, void* dat, unsigned int size, unsigned int rate, unsigned int chans, unsigned int bits, void* ctx) : engine(eng), data(dat), size_in_bytes(size), sample_rate(rate), channels(chans), bitsize(bits), context(ctx) {}
 void tts_audio_data::free() { if (engine) engine->free_pcm(this); }
 
-// The builtin synthesizer knows ASCII only, and spells out a word with any other byte in it letter by letter, naming each byte as the ASCII character it masks to: "café" came out as "C A F C close parenthesis". So the text it gets has each Latin letter and ligature as its base letters, typographic quotes, hyphens, the minus sign and the multiplication sign as their ASCII forms, dashes as pauses, apostrophes only within words, square brackets and control characters as spaces, combining marks and invisible characters left out, as they belong to the letters around them, and everything else outside ASCII as a space. The text is valid UTF-8 by then, see tts_valid_utf8.
+// The builtin synthesizer knows ASCII only, and spells out a word with any other byte in it letter by letter, naming each byte as the ASCII character it masks to: "café" came out as "C A F C close parenthesis". So the text it gets has each Latin letter and ligature as its base letters, fullwidth characters as their ASCII forms, guillemets as quotation marks, typographic quotes, hyphens, the minus sign and the multiplication sign as their ASCII forms, dashes as pauses, apostrophes only within words, square brackets and control characters as spaces, combining marks and invisible characters left out, as they belong to the letters around them, and everything else outside ASCII as a space. The text is valid UTF-8 by then, see tts_valid_utf8.
 static string tts_fallback_ascii(const string &text) {
 	static const char *const latin[] = { // U+00C0 to U+024F.
 		"A", "A", "A", "A", "A", "A", "AE", "C", "E", "E", "E", "E", "I", "I", "I", "I",
@@ -233,6 +233,7 @@ static string tts_fallback_ascii(const string &text) {
 		if (at + length > text.size()) return 0;
 		c = length == 1? lead : lead & (length == 2? 0x1F : length == 3? 0x0F : 0x07);
 		for (size_t k = 1; k < length; k++) c = (c << 6) | (text[at + k] & 0x3F);
+		if (c >= 0xFF01 && c <= 0xFF5E) c -= 0xFEE0; // Fullwidth forms of ASCII characters, as those.
 		return length;
 	};
 	string out;
@@ -243,7 +244,7 @@ static string tts_fallback_ascii(const string &text) {
 		if (!length) break;
 		i += length;
 		decode(i, next);
-		if (c == '\'' || c == '`' || c == 0xB4 || c == 0x2018 || c == 0x2019 || c == 0x201A || c == 0x201B || c == 0x2032) {
+		if (c == '\'' || c == '`' || c == 0xB4 || c == 0x2BC || c == 0x2018 || c == 0x2019 || c == 0x201A || c == 0x201B || c == 0x2032) {
 			// An apostrophe, or an accent typed for one, is kept only between letters, as in "it's": as a quotation mark, outside a word, the synthesizer says "quote".
 			out += !out.empty() && isalpha((unsigned char)out.back()) && is_letter(next, false)? '\'' : ' ';
 		} else if (c < 0x80) {
@@ -258,7 +259,7 @@ static string tts_fallback_ascii(const string &text) {
 				for (const char *letter = letters + 1; *letter; letter++) out += (char)tolower((unsigned char)*letter);
 			} else out += letters;
 		}
-		else if ((c >= 0x201C && c <= 0x201F) || c == 0x2033) out += '"';
+		else if ((c >= 0x201C && c <= 0x201F) || c == 0x2033 || c == 0xAB || c == 0xBB || c == 0x2039 || c == 0x203A) out += '"';
 		else if (c == 0x2010 || c == 0x2011 || c == 0x2212) out += '-'; // Hyphens, and the minus sign, which the synthesizer reads before a number.
 		else if (c >= 0x2013 && c <= 0x2015) out += ", "; // Dashes, as a pause: a hyphen between numbers would read "minus".
 		else if (c >= 0xFB00 && c <= 0xFB06) {
