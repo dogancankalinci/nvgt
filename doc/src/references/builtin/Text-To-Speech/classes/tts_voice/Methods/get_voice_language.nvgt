@@ -1,0 +1,14 @@
+/**
+	Get the language of a voice at a particular index.
+	string tts_voice::get_voice_language(int index);
+	## Parameters:
+		* int index: the index of the voice to get the language of.
+	## Returns:
+		string: the voice's language code, such as "en-us", or an empty string for an index out of range.
+*/
+
+// Example:
+void main() {
+	tts_voice v;
+	alert("The current voice's language is", v.get_voice_language(v.voice));
+}

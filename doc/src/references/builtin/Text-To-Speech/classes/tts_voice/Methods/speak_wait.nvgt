@@ -1,0 +1,18 @@
+/**
+	Speak a string of text through the currently active TTS voice and wait until it has been spoken.
+	bool tts_voice::speak_wait(const string&in text, bool interrupt = false);
+	## Arguments:
+		* const string&in text: the text to be spoken.
+		* bool interrupt = false: whether or not to interrupt the previously speaking speech to speak the new string.
+	## Returns:
+		bool: true if speech was successful, false otherwise.
+	## Remarks:
+		Without interrupting, the text is queued after the object's earlier speech, and the call returns once all of it has been spoken. The program does nothing else in the meantime, so in a game loop the speaking property is usually the better choice.
+*/
+
+// Example:
+void main() {
+	tts_voice v;
+	v.speak_wait("This is spoken first.");
+	alert("Done", "The voice has finished speaking.");
+}

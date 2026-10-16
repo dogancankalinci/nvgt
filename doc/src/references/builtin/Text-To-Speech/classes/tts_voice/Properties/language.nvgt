@@ -1,0 +1,10 @@
+/**
+	The language set with set_language, or, when none was set, the language of the selected voice.
+	string tts_voice::language;
+*/
+
+// Example:
+void main() {
+	tts_voice v;
+	alert("Language", v.language);
+}

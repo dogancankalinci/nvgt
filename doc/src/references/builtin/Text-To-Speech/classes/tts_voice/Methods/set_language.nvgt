@@ -1,0 +1,20 @@
+/**
+	Limit the object's voices to those of one language.
+	bool tts_voice::set_language(const string&in language);
+	## Arguments:
+		* const string&in language: a language code such as "en" or "en-US", or an empty string to list every voice again.
+	## Returns:
+		bool: true if a voice of the language was found, false otherwise.
+	## Remarks:
+		Afterwards voice_count, get_voice_name and set_voice see only the voices of that language, and one of them is selected unless the chosen voice is among them. Codes are compared without regard to letter case and with either "-" or "_" before the region, and a code without a region, such as "en", matches every region of the language. When no voice matches, the object is left as it was.
+*/
+
+// Example:
+void main() {
+	tts_voice v;
+	if (!v.set_language("en")) {
+		alert("Error", "No English voice is installed.");
+		exit();
+	}
+	v.speak_wait("This is an English voice, one of " + v.voice_count + ".");
+}

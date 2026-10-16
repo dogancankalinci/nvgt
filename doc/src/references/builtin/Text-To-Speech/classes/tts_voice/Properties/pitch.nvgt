@@ -1,0 +1,15 @@
+/**
+	The pitch of the voice, from -10 (lowest) to 10 (highest), with 0 being the default.
+	float tts_voice::pitch;
+	## Remarks:
+		Values outside the range are clamped to it. Until it is assigned, it reports the pitch the engine uses, which may not be 0.
+*/
+
+// Example:
+void main() {
+	tts_voice v;
+	v.pitch = 5;
+	v.speak_wait("This is spoken at a higher pitch.");
+	v.pitch = -5;
+	v.speak_wait("And this at a lower one.");
+}

@@ -1,0 +1,13 @@
+/**
+	The rate of the voice (how fast it speaks), from -10 (slowest) to 10 (fastest), with 0 being the default.
+	float tts_voice::rate;
+	## Remarks:
+		Values outside the range are clamped to it. Until it is assigned, it reports the rate the engine uses, which may not be 0. This is the property form of set_rate and get_rate.
+*/
+
+// Example:
+void main() {
+	tts_voice v;
+	v.rate = 4;
+	v.speak_wait("This is spoken faster than usual, at a rate of " + v.rate + ".");
+}

@@ -1,0 +1,21 @@
+/**
+	Synthesizes a string of text through the currently active TTS voice into a new sound object.
+	sound@ tts_voice::speak_to_sound(const string&in text);
+	## Arguments:
+		* const string&in text: the text to synthesize.
+	## Returns:
+		sound@: a sound holding the speech, or null on failure.
+	## Remarks:
+		The sound is not played; it can be played, paused and positioned like any other sound, and it stays usable after the tts_voice object is gone. Text with nothing to say gives a sound with no length. Engines that can't synthesize to memory, such as Speech Dispatcher on Linux, make this return null.
+*/
+
+// Example:
+void main() {
+	tts_voice v;
+	sound@ s = v.speak_to_sound("This speech plays through a sound object.");
+	if (@s == null) {
+		alert("Error", "The voice could not synthesize to a sound.");
+		exit();
+	}
+	s.play_wait();
+}

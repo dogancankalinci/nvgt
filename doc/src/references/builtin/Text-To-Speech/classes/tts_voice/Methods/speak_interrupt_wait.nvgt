@@ -1,0 +1,19 @@
+/**
+	Speaks a string, interrupting what the voice is saying, and waits until it has been spoken.
+	bool tts_voice::speak_interrupt_wait(const string&in text);
+	## Arguments:
+		* const string&in text: the text to speak.
+	## Returns:
+		bool: true if speech was successful, false otherwise.
+	## Remarks:
+		This is the same as calling speak_wait with interrupt set to true.
+*/
+
+// Example:
+void main() {
+	tts_voice v;
+	v.speak("This long sentence will not be heard to its end, because the next call interrupts it.");
+	wait(500);
+	v.speak_interrupt_wait("Interrupted.");
+	alert("Done", "The voice has finished speaking.");
+}
