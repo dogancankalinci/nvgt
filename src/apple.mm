@@ -187,17 +187,23 @@ public:
 	}
 	// Nothing to stop counts as stopped.
 	bool stopSpeech() {
-		if (!waitState->queued.exchange(nullptr) && !synth.isSpeaking) return true;
-		return [synth stopSpeakingAtBoundary:AVSpeechBoundaryImmediate] || !synth.isSpeaking;
+		@autoreleasepool {
+			if (!waitState->queued.exchange(nullptr) && !synth.isSpeaking) return true;
+			return [synth stopSpeakingAtBoundary:AVSpeechBoundaryImmediate] || !synth.isSpeaking;
+		}
 	}
 	bool pauseSpeech() {
-		if (!synth.isPaused && synth.isSpeaking) return [synth pauseSpeakingAtBoundary:AVSpeechBoundaryImmediate];
-		return false;
+		@autoreleasepool {
+			if (!synth.isPaused && synth.isSpeaking) return [synth pauseSpeakingAtBoundary:AVSpeechBoundaryImmediate];
+			return false;
+		}
 	}
-	bool isPaused() const { return synth.isPaused; }
+	bool isPaused() const { @autoreleasepool { return synth.isPaused; } }
 	// The synthesizer reports speaking only once it has started an utterance, which can be seconds after speak() returns, so one queued here that hasn't started counts too, for ten seconds at most, after which speakWait() gives up on it as well.
 	bool isSpeaking() const {
-		if (synth.isSpeaking) return true;
+		@autoreleasepool {
+			if (synth.isSpeaking) return true;
+		}
 		if (!waitState->queued.load()) return false;
 		return std::chrono::steady_clock::now().time_since_epoch().count() - waitState->queuedAt.load() < std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::seconds(10)).count();
 	}
