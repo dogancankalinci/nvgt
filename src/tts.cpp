@@ -164,7 +164,7 @@ static ma_format tts_pcm_format(const tts_audio_data* data) {
 tts_audio_data::tts_audio_data(tts_engine* eng, void* dat, unsigned int size, unsigned int rate, unsigned int chans, unsigned int bits, void* ctx) : engine(eng), data(dat), size_in_bytes(size), sample_rate(rate), channels(chans), bitsize(bits), context(ctx) {}
 void tts_audio_data::free() { if (engine) engine->free_pcm(this); }
 
-// The builtin synthesizer knows ASCII only, and spells out a word with any other byte in it letter by letter, naming each byte as the ASCII character it masks to: "café" came out as "C A F C close parenthesis". So the text it gets has each Latin letter as its base letters, typographic quotes and hyphens as their ASCII forms, apostrophes only within words, square brackets and control characters as spaces, combining marks and invisible characters left out, as they belong to the letters around them, and everything else outside ASCII as a space. The text is valid UTF-8 by then, see tts_valid_utf8.
+// The builtin synthesizer knows ASCII only, and spells out a word with any other byte in it letter by letter, naming each byte as the ASCII character it masks to: "café" came out as "C A F C close parenthesis". So the text it gets has each Latin letter and ligature as its base letters, typographic quotes, hyphens, the minus sign and the multiplication sign as their ASCII forms, dashes as pauses, apostrophes only within words, square brackets and control characters as spaces, combining marks and invisible characters left out, as they belong to the letters around them, and everything else outside ASCII as a space. The text is valid UTF-8 by then, see tts_valid_utf8.
 static string tts_fallback_ascii(const string &text) {
 	static const char *const latin[] = { // U+00C0 to U+024F.
 		"A", "A", "A", "A", "A", "A", "AE", "C", "E", "E", "E", "E", "I", "I", "I", "I",
@@ -247,7 +247,8 @@ static string tts_fallback_ascii(const string &text) {
 			if (c == '[' || c == ']') out += ' '; // The synthesizer reads text in brackets as its own phoneme codes.
 			else if ((c < 0x20 && !isspace((int)c)) || c == 0x7F) out += ' '; // It spells out the word around a control character, naming it.
 			else out += (char)c;
-		} else if (const char *letters = latin_letters(c)) {
+		} else if (c == 0xD7) out += 'x'; // The multiplication sign, read as "3x4" is.
+		else if (const char *letters = latin_letters(c)) {
 			// A capital such as Æ or Œ in a word going on in lowercase gives one capital, "Ae": the synthesizer spells out a word with a capital after its first letter.
 			if (letters[0] && letters[1] && isupper((unsigned char)letters[0]) && is_letter(next, true)) {
 				out += letters[0];
@@ -255,7 +256,12 @@ static string tts_fallback_ascii(const string &text) {
 			} else out += letters;
 		}
 		else if ((c >= 0x201C && c <= 0x201F) || c == 0x2033) out += '"';
-		else if (c == 0x2010 || c == 0x2011) out += '-';
+		else if (c == 0x2010 || c == 0x2011 || c == 0x2212) out += '-'; // Hyphens, and the minus sign, which the synthesizer reads before a number.
+		else if (c >= 0x2013 && c <= 0x2015) out += ", "; // Dashes, as a pause: a hyphen between numbers would read "minus".
+		else if (c >= 0xFB00 && c <= 0xFB06) {
+			static const char *const ligatures[] = {"ff", "fi", "fl", "ffi", "ffl", "st", "st"};
+			out += ligatures[c - 0xFB00];
+		}
 		else if (c == 0x2026) out += "...";
 		else if ((c >= 0x300 && c < 0x370) || c == 0xAD || (c >= 0x200B && c <= 0x200D) || c == 0x2060 || c == 0xFEFF) continue;
 		else out += ' ';
