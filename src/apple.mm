@@ -755,7 +755,8 @@ bool voice_over_speak(const std::string& text, bool interrupt) {
 	std::string message = tts_valid_utf8(text); // NSString makes nil of malformed UTF-8, which the announcement dictionary on macOS rejects with an exception.
 	@autoreleasepool {
 		#if !TARGET_OS_IOS
-			NSWindow* key = [NSApp keyWindow];
+			// AppKit's key window is only to be asked for on the main thread; text given on another script thread is announced from the game's own window.
+			NSWindow* key = [NSThread isMainThread]? [NSApp keyWindow] : (g_window? (NSWindow*)g_window->get_native_window() : nil);
 		#endif
 		Poco::FastMutex::ScopedLock exclusive(speech_text_mutex); // Also around starting the thread, so two script threads can't both start it.
 		if (speech_closed) return false;
