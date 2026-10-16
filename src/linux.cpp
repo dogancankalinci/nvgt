@@ -181,6 +181,11 @@ void speechd_engine::drop_connection() {
 		speechd_call_guard guard;
 		spd_close(dropped);
 	}
+	forget_messages();
+}
+
+// Stops counting this engine's messages as pending, once its connection is gone or spd_cancel took them back. The server reports a cancellation later, on the event thread, and the engine is not to report speech it stopped in between; an end that comes after this lands among the early ones and expires.
+void speechd_engine::forget_messages() {
 	std::lock_guard<std::mutex> lock(g_speechd_messages_mutex);
 	for (auto it = g_speechd_pending.begin(); it != g_speechd_pending.end();) {
 		if (it->second == this) it = g_speechd_pending.erase(it);
@@ -207,7 +212,7 @@ bool speechd_engine::speak(const std::string &text, bool interrupt, bool blockin
 		SPDConnection *speaking_connection = (SPDConnection*)connection;
 		{
 			speechd_call_guard guard;
-			if (interrupt) spd_cancel(speaking_connection); // Stops the message being spoken and drops the queued ones; a stop before it would let the next queued one start for a moment.
+			if (interrupt && spd_cancel(speaking_connection) == 0) forget_messages(); // Stops the message being spoken and drops the queued ones; a stop before it would let the next queued one start for a moment.
 			// Priority message for all of it: one of priority important cancels what other connections are speaking, the user's screen reader's included, and holds up their speech after it. Interrupting stops this connection's own speech, above.
 			msg_id = spd_say(speaking_connection, SPD_MESSAGE, text.c_str());
 		}
@@ -254,7 +259,8 @@ bool speechd_engine::stop() {
 		return true;
 	}
 	speechd_call_guard guard;
-	spd_cancel((SPDConnection*)connection);
+	if (spd_cancel((SPDConnection*)connection) != 0) return false;
+	forget_messages();
 	return true;
 }
 

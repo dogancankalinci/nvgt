@@ -27,6 +27,7 @@ class speechd_engine : public tts_engine_impl {
 	bool open_connection();
 	bool connection_closed();
 	void drop_connection();
+	void forget_messages();
 	bool connected();
 public:
 	speechd_engine();
