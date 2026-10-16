@@ -179,14 +179,24 @@ public class TTS {
 	private String enginePackage;
 
 	// PCM synthesis fields
-	private ByteArrayOutputStream pcmAudioBuffer;
-	private CountDownLatch pcmSynthesisLatch;
-	private int pcmSampleRate;
+	private int pcmSampleRate; // The format of the last synthesized audio, read back by the native side.
 	private int pcmAudioFormat;
 	private int pcmChannelCount;
-	private boolean pcmSynthesisSuccessful;
-	private String currentPcmUtteranceId;
-	private volatile boolean pcmStarted; // The engine has started on the current PCM request.
+	// One PCM request. The listener looks the current one up once and works on that object, so callbacks of a request that
+	// timed out, which the engine can still deliver while the next one runs, only ever touch their own.
+	private static final class PcmRequest {
+		final String id;
+		final ByteArrayOutputStream audio = new ByteArrayOutputStream();
+		final CountDownLatch done = new CountDownLatch(1);
+		volatile boolean started, successful;
+		volatile int sampleRate, audioFormat, channelCount;
+		PcmRequest(String id) { this.id = id; }
+	}
+	private volatile PcmRequest pcmRequest;
+	private PcmRequest pcmRequestFor(String utteranceId) {
+		PcmRequest request = pcmRequest;
+		return request != null && request.id.equals(utteranceId)? request : null;
+	}
 
 	// Voice management fields
 	private List<Voice> availableVoices;
@@ -698,61 +708,47 @@ public class TTS {
 		target.setOnUtteranceProgressListener(new UtteranceProgressListener() {
 			@Override
 			public void onStart(String utteranceId) {
-				if (currentPcmUtteranceId != null && currentPcmUtteranceId.equals(utteranceId)) pcmStarted = true;
+				PcmRequest request = pcmRequestFor(utteranceId);
+				if (request != null) request.started = true;
 			}
 			@Override
 			public void onBeginSynthesis(String utteranceId, int sampleRateInHz, int audioFormat, int channelCount) {
-				if (currentPcmUtteranceId != null && currentPcmUtteranceId.equals(utteranceId)) {
-					pcmStarted = true;
-					pcmSampleRate = sampleRateInHz;
-					pcmAudioFormat = audioFormat;
-					pcmChannelCount = channelCount;
-				}
+				PcmRequest request = pcmRequestFor(utteranceId);
+				if (request == null) return;
+				request.sampleRate = sampleRateInHz;
+				request.audioFormat = audioFormat;
+				request.channelCount = channelCount;
+				request.started = true;
 			}
 
 			@Override
 			public void onAudioAvailable(String utteranceId, byte[] audio) {
-				if (currentPcmUtteranceId != null && currentPcmUtteranceId.equals(utteranceId) && pcmAudioBuffer != null) {
-					try {
-						pcmAudioBuffer.write(audio);
-					} catch (IOException e) {
-						pcmSynthesisSuccessful = false;
-					}
-				}
+				PcmRequest request = pcmRequestFor(utteranceId);
+				if (request != null) request.audio.write(audio, 0, audio.length);
 			}
 
 			// Before Android 6.0 a stopped utterance also ends here.
 			@Override
 			public void onDone(String utteranceId) {
 				trackedEnded(utteranceId);
-				if (currentPcmUtteranceId != null && currentPcmUtteranceId.equals(utteranceId)) {
-					pcmSynthesisSuccessful = true;
-					if (pcmSynthesisLatch != null) {
-						pcmSynthesisLatch.countDown();
-					}
-				}
+				PcmRequest request = pcmRequestFor(utteranceId);
+				if (request == null) return;
+				request.successful = true;
+				request.done.countDown();
 			}
 
 			@Override
 			public void onError(String utteranceId) {
 				trackedEnded(utteranceId);
-				if (currentPcmUtteranceId != null && currentPcmUtteranceId.equals(utteranceId)) {
-					pcmSynthesisSuccessful = false;
-					if (pcmSynthesisLatch != null) {
-						pcmSynthesisLatch.countDown();
-					}
-				}
+				PcmRequest request = pcmRequestFor(utteranceId);
+				if (request != null) request.done.countDown();
 			}
 
 			@Override
 			public void onStop(String utteranceId, boolean interrupted) {
 				trackedEnded(utteranceId);
-				if (currentPcmUtteranceId != null && currentPcmUtteranceId.equals(utteranceId)) {
-					pcmSynthesisSuccessful = false;
-					if (pcmSynthesisLatch != null) {
-						pcmSynthesisLatch.countDown();
-					}
-				}
+				PcmRequest request = pcmRequestFor(utteranceId);
+				if (request != null) request.done.countDown();
 			}
 		});
 	}
@@ -841,17 +837,11 @@ public class TTS {
 	private static final java.util.concurrent.atomic.AtomicLong instanceSerials = new java.util.concurrent.atomic.AtomicLong();
 	private final long instanceSerial = instanceSerials.incrementAndGet(); // Tells this object's synthesis file apart from other objects'.
 	private byte[] synthesizePart(String text) {
-		// Prepare for PCM synthesis
-		pcmAudioBuffer = new ByteArrayOutputStream();
-		pcmSynthesisLatch = new CountDownLatch(1);
-		pcmSynthesisSuccessful = false;
-		pcmStarted = false;
 		pcmSampleRate = 0;
 		pcmAudioFormat = 0;
 		pcmChannelCount = 0;
-
-		// Create utterance ID and set it as current
-		currentPcmUtteranceId = "nvgtts_" + (++pcmSerial);
+		PcmRequest request = new PcmRequest("nvgtts_" + (++pcmSerial));
+		pcmRequest = request;
 
 		// Start synthesis - using speak with synthesis callbacks. Each TTS object has its own file, since several can use one
 		// engine at once: synthesis on one object is serialized by the caller, and a file that a timed out request writes
@@ -859,13 +849,13 @@ public class TTS {
 		File file = new File(SDL.getContext().getCacheDir(), "nvgt_speech_" + (enginePackage != null ? enginePackage : "default") + "_" + instanceSerial + ".wav");
 		followSystemSettings();
 		TextToSpeech synthesizing = tts;
-		int result = synthesizing.synthesizeToFile(text, utteranceParams(), file, currentPcmUtteranceId);
+		int result = synthesizing.synthesizeToFile(text, utteranceParams(), file, request.id);
 		if (result != TextToSpeech.SUCCESS && recoverConnection(synthesizing)) {
 			followSystemSettings();
-			result = tts.synthesizeToFile(text, utteranceParams(), file, currentPcmUtteranceId);
+			result = tts.synthesizeToFile(text, utteranceParams(), file, request.id);
 		}
 		if (result != TextToSpeech.SUCCESS) {
-			currentPcmUtteranceId = null;
+			pcmRequest = null;
 			return null;
 		}
 
@@ -876,9 +866,9 @@ public class TTS {
 		// engine writes as it goes.
 		try {
 			long now = SystemClock.elapsedRealtime(), limit = now + 10000, stopExtending = now + 60000, written = 0;
-			while (!pcmSynthesisLatch.await(100, TimeUnit.MILLISECONDS)) {
+			while (!request.done.await(100, TimeUnit.MILLISECONDS)) {
 				now = SystemClock.elapsedRealtime();
-				if (!pcmStarted && now < stopExtending && tts.isSpeaking()) limit = now + 10000;
+				if (!request.started && now < stopExtending && tts.isSpeaking()) limit = now + 10000;
 				long size = file.length();
 				if (size != written) {
 					written = size;
@@ -887,16 +877,19 @@ public class TTS {
 				if (now >= limit) break;
 			}
 		} catch (InterruptedException e) {
-			currentPcmUtteranceId = null;
+			pcmRequest = null;
 			file.delete();
 			return null;
 		}
 
 		// Clean up and return the audio data if successful
-		currentPcmUtteranceId = null;
+		pcmRequest = null;
 		byte[] audio = null;
-		if (pcmSynthesisSuccessful) {
-			audio = pcmAudioBuffer.toByteArray();
+		if (request.successful) {
+			pcmSampleRate = request.sampleRate;
+			pcmAudioFormat = request.audioFormat;
+			pcmChannelCount = request.channelCount;
+			audio = request.audio.toByteArray();
 			// Before Android 7.0 TextToSpeech gives the listener no audio, only the finished file.
 			if (audio.length == 0) audio = readWavFile(file);
 		}
