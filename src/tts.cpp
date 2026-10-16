@@ -91,6 +91,18 @@ static bool tts_language_matches(const string &voice_language, const string &req
 	if (language.find('-') != string::npos || regional.size() <= language.size()) return false;
 	return regional.compare(0, language.size(), language) == 0 && regional[language.size()] == '-';
 }
+// Finds an engine's voice in a voice list: the same engine index, name and language first, then the same name and language, as indices move when voices are installed or removed while the program runs. The name alone doesn't do, as names repeat on Apple platforms, which list some voices once per language.
+static int find_listed_voice(const vector<voice_info> &voices, const string &engine_name, int engine_voice_index, const string &name, const string &language) {
+	for (int pass = 0; pass < 2; pass++) {
+		for (size_t i = 0; i < voices.size(); i++) {
+			const voice_info &voice = voices[i];
+			if (voice.engine_name != engine_name || voice.name != name || voice.language != language) continue;
+			if (pass == 0 && voice.engine_voice_index != engine_voice_index) continue;
+			return i;
+		}
+	}
+	return -1;
+}
 
 // Text as valid UTF-8: each malformed sequence (a stray or truncated byte run, an overlong form, an encoded surrogate or a value past U+10FFFF) becomes one U+FFFD, and decoding resumes at the first byte that can't belong to it, as Android's conversion to UTF-16 does. Engines handle malformed text badly: SAPI refuses the whole text, Apple's speech throws an Objective-C exception, Speech Dispatcher rejects it. A string cut in the middle of a character, by substr for instance, is enough to produce it.
 string tts_valid_utf8(const string &text) {
@@ -363,12 +375,12 @@ bool tts_voice::sync_engine(engine_entry &entry, bool force) {
 	voice_info *voice = get_voice_info(current_voice_index);
 	bool voice_applied = true;
 	if (voice_set && voice) {
-		// The index the list was built with names another voice once voices are installed or removed while the program runs, as SAPI lists them again on every call, so the voice is then found again by its name.
+		// The index the list was built with names another voice once voices are installed or removed while the program runs, as SAPI lists them again on every call, so the voice is then found again by its name and language (names repeat on Apple platforms, which list some voices once per language).
 		int index = voice->engine_voice_index;
-		if (engine->get_voice_name(index) != voice->name) {
+		if (engine->get_voice_name(index) != voice->name || engine->get_voice_language(index) != voice->language) {
 			index = -1;
 			int count = engine->get_voice_count();
-			for (int i = 0; i < count && index < 0; i++) if (engine->get_voice_name(i) == voice->name) index = i;
+			for (int i = 0; i < count && index < 0; i++) if (engine->get_voice_name(i) == voice->name && engine->get_voice_language(i) == voice->language) index = i;
 			if (index >= 0) voice->engine_voice_index = index;
 		}
 		voice_applied = index >= 0 && engine->set_voice(index);
@@ -420,16 +432,9 @@ int tts_voice::platform_voice_index() {
 	if (!engine || !voice) return -1;
 	int engine_voice = engine->get_current_voice();
 	if (engine_voice < 0) return -1;
-	string engine_name = voice->engine_name, engine_voice_name = engine->get_voice_name(engine_voice);
-	// By index and name, and failing that by name alone, as indices move when voices are installed or removed while the program runs.
-	for (int pass = 0; pass < 2; pass++) {
-		for (size_t i = 0; i < voices.size(); i++) {
-			if (voices[i].engine_name != engine_name || voices[i].name != engine_voice_name || (pass == 0 && voices[i].engine_voice_index != engine_voice)) continue;
-			current_voice_index = i;
-			return i;
-		}
-	}
-	return -1;
+	int index = find_listed_voice(voices, voice->engine_name, engine_voice, engine->get_voice_name(engine_voice), engine->get_voice_language(engine_voice));
+	if (index >= 0) current_voice_index = index;
+	return index;
 }
 void *tts_voice::speak_to_pcm(const string &text, tts_audio_data** datablock) {
 	ensure_default();
@@ -626,11 +631,10 @@ bool tts_voice::get_speaking() {
 }
 bool tts_voice::refresh() {
 	voice_state = VOICES_FULL;
-	string old_voice_name, old_engine_name;
+	voice_info old_voice{};
 	bool had_voice = false;
 	if (current_voice_index >= 0 && current_voice_index < static_cast<int>(voices.size())) {
-		old_voice_name = voices[current_voice_index].name;
-		old_engine_name = voices[current_voice_index].engine_name;
+		old_voice = voices[current_voice_index];
 		had_voice = true;
 	}
 	voices.clear();
@@ -649,14 +653,8 @@ bool tts_voice::refresh() {
 		}
 	}
 	current_voice_index = -1;
-	// Only a voice the script chose is carried over by name. Without a choice the selection must keep following the platform default, which the block below picks.
-	if (had_voice && voice_set) {
-		for (size_t i = 0; i < voices.size(); i++) {
-			if (voices[i].engine_name != old_engine_name || voices[i].name != old_voice_name) continue;
-			current_voice_index = i;
-			break;
-		}
-	}
+	// Only a voice the script chose is carried over. Without a choice the selection must keep following the platform default, which the block below picks.
+	if (had_voice && voice_set) current_voice_index = find_listed_voice(voices, old_voice.engine_name, old_voice.engine_voice_index, old_voice.name, old_voice.language);
 	if (current_voice_index < 0) voice_set = false; // The chosen voice is gone, so fall back to the platform default rather than forcing whichever voice lands on its old index.
 	if (current_voice_index < 0 && !voices.empty()) {
 		// Pick an initial voice: prefer the configured/default engine, then the platform's own order, then the first non-fallback engine, then anything, as ensure_default() does. Only an engine with a voice in the list counts: one that could not be bound, or whose voices the language filter left out, would match nothing below and leave the selection on the first voice, the builtin fallback.
