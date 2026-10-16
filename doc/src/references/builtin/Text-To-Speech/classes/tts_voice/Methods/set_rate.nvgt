@@ -15,7 +15,7 @@ void main() {
 	v.set_rate(5);
 	v.speak_wait("this is at seventy-five percent rate");
 	//demonstrate setting it like it's a percentage, but note that it'll jump a bit because percentages have 100 values but there are only technically 21 choices, so implement this idea with an increment of 5 for best results.
-	uint desired_rate=85;
+	int desired_rate=85;
 	v.set_rate(desired_rate/5-10);
 	int resulting_rate=v.get_rate();
 	alert("after setting as 85 percent, the resulting rate now is:", resulting_rate);
