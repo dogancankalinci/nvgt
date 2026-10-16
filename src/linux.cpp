@@ -280,7 +280,7 @@ static tts_voice* g_screen_reader_voice = nullptr;
 
 bool screen_reader_is_speaking() { return g_screen_reader_voice && g_screen_reader_voice->get_speaking(); }
 
-// Speech Dispatcher counts as a screen reader when a connection to it could be opened, which is what its one voice stands for. Every call answers the same: the voice list is built the first time.
+// Speech Dispatcher counts as a screen reader when NVGT could connect to it, which is what its one voice stands for and which is tried once per run, for any speech. Every call answers the same: the voice list is built the first time.
 bool screen_reader_load() {
 	if (!g_screen_reader_voice) g_screen_reader_voice = new tts_voice("speechd");
 	return g_screen_reader_voice->get_voice_count() > 0;

@@ -2,7 +2,7 @@
 	reports whether NVGT's screen reader support could be loaded.
 	const bool SCREEN_READER_AVAILABLE;
 	## Remarks:
-		This doesn't tell whether a screen reader is running; use screen_reader_has_speech() or screen_reader_detect() for that. On Linux, where Speech Dispatcher stands in for a screen reader, it is true when a connection to Speech Dispatcher could be opened the first time it was checked.
+		This doesn't tell whether a screen reader is running; use screen_reader_has_speech() or screen_reader_detect() for that. On Linux, where Speech Dispatcher stands in for a screen reader, it is true when NVGT could connect to Speech Dispatcher, which it tries once per run, for any speech; a connection lost later is opened again when speech needs it.
 */
 
 // Example:
