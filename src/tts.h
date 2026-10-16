@@ -127,6 +127,7 @@ struct engine_entry {
 	std::shared_ptr<tts_engine> engine; // Null if this engine could not be bound.
 	float init_rate = 0, init_pitch = 0, init_volume = 0; // In engine units, as reported when bound. Used to undo a change on engines that cannot reset themselves.
 	int init_voice = -1;
+	std::string init_voice_name; // Of init_voice, which is found again by name, since indices move when voices are installed or removed while the program runs.
 	bool rate_changed = false, pitch_changed = false, volume_changed = false, voice_changed = false; // Whether a value the object set is on the engine in place of its default.
 	bool synced = false; // Whether the engine carries the object's current settings.
 };

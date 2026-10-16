@@ -201,17 +201,29 @@ static std::mutex g_engine_pool_mutex;
 static std::mutex g_engine_binding_mutex;
 static unordered_set<string> g_unusable_engines;
 static unordered_map<string, vector<shared_ptr<tts_engine>>> g_idle_engines;
+// The index the voice an engine had when it was bound has now: found by its name, or the old index when it had none.
+static int tts_engine_init_voice_index(engine_entry &entry) {
+	if (entry.init_voice_name.empty()) return entry.init_voice;
+	int count = entry.engine->get_voice_count();
+	for (int i = 0; i < count; i++) if (entry.engine->get_voice_name(i) == entry.init_voice_name) return i;
+	return -1;
+}
+// Puts back the voice an engine had before the object set one: through the engine when it can reset it, otherwise by finding that voice again. False when neither worked.
+static bool tts_engine_restore_voice(engine_entry &entry) {
+	if (entry.engine->reset_voice()) return true;
+	int index = tts_engine_init_voice_index(entry);
+	return index >= 0 && entry.engine->set_voice(index);
+}
 // The engine's own default voice: its current voice, unless the object set one on it, in which case the voice it had when it was bound, which is also what resetting it restores.
 static int tts_engine_default_voice(engine_entry &entry) {
 	if (!entry.engine) return -1;
-	return entry.voice_changed? entry.init_voice : entry.engine->get_current_voice();
+	return entry.voice_changed? tts_engine_init_voice_index(entry) : entry.engine->get_current_voice();
 }
 // Puts back what an object set on an engine, so the engine speaks with the platform's settings again. False when the voice could not be put back, so the engine still speaks with the one the object chose.
 static bool tts_engine_restore_defaults(engine_entry &entry) {
 	tts_engine *engine = entry.engine.get();
 	if (!engine) return false;
-	bool voice_restored = true;
-	if (entry.voice_changed) voice_restored = engine->reset_voice() || (entry.init_voice >= 0 && engine->set_voice(entry.init_voice));
+	bool voice_restored = !entry.voice_changed || tts_engine_restore_voice(entry);
 	if (entry.rate_changed && !engine->reset_rate()) engine->set_rate(entry.init_rate);
 	if (entry.pitch_changed && !engine->reset_pitch()) engine->set_pitch(entry.init_pitch);
 	if (entry.volume_changed && !engine->reset_volume()) engine->set_volume(entry.init_volume);
@@ -287,6 +299,7 @@ engine_entry &tts_voice::get_engine_entry(const string &name) {
 		entry.init_pitch = entry.engine->get_pitch();
 		entry.init_volume = entry.engine->get_volume();
 		entry.init_voice = entry.engine->get_current_voice();
+		if (entry.init_voice >= 0) entry.init_voice_name = entry.engine->get_voice_name(entry.init_voice);
 	}
 	return engines.emplace(name, std::move(entry)).first->second;
 }
@@ -342,8 +355,7 @@ bool tts_voice::sync_engine(engine_entry &entry, bool force) {
 		voice_applied = engine->set_voice(voice->engine_voice_index);
 		if (voice_applied) entry.voice_changed = true;
 	} else if (entry.voice_changed) {
-		if (!engine->reset_voice() && entry.init_voice >= 0) engine->set_voice(entry.init_voice);
-		entry.voice_changed = false;
+		entry.voice_changed = !tts_engine_restore_voice(entry); // A voice that couldn't be put back still counts as changed, so the engine isn't handed on with it.
 	}
 	float lo, mid, hi;
 	if (rate_set) {
