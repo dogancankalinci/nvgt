@@ -4,7 +4,7 @@
 	## Returns:
 		bool: true if the currently active screen reader is speaking, false otherwise.
 	## Remarks:
-		This function isn't foolproof, as some screen readers (e.g. NVDA) don't have a way to query this information.
+		This function isn't foolproof, as some screen readers (e.g. NVDA) don't have a way to query this information. On Android and Apple platforms it always returns false, as TalkBack and VoiceOver don't report it.
 */
 
 // Example:

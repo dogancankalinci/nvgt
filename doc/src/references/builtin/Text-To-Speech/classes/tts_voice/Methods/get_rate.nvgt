@@ -1,0 +1,15 @@
+/**
+	Get the text to speech voice's rate (how fast it speaks).
+	float tts_voice::get_rate();
+	## Returns:
+		float: the current rate.
+	## Remarks:
+		-10 is slowest and 10 is fastest, with 0 being the default speed. If this hasn't been assigned, it reports the rate the engine uses, which may not be 0. This is the same as reading the rate property.
+*/
+
+// Example:
+void main() {
+	tts_voice v;
+	v.set_rate(3);
+	alert("the current rate is: ", "" + v.get_rate());
+}

@@ -1,0 +1,17 @@
+/**
+	Set the text to speech voice's pitch.
+	void tts_voice::set_pitch(float pitch);
+	## Arguments:
+		* float pitch: the desired pitch.
+	## Remarks:
+		-10 is lowest and 10 is highest, with 0 being the default; values outside are clamped to it. If this hasn't been assigned, the engine's own pitch is used, which may not be 0. This is the same as assigning the pitch property.
+*/
+
+// Example:
+void main() {
+	tts_voice v;
+	v.set_pitch(5);
+	v.speak_wait("This is spoken at a higher pitch.");
+	v.set_pitch(0);
+	v.speak_wait("And this at the default one.");
+}
