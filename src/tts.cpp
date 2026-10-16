@@ -570,31 +570,25 @@ string tts_voice::speak_to_memory(const string &text) {
 }
 // The lock is not held while this waits, so held speech can be started meanwhile and another script thread can stop the speech.
 bool tts_voice::speak_wait(const string &text, bool interrupt) {
-	tts_engine *engine;
-	bool pcm;
-	{
-		std::lock_guard<std::recursive_mutex> chain(chain_mtx);
-		ensure_default();
-		engine = active_engine();
-		if (!engine) return false;
-		pcm = engine->get_pcm_generation_state() == PCM_PREFERRED;
-	}
-	// Without interrupting, the text waits for its turn after the object's speech on other paths, starting held speech as its turn comes rather than leaving that to held_speech_thread().
+	std::unique_lock<std::recursive_mutex> chain(chain_mtx);
+	ensure_default();
+	tts_engine *engine = active_engine();
+	if (!engine) return false;
+	bool pcm = engine->get_pcm_generation_state() == PCM_PREFERRED;
+	// Without interrupting, the text waits for its turn after the object's speech on other paths, starting held speech as its turn comes rather than leaving that to held_speech_thread(). The lock is kept from the last look to the speech, so it can't be held after all.
 	if (!interrupt && !text.empty()) {
-		while (true) {
-			{
-				std::lock_guard<std::recursive_mutex> chain(chain_mtx);
-				if (!release_held() && !other_path_speaking(pcm? nullptr : engine)) break;
-			}
+		while (release_held() || other_path_speaking(pcm? nullptr : engine)) {
+			chain.unlock();
 			wait(10);
+			chain.lock();
 		}
 	}
 	if (pcm) {
 		if (!speak(text, interrupt)) return false;
+		chain.unlock();
 		while (queue_speaking()) wait(10);
 		return true;
 	}
-	std::unique_lock<std::recursive_mutex> chain(chain_mtx);
 	if (interrupt && !text.empty()) interrupt_other_speech(engine);
 	shared_ptr<tts_engine> speaking_engine = current_engine;
 	if (!text.empty()) remember_native_engine(speaking_engine); // Before it speaks, so speech the object is given meanwhile waits for it, and even when it fails, as part of a long text can have been queued.
