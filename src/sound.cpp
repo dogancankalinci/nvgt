@@ -2314,7 +2314,8 @@ static bool write_pcm_as_wav(const void *buffer, unsigned int size, ma_format fo
 	Poco::MemoryOutputStream stream((char *)output, capacity);
 	ma_encoder_config cfg = ma_encoder_config_init(ma_encoding_format_wav, format, channels, samplerate);
 	ma_encoder encoder;
-	g_soundsystem_last_error = ma_encoder_init(wav_write_proc, wav_seek_proc, &stream, &cfg, &encoder);
+	std::ostream *output_stream = &stream; // The callbacks take the std::ostream, which isn't the first base of a MemoryOutputStream.
+	g_soundsystem_last_error = ma_encoder_init(wav_write_proc, wav_seek_proc, output_stream, &cfg, &encoder);
 	if (g_soundsystem_last_error != MA_SUCCESS)
 		return false;
 	// Should be okay to push the content in one go:
