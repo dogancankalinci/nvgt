@@ -15,6 +15,7 @@
 #include "tts.h"
 #include "UI.h"
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cerrno>
 #include <csignal>
@@ -342,39 +343,47 @@ std::string speechd_engine::get_voice_language(int index) {
 
 void register_native_tts() { tts_engine_register("speechd", []() -> shared_ptr<tts_engine> { return make_shared<speechd_engine>(); }); }
 
-static tts_voice* g_screen_reader_voice = nullptr;
+static std::atomic<tts_voice*> g_screen_reader_voice{nullptr};
+static std::mutex g_screen_reader_mutex; // Two script threads speaking for the first time at once would otherwise each make a voice, and one would be left behind with its connection.
 
-bool screen_reader_is_speaking() { return g_screen_reader_voice && g_screen_reader_voice->get_speaking(); }
+bool screen_reader_is_speaking() {
+	tts_voice *voice = g_screen_reader_voice;
+	return voice && voice->get_speaking();
+}
 
 // Speech Dispatcher counts as a screen reader when NVGT could connect to it, which is what its one voice stands for and which is tried once per run, for any speech. Every call answers the same: the voice list is built the first time.
 bool screen_reader_load() {
-	if (!g_screen_reader_voice) g_screen_reader_voice = new tts_voice("speechd");
-	return g_screen_reader_voice->get_voice_count() > 0;
+	tts_voice *voice = g_screen_reader_voice;
+	if (!voice) {
+		std::lock_guard<std::mutex> lock(g_screen_reader_mutex);
+		voice = g_screen_reader_voice;
+		if (!voice) g_screen_reader_voice = voice = new tts_voice("speechd");
+	}
+	return voice->get_voice_count() > 0;
 }
 
 void screen_reader_unload() {
-	if (g_screen_reader_voice) {
-		g_screen_reader_voice->Release();
-		g_screen_reader_voice = nullptr;
-	}
+	std::lock_guard<std::mutex> lock(g_screen_reader_mutex);
+	tts_voice *voice = g_screen_reader_voice.exchange(nullptr);
+	if (voice) voice->Release();
 }
 
 std::string screen_reader_detect() {
 	if (!screen_reader_load()) return "";
-	return g_screen_reader_voice->get_voice_count() > 0 ? "Speech Dispatcher" : "";
+	return g_screen_reader_voice.load()->get_voice_count() > 0 ? "Speech Dispatcher" : "";
 }
 
 bool screen_reader_has_speech() {
 	if (!screen_reader_load()) return false;
-	return g_screen_reader_voice->get_voice_count() > 0;
+	return g_screen_reader_voice.load()->get_voice_count() > 0;
 }
 
 bool screen_reader_has_braille() { return false; }
 
 bool screen_reader_speak(const std::string& text, bool interrupt) {
 	if (!screen_reader_load()) return false;
-	if (text.empty()) return !interrupt || g_screen_reader_voice->stop(); // As on the other platforms, empty text only interrupts.
-	return g_screen_reader_voice->speak(text, interrupt);
+	if (text.empty()) return !interrupt || g_screen_reader_voice.load()->stop(); // As on the other platforms, empty text only interrupts.
+	return g_screen_reader_voice.load()->speak(text, interrupt);
 }
 
 bool screen_reader_output(const std::string& text, bool interrupt) { return screen_reader_speak(text, interrupt); }
@@ -383,7 +392,7 @@ bool screen_reader_braille(const std::string& text) { return false; }
 
 bool screen_reader_silence() {
 	if (!screen_reader_load()) return false;
-	return g_screen_reader_voice->stop();
+	return g_screen_reader_voice.load()->stop();
 }
 
 unsigned long long system_running_milliseconds() {
