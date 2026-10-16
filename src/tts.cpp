@@ -34,10 +34,11 @@
 #include "xplatform.h"
 using namespace std;
 
-// Trim prenormalized TTS based on minimum thresholds in dB. Size is in frames. A sample's level is its distance from silence, which is 128 for unsigned 8-bit samples and 0 for signed ones, relative to the largest such distance.
-template <class t> static t *tts_trim_internal(t *data, unsigned int* size_in_frames, int channels, float begin_db, float end_db, double silence = 0, double peak = numeric_limits<t>::max()) {
+// Trim prenormalized TTS based on minimum thresholds in dB. Size is in frames. A sample's level is its distance from silence, which is 128 for unsigned 8-bit samples and 0 for signed ones, relative to the largest such distance. Audio with no frame at the beginning threshold is left whole and reported as quiet.
+template <class t> static t *tts_trim_internal(t *data, unsigned int* size_in_frames, int channels, float begin_db, float end_db, bool *quiet, double silence = 0, double peak = numeric_limits<t>::max()) {
 	double min_begin_sample = ceil(ma_volume_db_to_linear(begin_db) * peak);
 	double min_end_sample = ceil(ma_volume_db_to_linear(end_db) * peak);
+	*quiet = true;
 	for (unsigned long i = 0; i < *size_in_frames; i++) {
 		double mean = 0;
 		for (int c = 0; c < channels; c++)
@@ -46,6 +47,7 @@ template <class t> static t *tts_trim_internal(t *data, unsigned int* size_in_fr
 		if (mean >= min_begin_sample) {
 			*size_in_frames -= i;
 			data += i * channels;
+			*quiet = false;
 			break;
 		}
 	}
@@ -62,18 +64,19 @@ template <class t> static t *tts_trim_internal(t *data, unsigned int* size_in_fr
 	return data;
 }
 
-static void* tts_trim(tts_audio_data* data, float begin_db = -60, float end_db = -60) {
+static void* tts_trim(tts_audio_data* data, bool *quiet, float begin_db = -60, float end_db = -60) {
 	unsigned int size_in_frames;
 	void* trimmed_data;
+	*quiet = false;
 	switch (data->bitsize) {
 		case 16:
 			size_in_frames = data->size_in_bytes / 2 / data->channels;
-			trimmed_data = tts_trim_internal<int16_t>((int16_t*)data->data, &size_in_frames, data->channels, begin_db, end_db);
+			trimmed_data = tts_trim_internal<int16_t>((int16_t*)data->data, &size_in_frames, data->channels, begin_db, end_db, quiet);
 			data->size_in_bytes = size_in_frames * 2 * data->channels;
 			return trimmed_data;
 		case 8:
 			size_in_frames = data->size_in_bytes / data->channels;
-			trimmed_data = tts_trim_internal<uint8_t>((uint8_t*)data->data, &size_in_frames, data->channels, begin_db, end_db, 128, 127);
+			trimmed_data = tts_trim_internal<uint8_t>((uint8_t*)data->data, &size_in_frames, data->channels, begin_db, end_db, quiet, 128, 127);
 			data->size_in_bytes = size_in_frames * data->channels;
 			return trimmed_data;
 		default:
@@ -608,7 +611,11 @@ void *tts_voice::speak_to_pcm(const string &text, tts_audio_data** datablock) {
 	if (!datablock || !engine || engine->get_pcm_generation_state() == PCM_UNSUPPORTED) return nullptr;
 	*datablock = engine->speak_to_pcm(tts_valid_utf8(text));
 	if (!*datablock) return nullptr;
-	return tts_trim(*datablock);
+	bool quiet;
+	void *trimmed = tts_trim(*datablock, &quiet);
+	// Audio with nothing at the trimming threshold, -60 dB, is what some voices give for text with nothing to say, which is empty audio, as with the other voices. Speech is far louder at any volume from -40 up; below that, where speech could be that quiet too, the audio keeps its length.
+	if (quiet && get_volume() >= -40) (*datablock)->size_in_bytes = 0;
+	return trimmed;
 }
 // Speech that doesn't interrupt follows the object's earlier speech, whichever engine spoke it. Each path keeps its own speech in order, the sound system's queue and each engine that plays its own speech, so speech for one path is held while the object speaks on another, or while earlier speech is held, and started when its turn comes, by held_speech_thread() or a speak_wait() waiting for its own turn. Held speech counts as speaking, and interrupting speech or stop() drops it.
 bool tts_voice::speak(const string &text, bool interrupt) {
