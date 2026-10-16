@@ -383,7 +383,12 @@ ISpStream* stream=sapi->mem;
 if(!stream) return 0;
 if(FAILED(stream->lpVtbl->Seek(stream, zero, STREAM_SEEK_END, &end_pos))) return 0;
 ULONG total_size=(ULONG) end_pos.QuadPart;
-if(total_size<=0) return 0;
+/* Text with nothing to say synthesizes to no audio, which is empty audio rather than a failure, as with the other engines. */
+if(total_size==0)
+{
+*buffer=malloc(1);
+return *buffer!=NULL;
+}
 if(FAILED(stream->lpVtbl->Seek(stream, zero, STREAM_SEEK_SET, NULL))) return 0;
 void* wav=malloc(total_size);
 if(!wav) return 0;

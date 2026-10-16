@@ -57,7 +57,7 @@ tts_audio_data* sapi5_engine::speak_to_pcm(const string &text) {
 	void *temp = nullptr;
 	int bufsize = 0;
 	if (!sb_sapi_speak_to_memory(inst, const_cast<char*>(text.c_str()), &temp, &bufsize)) return nullptr;
-	if (!temp || bufsize <= 0) return nullptr;
+	if (!temp || bufsize < 0) return nullptr;
 	return new tts_audio_data(this, temp, bufsize, sb_sapi_get_sample_rate(inst), sb_sapi_get_channels(inst), sb_sapi_get_bit_depth(inst));
 }
 float sapi5_engine::get_rate() { std::lock_guard<std::recursive_mutex> l(inst_mutex); return sb_sapi_get_rate(inst); }
