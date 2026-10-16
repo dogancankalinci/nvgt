@@ -541,7 +541,7 @@ void vo_speech_thread(void* extra) {
 			text = speech_text;
 			speech_text = "";
 			#if !TARGET_OS_IOS
-				window = speech_window; // Now released here.
+				window = speech_window; // Released below, on the main thread.
 				speech_window = nil;
 			#endif
 		}
@@ -549,7 +549,7 @@ void vo_speech_thread(void* extra) {
 			voice_over_announce(text);
 		#else
 			voice_over_announce(text, window);
-			[window release];
+			dispatch_async(dispatch_get_main_queue(), ^{ [window release]; }); // On the main thread, as this can be the last reference once the window was destroyed meanwhile, and AppKit's windows are to be deallocated there.
 		#endif
 	}
 }
