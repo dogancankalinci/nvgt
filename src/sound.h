@@ -355,7 +355,7 @@ public:
 	virtual bool stream(const std::string &filename, const pack_interface *pack_file = nullptr) = 0;
 	virtual bool stream_url(const std::string &url) = 0;
 	virtual bool load_string(const std::string &data) = 0;
-	virtual bool load_string_async(const std::string &data) = 0; // Makes an extra copy. Good for short sounds that need to start immediately. Used by speak_to_sound.
+	virtual bool load_string_async(const std::string &data) = 0; // Makes an extra copy. Good for short sounds that need to start immediately.
 	virtual bool load_memory(const void *buffer, unsigned int size) = 0;
 	virtual bool is_load_completed() const = 0;
 	/**

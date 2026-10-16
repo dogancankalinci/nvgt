@@ -1815,7 +1815,8 @@ public:
 	}
 	bool load_string(const std::string &data) override { return load_memory(data.data(), data.size()); }
 	bool load_string_async(const std::string &data) override {
-		// Same as load_pcm, but without the setup.
+		// Same as load_pcm, but without the setup. A loaded sound is closed first, since closing empties pcm_buffer, which the directive points into.
+		if (snd) close();
 		pcm_buffer = data;
 		return load_special(":quickstring", g_memory_protocol_slot, memory_protocol::directive(&pcm_buffer[0], pcm_buffer.size()), sound_service::null_filter_slot, nullptr, MA_SOUND_FLAG_DECODE | MA_SOUND_FLAG_ASYNC);
 	}
