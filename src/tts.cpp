@@ -164,6 +164,40 @@ static ma_format tts_pcm_format(const tts_audio_data* data) {
 tts_audio_data::tts_audio_data(tts_engine* eng, void* dat, unsigned int size, unsigned int rate, unsigned int chans, unsigned int bits, void* ctx) : engine(eng), data(dat), size_in_bytes(size), sample_rate(rate), channels(chans), bitsize(bits), context(ctx) {}
 void tts_audio_data::free() { if (engine) engine->free_pcm(this); }
 
+// The builtin synthesizer knows ASCII only, and spells out a word with any other byte in it letter by letter, naming each byte as the ASCII character it masks to: "café" came out as "C A F C close parenthesis". So the text it gets has each Latin letter as its base letters and everything else outside ASCII as a space. The text is valid UTF-8 by then, see tts_valid_utf8.
+static string tts_fallback_ascii(const string &text) {
+	static const char *const latin[] = { // U+00C0 to U+017F.
+		"A", "A", "A", "A", "A", "A", "AE", "C", "E", "E", "E", "E", "I", "I", "I", "I",
+		"D", "N", "O", "O", "O", "O", "O", " ", "O", "U", "U", "U", "U", "Y", "Th", "ss",
+		"a", "a", "a", "a", "a", "a", "ae", "c", "e", "e", "e", "e", "i", "i", "i", "i",
+		"d", "n", "o", "o", "o", "o", "o", " ", "o", "u", "u", "u", "u", "y", "th", "y",
+		"A", "a", "A", "a", "A", "a", "C", "c", "C", "c", "C", "c", "C", "c", "D", "d",
+		"D", "d", "E", "e", "E", "e", "E", "e", "E", "e", "E", "e", "G", "g", "G", "g",
+		"G", "g", "G", "g", "H", "h", "H", "h", "I", "i", "I", "i", "I", "i", "I", "i",
+		"I", "i", "IJ", "ij", "J", "j", "K", "k", "k", "L", "l", "L", "l", "L", "l", "L",
+		"l", "L", "l", "N", "n", "N", "n", "N", "n", "n", "Ng", "ng", "O", "o", "O", "o",
+		"O", "o", "OE", "oe", "R", "r", "R", "r", "R", "r", "S", "s", "S", "s", "S", "s",
+		"S", "s", "T", "t", "T", "t", "T", "t", "U", "u", "U", "u", "U", "u", "U", "u",
+		"U", "u", "U", "u", "W", "w", "Y", "y", "Y", "Z", "z", "Z", "z", "Z", "z", "s"
+	};
+	string out;
+	out.reserve(text.size());
+	for (size_t i = 0; i < text.size();) {
+		unsigned char lead = text[i];
+		if (lead < 0x80) {
+			out += (char)lead;
+			i++;
+			continue;
+		}
+		size_t length = lead >= 0xF0? 4 : lead >= 0xE0? 3 : 2;
+		if (i + length > text.size()) break;
+		uint32_t c = length == 2? ((lead & 0x1F) << 6) | (text[i + 1] & 0x3F) : 0;
+		out += c >= 0xC0 && c < 0x180? latin[c - 0xC0] : " ";
+		i += length;
+	}
+	return out;
+}
+
 // Fallback voice engine using RSynth
 class fallback_voice_engine : public tts_engine_impl {
 	float rate, pitch, volume;
@@ -172,13 +206,14 @@ public:
 	tts_pcm_generation_state get_pcm_generation_state() override { return PCM_PREFERRED; }
 	tts_audio_data* speak_to_pcm(const string &text) override {
 		if (text.empty()) return nullptr;
+		string ascii = tts_fallback_ascii(text);
 		int samples;
-		char *data = (char *)speech_gen(&samples, text.c_str(), 20 - rate, pitch, volume, NULL); // smaller rate values mean faster so we must reverse the rate value here.
+		char *data = (char *)speech_gen(&samples, ascii.c_str(), 20 - rate, pitch, volume, NULL); // smaller rate values mean faster so we must reverse the rate value here.
 		if (!data) return nullptr;
 		// Text with nothing to say, punctuation alone for instance, comes out as pauses of digital silence, which is empty audio rather than silence of that length, as with the other engines. Speech at a volume too low to leave a sample above zero comes out the same, and keeps its length, so silent audio is told apart by synthesizing the text again at full volume.
 		if (samples > 0 && silent((const short *)data, samples)) {
 			int loud_samples;
-			short *loud = speech_gen(&loud_samples, text.c_str(), 20 - rate, pitch, 70, NULL);
+			short *loud = speech_gen(&loud_samples, ascii.c_str(), 20 - rate, pitch, 70, NULL);
 			if (loud && silent(loud, loud_samples)) samples = 0;
 			if (loud) speech_free(loud, NULL);
 		}
