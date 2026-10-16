@@ -164,7 +164,7 @@ static ma_format tts_pcm_format(const tts_audio_data* data) {
 tts_audio_data::tts_audio_data(tts_engine* eng, void* dat, unsigned int size, unsigned int rate, unsigned int chans, unsigned int bits, void* ctx) : engine(eng), data(dat), size_in_bytes(size), sample_rate(rate), channels(chans), bitsize(bits), context(ctx) {}
 void tts_audio_data::free() { if (engine) engine->free_pcm(this); }
 
-// The builtin synthesizer knows ASCII only, and spells out a word with any other byte in it letter by letter, naming each byte as the ASCII character it masks to: "café" came out as "C A F C close parenthesis". So the text it gets has each Latin letter as its base letters, typographic quotes and hyphens as their ASCII forms, apostrophes only within words, square brackets as spaces, combining marks and invisible characters left out, as they belong to the letters around them, and everything else outside ASCII as a space. The text is valid UTF-8 by then, see tts_valid_utf8.
+// The builtin synthesizer knows ASCII only, and spells out a word with any other byte in it letter by letter, naming each byte as the ASCII character it masks to: "café" came out as "C A F C close parenthesis". So the text it gets has each Latin letter as its base letters, typographic quotes and hyphens as their ASCII forms, apostrophes only within words, square brackets and control characters as spaces, combining marks and invisible characters left out, as they belong to the letters around them, and everything else outside ASCII as a space. The text is valid UTF-8 by then, see tts_valid_utf8.
 static string tts_fallback_ascii(const string &text) {
 	static const char *const latin[] = { // U+00C0 to U+024F.
 		"A", "A", "A", "A", "A", "A", "AE", "C", "E", "E", "E", "E", "I", "I", "I", "I",
@@ -245,6 +245,7 @@ static string tts_fallback_ascii(const string &text) {
 			out += !out.empty() && isalpha((unsigned char)out.back()) && is_letter(next, false)? '\'' : ' ';
 		} else if (c < 0x80) {
 			if (c == '[' || c == ']') out += ' '; // The synthesizer reads text in brackets as its own phoneme codes.
+			else if ((c < 0x20 && !isspace((int)c)) || c == 0x7F) out += ' '; // It spells out the word around a control character, naming it.
 			else out += (char)c;
 		} else if (const char *letters = latin_letters(c)) {
 			// A capital such as Æ or Œ in a word going on in lowercase gives one capital, "Ae": the synthesizer spells out a word with a capital after its first letter.
