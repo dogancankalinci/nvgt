@@ -6,6 +6,8 @@
 		* bool interrupt = false: whether or not to interrupt the previously speaking speech to speak the new string.
 	## Returns:
 		bool: true if speech was successful, false otherwise.
+	## Remarks:
+		Speech that doesn't interrupt waits for the object's earlier speech on the same engine. Speech on another engine, after a voice of another engine was selected (the builtin voice included), is not held back for it on Android, Linux and iOS, where it can start while the earlier speech still plays; wait while the speaking property is true first to keep them apart. On Windows and macOS every engine's speech plays in order. Speech that interrupts stops the object's speech on every engine.
 */
 
 // Example:
