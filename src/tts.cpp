@@ -447,7 +447,7 @@ bool tts_voice::speak(const string &text, bool interrupt) {
 	}
 	if (interrupt && !text.empty()) interrupt_other_speech(engine);
 	bool spoken = engine->speak(tts_valid_utf8(text), interrupt, false);
-	if (spoken) remember_native_engine();
+	if (!text.empty()) remember_native_engine(); // Even when it failed, as part of a long text can have been queued.
 	return spoken;
 }
 bool tts_voice::speak_to_file(const string &filename, const string &text) {
@@ -495,7 +495,7 @@ bool tts_voice::speak_wait(const string &text, bool interrupt) {
 	}
 	if (interrupt && !text.empty()) interrupt_other_speech(engine);
 	bool spoken = engine->speak(tts_valid_utf8(text), interrupt, true);
-	if (spoken) remember_native_engine();
+	if (!text.empty()) remember_native_engine(); // Even when it failed, as part of a long text can have been queued.
 	return spoken;
 }
 sound *tts_voice::speak_to_sound(const string &text) {
