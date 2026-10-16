@@ -21,6 +21,7 @@
 #include <memory>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <fstream>
 #include <ctime>
 #include <iomanip>
@@ -63,9 +64,10 @@ tts_audio_data* sapi5_engine::speak_to_pcm(const string &text) {
 float sapi5_engine::get_rate() { std::lock_guard<std::recursive_mutex> l(inst_mutex); return sb_sapi_get_rate(inst); }
 float sapi5_engine::get_pitch() { std::lock_guard<std::recursive_mutex> l(inst_mutex); return sb_sapi_get_pitch(inst); }
 float sapi5_engine::get_volume() { std::lock_guard<std::recursive_mutex> l(inst_mutex); return sb_sapi_get_volume(inst); }
-void sapi5_engine::set_rate(float rate) { std::lock_guard<std::recursive_mutex> l(inst_mutex); sb_sapi_set_rate(inst, rate); }
-void sapi5_engine::set_pitch(float pitch) { std::lock_guard<std::recursive_mutex> l(inst_mutex); sb_sapi_set_pitch(inst, pitch); }
-void sapi5_engine::set_volume(float volume) { std::lock_guard<std::recursive_mutex> l(inst_mutex); sb_sapi_set_volume(inst, volume); }
+// SAPI takes whole steps, so the value is rounded to the nearest rather than cut toward zero.
+void sapi5_engine::set_rate(float rate) { std::lock_guard<std::recursive_mutex> l(inst_mutex); sb_sapi_set_rate(inst, (int)lrintf(rate)); }
+void sapi5_engine::set_pitch(float pitch) { std::lock_guard<std::recursive_mutex> l(inst_mutex); sb_sapi_set_pitch(inst, (int)lrintf(pitch)); }
+void sapi5_engine::set_volume(float volume) { std::lock_guard<std::recursive_mutex> l(inst_mutex); sb_sapi_set_volume(inst, (int)lrintf(volume)); }
 bool sapi5_engine::get_rate_range(float& minimum, float& midpoint, float& maximum) { minimum = -10; midpoint = 0; maximum = 10; return true; }
 bool sapi5_engine::get_pitch_range(float& minimum, float& midpoint, float& maximum) { minimum = -10; midpoint = 0; maximum = 10; return true; }
 bool sapi5_engine::get_volume_range(float& minimum, float& midpoint, float& maximum) { minimum = 0; midpoint = 50; maximum = 100; return true; }
