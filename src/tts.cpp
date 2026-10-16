@@ -91,7 +91,7 @@ static bool tts_language_matches(const string &voice_language, const string &req
 	if (language.find('-') != string::npos || regional.size() <= language.size()) return false;
 	return regional.compare(0, language.size(), language) == 0 && regional[language.size()] == '-';
 }
-// Finds an engine's voice in a voice list: the same engine index, name and language first, then the same name and language, as indices move when voices are installed or removed while the program runs. The name alone doesn't do, as names repeat on Apple platforms, which list some voices once per language.
+// Finds an engine's voice in a voice list: the same engine index, name and language first, then the same name and language, as indices move when voices are installed or removed while the program runs. The name alone doesn't do, as names repeat on Apple platforms, which list some voices once per language. Failing both, a voice at the same index whose name no other listed voice of the engine has is taken, as only its language changed: Speech Dispatcher's follows the server, which can also be unreachable for a moment.
 static int find_listed_voice(const vector<voice_info> &voices, const string &engine_name, int engine_voice_index, const string &name, const string &language) {
 	for (int pass = 0; pass < 2; pass++) {
 		for (size_t i = 0; i < voices.size(); i++) {
@@ -101,7 +101,13 @@ static int find_listed_voice(const vector<voice_info> &voices, const string &eng
 			return i;
 		}
 	}
-	return -1;
+	int found = -1, named = 0;
+	for (size_t i = 0; i < voices.size(); i++) {
+		if (voices[i].engine_name != engine_name || voices[i].name != name) continue;
+		named++;
+		if (voices[i].engine_voice_index == engine_voice_index) found = i;
+	}
+	return named == 1? found : -1;
 }
 
 // Text as valid UTF-8: each malformed sequence (a stray or truncated byte run, an overlong form, an encoded surrogate or a value past U+10FFFF) becomes one U+FFFD, and decoding resumes at the first byte that can't belong to it, as Android's conversion to UTF-16 does. Engines handle malformed text badly: SAPI refuses the whole text, Apple's speech throws an Objective-C exception, Speech Dispatcher rejects it. A string cut in the middle of a character, by substr for instance, is enough to produce it.
@@ -388,12 +394,17 @@ bool tts_voice::sync_engine(engine_entry &entry, bool force) {
 	voice_info *voice = get_voice_info(current_voice_index);
 	bool voice_applied = true;
 	if (voice_set && voice) {
-		// The index the list was built with names another voice once voices are installed or removed while the program runs, as SAPI lists them again on every call, so the voice is then found again by its name and language (names repeat on Apple platforms, which list some voices once per language).
+		// The index the list was built with names another voice once voices are installed or removed while the program runs, as SAPI lists them again on every call, so the voice is then found again by its name and language (names repeat on Apple platforms, which list some voices once per language), or, as in find_listed_voice, kept when only its language changed and no other voice of the engine has its name.
 		int index = voice->engine_voice_index;
 		if (engine->get_voice_name(index) != voice->name || engine->get_voice_language(index) != voice->language) {
-			index = -1;
-			int count = engine->get_voice_count();
-			for (int i = 0; i < count && index < 0; i++) if (engine->get_voice_name(i) == voice->name && engine->get_voice_language(i) == voice->language) index = i;
+			int count = engine->get_voice_count(), named = 0, found = -1;
+			for (int i = 0; i < count; i++) {
+				if (engine->get_voice_name(i) != voice->name) continue;
+				named++;
+				if (found < 0 && engine->get_voice_language(i) == voice->language) found = i;
+			}
+			if (found < 0 && named == 1 && engine->get_voice_name(index) == voice->name) found = index;
+			index = found;
 			if (index >= 0) voice->engine_voice_index = index;
 		}
 		voice_applied = index >= 0 && engine->set_voice(index);
