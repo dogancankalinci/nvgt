@@ -705,7 +705,7 @@ bool android_tts_engine::speak(const std::string &text, bool interrupt, bool blo
 	// blocking call waits for the end of its own utterance instead.
 	jlong utterance = env->CallLongMethod(TTSObj, midSpeakTracked, jtext.get(), interrupt ? JNI_TRUE : JNI_FALSE);
 	if (jni_clear_exception(env) || utterance < 0) {
-		while (tts_call_bool(TTSObj, midHasPendingSpeech)) wait(10); // Any part queued before the failure; isSpeaking() would also wait for other apps.
+		if (utterance == -2) while (tts_call_bool(TTSObj, midHasPendingSpeech)) wait(10); // Part of the text was queued before the service refused the rest.
 		return false;
 	}
 	// No end is reported for an utterance that a flush dropped before it started, or that an engine was speaking when it

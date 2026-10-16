@@ -426,7 +426,7 @@ public class TTS {
 			if (queued == NOTHING_QUEUED) return -1;
 			trackedSerial = serial;
 			lastQueuedAt = SystemClock.elapsedRealtime();
-			return queued == QUEUED? serial : -1; // With part of the text refused the call fails, while what was queued is tracked till it has been spoken.
+			return queued == QUEUED? serial : -2; // With part of the text refused the call fails, -2 telling it from -1, nothing queued, while what was queued is tracked till it has been spoken.
 		}
 	}
 	public boolean isTrackedDone(long serial) { return endedSerial >= serial; }
