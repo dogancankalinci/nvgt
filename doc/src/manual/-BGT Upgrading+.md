@@ -91,5 +91,5 @@ The following key constants are also different:
 You can `#include "bgt_compat.nvgt"`, which implements a lot of aliases to BGT-compatible functions and classes. However when doing this, please be aware of the following limitations:
 * Using built-in functions may improve performance so this is more or less a stop-gap to get you up and running quickly; however if you wish for your code to just run, bgt_compat will certainly be of use.
 * Please note you will not be able to use this script if you have disabled global variables.
-* Since the screen reader internal functions no longer require you to specify a screen reader, the reader parameter is ignored.
+* Since the screen reader internal functions no longer require you to specify a screen reader, the reader parameter of the speech and braille functions is ignored. screen_reader_is_running still answers for the reader given, by comparing it with what screen_reader_detect() reports.
 * The hardware_only parameter of generate_computer_id is ignored.

@@ -149,10 +149,13 @@ const string get_DIRECTORY_MY_DOCUMENTS() property {
 //screen reader legacy function
 // Try to use NVGT's screen reader functions where possible. They are both much more efficient, and more powerful.
 bool screen_reader_is_running(int reader) {
-	if (reader == 1 and screen_reader_detect() == "JAWS") return (true);
-	if (reader == 2 and screen_reader_detect() == "SYSTEM_ACCESS") return (true);
-	if (reader == 4 and screen_reader_detect() == "NVDA") return (true);
-	return (false);
+	// The names screen_reader_detect() reports on Windows.
+	string running = screen_reader_detect();
+	if (reader == JAWS) return running == "JAWS";
+	if (reader == WINDOW_EYES) return running == "Window eyes";
+	if (reader == SYSTEM_ACCESS) return running == "System access";
+	if (reader == NVDA) return running == "NVDA";
+	return false;
 }
 //screen reader constants
 const int JAWS = 1, WINDOW_EYES = 2, SYSTEM_ACCESS = 3, NVDA = 4;
