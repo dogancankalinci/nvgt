@@ -1,5 +1,5 @@
 /**
-	Represents the total number of available tex-to-speech voices on your system.
+	Represents the number of text-to-speech voices this object can use, the builtin voice included when the object's engine list has "fallback", which it does by default.
 	int tts_voice::voice_count;
 */
 
