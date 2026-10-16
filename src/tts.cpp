@@ -526,7 +526,7 @@ sound *tts_voice::speak_to_sound(const string &text) {
 	datablock->free();
 	return s;
 }
-// A parameter the script never set is read from the engine each time, so it reports the platform's current value (on Android and Apple platforms, the user's own speech settings) rather than a copy taken at startup.
+// A parameter the script never set is read from the engine each time, so it reports the platform's current value (on Android the user's own speech settings, on Apple platforms the values a new utterance starts with) rather than a copy taken at startup.
 float tts_voice::get_rate() {
 	if (rate_set) return fRound(nvgt_rate, 3);
 	ensure_default();
