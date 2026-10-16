@@ -6,7 +6,7 @@
 	## Returns:
 		string: the name of the voice, or an empty string for an index out of range.
 	## Remarks:
-		When the object's engine list includes "fallback", which it does by default, voice 0 is the builtin voice.
+		Voices are listed engine by engine in the order of the object's engine list, and only those of the language set with set_language when one is set. With the default engine list, which begins with "fallback", voice 0 is the builtin voice unless the language filter leaves it out.
 */
 
 // Example:

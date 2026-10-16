@@ -1,5 +1,5 @@
 /**
-	Represents the number of text-to-speech voices this object can use, the builtin voice included when the object's engine list has "fallback", which it does by default.
+	Represents the number of text-to-speech voices this object can use, the builtin voice included when the object's engine list has "fallback", which it does by default. When a language was set with set_language, only voices of that language are counted.
 	int tts_voice::voice_count;
 */
 
