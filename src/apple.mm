@@ -527,7 +527,9 @@ void vo_speech_thread(void* extra) {
 			speech_shutdown = false;
 			return;
 		}
-		while (!speech_shutdown && speech_new_event.tryWait(10)) continue; // A signal taken here can be the shutdown's.
+		// Text given within 10 ms of the last is gathered into one announcement, for at most 100 ms, so speech given without such a break is still announced. A signal taken here can be the shutdown's.
+		auto gathering = std::chrono::steady_clock::now();
+		while (!speech_shutdown && std::chrono::steady_clock::now() - gathering < std::chrono::milliseconds(100) && speech_new_event.tryWait(10)) continue;
 		if (speech_shutdown) {
 			speech_shutdown = false;
 			return;
