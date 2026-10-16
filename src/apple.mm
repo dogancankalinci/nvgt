@@ -405,7 +405,7 @@ tts_audio_data* AVTTSVoice::speak_to_pcm(const std::string &text) {
 	if (@available(iOS 13.0, macOS 10.15, *)) {} else return nullptr;
 	@autoreleasepool {
 		__block NSMutableData *audioData = [[NSMutableData alloc] init];
-		__block BOOL synthesisDone = NO;
+		__block BOOL synthesisDone = NO; // Set by the block with release order and read here with acquire order, so the audio and format it wrote before are seen with it.
 		__block AVAudioFormat *targetFormat = nil;
 		__block AVAudioConverter *converter = nil;
 		__block uint64_t buffersDelivered = 0; // Counted by the block, which runs on another thread, with atomic builtins; see the wait below.
@@ -414,11 +414,11 @@ tts_audio_data* AVTTSVoice::speak_to_pcm(const std::string &text) {
 		impl->apply(utterance, false);
 		[impl->pcmSynthesizer() writeUtterance:utterance toBufferCallback:^(AVAudioBuffer * _Nonnull buffer) {
 			@autoreleasepool {
-				if (synthesisDone) return; // Once the closing empty buffer came, the success path below releases what this block uses; Apple doesn't document that nothing follows it.
+				if (__atomic_load_n(&synthesisDone, __ATOMIC_ACQUIRE)) return; // Once the closing empty buffer came, the success path below releases what this block uses; Apple doesn't document that nothing follows it.
 				__atomic_fetch_add(&buffersDelivered, 1, __ATOMIC_RELAXED);
 				if (![buffer isKindOfClass:[AVAudioPCMBuffer class]]) return;
 				AVAudioPCMBuffer *pcmBuffer = (AVAudioPCMBuffer *)buffer;
-				if (pcmBuffer.frameLength == 0) { synthesisDone = YES; return; }
+				if (pcmBuffer.frameLength == 0) { __atomic_store_n(&synthesisDone, YES, __ATOMIC_RELEASE); return; }
 				if (!converter) {
 					AVAudioFormat *sourceFormat = pcmBuffer.format;
 					if (!sourceFormat) return;
@@ -450,7 +450,7 @@ tts_audio_data* AVTTSVoice::speak_to_pcm(const std::string &text) {
 		// the synthesizer delivered. On a thread whose run loop has no sources, runMode returns at once, so the wait sleeps there.
 		auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(10);
 		uint64_t delivered = 0;
-		while (!synthesisDone) {
+		while (!__atomic_load_n(&synthesisDone, __ATOMIC_ACQUIRE)) {
 			uint64_t now_delivered = __atomic_load_n(&buffersDelivered, __ATOMIC_RELAXED);
 			if (now_delivered != delivered) {
 				delivered = now_delivered;
@@ -462,7 +462,7 @@ tts_audio_data* AVTTSVoice::speak_to_pcm(const std::string &text) {
 			}
 		}
 		// A synthesis that timed out is cancelled, so it doesn't hold up the next, but it can still call the block, which uses these objects, so they are kept.
-		if (!synthesisDone) {
+		if (!__atomic_load_n(&synthesisDone, __ATOMIC_ACQUIRE)) {
 			[impl->pcmSynthesizer() stopSpeakingAtBoundary:AVSpeechBoundaryImmediate];
 			return nullptr;
 		}
