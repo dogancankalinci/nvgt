@@ -330,7 +330,10 @@ tts_voice::~tts_voice() {
 		std::lock_guard<std::mutex> lock(g_held_speech.mtx);
 		g_held_speech.voices.erase(id);
 	}
-	held.clear();
+	{
+		std::lock_guard<std::recursive_mutex> chain(chain_mtx); // Waits for held_speech_thread() to finish with this object, if it is under way.
+		held.clear();
+	}
 	{
 		std::lock_guard<std::mutex> lock(g_live_tts_voices_mutex);
 		g_live_tts_voices.erase((uintptr_t)id);
@@ -923,6 +926,7 @@ bool tts_voice::release_held() {
 	}
 	return false;
 }
+// The starter's lock is let go while an object's held speech is started, which calls its engines and can take a while, so it holds up neither other objects being released nor speech being held. The object's own lock, taken before that, keeps it from being destroyed meanwhile: its destructor takes the object out of the starter's list and then waits for that lock. An object is taken out of the list only while its lock is still held, so speech held just then is never left behind.
 void tts_voice::held_speech_thread() {
 	std::unique_lock<std::mutex> lock(g_held_speech.mtx);
 	while (!g_held_speech.closed) {
@@ -930,11 +934,19 @@ void tts_voice::held_speech_thread() {
 			g_held_speech.cv.wait(lock);
 			continue;
 		}
-		for (auto it = g_held_speech.voices.begin(); it != g_held_speech.voices.end();) {
-			// An object a script thread is using is looked at the next time rather than waited for, which would hold up the others and the scripts waiting to hold speech.
-			std::unique_lock<std::recursive_mutex> chain(it->second->chain_mtx, std::try_to_lock);
-			if (chain.owns_lock() && !it->second->release_held()) it = g_held_speech.voices.erase(it);
-			else ++it;
+		vector<uint64_t> ids;
+		for (const auto &voice : g_held_speech.voices) ids.push_back(voice.first);
+		for (uint64_t id : ids) {
+			auto it = g_held_speech.voices.find(id);
+			if (it == g_held_speech.voices.end()) continue; // Destroyed meanwhile.
+			tts_voice *voice = it->second;
+			// An object a script thread is using is looked at the next time rather than waited for, which would hold up the others.
+			std::unique_lock<std::recursive_mutex> chain(voice->chain_mtx, std::try_to_lock);
+			if (!chain.owns_lock()) continue;
+			lock.unlock();
+			bool still_held = voice->release_held();
+			lock.lock();
+			if (!still_held) g_held_speech.voices.erase(id);
 		}
 		g_held_speech.cv.wait_for(lock, std::chrono::milliseconds(20));
 	}
