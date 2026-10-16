@@ -2561,8 +2561,8 @@ static void tts_klatt_parwave(struct tts_klatt_t* klatt, struct tts_klatt_frame_
 
     int ns;
     for( ns = 0; ns < klatt->mNspFr; ns++ ) {
-        // TODO: get rid of static var
-        static unsigned int seed = 5; /* Fixed staring value */
+        // NVGT: per thread, as tts_voice objects on different script threads synthesize at the same time.
+        static thread_local unsigned int seed = 5; /* Fixed staring value */
         float noise;
         int n4;
         float sourc;                   /* Sound source if all-parallel config used  */
