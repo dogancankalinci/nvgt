@@ -4,7 +4,7 @@
 	## Arguments:
 		* float volume: the desired volume level.
 	## Remarks:
-		-100 is silent and 0 is loudest, as in BGT, with -50 being the middle of the engine's range; values outside are clamped to it. If this hasn't been assigned, it will use the OS setting which may not be 0. It's better to use this instead of directly setting volume property.
+		-100 is silent and 0 is loudest, as in BGT, with -50 being the middle of the engine's range; values outside are clamped to it. If this hasn't been assigned, it will use the OS setting which may not be 0. This is the same as assigning the volume property.
 */
 
 // Example:

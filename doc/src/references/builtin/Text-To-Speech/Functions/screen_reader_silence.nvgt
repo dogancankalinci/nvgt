@@ -1,0 +1,15 @@
+/**
+	Stops the speech of the currently active screen reader, if supported.
+	bool screen_reader_silence();
+	## Returns:
+		bool: true if the function succeeded, false otherwise, for instance when no screen reader is running.
+	## Remarks:
+		On Apple platforms this sends VoiceOver an empty announcement that interrupts what it is saying.
+*/
+
+// Example:
+void main() {
+	screen_reader_speak("This long message is cut short a moment after it starts, so you will hardly hear any of it.", true);
+	wait(300);
+	screen_reader_silence();
+}

@@ -1,0 +1,13 @@
+/**
+	The volume of the voice, from -100 (silent) to 0 (loudest), as in BGT, with -50 being the middle of the engine's range.
+	float tts_voice::volume;
+	## Remarks:
+		Values outside the range are clamped to it. Until it is assigned, it reports the volume the engine uses, which may not be 0. This is the property form of set_volume and get_volume.
+*/
+
+// Example:
+void main() {
+	tts_voice v;
+	v.volume = -20;
+	v.speak_wait("This is spoken a little more quietly, at a volume of " + v.volume + ".");
+}
