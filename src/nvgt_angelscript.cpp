@@ -955,6 +955,9 @@ int ExecuteScript(asIScriptEngine *engine, const string &scriptFile) {
 	if (mod->ResetGlobalVars(0) < 0) {
 		// In this case any extra information is printed as an info message, we usually filter those out.
 		g_scriptMessagesErr += g_scriptMessagesInfo;
+		// The globals made before the failure are released now, as after a run, rather than when the script engine shuts down, after the window, sound and screen reader support are gone.
+		mod->Discard();
+		engine->GarbageCollect();
 		return -1;
 	}
 	ShowAngelscriptMessages(); // Display any warnings or extra info if the user has asked for it.
