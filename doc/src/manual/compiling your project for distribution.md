@@ -119,13 +119,12 @@ At time of writing, the files are:
 These are organized here roughly in order of most critical to least, but it all depends generally on your project. The first few items are required for the game to even run, but the rest are only necessary if you're using them, and the documentation for using those plugins will ideally make that apparent.
 
 ## Detecting library availability
-Sometimes, you might want to display a friendly error message to your users if a library is unavailable on platforms that allow you to do so rather than the application just crashing. You can do this with a function in NVGT called `bool preglobals()` which executes automatically similar to the main function but before any global variables that might tap into one of these libraries are ever initialized. It can return false to abort the execution of the application. Then, you can use the properties called SOUND_AVAILABLE and SCREEN_READER_AVAILABLE to safely determine if the subsystems could be loaded. The following code snippet would be OK, for example.
+Sometimes, you might want to display a friendly error message to your users if a library is unavailable on platforms that allow you to do so rather than the application just crashing. You can do this with a function in NVGT called `bool preglobals()` which executes automatically similar to the main function but before any global variables that might tap into one of these libraries are ever initialized. It can return false to abort the execution of the application. Then, you can use the property called SCREEN_READER_AVAILABLE to safely determine if screen reader output could be loaded. A missing screen reader is no reason to stop for a game that can also speak through a tts_voice object: on Linux SCREEN_READER_AVAILABLE is false whenever Speech Dispatcher can't be reached. A game that can only speak through a screen reader could do this, for example.
 ```
 bool preglobals() {
-	if (!SCREEN_READER_AVAILABLE) alert("error", "cannot load screen reader components");
-	else if (!SOUND_AVAILABLE) alert("error", "cannot load soundsystem");
-	else return true; // success
-	return false; // one of the libraries failed to load.
+	if (SCREEN_READER_AVAILABLE) return true; // success
+	alert("error", "cannot load screen reader components");
+	return false; // stops the program before its global variables are initialized.
 }
 ```
 
