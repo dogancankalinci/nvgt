@@ -69,7 +69,12 @@ void sapi5_engine::set_volume(float volume) { std::lock_guard<std::recursive_mut
 bool sapi5_engine::get_rate_range(float& minimum, float& midpoint, float& maximum) { minimum = -10; midpoint = 0; maximum = 10; return true; }
 bool sapi5_engine::get_pitch_range(float& minimum, float& midpoint, float& maximum) { minimum = -10; midpoint = 0; maximum = 10; return true; }
 bool sapi5_engine::get_volume_range(float& minimum, float& midpoint, float& maximum) { minimum = 0; midpoint = 50; maximum = 100; return true; }
-int sapi5_engine::get_voice_count() { std::lock_guard<std::recursive_mutex> l(inst_mutex); return inst->voice_count; }
+// The voices are listed again first, as the other calls do, so the count follows voices installed or removed while the program runs.
+int sapi5_engine::get_voice_count() {
+	std::lock_guard<std::recursive_mutex> l(inst_mutex);
+	sb_sapi_refresh_voices(inst);
+	return inst->voice_count;
+}
 string sapi5_engine::get_voice_name(int index) {
 	std::lock_guard<std::recursive_mutex> l(inst_mutex);
 	if (index < 0 || index >= inst->voice_count) return "";
