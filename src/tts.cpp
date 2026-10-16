@@ -272,7 +272,10 @@ tts_voice::tts_voice(const string &engine_list) : RefCount(1), voice_state(VOICE
 	if (engine_list.empty()) engine_names = tts_get_engine_names();
 	else {
 		Poco::StringTokenizer tokens(engine_list, ",");
-		for (const string& e : tokens) engine_names.push_back(Poco::trim(e));
+		for (const string& e : tokens) {
+			string name = Poco::trim(e);
+			if (find(engine_names.begin(), engine_names.end(), name) == engine_names.end()) engine_names.push_back(name); // An engine named twice would list its voices twice.
+		}
 	}
 	// Engines are bound lazily. We deliberately do NOT instantiate any engine here, nor enumerate voices yet: a tts_voice that is created but never used (e.g. a global object on a device where a screen reader handles speech instead) must never bind to any TTS engine. This is what avoids the "bind to every installed engine at startup" problem, including crashing on restricted engines like Sao Mai Myanmar TTS.
 	std::lock_guard<std::mutex> lock(g_live_tts_voices_mutex);
