@@ -81,8 +81,9 @@ public:
 	AVSpeechSynthesizer* pcmSynth = nil; // Made on first use, see pcmSynthesizer().
 	AVSpeechSynthesisVoice* currentVoice; // Only non-nil once a voice was chosen; while nil, the system's default voice speaks.
 	NSArray<AVSpeechSynthesisVoice *> *voices;
-	nvgt_speech_wait_state waitState;
-	NVGTSpeechWaiter* waiter; // The synthesizer's delegate, which it doesn't retain.
+	// The synthesizer's delegate, which it doesn't retain, and the state the delegate writes. Neither is freed with the engine: a delegate call already under way when the engine goes, which Apple doesn't rule out, would use them, and an engine is only destroyed as the program ends or when a tts_voice lets go of one it can't hand on.
+	nvgt_speech_wait_state* waitState = new nvgt_speech_wait_state;
+	NVGTSpeechWaiter* waiter;
 	Impl() : currentVoice(nil) {
 		@autoreleasepool {
 			voices = [[AVSpeechSynthesisVoice speechVoices] retain];
@@ -95,12 +96,11 @@ public:
 		synth.delegate = nil;
 		[synth release];
 		[pcmSynth release];
-		[waiter release];
 		if (voices) [voices release];
 	}
 	void setDelegate() {
 		waiter = [[NVGTSpeechWaiter alloc] init];
-		waiter->state = &waitState;
+		waiter->state = waitState;
 		synth.delegate = waiter;
 	}
 	void readDefaults() {
@@ -141,7 +141,7 @@ public:
 	}
 	// Interrupting stops the synthesizer while it speaks, and also while an utterance queued here hasn't started yet, which the synthesizer doesn't count as speaking. Stopping an idle synthesizer is avoided: reports have it ignore what is spoken next after stops in quick succession.
 	void interruptSpeech() {
-		if (waitState.queued.exchange(nullptr) || synth.isSpeaking) [synth stopSpeakingAtBoundary:AVSpeechBoundaryImmediate];
+		if (waitState->queued.exchange(nullptr) || synth.isSpeaking) [synth stopSpeakingAtBoundary:AVSpeechBoundaryImmediate];
 	}
 	// Speech starts asynchronously, so the synthesizer can still report that it isn't speaking when this returns. Empty text neither speaks nor interrupts anything, as on the other platforms.
 	// Nothing drains autorelease pools around the script, so every Objective-C call made for it runs in a pool of its own.
@@ -152,7 +152,7 @@ public:
 			NSString *nstext = [NSString stringWithUTF8String:text.c_str()];
 			AVSpeechUtterance *utterance = [[AVSpeechUtterance alloc] initWithString:nstext];
 			apply(utterance);
-			waitState.setQueued((void*)utterance);
+			waitState->setQueued((void*)utterance);
 			[synth speakUtterance:utterance];
 			[utterance release]; // The synthesizer keeps it while it is queued.
 		}
@@ -167,27 +167,27 @@ public:
 			NSString *nstext = [NSString stringWithUTF8String:text.c_str()];
 			utterance = [[AVSpeechUtterance alloc] initWithString:nstext];
 			apply(utterance);
-			waitState.ended = false;
-			waitState.utterance = (void*)utterance;
-			waitState.setQueued((void*)utterance);
+			waitState->ended = false;
+			waitState->utterance = (void*)utterance;
+			waitState->setQueued((void*)utterance);
 			[synth speakUtterance:utterance];
 		}
 		bool seenSpeaking = false;
 		auto giveUp = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-		while (!waitState.ended) {
+		while (!waitState->ended) {
 			@autoreleasepool {
 				if (synth.isSpeaking) seenSpeaking = true;
 				else if (seenSpeaking || std::chrono::steady_clock::now() >= giveUp) break;
 				wait(5);
 			}
 		}
-		waitState.utterance = nullptr;
+		waitState->utterance = nullptr;
 		[utterance release]; // Held until here, so its address can't be reused by another utterance while it is compared.
 		return true;
 	}
 	// Nothing to stop counts as stopped.
 	bool stopSpeech() {
-		if (!waitState.queued.exchange(nullptr) && !synth.isSpeaking) return true;
+		if (!waitState->queued.exchange(nullptr) && !synth.isSpeaking) return true;
 		return [synth stopSpeakingAtBoundary:AVSpeechBoundaryImmediate] || !synth.isSpeaking;
 	}
 	bool pauseSpeech() {
@@ -198,8 +198,8 @@ public:
 	// The synthesizer reports speaking only once it has started an utterance, which can be seconds after speak() returns, so one queued here that hasn't started counts too, for ten seconds at most, after which speakWait() gives up on it as well.
 	bool isSpeaking() const {
 		if (synth.isSpeaking) return true;
-		if (!waitState.queued.load()) return false;
-		return std::chrono::steady_clock::now().time_since_epoch().count() - waitState.queuedAt.load() < std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::seconds(10)).count();
+		if (!waitState->queued.load()) return false;
+		return std::chrono::steady_clock::now().time_since_epoch().count() - waitState->queuedAt.load() < std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::seconds(10)).count();
 	}
 	std::string getCurrentVoice() const {
 		@autoreleasepool {
