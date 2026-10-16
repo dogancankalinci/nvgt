@@ -728,6 +728,14 @@ bool tts_voice::get_speaking() {
 }
 bool tts_voice::refresh() {
 	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
+	// An engine this object couldn't bind is tried again, unless it never bound anywhere: one that has worked can fail for a while, while it restarts for instance, and the object would otherwise go without it for good.
+	{
+		std::lock_guard<std::mutex> lock(g_engine_pool_mutex);
+		for (auto it = engines.begin(); it != engines.end();) {
+			if (!it->second.engine && !g_unusable_engines.count(it->first)) it = engines.erase(it);
+			else ++it;
+		}
+	}
 	voice_state = VOICES_FULL;
 	voice_info old_voice{};
 	bool had_voice = false;
