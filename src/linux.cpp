@@ -311,15 +311,13 @@ bool screen_reader_has_speech() {
 
 bool screen_reader_has_braille() { return false; }
 
-bool screen_reader_output(const std::string& text, bool interrupt) {
+bool screen_reader_speak(const std::string& text, bool interrupt) {
 	if (!screen_reader_load()) return false;
+	if (text.empty()) return !interrupt || g_screen_reader_voice->stop(); // As on the other platforms, empty text only interrupts.
 	return g_screen_reader_voice->speak(text, interrupt);
 }
 
-bool screen_reader_speak(const std::string& text, bool interrupt) {
-	if (!screen_reader_load()) return false;
-	return g_screen_reader_voice->speak(text, interrupt);
-}
+bool screen_reader_output(const std::string& text, bool interrupt) { return screen_reader_speak(text, interrupt); }
 
 bool screen_reader_braille(const std::string& text) { return false; }
 
