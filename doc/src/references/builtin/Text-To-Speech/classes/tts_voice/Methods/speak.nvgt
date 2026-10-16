@@ -7,7 +7,7 @@
 	## Returns:
 		bool: true if speech was successful, false otherwise.
 	## Remarks:
-		Speech that doesn't interrupt waits for the object's earlier speech on the same engine. Speech on another engine, after a voice of another engine was selected (the builtin voice included), is not held back for it on Android, Linux and iOS, where it can start while the earlier speech still plays; wait while the speaking property is true first to keep them apart. On Windows and macOS every engine's speech plays in order. Speech that interrupts stops the object's speech on every engine.
+		Speech that doesn't interrupt is spoken after the object's earlier speech, also when a voice of another engine (the builtin voice included) was selected in between: it is held until the earlier speech has ended, and the speaking property is true meanwhile. Held speech is reported as successful when it is held, before the engine has taken it. Speech that interrupts, and stop, silence the object's speech on every engine and drop what is held.
 */
 
 // Example:
