@@ -2686,10 +2686,9 @@ static void tts_klatt_parwave(struct tts_klatt_t* klatt, struct tts_klatt_frame_
 
 
 
-static char * tts_phoneme_to_element_lookup( char *s, void ** data ) {
+static char * tts_phoneme_to_element_lookup( char *s, char *limit, void ** data ) {
     int key8 = *s;
-    int key16 = key8 + (s[1] << 8);
-    if (s[1] == 0) key16 = -1; // avoid key8==key16
+    int key16 = (s + 1 < limit && s[1])? key8 + (s[1] << 8) : -1; // avoid key8==key16; NVGT: and s[1] is read only within the phonemes, which aren't NUL-terminated
     int i;
     for (i = 0; i < TTS_PHONEME_COUNT; i++) {
         if (tts_phoneme_to_elements[i].mKey == key16) {
@@ -2703,7 +2702,7 @@ static char * tts_phoneme_to_element_lookup( char *s, void ** data ) {
     }
     // should never happen
     *data = NULL;
-    return s+1;
+    return s; // NVGT: the caller takes the character, a stress mark for instance, rather than skipping it along with the next one
 }
 
 
@@ -2716,7 +2715,7 @@ static int tts_phone_to_elm( char *aPhoneme, int aCount, struct tts_darray_t *aE
 
     while (s < limit && *s) {
         char *e = NULL;
-        s = tts_phoneme_to_element_lookup(s, (void**)&e);
+        s = tts_phoneme_to_element_lookup(s, limit, (void**)&e);
 
         if (e) {
             int n = *e++;
