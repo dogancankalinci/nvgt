@@ -151,6 +151,7 @@ class tts_voice {
 	sound_queue queue;
 	std::mutex queue_mtx;
 	sound_queue fade_queue;
+	sound_queue finished; // Utterances that played to their end, released on a script thread: the end-of-utterance job's thread must not close a sound, which takes the node graph lock a script thread can hold while it waits for that very thread.
 	std::atomic_flag speaking;
 	std::vector<std::shared_ptr<tts_engine>> native_engines; // Engines this object spoke on without the sound system, so that their speech can still be reported and stopped once another voice is selected.
 	voice_info *get_voice_info(int voice_index);
