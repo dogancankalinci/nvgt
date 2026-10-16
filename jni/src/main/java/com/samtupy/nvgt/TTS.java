@@ -387,14 +387,20 @@ public class TTS {
 	}
 	// Queues text, the first part as interrupt asks and any others after it; only the last part carries lastUtteranceId.
 	// Called with queueLock held, so the parts of one text can't be interleaved with another text being queued.
-	private boolean queueText(String text, boolean interrupt, String lastUtteranceId) {
+	// Returns QUEUED when all of it was queued and NOTHING_QUEUED when none was. When the service refuses a later part, a
+	// moment of silence carrying lastUtteranceId follows the parts already queued, so the id still reports when they have
+	// been spoken, and PARTLY_QUEUED is returned.
+	private static final int NOTHING_QUEUED = 0, PARTLY_QUEUED = 1, QUEUED = 2;
+	private int queueText(String text, boolean interrupt, String lastUtteranceId) {
 		List<String> parts = splitForSpeech(text, maxRequestLength());
 		Bundle params = utteranceParams();
 		for (int i = 0; i < parts.size(); i++) {
 			int mode = interrupt && i == 0? TextToSpeech.QUEUE_FLUSH : TextToSpeech.QUEUE_ADD;
-			if (tts.speak(parts.get(i), mode, params, i == parts.size() - 1? lastUtteranceId : null) != TextToSpeech.SUCCESS) return false;
+			if (tts.speak(parts.get(i), mode, params, i == parts.size() - 1? lastUtteranceId : null) == TextToSpeech.SUCCESS) continue;
+			if (i == 0 || lastUtteranceId == null) return NOTHING_QUEUED;
+			return tts.playSilentUtterance(1, TextToSpeech.QUEUE_ADD, lastUtteranceId) == TextToSpeech.SUCCESS? PARTLY_QUEUED : NOTHING_QUEUED;
 		}
-		return true;
+		return QUEUED;
 	}
 	// isSpeaking() only turns true once the service has picked a request up, which can be after speak() returns, so speech
 	// is spoken with an utterance id holding a serial number, and the listener records the highest serial that ended. This
@@ -411,14 +417,16 @@ public class TTS {
 			followSystemSettings();
 			long serial = trackedSerial + 1;
 			TextToSpeech speaking = tts;
-			if (!queueText(text, interrupt, TRACKED_UTTERANCE + serial)) {
+			int queued = queueText(text, interrupt, TRACKED_UTTERANCE + serial);
+			if (queued == NOTHING_QUEUED) {
 				if (!recoverConnection(speaking)) return -1;
 				followSystemSettings();
-				if (!queueText(text, interrupt, TRACKED_UTTERANCE + serial)) return -1;
+				queued = queueText(text, interrupt, TRACKED_UTTERANCE + serial);
 			}
+			if (queued == NOTHING_QUEUED) return -1;
 			trackedSerial = serial;
 			lastQueuedAt = SystemClock.elapsedRealtime();
-			return serial;
+			return queued == QUEUED? serial : -1; // With part of the text refused the call fails, while what was queued is tracked till it has been spoken.
 		}
 	}
 	public boolean isTrackedDone(long serial) { return endedSerial >= serial; }
