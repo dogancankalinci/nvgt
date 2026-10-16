@@ -7,7 +7,7 @@
 	## Returns:
 		bool: true if speech was successful, false otherwise.
 	## Remarks:
-		Speech that doesn't interrupt is spoken after the object's earlier speech, also when a voice of another engine (the builtin voice included) was selected in between: it is held until the earlier speech has ended, and the speaking property is true meanwhile. Held speech is reported as successful when it is held, before the engine has taken it. Speech that interrupts, and stop, silence the object's speech on every engine and drop what is held.
+		Speech that doesn't interrupt is spoken after the object's earlier speech, also when a voice of another engine (the builtin voice included) was selected in between: it is held until the earlier speech has ended, and the speaking property is true meanwhile. Held speech is reported as successful when it is held, before the engine has taken it. Speech that interrupts, and stop, silence the object's speech on every engine and drop what is held. Empty text speaks and interrupts nothing and returns false; use stop to silence the voice.
 */
 
 // Example:

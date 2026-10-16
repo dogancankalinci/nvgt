@@ -7,7 +7,7 @@
 	## Returns:
 		bool: true if speech was successful, false otherwise.
 	## Remarks:
-		Without interrupting, the text is queued after the object's earlier speech, and the call returns once all of it has been spoken. The program does nothing else in the meantime, so in a game loop the speaking property is usually the better choice.
+		Without interrupting, the text is queued after the object's earlier speech, and the call returns once all of it has been spoken. The program does nothing else in the meantime, so in a game loop the speaking property is usually the better choice. Empty text speaks and interrupts nothing and returns false at once.
 */
 
 // Example:

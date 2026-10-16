@@ -5,6 +5,8 @@
 		* const string&in text: the text to speak.
 	## Returns:
 		bool: true if the speech was generated successfully, false otherwise.
+	## Remarks:
+		Empty text speaks and interrupts nothing and returns false; use stop to silence the voice.
 */
 
 // Example:

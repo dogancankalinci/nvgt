@@ -6,7 +6,7 @@
 	## Returns:
 		bool: true if speech was successful, false otherwise.
 	## Remarks:
-		This is the same as calling speak_wait with interrupt set to true.
+		This is the same as calling speak_wait with interrupt set to true. Empty text speaks and interrupts nothing and returns false; use stop to silence the voice.
 */
 
 // Example:
