@@ -200,6 +200,7 @@ shared_ptr<tts_engine> tts_create_engine(const string &name) {
 static std::mutex g_engine_pool_mutex;
 static std::mutex g_engine_binding_mutex;
 static unordered_set<string> g_unusable_engines;
+static unordered_set<string> g_bound_engines; // Engines bound at least once.
 static unordered_map<string, vector<shared_ptr<tts_engine>>> g_idle_engines;
 // The index the voice an engine had when it was bound has now: found by its name, or the old index when it had none.
 static int tts_engine_init_voice_index(engine_entry &entry) {
@@ -276,22 +277,23 @@ engine_entry &tts_voice::get_engine_entry(const string &name) {
 	engine_entry entry;
 	auto take_idle = [&]() {
 		std::lock_guard<std::mutex> lock(g_engine_pool_mutex);
-		if (g_unusable_engines.count(name)) return true;
 		auto idle = g_idle_engines.find(name);
-		if (idle == g_idle_engines.end() || idle->second.empty()) return false;
-		entry.engine = idle->second.back();
-		idle->second.pop_back();
-		return true;
+		if (idle != g_idle_engines.end() && !idle->second.empty()) {
+			entry.engine = idle->second.back();
+			idle->second.pop_back();
+			return true;
+		}
+		return g_unusable_engines.count(name) > 0;
 	};
 	if (!take_idle()) {
 		std::lock_guard<std::mutex> binding(g_engine_binding_mutex);
 		if (!take_idle()) { // Another object may have released one, or found the engine unusable, while this one waited.
 			shared_ptr<tts_engine> engine = tts_create_engine(name);
-			if (engine && engine->is_available()) entry.engine = engine;
-			else {
-				std::lock_guard<std::mutex> lock(g_engine_pool_mutex);
-				g_unusable_engines.insert(name);
-			}
+			std::lock_guard<std::mutex> lock(g_engine_pool_mutex);
+			if (engine && engine->is_available()) {
+				entry.engine = engine;
+				g_bound_engines.insert(name);
+			} else if (!g_bound_engines.count(name)) g_unusable_engines.insert(name); // An engine that has worked can fail for a while, while it restarts for instance, so only one that never bound is given up for good.
 		}
 	}
 	if (entry.engine) {
