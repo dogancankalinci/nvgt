@@ -414,6 +414,7 @@ tts_audio_data* AVTTSVoice::speak_to_pcm(const std::string &text) {
 		impl->apply(utterance, false);
 		[impl->pcmSynthesizer() writeUtterance:utterance toBufferCallback:^(AVAudioBuffer * _Nonnull buffer) {
 			@autoreleasepool {
+				if (synthesisDone) return; // Once the closing empty buffer came, the success path below releases what this block uses; Apple doesn't document that nothing follows it.
 				__atomic_fetch_add(&buffersDelivered, 1, __ATOMIC_RELAXED);
 				if (![buffer isKindOfClass:[AVAudioPCMBuffer class]]) return;
 				AVAudioPCMBuffer *pcmBuffer = (AVAudioPCMBuffer *)buffer;
