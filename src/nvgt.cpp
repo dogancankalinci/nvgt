@@ -353,6 +353,7 @@ protected:
 		timeEndPeriod(1);
 		#endif
 		screen_reader_unload();
+		tts_release_idle_engines(); // While COM, which SDL_Quit uninitialises on this thread, and the Java VM are still there for them.
 		DestroyNVGTWindow(); // must precede InputDestroy's SDL_Quit or a key event can deadlock Android shutdown; see DestroyNVGTWindow.
 		InputDestroy();
 		uninit_sound();

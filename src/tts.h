@@ -219,4 +219,5 @@ bool screen_reader_speak(const std::string& text, bool interrupt);
 bool screen_reader_braille(const std::string& text);
 bool screen_reader_silence();
 
+void tts_release_idle_engines(); // Destroys the engines kept for later tts_voice objects, while the program shuts down and the services they use are still there.
 void RegisterTTSVoice(asIScriptEngine *engine);
