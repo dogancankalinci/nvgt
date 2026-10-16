@@ -173,7 +173,18 @@ public:
 		int samples;
 		char *data = (char *)speech_gen(&samples, text.c_str(), 20 - rate, pitch, volume, NULL); // smaller rate values mean faster so we must reverse the rate value here.
 		if (!data) return nullptr;
+		// Text with nothing to say, punctuation alone for instance, comes out as pauses of digital silence, which is empty audio rather than silence of that length, as with the other engines. Speech at a volume too low to leave a sample above zero comes out the same, and keeps its length, so silent audio is told apart by synthesizing the text again at full volume.
+		if (samples > 0 && silent((const short *)data, samples)) {
+			int loud_samples;
+			short *loud = speech_gen(&loud_samples, text.c_str(), 20 - rate, pitch, 70, NULL);
+			if (loud && silent(loud, loud_samples)) samples = 0;
+			if (loud) speech_free(loud, NULL);
+		}
 		return new tts_audio_data(this, data, samples * 4, 44100, 2, 16);
+	}
+	static bool silent(const short *data, int samples) {
+		for (int i = 0; i < samples * 2; i++) if (data[i]) return false;
+		return true;
 	}
 	void free_pcm(tts_audio_data* data) override {
 		if (data && data->data) {
