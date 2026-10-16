@@ -1,4 +1,7 @@
+#include <condition_variable>
+#include <functional>
 #include <mutex>
+#include <thread>
 /* win.h - header exposing windows only functions and classes
  *
  * NVGT - NonVisual Gaming Toolkit
@@ -21,10 +24,16 @@
 
 class sapi5_engine : public tts_engine_impl {
 	sb_sapi *inst;
-	// The ISpVoice behind the sb_sapi instance is not safe to call from two threads at once even in the MTA, and a
-	// tts_voice can be used from several script threads. Recursive because these methods legitimately call one another on the same thread, which a
-	// plain mutex answered by throwing "resource deadlock would occur" instead of letting the call through.
-	std::recursive_mutex inst_mutex;
+	// SAPI's objects belong to the COM apartment of the thread that made them, and calling them from another thread, as a pooled engine handed to a tts_voice on another script thread did, breaks COM's rules. So the engine has a thread of its own, in the multithreaded apartment, which makes, uses and frees them, and initialises and uninitialises COM; every call is run there, one at a time, the ISpVoice not being safe to call from two threads at once.
+	std::thread worker;
+	std::mutex work_mutex; // Guards work, work_done and stopping.
+	std::condition_variable work_cv;
+	const std::function<void()> *work = nullptr; // The call for the worker to run.
+	bool work_done = false, stopping = false;
+	std::mutex call_mutex; // One call at a time.
+	void run(const std::function<void()> &call);
+	void work_loop();
+	void stop_worker();
 public:
 	sapi5_engine();
 	virtual ~sapi5_engine();

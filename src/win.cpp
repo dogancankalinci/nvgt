@@ -35,67 +35,117 @@ using namespace std;
 
 void register_native_tts() { tts_engine_register("sapi5", []() -> shared_ptr<tts_engine> { return make_shared<sapi5_engine>(); }); }
 
-sapi5_engine::sapi5_engine() : tts_engine_impl("SAPI5") {
-	inst = (sb_sapi *)malloc(sizeof(sb_sapi));
-	if (!inst) throw runtime_error("Failed to allocate SAPI5 instance");
-	memset(inst, 0, sizeof(sb_sapi));
-	if (!sb_sapi_initialise(inst)) {
-		free(inst);
+sapi5_engine::sapi5_engine() : tts_engine_impl("SAPI5"), inst(nullptr) {
+	worker = std::thread(&sapi5_engine::work_loop, this);
+	run([this] {
+		sb_sapi *made = (sb_sapi *)malloc(sizeof(sb_sapi));
+		if (!made) return;
+		memset(made, 0, sizeof(sb_sapi));
+		if (sb_sapi_initialise(made)) inst = made;
+		else free(made);
+	});
+	if (!inst) {
+		stop_worker();
 		throw runtime_error("Failed to initialize SAPI5 engine");
 	}
 }
 sapi5_engine::~sapi5_engine() {
-	if (inst) {
+	run([this] {
 		sb_sapi_cleanup(inst);
 		free(inst);
+		inst = nullptr;
+	});
+	stop_worker();
+}
+// Runs a call on the worker thread and waits for it.
+void sapi5_engine::run(const std::function<void()> &call) {
+	std::lock_guard<std::mutex> one(call_mutex);
+	std::unique_lock<std::mutex> lock(work_mutex);
+	work = &call;
+	work_done = false;
+	work_cv.notify_all();
+	work_cv.wait(lock, [this] { return work_done; });
+	work = nullptr;
+}
+void sapi5_engine::work_loop() {
+	std::unique_lock<std::mutex> lock(work_mutex);
+	while (true) {
+		work_cv.wait(lock, [this] { return stopping || (work && !work_done); });
+		if (work && !work_done) {
+			const std::function<void()> *call = work;
+			lock.unlock();
+			(*call)();
+			lock.lock();
+			work_done = true;
+			work_cv.notify_all();
+		} else return; // Stopping, with no call waiting.
 	}
+}
+void sapi5_engine::stop_worker() {
+	{
+		std::lock_guard<std::mutex> lock(work_mutex);
+		stopping = true;
+	}
+	work_cv.notify_all();
+	worker.join();
 }
 bool sapi5_engine::is_available() { return true; }
 tts_pcm_generation_state sapi5_engine::get_pcm_generation_state() { return PCM_PREFERRED; }
 tts_audio_data* sapi5_engine::speak_to_pcm(const string &text) {
-	std::lock_guard<std::recursive_mutex> l(inst_mutex);
 	if (text.empty()) return nullptr;
-	void *temp = nullptr;
-	int bufsize = 0;
-	if (!sb_sapi_speak_to_memory(inst, const_cast<char*>(text.c_str()), &temp, &bufsize)) return nullptr;
-	if (!temp || bufsize < 0) return nullptr;
-	return new tts_audio_data(this, temp, bufsize, sb_sapi_get_sample_rate(inst), sb_sapi_get_channels(inst), sb_sapi_get_bit_depth(inst));
+	tts_audio_data *result = nullptr;
+	run([&] {
+		void *temp = nullptr;
+		int bufsize = 0;
+		if (!sb_sapi_speak_to_memory(inst, const_cast<char*>(text.c_str()), &temp, &bufsize)) return;
+		if (!temp || bufsize < 0) return;
+		result = new tts_audio_data(this, temp, bufsize, sb_sapi_get_sample_rate(inst), sb_sapi_get_channels(inst), sb_sapi_get_bit_depth(inst));
+	});
+	return result;
 }
-float sapi5_engine::get_rate() { std::lock_guard<std::recursive_mutex> l(inst_mutex); return sb_sapi_get_rate(inst); }
-float sapi5_engine::get_pitch() { std::lock_guard<std::recursive_mutex> l(inst_mutex); return sb_sapi_get_pitch(inst); }
-float sapi5_engine::get_volume() { std::lock_guard<std::recursive_mutex> l(inst_mutex); return sb_sapi_get_volume(inst); }
+float sapi5_engine::get_rate() { float result = 0; run([&] { result = sb_sapi_get_rate(inst); }); return result; }
+float sapi5_engine::get_pitch() { float result = 0; run([&] { result = sb_sapi_get_pitch(inst); }); return result; }
+float sapi5_engine::get_volume() { float result = 0; run([&] { result = sb_sapi_get_volume(inst); }); return result; }
 // SAPI takes whole steps, so the value is rounded to the nearest rather than cut toward zero.
-void sapi5_engine::set_rate(float rate) { std::lock_guard<std::recursive_mutex> l(inst_mutex); sb_sapi_set_rate(inst, (int)lrintf(rate)); }
-void sapi5_engine::set_pitch(float pitch) { std::lock_guard<std::recursive_mutex> l(inst_mutex); sb_sapi_set_pitch(inst, (int)lrintf(pitch)); }
-void sapi5_engine::set_volume(float volume) { std::lock_guard<std::recursive_mutex> l(inst_mutex); sb_sapi_set_volume(inst, (int)lrintf(volume)); }
+void sapi5_engine::set_rate(float rate) { run([&] { sb_sapi_set_rate(inst, (int)lrintf(rate)); }); }
+void sapi5_engine::set_pitch(float pitch) { run([&] { sb_sapi_set_pitch(inst, (int)lrintf(pitch)); }); }
+void sapi5_engine::set_volume(float volume) { run([&] { sb_sapi_set_volume(inst, (int)lrintf(volume)); }); }
 bool sapi5_engine::get_rate_range(float& minimum, float& midpoint, float& maximum) { minimum = -10; midpoint = 0; maximum = 10; return true; }
 bool sapi5_engine::get_pitch_range(float& minimum, float& midpoint, float& maximum) { minimum = -10; midpoint = 0; maximum = 10; return true; }
 bool sapi5_engine::get_volume_range(float& minimum, float& midpoint, float& maximum) { minimum = 0; midpoint = 50; maximum = 100; return true; }
 // The voices are listed again first, as the other calls do, so the count follows voices installed or removed while the program runs.
 int sapi5_engine::get_voice_count() {
-	std::lock_guard<std::recursive_mutex> l(inst_mutex);
-	sb_sapi_refresh_voices(inst);
-	return inst->voice_count;
+	int result = 0;
+	run([&] {
+		sb_sapi_refresh_voices(inst);
+		result = inst->voice_count;
+	});
+	return result;
 }
 string sapi5_engine::get_voice_name(int index) {
-	std::lock_guard<std::recursive_mutex> l(inst_mutex);
-	if (index < 0 || index >= inst->voice_count) return "";
-	char *result = sb_sapi_get_voice_name(inst, index);
-	return result? string(result) : "";
+	string result;
+	run([&] {
+		if (index < 0 || index >= inst->voice_count) return;
+		char *name = sb_sapi_get_voice_name(inst, index);
+		if (name) result = name;
+	});
+	return result;
 }
 string sapi5_engine::get_voice_language(int index) {
-	std::lock_guard<std::recursive_mutex> l(inst_mutex);
-	if (!inst || index < 0 || index >= inst->voice_count) return "";
-	char *lang = sb_sapi_get_voice_language(inst, index);
-	return lang ? string(lang) : "";
+	string result;
+	run([&] {
+		if (index < 0 || index >= inst->voice_count) return;
+		char *lang = sb_sapi_get_voice_language(inst, index);
+		if (lang) result = lang;
+	});
+	return result;
 }
 bool sapi5_engine::set_voice(int voice) {
-	std::lock_guard<std::recursive_mutex> l(inst_mutex);
-	if (voice < 0 || voice >= inst->voice_count) return false;
-	if (!sb_sapi_set_voice(inst, voice)) return false;
-	return true;
+	bool result = false;
+	run([&] { result = voice >= 0 && voice < inst->voice_count && sb_sapi_set_voice(inst, voice); });
+	return result;
 }
-int sapi5_engine::get_current_voice() { std::lock_guard<std::recursive_mutex> l(inst_mutex); return sb_sapi_get_voice(inst); }
+int sapi5_engine::get_current_voice() { int result = -1; run([&] { result = sb_sapi_get_voice(inst); }); return result; }
 
 static Poco::AtomicFlag g_sr_loaded;
 static Poco::AtomicFlag g_sr_available;
