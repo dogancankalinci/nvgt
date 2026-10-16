@@ -343,47 +343,56 @@ std::string speechd_engine::get_voice_language(int index) {
 
 void register_native_tts() { tts_engine_register("speechd", []() -> shared_ptr<tts_engine> { return make_shared<speechd_engine>(); }); }
 
-static std::atomic<tts_voice*> g_screen_reader_voice{nullptr};
-static std::mutex g_screen_reader_mutex; // Two script threads speaking for the first time at once would otherwise each make a voice, and one would be left behind with its connection.
+// Speech Dispatcher's one voice, made on first use. Script threads can use it while the program shuts down and lets it go, so each call takes a reference of its own, under the lock, which also keeps two threads speaking for the first time at once from each making a voice; once it has been let go, it isn't made again, as nothing would let the new one go.
+static tts_voice* g_screen_reader_voice = nullptr;
+static bool g_screen_reader_unloaded = false;
+static std::mutex g_screen_reader_mutex;
+class screen_reader_voice {
+	tts_voice *voice;
+public:
+	screen_reader_voice(bool make = true) {
+		std::lock_guard<std::mutex> lock(g_screen_reader_mutex);
+		if (!g_screen_reader_voice && make && !g_screen_reader_unloaded) g_screen_reader_voice = new tts_voice("speechd");
+		voice = g_screen_reader_voice;
+		if (voice) voice->AddRef();
+	}
+	~screen_reader_voice() { if (voice) voice->Release(); }
+	screen_reader_voice(const screen_reader_voice &) = delete;
+	screen_reader_voice &operator=(const screen_reader_voice &) = delete;
+	tts_voice *operator->() const { return voice; }
+	// Speech Dispatcher counts as a screen reader when NVGT could connect to it, which is what its one voice stands for and which is tried once per run, for any speech. Every call answers the same: the voice list is built the first time.
+	bool usable() const { return voice && voice->get_voice_count() > 0; }
+};
 
 bool screen_reader_is_speaking() {
-	tts_voice *voice = g_screen_reader_voice;
-	return voice && voice->get_speaking();
+	screen_reader_voice voice(false);
+	return voice.usable() && voice->get_speaking();
 }
 
-// Speech Dispatcher counts as a screen reader when NVGT could connect to it, which is what its one voice stands for and which is tried once per run, for any speech. Every call answers the same: the voice list is built the first time.
-bool screen_reader_load() {
-	tts_voice *voice = g_screen_reader_voice;
-	if (!voice) {
-		std::lock_guard<std::mutex> lock(g_screen_reader_mutex);
-		voice = g_screen_reader_voice;
-		if (!voice) g_screen_reader_voice = voice = new tts_voice("speechd");
-	}
-	return voice->get_voice_count() > 0;
-}
+bool screen_reader_load() { return screen_reader_voice().usable(); }
 
 void screen_reader_unload() {
-	std::lock_guard<std::mutex> lock(g_screen_reader_mutex);
-	tts_voice *voice = g_screen_reader_voice.exchange(nullptr);
+	tts_voice *voice;
+	{
+		std::lock_guard<std::mutex> lock(g_screen_reader_mutex);
+		voice = g_screen_reader_voice;
+		g_screen_reader_voice = nullptr;
+		g_screen_reader_unloaded = true;
+	}
 	if (voice) voice->Release();
 }
 
-std::string screen_reader_detect() {
-	if (!screen_reader_load()) return "";
-	return g_screen_reader_voice.load()->get_voice_count() > 0 ? "Speech Dispatcher" : "";
-}
+std::string screen_reader_detect() { return screen_reader_voice().usable()? "Speech Dispatcher" : ""; }
 
-bool screen_reader_has_speech() {
-	if (!screen_reader_load()) return false;
-	return g_screen_reader_voice.load()->get_voice_count() > 0;
-}
+bool screen_reader_has_speech() { return screen_reader_voice().usable(); }
 
 bool screen_reader_has_braille() { return false; }
 
 bool screen_reader_speak(const std::string& text, bool interrupt) {
-	if (!screen_reader_load()) return false;
-	if (text.empty()) return !interrupt || g_screen_reader_voice.load()->stop(); // As on the other platforms, empty text only interrupts.
-	return g_screen_reader_voice.load()->speak(text, interrupt);
+	screen_reader_voice voice;
+	if (!voice.usable()) return false;
+	if (text.empty()) return !interrupt || voice->stop(); // As on the other platforms, empty text only interrupts.
+	return voice->speak(text, interrupt);
 }
 
 bool screen_reader_output(const std::string& text, bool interrupt) { return screen_reader_speak(text, interrupt); }
@@ -391,8 +400,8 @@ bool screen_reader_output(const std::string& text, bool interrupt) { return scre
 bool screen_reader_braille(const std::string& text) { return false; }
 
 bool screen_reader_silence() {
-	if (!screen_reader_load()) return false;
-	return g_screen_reader_voice.load()->stop();
+	screen_reader_voice voice;
+	return voice.usable() && voice->stop();
 }
 
 unsigned long long system_running_milliseconds() {
