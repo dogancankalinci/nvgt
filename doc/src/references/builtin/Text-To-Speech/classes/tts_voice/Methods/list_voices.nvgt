@@ -3,6 +3,8 @@
 	string[]@ tts_voice::list_voices();
 	## Returns:
 		string[]@: a handle to an array containing all the voice names (as strings).
+	## Remarks:
+		get_voice_names is another name for this method.
 */
 
 // Example:

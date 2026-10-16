@@ -1,0 +1,14 @@
+/**
+	Set the voice of the TTS voice. This is another name for set_voice, as BGT called it.
+	bool tts_voice::set_current_voice(int index);
+	## Arguments:
+		* int index: index of the voice to switch to.
+	## Returns:
+		bool: true if the voice was successfully set, false otherwise.
+*/
+
+// Example:
+void main() {
+	tts_voice v;
+	if (v.voice_count > 1 && v.set_current_voice(1)) v.speak_wait("This is the second voice.");
+}

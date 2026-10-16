@@ -1,6 +1,8 @@
 /**
 	The number of the currently selected voice.
 	int tts_voice::voice;
+	## Remarks:
+		Until a voice is chosen with set_voice, this is the voice the engine speaks with, or -1 when the engine can't say which one that is, or it isn't in the list, as when a language set with set_language leaves it out.
 */
 
 // Example:
