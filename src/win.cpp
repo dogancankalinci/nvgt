@@ -132,7 +132,7 @@ bool screen_reader_is_speaking() {
 bool screen_reader_output(const std::string& text, bool interrupt) {
 	if (!screen_reader_load()) return false;
 	std::wstring textW;
-	Poco::UnicodeConverter::convert(text, textW);
+	Poco::UnicodeConverter::convert(tts_valid_utf8(text), textW); // See tts_valid_utf8: a NUL would end the text.
 	// Both are always tried, so braille still gets the text when speech fails, and the text counts as output when either took it, so a screen reader that speaks it but can't braille it doesn't make the call look failed.
 	bool spoken = speechSay(textW.c_str(), interrupt) != 0;
 	bool brailled = brailleDisplay(textW.c_str()) != 0;
@@ -141,13 +141,13 @@ bool screen_reader_output(const std::string& text, bool interrupt) {
 bool screen_reader_speak(const std::string& text, bool interrupt) {
 	if (!screen_reader_load()) return false;
 	std::wstring textW;
-	Poco::UnicodeConverter::convert(text, textW);
+	Poco::UnicodeConverter::convert(tts_valid_utf8(text), textW); // See tts_valid_utf8: a NUL would end the text.
 	return speechSay(textW.c_str(), interrupt) != 0;
 }
 bool screen_reader_braille(const std::string& text) {
 	if (!screen_reader_load()) return false;
 	std::wstring textW;
-	Poco::UnicodeConverter::convert(text, textW);
+	Poco::UnicodeConverter::convert(tts_valid_utf8(text), textW); // See tts_valid_utf8: a NUL would end the text.
 	return brailleDisplay(textW.c_str()) != 0;
 }
 bool screen_reader_silence() {

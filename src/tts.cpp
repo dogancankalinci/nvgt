@@ -112,6 +112,16 @@ string tts_valid_utf8(const string &text) {
 	bool copying = false; // Only once something had to be replaced; valid text is returned as it is.
 	while (i < n) {
 		unsigned char lead = s[i];
+		if (lead == 0) { // Engines that take a C string would end the text there.
+			if (!copying) {
+				out.reserve(n + 2);
+				out.assign(text, 0, i);
+				copying = true;
+			}
+			out += ' ';
+			i++;
+			continue;
+		}
 		uint32_t c;
 		size_t length;
 		if (lead < 0x80) c = lead, length = 1;

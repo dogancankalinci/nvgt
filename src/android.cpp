@@ -408,7 +408,7 @@ bool android_screen_reader_speak(const std::string& text, bool interrupt) {
 	try { android_setup_jni(); } catch (...) { return false; } // A failed setup is reported as nothing done, not as an exception crossing the script engine.
 	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
 	if (!env) return false;
-	LocalRef<jstring> jtext(env, to_jstring(env, text));
+	LocalRef<jstring> jtext(env, to_jstring(env, tts_valid_utf8(text))); // NULs as spaces, as on the other platforms.
 	if (!jtext.get()) return false;
 	jboolean result = env->CallStaticBooleanMethod(TTSClass, midScreenReaderSpeak, jtext.get(), interrupt ? JNI_TRUE : JNI_FALSE);
 	return !jni_clear_exception(env) && result;
