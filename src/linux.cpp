@@ -14,6 +14,7 @@
 #include "linux.h"
 #include "tts.h"
 #include "UI.h"
+#include <algorithm>
 #include <cctype>
 #include <cerrno>
 #include <csignal>
@@ -109,22 +110,71 @@ static unsigned long long monotonic_milliseconds() {
 	return (unsigned long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-// The server reports the end or cancellation of each message to callbacks that get no context, on libspeechd's event thread. Message numbers come from the server, unique across its connections, so one table serves every engine, each of which has a connection of its own, and records whose message each one is. They are unique only while one server runs, though: after it restarts, an engine that hasn't noticed its connection is gone still holds old numbers, and an end that arrives for a message of a dropped connection lands among the early ones. So a number said again takes the pending entry over, and an early end counts only for two seconds, as it only bridges spd_say sending a message and returning its number.
+// The server reports the start, end or cancellation of each message to callbacks that get no context, on libspeechd's event thread. Message numbers come from the server, unique across its connections, so one table serves every engine, each of which has a connection of its own, and records whose message each one is. They are unique only while one server runs, though: after it restarts, an engine that hasn't noticed its connection is gone still holds old numbers, and a report that arrives for a message of a dropped connection lands among the early ones. So a number said again takes the pending entry over, and an early report counts only for two seconds, as it only bridges spd_say sending a message and returning its number.
+struct speechd_message {
+	const speechd_engine *engine;
+	unsigned long long said, begun; // When spd_say returned its number, and when the server reported it starting, 0 until then.
+	size_t length;
+};
+struct speechd_early_report {
+	unsigned long long at;
+	bool ended;
+};
 static std::mutex g_speechd_messages_mutex;
-static std::map<int, const speechd_engine*> g_speechd_pending; // Said, and neither ended nor cancelled yet, with the engine that said it.
-static std::map<int, unsigned long long> g_speechd_ended_early; // Reported before spd_say returned their number, with when.
-static void speechd_message_ended(size_t msg_id, size_t client_id, SPDNotificationType state) {
-	std::lock_guard<std::mutex> lock(g_speechd_messages_mutex);
-	if (g_speechd_pending.erase((int)msg_id)) return;
-	unsigned long long now = monotonic_milliseconds();
-	for (auto it = g_speechd_ended_early.begin(); it != g_speechd_ended_early.end();) {
-		if (now - it->second >= 2000) it = g_speechd_ended_early.erase(it);
+static std::map<int, speechd_message> g_speechd_pending; // Said, and neither ended nor cancelled yet.
+static std::map<int, speechd_early_report> g_speechd_early; // Begun or ended before spd_say returned their number.
+static unsigned long long g_speechd_last_report = 0; // When the server last reported on a message in the table.
+static void speechd_note_early(int msg_id, unsigned long long now, bool ended) {
+	for (auto it = g_speechd_early.begin(); it != g_speechd_early.end();) {
+		if (now - it->second.at >= 2000) it = g_speechd_early.erase(it);
 		else ++it;
 	}
-	g_speechd_ended_early[(int)msg_id] = now;
+	speechd_early_report &report = g_speechd_early[msg_id];
+	if (!report.ended) report = {now, ended};
+}
+// A connection's messages are spoken in the order they were said, so once the server reports on one, the same engine's earlier messages it never reported ending were lost, as when an output module dies.
+static void speechd_drop_earlier(std::map<int, speechd_message>::iterator reported) {
+	const speechd_engine *engine = reported->second.engine;
+	for (auto it = g_speechd_pending.begin(); it != reported;) {
+		if (it->second.engine == engine) it = g_speechd_pending.erase(it);
+		else ++it;
+	}
+}
+static void speechd_message_begun(size_t msg_id, size_t client_id, SPDNotificationType state) {
+	std::lock_guard<std::mutex> lock(g_speechd_messages_mutex);
+	unsigned long long now = monotonic_milliseconds();
+	auto it = g_speechd_pending.find((int)msg_id);
+	if (it == g_speechd_pending.end()) return speechd_note_early((int)msg_id, now, false);
+	g_speechd_last_report = now;
+	if (!it->second.begun) it->second.begun = now;
+	speechd_drop_earlier(it);
+}
+static void speechd_message_ended(size_t msg_id, size_t client_id, SPDNotificationType state) {
+	std::lock_guard<std::mutex> lock(g_speechd_messages_mutex);
+	unsigned long long now = monotonic_milliseconds();
+	auto it = g_speechd_pending.find((int)msg_id);
+	if (it == g_speechd_pending.end()) return speechd_note_early((int)msg_id, now, true);
+	g_speechd_last_report = now;
+	speechd_drop_earlier(it);
+	g_speechd_pending.erase(it);
+}
+// The server says nothing more of a message when its output module dies, or it reloads its configuration, while the message is spoken, and none of the same engine's follows to show it was lost. So a message stops counting once it has taken far longer than speaking its text can: from its start, or for one not reported starting, from when it was said or the server last reported on a message, whichever is later, and only while no started message is still within its time, as it may be waiting for that one. Expects g_speechd_messages_mutex held.
+static unsigned long long speechd_message_time(size_t length) { return 30000 + 200ULL * length; }
+static void speechd_drop_lost(unsigned long long now) {
+	bool speaking = false;
+	for (const auto &message : g_speechd_pending) {
+		if (message.second.begun && now - message.second.begun < speechd_message_time(message.second.length)) speaking = true;
+	}
+	for (auto it = g_speechd_pending.begin(); it != g_speechd_pending.end();) {
+		const speechd_message &message = it->second;
+		unsigned long long since = message.begun? message.begun : std::max(message.said, g_speechd_last_report);
+		if ((message.begun || !speaking) && now - since >= speechd_message_time(message.length)) it = g_speechd_pending.erase(it);
+		else ++it;
+	}
 }
 static bool speechd_message_pending(int msg_id) {
 	std::lock_guard<std::mutex> lock(g_speechd_messages_mutex);
+	speechd_drop_lost(monotonic_milliseconds());
 	return g_speechd_pending.count(msg_id) > 0;
 }
 
@@ -149,10 +199,12 @@ bool speechd_engine::open_connection() {
 	}
 	free(error);
 	if (!opened) return false;
+	opened->callback_begin = speechd_message_begun;
 	opened->callback_end = opened->callback_cancel = speechd_message_ended;
 	{
 		speechd_call_guard guard;
 		notifying = spd_set_notification_on && spd_set_notification_on(opened, SPD_END) == 0 && spd_set_notification_on(opened, SPD_CANCEL) == 0;
+		if (!notifying || spd_set_notification_on(opened, SPD_BEGIN) != 0) opened->callback_begin = nullptr; // Starts only make lost messages found sooner.
 	}
 	if (!notifying) opened->callback_end = opened->callback_cancel = nullptr; // Ends that can't all be reported are not tracked.
 	struct stat socket_status;
@@ -188,7 +240,7 @@ void speechd_engine::drop_connection() {
 void speechd_engine::forget_messages() {
 	std::lock_guard<std::mutex> lock(g_speechd_messages_mutex);
 	for (auto it = g_speechd_pending.begin(); it != g_speechd_pending.end();) {
-		if (it->second == this) it = g_speechd_pending.erase(it);
+		if (it->second.engine == this) it = g_speechd_pending.erase(it);
 		else ++it;
 	}
 }
@@ -219,13 +271,20 @@ bool speechd_engine::speak(const std::string &text, bool interrupt, bool blockin
 		if (msg_id < 0) return false;
 		if (!notifying) return true; // Nothing would say when it ended, so a blocking call can't wait either.
 		std::lock_guard<std::mutex> messages_lock(g_speechd_messages_mutex);
-		auto early = g_speechd_ended_early.find(msg_id);
-		bool ended = early != g_speechd_ended_early.end() && monotonic_milliseconds() - early->second < 2000;
-		if (early != g_speechd_ended_early.end()) g_speechd_ended_early.erase(early);
-		if (!ended) g_speechd_pending[msg_id] = this;
+		unsigned long long now = monotonic_milliseconds();
+		auto early = g_speechd_early.find(msg_id);
+		speechd_early_report report = early != g_speechd_early.end() && now - early->second.at < 2000? early->second : speechd_early_report{0, false};
+		if (early != g_speechd_early.end()) g_speechd_early.erase(early);
+		if (!report.ended) {
+			auto said = g_speechd_pending.insert_or_assign(msg_id, speechd_message{this, now, report.at, text.size()}).first;
+			if (report.at) {
+				g_speechd_last_report = now;
+				speechd_drop_earlier(said);
+			}
+		}
 	}
 	if (!blocking) return true;
-	// The message stops pending when it ends, is cancelled, or its connection is dropped, here or by another thread.
+	// The message stops pending when it ends, is cancelled, is lost, or its connection is dropped, here or by another thread.
 	while (speechd_message_pending(msg_id)) {
 		{
 			std::lock_guard<std::mutex> lock(state_mutex);
@@ -247,7 +306,8 @@ bool speechd_engine::is_speaking() {
 		return false;
 	}
 	std::lock_guard<std::mutex> messages_lock(g_speechd_messages_mutex);
-	for (const auto &message : g_speechd_pending) if (message.second == this) return true;
+	speechd_drop_lost(monotonic_milliseconds());
+	for (const auto &message : g_speechd_pending) if (message.second.engine == this) return true;
 	return false;
 }
 
