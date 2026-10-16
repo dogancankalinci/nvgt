@@ -202,11 +202,13 @@ static std::mutex g_engine_binding_mutex;
 static unordered_set<string> g_unusable_engines;
 static unordered_set<string> g_bound_engines; // Engines bound at least once.
 static unordered_map<string, vector<shared_ptr<tts_engine>>> g_idle_engines;
+static bool g_engine_pool_closed = false; // Set at shutdown; the engines of a tts_voice released after that are destroyed at once instead of waiting in the pool for static destruction.
 void tts_release_idle_engines() {
 	unordered_map<string, vector<shared_ptr<tts_engine>>> idle;
 	{
 		std::lock_guard<std::mutex> lock(g_engine_pool_mutex);
 		idle.swap(g_idle_engines);
+		g_engine_pool_closed = true;
 	}
 }
 // The index the voice an engine had when it was bound has now: found by its name, or the old index when it had none.
@@ -275,7 +277,7 @@ tts_voice::~tts_voice() {
 		entry.engine->stop();
 		if (!tts_engine_restore_defaults(entry)) continue;
 		std::lock_guard<std::mutex> lock(g_engine_pool_mutex);
-		g_idle_engines[name].push_back(entry.engine);
+		if (!g_engine_pool_closed) g_idle_engines[name].push_back(entry.engine);
 	}
 }
 engine_entry &tts_voice::get_engine_entry(const string &name) {
