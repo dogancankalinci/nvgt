@@ -425,7 +425,8 @@ bool tts_voice::speak(const string &text, bool interrupt) {
 		tts_audio_data* datablock = nullptr;
 		void *trimmed_data = speak_to_pcm(text, &datablock);
 		if (!trimmed_data || !datablock) return false;
-		soundptr s(new_global_sound());
+		soundptr s;
+		try { s.reset(new_global_sound()); } catch (...) {} // The sound system starts on first use and can fail to; the speech then fails, its audio freed, rather than throwing at the script.
 		ma_format format = tts_pcm_format(datablock);
 		if (!s || !s->load_pcm(trimmed_data, datablock->size_in_bytes, format, datablock->sample_rate, datablock->channels)) {
 			datablock->free();
@@ -492,7 +493,8 @@ sound *tts_voice::speak_to_sound(const string &text) {
 	tts_audio_data* datablock;
 	void *trimmed_data = speak_to_pcm(text, &datablock);
 	if (!trimmed_data || !datablock) return nullptr;
-	sound *s = new_global_sound();
+	sound *s = nullptr;
+	try { s = new_global_sound(); } catch (...) {} // See speak().
 	ma_format format = tts_pcm_format(datablock);
 	if (!s || !s->load_pcm(trimmed_data, datablock->size_in_bytes, format, datablock->sample_rate, datablock->channels)) {
 		datablock->free();
