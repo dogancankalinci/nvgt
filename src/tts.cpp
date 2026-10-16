@@ -164,7 +164,7 @@ static ma_format tts_pcm_format(const tts_audio_data* data) {
 tts_audio_data::tts_audio_data(tts_engine* eng, void* dat, unsigned int size, unsigned int rate, unsigned int chans, unsigned int bits, void* ctx) : engine(eng), data(dat), size_in_bytes(size), sample_rate(rate), channels(chans), bitsize(bits), context(ctx) {}
 void tts_audio_data::free() { if (engine) engine->free_pcm(this); }
 
-// The builtin synthesizer knows ASCII only, and spells out a word with any other byte in it letter by letter, naming each byte as the ASCII character it masks to: "café" came out as "C A F C close parenthesis". So the text it gets has each Latin letter as its base letters, typographic quotes and hyphens as their ASCII forms, apostrophes only within words, combining marks and invisible characters left out, as they belong to the letters around them, and everything else outside ASCII as a space. The text is valid UTF-8 by then, see tts_valid_utf8.
+// The builtin synthesizer knows ASCII only, and spells out a word with any other byte in it letter by letter, naming each byte as the ASCII character it masks to: "café" came out as "C A F C close parenthesis". So the text it gets has each Latin letter as its base letters, typographic quotes and hyphens as their ASCII forms, apostrophes only within words, square brackets as spaces, combining marks and invisible characters left out, as they belong to the letters around them, and everything else outside ASCII as a space. The text is valid UTF-8 by then, see tts_valid_utf8.
 static string tts_fallback_ascii(const string &text) {
 	static const char *const latin[] = { // U+00C0 to U+024F.
 		"A", "A", "A", "A", "A", "A", "AE", "C", "E", "E", "E", "E", "I", "I", "I", "I",
@@ -223,6 +223,7 @@ static string tts_fallback_ascii(const string &text) {
 		unsigned char lead = text[i];
 		if (lead < 0x80) {
 			if (lead == '\'') apostrophe(i + 1);
+			else if (lead == '[' || lead == ']') out += ' '; // The synthesizer reads text in brackets as its own phoneme codes.
 			else out += (char)lead;
 			i++;
 			continue;
