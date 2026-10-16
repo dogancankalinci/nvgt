@@ -246,7 +246,13 @@ static string tts_fallback_ascii(const string &text) {
 		} else if (c < 0x80) {
 			if (c == '[' || c == ']') out += ' '; // The synthesizer reads text in brackets as its own phoneme codes.
 			else out += (char)c;
-		} else if (const char *letters = latin_letters(c)) out += letters;
+		} else if (const char *letters = latin_letters(c)) {
+			// A capital such as Æ or Œ in a word going on in lowercase gives one capital, "Ae": the synthesizer spells out a word with a capital after its first letter.
+			if (letters[0] && letters[1] && isupper((unsigned char)letters[0]) && is_letter(next, true)) {
+				out += letters[0];
+				for (const char *letter = letters + 1; *letter; letter++) out += (char)tolower((unsigned char)*letter);
+			} else out += letters;
+		}
 		else if ((c >= 0x201C && c <= 0x201F) || c == 0x2033) out += '"';
 		else if (c == 0x2010 || c == 0x2011) out += '-';
 		else if (c == 0x2026) out += "...";
