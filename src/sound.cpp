@@ -2195,6 +2195,7 @@ mixer *new_global_mixer() {
 }
 sound *new_global_sound() {
 	init_sound();
+	if (!g_audio_engine) return nullptr; // The sound system couldn't start.
 	sound* s = new sound_impl(g_audio_engine);
 	if (!s) return nullptr;
 	if (g_audio_mixer) s->set_mixer(g_audio_mixer);

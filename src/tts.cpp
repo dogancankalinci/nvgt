@@ -415,7 +415,7 @@ bool tts_voice::speak(const string &text, bool interrupt) {
 		if (!trimmed_data || !datablock) return false;
 		soundptr s(new_global_sound());
 		ma_format format = tts_pcm_format(datablock);
-		if (!s->load_pcm(trimmed_data, datablock->size_in_bytes, format, datablock->sample_rate, datablock->channels)) {
+		if (!s || !s->load_pcm(trimmed_data, datablock->size_in_bytes, format, datablock->sample_rate, datablock->channels)) {
 			datablock->free();
 			return false;
 		}
@@ -482,9 +482,9 @@ sound *tts_voice::speak_to_sound(const string &text) {
 	if (!trimmed_data || !datablock) return nullptr;
 	sound *s = new_global_sound();
 	ma_format format = tts_pcm_format(datablock);
-	if (!s->load_pcm(trimmed_data, datablock->size_in_bytes, format, datablock->sample_rate, datablock->channels)) {
+	if (!s || !s->load_pcm(trimmed_data, datablock->size_in_bytes, format, datablock->sample_rate, datablock->channels)) {
 		datablock->free();
-		s->release();
+		if (s) s->release();
 		return nullptr;
 	}
 	datablock->free();
