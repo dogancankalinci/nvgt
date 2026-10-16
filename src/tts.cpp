@@ -840,7 +840,16 @@ void tts_voice::at_end(void *pUserData, ma_sound *pSound) {
 	job.data.custom.data1 = (ma_uintptr)pSound;
 	job.data.custom.proc = job_proc;
 	ma_engine *engine = ma_sound_get_engine(pSound); // Rather than g_audio_engine, which is cleared when sound shuts down while sounds still hold the engine.
-	if (engine && engine->pResourceManager) ma_resource_manager_post_job(engine->pResourceManager, &job); // A job that can't be posted is made up for by queue_speaking().
+	if (engine && engine->pResourceManager && ma_resource_manager_post_job(engine->pResourceManager, &job) == MA_SUCCESS) return;
+	// The job queue is full, as it can be while many sounds load. Rather than leave the next utterance waiting for the script's next call on the object, the queue moves on here, on the audio thread, when the locks are free: starting the next sound only marks it started, and the finished one is closed on a script thread as ever. When they aren't, queue_speaking() makes up for it.
+	unique_lock<mutex> live_lock(g_live_tts_voices_mutex, try_to_lock);
+	if (!live_lock.owns_lock()) return;
+	auto live = g_live_tts_voices.find((uintptr_t)pUserData);
+	if (live == g_live_tts_voices.end()) return;
+	tts_voice *voice = live->second;
+	unique_lock<mutex> lock(voice->queue_mtx, try_to_lock);
+	if (!lock.owns_lock() || voice->queue.empty() || voice->queue.front()->get_ma_sound() != pSound) return;
+	voice->advance_queue();
 }
 ma_result tts_voice::job_proc(ma_job *pJob) {
 	// Held until the voice's queue lock below is released, so the voice can't be destroyed in between.
