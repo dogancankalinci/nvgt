@@ -167,7 +167,7 @@ static ma_format tts_pcm_format(const tts_audio_data* data) {
 tts_audio_data::tts_audio_data(tts_engine* eng, void* dat, unsigned int size, unsigned int rate, unsigned int chans, unsigned int bits, void* ctx) : engine(eng), data(dat), size_in_bytes(size), sample_rate(rate), channels(chans), bitsize(bits), context(ctx) {}
 void tts_audio_data::free() { if (engine) engine->free_pcm(this); }
 
-// The builtin synthesizer knows ASCII only, and spells out a word with any other byte in it letter by letter, naming each byte as the ASCII character it masks to: "café" came out as "C A F C close parenthesis". So the text it gets has each Latin letter and ligature as its base letters, fullwidth characters as their ASCII forms, guillemets as quotation marks, typographic quotes, hyphens, the minus sign and the multiplication sign as their ASCII forms, dashes as pauses, apostrophes only within words, square brackets and control characters as spaces, combining marks and invisible characters left out, as they belong to the letters around them, and everything else outside ASCII as a space. The text is valid UTF-8 by then, see tts_valid_utf8.
+// The builtin synthesizer knows ASCII only, and spells out a word with any other byte in it letter by letter, naming each byte as the ASCII character it masks to: "café" came out as "C A F C close parenthesis". So the text it gets has each Latin letter and ligature as its base letters, fullwidth characters as their ASCII forms, guillemets as quotation marks, typographic quotes, hyphens, the minus sign and the multiplication sign as their ASCII forms, dashes as pauses, apostrophes only within words, square brackets and control characters as spaces, symbols such as currency signs, fractions and powers as words, combining marks and invisible characters left out, as they belong to the letters around them, and everything else outside ASCII as a space. The text is valid UTF-8 by then, see tts_valid_utf8.
 static string tts_fallback_ascii(const string &text) {
 	static const char *const latin[] = { // U+00C0 to U+024F.
 		"A", "A", "A", "A", "A", "A", "AE", "C", "E", "E", "E", "E", "I", "I", "I", "I",
@@ -236,14 +236,53 @@ static string tts_fallback_ascii(const string &text) {
 		if (c >= 0xFF01 && c <= 0xFF5E) c -= 0xFEE0; // Fullwidth forms of ASCII characters, as those.
 		return length;
 	};
+	// Symbols with no ASCII form are read as words, which the synthesizer would otherwise say nothing for.
+	static const struct { uint32_t code; const char *words; } symbols[] = {
+		{0xA2, " cent "}, {0xA3, " pound "}, {0xA5, " yen "}, {0xA7, " section "}, {0xA9, " copyright "}, {0xAE, " registered "}, {0xB0, " degrees "}, {0xB1, " plus or minus "}, {0xB5, " micro "}, {0xB6, " paragraph "}, {0xF7, " divided by "},
+		{0x2022, ", "}, {0x2030, " per mille "}, {0x20A9, " won "}, {0x20AC, " euro "}, {0x20B9, " rupee "}, {0x20BA, " lira "}, {0x20BD, " ruble "}, {0x2122, " trademark "},
+		{0x2190, " left "}, {0x2191, " up "}, {0x2192, " right "}, {0x2193, " down "}, {0x221A, " square root of "}, {0x221E, " infinity "}, {0x2248, " approximately "}, {0x2260, " not equal to "}, {0x2264, " less than or equal to "}, {0x2265, " greater than or equal to "}
+	};
+	// Fractions, as words joined to a whole number written before them ("1½", one and a half) or on their own.
+	static const struct { uint32_t code; const char *after_number, *alone; } fractions[] = {
+		{0xBC, " and a quarter ", " one quarter "}, {0xBD, " and a half ", " one half "}, {0xBE, " and three quarters ", " three quarters "},
+		{0x2153, " and a third ", " one third "}, {0x2154, " and two thirds ", " two thirds "}, {0x215B, " and an eighth ", " one eighth "}
+	};
+	// Superscript digits are a power, "squared" or "cubed" for a lone 2 or 3; subscript digits are digits.
+	auto superscript_digit = [](uint32_t c) -> int {
+		if (c == 0xB9) return 1;
+		if (c == 0xB2 || c == 0xB3) return c - 0xB0;
+		if (c == 0x2070 || (c >= 0x2074 && c <= 0x2079)) return c - 0x2070;
+		return -1;
+	};
 	string out;
 	out.reserve(text.size());
+	uint32_t previous = 0;
 	for (size_t i = 0; i < text.size();) {
 		uint32_t c, next = 0;
 		size_t length = decode(i, c);
 		if (!length) break;
 		i += length;
 		decode(i, next);
+		uint32_t before = previous;
+		previous = c;
+		if (int digit = superscript_digit(c); digit >= 0) {
+			bool first = superscript_digit(before) < 0, last = superscript_digit(next) < 0;
+			if (first && last && (digit == 2 || digit == 3)) out += digit == 2? " squared " : " cubed ";
+			else {
+				if (first) out += " to the power of ";
+				out += (char)('0' + digit);
+				if (last) out += ' ';
+			}
+			continue;
+		}
+		if (c >= 0x2080 && c <= 0x2089) {
+			out += (char)('0' + (c - 0x2080));
+			continue;
+		}
+		bool symbol = false;
+		for (const auto &entry : symbols) if (entry.code == c) { out += entry.words; symbol = true; break; }
+		for (const auto &entry : fractions) if (entry.code == c) { out += !out.empty() && isdigit((unsigned char)out.back())? entry.after_number : entry.alone; symbol = true; break; }
+		if (symbol) continue;
 		if (c == '\'' || c == '`' || c == 0xB4 || c == 0x2BC || c == 0x2018 || c == 0x2019 || c == 0x201A || c == 0x201B || c == 0x2032) {
 			// An apostrophe, or an accent typed for one, is kept only between letters, as in "it's": as a quotation mark, outside a word, the synthesizer says "quote".
 			out += !out.empty() && isalpha((unsigned char)out.back()) && is_letter(next, false)? '\'' : ' ';
