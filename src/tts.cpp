@@ -240,8 +240,8 @@ static string tts_fallback_ascii(const string &text) {
 		if (!length) break;
 		i += length;
 		decode(i, next);
-		if (c == '\'' || c == 0x2018 || c == 0x2019 || c == 0x201A || c == 0x201B || c == 0x2032) {
-			// An apostrophe is kept only between letters, as in "it's": as a quotation mark, outside a word, the synthesizer says "quote".
+		if (c == '\'' || c == '`' || c == 0xB4 || c == 0x2018 || c == 0x2019 || c == 0x201A || c == 0x201B || c == 0x2032) {
+			// An apostrophe, or an accent typed for one, is kept only between letters, as in "it's": as a quotation mark, outside a word, the synthesizer says "quote".
 			out += !out.empty() && isalpha((unsigned char)out.back()) && is_letter(next, false)? '\'' : ' ';
 		} else if (c < 0x80) {
 			if (c == '[' || c == ']') out += ' '; // The synthesizer reads text in brackets as its own phoneme codes.
