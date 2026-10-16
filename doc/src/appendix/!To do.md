@@ -16,9 +16,6 @@ The joystick class in NVGT is still a no-op interface. There has already been a 
 ### tone_synth
 Another object from BGT we have not yet reimplemented, though the beginnings of tone generation will appear in miniaudio.
 
-### Speech dispatcher and the `tts_voice` object
-Currently, NVGT's Speech Dispatcher implementation for Linux only works with the screen reader speech functions. At this time, we are still considering if we should implement it into the `tts_voice` object as well.
-
 ### VSCode extension
 A plan that has existed for a few months now is to create a VSCode extension for Angelscript that works with NVGT scripts. To facilitate this we have wrapped a function called script_dump_engine_configuration, an example of which you can see in test/quick/dump_engine_config.nvgt. This function dumps a complete reference of everything registered in the engine, enough to compile scripts. This will, once time permits to learn the needed components, allow us to create an extension for VSCode that allows everything from symbol lookup to intellisense. As of 0.89.0 many of the function and method parameters have been properly named, which helps us get just a bit closer to this goal.
 
@@ -91,9 +88,6 @@ The input_box function is currently only implemented on Windows and MacOS, we ne
 ### reactphysics3d
 We're working on integrating a physics engine into NVGT for much more advanced games. There are many of these out there, we chose reactphysics3d because it builds on all of our desired platforms, it's not utterly massive, it seems to contain many of the features we can imagine needing, and it does not come with a huge learning curve. Much work has been put into implementing reactphysics, though  most of it is on a different branch at this time called rp3d.
 
-### tts_voice parameter scaling
-In bgt, tts_voice parameters went from -10 to 10 for rate and pitch, and -100 to 0 for volume. However in NVGT, this currently differs per platform. We need to set up a couple of conversion functions that make bgt's old values work across the board, though possibly in floatingpoint so as to give NVGT users more precision if they desire it.
-
 ### package managers
 This is a long-term goal, but consider figuring out how to create an apt repo / get on homebrew / other package managers for easy installs of NVGT.
 
@@ -107,7 +101,7 @@ This is likely to be fixed very soon: Currently, it is not possible to code sign
 Currently nvgt's official installers are unsigned and I am hoping to fix that.
 
 ### Android touchups
-Android support is getting pretty stable, but there are a couple of areas that still need improvement. We still need to finish asset management, and so until that is done you must embed a pack file into your app for sounds to be played. More improvements to tts_voice will follow as well, you can only use the default voice at this time and parameter ranges may need adjustment. The gesture support though functional is still very young, and needs more testing and expansion.
+Android support is getting pretty stable, but there are a couple of areas that still need improvement. We still need to finish asset management, and so until that is done you must embed a pack file into your app for sounds to be played. The gesture support though functional is still very young, and needs more testing and expansion.
 
 ## Code improvements
 This section specifically lists tasks we wish to perform related to NVGT's c++ code, repository, or other backend. Other than performance, items here should rarely effect application functionality but are instead designed to allow developers to engage in a bit less painful wincing when reading or contributing to NVGT's code.
