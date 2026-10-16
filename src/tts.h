@@ -20,6 +20,7 @@
 #include <queue>
 #include <unordered_map>
 #include <mutex>
+#include <thread>
 #include <atomic>
 #include <cstdint>
 #include <sstream>
@@ -163,6 +164,9 @@ class tts_voice {
 	};
 	std::deque<held_speech> held;
 	std::recursive_mutex chain_mtx; // Taken by every method that uses the engines, held or native_engines, and by the thread that starts held speech, so that thread's engine calls never run beside the script's.
+	std::thread held_starter; // Starts this object's held speech as its turn comes, while there is any; see start_held_speech().
+	bool held_starter_running = false; // Under chain_mtx: whether held_starter still goes on. Once it has stopped, it takes the lock no more.
+	std::atomic<bool> held_starter_stop{false}; // Set as the object is destroyed.
 	voice_info *get_voice_info(int voice_index);
 	void ensure_default(); // Bind only the default/preferred engine and select its default voice (enough to speak); does not touch other engines.
 	void ensure_enumerated(); // Build the full flattened voice list across all engines (needed to list or select voices).
@@ -177,7 +181,7 @@ class tts_voice {
 	bool other_path_speaking(tts_engine *engine);
 	bool hold(held_speech &&speech);
 	bool release_held();
-	static void held_speech_thread();
+	void start_held_speech();
 	void advance_queue();
 	bool queue_speaking();
 	void interrupt_other_speech(tts_engine *engine);

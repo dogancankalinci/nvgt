@@ -354,22 +354,14 @@ static unordered_set<string> g_unusable_engines;
 static unordered_set<string> g_bound_engines; // Engines bound at least once.
 static unordered_map<string, vector<shared_ptr<tts_engine>>> g_idle_engines;
 static bool g_engine_pool_closed = false; // Set at shutdown; the engines of a tts_voice released after that are destroyed at once instead of waiting in the pool for static destruction.
-// Held speech (see tts_voice::speak) is started by a thread of its own, as its turn comes when speech on another path ends, which nothing reports to the script. The thread looks at the objects with held speech every 20 milliseconds while there are any, under the lock, and an object being destroyed takes itself out under the same lock first, so the thread never uses one that is gone. The state is never destroyed, so the thread object is never destroyed while it runs, should the program end without shutting it down.
-struct tts_held_speech_starter {
-	std::mutex mtx;
-	std::condition_variable cv;
-	unordered_map<uint64_t, tts_voice*> voices;
-	std::thread thread;
-	bool closed = false;
-};
-static tts_held_speech_starter &g_held_speech = *new tts_held_speech_starter;
+// Set at shutdown, after which speech is no longer held (see tts_voice::hold), so no thread is started to start it.
+static std::mutex g_held_speech_mutex;
+static bool g_held_speech_closed = false;
 void tts_release_idle_engines() {
 	{
-		std::lock_guard<std::mutex> lock(g_held_speech.mtx);
-		g_held_speech.closed = true;
-		g_held_speech.cv.notify_all();
+		std::lock_guard<std::mutex> lock(g_held_speech_mutex);
+		g_held_speech_closed = true;
 	}
-	if (g_held_speech.thread.joinable()) g_held_speech.thread.join();
 	unordered_map<string, vector<shared_ptr<tts_engine>>> idle;
 	{
 		std::lock_guard<std::mutex> lock(g_engine_pool_mutex);
@@ -437,13 +429,11 @@ tts_voice::tts_voice(const string &engine_list) : RefCount(1), voice_state(VOICE
 }
 tts_voice::~tts_voice() {
 	{
-		std::lock_guard<std::mutex> lock(g_held_speech.mtx);
-		g_held_speech.voices.erase(id);
-	}
-	{
-		std::lock_guard<std::recursive_mutex> chain(chain_mtx); // Waits for held_speech_thread() to finish with this object, if it is under way.
+		std::lock_guard<std::recursive_mutex> chain(chain_mtx);
 		held.clear();
+		held_starter_stop = true;
 	}
+	if (held_starter.joinable()) held_starter.join(); // It ends as soon as it sees the stop, after an engine call under way.
 	{
 		std::lock_guard<std::mutex> lock(g_live_tts_voices_mutex);
 		g_live_tts_voices.erase((uintptr_t)id);
@@ -618,7 +608,7 @@ void *tts_voice::speak_to_pcm(const string &text, tts_audio_data** datablock) {
 	if (quiet && get_volume() >= -40) (*datablock)->size_in_bytes = 0;
 	return trimmed;
 }
-// Speech that doesn't interrupt follows the object's earlier speech, whichever engine spoke it. Each path keeps its own speech in order, the sound system's queue and each engine that plays its own speech, so speech for one path is held while the object speaks on another, or while earlier speech is held, and started when its turn comes, by held_speech_thread() or a speak_wait() waiting for its own turn. Held speech counts as speaking, and interrupting speech or stop() drops it.
+// Speech that doesn't interrupt follows the object's earlier speech, whichever engine spoke it. Each path keeps its own speech in order, the sound system's queue and each engine that plays its own speech, so speech for one path is held while the object speaks on another, or while earlier speech is held, and started when its turn comes, by the object's start_held_speech() thread or a speak_wait() waiting for its own turn. Held speech counts as speaking, and interrupting speech or stop() drops it.
 bool tts_voice::speak(const string &text, bool interrupt) {
 	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
 	ensure_default();
@@ -689,7 +679,7 @@ bool tts_voice::speak_wait(const string &text, bool interrupt) {
 	tts_engine *engine = active_engine();
 	if (!engine) return false;
 	bool pcm = engine->get_pcm_generation_state() == PCM_PREFERRED;
-	// Without interrupting, the text waits for its turn after the object's speech on other paths, starting held speech as its turn comes rather than leaving that to held_speech_thread(). The lock is kept from the last look to the speech, so it can't be held after all.
+	// Without interrupting, the text waits for its turn after the object's speech on other paths, starting held speech as its turn comes rather than leaving that to start_held_speech(). The lock is kept from the last look to the speech, so it can't be held after all.
 	if (!interrupt && !text.empty()) {
 		while (release_held() || other_path_speaking(pcm? nullptr : engine)) {
 			chain.unlock();
@@ -1010,14 +1000,22 @@ bool tts_voice::other_path_speaking(tts_engine *engine) {
 	for (const auto &other : native_engines) if (other.get() != engine && other->is_speaking()) return true;
 	return false;
 }
-// Holds speech for held_speech_thread() to start. False, holding nothing, once that thread has been shut down with the program. Expects chain_mtx held.
+// Holds speech for start_held_speech() to start, starting that thread when it isn't running. False, holding nothing, at shutdown or when no thread can be started, so the speech is started at once instead. Expects chain_mtx held.
 bool tts_voice::hold(held_speech &&speech) {
-	std::lock_guard<std::mutex> lock(g_held_speech.mtx);
-	if (g_held_speech.closed) return false;
+	{
+		std::lock_guard<std::mutex> lock(g_held_speech_mutex);
+		if (g_held_speech_closed) return false;
+	}
 	held.push_back(std::move(speech));
-	g_held_speech.voices[id] = this;
-	if (!g_held_speech.thread.joinable()) g_held_speech.thread = std::thread(held_speech_thread);
-	g_held_speech.cv.notify_one();
+	if (held_starter_running) return true;
+	if (held_starter.joinable()) held_starter.join(); // A starter that has stopped takes the lock no more, so it is waited for under the lock.
+	try {
+		held_starter = std::thread(&tts_voice::start_held_speech, this);
+	} catch (const std::system_error &) {
+		held.pop_back();
+		return false;
+	}
+	held_starter_running = true; // Before the thread can look, as it waits for the lock held here.
 	return true;
 }
 // Starts held speech whose turn has come, in order: speech for a path once the object no longer speaks on any other. True while some is still held. Expects chain_mtx held.
@@ -1035,29 +1033,17 @@ bool tts_voice::release_held() {
 	}
 	return false;
 }
-// The starter's lock is let go while an object's held speech is started, which calls its engines and can take a while, so it holds up neither other objects being released nor speech being held. The object's own lock, taken before that, keeps it from being destroyed meanwhile: its destructor takes the object out of the starter's list and then waits for that lock. An object is taken out of the list only while its lock is still held, so speech held just then is never left behind.
-void tts_voice::held_speech_thread() {
-	std::unique_lock<std::mutex> lock(g_held_speech.mtx);
-	while (!g_held_speech.closed) {
-		if (g_held_speech.voices.empty()) {
-			g_held_speech.cv.wait(lock);
-			continue;
+// Each object with held speech has a thread of its own starting it, every 20 milliseconds while some is held, so an engine call that takes long, as when an engine reconnects, holds up only this object's speech. The thread ends once none is held or the object is being destroyed, deciding so under the object's lock, and takes the lock no more after that, so hold() can wait for it to end while holding the lock, and the destructor waits for it before anything of the object goes.
+void tts_voice::start_held_speech() {
+	while (true) {
+		{
+			std::lock_guard<std::recursive_mutex> chain(chain_mtx);
+			if (held_starter_stop || !release_held()) {
+				held_starter_running = false;
+				return;
+			}
 		}
-		vector<uint64_t> ids;
-		for (const auto &voice : g_held_speech.voices) ids.push_back(voice.first);
-		for (uint64_t id : ids) {
-			auto it = g_held_speech.voices.find(id);
-			if (it == g_held_speech.voices.end()) continue; // Destroyed meanwhile.
-			tts_voice *voice = it->second;
-			// An object a script thread is using is looked at the next time rather than waited for, which would hold up the others.
-			std::unique_lock<std::recursive_mutex> chain(voice->chain_mtx, std::try_to_lock);
-			if (!chain.owns_lock()) continue;
-			lock.unlock();
-			bool still_held = voice->release_held();
-			lock.lock();
-			if (!still_held) g_held_speech.voices.erase(id);
-		}
-		g_held_speech.cv.wait_for(lock, std::chrono::milliseconds(20));
+		std::this_thread::sleep_for(std::chrono::milliseconds(20));
 	}
 }
 // Moves the queue past its front utterance once that has played to its end, into finished. Expects queue_mtx held.
