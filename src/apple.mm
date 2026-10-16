@@ -517,7 +517,7 @@ NSWindow* speech_window = nil; // The key window when the text was last given, r
 Poco::FastMutex speech_text_mutex;
 Poco::Event speech_new_event;
 Poco::Thread speech_thread;
-bool speech_shutdown = false;
+std::atomic<bool> speech_shutdown{false};
 // So this really sucks, and if someone can come along and make this nonsense unneeded, it would be very very appreciated. So the apple documentation taunts us telling us that we can pass speech notification priorities to NSAccessibilityPostNotificationWithUserInfo to control speech interrupt, and quite simply it doesn't work. While this doesn't at all make non-interrupting speech events actually work, it does make it possible to queue multiple speak calls together with only the first being interrupting.
 // The thread keeps running and announces whatever arrived, so text added while it announces is not left for a thread that already finished.
 void vo_speech_thread(void* extra) {
@@ -527,7 +527,11 @@ void vo_speech_thread(void* extra) {
 			speech_shutdown = false;
 			return;
 		}
-		while (speech_new_event.tryWait(10)) continue;
+		while (!speech_shutdown && speech_new_event.tryWait(10)) continue; // A signal taken here can be the shutdown's.
+		if (speech_shutdown) {
+			speech_shutdown = false;
+			return;
+		}
 		std::string text;
 		#if !TARGET_OS_IOS
 			NSWindow* window;
@@ -767,8 +771,10 @@ bool voice_over_speak(const std::string& text, bool interrupt) {
 }
 
 void voice_over_speech_shutdown() {
+	if (!speech_thread.isRunning()) return;
 	speech_shutdown = true;
 	speech_new_event.set();
+	speech_thread.tryJoin(1000); // So the event isn't destroyed with the thread still waiting on it as the program ends.
 }
 
 std::string apple_get_identifier_for_vendor() {
