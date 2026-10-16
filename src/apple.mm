@@ -742,11 +742,11 @@ bool voice_over_speak(const std::string& text, bool interrupt) {
 	if (!voice_over_is_running()) return false;
 	std::string message = tts_valid_utf8(text); // NSString makes nil of malformed UTF-8, which the announcement dictionary on macOS rejects with an exception.
 	@autoreleasepool {
-		if (!speech_thread.isRunning()) speech_thread.start(vo_speech_thread);
 		#if !TARGET_OS_IOS
 			NSWindow* key = [NSApp keyWindow];
 		#endif
-		Poco::FastMutex::ScopedLock exclusive(speech_text_mutex);
+		Poco::FastMutex::ScopedLock exclusive(speech_text_mutex); // Also around starting the thread, so two script threads can't both start it.
+		if (!speech_thread.isRunning()) speech_thread.start(vo_speech_thread);
 		if (interrupt || speech_text == "") speech_text = message;
 		else {
 			speech_text += " . ";
