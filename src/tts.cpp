@@ -211,31 +211,42 @@ static string tts_fallback_ascii(const string &text) {
 		"O", "o", "O", "o", "U", "u", "U", "u", "U", "u", "U", "u", "U", "u", "U", "u",
 		"U", "u", "Y", "y", "Y", "y", "Y", "y", "Y", "y", "LL", "ll", "V", "v", "Y", "y"
 	};
+	// The base letters of a Latin letter, or null for anything else outside ASCII.
+	auto latin_letters = [&](uint32_t c) -> const char * {
+		if (c >= 0xC0 && c < 0x250) return latin[c - 0xC0];
+		if (c >= 0x1E00 && c < 0x1F00) return latin_additional[c - 0x1E00];
+		return nullptr;
+	};
+	auto is_letter = [&](uint32_t c, bool lowercase) {
+		if (c < 0x80) return lowercase? islower((int)c) != 0 : isalpha((int)c) != 0;
+		const char *letters = latin_letters(c);
+		return letters && (lowercase? islower((unsigned char)letters[0]) : isalpha((unsigned char)letters[0]));
+	};
+	// The code point starting at a byte, and how many bytes it takes; none at the end.
+	auto decode = [&](size_t at, uint32_t &c) -> size_t {
+		if (at >= text.size()) return 0;
+		unsigned char lead = text[at];
+		size_t length = lead < 0x80? 1 : lead >= 0xF0? 4 : lead >= 0xE0? 3 : 2;
+		if (at + length > text.size()) return 0;
+		c = length == 1? lead : lead & (length == 2? 0x1F : length == 3? 0x0F : 0x07);
+		for (size_t k = 1; k < length; k++) c = (c << 6) | (text[at + k] & 0x3F);
+		return length;
+	};
 	string out;
 	out.reserve(text.size());
-	// An apostrophe is kept only between letters, as in "it's": as a quotation mark, outside a word, the synthesizer says "quote".
-	auto apostrophe = [&](size_t next) {
-		bool after_letter = !out.empty() && isalpha((unsigned char)out.back());
-		bool before_letter = next < text.size() && (isalpha((unsigned char)text[next]) || (unsigned char)text[next] >= 0xC0);
-		out += after_letter && before_letter? '\'' : ' ';
-	};
 	for (size_t i = 0; i < text.size();) {
-		unsigned char lead = text[i];
-		if (lead < 0x80) {
-			if (lead == '\'') apostrophe(i + 1);
-			else if (lead == '[' || lead == ']') out += ' '; // The synthesizer reads text in brackets as its own phoneme codes.
-			else out += (char)lead;
-			i++;
-			continue;
-		}
-		size_t length = lead >= 0xF0? 4 : lead >= 0xE0? 3 : 2;
-		if (i + length > text.size()) break;
-		uint32_t c = lead & (length == 2? 0x1F : length == 3? 0x0F : 0x07);
-		for (size_t k = 1; k < length; k++) c = (c << 6) | (text[i + k] & 0x3F);
+		uint32_t c, next = 0;
+		size_t length = decode(i, c);
+		if (!length) break;
 		i += length;
-		if (c >= 0xC0 && c < 0x250) out += latin[c - 0xC0];
-		else if (c >= 0x1E00 && c < 0x1F00) out += latin_additional[c - 0x1E00];
-		else if (c == 0x2018 || c == 0x2019 || c == 0x201A || c == 0x201B || c == 0x2032) apostrophe(i);
+		decode(i, next);
+		if (c == '\'' || c == 0x2018 || c == 0x2019 || c == 0x201A || c == 0x201B || c == 0x2032) {
+			// An apostrophe is kept only between letters, as in "it's": as a quotation mark, outside a word, the synthesizer says "quote".
+			out += !out.empty() && isalpha((unsigned char)out.back()) && is_letter(next, false)? '\'' : ' ';
+		} else if (c < 0x80) {
+			if (c == '[' || c == ']') out += ' '; // The synthesizer reads text in brackets as its own phoneme codes.
+			else out += (char)c;
+		} else if (const char *letters = latin_letters(c)) out += letters;
 		else if ((c >= 0x201C && c <= 0x201F) || c == 0x2033) out += '"';
 		else if (c == 0x2010 || c == 0x2011) out += '-';
 		else if (c == 0x2026) out += "...";
