@@ -16,6 +16,7 @@
 #include <vector>
 #include <memory>
 #include <functional>
+#include <deque>
 #include <queue>
 #include <unordered_map>
 #include <mutex>
@@ -154,6 +155,14 @@ class tts_voice {
 	sound_queue finished; // Utterances that played to their end, released on a script thread: the end-of-utterance job's thread must not close a sound, which takes the node graph lock a script thread can hold while it waits for that very thread.
 	std::atomic_flag speaking;
 	std::vector<std::shared_ptr<tts_engine>> native_engines; // Engines this object spoke on without the sound system, so that their speech can still be reported and stopped once another voice is selected.
+	// Speech that waits for the object's speech on another path to end: a sound for the sound system's queue, or text for an engine that plays its own speech. See speak().
+	struct held_speech {
+		soundptr sound;
+		std::shared_ptr<tts_engine> engine;
+		std::string text;
+	};
+	std::deque<held_speech> held;
+	std::recursive_mutex chain_mtx; // Taken by every method that uses the engines, held or native_engines, and by the thread that starts held speech, so that thread's engine calls never run beside the script's.
 	voice_info *get_voice_info(int voice_index);
 	void ensure_default(); // Bind only the default/preferred engine and select its default voice (enough to speak); does not touch other engines.
 	void ensure_enumerated(); // Build the full flattened voice list across all engines (needed to list or select voices).
@@ -164,7 +173,11 @@ class tts_voice {
 	void *speak_to_pcm(const std::string &text, tts_audio_data** datablock); // Returns pointer to trimmed sample.
 	bool schedule(soundptr &s, bool interrupt);
 	sound_queue clear();
-	void remember_native_engine();
+	void remember_native_engine(const std::shared_ptr<tts_engine> &spoke);
+	bool other_path_speaking(tts_engine *engine);
+	bool hold(held_speech &&speech);
+	bool release_held();
+	static void held_speech_thread();
 	void advance_queue();
 	bool queue_speaking();
 	void interrupt_other_speech(tts_engine *engine);

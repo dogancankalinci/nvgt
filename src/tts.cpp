@@ -17,6 +17,8 @@
 #include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
+#include <chrono>
+#include <condition_variable>
 #include <mutex>
 #include <thread>
 #include <miniaudio.h>
@@ -242,7 +244,22 @@ static unordered_set<string> g_unusable_engines;
 static unordered_set<string> g_bound_engines; // Engines bound at least once.
 static unordered_map<string, vector<shared_ptr<tts_engine>>> g_idle_engines;
 static bool g_engine_pool_closed = false; // Set at shutdown; the engines of a tts_voice released after that are destroyed at once instead of waiting in the pool for static destruction.
+// Held speech (see tts_voice::speak) is started by a thread of its own, as its turn comes when speech on another path ends, which nothing reports to the script. The thread looks at the objects with held speech every 20 milliseconds while there are any, under the lock, and an object being destroyed takes itself out under the same lock first, so the thread never uses one that is gone. The state is never destroyed, so the thread object is never destroyed while it runs, should the program end without shutting it down.
+struct tts_held_speech_starter {
+	std::mutex mtx;
+	std::condition_variable cv;
+	unordered_map<uint64_t, tts_voice*> voices;
+	std::thread thread;
+	bool closed = false;
+};
+static tts_held_speech_starter &g_held_speech = *new tts_held_speech_starter;
 void tts_release_idle_engines() {
+	{
+		std::lock_guard<std::mutex> lock(g_held_speech.mtx);
+		g_held_speech.closed = true;
+		g_held_speech.cv.notify_all();
+	}
+	if (g_held_speech.thread.joinable()) g_held_speech.thread.join();
 	unordered_map<string, vector<shared_ptr<tts_engine>>> idle;
 	{
 		std::lock_guard<std::mutex> lock(g_engine_pool_mutex);
@@ -309,6 +326,11 @@ tts_voice::tts_voice(const string &engine_list) : RefCount(1), voice_state(VOICE
 	g_live_tts_voices[(uintptr_t)id] = this;
 }
 tts_voice::~tts_voice() {
+	{
+		std::lock_guard<std::mutex> lock(g_held_speech.mtx);
+		g_held_speech.voices.erase(id);
+	}
+	held.clear();
 	{
 		std::lock_guard<std::mutex> lock(g_live_tts_voices_mutex);
 		g_live_tts_voices.erase((uintptr_t)id);
@@ -479,7 +501,9 @@ void *tts_voice::speak_to_pcm(const string &text, tts_audio_data** datablock) {
 	if (!*datablock) return nullptr;
 	return tts_trim(*datablock);
 }
+// Speech that doesn't interrupt follows the object's earlier speech, whichever engine spoke it. Each path keeps its own speech in order, the sound system's queue and each engine that plays its own speech, so speech for one path is held while the object speaks on another, or while earlier speech is held, and started when its turn comes, by held_speech_thread() or a speak_wait() waiting for its own turn. Held speech counts as speaking, and interrupting speech or stop() drops it.
 bool tts_voice::speak(const string &text, bool interrupt) {
+	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
 	ensure_default();
 	tts_engine *engine = active_engine();
 	if (!engine) return false;
@@ -496,14 +520,17 @@ bool tts_voice::speak(const string &text, bool interrupt) {
 		}
 		datablock->free();
 		if (interrupt) interrupt_other_speech(engine);
+		else if ((!held.empty() || other_path_speaking(nullptr)) && hold({s, nullptr, ""})) return true;
 		return schedule(s, interrupt);
 	}
 	if (interrupt && !text.empty()) interrupt_other_speech(engine);
+	else if (!interrupt && !text.empty() && (!held.empty() || other_path_speaking(engine)) && hold({nullptr, current_engine, tts_valid_utf8(text)})) return true;
 	bool spoken = engine->speak(tts_valid_utf8(text), interrupt, false);
-	if (!text.empty()) remember_native_engine(); // Even when it failed, as part of a long text can have been queued.
+	if (!text.empty()) remember_native_engine(current_engine); // Even when it failed, as part of a long text can have been queued.
 	return spoken;
 }
 bool tts_voice::speak_to_file(const string &filename, const string &text) {
+	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
 	tts_audio_data* datablock;
 	void *trimmed_data = speak_to_pcm(text, &datablock);
 	if (!trimmed_data || !datablock) return false;
@@ -525,6 +552,7 @@ bool tts_voice::speak_to_file(const string &filename, const string &text) {
 	}
 }
 string tts_voice::speak_to_memory(const string &text) {
+	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
 	tts_audio_data* datablock;
 	void *trimmed_data = speak_to_pcm(text, &datablock);
 	if (!trimmed_data || !datablock) return "";
@@ -537,21 +565,40 @@ string tts_voice::speak_to_memory(const string &text) {
 	datablock->free();
 	return output;
 }
+// The lock is not held while this waits, so held speech can be started meanwhile.
 bool tts_voice::speak_wait(const string &text, bool interrupt) {
-	ensure_default();
-	tts_engine *engine = active_engine();
-	if (!engine) return false;
-	if (engine->get_pcm_generation_state() == PCM_PREFERRED) {
+	tts_engine *engine;
+	bool pcm;
+	{
+		std::lock_guard<std::recursive_mutex> chain(chain_mtx);
+		ensure_default();
+		engine = active_engine();
+		if (!engine) return false;
+		pcm = engine->get_pcm_generation_state() == PCM_PREFERRED;
+	}
+	// Without interrupting, the text waits for its turn after the object's speech on other paths, starting held speech as its turn comes rather than leaving that to held_speech_thread().
+	if (!interrupt && !text.empty()) {
+		while (true) {
+			{
+				std::lock_guard<std::recursive_mutex> chain(chain_mtx);
+				if (!release_held() && !other_path_speaking(pcm? nullptr : engine)) break;
+			}
+			wait(10);
+		}
+	}
+	if (pcm) {
 		if (!speak(text, interrupt)) return false;
 		while (queue_speaking()) wait(10);
 		return true;
 	}
+	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
 	if (interrupt && !text.empty()) interrupt_other_speech(engine);
 	bool spoken = engine->speak(tts_valid_utf8(text), interrupt, true);
-	if (!text.empty()) remember_native_engine(); // Even when it failed, as part of a long text can have been queued.
+	if (!text.empty()) remember_native_engine(current_engine); // Even when it failed, as part of a long text can have been queued.
 	return spoken;
 }
 sound *tts_voice::speak_to_sound(const string &text) {
+	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
 	tts_audio_data* datablock;
 	void *trimmed_data = speak_to_pcm(text, &datablock);
 	if (!trimmed_data || !datablock) return nullptr;
@@ -568,6 +615,7 @@ sound *tts_voice::speak_to_sound(const string &text) {
 }
 // A parameter the script never set is read from the engine each time, so it reports the platform's current value (on Android the user's own speech settings, on Apple platforms the values a new utterance starts with) rather than a copy taken at startup.
 float tts_voice::get_rate() {
+	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
 	if (rate_set) return fRound(nvgt_rate, 3);
 	ensure_default();
 	tts_engine *engine = active_engine();
@@ -576,6 +624,7 @@ float tts_voice::get_rate() {
 	return fRound(range_convert_midpoint(engine->get_rate(), lo, mid, hi, -10.0f, 0.0f, 10.0f), 3);
 }
 float tts_voice::get_pitch() {
+	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
 	if (pitch_set) return fRound(nvgt_pitch, 3);
 	ensure_default();
 	tts_engine *engine = active_engine();
@@ -584,6 +633,7 @@ float tts_voice::get_pitch() {
 	return fRound(range_convert_midpoint(engine->get_pitch(), lo, mid, hi, -10.0f, 0.0f, 10.0f), 3);
 }
 float tts_voice::get_volume() {
+	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
 	if (volume_set) return fRound(nvgt_volume, 3);
 	ensure_default();
 	tts_engine *engine = active_engine();
@@ -591,17 +641,24 @@ float tts_voice::get_volume() {
 	if (!engine || !engine->get_volume_range(lo, mid, hi)) return 0;
 	return fRound(range_convert_midpoint(engine->get_volume(), lo, mid, hi, -100.0f, -50.0f, 0.0f), 3);
 }
-int tts_voice::get_voice_count() { ensure_enumerated(); return voices.size(); }
+int tts_voice::get_voice_count() {
+	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
+	ensure_enumerated();
+	return voices.size();
+}
 string tts_voice::get_voice_name(int index) {
+	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
 	ensure_enumerated();
 	voice_info *voice = get_voice_info(index);
 	return voice? voice->name : "";
 }
 int tts_voice::get_current_voice() {
+	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
 	ensure_enumerated();
 	return voice_set? current_voice_index : platform_voice_index();
 }
 void tts_voice::set_rate(float rate) {
+	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
 	if (std::isnan(rate)) return; // See set_volume().
 	ensure_default();
 	nvgt_rate = clamp(rate, -10.0f, 10.0f);
@@ -609,6 +666,7 @@ void tts_voice::set_rate(float rate) {
 	active_engine(true); // push the new parameter onto the engine
 }
 void tts_voice::set_pitch(float pitch) {
+	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
 	if (std::isnan(pitch)) return; // See set_volume().
 	ensure_default();
 	nvgt_pitch = clamp(pitch, -10.0f, 10.0f);
@@ -617,6 +675,7 @@ void tts_voice::set_pitch(float pitch) {
 }
 // NaN is no value: clamp lets it through, and the builtin synthesizer crashes on it, so it leaves the setting as it was.
 void tts_voice::set_volume(float volume) {
+	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
 	if (std::isnan(volume)) return;
 	ensure_default();
 	nvgt_volume = clamp(volume, -100.0f, 0.0f);
@@ -624,6 +683,7 @@ void tts_voice::set_volume(float volume) {
 	active_engine(true);
 }
 CScriptArray *tts_voice::list_voices() {
+	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
 	ensure_enumerated();
 	asIScriptContext *ctx = asGetActiveContext();
 	asIScriptEngine *engine = ctx->GetEngine();
@@ -637,6 +697,7 @@ CScriptArray *tts_voice::list_voices() {
 	return array;
 }
 bool tts_voice::set_voice(int voice) {
+	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
 	ensure_enumerated();
 	if (voice < 0 || voice >= static_cast<int>(voices.size())) return false;
 	if (!get_voice_info(voice)) return false;
@@ -659,12 +720,14 @@ bool tts_voice::set_voice(int voice) {
 }
 // The queue of speech played through the sound system belongs to this object rather than to an engine, so it is reported and stopped whichever voice is selected now, as is speech on engines this object spoke on before another voice was selected.
 bool tts_voice::get_speaking() {
-	if (queue_speaking()) return true;
+	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
+	if (!held.empty() || queue_speaking()) return true;
 	if (current_engine && current_engine->get_pcm_generation_state() != PCM_PREFERRED && current_engine->is_speaking()) return true;
 	for (const auto &engine : native_engines) if (engine != current_engine && engine->is_speaking()) return true;
 	return false;
 }
 bool tts_voice::refresh() {
+	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
 	voice_state = VOICES_FULL;
 	voice_info old_voice{};
 	bool had_voice = false;
@@ -714,6 +777,8 @@ bool tts_voice::refresh() {
 	return !voices.empty();
 }
 bool tts_voice::stop() {
+	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
+	held.clear();
 	sound_queue removed; // Released after the lock, see clear().
 	{
 		unique_lock<mutex> lock(queue_mtx);
@@ -726,6 +791,7 @@ bool tts_voice::stop() {
 	return stopped;
 }
 string tts_voice::get_engine_name() {
+	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
 	ensure_default();
 	voice_info *voice = get_voice_info(current_voice_index);
 	return voice? voice->engine_name : "";
@@ -736,11 +802,13 @@ string tts_voice::get_engine_name(int index) {
 	return engine_names[index];
 }
 string tts_voice::get_voice_language(int index) {
+	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
 	ensure_enumerated();
 	if (index < 0 || index >= static_cast<int>(voices.size())) return "";
 	return voices[index].language;
 }
 bool tts_voice::set_language(const string& language) {
+	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
 	// A language no voice serves, or whose voices the engines all refuse, leaves the object as it was, as a failed set_voice() does, rather than without voices and unable to speak.
 	string previous_language = current_language, previous_engine_name = current_engine_name;
 	vector<voice_info> previous_voices = voices;
@@ -776,6 +844,7 @@ bool tts_voice::set_language(const string& language) {
 }
 // The language filter the script set, or, without one, the language of the voice actually in use.
 string tts_voice::get_language() {
+	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
 	if (!current_language.empty()) return current_language;
 	ensure_default();
 	voice_info *voice = get_voice_info(voice_set? current_voice_index : platform_voice_index());
@@ -801,6 +870,7 @@ bool tts_voice::schedule(soundptr &s, bool interrupt) {
 }
 // Interrupting speech also silences what this object started on another path: the queue played through the sound system when the engine about to speak plays its own speech, and an engine selected before.
 void tts_voice::interrupt_other_speech(tts_engine *engine) {
+	held.clear();
 	sound_queue removed; // Released after the lock, see clear().
 	if (engine->get_pcm_generation_state() != PCM_PREFERRED) {
 		unique_lock<mutex> lock(queue_mtx);
@@ -810,9 +880,56 @@ void tts_voice::interrupt_other_speech(tts_engine *engine) {
 	native_engines.erase(remove_if(native_engines.begin(), native_engines.end(), [engine](const shared_ptr<tts_engine> &other) { return other.get() != engine; }), native_engines.end());
 }
 // Remembers the engine that just spoke, leaving out engines whose speech has ended.
-void tts_voice::remember_native_engine() {
-	native_engines.erase(remove_if(native_engines.begin(), native_engines.end(), [this](const shared_ptr<tts_engine> &engine) { return engine != current_engine && !engine->is_speaking(); }), native_engines.end());
-	if (current_engine && find(native_engines.begin(), native_engines.end(), current_engine) == native_engines.end()) native_engines.push_back(current_engine);
+void tts_voice::remember_native_engine(const shared_ptr<tts_engine> &spoke) {
+	native_engines.erase(remove_if(native_engines.begin(), native_engines.end(), [&](const shared_ptr<tts_engine> &engine) { return engine != current_engine && engine != spoke && !engine->is_speaking(); }), native_engines.end());
+	if (spoke && find(native_engines.begin(), native_engines.end(), spoke) == native_engines.end()) native_engines.push_back(spoke);
+}
+// Whether the object speaks on a path other than the given engine's: the sound system's queue, unless the engine is null, which stands for that queue, and engines that play their own speech.
+bool tts_voice::other_path_speaking(tts_engine *engine) {
+	if (engine && queue_speaking()) return true;
+	for (const auto &other : native_engines) if (other.get() != engine && other->is_speaking()) return true;
+	return false;
+}
+// Holds speech for held_speech_thread() to start. False, holding nothing, once that thread has been shut down with the program. Expects chain_mtx held.
+bool tts_voice::hold(held_speech &&speech) {
+	std::lock_guard<std::mutex> lock(g_held_speech.mtx);
+	if (g_held_speech.closed) return false;
+	held.push_back(std::move(speech));
+	g_held_speech.voices[id] = this;
+	if (!g_held_speech.thread.joinable()) g_held_speech.thread = std::thread(held_speech_thread);
+	g_held_speech.cv.notify_one();
+	return true;
+}
+// Starts held speech whose turn has come, in order: speech for a path once the object no longer speaks on any other. True while some is still held. Expects chain_mtx held.
+bool tts_voice::release_held() {
+	while (!held.empty()) {
+		tts_engine *engine = held.front().sound? nullptr : held.front().engine.get();
+		if (other_path_speaking(engine)) return true;
+		held_speech speech = std::move(held.front());
+		held.pop_front();
+		if (speech.sound) schedule(speech.sound, false);
+		else {
+			speech.engine->speak(speech.text, false, false);
+			remember_native_engine(speech.engine);
+		}
+	}
+	return false;
+}
+void tts_voice::held_speech_thread() {
+	std::unique_lock<std::mutex> lock(g_held_speech.mtx);
+	while (!g_held_speech.closed) {
+		if (g_held_speech.voices.empty()) {
+			g_held_speech.cv.wait(lock);
+			continue;
+		}
+		for (auto it = g_held_speech.voices.begin(); it != g_held_speech.voices.end();) {
+			// An object a script thread is using is looked at the next time rather than waited for, which would hold up the others and the scripts waiting to hold speech.
+			std::unique_lock<std::recursive_mutex> chain(it->second->chain_mtx, std::try_to_lock);
+			if (chain.owns_lock() && !it->second->release_held()) it = g_held_speech.voices.erase(it);
+			else ++it;
+		}
+		g_held_speech.cv.wait_for(lock, std::chrono::milliseconds(20));
+	}
 }
 // Moves the queue past its front utterance once that has played to its end, into finished. Expects queue_mtx held.
 void tts_voice::advance_queue() {
