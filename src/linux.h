@@ -23,6 +23,7 @@ class speechd_engine : public tts_engine_impl {
 	bool loaded; // A first connection succeeded; the engine stays available while it reconnects after that.
 	bool notifying; // The server reports when the messages of this connection end or are cancelled.
 	unsigned long long last_open; // When a connection was last opened or tried, in monotonic milliseconds.
+	unsigned long long socket_inode; // Of the connection's socket, to tell it from a file that took its number.
 	bool open_connection();
 	bool connection_closed();
 	void drop_connection();

@@ -23,6 +23,7 @@
 #include <mutex>
 #include <pthread.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <Poco/SharedLibrary.h>
 #include <stdexcept>
@@ -127,7 +128,7 @@ static bool speechd_message_pending(int msg_id) {
 	return g_speechd_pending.count(msg_id) > 0;
 }
 
-speechd_engine::speechd_engine() : tts_engine_impl("Speech Dispatcher"), connection(nullptr), loaded(false), notifying(false), last_open(0) {
+speechd_engine::speechd_engine() : tts_engine_impl("Speech Dispatcher"), connection(nullptr), loaded(false), notifying(false), last_open(0), socket_inode(0) {
 	if (!load_speechd_library()) return;
 	loaded = open_connection();
 }
@@ -154,25 +155,29 @@ bool speechd_engine::open_connection() {
 		notifying = spd_set_notification_on && spd_set_notification_on(opened, SPD_END) == 0 && spd_set_notification_on(opened, SPD_CANCEL) == 0;
 	}
 	if (!notifying) opened->callback_end = opened->callback_cancel = nullptr; // Ends that can't all be reported are not tracked.
+	struct stat socket_status;
+	socket_inode = fstat(opened->socket, &socket_status) == 0? (unsigned long long)socket_status.st_ino : 0;
 	connection = opened;
 	return true;
 }
 
-// libspeechd reports nothing when the server goes away; its event thread just closes the socket, and newer versions set it to -1. So the socket is checked instead: reading end of file, or failing other than for want of data, means the connection is gone.
-static bool speechd_socket_closed(int fd) {
+// libspeechd reports nothing when the server goes away; its event thread just closes the socket, and newer versions set it to -1. So the socket is checked instead: reading end of file, or failing other than for want of data, means the connection is gone. Older versions leave the number set, which a file opened since can have taken, so the socket must also still be the one the connection opened.
+static bool speechd_socket_closed(int fd, unsigned long long inode) {
 	if (fd < 0) return true;
+	struct stat socket_status;
+	if (fstat(fd, &socket_status) != 0 || (unsigned long long)socket_status.st_ino != inode) return true;
 	char byte;
 	ssize_t result = recv(fd, &byte, 1, MSG_PEEK | MSG_DONTWAIT);
 	return result == 0 || (result < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR);
 }
-bool speechd_engine::connection_closed() { return speechd_socket_closed(((SPDConnection*)connection)->socket); }
+bool speechd_engine::connection_closed() { return speechd_socket_closed(((SPDConnection*)connection)->socket, socket_inode); }
 
 // Messages of a connection that is dropped will never be reported, so they stop counting. A connection whose socket libspeechd already set to -1 is closed; one whose socket it closed without that (libspeechd before 0.9), or is about to close, is left alone, because spd_close would close that descriptor again, and by then the number may belong to another file.
 void speechd_engine::drop_connection() {
 	if (!connection) return;
 	SPDConnection *dropped = (SPDConnection*)connection;
 	connection = nullptr;
-	if (dropped->socket < 0 || !speechd_socket_closed(dropped->socket)) {
+	if (dropped->socket < 0 || !speechd_socket_closed(dropped->socket, socket_inode)) {
 		speechd_call_guard guard;
 		spd_close(dropped);
 	}
