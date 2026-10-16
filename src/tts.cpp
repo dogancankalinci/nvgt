@@ -363,7 +363,15 @@ bool tts_voice::sync_engine(engine_entry &entry, bool force) {
 	voice_info *voice = get_voice_info(current_voice_index);
 	bool voice_applied = true;
 	if (voice_set && voice) {
-		voice_applied = engine->set_voice(voice->engine_voice_index);
+		// The index the list was built with names another voice once voices are installed or removed while the program runs, as SAPI lists them again on every call, so the voice is then found again by its name.
+		int index = voice->engine_voice_index;
+		if (engine->get_voice_name(index) != voice->name) {
+			index = -1;
+			int count = engine->get_voice_count();
+			for (int i = 0; i < count && index < 0; i++) if (engine->get_voice_name(i) == voice->name) index = i;
+			if (index >= 0) voice->engine_voice_index = index;
+		}
+		voice_applied = index >= 0 && engine->set_voice(index);
 		if (voice_applied) entry.voice_changed = true;
 	} else if (entry.voice_changed) {
 		entry.voice_changed = !tts_engine_restore_voice(entry); // A voice that couldn't be put back still counts as changed, so the engine isn't handed on with it.
@@ -412,11 +420,14 @@ int tts_voice::platform_voice_index() {
 	if (!engine || !voice) return -1;
 	int engine_voice = engine->get_current_voice();
 	if (engine_voice < 0) return -1;
-	string engine_name = voice->engine_name;
-	for (size_t i = 0; i < voices.size(); i++) {
-		if (voices[i].engine_name != engine_name || voices[i].engine_voice_index != engine_voice) continue;
-		current_voice_index = i;
-		return i;
+	string engine_name = voice->engine_name, engine_voice_name = engine->get_voice_name(engine_voice);
+	// By index and name, and failing that by name alone, as indices move when voices are installed or removed while the program runs.
+	for (int pass = 0; pass < 2; pass++) {
+		for (size_t i = 0; i < voices.size(); i++) {
+			if (voices[i].engine_name != engine_name || voices[i].name != engine_voice_name || (pass == 0 && voices[i].engine_voice_index != engine_voice)) continue;
+			current_voice_index = i;
+			return i;
+		}
 	}
 	return -1;
 }
