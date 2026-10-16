@@ -66,6 +66,7 @@ void speech_free( short* sample_pairs, void* memctx );
 #endif
 #include <math.h>
 #include <ctype.h>
+#include <limits.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -3627,12 +3628,13 @@ static int tts_xlate_cardinal(int value, struct tts_darray_t* phone, void* memct
 
     if (value < 0) {
         nph += tts_xlate_string("minus", phone, memctx);
-        value = (-value);
 
-        if (value < 0) {                 /* Overflow!  -32768 */
+        if (value == INT_MIN) {          /* Overflow!  -32768. NVGT: checked before negating, as the negation overflows and a compiler may drop a check after it. */
             nph += tts_xlate_string("a lot", phone, memctx);
             return nph;
         }
+
+        value = (-value);
     }
 
     if (value >= 1000000000L) {
@@ -3701,6 +3703,21 @@ static int tts_xlate_cardinal(int value, struct tts_darray_t* phone, void* memct
 
     nph += tts_xlate_string(tts_Cardinals[value], phone, memctx);
 
+    return nph;
+}
+
+/* NVGT: a number read from the text, which can be past the range of int; that is read as "a lot", as tts_xlate_cardinal reads the one int it can't negate. */
+static int tts_xlate_read_number(long long value, int sign, struct tts_darray_t* phone, void* memctx)
+{
+    int nph = 0;
+
+    if (value <= INT_MAX)
+        return tts_xlate_cardinal((int)value * sign, phone, memctx);
+
+    if (sign < 0)
+        nph += tts_xlate_string("minus", phone, memctx);
+
+    nph += tts_xlate_string("a lot", phone, memctx);
     return nph;
 }
 
@@ -4187,19 +4204,20 @@ static int tts_xlate_string(const char *string, struct tts_darray_t *phone, void
         } else {
             if (isdigit(ch) || (ch == '-' && isdigit(s[1]))) {
                 int sign = (ch == '-') ? -1 : 1;
-                int value = 0;
+                long long value = 0; /* NVGT: wider than int and not grown past its range, so a long run of digits can't overflow it. */
 
                 if (sign < 0)
                     ch = *++s;
 
                 while (isdigit(ch = *s)) {
-                    value = value * 10 + ch - '0';
+                    if (value <= INT_MAX)
+                        value = value * 10 + ch - '0';
                     s++;
                 }
 
                 if (ch == '.' && isdigit(s[1])) {
                     word = ++s;
-                    nph += tts_xlate_cardinal(value * sign, phone, memctx);
+                    nph += tts_xlate_read_number(value, sign, phone, memctx);
                     nph += tts_xlate_string("point", phone, memctx);
 
                     while (isdigit(ch = *s))
@@ -4208,7 +4226,7 @@ static int tts_xlate_string(const char *string, struct tts_darray_t *phone, void
                     nph += tts_spell_out(word, (int)(s - word), phone, memctx);
                 } else {
                     /* check for ordinals, date, time etc. can go in here */
-                    nph += tts_xlate_cardinal(value * sign, phone, memctx);
+                    nph += tts_xlate_read_number(value, sign, phone, memctx);
                 }
             } else {
                 if (ch == '[' && strchr(s, ']')) {
