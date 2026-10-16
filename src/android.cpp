@@ -765,12 +765,18 @@ tts_audio_data* android_tts_engine::speak_to_pcm(const std::string &text) {
 	int pcmSampleRate = tts_call_int(TTSObj, 0, midGetPcmSampleRate);
 	int pcmAudioFormat = tts_call_int(TTSObj, 0, midGetPcmAudioFormat);
 	int pcmChannelCount = tts_call_int(TTSObj, 0, midGetPcmChannelCount);
+	jsize dataSize = env->GetArrayLength(jpcmData.get());
+	// Text with nothing to say synthesizes to no samples, which is empty audio rather than a failure, as with the other
+	// engines. With no samples to read, a format the engine didn't report is made up.
+	if (dataSize <= 0) {
+		void* empty = malloc(1);
+		if (!empty) return nullptr;
+		return new tts_audio_data(this, empty, 0, pcmSampleRate > 0? pcmSampleRate : 22050, pcmChannelCount > 0? pcmChannelCount : 1, 16);
+	}
 	if (pcmSampleRate <= 0 || pcmChannelCount <= 0) return nullptr; // No format was reported, so the samples can't be read.
 
 	// Get PCM data. The bytes stay pinned until free_pcm, which may run on another thread, so they are taken through
 	// a global reference to the array.
-	jsize dataSize = env->GetArrayLength(jpcmData.get());
-	if (dataSize <= 0) return nullptr;
 	jbyteArray globalRef = (jbyteArray)env->NewGlobalRef(jpcmData.get());
 	if (!globalRef) {
 		env->ExceptionClear();
@@ -797,15 +803,17 @@ tts_audio_data* android_tts_engine::speak_to_pcm(const std::string &text) {
 }
 
 void android_tts_engine::free_pcm(tts_audio_data* data) {
-	if (!data || !data->context) return;
-	JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
-	if (env) {
-		env->ReleaseByteArrayElements((jbyteArray)data->context, (jbyte*)data->data, 0);
-		env->DeleteGlobalRef((jobject)data->context);
+	if (!data) return;
+	if (data->context) {
+		JNIEnv* env = (JNIEnv*)SDL_GetAndroidJNIEnv();
+		if (env) {
+			env->ReleaseByteArrayElements((jbyteArray)data->context, (jbyte*)data->data, 0);
+			env->DeleteGlobalRef((jobject)data->context);
+		}
+		data->data = nullptr; // The VM's memory, never to be passed to free().
+		data->context = nullptr;
 	}
-	data->data = nullptr; // The VM's memory, never to be passed to free().
-	data->context = nullptr;
-	tts_engine_impl::free_pcm(data);
+	tts_engine_impl::free_pcm(data); // Also frees empty audio's own allocation, see speak_to_pcm.
 }
 
 bool screen_reader_load() { return true; }
