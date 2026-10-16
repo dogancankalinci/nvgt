@@ -164,9 +164,9 @@ static ma_format tts_pcm_format(const tts_audio_data* data) {
 tts_audio_data::tts_audio_data(tts_engine* eng, void* dat, unsigned int size, unsigned int rate, unsigned int chans, unsigned int bits, void* ctx) : engine(eng), data(dat), size_in_bytes(size), sample_rate(rate), channels(chans), bitsize(bits), context(ctx) {}
 void tts_audio_data::free() { if (engine) engine->free_pcm(this); }
 
-// The builtin synthesizer knows ASCII only, and spells out a word with any other byte in it letter by letter, naming each byte as the ASCII character it masks to: "café" came out as "C A F C close parenthesis". So the text it gets has each Latin letter as its base letters and everything else outside ASCII as a space. The text is valid UTF-8 by then, see tts_valid_utf8.
+// The builtin synthesizer knows ASCII only, and spells out a word with any other byte in it letter by letter, naming each byte as the ASCII character it masks to: "café" came out as "C A F C close parenthesis". So the text it gets has each Latin letter as its base letters, typographic quotes and hyphens as their ASCII forms, combining marks and invisible characters left out, as they belong to the letters around them, and everything else outside ASCII as a space. The text is valid UTF-8 by then, see tts_valid_utf8.
 static string tts_fallback_ascii(const string &text) {
-	static const char *const latin[] = { // U+00C0 to U+017F.
+	static const char *const latin[] = { // U+00C0 to U+024F.
 		"A", "A", "A", "A", "A", "A", "AE", "C", "E", "E", "E", "E", "I", "I", "I", "I",
 		"D", "N", "O", "O", "O", "O", "O", " ", "O", "U", "U", "U", "U", "Y", "Th", "ss",
 		"a", "a", "a", "a", "a", "a", "ae", "c", "e", "e", "e", "e", "i", "i", "i", "i",
@@ -178,7 +178,38 @@ static string tts_fallback_ascii(const string &text) {
 		"l", "L", "l", "N", "n", "N", "n", "N", "n", "n", "Ng", "ng", "O", "o", "O", "o",
 		"O", "o", "OE", "oe", "R", "r", "R", "r", "R", "r", "S", "s", "S", "s", "S", "s",
 		"S", "s", "T", "t", "T", "t", "T", "t", "U", "u", "U", "u", "U", "u", "U", "u",
-		"U", "u", "U", "u", "W", "w", "Y", "y", "Y", "Z", "z", "Z", "z", "Z", "z", "s"
+		"U", "u", "U", "u", "W", "w", "Y", "y", "Y", "Z", "z", "Z", "z", "Z", "z", "s",
+		"b", "B", "B", "b", " ", " ", "O", "C", "c", "D", "D", "D", "d", "d", "E", "E",
+		"E", "F", "f", "G", "G", "hv", "I", "I", "K", "k", "l", "l", "M", "N", "n", "O",
+		"O", "o", "OI", "oi", "P", "p", "R", " ", " ", "Sh", " ", "t", "T", "t", "T", "U",
+		"u", "U", "V", "Y", "y", "Z", "z", "Z", "Z", "z", "z", " ", " ", " ", " ", "w",
+		" ", " ", " ", " ", "DZ", "Dz", "dz", "LJ", "Lj", "lj", "NJ", "Nj", "nj", "A", "a", "I",
+		"i", "O", "o", "U", "u", "U", "u", "U", "u", "U", "u", "U", "u", "e", "A", "a",
+		"A", "a", "AE", "ae", "G", "g", "G", "g", "K", "k", "O", "o", "O", "o", "Z", "z",
+		"j", "DZ", "Dz", "dz", "G", "g", "Hw", "W", "N", "n", "A", "a", "AE", "ae", "O", "o",
+		"A", "a", "A", "a", "E", "e", "E", "e", "I", "i", "I", "i", "O", "o", "O", "o",
+		"R", "r", "R", "r", "U", "u", "U", "u", "S", "s", "T", "t", "Y", "y", "H", "h",
+		"N", "d", "OU", "ou", "Z", "z", "A", "a", "E", "e", "O", "o", "O", "o", "O", "o",
+		"O", "o", "Y", "y", "l", "n", "t", "j", " ", " ", "A", "C", "c", "L", "T", "s",
+		"z", " ", " ", "B", "U", "V", "E", "e", "J", "j", "Q", "q", "R", "r", "Y", "y"
+	};
+	static const char *const latin_additional[] = { // U+1E00 to U+1EFF.
+		"A", "a", "B", "b", "B", "b", "B", "b", "C", "c", "D", "d", "D", "d", "D", "d",
+		"D", "d", "D", "d", "E", "e", "E", "e", "E", "e", "E", "e", "E", "e", "F", "f",
+		"G", "g", "H", "h", "H", "h", "H", "h", "H", "h", "H", "h", "I", "i", "I", "i",
+		"K", "k", "K", "k", "K", "k", "L", "l", "L", "l", "L", "l", "L", "l", "M", "m",
+		"M", "m", "M", "m", "N", "n", "N", "n", "N", "n", "N", "n", "O", "o", "O", "o",
+		"O", "o", "O", "o", "P", "p", "P", "p", "R", "r", "R", "r", "R", "r", "R", "r",
+		"S", "s", "S", "s", "S", "s", "S", "s", "S", "s", "T", "t", "T", "t", "T", "t",
+		"T", "t", "U", "u", "U", "u", "U", "u", "U", "u", "U", "u", "V", "v", "V", "v",
+		"W", "w", "W", "w", "W", "w", "W", "w", "W", "w", "X", "x", "X", "x", "Y", "y",
+		"Z", "z", "Z", "z", "Z", "z", "h", "t", "w", "y", "a", "s", "s", "s", "SS", "d",
+		"A", "a", "A", "a", "A", "a", "A", "a", "A", "a", "A", "a", "A", "a", "A", "a",
+		"A", "a", "A", "a", "A", "a", "A", "a", "E", "e", "E", "e", "E", "e", "E", "e",
+		"E", "e", "E", "e", "E", "e", "E", "e", "I", "i", "I", "i", "O", "o", "O", "o",
+		"O", "o", "O", "o", "O", "o", "O", "o", "O", "o", "O", "o", "O", "o", "O", "o",
+		"O", "o", "O", "o", "U", "u", "U", "u", "U", "u", "U", "u", "U", "u", "U", "u",
+		"U", "u", "Y", "y", "Y", "y", "Y", "y", "Y", "y", "LL", "ll", "V", "v", "Y", "y"
 	};
 	string out;
 	out.reserve(text.size());
@@ -191,9 +222,17 @@ static string tts_fallback_ascii(const string &text) {
 		}
 		size_t length = lead >= 0xF0? 4 : lead >= 0xE0? 3 : 2;
 		if (i + length > text.size()) break;
-		uint32_t c = length == 2? ((lead & 0x1F) << 6) | (text[i + 1] & 0x3F) : 0;
-		out += c >= 0xC0 && c < 0x180? latin[c - 0xC0] : " ";
+		uint32_t c = lead & (length == 2? 0x1F : length == 3? 0x0F : 0x07);
+		for (size_t k = 1; k < length; k++) c = (c << 6) | (text[i + k] & 0x3F);
 		i += length;
+		if (c >= 0xC0 && c < 0x250) out += latin[c - 0xC0];
+		else if (c >= 0x1E00 && c < 0x1F00) out += latin_additional[c - 0x1E00];
+		else if (c == 0x2018 || c == 0x2019 || c == 0x201A || c == 0x201B || c == 0x2032) out += '\'';
+		else if ((c >= 0x201C && c <= 0x201F) || c == 0x2033) out += '"';
+		else if (c == 0x2010 || c == 0x2011) out += '-';
+		else if (c == 0x2026) out += "...";
+		else if ((c >= 0x300 && c < 0x370) || c == 0xAD || (c >= 0x200B && c <= 0x200D) || c == 0x2060 || c == 0xFEFF) continue;
+		else out += ' ';
 	}
 	return out;
 }
