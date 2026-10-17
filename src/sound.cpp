@@ -2399,7 +2399,7 @@ void set_sound_master_volume(float db) {
 	default_engine_ref engine;
 	if (!engine)
 		return;
-	if (db > 0 || db < -100)
+	if (!(db <= 0 && db >= -100)) // NaN fails both, and is ignored as other values out of range are.
 		return;
 	ma_engine_set_volume(engine->get_ma_engine(), ma_volume_db_to_linear(db));
 }
