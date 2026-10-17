@@ -2,7 +2,7 @@
 	The number of the currently selected voice.
 	int tts_voice::voice;
 	## Remarks:
-		This property is read-only; set_voice changes the voice. Until a voice is chosen with set_voice or set_language, this is the voice the engine speaks with, or -1 when the engine can't say which one that is, or that voice isn't in the list.
+		This property is read-only; set_voice changes the voice. Until a voice is chosen with set_voice or set_language, this is the voice the engine speaks with, or -1 when the engine can't say which one that is, or that voice isn't in the list, as when a Siri voice is chosen in Apple's Spoken Content settings, which apps can't use or see.
 */
 
 // Example:

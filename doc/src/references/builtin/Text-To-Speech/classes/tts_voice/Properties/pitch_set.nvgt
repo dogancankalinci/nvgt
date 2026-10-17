@@ -2,7 +2,7 @@
 	Whether the script set the pitch of the voice, with set_pitch or the pitch property, rather than the voice following the platform's own setting.
 	bool tts_voice::pitch_set;
 	## Remarks:
-		This property is read-only. Until the pitch is set, the voice speaks at the pitch it starts with: on Android the pitch chosen in the system's speech settings, which it follows when the user changes it; on Windows, Apple platforms and with the builtin voice the engine's default pitch, as there is no such setting to follow, or Apple doesn't let apps read it. Speech Dispatcher on Linux speaks at the pitch of its own configuration, and doesn't take a pitch set here.
+		This property is read-only. Until the pitch is set, the voice speaks at the pitch it starts with: on Android the pitch chosen in the system's speech settings, which it follows when the user changes it; on Windows and with the builtin voice the engine's default pitch, as there is no such setting to follow; on Apple platforms the system's own, which the pitch property reports as Apple's default, 0, as Apple doesn't let apps read the user's speech settings. Speech Dispatcher on Linux speaks at the pitch of its own configuration, and doesn't take a pitch set here.
 */
 
 // Example:
