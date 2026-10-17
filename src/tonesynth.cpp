@@ -16,6 +16,7 @@
 */
 
 #include "tonesynth.h"
+#include <memory>
 #include <angelscript.h>
 #include <scriptarray.h>
 #include <Poco/Format.h>
@@ -153,22 +154,20 @@ int tone_synth::get_channels() {
 	return el_tonar_get_channels(gen);
 }
 sound* tone_synth::generate_sound() {
-init_sound();
+	if (!init_sound()) return nullptr;
 	int size = el_tonar_output_buffer_size(gen);
 	if (size <= 0) return nullptr;
-	char* buffer = new char[size];
-	if (!buffer) return nullptr;
-	if (!el_tonar_output_buffer(gen, buffer, size)) {
-		delete[] buffer;
-		return nullptr;
-	}
+	std::unique_ptr<char[]> buffer(new char[size]);
+	if (!el_tonar_output_buffer(gen, buffer.get(), size)) return nullptr;
 	sound *s = g_audio_engine->new_sound();
-	if (!s) {
-		delete[] buffer;
-		return nullptr;
+	if (!s) return nullptr;
+	bool loaded = false;
+	try {
+		loaded = s->load_pcm(buffer.get(), static_cast<unsigned int>(size), ma_format_s16, gen->sample_rate, gen->channels);
+	} catch (...) {
+		s->release();
+		throw;
 	}
-	bool loaded = s->load_pcm(buffer, static_cast<unsigned int>(size), ma_format_s16, gen->sample_rate, gen->channels);
-	delete[] buffer;
 	if (!loaded) {
 		s->release(); // Sound object is not passed to the script if load fails, delete it.
 		return nullptr;

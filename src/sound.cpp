@@ -433,7 +433,7 @@ public:
 			cfg.jobThreadCount = std::clamp(std::thread::hardware_concurrency(), 1u, (unsigned int)MA_RESOURCE_MANAGER_MAX_JOB_THREAD_COUNT);
 			resource_manager = std::make_unique<ma_resource_manager>();
 			if ((g_soundsystem_last_error = ma_resource_manager_init(&cfg, &*resource_manager)) != MA_SUCCESS) {
-				uninit_device(&*device);
+				if (device) uninit_device(&*device); // None for an engine without a device.
 				device.reset();
 				engine.reset();
 				resource_manager.reset();
