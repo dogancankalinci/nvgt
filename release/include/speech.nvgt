@@ -29,6 +29,8 @@ bool speak(string text, bool interrupt = tts_default_interrupt, text_processing_
 		while (tmp.length() > 0) {
 			uint pos = 4096;
 			while (pos > 2048 and pos < tmp.length() and tmp[pos] != " ") pos--;
+			// Never inside a character: UTF-8 continuation bytes, 0x80 to 0xBF, are at most three.
+			for (uint back = 0; back < 3 and pos < tmp.length() and tmp[pos] >= "\x80" and tmp[pos] < "\xC0"; back++) pos--;
 			raw_speak(tmp.substr(0, pos), interrupt and tmp.length() == text.length());
 			tmp = tmp.substr(pos);
 		}
