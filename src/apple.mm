@@ -39,6 +39,8 @@
 #include "UI.h"
 #include "xplatform.h"
 
+bool init_sound(); // From sound.h, which brings miniaudio in.
+
 void register_native_tts() { tts_engine_register("avspeech", []() -> std::shared_ptr<tts_engine> { return std::make_shared<AVTTSVoice>(); }); }
 
 // What a blocking speak waits for: the end of its own utterance. The synthesizer calls its delegate on a thread of its choosing, so the state is atomic.
@@ -319,7 +321,12 @@ private:
 	}
 };
 
-AVTTSVoice::AVTTSVoice() : tts_engine_impl("avspeech"), impl(new Impl()), RefCount(1) {}
+AVTTSVoice::AVTTSVoice() : tts_engine_impl("avspeech"), impl(new Impl()), RefCount(1) {
+	#if TARGET_OS_IOS
+	// The synthesizer speaks in the application's audio session, which the sound system sets up to mix with other audio and not to be silenced by the Ring/Silent switch; until it starts, speech plays in iOS's default session, which stops other audio and is silenced. A sound system that can't start leaves speech as it was.
+	try { init_sound(); } catch (...) {}
+	#endif
+}
 AVTTSVoice::~AVTTSVoice() { delete impl; }
 
 bool AVTTSVoice::speak(const std::string& text, bool interrupt, bool blocking) {
