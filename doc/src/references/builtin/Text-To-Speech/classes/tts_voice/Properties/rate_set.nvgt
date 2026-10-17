@@ -1,0 +1,14 @@
+/**
+	Whether the script set the rate of the voice, with set_rate or the rate property, rather than the voice following the platform's own setting.
+	bool tts_voice::rate_set;
+	## Remarks:
+		This property is read-only. Until the rate is set, the voice speaks with the rate the user chose in the platform's speech settings, and follows it when the user changes it.
+*/
+
+// Example:
+void main() {
+	tts_voice v;
+	alert("Before", "rate_set: " + v.rate_set);
+	v.rate = 2;
+	alert("After", "rate_set: " + v.rate_set);
+}

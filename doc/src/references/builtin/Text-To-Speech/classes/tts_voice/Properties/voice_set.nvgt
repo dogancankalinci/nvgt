@@ -1,0 +1,14 @@
+/**
+	Whether the script set the voice of the voice, with set_voice or set_language, rather than the voice following the platform's own setting.
+	bool tts_voice::voice_set;
+	## Remarks:
+		This property is read-only. Until the voice is set, the voice speaks with the voice the user chose in the platform's speech settings, and follows it when the user changes it.
+*/
+
+// Example:
+void main() {
+	tts_voice v;
+	alert("Before", "voice_set: " + v.voice_set);
+	v.set_voice(0);
+	alert("After", "voice_set: " + v.voice_set);
+}

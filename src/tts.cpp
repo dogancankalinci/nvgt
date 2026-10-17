@@ -879,6 +879,10 @@ bool tts_voice::set_voice(int voice) {
 	return true;
 }
 // The queue of speech played through the sound system belongs to this object rather than to an engine, so it is reported and stopped whichever voice is selected now, as is speech on engines this object spoke on before another voice was selected.
+bool tts_voice::get_rate_set() { std::lock_guard<std::recursive_mutex> chain(chain_mtx); return rate_set; }
+bool tts_voice::get_pitch_set() { std::lock_guard<std::recursive_mutex> chain(chain_mtx); return pitch_set; }
+bool tts_voice::get_volume_set() { std::lock_guard<std::recursive_mutex> chain(chain_mtx); return volume_set; }
+bool tts_voice::get_voice_set() { std::lock_guard<std::recursive_mutex> chain(chain_mtx); return voice_set; }
 bool tts_voice::get_speaking() {
 	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
 	if (!held.empty() || queue_speaking()) return true;
@@ -1226,6 +1230,10 @@ void RegisterTTSVoice(asIScriptEngine *engine) {
 	engine->RegisterObjectMethod("tts_voice", "bool set_language(const string& in language)", asMETHOD(tts_voice, set_language), asCALL_THISCALL);
 	engine->RegisterObjectMethod("tts_voice", "string get_language() const property", asMETHOD(tts_voice, get_language), asCALL_THISCALL);
 	engine->RegisterObjectMethod("tts_voice", "bool get_speaking() const property", asMETHOD(tts_voice, get_speaking), asCALL_THISCALL);
+	engine->RegisterObjectMethod("tts_voice", "bool get_rate_set() const property", asMETHOD(tts_voice, get_rate_set), asCALL_THISCALL);
+	engine->RegisterObjectMethod("tts_voice", "bool get_pitch_set() const property", asMETHOD(tts_voice, get_pitch_set), asCALL_THISCALL);
+	engine->RegisterObjectMethod("tts_voice", "bool get_volume_set() const property", asMETHOD(tts_voice, get_volume_set), asCALL_THISCALL);
+	engine->RegisterObjectMethod("tts_voice", "bool get_voice_set() const property", asMETHOD(tts_voice, get_voice_set), asCALL_THISCALL);
 	engine->RegisterObjectMethod("tts_voice", "int get_voice() const property", asMETHOD(tts_voice, get_current_voice), asCALL_THISCALL);
 	engine->RegisterGlobalFunction("bool get_SCREEN_READER_AVAILABLE() property", asFUNCTION(screen_reader_load), asCALL_CDECL);
 	engine->RegisterGlobalFunction("string screen_reader_detect()", asFUNCTION(screen_reader_detect), asCALL_CDECL);

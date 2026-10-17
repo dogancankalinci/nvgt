@@ -214,6 +214,11 @@ public:
 	bool set_voice(int voice);
 	int get_current_voice();
 	bool get_speaking();
+	// Whether the script set each of these, rather than the object following the platform's own settings.
+	bool get_rate_set();
+	bool get_pitch_set();
+	bool get_volume_set();
+	bool get_voice_set();
 	bool refresh();
 	bool stop();
 	std::string get_engine_name();

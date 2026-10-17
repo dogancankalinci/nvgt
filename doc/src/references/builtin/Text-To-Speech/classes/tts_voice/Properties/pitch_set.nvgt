@@ -1,0 +1,14 @@
+/**
+	Whether the script set the pitch of the voice, with set_pitch or the pitch property, rather than the voice following the platform's own setting.
+	bool tts_voice::pitch_set;
+	## Remarks:
+		This property is read-only. Until the pitch is set, the voice speaks with the pitch the user chose in the platform's speech settings, and follows it when the user changes it.
+*/
+
+// Example:
+void main() {
+	tts_voice v;
+	alert("Before", "pitch_set: " + v.pitch_set);
+	v.pitch = 2;
+	alert("After", "pitch_set: " + v.pitch_set);
+}

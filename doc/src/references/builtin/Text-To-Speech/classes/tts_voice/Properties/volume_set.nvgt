@@ -1,0 +1,14 @@
+/**
+	Whether the script set the volume of the voice, with set_volume or the volume property, rather than the voice following the platform's own setting.
+	bool tts_voice::volume_set;
+	## Remarks:
+		This property is read-only. Until the volume is set, the voice speaks with the volume the user chose in the platform's speech settings, and follows it when the user changes it.
+*/
+
+// Example:
+void main() {
+	tts_voice v;
+	alert("Before", "volume_set: " + v.volume_set);
+	v.volume = -10;
+	alert("After", "volume_set: " + v.volume_set);
+}
