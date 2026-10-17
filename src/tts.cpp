@@ -247,12 +247,21 @@ static string tts_fallback_ascii(const string &text) {
 		{0xBC, " and a quarter ", " one quarter "}, {0xBD, " and a half ", " one half "}, {0xBE, " and three quarters ", " three quarters "},
 		{0x2153, " and a third ", " one third "}, {0x2154, " and two thirds ", " two thirds "}, {0x215B, " and an eighth ", " one eighth "}
 	};
-	// Superscript digits are a power, "squared" or "cubed" for a lone 2 or 3; subscript digits are digits.
-	auto superscript_digit = [](uint32_t c) -> int {
-		if (c == 0xB9) return 1;
-		if (c == 0xB2 || c == 0xB3) return c - 0xB0;
-		if (c == 0x2070 || (c >= 0x2074 && c <= 0x2079)) return c - 0x2070;
-		return -1;
+	// Superscripts are a power, "10⁻³" ten to the power of minus three, and a lone superscript 2 or 3 "squared" or "cubed"; subscripts are the characters they stand for.
+	auto superscript = [](uint32_t c) -> const char * {
+		static const char *const digits[] = {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"};
+		switch (c) {
+			case 0xB9: return "1";
+			case 0xB2: return "2";
+			case 0xB3: return "3";
+			case 0x2071: return " i ";
+			case 0x207A: return " plus ";
+			case 0x207B: return " minus ";
+			case 0x207C: return " equals ";
+			case 0x207D: case 0x207E: return " ";
+			case 0x207F: return " n ";
+		}
+		return c == 0x2070 || (c >= 0x2074 && c <= 0x2079)? digits[c - 0x2070] : nullptr;
 	};
 	string out;
 	out.reserve(text.size());
@@ -265,18 +274,18 @@ static string tts_fallback_ascii(const string &text) {
 		decode(i, next);
 		uint32_t before = previous;
 		previous = c;
-		if (int digit = superscript_digit(c); digit >= 0) {
-			bool first = superscript_digit(before) < 0, last = superscript_digit(next) < 0;
-			if (first && last && (digit == 2 || digit == 3)) out += digit == 2? " squared " : " cubed ";
+		if (const char *power = superscript(c)) {
+			bool first = !superscript(before), last = !superscript(next);
+			if (first && last && (c == 0xB2 || c == 0xB3)) out += c == 0xB2? " squared " : " cubed ";
 			else {
 				if (first) out += " to the power of ";
-				out += (char)('0' + digit);
+				out += power;
 				if (last) out += ' ';
 			}
 			continue;
 		}
-		if (c >= 0x2080 && c <= 0x2089) {
-			out += (char)('0' + (c - 0x2080));
+		if (c >= 0x2080 && c <= 0x208E) {
+			out += "0123456789+-=()"[c - 0x2080];
 			continue;
 		}
 		bool symbol = false;
