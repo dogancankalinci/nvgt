@@ -4,7 +4,7 @@
 	## Returns:
 		bool: true if the function succeeded, false otherwise, for instance when no screen reader is running.
 	## Remarks:
-		On Apple platforms this sends VoiceOver an empty announcement that interrupts what it is saying.
+		On Apple platforms this sends VoiceOver an empty announcement that interrupts what it is saying. On Linux, once NVGT has connected to Speech Dispatcher, this returns true when that connection is gone, as nothing NVGT said is being spoken then.
 */
 
 // Example:

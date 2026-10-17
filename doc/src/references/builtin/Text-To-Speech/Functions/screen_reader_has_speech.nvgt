@@ -4,7 +4,7 @@
 	## Returns:
 		bool: true if the screen reader supports speech, false if not, or if no screen reader is active.
 	## Remarks:
-		On Linux, where Speech Dispatcher stands in for a screen reader, this is true whenever NVGT can reach Speech Dispatcher, whether or not a screen reader such as Orca is running.
+		On Linux, where Speech Dispatcher stands in for a screen reader, this is true when NVGT could connect to Speech Dispatcher, whether or not a screen reader such as Orca is running. NVGT tries that once per run, the first time any speech needs it, and the answer stays the same for the rest of the run: if Speech Dispatcher can't be reached later, this is still true while speech fails until a new connection can be opened.
 */
 
 // Example:

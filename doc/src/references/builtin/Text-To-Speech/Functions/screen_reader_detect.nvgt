@@ -4,7 +4,7 @@
 	## Returns:
 		string: the name of the given screen reader, or a blank string if none was found.
 	## Remarks:
-		What is reported depends on the platform. On Windows it is the screen reader's name, such as "NVDA" or "JAWS", and on Apple platforms "VoiceOver". On Android it is the id of the first enabled accessibility service that gives spoken feedback, such as "com.google.android.marvin.talkback/.TalkBackService" for TalkBack, which can also be another such service enabled alongside the screen reader. On Linux, where Speech Dispatcher stands in for a screen reader, it is "Speech Dispatcher" whenever NVGT can reach it, whether or not a screen reader such as Orca is running.
+		What is reported depends on the platform. On Windows it is the screen reader's name, such as "NVDA" or "JAWS", and on Apple platforms "VoiceOver". On Android it is the id of the first enabled accessibility service that gives spoken feedback, such as "com.google.android.marvin.talkback/.TalkBackService" for TalkBack, which can also be another such service enabled alongside the screen reader. On Linux, where Speech Dispatcher stands in for a screen reader, it is "Speech Dispatcher" when NVGT could connect to it, whether or not a screen reader such as Orca is running; as with screen_reader_has_speech(), that is tried once per run and the answer stays the same afterwards.
 */
 
 // Example:
