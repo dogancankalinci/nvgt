@@ -14,6 +14,7 @@
 
 #include <cmath>
 #include <limits>
+#include <type_traits>
 #include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
@@ -36,8 +37,12 @@ using namespace std;
 
 // Trim prenormalized TTS based on minimum thresholds in dB. Size is in frames. A sample's level is its distance from silence, which is 128 for unsigned 8-bit samples and 0 for signed ones, relative to the largest such distance. Audio with no frame at the beginning threshold is left whole and reported as quiet.
 template <class t> static t *tts_trim_internal(t *data, unsigned int* size_in_frames, int channels, float begin_db, float end_db, bool *quiet, double silence = 0, double peak = numeric_limits<t>::max()) {
-	double min_begin_sample = ceil(ma_volume_db_to_linear(begin_db) * peak);
-	double min_end_sample = ceil(ma_volume_db_to_linear(end_db) * peak);
+	double min_begin_sample = ma_volume_db_to_linear(begin_db) * peak;
+	double min_end_sample = ma_volume_db_to_linear(end_db) * peak;
+	if constexpr (!std::is_floating_point_v<t>) { // Whole sample steps for integer samples.
+		min_begin_sample = ceil(min_begin_sample);
+		min_end_sample = ceil(min_end_sample);
+	}
 	*quiet = true;
 	for (unsigned long i = 0; i < *size_in_frames; i++) {
 		double mean = 0;
@@ -78,6 +83,11 @@ static void* tts_trim(tts_audio_data* data, bool *quiet, float begin_db = -60, f
 			size_in_frames = data->size_in_bytes / data->channels;
 			trimmed_data = tts_trim_internal<uint8_t>((uint8_t*)data->data, &size_in_frames, data->channels, begin_db, end_db, quiet, 128, 127);
 			data->size_in_bytes = size_in_frames * data->channels;
+			return trimmed_data;
+		case 32: // Floats from Android engines, with 1 at full scale.
+			size_in_frames = data->size_in_bytes / 4 / data->channels;
+			trimmed_data = tts_trim_internal<float>((float*)data->data, &size_in_frames, data->channels, begin_db, end_db, quiet, 0, 1);
+			data->size_in_bytes = size_in_frames * 4 * data->channels;
 			return trimmed_data;
 		default:
 			return data->data;
