@@ -60,7 +60,7 @@ void stop_speech() {
 	tts.stop();
 }
 
-// The voices' names as the user sees them and as they are saved: with the language added to a name another voice also has, as on Apple platforms, which list some voices once per language under one name.
+// The voices' names as the user sees them: with the language added to a name another voice also has, as on Apple platforms, which list some voices once per language under one name.
 string[] tts_voice_display_names(tts_voice@ v) {
 	string[]@ names = v.list_voices();
 	string[] shown = names;
@@ -73,13 +73,15 @@ string[] tts_voice_display_names(tts_voice@ v) {
 	}
 	return shown;
 }
+// A voice's name with its language, as it is saved, so that it is found again whichever other voices of that name are listed when loading.
+string tts_voice_saved_name(tts_voice@ v, int voice) {
+	string name = v.get_voice_name(voice), language = v.get_voice_language(voice);
+	return language == ""? name : name + " (" + language + ")";
+}
 // Only what was set on the voice is written, "default" for the voice and an empty field for the rate or volume otherwise, so after loading the rest keep following the system's settings. The 0 stands for a pitch, which isn't saved.
 string tts_dump_config(tts_voice@ v, bool save_screen_reader_setting = false) {
 	string o = "default||";
-	if (v.voice_set and v.voice > -1) { // Listing the voices binds every engine, which a voice that only follows the system's settings needn't do.
-		string[] names = tts_voice_display_names(v);
-		if (uint(v.voice) < names.length()) o = names[v.voice] + "||";
-	}
+	if (v.voice_set and v.voice > -1 and v.get_voice_name(v.voice) != "") o = tts_voice_saved_name(v, v.voice) + "||"; // Not the list of every voice, which binds every engine.
 	o += (v.rate_set? "" + v.rate : "") + "||0||" + (v.volume_set? "" + v.volume : "");
 	if (save_screen_reader_setting) o += "||" + (use_sr? "1" : "0");
 	return o;
@@ -88,9 +90,12 @@ bool tts_load_config(string c, tts_voice@ v) {
 	string[] args = c.split("||", true, true); // Keeping the empty fields of settings that weren't saved.
 	if (args.length() < 4) return false;
 	if (args[0] != "default") {
-		string[] names = tts_voice_display_names(v);
-		int i = names.find(args[0]);
-		if (i < 0) i = v.list_voices().find(args[0]); // Saved with the plain name.
+		string[]@ names = v.list_voices();
+		int i = -1;
+		for (uint j = 0; j < names.length() and i < 0; j++) { // Asking for the language only of the voices whose name the saved one starts with.
+			if (names[j] != "" and args[0].find(names[j]) == 0 and tts_voice_saved_name(v, j) == args[0]) i = j;
+		}
+		if (i < 0) i = names.find(args[0]); // Saved with the plain name, before the language was always saved.
 		if (i > -1) v.set_voice(i);
 	}
 	if (args[1] != "") v.set_rate(parse_float(args[1]));

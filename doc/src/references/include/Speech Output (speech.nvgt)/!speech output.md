@@ -11,4 +11,4 @@ speech.nvgt speaks through the user's screen reader when one is running and thro
 
 ## Functions besides those below:
 * `void raw_speak(string text, bool interrupt)`: what speak does for each part, without processing, braille or splitting.
-* `string[] tts_voice_display_names(tts_voice@ v)`: the voices' names as tts_config shows them and tts_dump_config saves them, with the language added to a name another voice also has.
+* `string[] tts_voice_display_names(tts_voice@ v)`: the voices' names as tts_config shows them, with the language added to a name another voice also has.
