@@ -84,6 +84,8 @@ public:
 	// The synthesizer's delegate, which it doesn't retain, and the state the delegate writes. Neither is freed with the engine: a delegate call already under way when the engine goes, which Apple doesn't rule out, would use them, and an engine is only destroyed as the program ends or when a tts_voice lets go of one it can't hand on.
 	nvgt_speech_wait_state* waitState = new nvgt_speech_wait_state;
 	NVGTSpeechWaiter* waiter;
+	nvgt_speech_wait_state* pcmWaitState = new nvgt_speech_wait_state; // The same for synthesis to PCM, whose end the delegate reports.
+	NVGTSpeechWaiter* pcmWaiter = nil;
 	Impl() : currentVoice(nil) {
 		@autoreleasepool {
 			voices = [[AVSpeechSynthesisVoice speechVoices] retain];
@@ -95,6 +97,7 @@ public:
 	~Impl() {
 		synth.delegate = nil;
 		[synth release];
+		pcmSynth.delegate = nil;
 		[pcmSynth release];
 		if (voices) [voices release];
 	}
@@ -136,7 +139,12 @@ public:
 	void resetVoice() { currentVoice = nil; }
 	// Synthesis to PCM gets a synthesizer of its own, so that it doesn't wait behind speech queued on the other.
 	AVSpeechSynthesizer* pcmSynthesizer() {
-		if (!pcmSynth) pcmSynth = [[AVSpeechSynthesizer alloc] init];
+		if (!pcmSynth) {
+			pcmSynth = [[AVSpeechSynthesizer alloc] init];
+			pcmWaiter = [[NVGTSpeechWaiter alloc] init];
+			pcmWaiter->state = pcmWaitState;
+			pcmSynth.delegate = pcmWaiter;
+		}
 		return pcmSynth;
 	}
 	// Interrupting stops the synthesizer while it speaks, and also while an utterance queued here hasn't started yet, which the synthesizer doesn't count as speaking. Stopping an idle synthesizer is avoided: reports have it ignore what is spoken next after stops in quick succession.
@@ -410,21 +418,29 @@ tts_audio_data* AVTTSVoice::speak_to_pcm(const std::string &text) {
 	if (!impl || text.empty()) return nullptr;
 	if (@available(iOS 13.0, macOS 10.15, *)) {} else return nullptr;
 	@autoreleasepool {
+		// The block runs on a thread of the synthesizer's choosing; everything it and the wait below share is used under lock, which the block keeps alive.
+		NSObject *lock = [[NSObject alloc] init];
 		__block NSMutableData *audioData = [[NSMutableData alloc] init];
-		__block BOOL synthesisDone = NO; // Set by the block with release order and read here with acquire order, so the audio and format it wrote before are seen with it.
+		__block BOOL synthesisDone = NO; // Set by the wait below once the audio is complete; the block does nothing after it, as the success path releases what it uses.
+		__block BOOL lastBufferEmpty = NO;
 		__block AVAudioFormat *targetFormat = nil;
 		__block AVAudioConverter *converter = nil;
-		__block uint64_t buffersDelivered = 0; // Counted by the block, which runs on another thread, with atomic builtins; see the wait below.
+		__block uint64_t buffersDelivered = 0;
 		NSString *nstext = [NSString stringWithUTF8String:text.c_str()];
-		AVSpeechUtterance *utterance = [[AVSpeechUtterance alloc] initWithString:nstext];
+		AVSpeechUtterance *utterance = [[AVSpeechUtterance alloc] initWithString:nstext]; // Kept until the end of the wait, so the delegate's report about it can't be taken for another's at its address.
 		impl->apply(utterance, false);
-		[impl->pcmSynthesizer() writeUtterance:utterance toBufferCallback:^(AVAudioBuffer * _Nonnull buffer) {
-			@autoreleasepool {
-				if (__atomic_load_n(&synthesisDone, __ATOMIC_ACQUIRE)) return; // Once the closing empty buffer came, the success path below releases what this block uses; Apple doesn't document that nothing follows it.
-				__atomic_fetch_add(&buffersDelivered, 1, __ATOMIC_RELAXED);
+		AVSpeechSynthesizer *pcmSynth = impl->pcmSynthesizer();
+		impl->pcmWaitState->utterance = (void*)utterance; // Before clearing ended, so a late report about an earlier utterance can't set it again.
+		impl->pcmWaitState->ended = false;
+		[pcmSynth writeUtterance:utterance toBufferCallback:^(AVAudioBuffer * _Nonnull buffer) {
+			@autoreleasepool { @synchronized(lock) {
+				if (synthesisDone) return;
+				buffersDelivered++;
 				if (![buffer isKindOfClass:[AVAudioPCMBuffer class]]) return;
 				AVAudioPCMBuffer *pcmBuffer = (AVAudioPCMBuffer *)buffer;
-				if (pcmBuffer.frameLength == 0) { __atomic_store_n(&synthesisDone, YES, __ATOMIC_RELEASE); return; }
+				// An empty buffer closes the utterance, but voices also give them in the middle of long text, so it doesn't end the synthesis by itself; see the wait below.
+				lastBufferEmpty = pcmBuffer.frameLength == 0;
+				if (lastBufferEmpty) return;
 				if (!converter) {
 					AVAudioFormat *sourceFormat = pcmBuffer.format;
 					if (!sourceFormat) return;
@@ -449,27 +465,40 @@ tts_audio_data* AVTTSVoice::speak_to_pcm(const std::string &text) {
 					[audioData appendBytes:convertedBuffer.int16ChannelData[0] length:bytesToAppend];
 				}
 				[convertedBuffer release];
-			}
+			} }
 		}];
-		[utterance release]; // The synthesizer keeps it while it writes.
+		// The synthesis is complete once the delegate reports the utterance finished and its closing empty buffer came, or nothing more came for a moment after the report, as Apple doesn't document their order. Without a report, which the delegate might not give for written speech, an empty buffer followed by a second of nothing ends it.
 		// Long text or a slow voice can take more than ten seconds to synthesize, so the ten seconds count from the last buffer
 		// the synthesizer delivered. On a thread whose run loop has no sources, runMode returns at once, so the wait sleeps there.
-		auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+		auto limit = std::chrono::steady_clock::now() + std::chrono::seconds(10), lastChange = std::chrono::steady_clock::now();
 		uint64_t delivered = 0;
-		while (!__atomic_load_n(&synthesisDone, __ATOMIC_ACQUIRE)) {
-			uint64_t now_delivered = __atomic_load_n(&buffersDelivered, __ATOMIC_RELAXED);
-			if (now_delivered != delivered) {
-				delivered = now_delivered;
-				limit = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+		bool reported = false, complete = false;
+		while (true) {
+			bool ended = impl->pcmWaitState->ended;
+			auto now = std::chrono::steady_clock::now();
+			@synchronized(lock) {
+				if (buffersDelivered != delivered) {
+					delivered = buffersDelivered;
+					lastChange = now;
+					limit = now + std::chrono::seconds(10);
+				}
+				if (ended && !reported) {
+					reported = true;
+					lastChange = now;
+				}
+				auto quiet = now - lastChange;
+				if ((lastBufferEmpty && (reported || quiet >= std::chrono::seconds(1))) || (reported && quiet >= std::chrono::milliseconds(200))) complete = synthesisDone = YES;
 			}
-			if (std::chrono::steady_clock::now() >= limit) break;
+			if (complete || now >= limit) break;
 			@autoreleasepool {
 				if (![[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]]) std::this_thread::sleep_for(std::chrono::milliseconds(10));
 			}
 		}
+		[utterance release]; // The synthesizer keeps its own while it writes.
+		[lock release]; // The block keeps its own.
 		// A synthesis that timed out is cancelled, so it doesn't hold up the next, but it can still call the block, which uses these objects, so they are kept.
-		if (!__atomic_load_n(&synthesisDone, __ATOMIC_ACQUIRE)) {
-			[impl->pcmSynthesizer() stopSpeakingAtBoundary:AVSpeechBoundaryImmediate];
+		if (!complete) {
+			[pcmSynth stopSpeakingAtBoundary:AVSpeechBoundaryImmediate];
 			return nullptr;
 		}
 		unsigned int sampleRate = targetFormat ? (unsigned int)targetFormat.sampleRate : 22050;
