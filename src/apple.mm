@@ -504,8 +504,14 @@ AVTTSVoice* init() {
 
 // On macOS the announcement comes from the window that was key when the text was given: AppKit's windows aren't to be used from this thread while the main thread may be using them, so that is read where the text is given.
 #if TARGET_OS_IOS
-static void voice_over_announce(const std::string& message) {
-	@autoreleasepool { UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, [NSString stringWithUTF8String:message.c_str()]); }
+// Text given without interrupting is queued behind what VoiceOver is saying, which a plain announcement cuts off.
+static void voice_over_announce(const std::string& message, bool interrupt) {
+	@autoreleasepool {
+		NSString* text = [NSString stringWithUTF8String:message.c_str()];
+		if (!text) return;
+		if (interrupt) UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, text);
+		else UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification, [[[NSAttributedString alloc] initWithString:text attributes:@{UIAccessibilitySpeechAttributeQueueAnnouncement: @YES}] autorelease]);
+	}
 }
 #else
 static void voice_over_announce(const std::string& message, NSWindow* window) {
@@ -517,7 +523,9 @@ static void voice_over_announce(const std::string& message, NSWindow* window) {
 #endif
 
 std::string speech_text = "";
-#if !TARGET_OS_IOS
+#if TARGET_OS_IOS
+static bool speech_interrupts = true; // Whether the gathered text interrupts, which it does when its first part does; under speech_text_mutex.
+#else
 NSWindow* speech_window = nil; // The key window when the text was last given, retained, under speech_text_mutex.
 #endif
 Poco::FastMutex speech_text_mutex;
@@ -547,20 +555,24 @@ void vo_speech_thread(void* extra) {
 			return;
 		}
 		std::string text;
-		#if !TARGET_OS_IOS
+		#if TARGET_OS_IOS
+			bool interrupts;
+		#else
 			NSWindow* window;
 		#endif
 		{
 			Poco::FastMutex::ScopedLock exclusive(speech_text_mutex);
 			text = speech_text;
 			speech_text = "";
-			#if !TARGET_OS_IOS
+			#if TARGET_OS_IOS
+				interrupts = speech_interrupts;
+			#else
 				window = speech_window; // Released below, on the main thread.
 				speech_window = nil;
 			#endif
 		}
 		#if TARGET_OS_IOS
-			voice_over_announce(text);
+			voice_over_announce(text, interrupts);
 		#else
 			voice_over_announce(text, window);
 			if (window) dispatch_async(dispatch_get_main_queue(), ^{ [window release]; }); // On the main thread, as this can be the last reference once the window was destroyed meanwhile, and AppKit's windows are to be deallocated there. Without a window there is nothing to release, and a program without one may never run the main queue.
@@ -791,8 +803,12 @@ bool voice_over_speak(const std::string& text, bool interrupt) {
 		Poco::FastMutex::ScopedLock exclusive(speech_text_mutex); // Also around starting the thread, so two script threads can't both start it.
 		if (speech_closed) return false;
 		if (!speech_thread.isRunning()) speech_thread.start(vo_speech_thread);
-		if (interrupt || speech_text == "") speech_text = message;
-		else {
+		if (interrupt || speech_text == "") {
+			speech_text = message;
+			#if TARGET_OS_IOS
+				speech_interrupts = interrupt;
+			#endif
+		} else {
 			speech_text += " . ";
 			speech_text += message;
 		}

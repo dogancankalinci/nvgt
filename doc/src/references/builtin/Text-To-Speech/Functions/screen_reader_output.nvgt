@@ -6,6 +6,8 @@
 		* bool interrupt = true: Whether or not the previously spoken speech should be interrupted or not when speaking the new string.
 	## Returns:
 		bool: true if the function succeeded, false otherwise.
+	## Remarks:
+		Without interrupting, the text waits for what the screen reader is saying where the screen reader allows it. On Apple platforms, text given within about 10 ms of the last is joined to it into one announcement; beyond that, VoiceOver on iOS queues the text behind what it is saying, though text given later that interrupts can drop it before it is spoken, and VoiceOver on macOS, which can't queue an announcement, cuts off what it is saying either way.
 */
 
 // Example:
