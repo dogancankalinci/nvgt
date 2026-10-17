@@ -1143,12 +1143,12 @@ bool tts_voice::fade(soundptr &item) {
 		return true;
 	} catch (const exception &) { return false; }
 }
-// Releases faded sounds from the front of the queue once they are silent. The fade volume is read from miniaudio, linear whatever units the sound reports its attributes in: with the percentage attributes of the default engine, the sound's own getter reports decibels, never above 0.
+// Releases the faded sounds that are silent, wherever they are in the queue: one whose engine no longer processes audio, stopped or without a device, never finishes its fade, and must not keep those faded after it. The fade volume is read from miniaudio, linear whatever units the sound reports its attributes in: with the percentage attributes of the default engine, the sound's own getter reports decibels, never above 0.
 void tts_voice::cleanup_completed_fades() {
-	while (!fade_queue.empty()) {
-		sound *front = fade_queue.front().get();
-		if (!front->is_load_completed() || (front->get_playing() && ma_sound_get_current_fade_volume(front->get_ma_sound()) > 0)) break;
+	for (size_t i = fade_queue.size(); i > 0; i--) {
+		soundptr item = std::move(fade_queue.front());
 		fade_queue.pop();
+		if (!item->is_load_completed() || (item->get_playing() && ma_sound_get_current_fade_volume(item->get_ma_sound()) > 0)) fade_queue.push(std::move(item));
 	}
 }
 void tts_voice::at_end(void *pUserData, ma_sound *pSound) {
