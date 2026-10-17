@@ -2,7 +2,7 @@
 	Whether the script set the volume of the voice, with set_volume or the volume property, rather than the voice following the platform's own setting.
 	bool tts_voice::volume_set;
 	## Remarks:
-		This property is read-only. Until the volume is set, the voice speaks with the volume the user chose in the platform's speech settings, and follows it when the user changes it.
+		This property is read-only. Until the volume is set, the voice speaks at the volume it starts with, the engine's full volume on Windows, Android and Apple platforms, which have no speech volume setting for apps to follow, and -12.5 with the builtin voice. Speech Dispatcher on Linux speaks at the volume of its own configuration, and doesn't take a volume set here.
 */
 
 // Example:

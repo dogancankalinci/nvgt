@@ -2,7 +2,7 @@
 	The pitch of the voice, from -10 (lowest) to 10 (highest), with 0 being the default.
 	float tts_voice::pitch;
 	## Remarks:
-		Values outside the range are clamped to it. Until it is assigned, it reports the pitch the engine uses, which may not be 0. This is the property form of set_pitch and get_pitch.
+		Values outside the range are clamped to it. Until it is assigned, it reports the pitch the engine starts with, which may not be 0; see pitch_set for what that is on each platform. With Speech Dispatcher on Linux, which uses its own configuration, it reports 0 until assigned, and assigning it doesn't change the speech. This is the property form of set_pitch and get_pitch.
 */
 
 // Example:

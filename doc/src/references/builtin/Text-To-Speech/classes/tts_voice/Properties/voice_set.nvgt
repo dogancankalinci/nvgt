@@ -2,7 +2,7 @@
 	Whether the script set the voice of the voice, with set_voice or set_language, rather than the voice following the platform's own setting.
 	bool tts_voice::voice_set;
 	## Remarks:
-		This property is read-only. Until the voice is set, the voice speaks with the voice the user chose in the platform's speech settings, and follows it when the user changes it. It turns false again when refresh, called directly or by set_language, no longer finds the chosen voice, which was uninstalled for instance, and the object goes back to the platform's voice.
+		This property is read-only. Until the voice is set, the object speaks with the voice it starts with: on Windows the default voice chosen in the system's speech settings, on Android the engine's default voice, on Apple platforms the system's default voice for its language, on Linux the voice of Speech Dispatcher's configuration. It turns false again when refresh, called directly or by set_language, no longer finds the chosen voice, which was uninstalled for instance, and the object goes back to the voice it starts with.
 */
 
 // Example:
