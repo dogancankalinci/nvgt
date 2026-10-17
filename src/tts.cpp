@@ -660,6 +660,13 @@ void *tts_voice::speak_to_pcm(const string &text, tts_audio_data** datablock) {
 	if (!datablock || !engine || engine->get_pcm_generation_state() == PCM_UNSUPPORTED) return nullptr;
 	*datablock = engine->speak_to_pcm(tts_valid_utf8(text));
 	if (!*datablock) return nullptr;
+	// The engines check the format of their audio, so this only catches one that didn't: audio without data or channels, or with a sample size NVGT doesn't play, fails here with its block freed, rather than dividing by zero when trimmed or playing as noise.
+	tts_audio_data *block = *datablock;
+	if (!block->data || block->channels < 1 || block->sample_rate < 1 || (block->bitsize != 8 && block->bitsize != 16 && block->bitsize != 32)) {
+		block->free();
+		*datablock = nullptr;
+		return nullptr;
+	}
 	bool quiet;
 	void *trimmed = tts_trim(*datablock, &quiet);
 	// Audio with nothing at the trimming threshold, -60 dB, is what some voices give for text with nothing to say, which is empty audio, as with the other voices. Speech is far louder at any volume from -40 up; below that, where speech could be that quiet too, the audio keeps its length.
