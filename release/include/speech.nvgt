@@ -51,10 +51,9 @@ void raw_speak(string text, bool interrupt) {
 			if (tts.volume != volume) tts.set_volume(volume);
 		}
 	}
-	if (!use_sr or !screen_reader_has_speech())
+	// The voice speaks too when the screen reader turns the text down, as VoiceOver does while the game has no window in front.
+	if (!use_sr or !screen_reader_has_speech() or !screen_reader_speak(text, interrupt))
 		tts.speak(text, interrupt);
-	else
-		screen_reader_speak(text, interrupt);
 }
 void stop_speech() {
 	screen_reader_silence();
