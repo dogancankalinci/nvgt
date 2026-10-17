@@ -515,12 +515,14 @@ tts_audio_data* AVTTSVoice::speak_to_pcm(const std::string &text) {
 		NSUInteger audioLength = audioData.length;
 		// Text with nothing to say synthesizes to no samples, which is empty audio rather than a failure, as with the other engines. A sample that isn't counted gives the data an address.
 		if (audioLength == 0) [audioData setLength:sizeof(int16_t)];
-		if (impl->volumeSet && impl->volume < 1) { // The same linear gain an utterance's volume applies when spoken.
+		float gain = impl->volumeSet && impl->volume < 1? std::max(0.0f, impl->volume) : 1;
+		if (gain < 1) { // The same linear gain an utterance's volume applies when spoken.
 			int16_t *samples = (int16_t *)audioData.mutableBytes;
-			float gain = std::max(0.0f, impl->volume);
 			for (NSUInteger i = 0, count = audioLength / sizeof(int16_t); i < count; i++) samples[i] = (int16_t)lrintf(samples[i] * gain);
 		}
-		return new tts_audio_data(this, (void*)audioData.bytes, (unsigned int)audioLength, sampleRate, channelCount, 16, (void*)audioData); // free_pcm releases audioData.
+		tts_audio_data *block = new tts_audio_data(this, (void*)audioData.bytes, (unsigned int)audioLength, sampleRate, channelCount, 16, (void*)audioData); // free_pcm releases audioData.
+		block->gain_db = gain > 0? 20 * log10f(gain) : -200; // So trimming is measured against the voice's normal level.
+		return block;
 	}
 }
 

@@ -21,6 +21,7 @@
 #include <Poco/Format.h>
 #include <SDL3/SDL.h>
 #include <algorithm>
+#include <cmath>
 #include <mutex>
 #include <stdexcept>
 #include <memory>
@@ -799,7 +800,12 @@ tts_audio_data* android_tts_engine::speak_to_pcm(const std::string &text) {
 		default: bitsize = 16; break;
 	}
 
-	return new tts_audio_data(this, pcmBytes, dataSize, pcmSampleRate, pcmChannelCount, bitsize, globalRef);
+	tts_audio_data *block = new tts_audio_data(this, pcmBytes, dataSize, pcmSampleRate, pcmChannelCount, bitsize, globalRef);
+	// The linear gain TTS.withVolume() applied to the samples, at most full scale, so trimming is measured against the voice's normal level.
+	float gain = tts_call_float(TTSObj, 1, midGetVolume);
+	if (gain > 1) gain = 1;
+	block->gain_db = gain > 0? 20 * log10f(gain) : -200;
+	return block;
 }
 
 void android_tts_engine::free_pcm(tts_audio_data* data) {
