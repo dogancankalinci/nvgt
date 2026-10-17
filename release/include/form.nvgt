@@ -3164,13 +3164,17 @@ class control {
 			string[] nav_items(list.length());
 			for (int i = 0; i < list.length(); i++)
 				nav_items[i] = list[i].item;
-			bool already_on_result = nav_items[list_position].find(text) > -1;
+			bool already_on_result = list_position > -1 and nav_items[list_position].find(text) > -1;
 			string wrapped = "";
-			for (int i = list_position + dir; i != list_position; i += dir) {
+			// With nothing selected, the whole list is searched once, from the top, or from the bottom when searching backwards.
+			int first = list_position > -1 ? list_position + dir : (dir > 0 ? 0 : list.length() - 1);
+			for (int i = first; i != list_position; i += dir) {
 				if (i < 0) {
+					if (list_position < 0) break;
 					i = list.length() - 1;
 					wrapped = "wrapped to bottom";
 				} else if (i >= list.length()) {
+					if (list_position < 0) break;
 					i = 0;
 					wrapped = "wrapped to top";
 				}
