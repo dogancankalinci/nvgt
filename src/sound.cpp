@@ -374,6 +374,7 @@ class audio_engine_impl final : public audio_node_impl, public virtual audio_eng
 	std::unique_ptr<ma_resource_manager> resource_manager;
 	std::unique_ptr<ma_device> device;
 	bool device_follows_default = true; // Whether the device was opened as the system's default rather than by its id, as the constructor and assigning -1 do.
+	std::atomic<bool> started{false}; // Whether the engine is meant to run: started by the constructor or start(), until stop(). set_device() starts the new device only then.
 	std::atomic<asIScriptFunction*> script_data_callback;
 	audio_engine_endpoint *engine_endpoint; // Upon engine creation we'll call ma_engine_get_endpoint once so as to avoid creating more than one of our wrapper objects when our engine->get_endpoint() function is called.
 	std::mutex callback_mutex; // Lets the device's thread take a reference of its own to script_data_callback before set_processing_callback() can let it go.
@@ -497,6 +498,7 @@ public:
 			throw runtime_error(Poco::format("failed to initialize sound engine %d", int(g_soundsystem_last_error)));
 		}
 		node = (ma_node_base*)&*engine;
+		started = (flags & NO_AUTO_START) == 0;
 		// Set some default properties for spatialization.
 		set_listener_direction(0, 0, 1, 0); // Y forward
 		set_listener_world_up(0, 0, 0, 1);  // Z up
@@ -571,7 +573,7 @@ public:
 		uninit_device(old_dev);
 		if ((g_soundsystem_last_error = ma_device_init(&g_sound_context, &cfg, old_dev)) == MA_SUCCESS) {
 			device_follows_default = device == -1;
-			return (g_soundsystem_last_error = ma_engine_start(&*engine)) == MA_SUCCESS;
+			return !started || (g_soundsystem_last_error = ma_engine_start(&*engine)) == MA_SUCCESS; // An engine that was never started, or that the script stopped, stays stopped on the new device.
 		}
 		// The device asked for couldn't be opened: the one in use before is opened again, so that assigning it changes nothing, or failing that the system's default, so as not to leave the engine without a device. The error reported stays that of the device asked for.
 		ma_result error = g_soundsystem_last_error;
@@ -585,7 +587,7 @@ public:
 			reopened = ma_device_init(&g_sound_context, &cfg, old_dev) == MA_SUCCESS;
 			if (reopened) device_follows_default = true;
 		}
-		if (reopened) ma_engine_start(&*engine);
+		if (reopened && started) ma_engine_start(&*engine);
 		g_soundsystem_last_error = error;
 		return false;
 	}
@@ -626,8 +628,16 @@ public:
 	bool set_time_in_milliseconds(unsigned long long time) override { return engine ? (g_soundsystem_last_error = ma_engine_set_time_in_milliseconds(&*engine, time)) == MA_SUCCESS : false; }
 	int get_channels() const override { return engine ? ma_engine_get_channels(&*engine) : 0; }
 	int get_sample_rate() const override { return engine ? ma_engine_get_sample_rate(&*engine) : 0; }
-	bool start() override { return engine ? (ma_engine_start(&*engine)) == MA_SUCCESS : false; }
-	bool stop() override { return engine ? (ma_engine_stop(&*engine)) == MA_SUCCESS : false; }
+	bool start() override {
+		if (!engine || ma_engine_start(&*engine) != MA_SUCCESS) return false;
+		started = true;
+		return true;
+	}
+	bool stop() override {
+		if (!engine || ma_engine_stop(&*engine) != MA_SUCCESS) return false;
+		started = false;
+		return true;
+	}
 	bool set_volume(float volume) override { return engine ? (g_soundsystem_last_error = ma_engine_set_volume(&*engine, volume)) == MA_SUCCESS : false; }
 	float get_volume() const override { return engine ? ma_engine_get_volume(&*engine) : 0; }
 	bool set_gain(float db) override { return engine ? (g_soundsystem_last_error = ma_engine_set_gain_db(&*engine, db)) == MA_SUCCESS : false; }
