@@ -341,20 +341,28 @@ public:
 		if (text.empty()) return nullptr;
 		string ascii = tts_fallback_ascii(text);
 		int samples;
-		char *data = (char *)speech_gen(&samples, ascii.c_str(), 20 - rate, pitch, volume, NULL); // smaller rate values mean faster so we must reverse the rate value here.
+		// The synthesizer's own gain does nothing, as every frame takes its voicing amplitude from the phoneme tables, so the speech is made at its normal level and the volume is applied to the samples below.
+		short *data = speech_gen(&samples, ascii.c_str(), 20 - rate, pitch, 60, NULL); // smaller rate values mean faster so we must reverse the rate value here.
 		if (!data) return nullptr;
-		// Text with nothing to say, punctuation alone for instance, comes out as pauses of digital silence, which is empty audio rather than silence of that length, as with the other engines. Speech at a volume too low to leave a sample above zero comes out the same, and keeps its length, so silent audio is told apart by synthesizing the text again at full volume.
-		if (samples > 0 && silent((const short *)data, samples)) {
-			int loud_samples;
-			short *loud = speech_gen(&loud_samples, ascii.c_str(), 20 - rate, pitch, 70, NULL);
-			if (loud && silent(loud, loud_samples)) samples = 0;
-			if (loud) speech_free(loud, NULL);
-		}
+		// Text with nothing to say, punctuation alone for instance, comes out as pauses of digital silence, which is empty audio rather than silence of that length, as with the other engines.
+		if (samples > 0 && silent(data, samples)) samples = 0;
+		apply_volume(data, samples * 2);
 		return new tts_audio_data(this, data, samples * 4, 44100, 2, 16);
 	}
 	static bool silent(const short *data, int samples) {
 		for (int i = 0; i < samples * 2; i++) if (data[i]) return false;
 		return true;
+	}
+	// The volume on the synthesizer's decibel scale, where 60 is its normal level: lower settings are quieter down to 0, which is silence, and higher ones louder as far as the loudest sample allows without clipping.
+	void apply_volume(short *data, int count) {
+		float gain = volume <= 0? 0 : powf(10.0f, (volume - 60) / 20);
+		if (gain > 1) {
+			int peak = 1;
+			for (int i = 0; i < count; i++) peak = max(peak, abs((int)data[i]));
+			gain = min(gain, 32767.0f / peak);
+		}
+		if (gain == 1) return;
+		for (int i = 0; i < count; i++) data[i] = (short)clamp(lrintf(data[i] * gain), -32767L, 32767L);
 	}
 	void free_pcm(tts_audio_data* data) override {
 		if (data && data->data) {
