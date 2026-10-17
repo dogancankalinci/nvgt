@@ -1384,6 +1384,7 @@ public:
 	bool set_mixer(mixer *mix) override {
 		if (mix == parent_mixer)
 			return false;
+		if (mix && mix->get_engine() != get_engine()) return false; // Another engine's mixer is in that engine's graph, which would play this one's sound.
 		parent_mixer = mix; // Non-owning cache; node_chain's endpoint tracking is the sole owner of this reference.
 		audio_node *target = mix? mix : get_engine()->get_endpoint();
 		node_chain->set_endpoint(target);
@@ -2245,7 +2246,7 @@ sound *new_global_sound_unmixed() {
 }
 sound *new_global_sound() {
 	sound* s = new_global_sound_unmixed();
-	if (s && g_audio_mixer) s->set_mixer(g_audio_mixer);
+	if (s && g_audio_mixer) s->set_mixer(g_audio_mixer); // Refused for a sound_default_mixer of an engine other than the default one, which leaves the sound on the default engine's endpoint.
 	return s;
 }
 int get_sound_output_device() {
