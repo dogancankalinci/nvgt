@@ -521,6 +521,11 @@ std::string speech_text = "";
 NSWindow* speech_window = nil; // The key window when the text was last given, retained, under speech_text_mutex.
 #endif
 Poco::FastMutex speech_text_mutex;
+#if !TARGET_OS_IOS
+// The game window, retained, and whether it is the key window, kept from the main thread, where AppKit's windows are used, for text given on another script thread, which asks neither AppKit nor g_window, which the main thread can let go of meanwhile. Under speech_text_mutex.
+static NSWindow* g_vo_game_window = nil;
+static bool g_vo_game_window_key = false;
+#endif
 Poco::Event speech_new_event;
 Poco::Thread speech_thread;
 std::atomic<bool> speech_shutdown{false};
@@ -651,10 +656,37 @@ void voice_over_window_created(game_window* window) {
 		}
 	#else
 		NSWindow* win = (NSWindow*)window->get_native_window();
+		{
+			Poco::FastMutex::ScopedLock exclusive(speech_text_mutex);
+			[g_vo_game_window release];
+			g_vo_game_window = [win retain];
+			g_vo_game_window_key = false; // Until SDL reports the focus, see voice_over_window_focus().
+		}
 		NSAccessibilityPostNotification(win, NSAccessibilityApplicationActivatedNotification);
 		NSAccessibilityPostNotification(win, NSAccessibilityApplicationShownNotification);
 		NSAccessibilityPostNotification(win, NSAccessibilityWindowCreatedNotification);
 		NSAccessibilityPostNotification(win, NSAccessibilityFocusedWindowChangedNotification);
+	#endif
+}
+
+void voice_over_window_destroyed(game_window* window) {
+	#if !TARGET_OS_IOS
+		NSWindow* gone;
+		{
+			Poco::FastMutex::ScopedLock exclusive(speech_text_mutex);
+			if (!g_vo_game_window || g_vo_game_window != (NSWindow*)window->get_native_window()) return;
+			gone = g_vo_game_window;
+			g_vo_game_window = nil;
+			g_vo_game_window_key = false;
+		}
+		[gone release];
+	#endif
+}
+
+void voice_over_window_focus(bool focused) {
+	#if !TARGET_OS_IOS
+		Poco::FastMutex::ScopedLock exclusive(speech_text_mutex);
+		g_vo_game_window_key = focused && g_vo_game_window;
 	#endif
 }
 
@@ -755,8 +787,10 @@ bool voice_over_speak(const std::string& text, bool interrupt) {
 	std::string message = tts_valid_utf8(text); // NSString makes nil of malformed UTF-8, which the announcement dictionary on macOS rejects with an exception.
 	@autoreleasepool {
 		#if !TARGET_OS_IOS
-			// AppKit's key window is only to be asked for on the main thread; text given on another script thread is announced from the game's own window.
-			NSWindow* key = [NSThread isMainThread]? [NSApp keyWindow] : (g_window? (NSWindow*)g_window->get_native_window() : nil);
+			// AppKit's windows, and g_window, which the main thread can let go of, are only used on the main thread; on another script thread the game window and its focus kept from the main thread stand in for them.
+			bool on_main = [NSThread isMainThread];
+			NSWindow* key = on_main? [NSApp keyWindow] : nil;
+			NSWindow* win = on_main && g_window? (NSWindow*)g_window->get_native_window() : nil;
 		#endif
 		Poco::FastMutex::ScopedLock exclusive(speech_text_mutex); // Also around starting the thread, so two script threads can't both start it.
 		if (speech_closed) return false;
@@ -767,6 +801,10 @@ bool voice_over_speak(const std::string& text, bool interrupt) {
 			speech_text += message;
 		}
 		#if !TARGET_OS_IOS
+			if (!on_main) {
+				win = g_vo_game_window;
+				key = g_vo_game_window_key? win : nil;
+			}
 			[speech_window release];
 			speech_window = [key retain];
 		#endif
@@ -775,7 +813,6 @@ bool voice_over_speak(const std::string& text, bool interrupt) {
 			return UIAccessibilityIsVoiceOverRunning();
 		#else
 			// VoiceOver speaks announcements only from the focused application, so they reach it while our window is the key one; without a window, nothing does.
-			NSWindow* win = g_window ? (NSWindow*)g_window->get_native_window() : nullptr;
 			return win && key == win;
 		#endif
 	}

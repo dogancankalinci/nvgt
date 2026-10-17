@@ -24,6 +24,8 @@ struct SDL_Window;
 bool voice_over_is_running();
 bool voice_over_speak(const std::string& message, bool interrupt = true);
 void voice_over_window_created(game_window* window);
+void voice_over_window_destroyed(game_window* window);
+void voice_over_window_focus(bool focused);
 void voice_over_renderer_created(SDL_Window* window);
 void voice_over_speech_shutdown();
 #if defined(TARGET_OS_IOS) && TARGET_OS_IOS

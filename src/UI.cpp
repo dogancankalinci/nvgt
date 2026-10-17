@@ -279,6 +279,9 @@ game_window::game_window(SDL_Window* window) : _window(window), _owns_window(fal
 game_window::~game_window() {
 	_font = nullptr;
 	_renderer = nullptr;
+	#ifdef __APPLE__
+	if (_owns_window && _window) voice_over_window_destroyed(this);
+	#endif
 	if (_owns_window && _window) SDL_DestroyWindow(_window);
 }
 graphics_renderer* game_window::ensure_renderer() {
