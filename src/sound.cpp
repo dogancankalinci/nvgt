@@ -332,6 +332,7 @@ class audio_engine_impl final : public audio_node_impl, public virtual audio_eng
 	std::unique_ptr<ma_engine> engine;
 	std::unique_ptr<ma_resource_manager> resource_manager;
 	std::unique_ptr<ma_device> device;
+	bool device_follows_default = true; // Whether the device was opened as the system's default rather than by its id, as the constructor and assigning -1 do.
 	std::atomic<asIScriptFunction*> script_data_callback;
 	audio_node *engine_endpoint; // Upon engine creation we'll call ma_engine_get_endpoint once so as to avoid creating more than one of our wrapper objects when our engine->get_endpoint() function is called.
 	int refcount;
@@ -464,7 +465,8 @@ public:
 			return -1;
 		ma_device *dev = ma_engine_get_device(&*engine);
 		ma_device_info info;
-		if (!dev || ma_device_get_info(dev, ma_device_type_playback, &info) != MA_SUCCESS)
+		// A device that set_device couldn't open again is left uninitialized, and asking miniaudio about it would reach its backend.
+		if (!dev || ma_device_get_state(dev) == ma_device_state_uninitialized || ma_device_get_info(dev, ma_device_type_playback, &info) != MA_SUCCESS)
 			return -1;
 		for (std::size_t i = 0; i < g_sound_output_devices.size(); i++) {
 			if (memcmp(&g_sound_output_devices[i].id, &info.id, sizeof(ma_device_id)) == 0)
@@ -475,28 +477,45 @@ public:
 	bool set_device(int device) override {
 		if (!engine || flags & NO_DEVICE || device < -1 || device >= int(g_sound_output_devices.size())) return false;
 		ma_device *old_dev = ma_engine_get_device(&*engine);
-		if (!old_dev || device > -1 && ma_device_id_equal(&old_dev->playback.id, &g_sound_output_devices[device].id)) return false;
+		bool old_open = old_dev && ma_device_get_state(old_dev) != ma_device_state_uninitialized;
+		if (!old_dev || old_open && device > -1 && ma_device_id_equal(&old_dev->playback.id, &g_sound_output_devices[device].id)) return false;
 		ma_engine_stop(&*engine);
+		// As the constructor opens the device, with the engine's own format, which stays the same whichever device it is on and is still known after a device couldn't be opened.
 		ma_device_config cfg = ma_device_config_init(ma_device_type_playback);
 		if (device > -1) cfg.playback.pDeviceID = &g_sound_output_devices[device].id;
-		cfg.playback.channels = old_dev->playback.channels;
+		cfg.playback.channels = ma_engine_get_channels(&*engine);
 		cfg.playback.format = ma_format_f32;
-		cfg.sampleRate = old_dev->sampleRate;
-		cfg.noClip = (flags & engine_flags::NO_CLIP)? MA_TRUE : MA_FALSE; // As the constructor opens the device.
+		cfg.sampleRate = ma_engine_get_sample_rate(&*engine);
+		cfg.noClip = (flags & engine_flags::NO_CLIP)? MA_TRUE : MA_FALSE;
 		cfg.periodSizeInFrames = SOUNDSYSTEM_FRAMESIZE;
 		cfg.resampling.algorithm = ma_resample_algorithm_custom;
 		cfg.resampling.pBackendVTable = &wdl_resampler_backend_vtable;
 		cfg.wasapi.noAutoConvertSRC = true;
-		cfg.notificationCallback = old_dev->onNotification;
-		cfg.dataCallback = old_dev->onData;
-		cfg.pUserData = old_dev->pUserData;
+		cfg.dataCallback = data_callback;
+		cfg.pUserData = this;
+		ma_device_id previous_id = old_dev->playback.id;
+		bool previous_default = device_follows_default;
 		ma_device_stop(old_dev);
 		uninit_device(old_dev);
-		if ((g_soundsystem_last_error = ma_device_init(&g_sound_context, &cfg, old_dev)) != MA_SUCCESS) {
-			cfg.playback.pDeviceID = nullptr;
-			g_soundsystem_last_error = ma_device_init(&g_sound_context, &cfg, old_dev); // Try to at least initialize the default device so as not to leave useless engine.
+		if ((g_soundsystem_last_error = ma_device_init(&g_sound_context, &cfg, old_dev)) == MA_SUCCESS) {
+			device_follows_default = device == -1;
+			return (g_soundsystem_last_error = ma_engine_start(&*engine)) == MA_SUCCESS;
 		}
-		return (g_soundsystem_last_error = ma_engine_start(&*engine)) == MA_SUCCESS;
+		// The device asked for couldn't be opened: the one in use before is opened again, so that assigning it changes nothing, or failing that the system's default, so as not to leave the engine without a device. The error reported stays that of the device asked for.
+		ma_result error = g_soundsystem_last_error;
+		bool reopened = false;
+		if (old_open) {
+			cfg.playback.pDeviceID = previous_default? nullptr : &previous_id;
+			reopened = ma_device_init(&g_sound_context, &cfg, old_dev) == MA_SUCCESS;
+		}
+		if (!reopened && !(old_open && previous_default)) {
+			cfg.playback.pDeviceID = nullptr;
+			reopened = ma_device_init(&g_sound_context, &cfg, old_dev) == MA_SUCCESS;
+			if (reopened) device_follows_default = true;
+		}
+		if (reopened) ma_engine_start(&*engine);
+		g_soundsystem_last_error = error;
+		return false;
 	}
 	bool read(void *buffer, unsigned long long frame_count, unsigned long long *frames_read) override { return engine ? (g_soundsystem_last_error = ma_engine_read_pcm_frames(&*engine, buffer, frame_count, frames_read)) == MA_SUCCESS : false; }
 	CScriptArray *read_script(unsigned long long frame_count) override {

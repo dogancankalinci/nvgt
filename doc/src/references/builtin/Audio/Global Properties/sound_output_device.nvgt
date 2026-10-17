@@ -4,7 +4,7 @@
 	## Remarks:
 		The value is an index into the `sound_output_devices` array. Assign an index to switch devices, or assign -1 to use the system's default output device.
 		When read, this property returns the index of the device actually in use, so after assigning -1 it returns the index of the default device rather than -1. It returns -1 if the default audio engine has no device, for example if `sound_default_engine` was replaced with an engine created with `AUDIO_ENGINE_NO_DEVICE`.
-		Assigning an index that is out of range, or a device that can't be opened, has no effect and doesn't raise an error. Read the property again after assigning it if you need to know whether the switch succeeded.
+		Assigning an index that is out of range, or a device that can't be opened, has no effect and doesn't raise an error: the device in use before is opened again, and SOUNDSYSTEM_LAST_ERROR tells why the device asked for couldn't be. In the rare case that it can't be opened again either, the system's default device is used, and when even that fails, the engine is left without a device, plays nothing, and this property reads -1 until a device is assigned that can be opened. Read the property again after assigning it if you need to know whether the switch succeeded.
 		Accessing this property starts the sound system if it hasn't been started yet.
 */
 
