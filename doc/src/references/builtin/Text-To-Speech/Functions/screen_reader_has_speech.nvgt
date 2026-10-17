@@ -3,6 +3,8 @@
 	bool screen_reader_has_speech();
 	## Returns:
 		bool: true if the screen reader supports speech, false if not, or if no screen reader is active.
+	## Remarks:
+		On Linux, where Speech Dispatcher stands in for a screen reader, this is true whenever NVGT can reach Speech Dispatcher, whether or not a screen reader such as Orca is running.
 */
 
 // Example:
