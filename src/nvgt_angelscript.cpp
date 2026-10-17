@@ -998,10 +998,7 @@ int ExecuteScript(asIScriptEngine *engine, const string &scriptFile) {
 	asIScriptFunction *outfunc = mod->GetFunctionByDecl("void on_exit()");
 	if (outfunc) {
 		ctx = g_ctxMgr->AddContext(engine, outfunc);
-		if (ctx) {
-			ctx->Execute();
-			g_ctxMgr->DoneWithContext(ctx);
-		}
+		if (ctx) ctx->Execute(); // The manager gives the context back when it is deleted, as it was added without being kept; giving it back here too put it in the pool twice.
 	}
 	if (g_ctxMgr) {
 		delete g_ctxMgr;
