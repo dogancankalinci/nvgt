@@ -3107,8 +3107,9 @@ class control {
 				speak("Error, link url is empty!");
 				return;
 			}
-			if (regexp_match(link_url, "^(https?:\/\/)?(?:[a-zA-Z0-9_-]+(?::[a-zA-Z0-9._%+-]+)?@)?([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})(:\d{2,5})?(\/[^\s?#]*)?(\?[^\s#]*)?(#[^\s]*)?$")) {
-			speak("Invalid url (%0)".format(link_url));
+			// A heredoc string, as the escapes the pattern needs aren't valid in an ordinary one; there it matched nothing, and the inverted test let every text through.
+			if (!regexp_match(link_url, """^(https?://)?(?:[a-zA-Z0-9_-]+(?::[a-zA-Z0-9._%+-]+)?@)?([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})(:\d{2,5})?(/[^\s?#]*)?(\?[^\s#]*)?(#[^\s]*)?$""")) {
+				speak("Invalid url (%0)".format(link_url));
 				return;
 			}
 			bool open_response = urlopen(link_url);
