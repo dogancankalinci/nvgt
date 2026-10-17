@@ -15,6 +15,7 @@
 #define NOMINMAX
 #include "UI.h"
 #include "network.h"
+#include <atomic>
 #include <exception>
 #include <fstream>
 #include <iterator>
@@ -376,9 +377,11 @@ void TranslateException(asIScriptContext *ctx, void* /*userParam*/) {
 	} catch (...) {
 	}
 }
+static std::atomic<bool> g_exit_called{false}; // exit() was called, whose code ExecuteScript() then returns whenever it was.
 void Exit(int retcode = 0) {
 	g_shutting_down = true;
 	g_retcode = retcode;
+	g_exit_called = true;
 	if (g_ctxMgr) g_ctxMgr->AbortAll(); // Gone once the script ended, while the destructors that discarding its module runs can still call exit().
 }
 asUINT GetTimeCallback() {
@@ -1021,7 +1024,7 @@ int ExecuteScript(asIScriptEngine *engine, const string &scriptFile) {
 			;
 	}
 	discard_module(engine, mod);
-	return retcode;
+	return g_exit_called? g_retcode : retcode; // Also from on_exit(), a destructor or a thread still running once main() returned.
 }
 
 #ifndef NVGT_STUB
