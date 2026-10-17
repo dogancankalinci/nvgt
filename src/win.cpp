@@ -104,8 +104,17 @@ tts_audio_data* sapi5_engine::speak_to_pcm(const string &text) {
 		void *temp = nullptr;
 		int bufsize = 0;
 		if (!sb_sapi_speak_to_memory(inst, const_cast<char*>(text.c_str()), &temp, &bufsize)) return;
-		if (!temp || bufsize < 0) return;
-		result = new tts_audio_data(this, temp, bufsize, sb_sapi_get_sample_rate(inst), sb_sapi_get_channels(inst), sb_sapi_get_bit_depth(inst));
+		if (!temp) return;
+		if (bufsize < 0) { // Past 2 GB of audio.
+			free(temp);
+			return;
+		}
+		try {
+			result = new tts_audio_data(this, temp, bufsize, sb_sapi_get_sample_rate(inst), sb_sapi_get_channels(inst), sb_sapi_get_bit_depth(inst));
+		} catch (...) {
+			free(temp);
+			throw;
+		}
 	});
 	return result;
 }
