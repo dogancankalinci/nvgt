@@ -223,14 +223,19 @@ bool refresh_audio_devices() {
 		g_sound_script_input_devices->Resize(0);
 	return (g_soundsystem_last_error = ma_context_enumerate_devices(&g_sound_context, ma_device_enum_callback, nullptr)) == MA_SUCCESS;
 }
+// Better to return an empty array instead of null for now. A single one, as the script adds its own reference to what these return, so a new array each time was never let go.
+static CScriptArray *empty_device_list() {
+	static CScriptArray *empty = CScriptArray::Create(get_array_type("array<string>"));
+	return empty;
+}
 CScriptArray *get_sound_input_devices() {
 	if (!init_sound_context())
-		return CScriptArray::Create(get_array_type("array<string>")); // Better to return an empty array instead of null for now.
+		return empty_device_list();
 	return g_sound_script_input_devices;
 }
 CScriptArray *get_sound_output_devices() {
 	if (!init_sound_context())
-		return CScriptArray::Create(get_array_type("array<string>"));
+		return empty_device_list();
 	return g_sound_script_output_devices;
 }
 
