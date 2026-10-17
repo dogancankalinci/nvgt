@@ -64,9 +64,10 @@ void wait(int ms);
 static ma_context g_sound_context;
 audio_engine *g_audio_engine = nullptr;
 mixer* g_audio_mixer = nullptr;
-static std::atomic_flag g_soundsystem_initialized; // The initialization body has begun; used only to let init_sound() recognise a call re-entering it from its own engine construction.
+static std::atomic_flag g_soundsystem_initialized; // The context, the sound service and the device lists are set up, see init_sound_context().
 static std::atomic_flag g_soundsystem_ready; // The engine exists. Set last so that no other thread can be told "initialized" while g_audio_engine is still null.
-static std::recursive_mutex g_soundsystem_init_mutex; // Recursive because constructing the engine re-enters init_sound() on this same thread.
+static std::recursive_mutex g_soundsystem_init_mutex; // Recursive because setting up re-enters init_sound() and init_sound_context() on this same thread.
+static bool g_soundsystem_starting = false; // Under g_soundsystem_init_mutex: this thread is setting up, so a call re-entering from there is answered at once.
 thread_local ma_result g_soundsystem_last_error = MA_SUCCESS;
 static unordered_map<ma_data_source*, audio_data_source*> g_data_sources_map; // Only allow one audio_data_source wrapper per ma_data_source, should never be populated enough to be a performance hit.
 static std::mutex g_data_sources_map_mutex; // Every decoder open/close inserts into or erases from this map, from whichever script thread does it; an unlocked unordered_map rehashing under a concurrent erase corrupts the heap.
@@ -111,12 +112,17 @@ static void uninit_device(ma_device* device) {
 	#endif
 	ma_device_uninit(device);
 }
-bool init_sound() {
-	if (g_soundsystem_ready.test()) return true;
-	// Everything below runs under the lock: a second thread must wait for the engine to exist rather than be told the system is ready while it is still being built.
+// Marks the setup under way for as long as it runs, also when it throws.
+struct soundsystem_starting {
+	soundsystem_starting() { g_soundsystem_starting = true; }
+	~soundsystem_starting() { g_soundsystem_starting = false; }
+};
+// The context, the sound service and the device lists, which every engine needs, while init_sound() also builds the default engine. An engine of the script's own, such as one without a device, so doesn't depend on the default engine being buildable. False when the context can't start.
+bool init_sound_context() {
+	if (g_soundsystem_initialized.test()) return true;
 	std::lock_guard<std::recursive_mutex> lock(g_soundsystem_init_mutex);
-	if (g_soundsystem_ready.test()) return true; // another thread finished initializing while we waited for the lock
-	if (g_soundsystem_initialized.test()) return true; // re-entrant call from the engine construction below, on this very thread; the engine is not assigned yet but everything it needs already is
+	if (g_soundsystem_initialized.test() || g_soundsystem_starting) return true; // set up by another thread while we waited for the lock, or a re-entrant call from the setup below on this one
+	soundsystem_starting starting;
 	#ifdef __linux__
 	// Attempt to silence ALSA's verbose error output on headless servers; libasound may not be present so load it dynamically and ignore failure.
 	typedef int (*snd_lib_error_set_handler_t)(void (*)(const char*, int, const char*, int, const char*, ...));
@@ -148,9 +154,22 @@ bool init_sound() {
 	// Install default decoders into miniaudio.
 	add_decoder(ma_decoding_backend_libvorbis);
 	add_decoder(ma_decoding_backend_libopus);
-	g_soundsystem_initialized.test_and_set();
 	refresh_audio_devices();
-	g_audio_engine = new_audio_engine(audio_engine::PERCENTAGE_ATTRIBUTES | audio_engine::NO_CLIP);
+	g_soundsystem_initialized.test_and_set(); // only now may other threads use what is set up here
+	return true;
+}
+bool init_sound() {
+	if (g_soundsystem_ready.test()) return true;
+	// Everything below runs under the lock: a second thread must wait for the engine to exist rather than be told the system is ready while it is still being built.
+	std::lock_guard<std::recursive_mutex> lock(g_soundsystem_init_mutex);
+	if (g_soundsystem_ready.test()) return true; // another thread finished initializing while we waited for the lock
+	if (g_soundsystem_starting) return true; // re-entrant call from the setup, on this very thread; the engine is not assigned yet but everything it needs already is
+	if (!init_sound_context()) return false;
+	// An engine that can't be built, as on a machine without an output device, throws here, and again on each later call, which tries anew, rather than letting later calls report the system ready with g_audio_engine null.
+	{
+		soundsystem_starting starting;
+		g_audio_engine = new_audio_engine(audio_engine::PERCENTAGE_ATTRIBUTES | audio_engine::NO_CLIP);
+	}
 	g_soundsystem_ready.test_and_set(); // only now may other threads use the default engine
 	return true;
 }
@@ -179,7 +198,7 @@ ma_bool32 ma_device_enum_callback(ma_context * /*ctx*/, ma_device_type type, con
 	return MA_TRUE;
 }
 bool refresh_audio_devices() {
-	if (!g_soundsystem_initialized.test() && !init_sound())
+	if (!init_sound_context())
 		return false;
 	g_sound_output_devices.clear();
 	g_sound_input_devices.clear();
@@ -194,12 +213,12 @@ bool refresh_audio_devices() {
 	return (g_soundsystem_last_error = ma_context_enumerate_devices(&g_sound_context, ma_device_enum_callback, nullptr)) == MA_SUCCESS;
 }
 CScriptArray *get_sound_input_devices() {
-	if (!init_sound())
+	if (!init_sound_context())
 		return CScriptArray::Create(get_array_type("array<string>")); // Better to return an empty array instead of null for now.
 	return g_sound_script_input_devices;
 }
 CScriptArray *get_sound_output_devices() {
-	if (!init_sound())
+	if (!init_sound_context())
 		return CScriptArray::Create(get_array_type("array<string>"));
 	return g_sound_script_output_devices;
 }
@@ -364,7 +383,7 @@ public:
 	engine_flags flags;
 	audio_engine_impl(int flags, int sample_rate, int channels) : audio_node_impl(nullptr, this), engine(nullptr), resource_manager(nullptr), script_data_callback(nullptr), engine_endpoint(nullptr), flags(static_cast<engine_flags>(flags)) {
 		if (channels > MA_MAX_CHANNELS) throw runtime_error(Poco::format("exceeded maximum channel count of %d", MA_MAX_CHANNELS));
-		init_sound();
+		if (!init_sound_context()) throw runtime_error(Poco::format("failed to initialize sound context %d", int(g_soundsystem_last_error)));
 		engine = std::make_unique<ma_engine>();
 		// We need a self-managed device because at least on Windows, we can't meet low-latency requirements without specific configurations.
 		if ((flags & NO_DEVICE) == 0) {
@@ -964,7 +983,7 @@ class audio_decoder_impl : public audio_data_source_impl, public virtual audio_d
 	// means seeking to the end, which a live stream refuses and which would desync the rewind window from the decoder's position.
 	static ma_result vfs_info(ma_vfs*, ma_vfs_file, ma_file_info*) { return MA_NOT_IMPLEMENTED; }
 	ma_decoder_config decoder_config_init(unsigned int sample_rate, unsigned int channels) {
-		init_sound();
+		init_sound_context();
 		ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32, channels, sample_rate);
 		cfg.resampling.algorithm = ma_resample_algorithm_custom;
 		cfg.resampling.pBackendVTable = &wdl_resampler_backend_vtable;
@@ -1319,7 +1338,7 @@ protected:
 	audio_node_chain* effects_chain;
 public:
 	mixer_impl(audio_engine *e, bool sound_group = true) : audio_node_impl(nullptr, e), snd(nullptr), shape(nullptr), node_chain(audio_node_chain::create(nullptr, nullptr, e)), effects_chain(nullptr), parent_mixer(nullptr), spatializer(nullptr) {
-		init_sound();
+		init_sound_context();
 		node_chain->set_endpoint(e->get_endpoint());
 		if (!sound_group) return;
 		snd = make_unique<ma_sound>();
@@ -1755,7 +1774,7 @@ public:
 		state->release();
 	}
 	sound_impl(audio_engine *e) : paused(false), should_autoclose(false), datasource(nullptr), pcm_stream(nullptr), mixer_impl(dynamic_cast <audio_engine_impl*> (e), false), load_state(nullptr), pcm_buffer() {
-		init_sound();
+		init_sound_context();
 		snd = nullptr;
 	}
 	~sound_impl() {

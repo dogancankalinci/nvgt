@@ -43,6 +43,7 @@ extern thread_local ma_result g_soundsystem_last_error; // Per thread, like errn
 // Add support for a new audio format by plugging in a ma_decoding_backend_vtable.
 bool add_decoder(ma_decoding_backend_vtable *vtable);
 bool init_sound();
+bool init_sound_context(); // What every engine needs, without building the default engine as init_sound() does.
 void uninit_sound();
 bool refresh_audio_devices();
 void garbage_collect_inline_sounds();
