@@ -1,5 +1,7 @@
 #include <condition_variable>
+#include <exception>
 #include <functional>
+#include <utility>
 #include <mutex>
 #include <thread>
 /* win.h - header exposing windows only functions and classes
@@ -30,6 +32,7 @@ class sapi5_engine : public tts_engine_impl {
 	std::condition_variable work_cv;
 	const std::function<void()> *work = nullptr; // The call for the worker to run.
 	bool work_done = false, stopping = false;
+	std::exception_ptr work_error; // What the call threw, thrown again on the calling thread.
 	std::mutex call_mutex; // One call at a time.
 	void run(const std::function<void()> &call);
 	void work_loop();

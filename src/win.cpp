@@ -63,9 +63,11 @@ void sapi5_engine::run(const std::function<void()> &call) {
 	std::unique_lock<std::mutex> lock(work_mutex);
 	work = &call;
 	work_done = false;
+	work_error = nullptr;
 	work_cv.notify_all();
 	work_cv.wait(lock, [this] { return work_done; });
 	work = nullptr;
+	if (work_error) std::rethrow_exception(std::exchange(work_error, nullptr)); // As it would have been thrown by the call made here.
 }
 void sapi5_engine::work_loop() {
 	std::unique_lock<std::mutex> lock(work_mutex);
@@ -74,8 +76,12 @@ void sapi5_engine::work_loop() {
 		if (work && !work_done) {
 			const std::function<void()> *call = work;
 			lock.unlock();
-			(*call)();
+			std::exception_ptr error;
+			try {
+				(*call)();
+			} catch (...) { error = std::current_exception(); } // Out of the thread it would end the program.
 			lock.lock();
+			work_error = error;
 			work_done = true;
 			work_cv.notify_all();
 		} else return; // Stopping, with no call waiting.
