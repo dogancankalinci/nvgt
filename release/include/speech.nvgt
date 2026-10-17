@@ -17,6 +17,8 @@ string speechbuff;
 bool use_sr = true;
 string voicename = "SR";
 audio_form@ tts_config_form = null;
+tts_voice@ tts_config_voice = null; // The voice the main configuration form configures.
+tts_voice@ tts_config_preview = null; // The voice that speaks that form with its changes, see tts_config_speaker().
 bool tts_default_interrupt = true;
 funcdef string text_processing_callback(const string&in text);
 text_processing_callback@ tts_default_text_processing_callback = null;
@@ -40,24 +42,52 @@ bool speak(string text, bool interrupt = tts_default_interrupt, text_processing_
 }
 void raw_speak(string text, bool interrupt) {
 	if (interrupt and tts.speaking) tts.stop();
+	if (interrupt and @tts_config_preview != null and tts_config_preview.speaking) tts_config_preview.stop();
+	tts_voice@ voice = tts;
 	if (@tts_config_form != null) {
 		use_sr = tts_config_form.is_checked(0);
-		if (!use_sr or !screen_reader_has_speech()) { // Whenever the tts voice is what speaks the form, so that its changes are heard.
-			int voice = tts_config_form.get_list_position(1);
-			double rate = tts_config_form.get_slider(2);
-			double volume = tts_config_form.get_slider(3);
-			if (voice > -1 and tts.voice != voice) tts.set_voice(voice);
-			if (tts.rate != rate) tts.set_rate(rate);
-			if (tts.volume != volume) tts.set_volume(volume);
-		}
+		if (!use_sr or !screen_reader_has_speech()) @voice = tts_config_speaker(); // Whenever the tts voice is what speaks the form, so that its changes are heard.
 	}
 	// The voice speaks too when the screen reader turns the text down, as VoiceOver does while the game has no window in front.
 	if (!use_sr or !screen_reader_has_speech() or !screen_reader_speak(text, interrupt))
-		tts.speak(text, interrupt);
+		voice.speak(text, interrupt);
 }
 void stop_speech() {
 	screen_reader_silence();
 	tts.stop();
+	if (@tts_config_preview != null) tts_config_preview.stop();
+}
+// The voice that speaks the main configuration form: the configured voice until the form's values first differ from its own, then a voice of its own that takes them, so that the configured voice changes only when the settings are saved and Cancel leaves it, settings it never had included, as it was. That voice starts as a copy of the configured one; it lists every engine's voices, so voices are matched by name and language.
+tts_voice@ tts_config_speaker() {
+	tts_voice@ v = tts_config_voice;
+	int voice = tts_config_form.get_list_position(1);
+	double rate = tts_config_form.get_slider(2);
+	double volume = tts_config_form.get_slider(3);
+	if (@tts_config_preview == null) {
+		if ((voice < 0 or voice == v.voice) and rate == v.rate and volume == v.volume) return v;
+		tts_voice preview;
+		if (v.language != "") preview.set_language(v.language);
+		if (v.voice > -1) preview.set_voice(tts_config_preview_voice(preview, v.voice));
+		if (v.pitch_set) preview.pitch = v.pitch;
+		if (v.rate_set) preview.rate = v.rate;
+		if (v.volume_set) preview.volume = v.volume;
+		@tts_config_preview = preview;
+	}
+	if (voice > -1) {
+		int previewed = tts_config_preview_voice(tts_config_preview, voice);
+		if (previewed > -1 and tts_config_preview.voice != previewed) tts_config_preview.set_voice(previewed);
+	}
+	if (tts_config_preview.rate != rate) tts_config_preview.set_rate(rate);
+	if (tts_config_preview.volume != volume) tts_config_preview.set_volume(volume);
+	return tts_config_preview;
+}
+// The preview's voice with the name and language of the configured voice's voice at the given index, or -1.
+int tts_config_preview_voice(tts_voice@ preview, int voice) {
+	string name = tts_config_voice.get_voice_name(voice), language = tts_config_voice.get_voice_language(voice);
+	for (int i = 0; i < preview.voice_count; i++) {
+		if (preview.get_voice_name(i) == name and preview.get_voice_language(i) == language) return i;
+	}
+	return -1;
 }
 
 // The voices' names as the user sees them: with the language added to a name another voice also has, as on Apple platforms, which list some voices once per language under one name.
@@ -113,9 +143,6 @@ bool tts_load_config(string c, tts_voice@ v) {
 
 void tts_config(tts_voice@ v, bool main_config = false) {
 	bool orig_sr = use_sr;
-	int orig_voice = v.voice;
-	float orig_rate = v.rate;
-	float orig_volume = v.volume;
 	audio_form f;
 	f.create_window("Text to speech configuration", false, true);
 	int f_use_sr = f.create_checkbox("use screen reader when available", main_config and use_sr);
@@ -133,20 +160,21 @@ void tts_config(tts_voice@ v, bool main_config = false) {
 	if (v.voice > -1)
 		f.set_list_position(f_voices, v.voice);
 	f.focus(main_config ? 0 : 1);
-	if (main_config) @tts_config_form = @f;
+	if (main_config) {
+		@tts_config_voice = v;
+		@tts_config_form = @f;
+	}
 	while (true) {
 		wait(5);
 		f.monitor();
 		if (f.is_pressed(f_cancel)) {
-			@tts_config_form = null;
+			tts_config_close();
 			use_sr = orig_sr;
-			if (v.voice != orig_voice) v.set_voice(orig_voice);
-			if (v.rate != orig_rate) v.set_rate(orig_rate);
-			if (v.volume != orig_volume) v.set_volume(orig_volume);
 			speak("Canceled");
 			break;
 		} else if (f.is_pressed(f_save)) {
-			// Only what was changed, so the rest keeps following the system's settings; with main_config too, where the form's own speech takes up the changes only while the tts voice speaks it.
+			tts_config_close();
+			// Only what was changed, so the rest keeps following the system's settings.
 			int voice = f.get_list_position(f_voices);
 			if (voice > -1 and voice != v.voice) v.set_voice(voice);
 			if (f.get_slider(f_rate) != v.rate) v.set_rate(f.get_slider(f_rate));
@@ -155,5 +183,11 @@ void tts_config(tts_voice@ v, bool main_config = false) {
 			break;
 		}
 	}
+	tts_config_close();
+}
+// Ends the main configuration form's speech through a voice of its own, letting that voice go, which also stops what it was saying.
+void tts_config_close() {
 	@tts_config_form = null;
+	@tts_config_preview = null;
+	@tts_config_voice = null;
 }
