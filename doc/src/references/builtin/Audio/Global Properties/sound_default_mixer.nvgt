@@ -2,7 +2,7 @@
 	The mixer that newly created sounds are attached to.
 	mixer@ sound_default_mixer;
 	## Remarks:
-		This is null by default, which means new sounds play directly through the audio engine. If you assign a mixer, every sound created afterwards is attached to it, including the sounds sound_play() plays when it isn't given a mixer and those tone_synth makes, so you can control the volume or effects of all your sounds in one place. Sounds that already exist are not moved. Only a mixer of the default engine, sound_default_engine, is used: after another engine is made the default, new sounds play directly through that engine until a mixer of it is assigned here.
+		This is null by default, which means new sounds play directly through the audio engine. If you assign a mixer, every sound created afterwards is attached to it, including the sounds sound_play() plays when it isn't given a mixer, those tone_synth makes and those the default engine's own sound() and play() methods make, so you can control the volume or effects of all your sounds in one place. Sounds that already exist are not moved. Only a mixer of the default engine, sound_default_engine, is used: after another engine is made the default, new sounds play directly through that engine until a mixer of it is assigned here.
 		A sound can still be moved to a different mixer at any time with `sound::set_mixer()`, which refuses a mixer of another engine and returns false.
 */
 

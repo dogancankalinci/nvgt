@@ -721,7 +721,11 @@ public:
 		return snd;
 	}
 	mixer *new_mixer() override { return ::new_mixer(this); }
-	sound *new_sound() override { return ::new_sound(this); }
+	sound *new_sound() override {
+		sound *s = ::new_sound(this);
+		if (s && g_audio_mixer && this == g_audio_engine) s->set_mixer(g_audio_mixer); // The default engine's sounds go on sound_default_mixer, as those of sound() do; play() moves them to a mixer it is given.
+		return s;
+	}
 };
 class audio_data_source_impl;
 audio_data_source* audio_data_source_get(ma_data_source* ptr, audio_engine* engine);
