@@ -112,6 +112,7 @@ tts_audio_data* sapi5_engine::speak_to_pcm(const string &text) {
 		}
 		try {
 			result = new tts_audio_data(this, temp, bufsize, sb_sapi_get_sample_rate(inst), sb_sapi_get_channels(inst), sb_sapi_get_bit_depth(inst));
+			if (sb_sapi_get_volume(inst) < 100) result->gain_db = NAN; // Each voice turns itself down on its own curve, which can't be told from the volume.
 		} catch (...) {
 			free(temp);
 			throw;

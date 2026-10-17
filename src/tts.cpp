@@ -69,6 +69,21 @@ template <class t> static t *tts_trim_internal(t *data, unsigned int* size_in_fr
 	return data;
 }
 
+// The level of the loudest sample in dB relative to full scale, measured as tts_trim_internal measures levels.
+template <class t> static float tts_peak_db_internal(const t *data, size_t count, double silence = 0, double peak = numeric_limits<t>::max()) {
+	double loudest = 0;
+	for (size_t i = 0; i < count; i++) loudest = max(loudest, fabs(data[i] - silence));
+	return loudest > 0? 20 * log10(loudest / peak) : -200;
+}
+static float tts_peak_db(const tts_audio_data* data) {
+	switch (data->bitsize) {
+		case 16: return tts_peak_db_internal<int16_t>((const int16_t*)data->data, data->size_in_bytes / 2);
+		case 8: return tts_peak_db_internal<uint8_t>((const uint8_t*)data->data, data->size_in_bytes, 128, 127);
+		case 32: return tts_peak_db_internal<float>((const float*)data->data, data->size_in_bytes / 4, 0, 1);
+		default: return 0;
+	}
+}
+
 static void* tts_trim(tts_audio_data* data, bool *quiet, float begin_db = -60, float end_db = -60) {
 	unsigned int size_in_frames;
 	void* trimmed_data;
@@ -680,6 +695,10 @@ void *tts_voice::speak_to_pcm(const string &text, tts_audio_data** datablock) {
 	}
 	bool quiet;
 	float threshold = -60 + block->gain_db; // Measured against the engine's normal level, so speech an engine already made quieter keeps its quiet starts and ends.
+	if (std::isnan(block->gain_db)) { // Turned down by an amount the engine can't tell, as each SAPI voice does in its own way.
+		float peak = tts_peak_db(block);
+		threshold = peak >= -60? min(-60.0f, peak - 60) : -60; // Measured against the speech's own loudest sample instead; audio never as loud as -60 dB is quiet, as at full volume.
+	}
 	void *trimmed = tts_trim(*datablock, &quiet, threshold, threshold);
 	// Audio with nothing at the trimming threshold, -60 dB from the engine's normal level, is what some voices give for text with nothing to say, which is empty audio, as with the other voices. Speech is far louder at any volume from -40 up; below that, where speech could be that quiet too, the audio keeps its length.
 	if (quiet && get_volume() >= -40) (*datablock)->size_in_bytes = 0;
