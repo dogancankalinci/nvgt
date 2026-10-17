@@ -923,6 +923,14 @@ int LoadCompiledExecutable(asIScriptEngine *engine) {
 	#endif // __ANDROID__
 }
 #endif
+// Shows a script exception that nothing caught, offering to copy it.
+static void report_unhandled_exception(asIScriptContext *ctx) {
+	string exc = GetExceptionInfo(ctx, true);
+	string msg = exc + "\r\nCopy to clipboard?";
+	int c = question("unhandled exception", msg, false, SDL_MESSAGEBOX_ERROR);
+	if (c == 1)
+		ClipboardSetText(exc);
+}
 int ExecuteScript(asIScriptEngine *engine, const string &scriptFile) {
 	auto_chdir();
 	asIScriptModule *mod = engine->GetModule("nvgt_game", asGM_ONLY_IF_EXISTS);
@@ -942,7 +950,9 @@ int ExecuteScript(asIScriptEngine *engine, const string &scriptFile) {
 	if (!ctx)
 		return -1;
 	if (prefunc) {
-		if (ctx->Prepare(prefunc) < 0 || ctx->Execute() < 0) {
+		int r = ctx->Prepare(prefunc) < 0? -1 : ctx->Execute();
+		if (r == asEXECUTION_EXCEPTION) report_unhandled_exception(ctx); // As an exception in main() is, rather than reading the missing return value as false and ending silently.
+		if (r < 0 || r == asEXECUTION_EXCEPTION) {
 			engine->ReturnContext(ctx);
 			return -1;
 		}
@@ -975,11 +985,7 @@ int ExecuteScript(asIScriptEngine *engine, const string &scriptFile) {
 	int retcode = 0;
 	if (r != asEXECUTION_FINISHED) {
 		if (r == asEXECUTION_EXCEPTION) {
-			string exc = GetExceptionInfo(ctx, true);
-			string msg = exc + "\r\nCopy to clipboard?";
-			int c = question("unhandled exception", msg, false, SDL_MESSAGEBOX_ERROR);
-			if (c == 1)
-				ClipboardSetText(exc);
+			report_unhandled_exception(ctx);
 			retcode = -1;
 		} else if (r == asEXECUTION_ABORTED)
 			retcode = g_retcode;
