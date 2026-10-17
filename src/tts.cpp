@@ -677,7 +677,8 @@ bool tts_voice::speak(const string &text, bool interrupt) {
 		void *trimmed_data = speak_to_pcm(text, &datablock);
 		if (!trimmed_data || !datablock) return false;
 		soundptr s;
-		try { s.reset(new_global_sound()); } catch (...) {} // The sound system starts on first use and can fail to; the speech then fails, its audio freed, rather than throwing at the script.
+		// Past sound_default_mixer, so a game that pauses or turns down its sounds there doesn't silence the speech too. The sound system starts on first use and can fail to; the speech then fails, its audio freed, rather than throwing at the script.
+		try { s.reset(new_global_sound_unmixed()); } catch (...) {}
 		ma_format format = tts_pcm_format(datablock);
 		if (!s || !s->load_pcm(trimmed_data, datablock->size_in_bytes, format, datablock->sample_rate, datablock->channels)) {
 			datablock->free();

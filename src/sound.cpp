@@ -2194,12 +2194,15 @@ mixer *new_global_mixer() {
 	init_sound();
 	return new mixer_impl(g_audio_engine);
 }
-sound *new_global_sound() {
+// A sound on the default engine that isn't attached to sound_default_mixer, which the script can pause or turn down, but plays straight to the engine's endpoint, as speech does.
+sound *new_global_sound_unmixed() {
 	init_sound();
 	if (!g_audio_engine) return nullptr; // The sound system couldn't start.
-	sound* s = new sound_impl(g_audio_engine);
-	if (!s) return nullptr;
-	if (g_audio_mixer) s->set_mixer(g_audio_mixer);
+	return new sound_impl(g_audio_engine);
+}
+sound *new_global_sound() {
+	sound* s = new_global_sound_unmixed();
+	if (s && g_audio_mixer) s->set_mixer(g_audio_mixer);
 	return s;
 }
 int get_sound_output_device() {
