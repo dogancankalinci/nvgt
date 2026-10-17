@@ -7,7 +7,7 @@
 	## Returns:
 		bool: true if synthesis was successful and the file was written, false otherwise.
 	## Remarks:
-		An existing file is replaced. Engines that can't synthesize to memory, such as Speech Dispatcher on Linux, make this return false.
+		An existing file is replaced. Text with nothing to say, such as punctuation alone, gives a wave file without samples, while empty text fails, as with speak, and no file is written. Engines that can't synthesize to memory, such as Speech Dispatcher on Linux, make this return false.
 */
 
 // Example:

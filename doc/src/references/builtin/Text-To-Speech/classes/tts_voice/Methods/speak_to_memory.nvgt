@@ -6,7 +6,7 @@
 	## Returns:
 		string: the wave file's contents, or an empty string on failure.
 	## Remarks:
-		Text with nothing to say, such as punctuation alone, gives a wave file without samples. Engines that can't synthesize to memory, such as Speech Dispatcher on Linux, make this return an empty string.
+		Text with nothing to say, such as punctuation alone, gives a wave file without samples, while empty text fails, as with speak, and gives an empty string. Engines that can't synthesize to memory, such as Speech Dispatcher on Linux, make this return an empty string.
 */
 
 // Example:

@@ -6,7 +6,7 @@
 	## Returns:
 		sound@: a sound holding the speech, or null on failure.
 	## Remarks:
-		The sound is not played; it can be played, paused and positioned like any other sound, and it stays usable after the tts_voice object is gone. Text with nothing to say gives a sound with no length. Engines that can't synthesize to memory, such as Speech Dispatcher on Linux, make this return null.
+		The sound is not played; it can be played, paused and positioned like any other sound, and it stays usable after the tts_voice object is gone. Text with nothing to say, such as punctuation alone, gives a sound with no length, while empty text fails, as with speak, and gives null. Engines that can't synthesize to memory, such as Speech Dispatcher on Linux, make this return null.
 */
 
 // Example:
