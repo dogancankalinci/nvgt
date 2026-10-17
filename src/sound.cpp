@@ -302,15 +302,18 @@ ma_result wav_seek_proc(ma_encoder *pEncoder, ma_int64 offset, ma_seek_origin or
 unordered_set<sound*> g_inlined_sounds;
 mutex g_inlined_sounds_mutex;
 void garbage_collect_inline_sounds() {
-	auto it = g_inlined_sounds.begin();
-	while (it != g_inlined_sounds.end()) {
-		if ((*it)->get_playing()) ++it;
-		else {
-			unique_lock<mutex> lock(g_inlined_sounds_mutex);
-			(*it)->release();
-			it = g_inlined_sounds.erase(it);
+	vector<sound*> finished;
+	{
+		unique_lock<mutex> lock(g_inlined_sounds_mutex); // For the whole walk, as sounds that start playing on other threads are added meanwhile.
+		for (auto it = g_inlined_sounds.begin(); it != g_inlined_sounds.end();) {
+			if ((*it)->get_playing()) ++it;
+			else {
+				finished.push_back(*it);
+				it = g_inlined_sounds.erase(it);
+			}
 		}
 	}
+	for (sound *s : finished) s->release(); // Not under the lock, which closing a sound could need.
 }
 
 // Sound shapes let mixer/sound::set_position_3d position the sound as though it was more than one tile wide in each direction.
