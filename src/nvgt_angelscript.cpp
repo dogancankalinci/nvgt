@@ -997,9 +997,10 @@ int ExecuteScript(asIScriptEngine *engine, const string &scriptFile) {
 		g_ctxMgr->DoneWithContext(ctx); // Added to be kept, so the manager leaves giving it back to us, as after an exception above.
 	}
 	asIScriptFunction *outfunc = mod->GetFunctionByDecl("void on_exit()");
-	if (outfunc) {
-		ctx = g_ctxMgr->AddContext(engine, outfunc);
-		if (ctx) ctx->Execute(); // The manager gives the context back when it is deleted, as it was added without being kept; giving it back here too put it in the pool twice.
+	// Run as main() is, so that sleep() and yield() in it resume rather than leave it suspended for good; the manager gives the context back when it is done, as it is added without being kept.
+	if (outfunc && g_ctxMgr->AddContext(engine, outfunc)) {
+		while (g_ctxMgr->ExecuteScripts())
+			;
 	}
 	sound_stop_script_callbacks(); // Engines can outlive the module, and their processing callbacks run on audio threads, where they take contexts from the pool.
 	if (g_ctxMgr) {
@@ -1203,7 +1204,11 @@ asIScriptContext* RequestContextCallback(asIScriptEngine *engine, void* /*param*
 	return ctx;
 }
 void ReturnContextCallback(asIScriptEngine *engine, asIScriptContext *ctx, void* /*param*/) {
-	ctx->Unprepare();
+	// A context given back suspended can't be unprepared, and pooled like that, every later request got a context Prepare() refused; aborting it lets it be. One still running, as when exit() makes the manager give back the context calling it, can't be either way, and is pooled to be prepared again once it has stopped.
+	if (ctx->Unprepare() < 0 && ctx->GetState() == asEXECUTION_SUSPENDED) {
+		ctx->Abort();
+		ctx->Unprepare();
+	}
 	ctx->SetUserData(nullptr, 1002); // The context manager's pointer (CONTEXT_MGR in contextmgr.cpp), which it sets each time it takes a context: kept, sleep() or yield() in a later user of the context, such as a destructor run after the manager is deleted, reached the deleted manager.
 	ScopedLock<Mutex> l(g_ctxPoolMutex);
 	g_ctxPool.push_back(ctx);
