@@ -994,6 +994,7 @@ int ExecuteScript(asIScriptEngine *engine, const string &scriptFile) {
 			retcode = *(int*)ctx->GetAddressOfReturnValue();
 		else
 			retcode = 0;
+		g_ctxMgr->DoneWithContext(ctx); // Added to be kept, so the manager leaves giving it back to us, as after an exception above.
 	}
 	asIScriptFunction *outfunc = mod->GetFunctionByDecl("void on_exit()");
 	if (outfunc) {
@@ -1005,13 +1006,13 @@ int ExecuteScript(asIScriptEngine *engine, const string &scriptFile) {
 		delete g_ctxMgr;
 		g_ctxMgr = 0;
 	}
-	{
+	mod->Discard();
+	engine->GarbageCollect();
+	{ // After the module is gone, as the destructors that runs call script code in contexts from the pool too.
 		ScopedLock<Mutex> l(g_ctxPoolMutex);
 		for (asIScriptContext *pooled : g_ctxPool) pooled->Release();
 		g_ctxPool.clear();
 	}
-	mod->Discard();
-	engine->GarbageCollect();
 	return retcode;
 }
 
