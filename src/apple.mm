@@ -801,8 +801,11 @@ bool voice_over_speak(const std::string& text, bool interrupt) {
 				win = g_vo_game_window;
 				key = g_vo_game_window_key? win : nil;
 			}
-			[speech_window release];
+			NSWindow* previous = speech_window;
 			speech_window = [key retain];
+			// The previous window can have been destroyed meanwhile, which makes this the last reference, and AppKit's windows are to be deallocated on the main thread.
+			if (on_main) [previous release];
+			else if (previous) dispatch_async(dispatch_get_main_queue(), ^{ [previous release]; });
 		#endif
 		speech_new_event.set();
 		#if TARGET_OS_IOS
