@@ -20,6 +20,7 @@
 #include <thread>
 #include <memory>
 #include <atomic>
+#include <mutex>
 #include <chrono>
 #include <cmath>
 #include <fstream>
@@ -162,17 +163,21 @@ bool sapi5_engine::set_voice(int voice) {
 }
 int sapi5_engine::get_current_voice() { int result = -1; run([&] { result = sb_sapi_get_voice(inst); }); return result; }
 
-static Poco::AtomicFlag g_sr_loaded;
+// Under a lock, so a second thread waits for the first to turn native speech off rather than being told support is loaded before that. A Poco::AtomicFlag sets itself when tested, so testing one marked support loaded as soon as the first call began.
+static std::mutex g_sr_mutex;
+static bool g_sr_loaded = false;
 static Poco::AtomicFlag g_sr_available;
 bool screen_reader_load() {
+	std::lock_guard<std::mutex> lock(g_sr_mutex);
 	if (g_sr_loaded) return true;
 	speechSetValue(SP_ENABLE_NATIVE_SPEECH, 0);
 	g_sr_available.set();
-	g_sr_loaded.set();
+	g_sr_loaded = true;
 	return true;
 }
 void screen_reader_unload() {
-	if (g_sr_loaded) g_sr_loaded.reset();
+	std::lock_guard<std::mutex> lock(g_sr_mutex);
+	g_sr_loaded = false;
 }
 std::string screen_reader_detect() {
 	if (!screen_reader_load()) return "";
