@@ -11,4 +11,4 @@ Apply settings written by tts_dump_config to a tts_voice.
 bool: true if the string held settings, false if it had too few parts.
 
 ## Remarks:
-The voice is chosen by name, and left as it was when no voice of that name is installed now. use_sr is set too when the string has it.
+The voice is chosen by name, with its language when the name has it, and left as it was when no such voice is installed now. use_sr is set too when the string has it.
