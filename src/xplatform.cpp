@@ -138,8 +138,8 @@ std::string android_get_main_shared_object() {
 
 #if defined(__APPLE__)
 // VoiceOver announcements made from another script thread follow the window's focus, see voice_over_speak().
-void lost_window_focus_platform() { voice_over_window_focus(false); }
-void regained_window_focus_platform() { voice_over_window_focus(true); }
+void lost_window_focus_platform() { voice_over_window_focus_changed(); }
+void regained_window_focus_platform() { voice_over_window_focus_changed(); }
 #elif !defined(_WIN32)
 // Dummy versions of functions that are currently only implemented on windows. If some of these get defined on other platforms, this define can be made more complex to avoid the dummy versions clashing.
 void lost_window_focus_platform() {}

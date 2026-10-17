@@ -656,12 +656,6 @@ void voice_over_window_created(game_window* window) {
 		}
 	#else
 		NSWindow* win = (NSWindow*)window->get_native_window();
-		{
-			Poco::FastMutex::ScopedLock exclusive(speech_text_mutex);
-			[g_vo_game_window release];
-			g_vo_game_window = [win retain];
-			g_vo_game_window_key = false; // Until SDL reports the focus, see voice_over_window_focus().
-		}
 		NSAccessibilityPostNotification(win, NSAccessibilityApplicationActivatedNotification);
 		NSAccessibilityPostNotification(win, NSAccessibilityApplicationShownNotification);
 		NSAccessibilityPostNotification(win, NSAccessibilityWindowCreatedNotification);
@@ -669,24 +663,26 @@ void voice_over_window_created(game_window* window) {
 	#endif
 }
 
-void voice_over_window_destroyed(game_window* window) {
+// Called on the main thread as the game window (g_window, not other windows a script makes) is set, with null as it is let go of.
+void voice_over_game_window(game_window* window) {
 	#if !TARGET_OS_IOS
-		NSWindow* gone;
+		NSWindow* win = window? (NSWindow*)window->get_native_window() : nil;
+		NSWindow* old;
 		{
 			Poco::FastMutex::ScopedLock exclusive(speech_text_mutex);
-			if (!g_vo_game_window || g_vo_game_window != (NSWindow*)window->get_native_window()) return;
-			gone = g_vo_game_window;
-			g_vo_game_window = nil;
-			g_vo_game_window_key = false;
+			old = g_vo_game_window;
+			g_vo_game_window = [win retain];
+			g_vo_game_window_key = win && [NSApp keyWindow] == win;
 		}
-		[gone release];
+		[old release];
 	#endif
 }
 
-void voice_over_window_focus(bool focused) {
+// Called on the main thread for SDL's focus events of any window, so whether the game window is the key one is asked of AppKit there.
+void voice_over_window_focus_changed() {
 	#if !TARGET_OS_IOS
 		Poco::FastMutex::ScopedLock exclusive(speech_text_mutex);
-		g_vo_game_window_key = focused && g_vo_game_window;
+		g_vo_game_window_key = g_vo_game_window && [NSApp keyWindow] == g_vo_game_window;
 	#endif
 }
 

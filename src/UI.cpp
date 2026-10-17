@@ -279,9 +279,6 @@ game_window::game_window(SDL_Window* window) : _window(window), _owns_window(fal
 game_window::~game_window() {
 	_font = nullptr;
 	_renderer = nullptr;
-	#ifdef __APPLE__
-	if (_owns_window && _window) voice_over_window_destroyed(this);
-	#endif
 	if (_owns_window && _window) SDL_DestroyWindow(_window);
 }
 graphics_renderer* game_window::ensure_renderer() {
@@ -405,11 +402,17 @@ game_window* ShowNVGTWindow(const std::string& window_title, unsigned int flags)
 		return nullptr;
 	}
 	g_WindowThreadId = thread_current_thread_id();
+	#ifdef __APPLE__
+	voice_over_game_window(g_window.get());
+	#endif
 	g_window->duplicate();
 	return g_window.get();
 }
 bool DestroyNVGTWindow() {
 	if (!g_window) return false;
+	#ifdef __APPLE__
+	voice_over_game_window(nullptr);
+	#endif
 	// The window must be gone before InputDestroy's SDL_Quit: SDL_VideoQuit destroys the event queue
 	// (and its mutex) before it destroys any surviving windows, while Android's JNI input callbacks
 	// keep posting events for as long as the window exists. Quitting SDL with a live window lets a
