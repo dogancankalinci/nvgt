@@ -680,11 +680,10 @@ bool tts_voice::speak(const string &text, bool interrupt) {
 		// Past sound_default_mixer, so a game that pauses or turns down its sounds there doesn't silence the speech too. The sound system starts on first use and can fail to; the speech then fails, its audio freed, rather than throwing at the script.
 		try { s.reset(new_global_sound_unmixed()); } catch (...) {}
 		ma_format format = tts_pcm_format(datablock);
-		if (!s || !s->load_pcm(trimmed_data, datablock->size_in_bytes, format, datablock->sample_rate, datablock->channels)) {
-			datablock->free();
-			return false;
-		}
+		bool loaded = false;
+		try { loaded = s && s->load_pcm(trimmed_data, datablock->size_in_bytes, format, datablock->sample_rate, datablock->channels); } catch (...) {} // Copying the audio into a wave file can run out of memory with long speech; that fails too, with the engine's audio freed.
 		datablock->free();
+		if (!loaded) return false;
 		if (interrupt) interrupt_other_speech(engine);
 		else if ((!held.empty() || other_path_speaking(nullptr)) && hold({s, nullptr, ""})) return true;
 		return schedule(s, interrupt);
@@ -724,11 +723,10 @@ string tts_voice::speak_to_memory(const string &text) {
 	if (!trimmed_data || !datablock) return "";
 	string output;
 	ma_format format = tts_pcm_format(datablock);
-	if (!sound::pcm_to_wav(trimmed_data, datablock->size_in_bytes, format, datablock->sample_rate, datablock->channels, output)) {
-		datablock->free();
-		return "";
-	}
+	bool converted = false;
+	try { converted = sound::pcm_to_wav(trimmed_data, datablock->size_in_bytes, format, datablock->sample_rate, datablock->channels, output); } catch (...) {} // See speak().
 	datablock->free();
+	if (!converted) return "";
 	return output;
 }
 // The lock is not held while this waits, so held speech can be started meanwhile and another script thread can stop the speech.
@@ -766,12 +764,13 @@ sound *tts_voice::speak_to_sound(const string &text) {
 	sound *s = nullptr;
 	try { s = new_global_sound(); } catch (...) {} // See speak().
 	ma_format format = tts_pcm_format(datablock);
-	if (!s || !s->load_pcm(trimmed_data, datablock->size_in_bytes, format, datablock->sample_rate, datablock->channels)) {
-		datablock->free();
+	bool loaded = false;
+	try { loaded = s && s->load_pcm(trimmed_data, datablock->size_in_bytes, format, datablock->sample_rate, datablock->channels); } catch (...) {}
+	datablock->free();
+	if (!loaded) {
 		if (s) s->release();
 		return nullptr;
 	}
-	datablock->free();
 	return s;
 }
 // A parameter the script never set is read from the engine each time, so it reports the platform's current value (on Android the user's own speech settings, on Apple platforms the values a new utterance starts with) rather than a copy taken at startup.
