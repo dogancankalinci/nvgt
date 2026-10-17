@@ -42,7 +42,7 @@ void raw_speak(string text, bool interrupt) {
 	if (interrupt and tts.speaking) tts.stop();
 	if (@tts_config_form != null) {
 		use_sr = tts_config_form.is_checked(0);
-		if (!use_sr) {
+		if (!use_sr or !screen_reader_has_speech()) { // Whenever the tts voice is what speaks the form, so that its changes are heard.
 			int voice = tts_config_form.get_list_position(1);
 			double rate = tts_config_form.get_slider(2);
 			double volume = tts_config_form.get_slider(3);
@@ -134,7 +134,7 @@ void tts_config(tts_voice@ v, bool main_config = false) {
 			speak("Canceled");
 			break;
 		} else if (f.is_pressed(f_save)) {
-			// Only what was changed, so the rest keeps following the system's settings; with main_config too, where speech while the form is open takes up the changes only while the screen reader box is unchecked.
+			// Only what was changed, so the rest keeps following the system's settings; with main_config too, where the form's own speech takes up the changes only while the tts voice speaks it.
 			int voice = f.get_list_position(f_voices);
 			if (voice > -1 and voice != v.voice) v.set_voice(voice);
 			if (f.get_slider(f_rate) != v.rate) v.set_rate(f.get_slider(f_rate));
