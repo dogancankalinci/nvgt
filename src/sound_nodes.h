@@ -34,12 +34,14 @@ public:
 		if (!engine) this->engine = g_audio_engine;
 		// Defense in depth: without an engine there is nothing to attach to, and the duplicate() below would dereference null. uninit_sound() can also leave g_audio_engine cleared behind us.
 		if (!this->engine) throw std::runtime_error("no audio engine available");
-		if (dynamic_cast<audio_node_impl*>(this->engine) != this) this->engine->duplicate();
+		if (!is_engine()) this->engine->duplicate();
 	}
 	~audio_node_impl() {
 		for (audio_node *n : output_connections) if (n) n->release();
-		if (engine && dynamic_cast<audio_node_impl*>(this->engine) != this) engine->release();
+		if (engine && !is_engine()) engine->release();
 	}
+	// Whether this node is its engine, which holds no reference on itself. Compared through audio_node, the base both share: a dynamic_cast of the engine to this class gives null while the engine's own constructor is still running this one, so every engine took a reference on itself and was never destroyed.
+	bool is_engine() const { return static_cast<const audio_node*>(engine) == static_cast<const audio_node*>(this); }
 	void duplicate() { asAtomicInc(refcount); }
 	void release() {
 		if (asAtomicDec(refcount) < 1)

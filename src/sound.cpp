@@ -14,6 +14,9 @@
 #include <memory>
 #include <string>
 #include <thread>
+#ifdef _MSC_VER
+#include <intrin.h> // _InterlockedCompareExchange
+#endif
 #include <algorithm>
 #include <condition_variable>
 #include <mutex>
@@ -351,6 +354,14 @@ public:
 };
 sound_aabb_shape* create_sound_aabb_shape(int left_range, int right_range, int backward_range, int forward_range, int lower_range, int upper_range) { return new sound_aabb_shape(left_range, right_range, backward_range, forward_range, lower_range, upper_range); }
 
+// An engine's endpoint, which lives exactly as long as its engine: its references are the engine's, so a script holding the endpoint keeps the engine, while the engine, which deletes it, isn't kept alive by it. A reference of its own on the engine made the two hold each other, and no engine was ever destroyed.
+class audio_engine_endpoint final : public audio_node_impl {
+public:
+	audio_engine_endpoint(ma_node_base *endpoint, audio_engine *e) : audio_node_impl(endpoint, e) { engine->release(); } // Gives back the reference the node took; the engine's own keeps it alive.
+	~audio_engine_endpoint() { engine = nullptr; } // So the node doesn't give it back a second time.
+	void duplicate() override { engine->duplicate(); }
+	void release() override { engine->release(); }
+};
 // Miniaudio objects must be allocated on the heap as nvgt's API introduces the concept of an uninitialized sound, which a stack based system would make more difficult to implement.
 class audio_engine_impl final : public audio_node_impl, public virtual audio_engine {
 	std::unique_ptr<ma_engine> engine;
@@ -358,14 +369,33 @@ class audio_engine_impl final : public audio_node_impl, public virtual audio_eng
 	std::unique_ptr<ma_device> device;
 	bool device_follows_default = true; // Whether the device was opened as the system's default rather than by its id, as the constructor and assigning -1 do.
 	std::atomic<asIScriptFunction*> script_data_callback;
-	audio_node *engine_endpoint; // Upon engine creation we'll call ma_engine_get_endpoint once so as to avoid creating more than one of our wrapper objects when our engine->get_endpoint() function is called.
-	int refcount;
+	audio_engine_endpoint *engine_endpoint; // Upon engine creation we'll call ma_engine_get_endpoint once so as to avoid creating more than one of our wrapper objects when our engine->get_endpoint() function is called.
 	std::mutex callback_mutex; // Lets the device's thread take a reference of its own to script_data_callback before set_processing_callback() can let it go.
+	inline static thread_local audio_engine_impl *processing = nullptr; // The engine whose device this thread is running the data callback of, see release().
+	struct processing_scope {
+		processing_scope(audio_engine_impl *engine) { audio_engine_impl::processing = engine; }
+		~processing_scope() { audio_engine_impl::processing = nullptr; }
+	};
+	// A reference for the data callback, unless the last one is already gone and the engine is being destroyed on another thread, which waits for the callback to return; a plain duplicate() would bring it back for a second destruction.
+	bool duplicate_if_alive() {
+		for (int count = refcount; count > 0;) {
+			#ifdef _MSC_VER
+			int seen = _InterlockedCompareExchange(reinterpret_cast<volatile long*>(&refcount), count + 1, count);
+			#else
+			int seen = __sync_val_compare_and_swap(&refcount, count, count + 1);
+			#endif
+			if (seen == count) return true;
+			count = seen;
+		}
+		return false;
+	}
+	// Mixing needs no reference: destroying the engine stops the device first, which waits for this call to return. Calling the script does, as the engine is its argument, which takes a reference and gives it back.
 	static void data_callback(ma_device *pDevice, void *pOutput, const void *pInput, ma_uint32 frameCount) {
 		audio_engine_impl* engine = reinterpret_cast<audio_engine_impl*>(pDevice->pUserData);
-		engine->duplicate();
+		processing_scope scope(engine); // Outlasts every reference let go below.
 		ma_uint64 frames_read;
 		engine->read(pOutput, frameCount, &frames_read);
+		if (!engine->script_data_callback || !engine->duplicate_if_alive()) return;
 		asIScriptFunction *callback;
 		{
 			std::lock_guard<std::mutex> lock(engine->callback_mutex);
@@ -382,7 +412,7 @@ class audio_engine_impl final : public audio_node_impl, public virtual audio_eng
 			if (ctx) g_ScriptEngine->ReturnContext(ctx);
 			callback->Release();
 		}
-		engine->release();
+		engine->release(); // Can be the last reference, see release().
 	}
 
 public:
@@ -462,7 +492,7 @@ public:
 		// Set some default properties for spatialization.
 		set_listener_direction(0, 0, 1, 0); // Y forward
 		set_listener_world_up(0, 0, 0, 1);  // Z up
-		engine_endpoint = new audio_node_impl(reinterpret_cast<ma_node_base *>(ma_engine_get_endpoint(&*engine)), this);
+		engine_endpoint = new audio_engine_endpoint(reinterpret_cast<ma_node_base *>(ma_engine_get_endpoint(&*engine)), this);
 	}
 	~audio_engine_impl() {
 		if (device) {
@@ -473,14 +503,23 @@ public:
 			script_data_callback.load()->Release();
 			script_data_callback = nullptr;
 		}
-		if (engine_endpoint)
-			engine_endpoint->release();
+		delete engine_endpoint;
 		if (engine) {
 			ma_engine_uninit(&*engine);
 			engine = nullptr;
 		}
 		if (resource_manager)
 			ma_resource_manager_uninit(&*resource_manager);
+	}
+	// The last reference can go on the engine's own device thread, as the data callback holds one while it calls the script. Destroying the engine stops its device, which from that thread would wait for itself forever, so the engine is destroyed on a thread of its own then, or kept if none can be started.
+	void release() override {
+		if (asAtomicDec(refcount) >= 1) return;
+		if (g_soundsystem_shut_down.test()) return; // Once the sound system shut down, engines are left to the process's exit, as they always were: destroying one closes its device, which by then can come after SDL took down what the backend needs, COM on Windows.
+		if (processing != this) {
+			delete this;
+			return;
+		}
+		try { std::thread([this] { delete this; }).detach(); } catch (...) {}
 	}
 	ma_engine *get_ma_engine() const override { return engine.get(); }
 	audio_node *get_endpoint() const override { return engine_endpoint; }
