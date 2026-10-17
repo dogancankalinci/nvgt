@@ -379,7 +379,7 @@ void TranslateException(asIScriptContext *ctx, void* /*userParam*/) {
 void Exit(int retcode = 0) {
 	g_shutting_down = true;
 	g_retcode = retcode;
-	g_ctxMgr->AbortAll();
+	if (g_ctxMgr) g_ctxMgr->AbortAll(); // Gone once the script ended, while the destructors that discarding its module runs can still call exit().
 }
 asUINT GetTimeCallback() {
 	return ticks();
