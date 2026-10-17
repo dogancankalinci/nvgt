@@ -554,6 +554,7 @@ public:
 		return -1; // couldn't determine device?
 	}
 	bool set_device(int device) override {
+		if (processing == this) return false; // Closing the device from its own thread would wait for that thread, see release().
 		if (!engine || flags & NO_DEVICE || device < -1 || device >= int(g_sound_output_devices.size())) return false;
 		ma_device *old_dev = ma_engine_get_device(&*engine);
 		bool old_open = old_dev && ma_device_get_state(old_dev) != ma_device_state_uninitialized;
@@ -639,6 +640,7 @@ public:
 		return true;
 	}
 	bool stop() override {
+		if (processing == this) return false; // Stopping the device from its own thread would wait for that thread, see release().
 		if (!engine || ma_engine_stop(&*engine) != MA_SUCCESS) return false;
 		started = false;
 		return true;
