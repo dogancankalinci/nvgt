@@ -3183,7 +3183,7 @@ class control {
 				list_position = i;
 				if (!silent) {
 					if (wrapped != "") speak(wrapped);
-					speak_list_item();
+					speak_list_item(wrapped == ""); // Not interrupting the wrap message, as the input field's search below doesn't.
 				}
 				return true;
 			}
