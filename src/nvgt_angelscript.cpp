@@ -1204,6 +1204,7 @@ asIScriptContext* RequestContextCallback(asIScriptEngine *engine, void* /*param*
 }
 void ReturnContextCallback(asIScriptEngine *engine, asIScriptContext *ctx, void* /*param*/) {
 	ctx->Unprepare();
+	ctx->SetUserData(nullptr, 1002); // The context manager's pointer (CONTEXT_MGR in contextmgr.cpp), which it sets each time it takes a context: kept, sleep() or yield() in a later user of the context, such as a destructor run after the manager is deleted, reached the deleted manager.
 	ScopedLock<Mutex> l(g_ctxPoolMutex);
 	g_ctxPool.push_back(ctx);
 }
