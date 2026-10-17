@@ -133,12 +133,11 @@ void tts_config(tts_voice@ v, bool main_config = false) {
 			speak("Canceled");
 			break;
 		} else if (f.is_pressed(f_save)) {
-			if (!main_config) { // Only what was changed, so the rest keeps following the system's settings.
-				int voice = f.get_list_position(f_voices);
-				if (voice > -1 and voice != v.voice) v.set_voice(voice);
-				if (f.get_slider(f_rate) != v.rate) v.set_rate(f.get_slider(f_rate));
-				if (f.get_slider(f_volume) != v.volume) v.set_volume(f.get_slider(f_volume));
-			}
+			// Only what was changed, so the rest keeps following the system's settings; with main_config too, where speech while the form is open takes up the changes only while the screen reader box is unchecked.
+			int voice = f.get_list_position(f_voices);
+			if (voice > -1 and voice != v.voice) v.set_voice(voice);
+			if (f.get_slider(f_rate) != v.rate) v.set_rate(f.get_slider(f_rate));
+			if (f.get_slider(f_volume) != v.volume) v.set_volume(f.get_slider(f_volume));
 			speak("Text to speech settings saved");
 			break;
 		}
