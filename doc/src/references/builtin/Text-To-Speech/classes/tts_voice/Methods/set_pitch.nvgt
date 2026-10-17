@@ -4,7 +4,7 @@
 	## Arguments:
 		* float pitch: the desired pitch.
 	## Remarks:
-		-10 is lowest and 10 is highest, with 0 being the default; values outside are clamped to it. If this hasn't been assigned, the engine's own pitch is used, which may not be 0. This is the same as assigning the pitch property.
+		-10 is lowest and 10 is highest, with 0 being the default; values outside are clamped to it. If this hasn't been assigned, the voice speaks at the pitch the engine starts with, which may not be 0; see pitch_set for what that is on each platform. Speech Dispatcher on Linux speaks at the pitch of its own configuration, and doesn't take this setting. This is the same as assigning the pitch property.
 */
 
 // Example:

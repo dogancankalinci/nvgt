@@ -4,7 +4,7 @@
 	## Returns:
 		float: the current pitch.
 	## Remarks:
-		-10 is lowest and 10 is highest, with 0 being the default. If this hasn't been assigned, it reports the pitch the engine uses, which may not be 0. This is the same as reading the pitch property.
+		-10 is lowest and 10 is highest, with 0 being the default. If this hasn't been assigned, it reports the pitch the engine starts with, which may not be 0; see pitch_set for what that is on each platform. This is the same as reading the pitch property.
 */
 
 // Example:

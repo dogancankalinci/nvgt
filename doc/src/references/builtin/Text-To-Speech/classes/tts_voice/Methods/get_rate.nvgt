@@ -4,7 +4,7 @@
 	## Returns:
 		float: the current rate.
 	## Remarks:
-		-10 is slowest and 10 is fastest, with 0 being the default speed. If this hasn't been assigned, it reports the rate the engine uses, which may not be 0. This is the same as reading the rate property.
+		-10 is slowest and 10 is fastest, with 0 being the default speed. If this hasn't been assigned, it reports the rate the engine starts with, which may not be 0; see rate_set for what that is on each platform. This is the same as reading the rate property.
 */
 
 // Example:

@@ -4,7 +4,7 @@
 	## Returns:
 		float: the current volume.
 	## Remarks:
-		-100 is silent and 0 is loudest, as in BGT. If this hasn't been assigned, it reports the OS setting, which may not be 0.
+		-100 is silent and 0 is loudest, as in BGT. If this hasn't been assigned, it reports the volume the engine starts with, which may not be 0; see volume_set for what that is on each platform. This is the same as reading the volume property.
 */
 
 // Example:

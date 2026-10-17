@@ -4,7 +4,7 @@
 	## Arguments:
 		* float rate: the desired speech rate.
 	## Remarks:
-		-10 is slowest, 10 is fastest, with 0 being default speed, or 50 percent if you like. If this hasn't been manually assigned, it will use the OS setting which may not be 0. If moving in old bgt code, you may want to update it to use this method instead of the rate property.
+		-10 is slowest, 10 is fastest, with 0 being default speed, or 50 percent if you like; values outside are clamped to it. If this hasn't been assigned, the voice speaks at the rate the engine starts with, which may not be 0; see rate_set for what that is on each platform. Speech Dispatcher on Linux speaks at the rate of its own configuration, and doesn't take this setting. This is the same as assigning the rate property.
 */
 
 // Example:
