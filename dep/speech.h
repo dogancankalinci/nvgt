@@ -79,6 +79,7 @@ struct tts_darray_t {
     int mUsed;
     int mAllocated;
     int mAllocChunk;
+    int mFailed; // NVGT: set when memory ran out while it grew, which loses what it held, see speech_gen.
     char mem[ 1024 ];
 };
 
@@ -89,6 +90,7 @@ static void tts_darray_init( struct tts_darray_t* darray, void* memctx ) {
     darray->mUsed = 0;
     darray->mAllocated = sizeof( darray->mem );
     darray->mData = darray->mem;
+    darray->mFailed = 0;
 }
 
 
@@ -120,12 +122,13 @@ static char* tts_darray_getDataInPos( struct tts_darray_t* darray, int aPosition
 
         char* newdata = (char*) SPEECH_MALLOC( darray->memctx, newsize );
         if( !newdata ) {
-            if( darray->mData != darray->mem ) SPEECH_FREE( memctx, darray->mData);
+            if( darray->mData != darray->mem ) SPEECH_FREE( darray->memctx, darray->mData);
             darray->mData = NULL;
             darray->mAllocated = darray->mUsed = 0;
+            darray->mFailed = 1;
             return NULL;
         }
-        memcpy( newdata, darray->mData, darray->mAllocated );
+        if( darray->mAllocated ) memcpy( newdata, darray->mData, darray->mAllocated ); // NVGT: nothing to copy, from null, after memory ran out.
         if( darray->mData != darray->mem ) {
             SPEECH_FREE( darray->memctx, darray->mData );
         }
@@ -144,7 +147,7 @@ static char* tts_darray_getDataInPos( struct tts_darray_t* darray, int aPosition
 static void tts_darray_put( struct tts_darray_t* darray, int aData ) {
     char *s = tts_darray_getDataInPos( darray, darray->mUsed );
 
-    *s = (char) aData;
+    if( s ) *s = (char) aData; // NVGT: null once memory ran out.
 }
 
 
@@ -4093,6 +4096,10 @@ static int tts_NRL(const char *s, int n, struct tts_darray_t *phone, void* memct
     char mem[ 64 ];    
     char *word = mem;
     if( n + 3 > sizeof( mem ) ) word = (char *) SPEECH_MALLOC( memctx, n + 3);
+    if( !word ) { // NVGT: out of memory, which speech_gen reports.
+        phone->mFailed = 1;
+        return 0;
+    }
     char *d = word;
     *d++ = ' ';
 
@@ -4306,6 +4313,13 @@ short* speech_gen( int* samples_pairs_generated, char const* str, float rate, fl
 
     tts_xlate_string( str, &phone, memctx );
     int frames = tts_phone_to_elm( tts_darray_getData( &phone ), tts_darray_getSize( &phone ), &element );
+    // NVGT: memory that ran out on the way to the elements lost some of the speech, which then gives none, as below.
+    if( phone.mFailed || element.mFailed ) {
+        if( samples_pairs_generated ) *samples_pairs_generated = 0;
+        tts_darray_term( &phone );
+        tts_darray_term( &element );
+        return NULL;
+    }
 
     struct tts_klatt_t synth;
     tts_klatt_init( &synth, rate, freq, gain );
