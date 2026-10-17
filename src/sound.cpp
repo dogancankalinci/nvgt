@@ -67,6 +67,7 @@ mixer* g_audio_mixer = nullptr;
 static std::atomic_flag g_soundsystem_initialized; // The context, the sound service and the device lists are set up, see init_sound_context().
 static std::atomic_flag g_soundsystem_ready; // The engine exists. Set last so that no other thread can be told "initialized" while g_audio_engine is still null.
 static std::recursive_mutex g_soundsystem_init_mutex; // Recursive because setting up re-enters init_sound() and init_sound_context() on this same thread.
+static std::atomic_flag g_soundsystem_shut_down; // uninit_sound() ran: script threads still running are refused rather than given the default engine it let go.
 static bool g_soundsystem_starting = false; // Under g_soundsystem_init_mutex: this thread is setting up, so a call re-entering from there is answered at once.
 thread_local ma_result g_soundsystem_last_error = MA_SUCCESS;
 static unordered_map<ma_data_source*, audio_data_source*> g_data_sources_map; // Only allow one audio_data_source wrapper per ma_data_source, should never be populated enough to be a performance hit.
@@ -163,6 +164,7 @@ bool init_sound() {
 	// Everything below runs under the lock: a second thread must wait for the engine to exist rather than be told the system is ready while it is still being built.
 	std::lock_guard<std::recursive_mutex> lock(g_soundsystem_init_mutex);
 	if (g_soundsystem_ready.test()) return true; // another thread finished initializing while we waited for the lock
+	if (g_soundsystem_shut_down.test()) throw runtime_error("the sound system has shut down");
 	if (g_soundsystem_starting) return true; // re-entrant call from the setup, on this very thread; the engine is not assigned yet but everything it needs already is
 	if (!init_sound_context()) return false;
 	// An engine that can't be built, as on a machine without an output device, throws here, and again on each later call, which tries anew, rather than letting later calls report the system ready with g_audio_engine null.
@@ -177,6 +179,9 @@ void uninit_sound() {
 	if (!g_soundsystem_initialized.test())
 		return;
 	garbage_collect_inline_sounds();
+	std::lock_guard<std::recursive_mutex> lock(g_soundsystem_init_mutex);
+	g_soundsystem_shut_down.test_and_set();
+	g_soundsystem_ready.clear(); // So that init_sound() refuses later calls instead of reporting a ready system whose engine is gone.
 	if (g_audio_engine != nullptr) {
 		g_audio_engine->release();
 		g_audio_engine = nullptr;
