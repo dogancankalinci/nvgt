@@ -73,16 +73,16 @@ string[] tts_voice_display_names(tts_voice@ v) {
 	}
 	return shown;
 }
+// Only what was set on the voice is written, "default" for the voice and an empty field for the rate or volume otherwise, so after loading the rest keep following the system's settings. The 0 stands for a pitch, which isn't saved.
 string tts_dump_config(tts_voice@ v, bool save_screen_reader_setting = false) {
 	string[] names = tts_voice_display_names(v);
-	string o = (v.voice > -1 and uint(v.voice) < names.length()? names[v.voice] : "") + "||";
-	if (o == "||") o = "default||";
-	o += v.rate + "||0||" + v.volume;
+	string o = (v.voice_set and v.voice > -1 and uint(v.voice) < names.length()? names[v.voice] : "default") + "||";
+	o += (v.rate_set? "" + v.rate : "") + "||0||" + (v.volume_set? "" + v.volume : "");
 	if (save_screen_reader_setting) o += "||" + (use_sr? "1" : "0");
 	return o;
 }
 bool tts_load_config(string c, tts_voice@ v) {
-	string[] args = c.split("||");
+	string[] args = c.split("||", true, true); // Keeping the empty fields of settings that weren't saved.
 	if (args.length() < 4) return false;
 	if (args[0] != "default") {
 		string[] names = tts_voice_display_names(v);
@@ -90,8 +90,8 @@ bool tts_load_config(string c, tts_voice@ v) {
 		if (i < 0) i = v.list_voices().find(args[0]); // Saved with the plain name.
 		if (i > -1) v.set_voice(i);
 	}
-	v.set_rate(parse_float(args[1]));
-	v.set_volume(parse_float(args[3]));
+	if (args[1] != "") v.set_rate(parse_float(args[1]));
+	if (args[3] != "") v.set_volume(parse_float(args[3]));
 	if (args.length() > 4) use_sr = args[4] == "1";
 	return true;
 }
