@@ -374,6 +374,7 @@ struct tts_klatt_t {
     struct tts_slope_t mStressS;
     struct tts_slope_t mStressE;
     float mTop;
+    float mTopFloor; // NVGT: the lowest mTop goes as the pitch declines, see tts_klatt_synth.
 
     int count; // MG: REINIT AT LONG PAUSE
 };
@@ -2845,6 +2846,7 @@ static void tts_klatt_initsynth( struct tts_klatt_t* klatt, int aElementCount,un
     klatt->mNTStress = 0;
     klatt->mKlattFramePars.mF0FundamentalFreq = freq;
     klatt->mTop = 1.1f * klatt->mKlattFramePars.mF0FundamentalFreq;
+    klatt->mTopFloor = 0.5f * klatt->mTop;
     klatt->mKlattFramePars.mNasalPoleFreq = (int)klatt->mLastElement->mInterpolator[TTS_ELM_FN].mSteady;
     klatt->mKlattFramePars.mFormant1ParallelBandwidth = klatt->mKlattFramePars.mFormant1Bandwidth = 60;
     klatt->mKlattFramePars.mFormant2ParallelBandwidth = klatt->mKlattFramePars.mFormant2Bandwidth = 90;
@@ -2970,7 +2972,8 @@ int tts_klatt_synth( struct tts_klatt_t* klatt, int aSampleCount, short *aSample
             samp += klatt->mNspFr;
 
             // Declination of f0 envelope 0.25Hz / cS 
-            klatt->mTop -= 0.5;
+            // NVGT: down to a floor. Only a pause after punctuation resets it, so text without punctuation, such as the lines of a list, took the pitch below zero, after about 30 seconds at the default pitch and rate and sooner at a lower pitch, and the voice then went silent. The floor is an octave below where the pitch starts, lower than sentences take it, but for very long ones at the lowest pitch.
+            klatt->mTop = klatt->mTop - 0.5f > klatt->mTopFloor? klatt->mTop - 0.5f : klatt->mTopFloor;
         }
     }
 
@@ -2987,6 +2990,7 @@ int tts_klatt_synth( struct tts_klatt_t* klatt, int aSampleCount, short *aSample
         klatt->mNTStress = 0;
         klatt->mKlattFramePars.mF0FundamentalFreq = freq;
         klatt->mTop = 1.1f * klatt->mKlattFramePars.mF0FundamentalFreq;
+    klatt->mTopFloor = 0.5f * klatt->mTop;
         klatt->mKlattFramePars.mNasalPoleFreq = (int)klatt->mLastElement->mInterpolator[TTS_ELM_FN].mSteady;
         klatt->mKlattFramePars.mFormant1ParallelBandwidth = klatt->mKlattFramePars.mFormant1Bandwidth = 60;
         klatt->mKlattFramePars.mFormant2ParallelBandwidth = klatt->mKlattFramePars.mFormant2Bandwidth = 90;
