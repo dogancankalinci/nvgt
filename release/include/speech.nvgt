@@ -61,8 +61,22 @@ void stop_speech() {
 	tts.stop();
 }
 
+// The voices' names as the user sees them and as they are saved: with the language added to a name another voice also has, as on Apple platforms, which list some voices once per language under one name.
+string[] tts_voice_display_names(tts_voice@ v) {
+	string[]@ names = v.list_voices();
+	string[] shown = names;
+	for (uint i = 0; i < names.length(); i++) {
+		for (uint j = 0; j < names.length(); j++) {
+			if (j == i or names[j] != names[i]) continue;
+			shown[i] = names[i] + " (" + v.get_voice_language(i) + ")";
+			break;
+		}
+	}
+	return shown;
+}
 string tts_dump_config(tts_voice@ v, bool save_screen_reader_setting = false) {
-	string o = v.get_voice_name(v.voice) + "||";
+	string[] names = tts_voice_display_names(v);
+	string o = (v.voice > -1 and uint(v.voice) < names.length()? names[v.voice] : "") + "||";
 	if (o == "||") o = "default||";
 	o += v.rate + "||0||" + v.volume;
 	if (save_screen_reader_setting) o += "||" + (use_sr? "1" : "0");
@@ -72,8 +86,9 @@ bool tts_load_config(string c, tts_voice@ v) {
 	string[] args = c.split("||");
 	if (args.length() < 4) return false;
 	if (args[0] != "default") {
-		string[]@ V = v.list_voices();
-		int i = V.find(args[0]);
+		string[] names = tts_voice_display_names(v);
+		int i = names.find(args[0]);
+		if (i < 0) i = v.list_voices().find(args[0]); // Saved with the plain name.
 		if (i > -1) v.set_voice(i);
 	}
 	v.set_rate(parse_float(args[1]));
@@ -97,7 +112,7 @@ void tts_config(tts_voice@ v, bool main_config = false) {
 	int f_volume = f.create_slider("Volume", v.volume, -100, 0);
 	int f_save = f.create_button("&Save settings", true);
 	int f_cancel = f.create_button("Cancel", false, true);
-	string[]@ voicenames = v.list_voices();
+	string[] voicenames = tts_voice_display_names(v);
 	for (uint i = 0; i < voicenames.length(); i++)
 		f.add_list_item(f_voices, voicenames[i] != "" ? voicenames[i] : "Unknown voice " + (i + 1));
 	if (v.voice > -1)
