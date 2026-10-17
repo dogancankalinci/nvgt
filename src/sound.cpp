@@ -482,7 +482,7 @@ public:
 		cfg.playback.channels = old_dev->playback.channels;
 		cfg.playback.format = ma_format_f32;
 		cfg.sampleRate = old_dev->sampleRate;
-		cfg.noClip = MA_TRUE;
+		cfg.noClip = (flags & engine_flags::NO_CLIP)? MA_TRUE : MA_FALSE; // As the constructor opens the device.
 		cfg.periodSizeInFrames = SOUNDSYSTEM_FRAMESIZE;
 		cfg.resampling.algorithm = ma_resample_algorithm_custom;
 		cfg.resampling.pBackendVTable = &wdl_resampler_backend_vtable;
