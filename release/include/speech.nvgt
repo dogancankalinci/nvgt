@@ -86,6 +86,13 @@ string tts_dump_config(tts_voice@ v, bool save_screen_reader_setting = false) {
 	if (save_screen_reader_setting) o += "||" + (use_sr? "1" : "0");
 	return o;
 }
+// A rate or volume as tts_dump_config writes it, such as "-2.5". Anything else in the field, from a damaged or edited string, leaves the setting as it was, as an empty field does, rather than reading as 0.
+bool tts_config_number(string s) {
+	if (s.substr(0, 1) == "-") s = s.substr(1);
+	int point = s.find(".");
+	string whole = point < 0? s : s.substr(0, point), fraction = point < 0? "" : s.substr(point + 1);
+	return (whole != "" or fraction != "") and (whole == "" or whole.is_digits()) and (fraction == "" or fraction.is_digits());
+}
 bool tts_load_config(string c, tts_voice@ v) {
 	string[] args = c.split("||", true, true); // Keeping the empty fields of settings that weren't saved.
 	if (args.length() < 4) return false;
@@ -98,9 +105,9 @@ bool tts_load_config(string c, tts_voice@ v) {
 		if (i < 0) i = names.find(args[0]); // Saved with the plain name, before the language was always saved.
 		if (i > -1) v.set_voice(i);
 	}
-	if (args[1] != "") v.set_rate(parse_float(args[1]));
-	if (args[3] != "") v.set_volume(parse_float(args[3]));
-	if (args.length() > 4) use_sr = args[4] == "1";
+	if (tts_config_number(args[1])) v.set_rate(parse_float(args[1]));
+	if (tts_config_number(args[3])) v.set_volume(parse_float(args[3]));
+	if (args.length() > 4 and (args[4] == "0" or args[4] == "1")) use_sr = args[4] == "1";
 	return true;
 }
 
