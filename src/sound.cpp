@@ -360,26 +360,27 @@ class audio_engine_impl final : public audio_node_impl, public virtual audio_eng
 	std::atomic<asIScriptFunction*> script_data_callback;
 	audio_node *engine_endpoint; // Upon engine creation we'll call ma_engine_get_endpoint once so as to avoid creating more than one of our wrapper objects when our engine->get_endpoint() function is called.
 	int refcount;
+	std::mutex callback_mutex; // Lets the device's thread take a reference of its own to script_data_callback before set_processing_callback() can let it go.
 	static void data_callback(ma_device *pDevice, void *pOutput, const void *pInput, ma_uint32 frameCount) {
 		audio_engine_impl* engine = reinterpret_cast<audio_engine_impl*>(pDevice->pUserData);
 		engine->duplicate();
 		ma_uint64 frames_read;
 		engine->read(pOutput, frameCount, &frames_read);
-		if (engine->script_data_callback) {
+		asIScriptFunction *callback;
+		{
+			std::lock_guard<std::mutex> lock(engine->callback_mutex);
+			callback = engine->script_data_callback;
+			if (callback) callback->AddRef();
+		}
+		if (callback) {
 			asIScriptContext* ctx = g_ScriptEngine->RequestContext();
-			if (!ctx || ctx->Prepare(engine->script_data_callback) < 0) {
-				if (ctx) g_ScriptEngine->ReturnContext(ctx);
-				engine->release();
-				return; // Todo: Maybe find a way to log error state here?
+			if (ctx && ctx->Prepare(callback) >= 0) { // Todo: Maybe find a way to log error state here?
+				script_memory_buffer buf(g_ScriptEngine->GetTypeInfoByDecl("memory_buffer<float>"), pOutput, pDevice->playback.channels * frames_read); // Todo: Support all data formats.
+				if (ctx->SetArgObject(0, static_cast<audio_engine*>(engine)) >= 0 && ctx->SetArgObject(1, &buf) >= 0 && ctx->SetArgQWord(2, frames_read) >= 0)
+					ctx->Execute(); // Really not sure what to do about exceptions and errors taking place in the audio thread yet as we don't have a fully established logging facility set up.
 			}
-			script_memory_buffer buf(g_ScriptEngine->GetTypeInfoByDecl("memory_buffer<float>"), pOutput, pDevice->playback.channels * frames_read); // Todo: Support all data formats.
-			if (ctx->SetArgObject(0, static_cast<audio_engine*>(engine)) < 0 || ctx->SetArgObject(1, &buf) < 0 || ctx->SetArgQWord(2, frames_read) < 0) {
-				g_ScriptEngine->ReturnContext(ctx);
-				engine->release();
-				return;
-			}
-			ctx->Execute(); // Really not sure what to do about exceptions and errors taking place in the audio thread yet as we don't have a fully established logging facility set up.
-			g_ScriptEngine->ReturnContext(ctx);
+			if (ctx) g_ScriptEngine->ReturnContext(ctx);
+			callback->Release();
 		}
 		engine->release();
 	}
@@ -562,8 +563,12 @@ public:
 		return result;
 	}
 	void set_processing_callback(asIScriptFunction* cb) override {
-		if (script_data_callback) script_data_callback.load()->Release();
-		script_data_callback = cb;
+		asIScriptFunction *old;
+		{
+			std::lock_guard<std::mutex> lock(callback_mutex);
+			old = script_data_callback.exchange(cb);
+		}
+		if (old) old->Release(); // The device's thread holds a reference of its own to one it is calling.
 	}
 	asIScriptFunction* get_processing_callback() const override { return script_data_callback; }
 	unsigned long long get_time() const override { return engine ? (flags & DURATIONS_IN_FRAMES ? get_time_in_frames() : get_time_in_milliseconds()) : 0; }
