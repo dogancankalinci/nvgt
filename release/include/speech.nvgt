@@ -75,8 +75,11 @@ string[] tts_voice_display_names(tts_voice@ v) {
 }
 // Only what was set on the voice is written, "default" for the voice and an empty field for the rate or volume otherwise, so after loading the rest keep following the system's settings. The 0 stands for a pitch, which isn't saved.
 string tts_dump_config(tts_voice@ v, bool save_screen_reader_setting = false) {
-	string[] names = tts_voice_display_names(v);
-	string o = (v.voice_set and v.voice > -1 and uint(v.voice) < names.length()? names[v.voice] : "default") + "||";
+	string o = "default||";
+	if (v.voice_set and v.voice > -1) { // Listing the voices binds every engine, which a voice that only follows the system's settings needn't do.
+		string[] names = tts_voice_display_names(v);
+		if (uint(v.voice) < names.length()) o = names[v.voice] + "||";
+	}
 	o += (v.rate_set? "" + v.rate : "") + "||0||" + (v.volume_set? "" + v.volume : "");
 	if (save_screen_reader_setting) o += "||" + (use_sr? "1" : "0");
 	return o;
