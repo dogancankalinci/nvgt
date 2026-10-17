@@ -2334,7 +2334,7 @@ void set_sound_output_device(int device) {
 sound* sound_play(const string& path, const reactphysics3d::Vector3& position, float volume, float pan, float pitch, mixer* mix, const pack_interface* pack_file, bool autoplay) {
 	default_engine_ref engine;
 	if (!engine) return nullptr;
-	return engine->play(path, position, volume, pan, pitch, mix, pack_file, autoplay);
+	return engine->play(path, position, volume, pan, pitch, mix? mix : g_audio_mixer, pack_file, autoplay); // Without a mixer of its own, on sound_default_mixer as other new sounds are, unless that mixer is of another engine.
 }
 reactphysics3d::Vector3 sound_get_listener_position(unsigned int listener_index = 0) {
 	default_engine_ref engine;

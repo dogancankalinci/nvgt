@@ -159,10 +159,7 @@ sound* tone_synth::generate_sound() {
 	if (size <= 0) return nullptr;
 	std::unique_ptr<char[]> buffer(new char[size]);
 	if (!el_tonar_output_buffer(gen, buffer.get(), size)) return nullptr;
-	audio_engine *engine = acquire_default_engine(); // With a reference, so another thread making a different engine the default can't destroy it meanwhile.
-	if (!engine) return nullptr;
-	sound *s = engine->new_sound();
-	engine->release(); // The sound holds its own.
+	sound *s = new_global_sound(); // On the default engine and attached to sound_default_mixer, as other new sounds are.
 	if (!s) return nullptr;
 	bool loaded = false;
 	try {
