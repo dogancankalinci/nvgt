@@ -957,8 +957,12 @@ bool tts_voice::stop() {
 		removed = clear();
 	}
 	bool stopped = true;
-	for (const auto &engine : native_engines) if (engine != current_engine && !engine->stop()) stopped = false;
-	native_engines.clear();
+	// An engine that couldn't be stopped is kept while it goes on speaking, so the object still reports that speech and holds later speech behind it.
+	native_engines.erase(remove_if(native_engines.begin(), native_engines.end(), [&](const shared_ptr<tts_engine> &engine) {
+		if (engine == current_engine || engine->stop()) return true;
+		stopped = false;
+		return !engine->is_speaking();
+	}), native_engines.end());
 	if (current_engine && current_engine->get_pcm_generation_state() != PCM_PREFERRED) stopped = current_engine->stop() && stopped;
 	return stopped;
 }
@@ -1048,8 +1052,7 @@ void tts_voice::interrupt_other_speech(tts_engine *engine) {
 		unique_lock<mutex> lock(queue_mtx);
 		if (!queue.empty()) removed = clear();
 	}
-	for (const auto &other : native_engines) if (other.get() != engine) other->stop();
-	native_engines.erase(remove_if(native_engines.begin(), native_engines.end(), [engine](const shared_ptr<tts_engine> &other) { return other.get() != engine; }), native_engines.end());
+	native_engines.erase(remove_if(native_engines.begin(), native_engines.end(), [engine](const shared_ptr<tts_engine> &other) { return other.get() != engine && (other->stop() || !other->is_speaking()); }), native_engines.end()); // As in stop(), one that couldn't be stopped is kept while it speaks.
 }
 // Remembers the engine that just spoke, leaving out engines whose speech has ended.
 void tts_voice::remember_native_engine(const shared_ptr<tts_engine> &spoke) {
