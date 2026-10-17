@@ -13,4 +13,4 @@ Speak text through the user's screen reader, or through the tts voice when no sc
 bool: always true.
 
 ## Remarks:
-Text longer than 10000 bytes is spoken in parts of at most 4096 bytes, cut at the last space past the first 2048 bytes, or where there is none, at the end of a character. When the screen reader turns the text down, as VoiceOver does while the game has no window in front, the tts voice speaks it.
+Text longer than 10000 bytes is spoken in parts of at most 4096 bytes, each cut at the last space within that length but past its first 2048 bytes, or where there is no such space, at 2048 bytes, moved back to the start of a character. When the screen reader turns the text down, as VoiceOver does while the game has no window in front, the tts voice speaks it.
