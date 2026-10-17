@@ -3193,7 +3193,7 @@ static tts_Rule tts_D_rules[] = {
     {".E", "D", tts_Nothing, "d"},
     {"#:^E", "D", tts_Nothing, "t"},
     {tts_Nothing, "DE", "^#", "dI"},
-    {tts_Nothing, "DO", tts_Nothing, "mDU"},
+    {tts_Nothing, "DO", tts_Nothing, "du"}, // NVGT: was "mDU", an m and the th of "this" before the vowel.
     {tts_Nothing, "DOES", tts_Anything, "dVz"},
     {tts_Nothing, "DOING", tts_Anything, "duIN"},
     {tts_Nothing, "DOW", tts_Anything, "daU"},
