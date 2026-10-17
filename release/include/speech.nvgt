@@ -57,7 +57,7 @@ void stop_speech() {
 	tts.stop();
 	if (@tts_config_preview != null) tts_config_preview.stop();
 }
-// The voice that speaks the main configuration form: the configured voice until the form's values first differ from its own, then a voice of its own that takes them, so that the configured voice changes only when the settings are saved and Cancel leaves it, settings it never had included, as it was. That voice starts as a copy of the configured one; it lists every engine's voices, so voices are matched by name and language.
+// The voice that speaks the main configuration form: the configured voice until the form's values first differ from its own, then a voice of its own that takes them, so that the configured voice changes only when the settings are saved and Cancel leaves it, settings it never had included, as it was. That voice starts as a copy of the configured one; it lists every engine's voices in every language, so voices are matched by name and language.
 tts_voice@ tts_config_speaker() {
 	tts_voice@ v = tts_config_voice;
 	int voice = tts_config_form.get_list_position(1);
@@ -66,7 +66,6 @@ tts_voice@ tts_config_speaker() {
 	if (@tts_config_preview == null) {
 		if ((voice < 0 or voice == v.voice) and rate == v.rate and volume == v.volume) return v;
 		tts_voice preview;
-		if (v.language != "") preview.set_language(v.language);
 		if (v.voice > -1) preview.set_voice(tts_config_preview_voice(preview, v.voice));
 		if (v.pitch_set) preview.pitch = v.pitch;
 		if (v.rate_set) preview.rate = v.rate;
