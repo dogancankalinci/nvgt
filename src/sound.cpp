@@ -2368,9 +2368,16 @@ audio_engine* get_sound_default_engine() {
 	return g_audio_engine;
 }
 void set_sound_default_engine(audio_engine* engine) {
-	if (!g_soundsystem_initialized.test()) throw runtime_error("soundsystem not initialized");
 	if (!engine) throw runtime_error("a default audio engine must exist");
+	if (!g_soundsystem_initialized.test()) {
+		engine->release(); // The script's reference, given to this function.
+		throw runtime_error("soundsystem not initialized");
+	}
 	std::lock_guard<std::recursive_mutex> lock(g_soundsystem_init_mutex); // Not while init_sound() builds the default engine on another thread.
+	if (g_soundsystem_shut_down.test()) { // Which a script thread still running at shutdown could otherwise mark ready again.
+		engine->release();
+		throw runtime_error("the sound system has shut down");
+	}
 	if (g_audio_engine) g_audio_engine->release();
 	g_audio_engine = engine;
 	g_soundsystem_ready.test_and_set(); // The script's engine is the default now, possibly before init_sound() ever built one, which it then doesn't do over it.
