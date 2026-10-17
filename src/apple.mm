@@ -523,6 +523,7 @@ static void voice_over_announce(const std::string& message, NSWindow* window) {
 #endif
 
 std::string speech_text = "";
+static bool speech_pending = false; // Whether text was given that the announcement thread hasn't taken yet, which can be the empty text of a silence; under speech_text_mutex.
 #if TARGET_OS_IOS
 static bool speech_interrupts = true; // Whether the gathered text interrupts, which it does when its first part does; under speech_text_mutex.
 #else
@@ -564,6 +565,7 @@ void vo_speech_thread(void* extra) {
 			Poco::FastMutex::ScopedLock exclusive(speech_text_mutex);
 			text = speech_text;
 			speech_text = "";
+			speech_pending = false;
 			#if TARGET_OS_IOS
 				interrupts = speech_interrupts;
 			#else
@@ -803,15 +805,17 @@ bool voice_over_speak(const std::string& text, bool interrupt) {
 		Poco::FastMutex::ScopedLock exclusive(speech_text_mutex); // Also around starting the thread, so two script threads can't both start it.
 		if (speech_closed) return false;
 		if (!speech_thread.isRunning()) speech_thread.start(vo_speech_thread);
-		if (interrupt || speech_text == "") {
+		if (interrupt || !speech_pending) {
 			speech_text = message;
 			#if TARGET_OS_IOS
 				speech_interrupts = interrupt;
 			#endif
-		} else {
+		} else if (speech_text == "") speech_text = message; // After a silence, which still interrupts.
+		else {
 			speech_text += " . ";
 			speech_text += message;
 		}
+		speech_pending = true;
 		#if !TARGET_OS_IOS
 			if (!on_main) {
 				win = g_vo_game_window;
