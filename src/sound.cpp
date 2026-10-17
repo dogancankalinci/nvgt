@@ -2320,8 +2320,10 @@ audio_engine* get_sound_default_engine() {
 void set_sound_default_engine(audio_engine* engine) {
 	if (!g_soundsystem_initialized.test()) throw runtime_error("soundsystem not initialized");
 	if (!engine) throw runtime_error("a default audio engine must exist");
+	std::lock_guard<std::recursive_mutex> lock(g_soundsystem_init_mutex); // Not while init_sound() builds the default engine on another thread.
 	if (g_audio_engine) g_audio_engine->release();
 	g_audio_engine = engine;
+	g_soundsystem_ready.test_and_set(); // The script's engine is the default now, possibly before init_sound() ever built one, which it then doesn't do over it.
 }
 // The bytes in one frame of PCM, 0 for a format pcm_to_wav() can't write.
 static int pcm_frame_size(ma_format format, int channels) {
