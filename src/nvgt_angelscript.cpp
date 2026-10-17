@@ -931,6 +931,19 @@ static void report_unhandled_exception(asIScriptContext *ctx) {
 	if (c == 1)
 		ClipboardSetText(exc);
 }
+// Lets the module go once the script ended or failed to start. Engines can outlive it, and their processing callbacks, which run on audio threads, take contexts from the pool, so they are stopped first; the destructors that discarding runs use pooled contexts too, so the pool is emptied after.
+static void discard_module(asIScriptEngine *engine, asIScriptModule *mod) {
+	sound_stop_script_callbacks();
+	if (g_ctxMgr) {
+		delete g_ctxMgr;
+		g_ctxMgr = 0;
+	}
+	mod->Discard();
+	engine->GarbageCollect();
+	ScopedLock<Mutex> l(g_ctxPoolMutex);
+	for (asIScriptContext *pooled : g_ctxPool) pooled->Release();
+	g_ctxPool.clear();
+}
 int ExecuteScript(asIScriptEngine *engine, const string &scriptFile) {
 	auto_chdir();
 	asIScriptModule *mod = engine->GetModule("nvgt_game", asGM_ONLY_IF_EXISTS);
@@ -966,8 +979,7 @@ int ExecuteScript(asIScriptEngine *engine, const string &scriptFile) {
 		// In this case any extra information is printed as an info message, we usually filter those out.
 		g_scriptMessagesErr += g_scriptMessagesInfo;
 		// The globals made before the failure are released now, as after a run, rather than when the script engine shuts down, after the window, sound and screen reader support are gone.
-		mod->Discard();
-		engine->GarbageCollect();
+		discard_module(engine, mod);
 		return -1;
 	}
 	ShowAngelscriptMessages(); // Display any warnings or extra info if the user has asked for it.
@@ -1008,18 +1020,7 @@ int ExecuteScript(asIScriptEngine *engine, const string &scriptFile) {
 		while (g_ctxMgr->ExecuteScripts())
 			;
 	}
-	sound_stop_script_callbacks(); // Engines can outlive the module, and their processing callbacks run on audio threads, where they take contexts from the pool.
-	if (g_ctxMgr) {
-		delete g_ctxMgr;
-		g_ctxMgr = 0;
-	}
-	mod->Discard();
-	engine->GarbageCollect();
-	{ // After the module is gone, as the destructors that runs call script code in contexts from the pool too.
-		ScopedLock<Mutex> l(g_ctxPoolMutex);
-		for (asIScriptContext *pooled : g_ctxPool) pooled->Release();
-		g_ctxPool.clear();
-	}
+	discard_module(engine, mod);
 	return retcode;
 }
 
