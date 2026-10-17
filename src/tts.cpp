@@ -346,23 +346,26 @@ public:
 		if (!data) return nullptr;
 		// Text with nothing to say, punctuation alone for instance, comes out as pauses of digital silence, which is empty audio rather than silence of that length, as with the other engines.
 		if (samples > 0 && silent(data, samples)) samples = 0;
-		apply_volume(data, samples * 2);
-		return new tts_audio_data(this, data, samples * 4, 44100, 2, 16);
+		float gain = apply_volume(data, samples * 2);
+		tts_audio_data *block = new tts_audio_data(this, data, samples * 4, 44100, 2, 16);
+		block->gain_db = gain > 0? 20 * log10f(gain) : -200; // So the quiet starts and ends of speech made quieter aren't trimmed off as silence.
+		return block;
 	}
 	static bool silent(const short *data, int samples) {
 		for (int i = 0; i < samples * 2; i++) if (data[i]) return false;
 		return true;
 	}
-	// The volume on the synthesizer's decibel scale, where 60 is its normal level: lower settings are quieter down to 0, which is silence, and higher ones louder as far as the loudest sample allows without clipping.
-	void apply_volume(short *data, int count) {
+	// The volume on the synthesizer's decibel scale, where 60 is its normal level: lower settings are quieter down to 0, which is silence, and higher ones louder as far as the loudest sample allows without clipping. Gives the gain applied.
+	float apply_volume(short *data, int count) {
 		float gain = volume <= 0? 0 : powf(10.0f, (volume - 60) / 20);
 		if (gain > 1) {
 			int peak = 1;
 			for (int i = 0; i < count; i++) peak = max(peak, abs((int)data[i]));
 			gain = min(gain, 32767.0f / peak);
 		}
-		if (gain == 1) return;
+		if (gain == 1) return gain;
 		for (int i = 0; i < count; i++) data[i] = (short)clamp(lrintf(data[i] * gain), -32767L, 32767L);
+		return gain;
 	}
 	void free_pcm(tts_audio_data* data) override {
 		if (data && data->data) {
@@ -676,8 +679,9 @@ void *tts_voice::speak_to_pcm(const string &text, tts_audio_data** datablock) {
 		return nullptr;
 	}
 	bool quiet;
-	void *trimmed = tts_trim(*datablock, &quiet);
-	// Audio with nothing at the trimming threshold, -60 dB, is what some voices give for text with nothing to say, which is empty audio, as with the other voices. Speech is far louder at any volume from -40 up; below that, where speech could be that quiet too, the audio keeps its length.
+	float threshold = -60 + block->gain_db; // Measured against the engine's normal level, so speech an engine already made quieter keeps its quiet starts and ends.
+	void *trimmed = tts_trim(*datablock, &quiet, threshold, threshold);
+	// Audio with nothing at the trimming threshold, -60 dB from the engine's normal level, is what some voices give for text with nothing to say, which is empty audio, as with the other voices. Speech is far louder at any volume from -40 up; below that, where speech could be that quiet too, the audio keeps its length.
 	if (quiet && get_volume() >= -40) (*datablock)->size_in_bytes = 0;
 	return trimmed;
 }

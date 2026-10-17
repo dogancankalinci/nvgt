@@ -42,6 +42,7 @@ struct tts_audio_data {
 	unsigned int bitsize;
 	void* context;
 	tts_engine* engine;
+	float gain_db = 0; // How far the engine already turned the samples up or down from its normal level, which trimming is measured against.
 	tts_audio_data(tts_engine* eng, void* dat, unsigned int size, unsigned int rate, unsigned int chans, unsigned int bits, void* ctx = nullptr);
 	void free();
 };
