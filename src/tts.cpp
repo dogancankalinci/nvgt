@@ -970,7 +970,10 @@ bool tts_voice::stop() {
 		stopped = false;
 		return !engine->is_speaking();
 	}), native_engines.end());
-	if (current_engine && current_engine->get_pcm_generation_state() != PCM_PREFERRED) stopped = current_engine->stop() && stopped;
+	if (current_engine && current_engine->get_pcm_generation_state() != PCM_PREFERRED && !current_engine->stop()) {
+		stopped = false;
+		if (current_engine->is_speaking()) native_engines.push_back(current_engine); // So it is still followed once another voice is selected.
+	}
 	return stopped;
 }
 string tts_voice::get_engine_name() {
