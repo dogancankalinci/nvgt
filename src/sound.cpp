@@ -14,6 +14,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <chrono>
 #ifdef _MSC_VER
 #include <intrin.h> // _InterlockedCompareExchange
 #endif
@@ -71,7 +72,9 @@ static std::atomic_flag g_soundsystem_initialized; // The context, the sound ser
 static std::atomic_flag g_soundsystem_ready; // The engine exists. Set last so that no other thread can be told "initialized" while g_audio_engine is still null.
 static std::recursive_mutex g_soundsystem_init_mutex; // Recursive because setting up re-enters init_sound() and init_sound_context() on this same thread.
 static std::atomic_flag g_soundsystem_shut_down; // uninit_sound() ran: script threads still running are refused rather than given the default engine it let go.
-static bool g_soundsystem_starting = false; // Under g_soundsystem_init_mutex: this thread is setting up, so a call re-entering from there is answered at once.
+static bool g_soundsystem_starting = false;
+static std::atomic<bool> g_script_callbacks_stopped{false}; // See sound_stop_script_callbacks().
+static std::atomic<int> g_script_callbacks_running{0}; // Processing callbacks calling the script right now. // Under g_soundsystem_init_mutex: this thread is setting up, so a call re-entering from there is answered at once.
 thread_local ma_result g_soundsystem_last_error = MA_SUCCESS;
 static unordered_map<ma_data_source*, audio_data_source*> g_data_sources_map; // Only allow one audio_data_source wrapper per ma_data_source, should never be populated enough to be a performance hit.
 static std::mutex g_data_sources_map_mutex; // Every decoder open/close inserts into or erases from this map, from whichever script thread does it; an unlocked unordered_map rehashing under a concurrent erase corrupts the heap.
@@ -399,8 +402,9 @@ class audio_engine_impl final : public audio_node_impl, public virtual audio_eng
 		ma_uint64 frames_read;
 		engine->read(pOutput, frameCount, &frames_read);
 		if (!engine->script_data_callback || !engine->duplicate_if_alive()) return;
-		asIScriptFunction *callback;
-		{
+		g_script_callbacks_running++; // Before looking at the flag, so sound_stop_script_callbacks() either sees this call or this call sees the flag.
+		asIScriptFunction *callback = nullptr;
+		if (!g_script_callbacks_stopped) {
 			std::lock_guard<std::mutex> lock(engine->callback_mutex);
 			callback = engine->script_data_callback;
 			if (callback) callback->AddRef();
@@ -415,6 +419,7 @@ class audio_engine_impl final : public audio_node_impl, public virtual audio_eng
 			if (ctx) g_ScriptEngine->ReturnContext(ctx);
 			callback->Release();
 		}
+		g_script_callbacks_running--;
 		engine->release(); // Can be the last reference, see release().
 	}
 
@@ -2281,6 +2286,11 @@ microphone* microphone::create(int device, audio_engine* engine) { return new mi
 audio_engine *new_audio_engine(int flags, int sample_rate, int channels) { return new audio_engine_impl(flags, sample_rate, channels); }
 mixer *new_mixer(audio_engine *engine) { return new mixer_impl(engine); }
 sound *new_sound(audio_engine *engine) { return new sound_impl(engine); }
+// Stops engines' processing callbacks from calling the script and waits for calls under way, so the script's module can go away while engines, which a script can keep past that, still run.
+void sound_stop_script_callbacks() {
+	g_script_callbacks_stopped = true;
+	while (g_script_callbacks_running) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+}
 mixer *new_global_mixer() {
 	init_sound();
 	return new mixer_impl(g_audio_engine);

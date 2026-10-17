@@ -1000,11 +1000,16 @@ int ExecuteScript(asIScriptEngine *engine, const string &scriptFile) {
 		ctx = g_ctxMgr->AddContext(engine, outfunc);
 		if (ctx) ctx->Execute(); // The manager gives the context back when it is deleted, as it was added without being kept; giving it back here too put it in the pool twice.
 	}
+	sound_stop_script_callbacks(); // Engines can outlive the module, and their processing callbacks run on audio threads, where they take contexts from the pool.
 	if (g_ctxMgr) {
 		delete g_ctxMgr;
 		g_ctxMgr = 0;
 	}
-	g_ctxPool.clear();
+	{
+		ScopedLock<Mutex> l(g_ctxPoolMutex);
+		for (asIScriptContext *pooled : g_ctxPool) pooled->Release();
+		g_ctxPool.clear();
+	}
 	mod->Discard();
 	engine->GarbageCollect();
 	return retcode;
