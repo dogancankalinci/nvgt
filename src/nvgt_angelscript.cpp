@@ -977,6 +977,7 @@ int ExecuteScript(asIScriptEngine *engine, const string &scriptFile) {
 			return 0;
 		}
 		engine->ReturnContext(ctx);
+		if (g_exit_called) return g_retcode; // exit() ends the script before main(), which it can't abort, as preglobals() doesn't run under the context manager.
 	}
 	if (mod->ResetGlobalVars(0) < 0) {
 		// In this case any extra information is printed as an info message, we usually filter those out.
@@ -984,6 +985,10 @@ int ExecuteScript(asIScriptEngine *engine, const string &scriptFile) {
 		// The globals made before the failure are released now, as after a run, rather than when the script engine shuts down, after the window, sound and screen reader support are gone.
 		discard_module(engine, mod);
 		return -1;
+	}
+	if (g_exit_called) { // Called while the globals were made, which nothing aborts either.
+		discard_module(engine, mod);
+		return g_retcode;
 	}
 	ShowAngelscriptMessages(); // Display any warnings or extra info if the user has asked for it.
 	g_initialising_globals = false;

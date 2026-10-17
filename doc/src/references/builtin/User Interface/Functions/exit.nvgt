@@ -3,6 +3,8 @@
 	void exit(int exit_code = 0);
 	## Arguments:
 		* int exit_code = 0: the exit code to return to your operating system.
+	## Remarks:
+		Called from preglobals() or while global variables are being initialized, the script ends before main() runs. Called once main() has returned, from on_exit(), a destructor or a thread still running, the rest of the shutdown still happens, and the program ends with the code given.
 */
 
 // Example:
