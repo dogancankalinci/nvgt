@@ -31,10 +31,10 @@ public:
 	audio_node_impl(ma_node_base *node, audio_engine *engine) : audio_node(), node(node), engine(engine), refcount(1) {
 		// A node of a given engine, such as one of the script's engines without a device, needs only what every engine needs; one without an engine goes on the default engine, which init_sound() builds.
 		if (!(engine? init_sound_context() : init_sound())) throw std::runtime_error("sound system was not initialized");
-		if (!engine) this->engine = g_audio_engine;
+		if (!engine) this->engine = acquire_default_engine(); // With the reference this node keeps already taken.
 		// Defense in depth: without an engine there is nothing to attach to, and the duplicate() below would dereference null. uninit_sound() can also leave g_audio_engine cleared behind us.
 		if (!this->engine) throw std::runtime_error("no audio engine available");
-		if (!is_engine()) this->engine->duplicate();
+		if (engine && !is_engine()) this->engine->duplicate();
 	}
 	~audio_node_impl() {
 		for (audio_node *n : output_connections) if (n) n->release();

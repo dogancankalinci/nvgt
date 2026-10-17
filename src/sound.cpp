@@ -865,8 +865,7 @@ public:
 	bool get_active() const override { return src != nullptr; }
 };
 audio_data_source* audio_data_source_get(ma_data_source* ptr, audio_engine* engine) {
-	if (!ptr) return nullptr;
-	if (!engine) engine = g_audio_engine;
+	if (!ptr) return nullptr; // Without an engine, the node takes the default one, see audio_node_impl.
 	{
 		// The reference is taken while still holding the lock, so a concurrent reset() cannot erase and free the wrapper between our lookup and our duplicate().
 		std::lock_guard<std::mutex> lock(g_data_sources_map_mutex);
@@ -2286,20 +2285,38 @@ microphone* microphone::create(int device, audio_engine* engine) { return new mi
 audio_engine *new_audio_engine(int flags, int sample_rate, int channels) { return new audio_engine_impl(flags, sample_rate, channels); }
 mixer *new_mixer(audio_engine *engine) { return new mixer_impl(engine); }
 sound *new_sound(audio_engine *engine) { return new sound_impl(engine); }
+// The default engine with a reference of the caller's own: another thread making a different engine the default lets go of the old one, which could otherwise be destroyed while it is used. Null when the sound system couldn't start.
+audio_engine *acquire_default_engine() {
+	if (!init_sound()) return nullptr;
+	std::lock_guard<std::recursive_mutex> lock(g_soundsystem_init_mutex); // Which set_sound_default_engine() swaps the engine under.
+	if (g_audio_engine) g_audio_engine->duplicate();
+	return g_audio_engine;
+}
+// Holds such a reference for as long as a function uses the default engine.
+struct default_engine_ref {
+	audio_engine *engine = acquire_default_engine();
+	default_engine_ref() = default;
+	default_engine_ref(const default_engine_ref &) = delete;
+	default_engine_ref &operator=(const default_engine_ref &) = delete;
+	~default_engine_ref() { if (engine) engine->release(); }
+	explicit operator bool() const { return engine != nullptr; }
+	audio_engine *operator->() const { return engine; }
+};
 // Stops engines' processing callbacks from calling the script and waits for calls under way, so the script's module can go away while engines, which a script can keep past that, still run.
 void sound_stop_script_callbacks() {
 	g_script_callbacks_stopped = true;
 	while (g_script_callbacks_running) std::this_thread::sleep_for(std::chrono::milliseconds(1));
 }
 mixer *new_global_mixer() {
-	init_sound();
-	return new mixer_impl(g_audio_engine);
+	default_engine_ref engine;
+	if (!engine) throw runtime_error("no audio engine available");
+	return new mixer_impl(engine.engine);
 }
 // A sound on the default engine that isn't attached to sound_default_mixer, which the script can pause or turn down, but plays straight to the engine's endpoint, as speech does.
 sound *new_global_sound_unmixed() {
-	init_sound();
-	if (!g_audio_engine) return nullptr; // The sound system couldn't start.
-	return new sound_impl(g_audio_engine);
+	default_engine_ref engine;
+	if (!engine) return nullptr; // The sound system couldn't start.
+	return new sound_impl(engine.engine);
 }
 sound *new_global_sound() {
 	sound* s = new_global_sound_unmixed();
@@ -2307,29 +2324,33 @@ sound *new_global_sound() {
 	return s;
 }
 int get_sound_output_device() {
-	init_sound();
-	return g_audio_engine->get_device();
+	default_engine_ref engine;
+	return engine? engine->get_device() : -1;
 }
 void set_sound_output_device(int device) {
-	init_sound();
-	g_audio_engine->set_device(device);
+	default_engine_ref engine;
+	if (engine) engine->set_device(device);
 }
 sound* sound_play(const string& path, const reactphysics3d::Vector3& position, float volume, float pan, float pitch, mixer* mix, const pack_interface* pack_file, bool autoplay) {
-	if (!init_sound()) return nullptr;
-	return g_audio_engine->play(path, position, volume, pan, pitch, mix, pack_file, autoplay);
+	default_engine_ref engine;
+	if (!engine) return nullptr;
+	return engine->play(path, position, volume, pan, pitch, mix, pack_file, autoplay);
 }
 reactphysics3d::Vector3 sound_get_listener_position(unsigned int listener_index = 0) {
-	if (!init_sound()) return reactphysics3d::Vector3(0, 0, 0);
-	return g_audio_engine->get_listener_position(listener_index);
+	default_engine_ref engine;
+	if (!engine) return reactphysics3d::Vector3(0, 0, 0);
+	return engine->get_listener_position(listener_index);
 }
 bool sound_set_listener_position(float x, float y, float z, unsigned int listener_index = 0) {
-	if (!init_sound()) return false;
-	g_audio_engine->set_listener_position(listener_index, x, y, z);
+	default_engine_ref engine;
+	if (!engine) return false;
+	engine->set_listener_position(listener_index, x, y, z);
 	return true;
 }
 bool sound_set_listener_position_vector(const reactphysics3d::Vector3& position, unsigned int listener_index = 0) {
-	if (!init_sound()) return false;
-	g_audio_engine->set_listener_position_vector(listener_index, position);
+	default_engine_ref engine;
+	if (!engine) return false;
+	engine->set_listener_position_vector(listener_index, position);
 	return true;
 }
 // Encryption.
@@ -2365,35 +2386,38 @@ string get_soundsystem_last_error_text() {
 	return msg? msg : "";
 }
 void set_sound_master_volume(float db) {
-	if (!init_sound())
+	default_engine_ref engine;
+	if (!engine)
 		return;
 	if (db > 0 || db < -100)
 		return;
-	ma_engine_set_volume(g_audio_engine->get_ma_engine(), ma_volume_db_to_linear(db));
+	ma_engine_set_volume(engine->get_ma_engine(), ma_volume_db_to_linear(db));
 }
 float get_sound_master_volume() {
-	if (!init_sound())
+	default_engine_ref engine;
+	if (!engine)
 		return 0;
-	return ma_volume_linear_to_db(ma_engine_get_volume(g_audio_engine->get_ma_engine()));
+	return ma_volume_linear_to_db(ma_engine_get_volume(engine->get_ma_engine()));
 }
-audio_engine* get_sound_default_engine() {
-	init_sound();
-	return g_audio_engine;
-}
+audio_engine* get_sound_default_engine() { return acquire_default_engine(); } // The reference goes to the script.
 void set_sound_default_engine(audio_engine* engine) {
 	if (!engine) throw runtime_error("a default audio engine must exist");
 	if (!g_soundsystem_initialized.test()) {
 		engine->release(); // The script's reference, given to this function.
 		throw runtime_error("soundsystem not initialized");
 	}
-	std::lock_guard<std::recursive_mutex> lock(g_soundsystem_init_mutex); // Not while init_sound() builds the default engine on another thread.
-	if (g_soundsystem_shut_down.test()) { // Which a script thread still running at shutdown could otherwise mark ready again.
-		engine->release();
-		throw runtime_error("the sound system has shut down");
+	audio_engine *old;
+	{
+		std::lock_guard<std::recursive_mutex> lock(g_soundsystem_init_mutex); // Not while init_sound() builds the default engine on another thread.
+		if (g_soundsystem_shut_down.test()) { // Which a script thread still running at shutdown could otherwise mark ready again.
+			engine->release();
+			throw runtime_error("the sound system has shut down");
+		}
+		old = g_audio_engine;
+		g_audio_engine = engine;
+		g_soundsystem_ready.test_and_set(); // The script's engine is the default now, possibly before init_sound() ever built one, which it then doesn't do over it.
 	}
-	if (g_audio_engine) g_audio_engine->release();
-	g_audio_engine = engine;
-	g_soundsystem_ready.test_and_set(); // The script's engine is the default now, possibly before init_sound() ever built one, which it then doesn't do over it.
+	if (old) old->release(); // After the lock: destroying the engine waits for its processing callback, which can be asking for the default engine.
 }
 // The bytes in one frame of PCM, 0 for a format pcm_to_wav() can't write.
 static int pcm_frame_size(ma_format format, int channels) {
@@ -2566,7 +2590,7 @@ void RegisterSoundsystemEngine(asIScriptEngine *engine) {
 	engine->RegisterObjectMethod("audio_engine", "void set_listener_enabled(int index, bool enabled)", asFUNCTION((virtual_call < audio_engine, &audio_engine::set_listener_enabled, void, int, bool >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_engine", "bool get_listener_enabled(int index) const", asFUNCTION((virtual_call < audio_engine, &audio_engine::get_listener_enabled, bool, int >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterGlobalFunction("void set_sound_default_engine(audio_engine@ engine) property", asFUNCTION(set_sound_default_engine), asCALL_CDECL);
-	engine->RegisterGlobalFunction("audio_engine@+ get_sound_default_engine() property", asFUNCTION(get_sound_default_engine), asCALL_CDECL);
+	engine->RegisterGlobalFunction("audio_engine@ get_sound_default_engine() property", asFUNCTION(get_sound_default_engine), asCALL_CDECL);
 }
 void RegisterSoundsystemDataSources(asIScriptEngine* engine) {
 	RegisterSoundsystemDataSource<audio_data_source>(engine, "audio_data_source");

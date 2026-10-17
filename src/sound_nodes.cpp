@@ -178,8 +178,10 @@ static IPLHRTF g_phonon_hrtf = nullptr;
 
 bool phonon_init() {
 	if (g_phonon_context) return true;
-	if (!init_sound()) return false;
-	g_phonon_audio_settings = {g_audio_engine->get_sample_rate(), SOUNDSYSTEM_FRAMESIZE};
+	audio_engine *engine = acquire_default_engine();
+	if (!engine) return false;
+	g_phonon_audio_settings = {engine->get_sample_rate(), SOUNDSYSTEM_FRAMESIZE};
+	engine->release();
 	IPLContextSettings phonon_context_settings{};
 	phonon_context_settings.version = STEAMAUDIO_VERSION;
 	if (iplContextCreate(&phonon_context_settings, &g_phonon_context) != IPL_STATUS_SUCCESS) return false;

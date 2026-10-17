@@ -44,6 +44,7 @@ extern thread_local ma_result g_soundsystem_last_error; // Per thread, like errn
 bool add_decoder(ma_decoding_backend_vtable *vtable);
 bool init_sound();
 bool init_sound_context(); // What every engine needs, without building the default engine as init_sound() does.
+audio_engine *acquire_default_engine(); // The default engine with a reference the caller gives back, see sound.cpp.
 void sound_stop_script_callbacks(); // Before the script's module goes away, see sound.cpp.
 void uninit_sound();
 bool refresh_audio_devices();
