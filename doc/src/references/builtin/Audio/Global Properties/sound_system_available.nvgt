@@ -1,0 +1,18 @@
+/**
+	Whether the sound system started, with a default audio engine sounds can play on.
+	const bool sound_system_available;
+	## Remarks:
+		Reading this property starts the sound system if it hasn't been started yet. It is false when the default engine can't be built, for example on a machine without an audio output device. Unlike reading `sound_default_engine` or creating a `sound`, which throw an exception in that case, this property never throws, so it is the way to check before playing anything.
+		Each read tries again while the sound system isn't available, so it turns true once a device appears. An engine you create yourself with the `AUDIO_ENGINE_NO_DEVICE` flag works either way, and once you assign one to `sound_default_engine` this property reports true.
+*/
+
+// Example:
+void main() {
+	if (!sound_system_available) {
+		alert("No sound", "The sound system could not start, so this program will run silently.");
+		return;
+	}
+	sound s;
+	s.load("ding.ogg");
+	s.play_wait();
+}

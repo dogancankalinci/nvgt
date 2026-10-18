@@ -2614,6 +2614,17 @@ float get_sound_master_volume() {
 	return ma_volume_linear_to_db(ma_engine_get_volume(engine->get_ma_engine()));
 }
 audio_engine* get_sound_default_engine() { return acquire_default_engine(); } // The reference goes to the script.
+// Whether there is a default engine, starting the sound system to build it if need be; unlike sound_default_engine, it reports one that can't be built, as on a machine without an output device, rather than throwing.
+bool get_sound_system_available() {
+	try {
+		audio_engine *engine = acquire_default_engine();
+		if (!engine) return false;
+		engine->release();
+		return true;
+	} catch (const std::exception &) {
+		return false;
+	}
+}
 void set_sound_default_engine(audio_engine* engine) {
 	if (!engine) throw runtime_error("a default audio engine must exist");
 	if (!g_soundsystem_initialized.test()) {
@@ -2805,6 +2816,7 @@ void RegisterSoundsystemEngine(asIScriptEngine *engine) {
 	engine->RegisterObjectMethod("audio_engine", "bool get_listener_enabled(int index) const", asFUNCTION((virtual_call < audio_engine, &audio_engine::get_listener_enabled, bool, int >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterGlobalFunction("void set_sound_default_engine(audio_engine@ engine) property", asFUNCTION(set_sound_default_engine), asCALL_CDECL);
 	engine->RegisterGlobalFunction("audio_engine@ get_sound_default_engine() property", asFUNCTION(get_sound_default_engine), asCALL_CDECL);
+	engine->RegisterGlobalFunction("bool get_sound_system_available() property", asFUNCTION(get_sound_system_available), asCALL_CDECL);
 }
 void RegisterSoundsystemDataSources(asIScriptEngine* engine) {
 	RegisterSoundsystemDataSource<audio_data_source>(engine, "audio_data_source");
