@@ -169,6 +169,10 @@ CScriptArray* host_entry_get_aliases(const HostEntry& e) { return vector_to_scri
 CScriptArray* host_entry_get_addresses(const HostEntry& e) { return vector_to_scriptarray<IPAddress>(e.addresses(), "spec::ip_address"); }
 
 // In NVGT we tend to overuse std::string, make sure sockets can handle this datatype. We should try to register versions of SendBytes and ReceiveBytes that works with a lower level datatype when possible especially because of the unnecessary memory usage incurred with std::string in this case.
+template <class T> bool socket_bind(T& sock, const SocketAddress& address, bool reuse_address, bool ipv6_only) {
+	sock.bind(address, reuse_address, ipv6_only);
+	return true;
+}
 template <class T> int socket_send_bytes(T& sock, const string& data, int flags) { return sock.sendBytes(data.data(), data.size(), flags); }
 template <class T> string socket_receive_bytes(T& sock, int length, int flags) {
 	if (length <= 0) return std::string();
@@ -500,11 +504,6 @@ template <class T> void RegisterSocket(asIScriptEngine* engine, const std::strin
 	engine->RegisterObjectMethod(type.c_str(), "socket_address get_peer_address() const property", asMETHOD(T, peerAddress), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "bool get_secure() const property", asMETHOD(T, secure), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "void init(int af)", asMETHOD(T, init), asCALL_THISCALL);
-}
-// Poco's bind() returns nothing and throws on failure, so a call that returns has bound the socket.
-template <class T> bool socket_bind(T* socket, const SocketAddress& address, bool reuse_address, bool ipv6_only) {
-	socket->bind(address, reuse_address, ipv6_only);
-	return true;
 }
 template <class T> void RegisterStreamSocket(asIScriptEngine* engine, const std::string& type) {
 	RegisterSocket<T>(engine, type);
