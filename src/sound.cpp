@@ -2407,7 +2407,19 @@ public:
 	void set_volume(float volume) override { if (capture_device) g_soundsystem_last_error = ma_device_set_master_volume_db(&*capture_device, volume); }
 	float get_volume() const override { float result; return capture_device && (g_soundsystem_last_error = ma_device_get_master_volume_db(&*capture_device, &result)) == MA_SUCCESS? result : 0; }
 };
-microphone* microphone::create(int device, audio_engine* engine) { return new microphone_impl(engine, device); }
+microphone* microphone::create(int device, audio_engine* engine) {
+	if (engine) return new microphone_impl(engine, device);
+	audio_engine *default_engine = acquire_default_engine(); // Without an engine, the default one, as other nodes take; the constructor needs its format first.
+	if (!default_engine) throw runtime_error("no audio engine available");
+	try {
+		microphone *result = new microphone_impl(default_engine, device);
+		default_engine->release();
+		return result;
+	} catch (...) {
+		default_engine->release();
+		throw;
+	}
+}
 
 audio_engine *new_audio_engine(int flags, int sample_rate, int channels) { return new audio_engine_impl(flags, sample_rate, channels); }
 mixer *new_mixer(audio_engine *engine) { return new mixer_impl(engine); }
