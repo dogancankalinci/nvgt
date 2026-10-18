@@ -1193,7 +1193,10 @@ protected:
 			cfg.resampling.algorithm = ma_resample_algorithm_custom;
 			cfg.resampling.pBackendVTable = &wdl_resampler_backend_vtable;
 			if ((g_soundsystem_last_error = ma_data_converter_init(&cfg, nullptr, &*dc)) != MA_SUCCESS) {
-				close();
+				// Not close(), which takes write_mtx; the open call that got here holds it.
+				dc.reset();
+				close_impl();
+				sample_rate = channels = 0;
 				return false;
 			}
 		}
