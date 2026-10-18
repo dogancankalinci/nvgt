@@ -189,7 +189,10 @@ static IPLAudioSettings g_phonon_audio_settings {44100, SOUNDSYSTEM_FRAMESIZE}; 
 static IPLContext g_phonon_context = nullptr;
 static IPLHRTF g_phonon_hrtf = nullptr;
 
+// Under a lock, as the first Steam Audio components can be made on several threads at once, each of which would otherwise make a context, or find the context made but not yet the HRTF.
+static std::mutex g_phonon_init_mutex;
 bool phonon_init() {
+	std::lock_guard<std::mutex> lock(g_phonon_init_mutex);
 	if (g_phonon_context) return true;
 	audio_engine *engine = acquire_default_engine();
 	if (!engine) return false;
