@@ -1746,12 +1746,7 @@ public:
 		}
 		audio_node *target = mix? mix : get_engine()->get_endpoint();
 		node_chain->set_endpoint(target);
-		if (node_chain->get_endpoint() != target) { // It couldn't attach, as to a node without an input, so this stays where it was.
-			ma_result error = g_soundsystem_last_error;
-			node_chain->set_endpoint(parent_mixer? parent_mixer : get_engine()->get_endpoint());
-			g_soundsystem_last_error = error;
-			return false;
-		}
+		if (node_chain->get_endpoint() != target) return false; // It couldn't attach, as to a node without an input, which leaves this where it was.
 		// Held by this mixer too, not only through the chain, whose endpoint the rewiring above let go of and a script can change through internal_node_chain.
 		if (mix) mix->duplicate();
 		if (parent_mixer) parent_mixer->release();
