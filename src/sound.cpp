@@ -2158,6 +2158,8 @@ class sound_impl final : public mixer_impl, public virtual sound {
 		}
 	};
 	async_load_state *load_state; // Of the current load while it is asynchronous, else null.
+	// The resource manager source a sound loaded through load_special() plays. Made here and the sound made from it, rather than both made by MiniAudio from the file's name, so that a source can be freed only once MiniAudio's jobs let go of it: see free_failed_source().
+	unique_ptr<ma_resource_manager_data_source> source;
 	// MiniAudio's job threads keep touching a resource manager buffer after reporting it done: the job that loaded it, the one that decoded the last page of its node and the one that frees a buffer whose load failed each count themselves finished in the object after signalling. Freeing the sound in between had that count written to freed memory. These read and write those fields as MiniAudio's jobs do, atomically.
 	static ma_uint32 load_job_field(const ma_uint32 *field) {
 		#ifdef _MSC_VER
@@ -2177,10 +2179,10 @@ class sound_impl final : public mixer_impl, public virtual sound {
 	static void wait_for_jobs(const ma_uint32 *counter, const ma_uint32 *pointer) {
 		while (load_job_field(pointer) != load_job_field(counter)) std::this_thread::yield();
 	}
-	// Called once the load is done, before the sound is freed. Returns the sound's buffer if its load failed: such a buffer is freed through a job that counts itself finished after the sound frees it, so the caller frees it on this thread instead, as that job would, with free_failed_buffer().
-	ma_resource_manager_data_buffer *finish_load_jobs() {
-		if (!snd->pResourceManagerDataSource || (snd->pResourceManagerDataSource->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM)) return nullptr; // A stream is freed through a job ordered after its others, which signals last.
-		ma_resource_manager_data_buffer *buffer = &snd->pResourceManagerDataSource->backend.buffer;
+	// Called once the load is done, before the source is freed. Returns the source's buffer if its load failed: such a buffer is freed through a job that counts itself finished after the sound frees it, so the caller frees it on this thread instead, as that job would, with free_failed_buffer().
+	static ma_resource_manager_data_buffer *finish_load_jobs(ma_resource_manager_data_source *src) {
+		if (!src || (src->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM)) return nullptr; // A stream is freed through a job ordered after its others, which signals last.
+		ma_resource_manager_data_buffer *buffer = &src->backend.buffer;
 		wait_for_jobs(&buffer->executionCounter, &buffer->executionPointer);
 		if (ma_resource_manager_data_buffer_node *node = buffer->pNode) {
 			// The buffer's load is done once the node is decoded, unless the buffer failed first; the node's decoding then ends on its own.
@@ -2189,8 +2191,33 @@ class sound_impl final : public mixer_impl, public virtual sound {
 		}
 		return ma_resource_manager_data_buffer_result(buffer) == MA_SUCCESS? nullptr : buffer;
 	}
-	// With the sound already taken off the graph, which waited for the audio thread to stop reading it, so nothing reads the failed buffer once it is marked loaded, which makes ma_sound_uninit() free it at once.
-	void free_failed_buffer(ma_resource_manager_data_buffer *buffer) { store_job_field(&buffer->result, MA_SUCCESS); }
+	// With the sound already taken off the graph, which waited for the audio thread to stop reading it, so nothing reads the failed buffer once it is marked loaded, which makes ma_resource_manager_data_source_uninit() free it at once.
+	static void free_failed_buffer(ma_resource_manager_data_buffer *buffer) { store_job_field(&buffer->result, MA_SUCCESS); }
+	// Frees a source whose making failed. The job that loads or opens a source reports its failure and only then counts itself finished in the source, which MiniAudio, making the source itself, had already freed by then; so the source is freed once that count shows the job finished. A job that was never posted, as when the job queue was full, never counts, so a source whose count hasn't caught up soon is left allocated rather than freed under a job that may still run.
+	static void free_failed_source(unique_ptr<ma_resource_manager_data_source> &src) {
+		const bool stream = src->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM;
+		const ma_uint32 *counter = stream? &src->backend.stream.executionCounter : &src->backend.buffer.executionCounter;
+		const ma_uint32 *pointer = stream? &src->backend.stream.executionPointer : &src->backend.buffer.executionPointer;
+		for (int waited = 0; load_job_field(pointer) != load_job_field(counter); waited++) {
+			if (waited == 100) {
+				src.release();
+				return;
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		src.reset();
+	}
+	// Frees a source that was made, whether or not it loaded, once its jobs are done, as close() frees a sound's; no sound may be playing it.
+	static void discard_source(unique_ptr<ma_resource_manager_data_source> &src) {
+		ma_resource_manager_data_buffer *failed_buffer = finish_load_jobs(&*src);
+		if (failed_buffer) free_failed_buffer(failed_buffer);
+		{
+			std::unique_lock<std::mutex> tree_lock(g_resource_tree_mutex, std::defer_lock);
+			if (!(src->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM)) tree_lock.lock();
+			ma_resource_manager_data_source_uninit(&*src);
+		}
+		src.reset();
+	}
 	std::string pcm_buffer;      // When loading from raw PCM (like TTS) we store the intermediate wav data here so we can take advantage of async loading to return quickly. Makes a substantial difference in the responsiveness of TTS calls.
 	std::string loaded_filename; // Contains the loaded filename as passed in the load/stream method, used just for convenience.
 	mutable std::atomic_flag load_completed;
@@ -2257,20 +2284,30 @@ public:
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
-		ma_sound_config cfg = ma_sound_config_init();
-		// Not attached to the endpoint by MiniAudio, as postload() attaches it to its chain; so making it changes no node's lists and needs no graph lock, which is then not held across the file or network open and decoding that making a sound waits for.
-		cfg.flags = ma_flags | MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT;
-		cfg.pFilePath = triplet.c_str();
-		// Each attempt gets its own load state, so one a failed attempt left with MiniAudio can't be mistaken for the next.
+		ma_uint32 flags = ma_flags;
+		unique_ptr<ma_resource_manager_data_source> made_source;
+		// Each attempt gets its own load state, so one a failed attempt left with MiniAudio can't be mistaken for the next. It makes the source and then the sound from it, as ma_sound_init_ex() would from the file's name, but keeps the source: see source.
 		auto attempt_init = [&]() {
-			async_load_state *state = (cfg.flags & MA_SOUND_FLAG_ASYNC)? new async_load_state(this) : nullptr;
+			async_load_state *state = (flags & MA_SOUND_FLAG_ASYNC)? new async_load_state(this) : nullptr;
 			ma_resource_manager_pipeline_notifications notifications = ma_resource_manager_pipeline_notifications_init();
 			if (state) notifications.done.pNotification = &state->notification;
-			cfg.initNotifications = notifications;
+			ma_resource_manager_data_source_config source_cfg = ma_resource_manager_data_source_config_init();
+			source_cfg.pFilePath = triplet.c_str();
+			source_cfg.flags = flags | MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_WAIT_INIT; // A sound's loading flags are the resource manager's; the sound needs its source's format, so the source is waited for that far, as ma_sound_init_ex() does.
+			source_cfg.pNotifications = &notifications;
+			made_source = make_unique<ma_resource_manager_data_source>();
 			{
 				std::unique_lock<std::mutex> tree_lock(g_resource_tree_mutex, std::defer_lock);
-				if (!(cfg.flags & MA_SOUND_FLAG_STREAM)) tree_lock.lock();
-				g_soundsystem_last_error = ma_sound_init_ex(engine->get_ma_engine(), &cfg, &*made);
+				if (!(flags & MA_SOUND_FLAG_STREAM)) tree_lock.lock();
+				g_soundsystem_last_error = ma_resource_manager_data_source_init_ex(ma_engine_get_resource_manager(engine->get_ma_engine()), &source_cfg, &*made_source);
+			}
+			if (g_soundsystem_last_error != MA_SUCCESS) free_failed_source(made_source);
+			else {
+				ma_sound_config cfg = ma_sound_config_init();
+				// Not attached to the endpoint by MiniAudio, as postload() attaches it to its chain; so making it changes no node's lists and needs no graph lock.
+				cfg.flags = flags | MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT;
+				cfg.pDataSource = &*made_source;
+				if ((g_soundsystem_last_error = ma_sound_init_ex(engine->get_ma_engine(), &cfg, &*made)) != MA_SUCCESS) discard_source(made_source);
 			}
 			if (!state) return;
 			if (g_soundsystem_last_error == MA_SUCCESS) load_state = state;
@@ -2293,7 +2330,7 @@ public:
 		// For the time being, give it one more try without any flags if we got -10 (MA_INVALID_FILE) because MA's support for loading mp3 is limited.
 		// Not for a source of unknown length, such as a URL: loading without flags reads the source in whole, which needs its size, so it only opened the source again to fail with an error in place of the decoder's.
 		if (g_soundsystem_last_error == MA_INVALID_FILE && !(ma_flags & MA_SOUND_FLAG_UNKNOWN_LENGTH)) {
-			cfg.flags = MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT;
+			flags = 0;
 			attempt_init();
 			// Loading without flags reads the file in whole and then decodes it; when the decoding fails, MiniAudio keeps the file it read, cached under the file's name with nothing holding it, so each later load of that name failed on those bytes even once the file changed. That cached entry is let go here.
 			// Only for the decoder's own failures, which come after the file was read and cached: a file that couldn't be read, such as an empty one, leaves no entry, and MiniAudio's unregister of a name it doesn't find returns without unlocking its cache, hanging every later load.
@@ -2304,8 +2341,9 @@ public:
 		}
 
 		if (g_soundsystem_last_error == MA_SUCCESS) {
+			source = std::move(made_source);
 			adopt_sound(std::move(made));
-			postload(filename, (cfg.flags & MA_SOUND_FLAG_ASYNC));
+			postload(filename, (flags & MA_SOUND_FLAG_ASYNC));
 		}
 		// Sound service has to store data pertaining to our triplet, and this is the earliest point at which it's safe to clean that up.
 		g_sound_service->cleanup_triplet(triplet);
@@ -2472,7 +2510,7 @@ public:
 			spatializer->release();
 			spatializer = nullptr;
 		}
-		ma_resource_manager_data_buffer *failed_buffer = finish_load_jobs();
+		ma_resource_manager_data_buffer *failed_buffer = finish_load_jobs(source.get());
 		// Off the graph first, which waits for the audio thread to stop reading the sound, so nothing reads what is let go of below.
 		{
 			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex);
@@ -2482,12 +2520,16 @@ public:
 		if (datasource && !datasource_opened) {
 			if (auto impl = dynamic_cast<audio_data_source_impl*>(datasource)) impl->forget_source();
 		}
-		// Already off the graph, and a sound takes no input, so uninitializing it changes no node's lists: the graph lock isn't held across it, as freeing a stream waits for its reads, a stalled network read included. A buffer in the resource cache is freed under the cache's lock, as it is made.
+		// Already off the graph, and a sound takes no input, so uninitializing it changes no node's lists: the graph lock isn't held across it, nor across freeing its source, as freeing a stream waits for its reads, a stalled network read included. A buffer in the resource cache is freed under the cache's lock, as it is made.
 		if (failed_buffer) free_failed_buffer(failed_buffer);
-		{
-			std::unique_lock<std::mutex> tree_lock(g_resource_tree_mutex, std::defer_lock);
-			if (snd->pResourceManagerDataSource && !(snd->pResourceManagerDataSource->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM)) tree_lock.lock();
-			ma_sound_uninit(&*snd);
+		ma_sound_uninit(&*snd); // The sound doesn't own its source, which is freed after it.
+		if (source) {
+			{
+				std::unique_lock<std::mutex> tree_lock(g_resource_tree_mutex, std::defer_lock);
+				if (!(source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM)) tree_lock.lock();
+				ma_resource_manager_data_source_uninit(&*source);
+			}
+			source.reset();
 		}
 		snd.reset();
 		if (datasource) {
