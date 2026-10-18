@@ -1828,7 +1828,11 @@ public:
 	}
 	audio_node_chain* get_internal_node_chain() override { return node_chain; }
 	bool get_spatialization_parameters(audio_spatialization_parameters& params) override {
-		if (!snd || !get_spatialization_enabled() || !spatialization_params_mutex.try_lock()) return false;
+		if (!spatialization_params_mutex.try_lock()) return false;
+		if (!snd || !get_spatialization_enabled()) { // Checked under the lock a sound's loads hand snd over under.
+			spatialization_params_mutex.unlock();
+			return false;
+		}
 		reactphysics3d::Vector3 listener_pos = get_engine()->get_listener_position(get_listener()), listener_dir = get_direction_to_listener(), pos = get_position_3d();
 		params.listener_x = listener_pos.x;
 		params.listener_y = listener_pos.y;
@@ -2196,6 +2200,10 @@ class sound_impl final : public mixer_impl, public virtual sound {
 	bool should_autoclose; // If this is true, the release method defers sound destruction until playback has complete.
 	mutable audio_data_source* datasource; // Avoid the need to keep looking up the pointer to the c++ ma_data_source wrapper associated with this sound.
 	bool datasource_opened = false; // datasource is one open() was given and plays, rather than a wrapper of the sound's own source.
+	void adopt_sound(unique_ptr<ma_sound> made) {
+		unique_lock<mutex> lock(spatialization_params_mutex);
+		snd = std::move(made);
+	}
 	inline void postload(const string& filename, bool async_load = false) {
 		loaded_filename = filename;
 		node = (ma_node_base *)&*snd;
@@ -2241,11 +2249,11 @@ public:
 		garbage_collect_inline_sounds();
 		if (snd)
 			close();
-		snd = make_unique < ma_sound > ();
+		// Made here and handed to snd only once it loaded, under the lock the audio thread reads snd under, so the audio thread never reads a sound half made or freed after a failed load.
+		unique_ptr<ma_sound> made = make_unique<ma_sound>();
 		// The sound service converts our file name into a "tripplet" which includes information about the origin an asset is expected to come from. This guarantees that we don't mistake assets from different origins as the same just because they have the same name.
 		std::string triplet = g_sound_service->prepare_triplet(filename, protocol_slot, protocol_directive, filter_slot, filter_directive);
 		if (triplet.empty()) { // A name the sound service can't make one of, such as one that isn't valid UTF-8.
-			snd.reset();
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
@@ -2262,7 +2270,7 @@ public:
 			{
 				std::unique_lock<std::mutex> tree_lock(g_resource_tree_mutex, std::defer_lock);
 				if (!(cfg.flags & MA_SOUND_FLAG_STREAM)) tree_lock.lock();
-				g_soundsystem_last_error = ma_sound_init_ex(engine->get_ma_engine(), &cfg, &*snd);
+				g_soundsystem_last_error = ma_sound_init_ex(engine->get_ma_engine(), &cfg, &*made);
 			}
 			if (!state) return;
 			if (g_soundsystem_last_error == MA_SUCCESS) load_state = state;
@@ -2294,9 +2302,10 @@ public:
 			}
 		}
 
-		if (g_soundsystem_last_error != MA_SUCCESS)
-			snd.reset();
-		else postload(filename, (cfg.flags & MA_SOUND_FLAG_ASYNC));
+		if (g_soundsystem_last_error == MA_SUCCESS) {
+			adopt_sound(std::move(made));
+			postload(filename, (cfg.flags & MA_SOUND_FLAG_ASYNC));
+		}
 		// Sound service has to store data pertaining to our triplet, and this is the earliest point at which it's safe to clean that up.
 		g_sound_service->cleanup_triplet(triplet);
 		return g_soundsystem_last_error == MA_SUCCESS;
@@ -2359,14 +2368,14 @@ public:
 				return false;
 			}
 			ma_pcm_rb_set_sample_rate(&*pcm_stream, sample_rate);
-			snd = make_unique<ma_sound>();
-			std::unique_lock<std::recursive_mutex> graph_lock(g_node_graph_mutex); // auto-attaches to the endpoint
-			if ((g_soundsystem_last_error = ma_sound_init_from_data_source(get_engine()->get_ma_engine(), &*pcm_stream, 0, nullptr, &*snd)) != MA_SUCCESS) {
-				snd.reset();
+			// As load_special() makes a sound: not attached by MiniAudio, so without the graph lock, and handed to snd once made.
+			unique_ptr<ma_sound> made = make_unique<ma_sound>();
+			if ((g_soundsystem_last_error = ma_sound_init_from_data_source(get_engine()->get_ma_engine(), &*pcm_stream, MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT, nullptr, &*made)) != MA_SUCCESS) {
 				ma_pcm_rb_uninit(&*pcm_stream);
 				pcm_stream.reset();
 				return false;
 			}
+			adopt_sound(std::move(made));
 			postload(":pcm", false);
 			play(true);
 		}
@@ -2429,13 +2438,12 @@ public:
 			return false;
 		}
 		if (snd) close();
-		snd = make_unique<ma_sound>();
-		std::unique_lock<std::recursive_mutex> graph_lock(g_node_graph_mutex); // auto-attaches to the endpoint
-		if ((g_soundsystem_last_error = ma_sound_init_from_data_source(get_engine()->get_ma_engine(), ds->get_ma_data_source(), 0, nullptr, &*snd)) != MA_SUCCESS) {
-			snd.reset();
+		unique_ptr<ma_sound> made = make_unique<ma_sound>(); // As load_special() makes a sound.
+		if ((g_soundsystem_last_error = ma_sound_init_from_data_source(get_engine()->get_ma_engine(), ds->get_ma_data_source(), MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT, nullptr, &*made)) != MA_SUCCESS) {
 			ds->release();
 			return false;
 		}
+		adopt_sound(std::move(made));
 		datasource = ds;
 		datasource_opened = true;
 		audio_data_source_impl::add_user(ds); // So it can't be closed while this sound reads it.
