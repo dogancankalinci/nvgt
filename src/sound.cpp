@@ -1278,7 +1278,7 @@ public:
 		ma_uint64 total_processed = 0, total_written = 0;
 		while (frame_count) {
 			ma_uint64 frame_count_in = frame_count, frame_count_out = dc_bufsize;
-			if (ma_data_converter_process_pcm_frames(&*dc, ma_offset_pcm_frames_ptr_f32((float*)frames_in, total_processed, get_channels()), &frame_count_in, &dc_buffer[0], &frame_count_out) != MA_SUCCESS) return 0;
+			if (ma_data_converter_process_pcm_frames(&*dc, ma_offset_pcm_frames_ptr_f32((float*)frames_in, total_processed, dc->channelsIn), &frame_count_in, &dc_buffer[0], &frame_count_out) != MA_SUCCESS) return 0;
 			total_processed += frame_count_in;
 			frames_written += frame_count_in;
 			frame_count -= frame_count_in;
@@ -1286,13 +1286,16 @@ public:
 		}
 		return total_written;
 	}
+	// The engine's channel count makes a frame of the script's samples, as write() takes them.
 	unsigned int write_script_array(CScriptArray *frames) override {
-		if (!frames || !get_channels()) return 0;
-		return write((float*)frames->GetBuffer(), frames->GetSize() / get_channels());
+		unsigned int engine_channels = get_engine()->get_channels();
+		if (!frames || !engine_channels) return 0;
+		return write((float*)frames->GetBuffer(), frames->GetSize() / engine_channels);
 	}
 	unsigned int write_script_memory_buffer(script_memory_buffer* frames) override {
-		if (!frames || !get_channels()) return false;
-		return write((float*)frames->ptr, frames->size / get_channels());
+		unsigned int engine_channels = get_engine()->get_channels();
+		if (!frames || !engine_channels) return 0;
+		return write((float*)frames->ptr, frames->size / engine_channels);
 	}
 	void process(const float** frames_in, unsigned int* frame_count_in, float** frames_out, unsigned int* frame_count_out) override { write(*frames_in, *frame_count_in); }
 	string read() override {
