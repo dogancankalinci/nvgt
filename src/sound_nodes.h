@@ -155,7 +155,7 @@ public:
 	virtual bool attach_output_bus(unsigned int bus_index, audio_node* node, unsigned int input_bus_index) override = 0;
 	virtual bool detach_output_bus(unsigned int bus_index) override = 0;
 	virtual bool detach_all_output_buses() override = 0;
-	virtual bool add_node(audio_node* node, audio_node* after = nullptr, unsigned int input_bus_index = 0) = 0;
+	virtual bool add_node(audio_node* node, audio_node* after = nullptr, unsigned int input_bus_index = 0) = 0; // input_bus_index is the new node's input bus that the node before it feeds; the chain keeps it through later changes.
 	virtual bool add_node_at(audio_node* node, int after = -1, unsigned int input_bus_index = 0) = 0;
 	virtual bool remove_node(audio_node* node) = 0;
 	virtual bool remove_node_at(unsigned int index) = 0;

@@ -71,8 +71,11 @@ passthrough_node* passthrough_node::create(audio_engine* engine) { return new pa
 
 class audio_node_chain_impl : public passthrough_node_impl, public virtual audio_node_chain {
 	std::vector<audio_node*> nodes;
+	std::vector<unsigned int> input_buses; // For each node, the input bus the node before it feeds, which every rewiring attaches to again.
 	audio_node* endpoint;
 	unsigned int endpoint_input_bus_index = 0; // The endpoint's input bus the chain feeds, which every rewiring attaches to again.
+	// The input bus the node at index takes the chain on, index being nodes.size() for the endpoint.
+	unsigned int bus_at(size_t index) const { return index < nodes.size()? input_buses[index] : endpoint_input_bus_index; }
 protected:
 	// Every change and read of the chain's nodes and endpoint takes this, as one script thread can change a sound's chain while another changes it too, such as a global panner change rewiring every spatializer. Recursive because the changes call one another; never taken on the audio thread, which only reads the MiniAudio graph.
 	mutable std::recursive_mutex chain_mutex;
@@ -112,18 +115,19 @@ public:
 		}
 		audio_node* prev = new_idx? nodes[new_idx -1] : nullptr;
 		audio_node* next = new_idx? (new_idx < nodes.size()? nodes[new_idx] : endpoint) : (!nodes.empty()? first() : endpoint);
-		// The node before is attached to the new one first, which a node that takes no input, as a sound or data source, refuses with nothing changed; the next one, which the chain or the node after holds, is then attached to, and when the new node can't feed it, as with another channel count, the node before goes back to it.
-		if (prev && !prev->attach_output_bus(0, node, 0)) return false;
-		else if (!prev && !audio_node_impl::attach_output_bus(0, node, 0)) return false;
-		if (next && !node->attach_output_bus(0, next, next == endpoint? endpoint_input_bus_index : input_bus_index)) { // The endpoint keeps the bus set_endpoint() gave it.
+		// The node before is attached to the new one first, on the new node's input_bus_index, which a node that takes no input, as a sound or data source, refuses with nothing changed; the new node is then attached to the next one on the bus the next one was fed on, and when the new node can't feed it, as with another channel count, the node before goes back to it.
+		unsigned int next_bus = bus_at(new_idx);
+		if (prev && !prev->attach_output_bus(0, node, input_bus_index)) return false;
+		else if (!prev && !audio_node_impl::attach_output_bus(0, node, input_bus_index)) return false;
+		if (next && !node->attach_output_bus(0, next, next_bus)) {
 			ma_result error = g_soundsystem_last_error;
-			unsigned int next_bus = next == endpoint? endpoint_input_bus_index : 0;
 			if (prev) prev->attach_output_bus(0, next, next_bus);
 			else audio_node_impl::attach_output_bus(0, next, next_bus);
 			g_soundsystem_last_error = error;
 			return false;
 		}
 		nodes.insert(nodes.begin() + new_idx, node);
+		input_buses.insert(input_buses.begin() + new_idx, input_bus_index);
 		node->duplicate();
 		return true;
 	}
@@ -140,7 +144,8 @@ public:
 		if (it == nodes.end()) return false;
 		audio_node* prev = (*it) != nodes.front()? *(it -1) : nullptr;
 		audio_node* next = (*it) != nodes.back()? *(it + 1) : endpoint;
-		unsigned int next_bus = next == endpoint? endpoint_input_bus_index : 0;
+		size_t index = it - nodes.begin();
+		unsigned int next_bus = bus_at(index + 1);
 		if (prev && next && !prev->attach_output_bus(0, next, next_bus)) return false;
 		else if (!prev && next && !audio_node_impl::attach_output_bus(0, next, next_bus)) return false;
 		else if (!next) { // The last node of a chain without an endpoint: what fed it no longer leads anywhere, nor holds it.
@@ -148,6 +153,7 @@ public:
 			else audio_node_impl::detach_output_bus(0);
 		}
 		nodes.erase(it);
+		input_buses.erase(input_buses.begin() + index);
 		bool success = node->detach_output_bus(0);
 		node->release();
 		return success;
@@ -166,6 +172,7 @@ public:
 		}
 		if (success && endpoint) success = audio_node_impl::attach_output_bus(0, endpoint, endpoint_input_bus_index);
 		nodes.clear();
+		input_buses.clear();
 		return success;
 	}
 	// The chain holds a reference of its own to the endpoint. The attachment to it, whichever node it is from, holds another, but every insert, removal or clear rewires that attachment, which let go of the endpoint's only reference before the endpoint was attached to again, and a script can detach a node of the chain through the audio_node API.
