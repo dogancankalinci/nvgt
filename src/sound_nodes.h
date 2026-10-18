@@ -53,34 +53,47 @@ public:
 	unsigned int get_output_bus_count() { return node ? ma_node_get_output_bus_count(node) : 0; }
 	unsigned int get_input_channels(unsigned int bus) { return node ? ma_node_get_input_channels(node, bus) : 0; }
 	unsigned int get_output_channels(unsigned int bus) { return node ? ma_node_get_output_channels(node, bus) : 0; }
+	// The node this one was attached to is let go of after the graph lock: letting go can destroy it, and a destructor, such as a spatializer's, takes locks that are taken before the graph lock elsewhere.
 	bool attach_output_bus(unsigned int output_bus, audio_node *destination, unsigned int destination_input_bus) {
 		if (!node || !destination) return false;
-		std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); 
-		if ((g_soundsystem_last_error = ma_node_attach_output_bus(node, output_bus, destination->get_ma_node(), destination_input_bus)) != MA_SUCCESS) return false;
-		
-		if (output_bus >= output_connections.size()) output_connections.resize(output_bus + 1, nullptr);
-		if (output_connections[output_bus]) output_connections[output_bus]->release();
-		output_connections[output_bus] = destination;
-		destination->duplicate();
+		audio_node *previous = nullptr;
+		{
+			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); 
+			if ((g_soundsystem_last_error = ma_node_attach_output_bus(node, output_bus, destination->get_ma_node(), destination_input_bus)) != MA_SUCCESS) return false;
+			if (output_bus >= output_connections.size()) output_connections.resize(output_bus + 1, nullptr);
+			previous = output_connections[output_bus];
+			output_connections[output_bus] = destination;
+			destination->duplicate();
+		}
+		if (previous) previous->release();
 		return true;
 	}
 	bool detach_output_bus(unsigned int bus) {
 		if (!node) return false;
-		std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); 
-		if ((g_soundsystem_last_error = ma_node_detach_output_bus(node, bus)) != MA_SUCCESS) return false;
-		
-		if (bus < output_connections.size() && output_connections[bus]) {
-			output_connections[bus]->release();
-			output_connections[bus] = nullptr;
+		audio_node *previous = nullptr;
+		{
+			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); 
+			if ((g_soundsystem_last_error = ma_node_detach_output_bus(node, bus)) != MA_SUCCESS) return false;
+			if (bus < output_connections.size()) {
+				previous = output_connections[bus];
+				output_connections[bus] = nullptr;
+			}
 		}
+		if (previous) previous->release();
 		return true;
 	}
 	bool detach_all_output_buses() {
 		if (!node) return false;
-		std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); 
-		if ((g_soundsystem_last_error = ma_node_detach_all_output_buses(node)) != MA_SUCCESS) return false;
-		
-		for (audio_node *&n : output_connections) { if (n) { n->release(); n = nullptr; } }
+		std::vector<audio_node*> previous;
+		{
+			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); 
+			if ((g_soundsystem_last_error = ma_node_detach_all_output_buses(node)) != MA_SUCCESS) return false;
+			for (audio_node *&n : output_connections) {
+				if (n) previous.push_back(n);
+				n = nullptr;
+			}
+		}
+		for (audio_node *n : previous) n->release();
 		return true;
 	}
 	bool set_output_bus_volume(unsigned int bus, float volume) { return node ? (g_soundsystem_last_error = ma_node_set_output_bus_volume(node, bus, volume)) == MA_SUCCESS : false; }

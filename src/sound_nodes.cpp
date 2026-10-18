@@ -159,9 +159,9 @@ public:
 		return success;
 	}
 	// The chain holds a reference of its own to the endpoint. The attachment to it, whichever node it is from, holds another, but every insert, removal or clear rewires that attachment, which let go of the endpoint's only reference before the endpoint was attached to again, and a script can detach a node of the chain through the audio_node API.
+	// Under the chain's lock only, which keeps the detach and attach together. The graph lock is taken by each of them, after the lock of any chain they go into, such as a spatializer at the end of this one: taking it here first, as before, was the opposite order to a global panner change, which locks a spatializer and then the graph, and the two deadlocked.
 	void set_endpoint(audio_node* node, unsigned int input_bus_index) override {
 		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
-		std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); // detach-then-attach must be one graph mutation, not two that another thread can interleave
 		audio_node *old = endpoint;
 		if (old) {
 			if (!nodes.empty()) last()->detach_output_bus(0);
