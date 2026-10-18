@@ -902,6 +902,12 @@ public:
 	~audio_spatializer_impl() {
 		// Out of the set first: a global panner or attenuator change rewires every spatializer in it under that lock, so once this one is out, none is rewiring it as its node goes.
 		{ std::lock_guard<std::mutex> lock(g_tracked_spatializers_mutex); g_tracked_spatializers.erase(this); }
+		// A component the script kept goes on without this spatializer: off the graph first, which waits for the audio thread to stop processing it, then without its pointer back here, so it passes audio through if used again.
+		for (spatializer_component_node *component : {panner, attenuator}) {
+			if (!component) continue;
+			component->detach_all_output_buses();
+			component->forget_spatializer();
+		}
 		destroy_node();
 		if (panner) panner->release();
 		if (attenuator) attenuator->release();
@@ -986,7 +992,16 @@ public:
 		return reverb_attachment;
 	}
 	audio_spatializer_reverb3d_placement get_reverb3d_placement() const override { return reverb_placement; }
-	mixer* get_mixer() const override { return attached_mixer; }
+	mixer* get_mixer() const override {
+		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		return attached_mixer;
+	}
+	// The update on the audio thread reads attached_mixer under the chain lock, which it only tries, so after this it reads no mixer, as for a spatializer the script kept past its mixer.
+	void forget_mixer() override {
+		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		attached_mixer = nullptr;
+		parameters_valid = false;
+	}
 	void set_panner_by_id(int panner_id) override {
 		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		preferred_panner_id = panner_id;
@@ -1078,6 +1093,7 @@ public:
 		if (!spatializer) throw std::invalid_argument("spatializer cannot be null");
 	}
 	audio_spatializer* get_spatializer() const override { return spatializer; }
+	void forget_spatializer() override { spatializer = nullptr; }
 };
 
 class basic_panner_impl : public spatializer_component_node_impl, public virtual basic_panner {

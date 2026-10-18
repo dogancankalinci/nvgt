@@ -330,12 +330,14 @@ public:
 	virtual bool get_parameters(audio_spatialization_parameters& params) = 0;
 	virtual void on_panner_enabled_changed(int panner_id, bool enabled) = 0;
 	virtual void on_attenuator_enabled_changed(int attenuator_id, bool enabled) = 0;
+	virtual void forget_mixer() = 0; // Its mixer is letting go of it; one the script kept no longer reads that mixer.
 	static audio_spatializer* create(mixer* mixer, audio_engine* engine = nullptr);
 };
 
 class spatializer_component_node : public virtual effect_node {
 public:
 	virtual audio_spatializer* get_spatializer() const = 0;
+	virtual void forget_spatializer() {} // Its spatializer is going; after this the component passes audio through.
 };
 
 class basic_panner : public virtual spatializer_component_node {

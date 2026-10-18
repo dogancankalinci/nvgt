@@ -1675,6 +1675,7 @@ public:
 		stop();
 		unique_lock<mutex> lock(spatialization_params_mutex);
 		if (spatializer) {
+			spatializer->forget_mixer(); // A spatializer the script kept must not read this mixer once it is gone.
 			node_chain->remove_node(spatializer);
 			spatializer->release();
 		}
@@ -2408,6 +2409,7 @@ public:
 		if (!snd) return false;
 		if (spatializer) {
 			unique_lock<mutex> lock(spatialization_params_mutex);
+			spatializer->forget_mixer();
 			node_chain->remove_node(spatializer);
 			spatializer->release();
 			spatializer = nullptr;
