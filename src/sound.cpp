@@ -1174,7 +1174,24 @@ class audio_encoder_impl : public effect_node_impl, public virtual audio_encoder
 	unique_ptr<ma_data_converter> dc;
 	unsigned int sample_rate, channels;
 	unsigned long long frames_written;
+	unsigned long long frames_converted = 0; // Frames the converter gave the encoder, at the encoder's rate.
 	mutex write_mtx;
+	// The resampler keeps the last frames written until it is told no more come, which it takes to be calls without input. It is drained up to the length the frames written make at the encoder's rate.
+	void drain_converter() {
+		unsigned long long expected = frames_written * dc->sampleRateOut / dc->sampleRateIn;
+		vector<char> buffer(1024 * ma_get_bytes_per_frame(dc->formatOut, dc->channelsOut));
+		for (int idle = 0; idle < 3 && frames_converted < expected;) {
+			ma_uint64 frame_count_in = 0, frame_count_out = std::min<unsigned long long>(1024, expected - frames_converted);
+			if (ma_data_converter_process_pcm_frames(&*dc, nullptr, &frame_count_in, buffer.data(), &frame_count_out) != MA_SUCCESS) break;
+			if (!frame_count_out) {
+				idle++;
+				continue;
+			}
+			idle = 0;
+			frames_converted += frame_count_out;
+			write_impl(buffer.data(), frame_count_out);
+		}
+	}
 protected:
 	datastream* output_stream; // Child classes need not manage the stream's refcount.
 	datastream* pull_stream; // Convenience feature which queues newly encoded data to be pulled by the user in a threadsafe manner.
@@ -1253,6 +1270,7 @@ public:
 	}
 	bool close() override {
 		unique_lock<mutex> lock(write_mtx);
+		if (dc && get_active()) drain_converter();
 		if (!close_impl()) return false;
 		if (dc) {
 			ma_data_converter_uninit(&*dc, nullptr);
@@ -1260,7 +1278,7 @@ public:
 		}
 		if (output_stream && output_stream != pull_stream) output_stream->release();
 		output_stream = nullptr;
-		frames_written = sample_rate = channels = 0;
+		frames_written = frames_converted = sample_rate = channels = 0;
 		return true;
 	}
 	bool get_active() const override { return sample_rate && channels; }
@@ -1282,6 +1300,7 @@ public:
 			if (ma_data_converter_process_pcm_frames(&*dc, ma_offset_pcm_frames_ptr_f32((float*)frames_in, total_processed, dc->channelsIn), &frame_count_in, &dc_buffer[0], &frame_count_out) != MA_SUCCESS) break;
 			if (!frame_count_in && !frame_count_out) break;
 			if (frame_count_out && write_impl(dc_buffer.data(), frame_count_out) < frame_count_out) break; // The encoder failed; these frames didn't make it.
+			frames_converted += frame_count_out;
 			total_processed += frame_count_in;
 			frames_written += frame_count_in;
 		}
