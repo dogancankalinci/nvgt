@@ -56,6 +56,11 @@ public:
 	// The node this one was attached to is let go of after the graph lock: letting go can destroy it, and a destructor, such as a spatializer's, takes locks that are taken before the graph lock elsewhere.
 	bool attach_output_bus(unsigned int output_bus, audio_node *destination, unsigned int destination_input_bus) {
 		if (!node || !destination) return false;
+		// Only into this node's own engine, whose audio thread alone reads its graph: a node read by two engines' threads at once crashes. An engine itself is the exception, as a no-device engine is mixed into another through its own node, which only that other engine's thread then reads.
+		if (destination->get_engine() != engine && !is_engine()) {
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return false;
+		}
 		audio_node *previous = nullptr;
 		{
 			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); 
