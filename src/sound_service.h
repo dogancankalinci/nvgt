@@ -78,7 +78,7 @@ public:
 	 * Protocols and filters are singletons, and should generally not carry mutable state. It goes without saying that they must live as long as the sound service does, which is generally the lifetime of the application. For this reason, we suggest defining them as static instance properties on the classes themselves. The sound service will not attempt to delete these.
 	 */
 	virtual bool register_protocol(const protocol *proto, size_t &slot) = 0;
-	virtual bool register_filter(const filter *the_filter, size_t &slot) = 0; // Takes ownership.
+	virtual bool register_filter(const filter *the_filter, size_t &slot) = 0; // Doesn't take ownership, as above: the filter must outlive the service.
 	virtual bool set_default_protocol(size_t slot) = 0; // Must be valid (pre-existing) protocol slot. Once set, requests which don't specify a protocol will go to this one.
 	virtual const protocol *get_protocol(size_t slot) = 0;
 	virtual bool is_default_protocol(size_t slot) = 0;
