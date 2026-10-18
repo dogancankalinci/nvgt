@@ -1964,11 +1964,8 @@ class sound_impl final : public mixer_impl, public virtual sound {
 		}
 		return ma_resource_manager_data_buffer_result(buffer) == MA_SUCCESS? nullptr : buffer;
 	}
-	// With the node graph locked. Taking the sound off the graph waits for the audio thread to stop reading it, so nothing reads the failed buffer once it is marked loaded, which makes ma_sound_uninit() free it at once.
-	void free_failed_buffer(ma_resource_manager_data_buffer *buffer) {
-		ma_node_detach_all_output_buses(&*snd);
-		store_job_field(&buffer->result, MA_SUCCESS);
-	}
+	// With the node graph locked and the sound already taken off it, which waited for the audio thread to stop reading it, so nothing reads the failed buffer once it is marked loaded, which makes ma_sound_uninit() free it at once.
+	void free_failed_buffer(ma_resource_manager_data_buffer *buffer) { store_job_field(&buffer->result, MA_SUCCESS); }
 	std::string pcm_buffer;      // When loading from raw PCM (like TTS) we store the intermediate wav data here so we can take advantage of async loading to return quickly. Makes a substantial difference in the responsiveness of TTS calls.
 	std::string loaded_filename; // Contains the loaded filename as passed in the load/stream method, used just for convenience.
 	mutable std::atomic_flag load_completed;
@@ -2227,11 +2224,16 @@ public:
 			spatializer->release();
 			spatializer = nullptr;
 		}
-		// A wrapper the script got of the sound's own source is emptied before the source is freed with the sound, rather than left pointing at it.
+		ma_resource_manager_data_buffer *failed_buffer = finish_load_jobs();
+		// Off the graph first, which waits for the audio thread to stop reading the sound, so nothing reads what is let go of below.
+		{
+			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex);
+			ma_node_detach_all_output_buses(&*snd);
+		}
+		// A wrapper the script got of the sound's own source is emptied before the source is freed with the sound, rather than left pointing at it; this also lets go of sources chained to it. Not under the graph lock, which the wrapper takes after its own.
 		if (datasource && !datasource_opened) {
 			if (auto impl = dynamic_cast<audio_data_source_impl*>(datasource)) impl->forget_source();
 		}
-		ma_resource_manager_data_buffer *failed_buffer = finish_load_jobs();
 		{
 			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex);
 			if (failed_buffer) free_failed_buffer(failed_buffer);
