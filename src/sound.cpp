@@ -981,7 +981,7 @@ public:
 	bool set_current(audio_data_source* new_current) override {
 		if (!src || in_use()) return false;
 		bool self = new_current == static_cast<audio_data_source*>(this); // Back to this head, as a chain is rewound in MiniAudio. Nothing needs holding for that, and a reference to itself would keep this alive and in use for good.
-		if (new_current && !self && new_current != src_cur && new_current != held_current && (!can_chain(new_current) || is_sound_owned(new_current) || is_used(new_current))) { // A sound frees its own source when it closes, whatever else reads it, and one already read elsewhere would be read from two places.
+		if (new_current && !self && new_current != src_cur && new_current != src_next && new_current != held_current && (!can_chain(new_current) || is_sound_owned(new_current) || is_used(new_current))) { // A sound frees its own source when it closes, whatever else reads it, and one already read elsewhere would be read from two places.
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
@@ -1006,7 +1006,7 @@ public:
 	bool set_next(audio_data_source* new_next) override {
 		if (!src || in_use()) return false;
 		bool self = new_next == static_cast<audio_data_source*>(this); // Looping this source on itself; as for set_current(), without a reference to itself.
-		if (new_next && !self && new_next != src_next && new_next != held_current && (!can_chain(new_next) || is_sound_owned(new_next) || is_used(new_next))) {
+		if (new_next && !self && new_next != src_next && new_next != src_cur && new_next != held_current && (!can_chain(new_next) || is_sound_owned(new_next) || is_used(new_next))) {
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
