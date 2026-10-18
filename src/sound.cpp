@@ -2080,6 +2080,8 @@ public:
 		if (g_soundsystem_last_error == MA_INVALID_FILE) {
 			cfg.flags = 0;
 			attempt_init();
+			// Loading without flags reads the file in whole and then decodes it; when the decoding fails, MiniAudio keeps the file it read, cached under the file's name with nothing holding it, so each later load of that name failed on those bytes even once the file changed. That cached entry is let go here.
+			if (g_soundsystem_last_error != MA_SUCCESS) ma_resource_manager_unregister_file(ma_engine_get_resource_manager(get_engine()->get_ma_engine()), triplet.c_str());
 		}
 
 		if (g_soundsystem_last_error != MA_SUCCESS)
