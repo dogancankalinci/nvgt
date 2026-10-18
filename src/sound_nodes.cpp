@@ -56,6 +56,7 @@ void effect_node_impl::destroy_node() {
 	if (n) ma_node_uninit((ma_node_base*)&*n, nullptr);
 	
 	n.reset();
+	node = nullptr; // Freed with n; a destroyed node attaches to nothing, rather than through what is left of it.
 }
 void effect_node_impl::process(const float** frames_in, unsigned int* frame_count_in, float** frames_out, unsigned int* frame_count_out) {} // override in subclasses.
 unsigned int effect_node_impl::required_input_frame_count(unsigned int output_frame_count) const { return output_frame_count; }
@@ -842,8 +843,9 @@ public:
 		{ std::lock_guard<std::mutex> lock(g_tracked_spatializers_mutex); g_tracked_spatializers.insert(this); }
 	}
 	~audio_spatializer_impl() {
-		destroy_node();
+		// Out of the set first: a global panner or attenuator change rewires every spatializer in it under that lock, so once this one is out, none is rewiring it as its node goes.
 		{ std::lock_guard<std::mutex> lock(g_tracked_spatializers_mutex); g_tracked_spatializers.erase(this); }
+		destroy_node();
 		if (panner) panner->release();
 		if (attenuator) attenuator->release();
 		if (reverb_attachment) reverb_attachment->release();
