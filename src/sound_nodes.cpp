@@ -961,8 +961,9 @@ public:
 class basic_panner_impl : public spatializer_component_node_impl, public virtual basic_panner {
 	ma_panner panner;
 public:
-	basic_panner_impl(audio_spatializer* spatializer, audio_engine* e) : spatializer_component_node_impl(spatializer, e, 0, 2) {
-		ma_panner_config panner_config = ma_panner_config_init(ma_format_f32, 2);
+	// In and out at the engine's channel count, which the next node takes: MiniAudio's panner pans stereo and passes other channel counts through, where a fixed stereo output left the sound attached to nothing on any other engine.
+	basic_panner_impl(audio_spatializer* spatializer, audio_engine* e) : spatializer_component_node_impl(spatializer, e, 0, 0) {
+		ma_panner_config panner_config = ma_panner_config_init(ma_format_f32, get_engine()->get_channels());
 		if (ma_panner_init(&panner_config, &panner) != MA_SUCCESS) throw std::runtime_error("Failed to initialize panner");
 	}
 	~basic_panner_impl() { destroy_node(); }
@@ -1040,7 +1041,11 @@ public:
 			ma_copy_pcm_frames(frames_out[0], frames_in[0], *frame_count_in, ma_format_f32, get_engine()->get_channels());
 	}
 };
-spatializer_component_node* phonon_hrtf_panner::create(audio_spatializer* spatializer, audio_engine* engine) { return new phonon_hrtf_panner_impl(spatializer, engine); }
+// HRTF renders two ears, so an engine of another channel count, which couldn't take its output, gets none, and the spatializer falls back to another panner.
+spatializer_component_node* phonon_hrtf_panner::create(audio_spatializer* spatializer, audio_engine* engine) {
+	if (!engine || engine->get_channels() != 2) return nullptr;
+	return new phonon_hrtf_panner_impl(spatializer, engine);
+}
 
 class basic_attenuator_impl : public spatializer_component_node_impl, public virtual basic_attenuator {
 	ma_gainer gainer;
