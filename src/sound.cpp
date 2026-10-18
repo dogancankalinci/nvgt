@@ -2507,15 +2507,32 @@ public:
 	void set_stop_time_with_fade(unsigned long long absolute_time, unsigned long long fade_length) override {
 		return (get_engine()->get_flags() & audio_engine::DURATIONS_IN_FRAMES) ? set_stop_time_with_fade_in_frames(absolute_time, fade_length) : set_stop_time_with_fade_in_milliseconds(absolute_time, fade_length);
 	}
+	// A stop the script schedules replaces one pause_fade() scheduled, which play() then keeps.
 	void set_stop_time_with_fade_in_frames(unsigned long long absolute_time, unsigned long long fade_length) override {
 		if (!snd) return;
 		ma_sound_set_stop_time_with_fade_in_pcm_frames(&*snd, absolute_time, fade_length);
 		fade_from_stop = true;
+		fade_paused = false;
 	}
 	void set_stop_time_with_fade_in_milliseconds(unsigned long long absolute_time, unsigned long long fade_length) override {
 		if (!snd) return;
 		ma_sound_set_stop_time_with_fade_in_milliseconds(&*snd, absolute_time, fade_length);
 		fade_from_stop = true;
+		fade_paused = false;
+	}
+	// A plain stop replaces a stop with a fade too, so that stop's fade goes with it rather than leaving the sound silent until the new stop.
+	void set_stop_time_in_frames(ma_uint64 absolute_time) override {
+		mixer_impl::set_stop_time_in_frames(absolute_time);
+		forget_stop_fade();
+	}
+	void set_stop_time_in_milliseconds(ma_uint64 absolute_time) override {
+		mixer_impl::set_stop_time_in_milliseconds(absolute_time);
+		forget_stop_fade();
+	}
+	void forget_stop_fade() {
+		if (!snd) return;
+		if (fade_from_stop) ma_sound_reset_fade(&*snd);
+		fade_from_stop = fade_paused = false;
 	}
 	void set_looping(bool looping) override {
 		if (snd)
