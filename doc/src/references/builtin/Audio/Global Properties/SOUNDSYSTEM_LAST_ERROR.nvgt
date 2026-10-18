@@ -3,7 +3,7 @@
 	const audio_error_state SOUNDSYSTEM_LAST_ERROR;
 	## Remarks:
 		This is one of the values in the `audio_error_state` enum. It is `AUDIO_ERROR_STATE_SUCCESS` (0) if the most recent operation succeeded, and a negative value if it failed.
-		Not every audio function updates this value, and some functions fail before reaching the point where it is set. It is most useful right after a call that returned false, such as `sound::load()`, to find out why. Use `SOUNDSYSTEM_LAST_ERROR_TEXT` to get a description of the error.
+		Not every audio function updates this value, and some functions fail before reaching the point where it is set. It is most useful right after a call that returned false, such as `sound::load()`, to find out why. Use `SOUNDSYSTEM_LAST_ERROR_TEXT` to get a description of the error. The value is kept per thread, so it tells about the calls made on the thread that reads it.
 */
 
 // Example:

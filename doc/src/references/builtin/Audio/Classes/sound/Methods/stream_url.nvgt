@@ -1,6 +1,6 @@
 /**
 	Load the specified URL.
-	bool sound::load_url(string url);
+	bool sound::stream_url(const string&in url);
 	## Arguments:
 		* string url: the URL to load (should be the direct link to a sound or stream).
 	## Returns:
