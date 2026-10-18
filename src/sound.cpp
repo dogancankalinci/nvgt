@@ -553,8 +553,14 @@ public:
 		return -1; // couldn't determine device?
 	}
 	bool set_device(int device) override {
-		if (processing == this) return false; // Closing the device from its own thread would wait for that thread, see release().
-		if (!engine || flags & NO_DEVICE || device < -1 || device >= int(g_sound_output_devices.size())) return false;
+		if (processing == this || !engine || flags & NO_DEVICE) { // Closing the device from its own thread would wait for that thread, see release().
+			g_soundsystem_last_error = MA_INVALID_OPERATION;
+			return false;
+		}
+		if (device < -1 || device >= int(g_sound_output_devices.size())) {
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return false;
+		}
 		ma_device *old_dev = ma_engine_get_device(&*engine);
 		bool old_open = old_dev && ma_device_get_state(old_dev) != ma_device_state_uninitialized;
 		if (!old_dev || old_open && device > -1 && ma_device_id_equal(&old_dev->playback.id, &g_sound_output_devices[device].id)) return false;
