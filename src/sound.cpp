@@ -1418,6 +1418,10 @@ public:
 	// Takes frames in the engine's format, as process() is given them when the encoder is a node, and returns how many of those it wrote, which is what frames_written counts.
 	unsigned int write(const float* frames_in, unsigned int frame_count) override {
 		unique_lock<mutex> lock(write_mtx);
+		return write_locked(frames_in, frame_count);
+	}
+	// write(), with write_mtx held.
+	unsigned int write_locked(const float* frames_in, unsigned int frame_count) {
 		if (!frames_in || !frame_count || !get_active()) return 0;
 		if (!dc) {
 			unsigned int frames = write_impl(frames_in, frame_count);
@@ -1449,7 +1453,11 @@ public:
 		if (!frames || !engine_channels) return 0;
 		return write((float*)frames->ptr, frames->size / engine_channels);
 	}
-	void process(const float** frames_in, unsigned int* frame_count_in, float** frames_out, unsigned int* frame_count_out) override { write(*frames_in, *frame_count_in); }
+	// On the audio thread, which mustn't wait while a script thread opens, closes or writes to the encoder under write_mtx; that block isn't encoded then, and the audio goes on through this node either way.
+	void process(const float** frames_in, unsigned int* frame_count_in, float** frames_out, unsigned int* frame_count_out) override {
+		unique_lock<mutex> lock(write_mtx, try_to_lock);
+		if (lock.owns_lock()) write_locked(*frames_in, *frame_count_in);
+	}
 	string read() override {
 		unique_lock<mutex> lock(write_mtx);
 		if (!pull_stream) return "";
