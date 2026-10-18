@@ -113,6 +113,24 @@ static void drain_aaudio_reroutes(ma_device* device) {
 		ma_event_uninit(&done);
 	}
 }
+// AAudio's framework callbacks run on binder threads and can still be under way when a stream is closed: a device update that finds the stream disconnected goes on using it after calling the error callback, whose reroute job closes it on the job thread, and the audio service can be setting its volume meanwhile. Android 11 and 12 then crash inside libaaudio on the freed stream. Oboe, Google's AAudio library, stops a stream and sleeps for one burst, 10 to 100 ms, before closing it for this reason. MiniAudio closes every stream, its reroutes included, through the context's pointer, so the context gets one that does the same.
+static ma_proc g_aaudio_stream_close = nullptr, g_aaudio_stream_request_stop = nullptr, g_aaudio_stream_get_sample_rate = nullptr, g_aaudio_stream_get_frames_per_burst = nullptr;
+static int32_t close_aaudio_stream_after_callbacks(void* stream) {
+	typedef int32_t (*aaudio_stream_function)(void*);
+	((aaudio_stream_function)g_aaudio_stream_request_stop)(stream);
+	long long rate = ((aaudio_stream_function)g_aaudio_stream_get_sample_rate)(stream), burst = ((aaudio_stream_function)g_aaudio_stream_get_frames_per_burst)(stream);
+	std::this_thread::sleep_for(std::chrono::milliseconds(std::clamp(rate > 0 && burst > 0? 1 + burst * 1000 / rate : 0LL, 10LL, 100LL)));
+	return ((aaudio_stream_function)g_aaudio_stream_close)(stream);
+}
+static void delay_aaudio_stream_closes(ma_context* context) {
+	if (context->backend != ma_backend_aaudio || context->aaudio.AAudioStream_close == (ma_proc)close_aaudio_stream_after_callbacks) return;
+	if (!context->aaudio.AAudioStream_close || !context->aaudio.AAudioStream_requestStop || !context->aaudio.AAudioStream_getSampleRate || !context->aaudio.AAudioStream_getFramesPerBurst) return;
+	g_aaudio_stream_close = context->aaudio.AAudioStream_close;
+	g_aaudio_stream_request_stop = context->aaudio.AAudioStream_requestStop;
+	g_aaudio_stream_get_sample_rate = context->aaudio.AAudioStream_getSampleRate;
+	g_aaudio_stream_get_frames_per_burst = context->aaudio.AAudioStream_getFramesPerBurst;
+	context->aaudio.AAudioStream_close = (ma_proc)close_aaudio_stream_after_callbacks;
+}
 #endif
 static void uninit_device(ma_device* device) {
 	#ifdef MA_SUPPORT_AAUDIO
@@ -148,6 +166,9 @@ bool init_sound_context() {
 		ma_ios_session_category_option_mix_with_others;
 	if ((g_soundsystem_last_error = ma_context_init(nullptr, 0, &cfg, &g_sound_context)) != MA_SUCCESS)
 		return false;
+	#ifdef MA_SUPPORT_AAUDIO
+	delay_aaudio_stream_closes(&g_sound_context);
+	#endif
 	g_sound_service = sound_service::make();
 	if (g_sound_service == nullptr) {
 		ma_context_uninit(&g_sound_context);
