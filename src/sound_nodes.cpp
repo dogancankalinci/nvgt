@@ -851,8 +851,25 @@ private:
 	bool parameters_valid;
 	int preferred_panner_id, preferred_attenuator_id;
 	int current_panner_id, current_attenuator_id;
+	// The rewiring below runs under the chain lock, and what it lets go of is released only once the outermost rewiring ends, after that lock: letting go of a reverb3d can free its mixer and that mixer's spatializer, whose destructor takes g_tracked_spatializers_mutex, which a global panner change takes before a spatializer's chain lock.
+	int rewire_depth = 0; // Under chain_mutex.
+	std::vector<audio_node*> deferred_releases; // Under chain_mutex.
+	struct rewire_scope {
+		audio_spatializer_impl &spatializer;
+		rewire_scope(audio_spatializer_impl &s) : spatializer(s) {
+			spatializer.chain_mutex.lock();
+			spatializer.rewire_depth++;
+		}
+		~rewire_scope() {
+			std::vector<audio_node*> releasing;
+			if (--spatializer.rewire_depth == 0) releasing.swap(spatializer.deferred_releases);
+			spatializer.chain_mutex.unlock();
+			for (audio_node *n : releasing) n->release();
+		}
+	};
+	void release_later(audio_node *n) { deferred_releases.push_back(n); }
 	void position_reverb() {
-		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		rewire_scope scope(*this);
 		if (!reverb_attachment) return;
 		remove_node(reverb_attachment);
 		switch (reverb_placement) {
@@ -871,7 +888,7 @@ private:
 		}
 	}
 	bool set_fallback_panner() {
-		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		rewire_scope scope(*this);
 		for (const auto& pair : g_audio_panners) {
 			if (!pair.second.enabled) continue;
 			spatializer_component_node* fallback_panner = create_audio_panner(pair.first, this, get_engine());
@@ -883,7 +900,7 @@ private:
 		return false;
 	}
 	bool set_fallback_attenuator() {
-		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		rewire_scope scope(*this);
 		for (const auto& pair : g_audio_attenuators) {
 			if (!pair.second.enabled) continue;
 			spatializer_component_node* fallback_attenuator = create_audio_attenuator(pair.first, this, get_engine());
@@ -917,11 +934,11 @@ public:
 		if (reverb) reverb->release();
 	}
 	void set_panner(spatializer_component_node* new_panner) override {
-		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		rewire_scope scope(*this);
 		if (panner) {
 			remove_node(panner); // Which takes it off the graph and waits for the audio thread, so it can lose its pointer back here: a replaced component the script kept passes audio through.
 			panner->forget_spatializer();
-			panner->release();
+			release_later(panner);
 		}
 		panner = new_panner;
 		if (panner) {
@@ -930,11 +947,11 @@ public:
 		}
 	}
 	void set_attenuator(spatializer_component_node* new_attenuator) override {
-		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		rewire_scope scope(*this);
 		if (attenuator) {
 			remove_node(attenuator);
 			attenuator->forget_spatializer();
-			attenuator->release();
+			release_later(attenuator);
 		}
 		attenuator = new_attenuator;
 		if (attenuator) {
@@ -945,7 +962,7 @@ public:
 		}
 	}
 	void set_reverb3d(reverb3d* new_reverb, audio_spatializer_reverb3d_placement placement = postpan) override {
-		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		rewire_scope scope(*this);
 		if (new_reverb && new_reverb->get_engine() != get_engine()) { // Another engine's audio thread reads that reverb3d, which two threads can't read at once.
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return;
@@ -957,16 +974,13 @@ public:
 			}
 			return;
 		}
-		audio_node* tmp;
 		if (reverb) {
-			tmp = reverb;
+			release_later(reverb);
 			reverb = nullptr;
-			tmp->release();
 			if (reverb_attachment) {
 				remove_node(reverb_attachment);
-				tmp = reverb_attachment;
+				release_later(reverb_attachment);
 				reverb_attachment = nullptr;
-				tmp->release();
 			}
 		}
 		if (new_reverb) {
@@ -1002,12 +1016,12 @@ public:
 	}
 	// The update on the audio thread reads attached_mixer under the chain lock, which it only tries, so after this it reads no mixer, as for a spatializer the script kept past its mixer.
 	void forget_mixer() override {
-		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		rewire_scope scope(*this);
 		attached_mixer = nullptr;
 		parameters_valid = false;
 	}
 	void set_panner_by_id(int panner_id) override {
-		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		rewire_scope scope(*this);
 		preferred_panner_id = panner_id;
 		spatializer_component_node* new_panner = create_audio_panner(panner_id, this, get_engine());
 		if (new_panner) {
@@ -1019,7 +1033,7 @@ public:
 		}
 	}
 	void set_attenuator_by_id(int attenuator_id) override {
-		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		rewire_scope scope(*this);
 		preferred_attenuator_id = attenuator_id;
 		spatializer_component_node* new_attenuator = create_audio_attenuator(attenuator_id, this, get_engine());
 		if (new_attenuator) {
@@ -1053,7 +1067,7 @@ public:
 		} else parameters_valid = false;
 	}
 	void on_panner_enabled_changed(int panner_id, bool enabled) override {
-		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		rewire_scope scope(*this);
 		if (enabled) {
 			if (preferred_panner_id == panner_id && preferred_panner_id != current_panner_id) {
 				spatializer_component_node* new_panner = create_audio_panner(panner_id, this, get_engine());
@@ -1070,7 +1084,7 @@ public:
 		}
 	}
 	void on_attenuator_enabled_changed(int attenuator_id, bool enabled) override {
-		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		rewire_scope scope(*this);
 		if (enabled) {
 			if (preferred_attenuator_id == attenuator_id && preferred_attenuator_id != current_attenuator_id) {
 				spatializer_component_node* new_attenuator = create_audio_attenuator(attenuator_id, this, get_engine());
