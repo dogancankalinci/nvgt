@@ -1770,6 +1770,12 @@ public:
 		spatialization_params_mutex.unlock();
 		return true;
 	}
+	// Decibels to the linear volumes MiniAudio fades between, on an engine with PERCENTAGE_ATTRIBUTES; FLT_MAX starts from the current volume.
+	void fade_volumes_to_linear(float &start_volume, float &end_volume) const {
+		if (!(get_engine()->get_flags() & audio_engine::PERCENTAGE_ATTRIBUTES)) return;
+		start_volume = start_volume == FLT_MAX ? -1 : ma_volume_db_to_linear(start_volume);
+		end_volume = ma_volume_db_to_linear(end_volume);
+	}
 	// MiniAudio keeps a sound or group stopped once its scheduled stop has come, and its fade where the stop left it, until both are cleared, so starting it clears them then. With pending, a stop still to come is cleared too, as one pause_fade() scheduled.
 	void clear_stop_for_restart(bool pending = false) {
 		ma_uint64 stop_time = ma_node_get_state_time(&*snd, ma_node_state_stopped);
@@ -1973,19 +1979,13 @@ public:
 	void set_fade_in_frames(float start_volume, float end_volume, ma_uint64 frames) override {
 		if (!snd)
 			return;
-		if (get_engine()->get_flags() & audio_engine::PERCENTAGE_ATTRIBUTES) {
-			start_volume = start_volume == FLT_MAX ? -1 : ma_volume_db_to_linear(start_volume);
-			end_volume = ma_volume_db_to_linear(end_volume);
-		}
+		fade_volumes_to_linear(start_volume, end_volume);
 		ma_sound_set_fade_in_pcm_frames(&*snd, start_volume, end_volume, frames);
 	}
 	void set_fade_in_milliseconds(float start_volume, float end_volume, ma_uint64 milliseconds) override {
 		if (!snd)
 			return;
-		if (get_engine()->get_flags() & audio_engine::PERCENTAGE_ATTRIBUTES) {
-			start_volume = start_volume == FLT_MAX ? -1 : ma_volume_db_to_linear(start_volume);
-			end_volume = ma_volume_db_to_linear(end_volume);
-		}
+		fade_volumes_to_linear(start_volume, end_volume);
 		ma_sound_set_fade_in_milliseconds(&*snd, start_volume, end_volume, milliseconds);
 	}
 	float get_current_fade_volume() const override {
@@ -2465,13 +2465,16 @@ public:
 	void set_timed_fade(float start_volume, float end_volume, unsigned long long length, unsigned long long absolute_time) override {
 		return (get_engine()->get_flags() & audio_engine::DURATIONS_IN_FRAMES) ? set_timed_fade_in_frames(start_volume, end_volume, length, absolute_time) : set_timed_fade_in_milliseconds(start_volume, end_volume, length, absolute_time);
 	}
+	// The volumes are decibels on an engine with PERCENTAGE_ATTRIBUTES, as set_fade() takes them.
 	void set_timed_fade_in_frames(float start_volume, float end_volume, unsigned long long frames, unsigned long long absolute_time_in_frames) override {
-		if (snd)
-			ma_sound_set_fade_start_in_pcm_frames(&*snd, start_volume, end_volume, frames, absolute_time_in_frames);
+		if (!snd) return;
+		fade_volumes_to_linear(start_volume, end_volume);
+		ma_sound_set_fade_start_in_pcm_frames(&*snd, start_volume, end_volume, frames, absolute_time_in_frames);
 	}
 	void set_timed_fade_in_milliseconds(float start_volume, float end_volume, unsigned long long frames, unsigned long long absolute_time_in_frames) override {
-		if (snd)
-			ma_sound_set_fade_start_in_milliseconds(&*snd, start_volume, end_volume, frames, absolute_time_in_frames);
+		if (!snd) return;
+		fade_volumes_to_linear(start_volume, end_volume);
+		ma_sound_set_fade_start_in_milliseconds(&*snd, start_volume, end_volume, frames, absolute_time_in_frames);
 	}
 	void set_stop_time_with_fade(unsigned long long absolute_time, unsigned long long fade_length) override {
 		return (get_engine()->get_flags() & audio_engine::DURATIONS_IN_FRAMES) ? set_stop_time_with_fade_in_frames(absolute_time, fade_length) : set_stop_time_with_fade_in_milliseconds(absolute_time, fade_length);
