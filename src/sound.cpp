@@ -1299,7 +1299,6 @@ class audio_encoder_impl : public effect_node_impl, public virtual audio_encoder
 	unsigned int sample_rate, channels;
 	unsigned long long frames_written;
 	unsigned long long frames_converted = 0; // Frames the converter gave the encoder, at the encoder's rate.
-	mutex write_mtx;
 	// The resampler keeps the last frames written until it is told no more come, which it takes to be calls without input. It is drained up to the length the frames written make at the encoder's rate.
 	void drain_converter() {
 		unsigned long long expected = frames_written * dc->sampleRateOut / dc->sampleRateIn;
@@ -1317,6 +1316,7 @@ class audio_encoder_impl : public effect_node_impl, public virtual audio_encoder
 		}
 	}
 protected:
+	mutex write_mtx; // Taken by everything that uses the encoder, which the audio thread writes to through process() when the encoder is in the graph.
 	datastream* output_stream; // Child classes need not manage the stream's refcount.
 	datastream* pull_stream; // Convenience feature which queues newly encoded data to be pulled by the user in a threadsafe manner.
 	bool streamable_pulling; // If true read can be called any time in pull mode, otherwise only once after stream is closed.
@@ -1600,47 +1600,63 @@ public:
 	int get_bitrate() const override { return bitrate; }
 	bool set_bitrate(int new_bitrate) override {
 		if (new_bitrate < 6000 || new_bitrate > 510000) return false;
+		unique_lock<mutex> lock(write_mtx); // As the audio thread writes to the encoder under it; the value is kept only once the encoder took it, or for the next encoder opened.
+		if (encoder && ope_encoder_ctl(encoder, OPUS_SET_BITRATE(new_bitrate)) != OPE_OK) return false;
 		bitrate = new_bitrate;
-		return encoder? ope_encoder_ctl(encoder, OPUS_SET_BITRATE(bitrate)) == OPE_OK : true;
+		return true;
 	}
 	int get_complexity() const override { return complexity; }
 	bool set_complexity(int new_complexity) override {
 		if (new_complexity < 0 || new_complexity > 10) return false;
+		unique_lock<mutex> lock(write_mtx);
+		if (encoder && ope_encoder_ctl(encoder, OPUS_SET_COMPLEXITY(new_complexity)) != OPE_OK) return false;
 		complexity = new_complexity;
-		return encoder? ope_encoder_ctl(encoder, OPUS_SET_COMPLEXITY(complexity)) == OPE_OK : true;
+		return true;
 	}
 	int get_signal_type() const override { return signal_type; }
 	bool set_signal_type(int new_signal_type) override {
 		if (new_signal_type != OPUS_AUTO && new_signal_type != OPUS_SIGNAL_VOICE && new_signal_type != OPUS_SIGNAL_MUSIC) return false;
+		unique_lock<mutex> lock(write_mtx);
+		if (encoder && ope_encoder_ctl(encoder, OPUS_SET_SIGNAL(new_signal_type)) != OPE_OK) return false;
 		signal_type = new_signal_type;
-		return encoder? ope_encoder_ctl(encoder, OPUS_SET_SIGNAL(signal_type)) == OPE_OK : true;
+		return true;
 	}
 	int get_application() const override { return application; }
 	bool set_application(int new_application) override {
 		if (new_application != OPUS_APPLICATION_VOIP && new_application != OPUS_APPLICATION_AUDIO && new_application != OPUS_APPLICATION_RESTRICTED_LOWDELAY) return false;
+		unique_lock<mutex> lock(write_mtx);
+		if (encoder && ope_encoder_ctl(encoder, OPUS_SET_APPLICATION(new_application)) != OPE_OK) return false;
 		application = new_application;
-		return encoder? ope_encoder_ctl(encoder, OPUS_SET_APPLICATION(application)) == OPE_OK : true;
+		return true;
 	}
 	int get_packet_loss_percent() const override { return packet_loss_percent; }
 	bool set_packet_loss_percent(int percent) override {
 		if (percent < 0 || percent > 100) return false;
+		unique_lock<mutex> lock(write_mtx);
+		if (encoder && ope_encoder_ctl(encoder, OPUS_SET_PACKET_LOSS_PERC(percent)) != OPE_OK) return false;
 		packet_loss_percent = percent;
-		return encoder? ope_encoder_ctl(encoder, OPUS_SET_PACKET_LOSS_PERC(packet_loss_percent)) == OPE_OK : true;
+		return true;
 	}
 	bool get_vbr() const override { return vbr; }
 	bool set_vbr(bool enabled) override {
+		unique_lock<mutex> lock(write_mtx);
+		if (encoder && ope_encoder_ctl(encoder, OPUS_SET_VBR(enabled ? 1 : 0)) != OPE_OK) return false;
 		vbr = enabled;
-		return encoder? ope_encoder_ctl(encoder, OPUS_SET_VBR(vbr ? 1 : 0)) == OPE_OK : true;
+		return true;
 	}
 	bool get_cvbr() const override { return cvbr; }
 	bool set_cvbr(bool enabled) override {
+		unique_lock<mutex> lock(write_mtx);
+		if (encoder && ope_encoder_ctl(encoder, OPUS_SET_VBR_CONSTRAINT(enabled ? 1 : 0)) != OPE_OK) return false;
 		cvbr = enabled;
-		return encoder? ope_encoder_ctl(encoder, OPUS_SET_VBR_CONSTRAINT(cvbr ? 1 : 0)) == OPE_OK : true;
+		return true;
 	}
 	bool get_dtx() const override { return dtx; }
 	bool set_dtx(bool enabled) override {
+		unique_lock<mutex> lock(write_mtx);
+		if (encoder && ope_encoder_ctl(encoder, OPUS_SET_DTX(enabled ? 1 : 0)) != OPE_OK) return false;
 		dtx = enabled;
-		return encoder? ope_encoder_ctl(encoder, OPUS_SET_DTX(dtx ? 1 : 0)) == OPE_OK : true;
+		return true;
 	}
 };
 audio_opus_encoder* audio_opus_encoder::create(audio_engine* e) { return new audio_opus_encoder_impl(e); }
