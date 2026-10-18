@@ -942,6 +942,7 @@ class audio_ring_buffer_impl : public audio_data_source_impl, public virtual aud
 public:
 	audio_ring_buffer_impl(unsigned int channels, unsigned int size, audio_engine * e) : audio_data_source_impl(e, nullptr), rb(make_unique<ma_pcm_rb>()) {
 		if (ma_pcm_rb_init(ma_format_f32, channels, size, nullptr, nullptr, &*rb) != MA_SUCCESS) throw std::runtime_error("failed to initialize ring buffer");
+		ma_pcm_rb_set_sample_rate(&*rb, get_engine()->get_sample_rate()); // Frames are written at the engine's rate, as the microphone records them; MiniAudio leaves it 0.
 		set_ma_data_source((ma_data_source*)&*rb);
 	}
 	~audio_ring_buffer_impl() {
