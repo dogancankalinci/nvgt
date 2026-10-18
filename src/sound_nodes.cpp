@@ -100,7 +100,12 @@ public:
 		audio_node* next = new_idx? (new_idx < nodes.size()? nodes[new_idx] : endpoint) : (!nodes.empty()? first() : endpoint);
 		if (prev && !prev->attach_output_bus(0, node, 0)) return false;
 		else if (!prev && !audio_node_impl::attach_output_bus(0, node, 0)) return false;
-		if (next && !node->attach_output_bus(0, next, input_bus_index)) return false;
+		if (next && !node->attach_output_bus(0, next, input_bus_index)) {
+			// The node can't feed the next one, as with another channel count, so the chain goes back to how it was rather than ending at a node that leads nowhere.
+			if (prev) prev->attach_output_bus(0, next, 0);
+			else audio_node_impl::attach_output_bus(0, next, 0);
+			return false;
+		}
 		nodes.insert(nodes.begin() + new_idx, node);
 		node->duplicate();
 		return true;
