@@ -1240,7 +1240,14 @@ public:
 		if (get_active()) close();
 		if (pull_stream) pull_stream->release();
 		pull_stream = new datastream(new stringstream());
-		if (open_stream(pull_stream, sample_rate, channels, flags)) return true;
+		bool opened;
+		try {
+			opened = open_stream(pull_stream, sample_rate, channels, flags);
+		} catch (...) { // open_stream() released the stream then too.
+			pull_stream = nullptr;
+			throw;
+		}
+		if (opened) return true;
 		pull_stream = nullptr;
 		return false;
 	}
