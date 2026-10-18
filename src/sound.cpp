@@ -864,6 +864,11 @@ public:
 		auto impl = dynamic_cast<audio_data_source_impl*>(ds);
 		return impl && impl->sound_owned;
 	}
+	// Whether another sound, chain link or head already reads the source, so a second reader would read it alongside.
+	static bool is_used(audio_data_source* ds) {
+		auto impl = dynamic_cast<audio_data_source_impl*>(ds);
+		return impl && impl->users > 0;
+	}
 	ma_data_source* get_ma_data_source() const override { return src? src->pDataSource : nullptr; }
 	unsigned int get_advised_read_frame_count() const override { return SOUNDSYSTEM_FRAMESIZE; }
 	// Reads 32-bit float samples into buffer, as read_script() makes them.
@@ -952,7 +957,7 @@ public:
 	}
 	bool set_current(audio_data_source* new_current) override {
 		if (!src || in_use()) return false;
-		if (new_current && (!can_chain(new_current) || is_sound_owned(new_current))) { // A sound frees its own source when it closes, whatever else reads it.
+		if (new_current && new_current != src_cur && new_current != held_current && (!can_chain(new_current) || is_sound_owned(new_current) || is_used(new_current))) { // A sound frees its own source when it closes, whatever else reads it, and one already read elsewhere would be read from two places.
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
@@ -976,7 +981,7 @@ public:
 	audio_data_source* get_current() const override { return src? audio_data_source_get(ma_data_source_get_current(src->pDataSource), get_engine()) : nullptr; }
 	bool set_next(audio_data_source* new_next) override {
 		if (!src || in_use()) return false;
-		if (new_next && (!can_chain(new_next) || is_sound_owned(new_next))) {
+		if (new_next && new_next != src_next && new_next != held_current && (!can_chain(new_next) || is_sound_owned(new_next) || is_used(new_next))) {
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
@@ -2290,7 +2295,8 @@ public:
 	}
 	bool open(audio_data_source* ds) override {
 		if (!ds) return false;
-		if (!ds->get_active() || audio_data_source_impl::is_sound_owned(ds)) { // A sound's own source, which that sound frees when it closes, as this one does to open it.
+		// A sound's own source is freed by that sound when it closes, as this one does to open it, and one another sound or chain reads would be read from two places.
+		if (!ds->get_active() || audio_data_source_impl::is_sound_owned(ds) || audio_data_source_impl::is_used(ds)) {
 			ds->release();
 			return false;
 		}
