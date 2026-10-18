@@ -795,13 +795,24 @@ public:
 	void forget_source() { set_ma_data_source(nullptr); }
 	ma_data_source* get_ma_data_source() const override { return src? src->pDataSource : nullptr; }
 	unsigned int get_advised_read_frame_count() const override { return SOUNDSYSTEM_FRAMESIZE; }
+	// Reads 32-bit float samples into buffer, as read_script() makes them.
 	unsigned long long read(void* buffer, unsigned long long frame_count) override {
 		std::lock_guard<std::recursive_mutex> guard(source_mutex);
-		if (!src || !detach_all_output_buses()) return 0;
+		if (!src || node && !detach_all_output_buses()) return 0; // A source in another format was never made a node.
 		if (!frame_count) frame_count = get_advised_read_frame_count();
 		if (!frame_count) return 0;
+		ma_format format = ma_format_f32;
+		ma_uint32 channels = 0;
+		ma_data_source_get_data_format(src->pDataSource, &format, &channels, nullptr, nullptr, 0);
 		ma_uint64 frames_read = 0;
-		if ((g_soundsystem_last_error = ma_data_source_read_pcm_frames(src->pDataSource, buffer, frame_count, &frames_read)) != MA_SUCCESS) return 0;
+		if (format == ma_format_f32) {
+			if ((g_soundsystem_last_error = ma_data_source_read_pcm_frames(src->pDataSource, buffer, frame_count, &frames_read)) != MA_SUCCESS) return 0;
+			return frames_read;
+		}
+		// Another format, such as a 16-bit file the resource manager keeps as it is, is read as it is and converted.
+		std::vector<char> raw(frame_count * ma_get_bytes_per_frame(format, channels));
+		if ((g_soundsystem_last_error = ma_data_source_read_pcm_frames(src->pDataSource, raw.data(), frame_count, &frames_read)) != MA_SUCCESS) return 0;
+		ma_pcm_convert(buffer, ma_format_f32, raw.data(), format, frames_read * channels, ma_dither_mode_none);
 		return frames_read;
 	}
 	CScriptArray* read_script(unsigned long long frame_count) override {
