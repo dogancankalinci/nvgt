@@ -843,7 +843,13 @@ public:
 		}
 	}
 	void set_reverb3d(reverb3d* new_reverb, audio_spatializer_reverb3d_placement placement = postpan) override {
-		if (new_reverb == reverb) return;
+		if (new_reverb == reverb) {
+			if (reverb && placement != reverb_placement) { // Only moved: the same attachment goes to its new place in the chain.
+				reverb_placement = placement;
+				position_reverb();
+			}
+			return;
+		}
 		audio_node* tmp;
 		if (reverb) {
 			tmp = reverb;
