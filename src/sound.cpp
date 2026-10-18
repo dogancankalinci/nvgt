@@ -29,7 +29,6 @@
 #include <angelscript.h>
 #include <scriptarray.h>
 #include <scripthandle.h>
-#include "filesystem.h" // FileExists, FileDelete
 #include "misc_functions.h" // script_memory_buffer
 #include "nvgt.h" // g_ScriptEngine
 #include "nvgt_angelscript.h" // get_array_type
@@ -1248,8 +1247,7 @@ public:
 		if (get_active()) close();
 		unique_lock<mutex> lock(write_mtx);
 		if (flags & ENCODER_DEFAULTS) flags = (flags & ~ENCODER_DEFAULTS) | get_default_open_flags();
-		if (flags & ENCODER_OVERWRITE && FileExists(filename)) FileDelete(filename);
-		return open_impl(filename, nullptr, sample_rate, channels, flags);
+		return open_impl(filename, nullptr, sample_rate, channels, flags); // The encoders create the file anew, replacing one there, once their arguments check out; deleting it first lost it to an open that then failed.
 	}
 	bool open_stream(datastream* ds, unsigned int sample_rate, unsigned int channels, unsigned int flags) override {
 		if (!ds) return false;
