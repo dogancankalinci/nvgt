@@ -520,6 +520,7 @@ public:
 		}
 		delete engine_endpoint;
 		if (engine) {
+			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); // The engine's node can be attached in another engine's graph, which uninitializing detaches it from.
 			ma_engine_uninit(&*engine);
 			engine = nullptr;
 		}
