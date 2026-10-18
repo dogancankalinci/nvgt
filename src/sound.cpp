@@ -1265,6 +1265,7 @@ public:
 	}
 	bool get_active() const override { return sample_rate && channels; }
 	unsigned long long get_frames_written() const override { return frames_written; }
+	// Takes frames in the engine's format, as process() is given them when the encoder is a node, and returns how many of those it wrote, which is what frames_written counts.
 	unsigned int write(const float* frames_in, unsigned int frame_count) override {
 		unique_lock<mutex> lock(write_mtx);
 		if (!frames_in || !frame_count || !get_active()) return 0;
@@ -1275,16 +1276,16 @@ public:
 		}
 		unsigned int dc_bufsize = 1024; // frames
 		vector<char> dc_buffer(dc_bufsize * ma_get_bytes_per_frame(dc->formatOut, dc->channelsOut));
-		ma_uint64 total_processed = 0, total_written = 0;
-		while (frame_count) {
-			ma_uint64 frame_count_in = frame_count, frame_count_out = dc_bufsize;
-			if (ma_data_converter_process_pcm_frames(&*dc, ma_offset_pcm_frames_ptr_f32((float*)frames_in, total_processed, dc->channelsIn), &frame_count_in, &dc_buffer[0], &frame_count_out) != MA_SUCCESS) return 0;
+		ma_uint64 total_processed = 0;
+		while (total_processed < frame_count) {
+			ma_uint64 frame_count_in = frame_count - total_processed, frame_count_out = dc_bufsize;
+			if (ma_data_converter_process_pcm_frames(&*dc, ma_offset_pcm_frames_ptr_f32((float*)frames_in, total_processed, dc->channelsIn), &frame_count_in, &dc_buffer[0], &frame_count_out) != MA_SUCCESS) break;
+			if (!frame_count_in && !frame_count_out) break;
+			if (frame_count_out && write_impl(dc_buffer.data(), frame_count_out) < frame_count_out) break; // The encoder failed; these frames didn't make it.
 			total_processed += frame_count_in;
 			frames_written += frame_count_in;
-			frame_count -= frame_count_in;
-			total_written += write_impl(dc_buffer.data(), frame_count_out);
 		}
-		return total_written;
+		return total_processed;
 	}
 	// The engine's channel count makes a frame of the script's samples, as write() takes them.
 	unsigned int write_script_array(CScriptArray *frames) override {
