@@ -629,7 +629,7 @@ public:
 		if (worker.isRunning()) {
 			notify();
 			worker.join();
-		}
+		} else worker.tryJoin(0); // A finished request's thread still has to be joined: Poco's start() would otherwise replace it without ever joining it, so it would keep its stack until the process ends.
 		_request_body = _response_body = "";
 		_creds.clear();
 		_request = HTTPRequest(HTTPMessage::HTTP_1_1);
