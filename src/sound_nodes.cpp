@@ -578,7 +578,7 @@ public:
 	float get_volume_at(float distance) const override {
 		if (distance > max_audible_distance) distance = max_audible_distance;
 		float v;
-		if (distance <= max_volume_distance) v = range_convert(distance, 0, max_volume_distance, min_volume, max_volume);
+		if (distance <= max_volume_distance) v = max_volume_distance > 0? range_convert(distance, 0, max_volume_distance, min_volume, max_volume) : max_volume; // A range of no width would divide by zero; its one point is max_volume_distance itself.
 		else {
 			if (volume_curve <= 0) return ma_volume_db_to_linear(max_volume);
 			else if (volume_curve >= 1) return ma_volume_db_to_linear(min_volume);
