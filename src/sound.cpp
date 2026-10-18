@@ -822,6 +822,11 @@ protected:
 			}
 			if (node) { std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); ma_data_source_node_uninit(&*src, nullptr); }
 			node = nullptr;
+			// Uninitializing the node took it off the graph, so what it was attached to is no longer held either; a node made for a source opened later starts unattached.
+			for (audio_node *&n : output_connections) {
+				if (n) n->release();
+				n = nullptr;
+			}
 			src.reset();
 		}
 		if (src_cur) let_go(src_cur);
