@@ -53,7 +53,7 @@ void raw_speak(string text, bool interrupt) {
 		voice.speak(text, interrupt);
 }
 void stop_speech() {
-	screen_reader_silence();
+	if (use_sr) screen_reader_silence(); // Only a game that speaks through the screen reader has speech of its own to stop there; otherwise this cut off whatever the user's screen reader was reading.
 	tts.stop();
 	if (@tts_config_preview != null) tts_config_preview.stop();
 }
