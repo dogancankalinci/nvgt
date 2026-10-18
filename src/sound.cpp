@@ -2287,7 +2287,8 @@ public:
 			break; // Don't retry any other failure case.
 		}
 		// For the time being, give it one more try without any flags if we got -10 (MA_INVALID_FILE) because MA's support for loading mp3 is limited.
-		if (g_soundsystem_last_error == MA_INVALID_FILE) {
+		// Not for a source of unknown length, such as a URL: loading without flags reads the source in whole, which needs its size, so it only opened the source again to fail with an error in place of the decoder's.
+		if (g_soundsystem_last_error == MA_INVALID_FILE && !(ma_flags & MA_SOUND_FLAG_UNKNOWN_LENGTH)) {
 			cfg.flags = MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT;
 			attempt_init();
 			// Loading without flags reads the file in whole and then decodes it; when the decoding fails, MiniAudio keeps the file it read, cached under the file's name with nothing holding it, so each later load of that name failed on those bytes even once the file changed. That cached entry is let go here.
