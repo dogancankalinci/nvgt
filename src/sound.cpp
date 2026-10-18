@@ -958,6 +958,13 @@ public:
 		}
 		if ((g_soundsystem_last_error = ma_data_source_set_current(src->pDataSource, new_current? new_current->get_ma_data_source() : nullptr)) != MA_SUCCESS) return false;
 		if (src_cur) let_go(src_cur);
+		audio_data_source *held; // This head is on new_current now, off a source it was holding.
+		{
+			std::lock_guard<std::mutex> lock(held_mutex);
+			held = held_current;
+			held_current = nullptr;
+		}
+		if (held) let_go(held);
 		src_cur = new_current;
 		if (src_cur) {
 			src_cur->duplicate();
