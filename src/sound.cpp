@@ -1118,7 +1118,7 @@ public:
 		std::lock_guard<std::recursive_mutex> guard(source_mutex);
 		if (decoder && !close()) return false;
 		ma_decoder_config cfg = decoder_config_init(sample_rate, channels);
-		std::string triplet = g_sound_service->prepare_triplet(filename, pack_file && pack_file->get_is_active()? g_pack_protocol_slot : 0, pack_file && pack_file->get_is_active()? std::shared_ptr < const pack_interface > (pack_file->make_immutable()) : nullptr, 0, nullptr);
+		std::string triplet = g_sound_service->prepare_triplet(filename, pack_file && pack_file->get_is_active()? g_pack_protocol_slot : sound_service::fs_protocol_slot, pack_file && pack_file->get_is_active()? std::shared_ptr < const pack_interface > (pack_file->make_immutable()) : nullptr, 0, nullptr); // Without a pack, from disk, as sound.load() reads, rather than from the default protocol, which can be a pack.
 		if ((g_soundsystem_last_error = ma_decoder_init_vfs(g_sound_service->get_vfs(), triplet.c_str(), &cfg, &*decoder)) != MA_SUCCESS) decoder.reset();
 		else set_ma_data_source((ma_data_source*)&*decoder);
 		g_sound_service->cleanup_triplet(triplet);
