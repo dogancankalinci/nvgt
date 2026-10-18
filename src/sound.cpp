@@ -1346,6 +1346,7 @@ protected:
 public:
 	audio_encoder_impl(audio_engine* e, bool streamable_pulling = true) : effect_node_impl(e, 0, 0, 1, 1, MA_NODE_FLAG_PASSTHROUGH), output_stream(nullptr), pull_stream(nullptr), streamable_pulling(streamable_pulling), sample_rate(0), channels(0), frames_written(0) {}
 	~audio_encoder_impl() {
+		destroy_node(); // Off the graph before anything process() uses goes; the subclasses' destructors do so first.
 		close();
 		if (pull_stream) pull_stream->release();
 	}
@@ -1525,7 +1526,10 @@ protected:
 	}
 public:
 	audio_wav_encoder_impl(audio_engine* e) : audio_encoder_impl(e, false), encoder(nullptr) {}
-	~audio_wav_encoder_impl() { close(); }
+	~audio_wav_encoder_impl() {
+		destroy_node(); // An encoder in the graph has its process() called by the audio thread until then.
+		close();
+	}
 	unsigned int get_default_open_flags() const override { return audio_encoder_impl::get_default_open_flags() | WAV_S16; }
 	string get_format() const override { return "wav"; }
 	ma_format get_wav_format() const override { return get_dc()? get_dc()->formatOut : ma_format_f32; }
@@ -1587,7 +1591,10 @@ protected:
 	}
 public:
 	audio_opus_encoder_impl(audio_engine* e) : audio_encoder_impl(e), encoder(nullptr), comments(nullptr), bitrate(128000), complexity(10), signal_type(OPUS_AUTO), application(OPUS_APPLICATION_AUDIO), packet_loss_percent(0), vbr(true), cvbr(false), dtx(false) {}
-	~audio_opus_encoder_impl() { close(); }
+	~audio_opus_encoder_impl() {
+		destroy_node();
+		close();
+	}
 	string get_format() const override { return "opus"; }
 	int get_bitrate() const override { return bitrate; }
 	bool set_bitrate(int new_bitrate) override {
