@@ -2071,10 +2071,23 @@ public:
 		const char* input = (const char*)data;
 		unsigned int frames_written = 0;
 		unsigned int frame_size = ma_get_bytes_per_frame(ma_pcm_rb_get_format(&*pcm_stream), ma_pcm_rb_get_channels(&*pcm_stream));
+		// A full buffer is waited on while the sound plays it out; when nothing has made room for a second, as when the sound was stopped or its engine is never read, the rest is given up rather than waited on forever.
+		std::chrono::steady_clock::time_point waiting_since;
+		bool waiting = false;
 		while (size_in_frames) {
 			void* buffer_ptr = nullptr;
 			unsigned int frames_requested = size_in_frames;
 			if ((g_soundsystem_last_error = ma_pcm_rb_acquire_write(&*pcm_stream, &frames_requested, &buffer_ptr)) != MA_SUCCESS || !buffer_ptr) return false;
+			if (!frames_requested) {
+				ma_pcm_rb_commit_write(&*pcm_stream, 0);
+				if (!waiting) {
+					waiting = true;
+					waiting_since = std::chrono::steady_clock::now();
+				} else if (std::chrono::steady_clock::now() - waiting_since >= std::chrono::seconds(1)) return false;
+				std::this_thread::sleep_for(std::chrono::milliseconds(1));
+				continue;
+			}
+			waiting = false;
 			memcpy(buffer_ptr, input + (frames_written * frame_size), frames_requested * frame_size);
 			if ((g_soundsystem_last_error = ma_pcm_rb_commit_write(&*pcm_stream, frames_requested)) != MA_SUCCESS) return false;
 			frames_written += frames_requested;
