@@ -1686,6 +1686,8 @@ protected:
 	mixer *parent_mixer;
 	sound_shape* shape;
 	CScriptHandle shape_handle;
+	// With a shape, the position the script set, which MiniAudio's is moved from to the shape's point nearest the listener. Kept here rather than in the shape, as one shape can be given to several sounds.
+	reactphysics3d::Vector3 shape_anchor;
 	mutable audio_spatializer *spatializer;
 	mutex spatialization_params_mutex;
 	audio_node_chain* node_chain;
@@ -1778,7 +1780,7 @@ public:
 		// A type no shape is made from leaves the old shape in place.
 		int ot = new_shape.GetTypeId() ^ asTYPEID_OBJHANDLE;
 		if (new_shape.GetRef() && !g_sound_shape_setup_callbacks.contains(ot)) return false;
-		// The position the script set, which the old shape holds; MiniAudio's is the one the shape moved to its edge.
+		// The position the script set, kept with the old shape; MiniAudio's is the one the shape moved to its edge.
 		reactphysics3d::Vector3 position = get_position_3d();
 		// release old shape, swapped out under the lock the audio thread reads the shape under, through get_spatialization_parameters().
 		sound_shape* old_shape;
@@ -1796,6 +1798,7 @@ public:
 		sound_shape* new_shape_obj = g_sound_shape_setup_callbacks[ot](this, &new_shape);
 		if (!new_shape_obj) return false;
 		new_shape_obj->set_position(position);
+		shape_anchor = position;
 		{
 			unique_lock<mutex> lock(spatialization_params_mutex);
 			shape = new_shape_obj;
@@ -1945,6 +1948,7 @@ public:
 		if (sound_get_default_3d_attenuator() >= 0 && get_preferred_3d_attenuator() < 0) set_3d_attenuator(sound_get_default_3d_attenuator());
 		if (shape) {
 			reactphysics3d::Vector3 pos(x, y, z);
+			shape_anchor = pos;
 			reactphysics3d::Vector3 listener = get_engine()->get_listener_position(get_listener());
 			bool is_contained = shape->is_in_shape(listener, pos);
 			if (!is_contained) ma_sound_set_position(&*snd, pos.x, pos.y, pos.z);
@@ -1955,7 +1959,7 @@ public:
 	reactphysics3d::Vector3 get_position_3d() const override {
 		if (!snd)
 			return reactphysics3d::Vector3();
-		if (shape) return shape->get_position(); // True sound position is stored in the shape because the position stored in miniaudio may have been altered by the shape.
+		if (shape) return shape_anchor; // The position the script set, as MiniAudio's may have been moved by the shape.
 		const auto pos = ma_sound_get_position(&*snd);
 		reactphysics3d::Vector3 res;
 		res.setAllValues(pos.x, pos.y, pos.z);
