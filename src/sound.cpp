@@ -2228,6 +2228,7 @@ public:
 	bool pause_fade_in_frames(unsigned long long frames) override {
 		if (snd) {
 			g_soundsystem_last_error = ma_sound_stop_with_fade_in_pcm_frames(&*snd, frames);
+			if (g_soundsystem_last_error == MA_SUCCESS) paused = true; // As pause() does, so play() resumes it.
 			return g_soundsystem_last_error == MA_SUCCESS;
 		}
 		return false;
@@ -2235,6 +2236,7 @@ public:
 	bool pause_fade_in_milliseconds(unsigned long long frames) override {
 		if (snd) {
 			g_soundsystem_last_error = ma_sound_stop_with_fade_in_milliseconds(&*snd, frames);
+			if (g_soundsystem_last_error == MA_SUCCESS) paused = true;
 			return g_soundsystem_last_error == MA_SUCCESS;
 		}
 		return false;
