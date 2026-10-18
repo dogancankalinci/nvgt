@@ -249,7 +249,8 @@ bool set_global_hrtf(bool enabled) {
 	}
 	return true;
 }
-bool get_global_hrtf() { return get_audio_panner_enabled(g_audio_phonon_hrtf_panner) && get_audio_attenuator_enabled(g_audio_phonon_attenuator); }
+// Whether sounds are positioned with HRTF: its panner and attenuator enabled, and the defaults new sounds take.
+bool get_global_hrtf() { return get_audio_panner_enabled(g_audio_phonon_hrtf_panner) && get_audio_attenuator_enabled(g_audio_phonon_attenuator) && sound_get_default_3d_panner() == g_audio_phonon_hrtf_panner && sound_get_default_3d_attenuator() == g_audio_phonon_attenuator; }
 
 class phonon_binaural_node_impl : public audio_node_impl, public virtual phonon_binaural_node {
 	unique_ptr<ma_phonon_binaural_node> bn;
