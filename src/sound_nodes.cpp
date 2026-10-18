@@ -224,7 +224,10 @@ class phonon_binaural_node_impl : public audio_node_impl, public virtual phonon_
 			node = (ma_node_base*)&*bn;
 		}
 		~phonon_binaural_node_impl() {
-			if (bn) ma_phonon_binaural_node_uninit(&*bn, nullptr);
+			if (bn) {
+				std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); // Uninitializing detaches it from the nodes it is attached to, the same lists other threads attach to and detach from under this lock.
+				ma_phonon_binaural_node_uninit(&*bn, nullptr);
+			}
 		}
 		void set_direction(float x, float y, float z, float distance) override { ma_phonon_binaural_node_set_direction(&*bn, x, y, z, distance); }
 		void set_direction_vector(const reactphysics3d::Vector3& direction, float distance) override { ma_phonon_binaural_node_set_direction(&*bn, direction.x, direction.y, direction.z, distance); }
@@ -241,7 +244,10 @@ class splitter_node_impl : public audio_node_impl, public virtual splitter_node 
 		node = (ma_node_base*)&*sn;
 	}
 	~splitter_node_impl() {
-		if (sn) ma_splitter_node_uninit(&*sn, nullptr);
+		if (sn) {
+			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); // Uninitializing detaches it from the nodes it is attached to, the same lists other threads attach to and detach from under this lock.
+			ma_splitter_node_uninit(&*sn, nullptr);
+		}
 	}
 };
 splitter_node* splitter_node::create(audio_engine* e, int channels) { return new splitter_node_impl(e, channels); }
@@ -256,7 +262,10 @@ class low_pass_filter_node_impl : public audio_node_impl, public virtual low_pas
 		node = (ma_node_base*)&*fn;
 	}
 	~low_pass_filter_node_impl() {
-		if (fn) ma_lpf_node_uninit(&*fn, nullptr);
+		if (fn) {
+			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); // Uninitializing detaches it from the nodes it is attached to, the same lists other threads attach to and detach from under this lock.
+			ma_lpf_node_uninit(&*fn, nullptr);
+		}
 	}
 	void set_cutoff_frequency(double freq) override {
 		cfg.lpf.cutoffFrequency = freq;
@@ -281,7 +290,10 @@ class high_pass_filter_node_impl : public audio_node_impl, public virtual high_p
 		node = (ma_node_base*)&*fn;
 	}
 	~high_pass_filter_node_impl() {
-		if (fn) ma_hpf_node_uninit(&*fn, nullptr);
+		if (fn) {
+			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); // Uninitializing detaches it from the nodes it is attached to, the same lists other threads attach to and detach from under this lock.
+			ma_hpf_node_uninit(&*fn, nullptr);
+		}
 	}
 	void set_cutoff_frequency(double freq) override {
 		cfg.hpf.cutoffFrequency = freq;
@@ -306,7 +318,10 @@ class band_pass_filter_node_impl : public audio_node_impl, public virtual band_p
 		node = (ma_node_base*)&*fn;
 	}
 	~band_pass_filter_node_impl() {
-		if (fn) ma_bpf_node_uninit(&*fn, nullptr);
+		if (fn) {
+			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); // Uninitializing detaches it from the nodes it is attached to, the same lists other threads attach to and detach from under this lock.
+			ma_bpf_node_uninit(&*fn, nullptr);
+		}
 	}
 	void set_cutoff_frequency(double freq) override {
 		cfg.bpf.cutoffFrequency = freq;
@@ -331,7 +346,10 @@ class notch_filter_node_impl : public audio_node_impl, public virtual notch_filt
 		node = (ma_node_base*)&*fn;
 	}
 	~notch_filter_node_impl() {
-		if (fn) ma_notch_node_uninit(&*fn, nullptr);
+		if (fn) {
+			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); // Uninitializing detaches it from the nodes it is attached to, the same lists other threads attach to and detach from under this lock.
+			ma_notch_node_uninit(&*fn, nullptr);
+		}
 	}
 	void set_q(double q) override {
 		cfg.notch.q = q;
@@ -356,7 +374,10 @@ class peak_filter_node_impl : public audio_node_impl, public virtual peak_filter
 		node = (ma_node_base*)&*fn;
 	}
 	~peak_filter_node_impl() {
-		if (fn) ma_peak_node_uninit(&*fn, nullptr);
+		if (fn) {
+			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); // Uninitializing detaches it from the nodes it is attached to, the same lists other threads attach to and detach from under this lock.
+			ma_peak_node_uninit(&*fn, nullptr);
+		}
 	}
 	void set_gain(double gain) override {
 		cfg.peak.gainDB = gain;
@@ -386,7 +407,10 @@ class low_shelf_filter_node_impl : public audio_node_impl, public virtual low_sh
 		node = (ma_node_base*)&*fn;
 	}
 	~low_shelf_filter_node_impl() {
-		if (fn) ma_loshelf_node_uninit(&*fn, nullptr);
+		if (fn) {
+			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); // Uninitializing detaches it from the nodes it is attached to, the same lists other threads attach to and detach from under this lock.
+			ma_loshelf_node_uninit(&*fn, nullptr);
+		}
 	}
 	void set_gain(double gain) override {
 		cfg.loshelf.gainDB = gain;
@@ -416,7 +440,10 @@ class high_shelf_filter_node_impl : public audio_node_impl, public virtual high_
 		node = (ma_node_base*)&*fn;
 	}
 	~high_shelf_filter_node_impl() {
-		if (fn) ma_hishelf_node_uninit(&*fn, nullptr);
+		if (fn) {
+			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); // Uninitializing detaches it from the nodes it is attached to, the same lists other threads attach to and detach from under this lock.
+			ma_hishelf_node_uninit(&*fn, nullptr);
+		}
 	}
 	void set_gain(double gain) override {
 		cfg.hishelf.gainDB = gain;
@@ -445,7 +472,10 @@ class delay_node_impl : public audio_node_impl, public virtual delay_node {
 		node = (ma_node_base*)&*dn;
 	}
 	~delay_node_impl() {
-		if (dn) ma_delay_node_uninit(&*dn, nullptr);
+		if (dn) {
+			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); // Uninitializing detaches it from the nodes it is attached to, the same lists other threads attach to and detach from under this lock.
+			ma_delay_node_uninit(&*dn, nullptr);
+		}
 	}
 	void set_wet(float wet) override { ma_delay_node_set_wet(&*dn, wet); }
 	float get_wet() const override { return ma_delay_node_get_wet(&*dn); }
@@ -465,7 +495,10 @@ class freeverb_node_impl : public audio_node_impl, public virtual freeverb_node 
 		node = (ma_node_base*)&*rn;
 	}
 	~freeverb_node_impl() {
-		if (rn) ma_reverb_node_uninit(&*rn, nullptr);
+		if (rn) {
+			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); // Uninitializing detaches it from the nodes it is attached to, the same lists other threads attach to and detach from under this lock.
+			ma_reverb_node_uninit(&*rn, nullptr);
+		}
 	}
 	void set_room_size(float size) override { if (rn) verblib_set_room_size(&rn->reverb, size); }
 	float get_room_size() const override { return rn? verblib_get_room_size(&rn->reverb) : -1; }
