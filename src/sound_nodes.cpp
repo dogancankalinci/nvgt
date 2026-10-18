@@ -636,7 +636,21 @@ public:
 		return splitter;
 	}
 };
-reverb3d* reverb3d::create(audio_node* reverb, mixer* destination, audio_engine* e) { return new reverb3d_impl(e, reverb, destination); }
+// Without a destination, a new mixer of the reverb3d's own engine, as a reverb3d of the default engine always got one; a mixer of another engine is refused, as both engines' audio threads would read the reverb3d then.
+reverb3d* reverb3d::create(audio_node* reverb, mixer* destination, audio_engine* e) {
+	if (!e) throw std::runtime_error("no audio engine available");
+	if (destination && destination->get_engine() != e) throw std::runtime_error("the destination mixer belongs to another audio engine");
+	if (destination) return new reverb3d_impl(e, reverb, destination);
+	mixer *own = new_mixer(e);
+	try {
+		reverb3d *result = new reverb3d_impl(e, reverb, own);
+		own->release(); // The reverb3d holds its own reference.
+		return result;
+	} catch (...) {
+		own->release();
+		throw;
+	}
+}
 
 typedef struct {
 	ma_node_base base;

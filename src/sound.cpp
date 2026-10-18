@@ -3292,7 +3292,7 @@ void RegisterSoundsystemNodes(asIScriptEngine *engine) {
 	engine->RegisterObjectMethod("audio_freeverb_node", "float get_input_width() const property", asFUNCTION((virtual_call < freeverb_node, &freeverb_node::get_input_width, float >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_freeverb_node", "void set_frozen(bool frozen) property", asFUNCTION((virtual_call < freeverb_node, &freeverb_node::set_frozen, void, bool >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_freeverb_node", "bool get_frozen() const property", asFUNCTION((virtual_call < freeverb_node, &freeverb_node::get_frozen, bool >)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectBehaviour("reverb3d", asBEHAVE_FACTORY, "reverb3d@ n(audio_node@+ reverb, mixer@+ destination = mixer(), audio_engine@+ engine = sound_default_engine)", asFUNCTION(reverb3d::create), asCALL_CDECL);
+	engine->RegisterObjectBehaviour("reverb3d", asBEHAVE_FACTORY, "reverb3d@ n(audio_node@+ reverb, mixer@+ destination = null, audio_engine@+ engine = sound_default_engine)", asFUNCTION(reverb3d::create), asCALL_CDECL);
 	engine->RegisterObjectMethod("reverb3d", "void set_reverb(audio_node@+ reverb) property", asFUNCTION((virtual_call < reverb3d, &reverb3d::set_reverb, void, audio_node*>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("reverb3d", "audio_node@+ get_reverb() const property", asFUNCTION((virtual_call < reverb3d, &reverb3d::get_reverb, audio_node*>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("reverb3d", "void set_mixer(mixer@+ mix) property", asFUNCTION((virtual_call < reverb3d, &reverb3d::set_mixer, void, mixer*>)), asCALL_CDECL_OBJFIRST);
