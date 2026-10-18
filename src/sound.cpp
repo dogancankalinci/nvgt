@@ -767,10 +767,8 @@ protected:
 			std::lock_guard<std::mutex> lock(g_data_sources_map_mutex);
 			for (auto &entry : g_data_sources_map) {
 				if (entry.second == source || ma_data_source_get_current(entry.first) != target) continue;
-				if (auto head = dynamic_cast<audio_data_source_impl*>(entry.second)) {
-					head->duplicate();
-					heads.push_back(head);
-				}
+				auto head = dynamic_cast<audio_data_source_impl*>(entry.second);
+				if (head && head->duplicate_if_alive()) heads.push_back(head);
 			}
 		}
 		for (audio_data_source_impl *head : heads) {
@@ -820,7 +818,7 @@ protected:
 			{
 				std::lock_guard<std::mutex> lock(g_data_sources_map_mutex);
 				auto it = g_data_sources_map.find(src->pDataSource);
-				if (it != g_data_sources_map.end()) g_data_sources_map.erase(it);
+				if (it != g_data_sources_map.end() && it->second == this) g_data_sources_map.erase(it);
 			}
 			if (node) { std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); ma_data_source_node_uninit(&*src, nullptr); }
 			node = nullptr;
@@ -849,6 +847,19 @@ public:
 	// Lets go of the MiniAudio data source wrapped, for a wrapper of a sound's own source when the sound frees it; the wrapper stays, empty.
 	void forget_source() { set_ma_data_source(nullptr); }
 	void mark_sound_owned() { sound_owned = true; }
+	// A reference, unless the last one is already gone and this wrapper is being destroyed on another thread, before its destructor took it out of g_data_sources_map; a plain duplicate() would bring it back for a second destruction.
+	bool duplicate_if_alive() {
+		for (int count = refcount; count > 0;) {
+			#ifdef _MSC_VER
+			int seen = _InterlockedCompareExchange(reinterpret_cast<volatile long*>(&refcount), count + 1, count);
+			#else
+			int seen = __sync_val_compare_and_swap(&refcount, count, count + 1);
+			#endif
+			if (seen == count) return true;
+			count = seen;
+		}
+		return false;
+	}
 	static bool is_sound_owned(audio_data_source* ds) {
 		auto impl = dynamic_cast<audio_data_source_impl*>(ds);
 		return impl && impl->sound_owned;
@@ -996,7 +1007,9 @@ audio_data_source* audio_data_source_get(ma_data_source* ptr, audio_engine* engi
 		std::lock_guard<std::mutex> lock(g_data_sources_map_mutex);
 		auto it = g_data_sources_map.find(ptr);
 		if (it != g_data_sources_map.end()) {
-			it->second->duplicate();
+			auto impl = dynamic_cast<audio_data_source_impl*>(it->second);
+			if (impl && !impl->duplicate_if_alive()) return nullptr; // Being destroyed, along with what it wraps for a decoder, so not wrapped anew either.
+			if (!impl) it->second->duplicate();
 			return it->second;
 		}
 	}
