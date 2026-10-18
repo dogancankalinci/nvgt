@@ -217,47 +217,98 @@ void uninit_sound() {
 }
 
 // audio device enumeration, we'll just maintain a global list of available devices, vectors of ma_device_info structures for the c++ side and CScriptArrays of device names on the Angelscript side. It is important that the data in these arrays is index aligned.
+// Devices come and go while a program runs, so the lists are taken anew whenever a script reads one, and when a device in use isn't in them. Each taking makes new arrays, so an array a script holds never changes under it. g_devices_mutex covers the lists and the arrays' pointers.
+static std::mutex g_devices_mutex;
 static vector<ma_device_info> g_sound_input_devices, g_sound_output_devices;
 static CScriptArray *g_sound_script_input_devices = nullptr, *g_sound_script_output_devices = nullptr;
-ma_bool32 ma_device_enum_callback(ma_context * /*ctx*/, ma_device_type type, const ma_device_info *info, void * /*user*/) {
-	string devname;
+struct audio_device_lists {
+	vector<ma_device_info> inputs, outputs;
+	CScriptArray *input_names = nullptr, *output_names = nullptr;
+};
+ma_bool32 ma_device_enum_callback(ma_context * /*ctx*/, ma_device_type type, const ma_device_info *info, void *user) {
+	audio_device_lists *lists = (audio_device_lists*)user;
+	string devname = info->name;
 	if (type == ma_device_type_playback) {
-		g_sound_output_devices.push_back(*info);
-		g_sound_script_output_devices->InsertLast(&(devname = info->name));
+		lists->outputs.push_back(*info);
+		lists->output_names->InsertLast(&devname);
 	} else if (type == ma_device_type_capture) {
-		g_sound_input_devices.push_back(*info);
-		g_sound_script_input_devices->InsertLast(&(devname = info->name));
+		lists->inputs.push_back(*info);
+		lists->input_names->InsertLast(&devname);
 	}
 	return MA_TRUE;
 }
 bool refresh_audio_devices() {
 	if (!init_sound_context())
 		return false;
-	g_sound_output_devices.clear();
-	g_sound_input_devices.clear();
-	if (!g_sound_script_output_devices)
-		g_sound_script_output_devices = CScriptArray::Create(get_array_type("array<string>"));
-	else
-		g_sound_script_output_devices->Resize(0);
-	if (!g_sound_script_input_devices)
-		g_sound_script_input_devices = CScriptArray::Create(get_array_type("array<string>"));
-	else
-		g_sound_script_input_devices->Resize(0);
-	return (g_soundsystem_last_error = ma_context_enumerate_devices(&g_sound_context, ma_device_enum_callback, nullptr)) == MA_SUCCESS;
+	audio_device_lists lists;
+	lists.input_names = CScriptArray::Create(get_array_type("array<string>"));
+	lists.output_names = CScriptArray::Create(get_array_type("array<string>"));
+	ma_result result = ma_context_enumerate_devices(&g_sound_context, ma_device_enum_callback, &lists);
+	if (result == MA_SUCCESS) { // Otherwise the lists taken before stay.
+		std::lock_guard<std::mutex> lock(g_devices_mutex);
+		g_sound_input_devices.swap(lists.inputs);
+		g_sound_output_devices.swap(lists.outputs);
+		std::swap(g_sound_script_input_devices, lists.input_names);
+		std::swap(g_sound_script_output_devices, lists.output_names);
+	}
+	// The arrays not kept, after the lock: those taken before, which scripts may still hold, or these new ones.
+	if (lists.input_names) lists.input_names->Release();
+	if (lists.output_names) lists.output_names->Release();
+	g_soundsystem_last_error = result;
+	return result == MA_SUCCESS;
+}
+// Copies the id of the device at index in its list, for opening it; false for an index the list doesn't have.
+static bool audio_device_id(ma_device_type type, int index, ma_device_id &id) {
+	std::lock_guard<std::mutex> lock(g_devices_mutex);
+	const vector<ma_device_info> &list = type == ma_device_type_capture? g_sound_input_devices : g_sound_output_devices;
+	if (index < 0 || index >= int(list.size())) return false;
+	id = list[index].id;
+	return true;
+}
+// The index of an open device in its list, or -1. A device that isn't there, as one plugged in after the lists were taken, has them taken anew once; one still missing then isn't looked for anew until another device goes missing.
+static int audio_device_index(ma_device_type type, const ma_device_id &id) {
+	static ma_device_id unlisted[2];
+	static bool has_unlisted[2] = {false, false};
+	const int t = type == ma_device_type_capture? 1 : 0;
+	for (int attempt = 0;; attempt++) {
+		{
+			std::lock_guard<std::mutex> lock(g_devices_mutex);
+			const vector<ma_device_info> &list = t? g_sound_input_devices : g_sound_output_devices;
+			for (std::size_t i = 0; i < list.size(); i++) {
+				if (ma_device_id_equal(&list[i].id, &id)) return int(i);
+			}
+			if (attempt > 0) {
+				unlisted[t] = id;
+				has_unlisted[t] = true;
+				return -1;
+			}
+			if (has_unlisted[t] && ma_device_id_equal(&unlisted[t], &id)) return -1;
+		}
+		if (!refresh_audio_devices()) return -1;
+	}
 }
 // Better to return an empty array instead of null for now. A single one, as the script adds its own reference to what these return, so a new array each time was never let go.
 static CScriptArray *empty_device_list() {
 	static CScriptArray *empty = CScriptArray::Create(get_array_type("array<string>"));
 	return empty;
 }
+// Each with a reference of the caller's own, taken under the lock, as a list taken anew on another thread lets go of the one before.
 CScriptArray *get_sound_input_devices() {
-	if (!init_sound_context())
+	if (!refresh_audio_devices() && !g_sound_script_input_devices) {
+		empty_device_list()->AddRef();
 		return empty_device_list();
+	}
+	std::lock_guard<std::mutex> lock(g_devices_mutex);
+	g_sound_script_input_devices->AddRef();
 	return g_sound_script_input_devices;
 }
 CScriptArray *get_sound_output_devices() {
-	if (!init_sound_context())
+	if (!refresh_audio_devices() && !g_sound_script_output_devices) {
+		empty_device_list()->AddRef();
 		return empty_device_list();
+	}
+	std::lock_guard<std::mutex> lock(g_devices_mutex);
+	g_sound_script_output_devices->AddRef();
 	return g_sound_script_output_devices;
 }
 
@@ -563,28 +614,25 @@ public:
 		// A device that set_device couldn't open again is left uninitialized, and asking miniaudio about it would reach its backend.
 		if (!dev || ma_device_get_state(dev) == ma_device_state_uninitialized || ma_device_get_info(dev, ma_device_type_playback, &info) != MA_SUCCESS)
 			return -1;
-		for (std::size_t i = 0; i < g_sound_output_devices.size(); i++) {
-			if (memcmp(&g_sound_output_devices[i].id, &info.id, sizeof(ma_device_id)) == 0)
-				return i;
-		}
-		return -1; // couldn't determine device?
+		return audio_device_index(ma_device_type_playback, info.id);
 	}
 	bool set_device(int device) override {
 		if (processing == this || !engine || flags & NO_DEVICE) { // Closing the device from its own thread would wait for that thread, see release().
 			g_soundsystem_last_error = MA_INVALID_OPERATION;
 			return false;
 		}
-		if (device < -1 || device >= int(g_sound_output_devices.size())) {
+		ma_device_id requested_id; // Copied: the list can be taken anew while the device opens.
+		if (device < -1 || device > -1 && !audio_device_id(ma_device_type_playback, device, requested_id)) {
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
 		ma_device *old_dev = ma_engine_get_device(&*engine);
 		bool old_open = old_dev && ma_device_get_state(old_dev) != ma_device_state_uninitialized;
-		if (!old_dev || old_open && device > -1 && ma_device_id_equal(&old_dev->playback.id, &g_sound_output_devices[device].id)) return false;
+		if (!old_dev || old_open && device > -1 && ma_device_id_equal(&old_dev->playback.id, &requested_id)) return false;
 		ma_engine_stop(&*engine);
 		// As the constructor opens the device, with the engine's own format, which stays the same whichever device it is on and is still known after a device couldn't be opened.
 		ma_device_config cfg = ma_device_config_init(ma_device_type_playback);
-		if (device > -1) cfg.playback.pDeviceID = &g_sound_output_devices[device].id;
+		if (device > -1) cfg.playback.pDeviceID = &requested_id;
 		cfg.playback.channels = ma_engine_get_channels(&*engine);
 		cfg.playback.format = ma_format_f32;
 		cfg.sampleRate = ma_engine_get_sample_rate(&*engine);
@@ -2847,14 +2895,16 @@ public:
 
 class microphone_impl : public audio_ring_buffer_impl, public virtual microphone {
 	unique_ptr<ma_device> capture_device;
-	int device_index;
+	bool follows_default = true; // Opened as the system's default, which reads as -1, rather than as a device of the list.
+	ma_device_id device_id{}; // The device of the list it was opened as, whose index is looked up in the list as it is now.
 	static void capture_data_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount) {
 		microphone_impl* node = (microphone_impl*)pDevice->pUserData;
 		if (node && pInput && frameCount > 0) node->write((float*)pInput, frameCount);
 	}
 public:
 	// An index out of range opens the default device, as -1 does, and reads as -1 then.
-	microphone_impl(audio_engine* e, int device) : audio_ring_buffer_impl(e->get_channels(), 8192, e), capture_device(make_unique<ma_device>()), device_index(device >= 0 && device < int(g_sound_input_devices.size())? device : -1) {
+	microphone_impl(audio_engine* e, int device) : audio_ring_buffer_impl(e->get_channels(), 8192, e), capture_device(make_unique<ma_device>()) {
+		follows_default = !(device >= 0 && audio_device_id(ma_device_type_capture, device, device_id));
 		ma_device_config device_config = ma_device_config_init(ma_device_type_capture);
 		device_config.capture.format = ma_format_f32;
 		device_config.capture.channels = e->get_channels();
@@ -2862,7 +2912,7 @@ public:
 		device_config.dataCallback = capture_data_callback;
 		device_config.pUserData = this;
 		device_config.periodSizeInFrames = SOUNDSYSTEM_FRAMESIZE * 2;
-		device_config.capture.pDeviceID = device_index >= 0? &g_sound_input_devices[device_index].id : nullptr;
+		device_config.capture.pDeviceID = follows_default? nullptr : &device_id;
 		if ((g_soundsystem_last_error = ma_device_init(&g_sound_context, &device_config, &*capture_device)) != MA_SUCCESS) throw std::runtime_error("failed to initialize capture device");
 		if ((g_soundsystem_last_error = ma_device_start(&*capture_device)) != MA_SUCCESS) audio_node_impl::set_state(ma_node_state_stopped);
 	}
@@ -2870,11 +2920,12 @@ public:
 		if (capture_device) uninit_device(&*capture_device);
 	}
 	bool set_device(int device) override {
-		if (device == device_index && capture_device) return true; // Without a device open, as after one failed to, it is opened anew.
-		if (device < -1 || device >= int(g_sound_input_devices.size())) {
+		ma_device_id requested_id; // Copied: the list can be taken anew while the device opens.
+		if (device < -1 || device > -1 && !audio_device_id(ma_device_type_capture, device, requested_id)) {
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
+		if (capture_device && (device == -1? follows_default : !follows_default && ma_device_id_equal(&requested_id, &device_id))) return true; // Without a device open, as after one failed to, it is opened anew.
 		if (capture_device) {
 			ma_device_stop(&*capture_device);
 			uninit_device(&*capture_device);
@@ -2886,23 +2937,24 @@ public:
 		device_config.dataCallback = capture_data_callback;
 		device_config.pUserData = this;
 		device_config.periodSizeInFrames = SOUNDSYSTEM_FRAMESIZE * 2; // As the constructor opens it.
-		device_config.capture.pDeviceID = (device >= 0 && device < int(g_sound_input_devices.size())) ? &g_sound_input_devices[device].id : nullptr;
+		device_config.capture.pDeviceID = device > -1? &requested_id : nullptr;
 		capture_device = make_unique<ma_device>();
 		if ((g_soundsystem_last_error = ma_device_init(&g_sound_context, &device_config, &*capture_device)) != MA_SUCCESS) {
 			capture_device.reset();
 			return false;
 		}
-		device_index = device;
+		follows_default = device == -1;
+		if (!follows_default) device_id = requested_id;
 		if ((g_soundsystem_last_error = ma_device_start(&*capture_device)) != MA_SUCCESS) {
 			audio_node_impl::set_state(ma_node_state_stopped);
-			device_index = -1;
+			follows_default = true;
 			uninit_device(&*capture_device);
 			capture_device.reset();
 			return false;
 		}
 		return true;
 	}
-	int get_device() const override { return device_index; }
+	int get_device() const override { return follows_default? -1 : audio_device_index(ma_device_type_capture, device_id); }
 	bool set_state(ma_node_state state) override {
 		// A microphone started again drops what it recorded before it stopped, through its reader (see pcm_queue), before its node is read again; one already recording keeps its queue.
 		if (capture_device && state == ma_node_state_started && !ma_device_is_started(&*capture_device)) discard_queued();
@@ -3705,8 +3757,8 @@ void RegisterSoundsystem(asIScriptEngine *engine) {
 	engine->RegisterObjectMethod("sound", "uint64 get_length_in_milliseconds() const property", asFUNCTION((virtual_call < sound, &sound::get_length_in_milliseconds, unsigned long long >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("sound", "bool get_data_format(audio_format&out format, uint32&out channels, uint32&out sample_rate)", asFUNCTION((virtual_call < sound, &sound::get_data_format, bool, ma_format *, unsigned int *, unsigned int * >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("sound", "double get_pitch_lower_limit() const property", asFUNCTION((virtual_call < sound, &sound::get_pitch_lower_limit, double >)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterGlobalFunction("const string[]@+ get_sound_input_devices() property", asFUNCTION(get_sound_input_devices), asCALL_CDECL);
-	engine->RegisterGlobalFunction("const string[]@+ get_sound_output_devices() property", asFUNCTION(get_sound_output_devices), asCALL_CDECL);
+	engine->RegisterGlobalFunction("const string[]@ get_sound_input_devices() property", asFUNCTION(get_sound_input_devices), asCALL_CDECL);
+	engine->RegisterGlobalFunction("const string[]@ get_sound_output_devices() property", asFUNCTION(get_sound_output_devices), asCALL_CDECL);
 	engine->RegisterGlobalFunction("int get_sound_output_device() property", asFUNCTION(get_sound_output_device), asCALL_CDECL);
 	engine->RegisterGlobalProperty("mixer@ sound_default_mixer", (void*)&g_audio_mixer);
 	engine->RegisterGlobalFunction("void set_sound_output_device(int device) property", asFUNCTION(set_sound_output_device), asCALL_CDECL);
