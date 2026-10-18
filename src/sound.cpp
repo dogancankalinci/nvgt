@@ -741,13 +741,53 @@ class audio_data_source_impl : public audio_node_impl, public virtual audio_data
 	audio_data_source* src_cur;
 	audio_data_source* src_next;
 protected:
-	std::atomic<int> users{0}; // Sounds playing this source and sources chaining to it, which read its MiniAudio data source directly, so close() and open() mustn't free it under them.
+	std::atomic<int> users{0}; // Sounds playing this source, sources chaining to it and heads on it (see hold_current()), which read its MiniAudio data source directly, so close() and open() mustn't free it under them.
 	std::atomic<bool> sound_owned{false}; // The source of a sound, wrapped for sound.datasource, which that sound plays at any time and frees when it closes.
-	// A sound playing this source or a chain including it reads it on the audio thread or through that chain, and MiniAudio's data sources can't be read, sought or relinked from two places at once; a sound's own source can be played at any time. Calls that do so are refused then.
+	audio_data_source* held_current = nullptr; // Under held_mutex, see hold_current().
+	std::mutex held_mutex;
+	// A sound playing this source, a chain including it or a head on it reads it on the audio thread or through that chain, and MiniAudio's data sources can't be read, sought or relinked from two places at once; a sound's own source can be played at any time. Calls that do so are refused then.
 	bool in_use() const {
 		if (!users && !sound_owned) return false;
 		g_soundsystem_last_error = MA_INVALID_OPERATION;
 		return true;
+	}
+	// Lets go of a reference this object held to a source it used, after handing the source to any head now on it.
+	static void let_go(audio_data_source* source) {
+		remove_user(source);
+		hand_over_to_heads(source);
+		source->release();
+	}
+	// A head reading through a chain moves its MiniAudio current source along the chain, which no link holds once it is let go of. Any head now on the source being let go of takes a reference to it, so it reads on to that source's end rather than reading freed memory, and the source can't be closed meanwhile.
+	static void hand_over_to_heads(audio_data_source* source) {
+		ma_data_source *target = source->get_ma_data_source();
+		if (!target) return;
+		std::vector<audio_data_source_impl*> heads;
+		{
+			std::lock_guard<std::mutex> lock(g_data_sources_map_mutex);
+			for (auto &entry : g_data_sources_map) {
+				if (entry.second == source || ma_data_source_get_current(entry.first) != target) continue;
+				if (auto head = dynamic_cast<audio_data_source_impl*>(entry.second)) {
+					head->duplicate();
+					heads.push_back(head);
+				}
+			}
+		}
+		for (audio_data_source_impl *head : heads) {
+			head->hold_current(source);
+			head->release();
+		}
+	}
+	void hold_current(audio_data_source* source) {
+		audio_data_source *previous;
+		{
+			std::lock_guard<std::mutex> lock(held_mutex);
+			if (held_current == source) return;
+			source->duplicate();
+			add_user(source);
+			previous = held_current;
+			held_current = source;
+		}
+		if (previous) let_go(previous); // Not under held_mutex: letting go can free that source, whose own links are then handed over.
 	}
 	// One script thread may be reading from or closing this object while another opens it (a shared decoder handle, or a wrapper destroyed by its owner mid-read). The members below are unique_ptrs that get reset on close, so those paths must not interleave. Recursive because open() re-enters close(), and set_ma_data_source() re-enters reset().
 	mutable std::recursive_mutex source_mutex;
@@ -785,15 +825,16 @@ protected:
 			node = nullptr;
 			src.reset();
 		}
-		if (src_cur) {
-			remove_user(src_cur);
-			src_cur->release();
-		}
-		if (src_next) {
-			remove_user(src_next);
-			src_next->release();
-		}
+		if (src_cur) let_go(src_cur);
+		if (src_next) let_go(src_next);
 		src_cur = src_next = nullptr;
+		audio_data_source *held;
+		{
+			std::lock_guard<std::mutex> lock(held_mutex);
+			held = held_current;
+			held_current = nullptr;
+		}
+		if (held) let_go(held);
 	}
 public:
 	audio_data_source_impl(audio_engine* e, ma_data_source* initial_src = nullptr) : audio_node_impl(nullptr, e), src_cur(nullptr), src_next(nullptr), src(nullptr) { if (initial_src) set_ma_data_source(initial_src); }
@@ -904,10 +945,7 @@ public:
 			return false;
 		}
 		if ((g_soundsystem_last_error = ma_data_source_set_current(src->pDataSource, new_current? new_current->get_ma_data_source() : nullptr)) != MA_SUCCESS) return false;
-		if (src_cur) {
-			remove_user(src_cur);
-			src_cur->release();
-		}
+		if (src_cur) let_go(src_cur);
 		src_cur = new_current;
 		if (src_cur) {
 			src_cur->duplicate();
@@ -915,13 +953,8 @@ public:
 		}
 		return true;
 	}
-	audio_data_source* get_current() const override {
-		if (src_cur) {
-			src_cur->duplicate();
-			return src_cur;
-		}
-		return src? audio_data_source_get(ma_data_source_get_current(src->pDataSource), get_engine()) : nullptr;
-	}
+	// The source MiniAudio is on, which reading moves along the chain past one set_current() gave.
+	audio_data_source* get_current() const override { return src? audio_data_source_get(ma_data_source_get_current(src->pDataSource), get_engine()) : nullptr; }
 	bool set_next(audio_data_source* new_next) override {
 		if (!src || in_use()) return false;
 		if (new_next && (!can_chain(new_next) || is_sound_owned(new_next))) {
@@ -929,10 +962,7 @@ public:
 			return false;
 		}
 		if ((g_soundsystem_last_error = ma_data_source_set_next(src->pDataSource, new_next? new_next->get_ma_data_source() : nullptr)) != MA_SUCCESS) return false;
-		if (src_next) {
-			remove_user(src_next);
-			src_next->release();
-		}
+		if (src_next) let_go(src_next);
 		src_next = new_next;
 		if (src_next) {
 			src_next->duplicate();
