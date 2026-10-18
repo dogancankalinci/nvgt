@@ -872,8 +872,20 @@ public:
 	void get_range(unsigned long long* start_frame, unsigned long long* end_frame) const override { if (src) ma_data_source_get_range_in_pcm_frames(src->pDataSource, start_frame, end_frame); }
 	bool set_loop_point(unsigned long long start_frame, unsigned long long end_frame) override { return src? (g_soundsystem_last_error = ma_data_source_set_loop_point_in_pcm_frames(src->pDataSource, start_frame, end_frame)) == MA_SUCCESS : false; }
 	void get_loop_point(unsigned long long* start_frame, unsigned long long* end_frame) const override { if (src) ma_data_source_get_loop_point_in_pcm_frames(src->pDataSource, start_frame, end_frame); }
+	// A source chained to this one is read into buffers sized for this one's format and channel count, by the audio thread and by read(), and is played at this one's sample rate, so it must match in all three.
+	bool can_chain(audio_data_source* other) const {
+		ma_data_source *theirs = other->get_ma_data_source();
+		ma_format format, their_format;
+		ma_uint32 channels, their_channels, sample_rate, their_sample_rate;
+		if (!theirs || ma_data_source_get_data_format(src->pDataSource, &format, &channels, &sample_rate, nullptr, 0) != MA_SUCCESS || ma_data_source_get_data_format(theirs, &their_format, &their_channels, &their_sample_rate, nullptr, 0) != MA_SUCCESS) return false;
+		return format == their_format && channels == their_channels && sample_rate == their_sample_rate;
+	}
 	bool set_current(audio_data_source* new_current) override {
 		if (!src) return false;
+		if (new_current && !can_chain(new_current)) {
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return false;
+		}
 		if ((g_soundsystem_last_error = ma_data_source_set_current(src->pDataSource, new_current? new_current->get_ma_data_source() : nullptr)) != MA_SUCCESS) return false;
 		if (src_cur) {
 			remove_user(src_cur);
@@ -895,6 +907,10 @@ public:
 	}
 	bool set_next(audio_data_source* new_next) override {
 		if (!src) return false;
+		if (new_next && !can_chain(new_next)) {
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return false;
+		}
 		if ((g_soundsystem_last_error = ma_data_source_set_next(src->pDataSource, new_next? new_next->get_ma_data_source() : nullptr)) != MA_SUCCESS) return false;
 		if (src_next) {
 			remove_user(src_next);
