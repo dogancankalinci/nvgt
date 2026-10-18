@@ -1909,6 +1909,42 @@ class sound_impl final : public mixer_impl, public virtual sound {
 		}
 	};
 	async_load_state *load_state; // Of the current load while it is asynchronous, else null.
+	// MiniAudio's job threads keep touching a resource manager buffer after reporting it done: the job that loaded it, the one that decoded the last page of its node and the one that frees a buffer whose load failed each count themselves finished in the object after signalling. Freeing the sound in between had that count written to freed memory. These read and write those fields as MiniAudio's jobs do, atomically.
+	static ma_uint32 load_job_field(const ma_uint32 *field) {
+		#ifdef _MSC_VER
+		return (ma_uint32)_InterlockedCompareExchange((volatile long *)field, 0, 0);
+		#else
+		return __atomic_load_n(field, __ATOMIC_SEQ_CST);
+		#endif
+	}
+	static void store_job_field(ma_result *field, ma_result value) {
+		#ifdef _MSC_VER
+		_InterlockedExchange((volatile long *)field, value);
+		#else
+		__atomic_store_n(field, value, __ATOMIC_SEQ_CST);
+		#endif
+	}
+	// Each job takes a number from the counter when posted and advances the pointer when it is done, so they match once none is left.
+	static void wait_for_jobs(const ma_uint32 *counter, const ma_uint32 *pointer) {
+		while (load_job_field(pointer) != load_job_field(counter)) std::this_thread::yield();
+	}
+	// Called once the load is done, before the sound is freed. Returns the sound's buffer if its load failed: such a buffer is freed through a job that counts itself finished after the sound frees it, so the caller frees it on this thread instead, as that job would, with free_failed_buffer().
+	ma_resource_manager_data_buffer *finish_load_jobs() {
+		if (!snd->pResourceManagerDataSource || (snd->pResourceManagerDataSource->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM)) return nullptr; // A stream is freed through a job ordered after its others, which signals last.
+		ma_resource_manager_data_buffer *buffer = &snd->pResourceManagerDataSource->backend.buffer;
+		wait_for_jobs(&buffer->executionCounter, &buffer->executionPointer);
+		if (ma_resource_manager_data_buffer_node *node = buffer->pNode) {
+			// The buffer's load is done once the node is decoded, unless the buffer failed first; the node's decoding then ends on its own.
+			while ((ma_result)load_job_field((const ma_uint32 *)&node->result) == MA_BUSY) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			wait_for_jobs(&node->executionCounter, &node->executionPointer);
+		}
+		return ma_resource_manager_data_buffer_result(buffer) == MA_SUCCESS? nullptr : buffer;
+	}
+	// With the node graph locked. Taking the sound off the graph waits for the audio thread to stop reading it, so nothing reads the failed buffer once it is marked loaded, which makes ma_sound_uninit() free it at once.
+	void free_failed_buffer(ma_resource_manager_data_buffer *buffer) {
+		ma_node_detach_all_output_buses(&*snd);
+		store_job_field(&buffer->result, MA_SUCCESS);
+	}
 	std::string pcm_buffer;      // When loading from raw PCM (like TTS) we store the intermediate wav data here so we can take advantage of async loading to return quickly. Makes a substantial difference in the responsiveness of TTS calls.
 	std::string loaded_filename; // Contains the loaded filename as passed in the load/stream method, used just for convenience.
 	mutable std::atomic_flag load_completed;
@@ -2171,7 +2207,12 @@ public:
 		if (datasource && !datasource_opened) {
 			if (auto impl = dynamic_cast<audio_data_source_impl*>(datasource)) impl->forget_source();
 		}
-		{ std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); ma_sound_uninit(&*snd); }
+		ma_resource_manager_data_buffer *failed_buffer = finish_load_jobs();
+		{
+			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex);
+			if (failed_buffer) free_failed_buffer(failed_buffer);
+			ma_sound_uninit(&*snd);
+		}
 		snd.reset();
 		if (datasource) {
 			if (datasource_opened) audio_data_source_impl::remove_user(datasource);
