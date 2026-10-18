@@ -73,14 +73,14 @@ class audio_node_chain_impl : public passthrough_node_impl, public virtual audio
 	audio_node* endpoint;
 	unsigned int endpoint_input_bus_index;
 public:
-	audio_node_chain_impl(audio_node* source, audio_node* endpoint, audio_engine* e) : passthrough_node_impl(e), endpoint(endpoint) {
+	audio_node_chain_impl(audio_node* source, audio_node* endpoint, audio_engine* e) : passthrough_node_impl(e), endpoint(nullptr) {
 		if (source) source->attach_output_bus(0, this, 0);
 		if (endpoint) attach_output_bus(0, endpoint, 0);
 	}
 	~audio_node_chain_impl() {
 		// We only release references, all attachments are kept in tact. Call clear(true) to detach all known nodes instead.
-		// endpoint is not released here: whichever node is physically wired to it (this, if the chain was empty, or the last node otherwise) owns that reference via audio_node_impl's own attach/detach bookkeeping.
 		for (audio_node* node: nodes) node->release();
+		if (endpoint) endpoint->release();
 	}
 	bool attach_output_bus(unsigned int bus_index, audio_node* node, unsigned int input_bus_index) override {
 		set_endpoint(node, input_bus_index);
@@ -146,18 +146,23 @@ public:
 		nodes.clear();
 		return success;
 	}
+	// The chain holds a reference of its own to the endpoint. The attachment to it, whichever node it is from, holds another, but every insert, removal or clear rewires that attachment, which let go of the endpoint's only reference before the endpoint was attached to again, and a script can detach a node of the chain through the audio_node API.
 	void set_endpoint(audio_node* node, unsigned int input_bus_index) override {
 		std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); // detach-then-attach must be one graph mutation, not two that another thread can interleave
-		// Ownership of endpoint is not tracked here; it is taken/released automatically by whichever node's attach_output_bus/detach_output_bus is actually called below (audio_node_impl's own bookkeeping).
-		if (endpoint) {
+		audio_node *old = endpoint;
+		if (old) {
 			if (!nodes.empty()) last()->detach_output_bus(0);
 			else audio_node_impl::detach_output_bus(0);
 		}
-		endpoint = node;
-		if (endpoint) {
-			bool attached = !nodes.empty()? last()->attach_output_bus(0, endpoint, input_bus_index) : audio_node_impl::attach_output_bus(0, endpoint, input_bus_index);
-			if (!attached) endpoint = nullptr; // Nothing took a reference to it then, so it isn't kept, and get_endpoint() tells the attach failed.
+		endpoint = nullptr;
+		if (node) {
+			bool attached = !nodes.empty()? last()->attach_output_bus(0, node, input_bus_index) : audio_node_impl::attach_output_bus(0, node, input_bus_index);
+			if (attached) { // Otherwise it isn't kept, and get_endpoint() tells the attach failed.
+				endpoint = node;
+				endpoint->duplicate();
+			}
 		}
+		if (old) old->release(); // Last, as it can be the node just attached again.
 	}
 	audio_node* get_endpoint() const override { return endpoint; }
 	audio_node* first() const override {
