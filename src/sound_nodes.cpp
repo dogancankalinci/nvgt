@@ -128,7 +128,7 @@ public:
 	}
 	bool add_node_at(audio_node* node, int after, unsigned int input_bus_index) override {
 		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
-		if (after < -1 || after >= nodes.size()) return false;
+		if (after < -1 || after >= int(nodes.size())) return false;
 		audio_node* insert_after = after > -1? nodes[after] : nullptr;
 		return add_node(node, insert_after, input_bus_index);
 	}
