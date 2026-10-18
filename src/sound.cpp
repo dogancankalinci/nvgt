@@ -2572,7 +2572,8 @@ class microphone_impl : public audio_ring_buffer_impl, public virtual microphone
 		if (node && pInput && frameCount > 0) node->write((float*)pInput, frameCount);
 	}
 public:
-	microphone_impl(audio_engine* e, int device) : audio_ring_buffer_impl(e->get_channels(), 8192, e), capture_device(make_unique<ma_device>()), device_index(device) {
+	// An index out of range opens the default device, as -1 does, and reads as -1 then.
+	microphone_impl(audio_engine* e, int device) : audio_ring_buffer_impl(e->get_channels(), 8192, e), capture_device(make_unique<ma_device>()), device_index(device >= 0 && device < int(g_sound_input_devices.size())? device : -1) {
 		ma_device_config device_config = ma_device_config_init(ma_device_type_capture);
 		device_config.capture.format = ma_format_f32;
 		device_config.capture.channels = e->get_channels();
@@ -2580,7 +2581,7 @@ public:
 		device_config.dataCallback = capture_data_callback;
 		device_config.pUserData = this;
 		device_config.periodSizeInFrames = SOUNDSYSTEM_FRAMESIZE * 2;
-		device_config.capture.pDeviceID = (device >= 0 && device < g_sound_input_devices.size()) ? &g_sound_input_devices[device_index].id : nullptr;
+		device_config.capture.pDeviceID = device_index >= 0? &g_sound_input_devices[device_index].id : nullptr;
 		if ((g_soundsystem_last_error = ma_device_init(&g_sound_context, &device_config, &*capture_device)) != MA_SUCCESS) throw std::runtime_error("failed to initialize capture device");
 		if ((g_soundsystem_last_error = ma_device_start(&*capture_device)) != MA_SUCCESS) audio_node_impl::set_state(ma_node_state_stopped);
 	}
@@ -2603,6 +2604,7 @@ public:
 		device_config.sampleRate = get_engine()->get_sample_rate();
 		device_config.dataCallback = capture_data_callback;
 		device_config.pUserData = this;
+		device_config.periodSizeInFrames = SOUNDSYSTEM_FRAMESIZE * 2; // As the constructor opens it.
 		device_config.capture.pDeviceID = (device >= 0 && device < int(g_sound_input_devices.size())) ? &g_sound_input_devices[device].id : nullptr;
 		capture_device = make_unique<ma_device>();
 		if ((g_soundsystem_last_error = ma_device_init(&g_sound_context, &device_config, &*capture_device)) != MA_SUCCESS) {
