@@ -919,7 +919,8 @@ public:
 	void set_panner(spatializer_component_node* new_panner) override {
 		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		if (panner) {
-			remove_node(panner);
+			remove_node(panner); // Which takes it off the graph and waits for the audio thread, so it can lose its pointer back here: a replaced component the script kept passes audio through.
+			panner->forget_spatializer();
 			panner->release();
 		}
 		panner = new_panner;
@@ -932,6 +933,7 @@ public:
 		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		if (attenuator) {
 			remove_node(attenuator);
+			attenuator->forget_spatializer();
 			attenuator->release();
 		}
 		attenuator = new_attenuator;
