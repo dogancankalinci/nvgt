@@ -123,6 +123,10 @@ public:
 		audio_node* next = (*it) != nodes.back()? *(it + 1) : endpoint;
 		if (prev && next && !prev->attach_output_bus(0, next, 0)) return false;
 		else if (!prev && next && !audio_node_impl::attach_output_bus(0, next, 0)) return false;
+		else if (!next) { // The last node of a chain without an endpoint: what fed it no longer leads anywhere, nor holds it.
+			if (prev) prev->detach_output_bus(0);
+			else audio_node_impl::detach_output_bus(0);
+		}
 		nodes.erase(it);
 		bool success = node->detach_output_bus(0);
 		node->release();
