@@ -125,20 +125,26 @@ class sound_service_impl : public sound_service {
 	filter_array filters;
 	filter_registration default_filter; // Always access with atomic operations!
 	sound_service_vfs vfs;
-	typedef std::unordered_map<std::string, vfs_args> temp_args_t;
+	// Each load that prepares a triplet cleans it up once; several loading the same file at once share one entry, which only the last cleanup removes, so it isn't gone while another of them still opens the file.
+	struct temp_args_entry {
+		vfs_args args;
+		int users;
+	};
+	typedef std::unordered_map<std::string, temp_args_entry> temp_args_t;
 	temp_args_t temp_args;
 	std::mutex temp_args_mtx;
 	bool set_temp_args(const std::string &triplet, const vfs_args &args) {
 		std::unique_lock<std::mutex> lock(temp_args_mtx);
-
-		return temp_args.try_emplace(triplet, args).second;
+		auto added = temp_args.try_emplace(triplet, temp_args_entry{args, 0});
+		added.first->second.users++;
+		return added.second;
 	}
 	bool get_temp_args(const std::string &triplet, vfs_args &dest) {
 		std::unique_lock<std::mutex> lock(temp_args_mtx);
 		temp_args_t::iterator i = temp_args.find(triplet);
 		if (i == temp_args.end())
 			return false;
-		dest = i->second;
+		dest = i->second.args;
 		return true;
 	}
 public:
@@ -281,7 +287,7 @@ public:
 		temp_args_t::iterator i = temp_args.find(triplet);
 		if (i == temp_args.end())
 			return false;
-		temp_args.erase(i);
+		if (--i->second.users <= 0) temp_args.erase(i);
 		return true;
 	}
 	std::istream *apply_filter(std::istream *source, size_t filter_slot = 0, const directive_t filter_directive = nullptr) {
