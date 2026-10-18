@@ -2218,7 +2218,7 @@ public:
 	}
 	bool open(audio_data_source* ds) override {
 		if (!ds) return false;
-		if (!ds->get_active()) {
+		if (!ds->get_active() || ds == datasource && !datasource_opened) { // This sound's own source, which closing this sound to open it frees.
 			ds->release();
 			return false;
 		}
