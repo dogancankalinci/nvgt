@@ -980,7 +980,8 @@ public:
 	}
 	bool set_current(audio_data_source* new_current) override {
 		if (!src || in_use()) return false;
-		if (new_current && new_current != src_cur && new_current != held_current && (!can_chain(new_current) || is_sound_owned(new_current) || is_used(new_current))) { // A sound frees its own source when it closes, whatever else reads it, and one already read elsewhere would be read from two places.
+		bool self = new_current == static_cast<audio_data_source*>(this); // Back to this head, as a chain is rewound in MiniAudio. Nothing needs holding for that, and a reference to itself would keep this alive and in use for good.
+		if (new_current && !self && new_current != src_cur && new_current != held_current && (!can_chain(new_current) || is_sound_owned(new_current) || is_used(new_current))) { // A sound frees its own source when it closes, whatever else reads it, and one already read elsewhere would be read from two places.
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
@@ -993,7 +994,7 @@ public:
 			held_current = nullptr;
 		}
 		if (held) let_go(held);
-		src_cur = new_current;
+		src_cur = self? nullptr : new_current;
 		if (src_cur) {
 			src_cur->duplicate();
 			add_user(src_cur);
@@ -1004,13 +1005,14 @@ public:
 	audio_data_source* get_current() const override { return src? audio_data_source_get(ma_data_source_get_current(src->pDataSource), get_engine()) : nullptr; }
 	bool set_next(audio_data_source* new_next) override {
 		if (!src || in_use()) return false;
-		if (new_next && new_next != src_next && new_next != held_current && (!can_chain(new_next) || is_sound_owned(new_next) || is_used(new_next))) {
+		bool self = new_next == static_cast<audio_data_source*>(this); // Looping this source on itself; as for set_current(), without a reference to itself.
+		if (new_next && !self && new_next != src_next && new_next != held_current && (!can_chain(new_next) || is_sound_owned(new_next) || is_used(new_next))) {
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
 		if ((g_soundsystem_last_error = ma_data_source_set_next(src->pDataSource, new_next? new_next->get_ma_data_source() : nullptr)) != MA_SUCCESS) return false;
 		if (src_next) let_go(src_next);
-		src_next = new_next;
+		src_next = self? nullptr : new_next;
 		if (src_next) {
 			src_next->duplicate();
 			add_user(src_next);
