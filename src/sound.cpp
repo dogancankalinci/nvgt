@@ -742,6 +742,7 @@ class audio_data_source_impl : public audio_node_impl, public virtual audio_data
 	audio_data_source* src_next;
 protected:
 	std::atomic<int> users{0}; // Sounds playing this source and sources chaining to it, which read its MiniAudio data source directly, so close() and open() mustn't free it under them.
+	std::atomic<bool> sound_owned{false}; // The source of a sound, wrapped for sound.datasource, which that sound plays at any time and frees when it closes.
 	// One script thread may be reading from or closing this object while another opens it (a shared decoder handle, or a wrapper destroyed by its owner mid-read). The members below are unique_ptrs that get reset on close, so those paths must not interleave. Recursive because open() re-enters close(), and set_ma_data_source() re-enters reset().
 	mutable std::recursive_mutex source_mutex;
 	bool set_ma_data_source(ma_data_source* new_src) {
@@ -799,6 +800,11 @@ public:
 	}
 	// Lets go of the MiniAudio data source wrapped, for a wrapper of a sound's own source when the sound frees it; the wrapper stays, empty.
 	void forget_source() { set_ma_data_source(nullptr); }
+	void mark_sound_owned() { sound_owned = true; }
+	static bool is_sound_owned(audio_data_source* ds) {
+		auto impl = dynamic_cast<audio_data_source_impl*>(ds);
+		return impl && impl->sound_owned;
+	}
 	ma_data_source* get_ma_data_source() const override { return src? src->pDataSource : nullptr; }
 	unsigned int get_advised_read_frame_count() const override { return SOUNDSYSTEM_FRAMESIZE; }
 	// Reads 32-bit float samples into buffer, as read_script() makes them.
@@ -887,7 +893,7 @@ public:
 	}
 	bool set_current(audio_data_source* new_current) override {
 		if (!src) return false;
-		if (new_current && !can_chain(new_current)) {
+		if (new_current && (!can_chain(new_current) || is_sound_owned(new_current))) { // A sound frees its own source when it closes, whatever else reads it.
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
@@ -912,7 +918,7 @@ public:
 	}
 	bool set_next(audio_data_source* new_next) override {
 		if (!src) return false;
-		if (new_next && !can_chain(new_next)) {
+		if (new_next && (!can_chain(new_next) || is_sound_owned(new_next))) {
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
@@ -2222,7 +2228,7 @@ public:
 	}
 	bool open(audio_data_source* ds) override {
 		if (!ds) return false;
-		if (!ds->get_active() || ds == datasource && !datasource_opened) { // This sound's own source, which closing this sound to open it frees.
+		if (!ds->get_active() || audio_data_source_impl::is_sound_owned(ds)) { // A sound's own source, which that sound frees when it closes, as this one does to open it.
 			ds->release();
 			return false;
 		}
@@ -2295,7 +2301,10 @@ public:
 	bool get_autoclose() const override { return should_autoclose; }
 	const std::string &get_loaded_filename() const override { return loaded_filename; }
 	audio_data_source* get_datasource() const override {
-		if (!datasource && snd && (datasource = audio_data_source_get(snd->pDataSource, get_engine())) == nullptr) return nullptr;
+		if (!datasource && snd) {
+			if ((datasource = audio_data_source_get(snd->pDataSource, get_engine())) == nullptr) return nullptr;
+			if (auto impl = dynamic_cast<audio_data_source_impl*>(datasource)) impl->mark_sound_owned();
+		}
 		return datasource;
 	}
 	bool get_active() override {
