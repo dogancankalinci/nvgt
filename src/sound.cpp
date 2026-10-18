@@ -1770,17 +1770,21 @@ public:
 		spatialization_params_mutex.unlock();
 		return true;
 	}
+	bool fade_from_stop = false; // The fade is one a stop with a fade set, as pause_fade() does, rather than one the script set since.
 	// Decibels to the linear volumes MiniAudio fades between, on an engine with PERCENTAGE_ATTRIBUTES; FLT_MAX starts from the current volume.
 	void fade_volumes_to_linear(float &start_volume, float &end_volume) const {
 		if (!(get_engine()->get_flags() & audio_engine::PERCENTAGE_ATTRIBUTES)) return;
 		start_volume = start_volume == FLT_MAX ? -1 : ma_volume_db_to_linear(start_volume);
 		end_volume = ma_volume_db_to_linear(end_volume);
 	}
-	// MiniAudio keeps a sound or group stopped once its scheduled stop has come, and its fade where the stop left it, until both are cleared, so starting it clears them then. With pending, a stop still to come is cleared too, as one pause_fade() scheduled.
+	// MiniAudio keeps a sound or group stopped once its scheduled stop has come, and its fade where the stop left it, until both are cleared, so starting it clears them then. With pending, a stop still to come is cleared too, as one pause_fade() scheduled. The fade is cleared only when that stop set it, so a fade the script set since, such as one to fade back in, is kept.
 	void clear_stop_for_restart(bool pending = false) {
 		ma_uint64 stop_time = ma_node_get_state_time(&*snd, ma_node_state_stopped);
 		if (stop_time == ~(ma_uint64)0) return;
-		if (pending || stop_time <= ma_engine_get_time_in_pcm_frames(ma_sound_get_engine(&*snd))) ma_sound_reset_stop_time_and_fade(&*snd);
+		if (!pending && stop_time > ma_engine_get_time_in_pcm_frames(ma_sound_get_engine(&*snd))) return;
+		ma_sound_reset_stop_time(&*snd);
+		if (fade_from_stop) ma_sound_reset_fade(&*snd);
+		fade_from_stop = false;
 	}
 	bool play(bool reset_loop_state = true) override {
 		if (snd == nullptr)
@@ -1980,12 +1984,14 @@ public:
 		if (!snd)
 			return;
 		fade_volumes_to_linear(start_volume, end_volume);
+		fade_from_stop = false;
 		ma_sound_set_fade_in_pcm_frames(&*snd, start_volume, end_volume, frames);
 	}
 	void set_fade_in_milliseconds(float start_volume, float end_volume, ma_uint64 milliseconds) override {
 		if (!snd)
 			return;
 		fade_volumes_to_linear(start_volume, end_volume);
+		fade_from_stop = false;
 		ma_sound_set_fade_in_milliseconds(&*snd, start_volume, end_volume, milliseconds);
 	}
 	float get_current_fade_volume() const override {
@@ -2392,7 +2398,7 @@ public:
 		pcm_buffer.resize(0);
 		loaded_filename.clear();
 		load_completed.clear();
-		paused = fade_paused = should_autoclose = false;
+		paused = fade_paused = fade_from_stop = should_autoclose = false;
 		return true;
 	}
 	void set_autoclose(bool enabled) override { should_autoclose = enabled; }
@@ -2451,7 +2457,7 @@ public:
 	bool pause_fade_in_frames(unsigned long long frames) override {
 		if (snd) {
 			g_soundsystem_last_error = ma_sound_stop_with_fade_in_pcm_frames(&*snd, frames);
-			if (g_soundsystem_last_error == MA_SUCCESS) paused = fade_paused = true; // As pause() does, so play() resumes it.
+			if (g_soundsystem_last_error == MA_SUCCESS) paused = fade_paused = fade_from_stop = true; // As pause() does, so play() resumes it.
 			return g_soundsystem_last_error == MA_SUCCESS;
 		}
 		return false;
@@ -2459,7 +2465,7 @@ public:
 	bool pause_fade_in_milliseconds(unsigned long long frames) override {
 		if (snd) {
 			g_soundsystem_last_error = ma_sound_stop_with_fade_in_milliseconds(&*snd, frames);
-			if (g_soundsystem_last_error == MA_SUCCESS) paused = fade_paused = true;
+			if (g_soundsystem_last_error == MA_SUCCESS) paused = fade_paused = fade_from_stop = true;
 			return g_soundsystem_last_error == MA_SUCCESS;
 		}
 		return false;
@@ -2471,23 +2477,27 @@ public:
 	void set_timed_fade_in_frames(float start_volume, float end_volume, unsigned long long frames, unsigned long long absolute_time_in_frames) override {
 		if (!snd) return;
 		fade_volumes_to_linear(start_volume, end_volume);
+		fade_from_stop = false;
 		ma_sound_set_fade_start_in_pcm_frames(&*snd, start_volume, end_volume, frames, absolute_time_in_frames);
 	}
 	void set_timed_fade_in_milliseconds(float start_volume, float end_volume, unsigned long long frames, unsigned long long absolute_time_in_frames) override {
 		if (!snd) return;
 		fade_volumes_to_linear(start_volume, end_volume);
+		fade_from_stop = false;
 		ma_sound_set_fade_start_in_milliseconds(&*snd, start_volume, end_volume, frames, absolute_time_in_frames);
 	}
 	void set_stop_time_with_fade(unsigned long long absolute_time, unsigned long long fade_length) override {
 		return (get_engine()->get_flags() & audio_engine::DURATIONS_IN_FRAMES) ? set_stop_time_with_fade_in_frames(absolute_time, fade_length) : set_stop_time_with_fade_in_milliseconds(absolute_time, fade_length);
 	}
 	void set_stop_time_with_fade_in_frames(unsigned long long absolute_time, unsigned long long fade_length) override {
-		if (snd)
-			ma_sound_set_stop_time_with_fade_in_pcm_frames(&*snd, absolute_time, fade_length);
+		if (!snd) return;
+		ma_sound_set_stop_time_with_fade_in_pcm_frames(&*snd, absolute_time, fade_length);
+		fade_from_stop = true;
 	}
 	void set_stop_time_with_fade_in_milliseconds(unsigned long long absolute_time, unsigned long long fade_length) override {
-		if (snd)
-			ma_sound_set_stop_time_with_fade_in_milliseconds(&*snd, absolute_time, fade_length);
+		if (!snd) return;
+		ma_sound_set_stop_time_with_fade_in_milliseconds(&*snd, absolute_time, fade_length);
+		fade_from_stop = true;
 	}
 	void set_looping(bool looping) override {
 		if (snd)
