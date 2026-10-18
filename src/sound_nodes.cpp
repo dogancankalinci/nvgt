@@ -146,8 +146,8 @@ public:
 		}
 		endpoint = node;
 		if (endpoint) {
-			if (!nodes.empty()) last()->attach_output_bus(0, endpoint, input_bus_index);
-			else audio_node_impl::attach_output_bus(0, endpoint, input_bus_index);
+			bool attached = !nodes.empty()? last()->attach_output_bus(0, endpoint, input_bus_index) : audio_node_impl::attach_output_bus(0, endpoint, input_bus_index);
+			if (!attached) endpoint = nullptr; // Nothing took a reference to it then, so it isn't kept, and get_endpoint() tells the attach failed.
 		}
 	}
 	audio_node* get_endpoint() const override { return endpoint; }

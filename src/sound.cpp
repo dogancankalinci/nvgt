@@ -1584,10 +1584,16 @@ public:
 		if (mix == parent_mixer)
 			return false;
 		if (mix && mix->get_engine() != get_engine()) return false; // Another engine's mixer is in that engine's graph, which would play this one's sound.
-		parent_mixer = mix; // Non-owning cache; node_chain's endpoint tracking is the sole owner of this reference.
 		audio_node *target = mix? mix : get_engine()->get_endpoint();
 		node_chain->set_endpoint(target);
-		return node_chain->get_endpoint() == target;
+		if (node_chain->get_endpoint() != target) { // It couldn't attach, as to a node without an input, so this stays where it was.
+			ma_result error = g_soundsystem_last_error;
+			node_chain->set_endpoint(parent_mixer? parent_mixer : get_engine()->get_endpoint());
+			g_soundsystem_last_error = error;
+			return false;
+		}
+		parent_mixer = mix; // Non-owning cache; node_chain's endpoint tracking is the sole owner of this reference.
+		return true;
 	}
 	mixer *get_mixer() const override { return parent_mixer; }
 	void set_3d_panner(int panner_id) override {
