@@ -45,7 +45,7 @@ A value of 3 or more means that underflow is gradual: values smaller than the mi
 ## Remarks
 The epsilon constants are useful for comparing floating point values, which rarely compare exactly equal after arithmetic. Keep in mind that they describe the precision of values near 1, so for comparing large values you should scale your tolerance accordingly.
 
-FLOAT_MAX also has a special meaning in some audio functions. The `sound_play()` function and `audio_engine::play()` method default their position argument to `vector(FLOAT_MAX, FLOAT_MAX, FLOAT_MAX)`, which means that the sound should not be positioned in 3D space at all.
+FLOAT_MAX also has a special meaning in some audio functions. The `sound_play()` function and `audio_engine::play()` method default their position argument to `vector(FLOAT_MAX, FLOAT_MAX, FLOAT_MAX)`, which means that the sound should not be positioned in 3D space at all. Their volume, pan and pitch arguments default to FLOAT_MAX in the same way, which leaves the sound at its own default for that attribute, so the defaults suit any engine whether or not it was made with `AUDIO_ENGINE_PERCENTAGE_ATTRIBUTES`.
 
 ## Example
 ```NVGT
