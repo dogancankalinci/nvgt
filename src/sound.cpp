@@ -2105,6 +2105,7 @@ class sound_impl final : public mixer_impl, public virtual sound {
 	mutable std::atomic_flag load_completed;
 	unique_ptr<ma_pcm_rb> pcm_stream;
 	bool paused;
+	bool fade_paused = false; // Paused by pause_fade(), whose stop is still scheduled, unlike one the script scheduled itself.
 	bool should_autoclose; // If this is true, the release method defers sound destruction until playback has complete.
 	mutable audio_data_source* datasource; // Avoid the need to keep looking up the pointer to the c++ ma_data_source wrapper associated with this sound.
 	bool datasource_opened = false; // datasource is one open() was given and plays, rather than a wrapper of the sound's own source.
@@ -2391,7 +2392,7 @@ public:
 		pcm_buffer.resize(0);
 		loaded_filename.clear();
 		load_completed.clear();
-		paused = should_autoclose = false;
+		paused = fade_paused = should_autoclose = false;
 		return true;
 	}
 	void set_autoclose(bool enabled) override { should_autoclose = enabled; }
@@ -2411,15 +2412,15 @@ public:
 		return snd ? !ma_sound_is_playing(&*snd) && paused : false;
 	}
 	bool play(bool reset_loop_state = true) override {
-		if (paused && snd) clear_stop_for_restart(true); // A pause_fade() still fading out is called off.
-		paused = false;
+		if (fade_paused && snd) clear_stop_for_restart(true); // A pause_fade() still fading out is called off.
+		paused = fade_paused = false;
 		if (pcm_stream) ma_pcm_rb_reset(&*pcm_stream);
 		return mixer_impl::play(reset_loop_state);
 	}
 	bool play_looped() override {
 		if (pcm_stream) return false;
-		if (paused && snd) clear_stop_for_restart(true);
-		paused = false;
+		if (fade_paused && snd) clear_stop_for_restart(true);
+		paused = fade_paused = false;
 		return mixer_impl::play_looped();
 	}
 	bool play_wait() override {
@@ -2430,7 +2431,8 @@ public:
 		return true;
 	}
 	bool stop() override {
-		paused = false;
+		if (fade_paused && snd) clear_stop_for_restart(true); // Stopped now, so the pause_fade() stop still to come would stop the sound once it plays again.
+		paused = fade_paused = false;
 		if (!mixer_impl::stop()) return false;
 		return get_length_in_frames() == 0 || seek(0); // A stream without a length, such as PCM or a URL, has no start to go back to.
 	}
@@ -2449,7 +2451,7 @@ public:
 	bool pause_fade_in_frames(unsigned long long frames) override {
 		if (snd) {
 			g_soundsystem_last_error = ma_sound_stop_with_fade_in_pcm_frames(&*snd, frames);
-			if (g_soundsystem_last_error == MA_SUCCESS) paused = true; // As pause() does, so play() resumes it.
+			if (g_soundsystem_last_error == MA_SUCCESS) paused = fade_paused = true; // As pause() does, so play() resumes it.
 			return g_soundsystem_last_error == MA_SUCCESS;
 		}
 		return false;
@@ -2457,7 +2459,7 @@ public:
 	bool pause_fade_in_milliseconds(unsigned long long frames) override {
 		if (snd) {
 			g_soundsystem_last_error = ma_sound_stop_with_fade_in_milliseconds(&*snd, frames);
-			if (g_soundsystem_last_error == MA_SUCCESS) paused = true;
+			if (g_soundsystem_last_error == MA_SUCCESS) paused = fade_paused = true;
 			return g_soundsystem_last_error == MA_SUCCESS;
 		}
 		return false;
