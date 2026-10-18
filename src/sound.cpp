@@ -1666,17 +1666,25 @@ public:
 		spatialization_params_mutex.unlock();
 		return true;
 	}
+	// MiniAudio keeps a sound or group stopped once its scheduled stop has come, and its fade where the stop left it, until both are cleared, so starting it clears them then. With pending, a stop still to come is cleared too, as one pause_fade() scheduled.
+	void clear_stop_for_restart(bool pending = false) {
+		ma_uint64 stop_time = ma_node_get_state_time(&*snd, ma_node_state_stopped);
+		if (stop_time == ~(ma_uint64)0) return;
+		if (pending || stop_time <= ma_engine_get_time_in_pcm_frames(ma_sound_get_engine(&*snd))) ma_sound_reset_stop_time_and_fade(&*snd);
+	}
 	bool play(bool reset_loop_state = true) override {
 		if (snd == nullptr)
 			return false;
 		if (reset_loop_state)
 			ma_sound_set_looping(&*snd, MA_FALSE);
+		clear_stop_for_restart();
 		return (g_soundsystem_last_error = ma_sound_start(&*snd)) == MA_SUCCESS;
 	}
 	bool play_looped() override {
 		if (snd == nullptr)
 			return false;
 		ma_sound_set_looping(&*snd, true);
+		clear_stop_for_restart();
 		return (g_soundsystem_last_error = ma_sound_start(&*snd)) == MA_SUCCESS;
 	}
 	ma_sound *get_ma_sound() const override { return &*snd; }
@@ -2285,12 +2293,14 @@ public:
 		return snd ? !ma_sound_is_playing(&*snd) && paused : false;
 	}
 	bool play(bool reset_loop_state = true) override {
+		if (paused && snd) clear_stop_for_restart(true); // A pause_fade() still fading out is called off.
 		paused = false;
 		if (pcm_stream) ma_pcm_rb_reset(&*pcm_stream);
 		return mixer_impl::play(reset_loop_state);
 	}
 	bool play_looped() override {
 		if (pcm_stream) return false;
+		if (paused && snd) clear_stop_for_restart(true);
 		paused = false;
 		return mixer_impl::play_looped();
 	}
