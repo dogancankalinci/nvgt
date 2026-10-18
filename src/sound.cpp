@@ -2210,7 +2210,8 @@ public:
 	}
 	bool stop() override {
 		paused = false;
-		return mixer_impl::stop() && seek(0);
+		if (!mixer_impl::stop()) return false;
+		return get_length_in_frames() == 0 || seek(0); // A stream without a length, such as PCM or a URL, has no start to go back to.
 	}
 	bool pause() override {
 		if (snd && !pcm_stream) {
