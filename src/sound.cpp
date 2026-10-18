@@ -1747,6 +1747,11 @@ public:
 	}
 	bool get_hrtf() const override { return get_spatializer()->get_preferred_panner_id() == g_audio_phonon_hrtf_panner && get_spatializer()->get_preferred_attenuator_id() == g_audio_phonon_attenuator; }
 	bool set_shape(CScriptHandle new_shape) override {
+		// A type no shape is made from leaves the old shape in place.
+		int ot = new_shape.GetTypeId() ^ asTYPEID_OBJHANDLE;
+		if (new_shape.GetRef() && !g_sound_shape_setup_callbacks.contains(ot)) return false;
+		// The position the script set, which the old shape holds; MiniAudio's is the one the shape moved to its edge.
+		reactphysics3d::Vector3 position = get_position_3d();
 		// release old shape, swapped out under the lock the audio thread reads the shape under, through get_spatialization_parameters().
 		sound_shape* old_shape;
 		{
@@ -1756,18 +1761,19 @@ public:
 		}
 		shape_handle = CScriptHandle();
 		if (old_shape) old_shape->release();
-		if (!new_shape.GetRef()) return true; // A null shape clears it, which is done.
-		int ot = new_shape.GetTypeId();
-		ot ^= asTYPEID_OBJHANDLE;
-		if (!g_sound_shape_setup_callbacks.contains(ot)) return false;
+		if (!new_shape.GetRef()) { // A null shape clears it, which is done, back at the position the script set.
+			if (snd && get_spatialization_enabled()) set_position_3d(position.x, position.y, position.z);
+			return true;
+		}
 		sound_shape* new_shape_obj = g_sound_shape_setup_callbacks[ot](this, &new_shape);
 		if (!new_shape_obj) return false;
-		new_shape_obj->set_position(get_position_3d());
+		new_shape_obj->set_position(position);
 		{
 			unique_lock<mutex> lock(spatialization_params_mutex);
 			shape = new_shape_obj;
 		}
 		shape_handle = new_shape;
+		if (snd && get_spatialization_enabled()) set_position_3d(position.x, position.y, position.z); // Applied now rather than at the next set_position_3d(), for a sound already placed, which set_position_3d() would otherwise make spatialized.
 		return true;
 	}
 	CScriptHandle get_shape() const override {
