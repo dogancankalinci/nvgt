@@ -2494,7 +2494,7 @@ bool sound_set_listener_position_vector(const reactphysics3d::Vector3& position,
 }
 // Encryption.
 void set_default_decryption_key(const std::string &key) {
-	if (!init_sound())
+	if (!init_sound_context())
 		return;
 	g_sound_service->set_filter_directive(g_encryption_filter_slot, std::make_shared < std::string > (key));
 	g_sound_service->set_default_filter(key.empty() ? sound_service::null_filter_slot : g_encryption_filter_slot);
@@ -2502,7 +2502,7 @@ void set_default_decryption_key(const std::string &key) {
 // Set default pack storage for future sounds. Null means go back to local file system.
 // Note: a pack must be marked immutable in order to be used with sound service.
 void set_sound_default_storage(pack_interface *obj) {
-	if (!init_sound())
+	if (!init_sound_context())
 		return;
 	if (obj == nullptr) {
 		g_sound_service->set_default_protocol(sound_service::fs_protocol_slot);
@@ -2513,7 +2513,7 @@ void set_sound_default_storage(pack_interface *obj) {
 	g_sound_service->set_default_protocol(g_pack_protocol_slot);
 }
 const pack_interface *get_sound_default_storage() {
-	if (!init_sound() || !g_sound_service->is_default_protocol(g_pack_protocol_slot))
+	if (!init_sound_context() || !g_sound_service->is_default_protocol(g_pack_protocol_slot))
 		return nullptr;
 	std::shared_ptr < const pack_interface > obj = std::static_pointer_cast < const pack_interface>(g_sound_service->get_protocol_directive(g_pack_protocol_slot));
 	if (!obj) return nullptr;
