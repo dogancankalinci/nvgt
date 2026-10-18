@@ -529,11 +529,14 @@ class reverb3d_impl : public passthrough_node_impl, public virtual reverb3d {
 public:
 	reverb3d_impl(audio_engine* e, audio_node* reverb, mixer* destination) : passthrough_node_impl(e), output_mixer(destination), reverb(reverb), min_volume(-7), max_volume(-5), max_volume_distance(7), max_audible_distance(60), volume_curve(0.4) {
 		if (output_mixer) output_mixer->duplicate(); // reverb owns its own reference to output_mixer via attach_output_bus below; this is reverb3d_impl's separate reference for get_mixer().
-		if (reverb) {
-			attach_output_bus(0, reverb, 0); // reverb is owned automatically via audio_node_impl's output_connections tracking.
-			if (output_mixer) reverb->attach_output_bus(0, output_mixer, 0);
-			else reverb->attach_output_bus(0, get_engine()->get_endpoint(), 0);
-		}
+		if (reverb) wire_reverb(reverb);
+	}
+	// Attaches this node to the reverb and the reverb to the destination, keeping the reverb only when it took this node's output: that attachment holds its reference, so a reverb it refused, such as one of another channel count, would otherwise be kept after the script let go of it.
+	void wire_reverb(audio_node* verb) {
+		reverb = nullptr;
+		if (!attach_output_bus(0, verb, 0)) return; // reverb is owned automatically via audio_node_impl's output_connections tracking.
+		reverb = verb;
+		reverb->attach_output_bus(0, output_mixer? static_cast<audio_node*>(output_mixer) : get_engine()->get_endpoint(), 0);
 	}
 	~reverb3d_impl() {
 		if (output_mixer) output_mixer->release();
@@ -543,9 +546,9 @@ public:
 			detach_output_bus(0);
 			if (output_mixer) reverb->detach_output_bus(0);
 		}
-		reverb = verb;
-		if (verb) {
-			attach_output_bus(0, verb, 0);
+		reverb = nullptr;
+		if (verb && attach_output_bus(0, verb, 0)) { // Kept only when it took this node's output, whose attachment holds its reference.
+			reverb = verb;
 			if (output_mixer) verb->attach_output_bus(0, output_mixer, 0);
 		}
 	}
