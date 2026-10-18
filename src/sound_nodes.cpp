@@ -533,6 +533,8 @@ class delay_node_impl : public audio_node_impl, public virtual delay_node {
 	unique_ptr<ma_delay_node> dn;
 	public:
 	delay_node_impl(unsigned int delay_in_frames, float decay, audio_engine* e) : dn(make_unique<ma_delay_node>()), audio_node_impl(nullptr, e) {
+		// MiniAudio takes neither a delay of 0, by which it divides while processing, nor one whose buffer size overflows 32 bits, which it then allocates too small and overruns.
+		if (delay_in_frames == 0 || uint64_t(delay_in_frames) * get_engine()->get_channels() * sizeof(float) > UINT32_MAX) throw std::invalid_argument("delay out of range");
 		ma_delay_node_config cfg = ma_delay_node_config_init(get_engine()->get_channels(), get_engine()->get_sample_rate(), delay_in_frames, decay);
 		if ((g_soundsystem_last_error = ma_delay_node_init(ma_engine_get_node_graph(get_engine()->get_ma_engine()), &cfg, nullptr, &*dn)) != MA_SUCCESS) throw std::runtime_error("ma_delay_node was not initialized");
 		node = (ma_node_base*)&*dn;
