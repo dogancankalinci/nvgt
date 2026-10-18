@@ -2475,7 +2475,7 @@ public:
 		if (capture_device) uninit_device(&*capture_device);
 	}
 	bool set_device(int device) override {
-		if (device == device_index) return true;
+		if (device == device_index && capture_device) return true; // Without a device open, as after one failed to, it is opened anew.
 		if (device < -1 || device >= int(g_sound_input_devices.size())) return false;
 		if (capture_device) {
 			ma_device_stop(&*capture_device);
