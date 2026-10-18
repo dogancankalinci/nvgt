@@ -543,14 +543,11 @@ public:
 	}
 	void set_reverb(audio_node* verb) override {
 		if (reverb) {
+			reverb->detach_output_bus(0); // From the mixer or, without one, the engine's endpoint, which the reverb was attached to alike.
 			detach_output_bus(0);
-			if (output_mixer) reverb->detach_output_bus(0);
 		}
 		reverb = nullptr;
-		if (verb && attach_output_bus(0, verb, 0)) { // Kept only when it took this node's output, whose attachment holds its reference.
-			reverb = verb;
-			if (output_mixer) verb->attach_output_bus(0, output_mixer, 0);
-		}
+		if (verb) wire_reverb(verb);
 	}
 	audio_node* get_reverb() const override { return reverb; }
 	void set_mixer(mixer* mix) override {
