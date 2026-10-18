@@ -743,6 +743,12 @@ class audio_data_source_impl : public audio_node_impl, public virtual audio_data
 protected:
 	std::atomic<int> users{0}; // Sounds playing this source and sources chaining to it, which read its MiniAudio data source directly, so close() and open() mustn't free it under them.
 	std::atomic<bool> sound_owned{false}; // The source of a sound, wrapped for sound.datasource, which that sound plays at any time and frees when it closes.
+	// A sound playing this source or a chain including it reads it on the audio thread or through that chain, and MiniAudio's data sources can't be read, sought or relinked from two places at once; a sound's own source can be played at any time. Calls that do so are refused then.
+	bool in_use() const {
+		if (!users && !sound_owned) return false;
+		g_soundsystem_last_error = MA_INVALID_OPERATION;
+		return true;
+	}
 	// One script thread may be reading from or closing this object while another opens it (a shared decoder handle, or a wrapper destroyed by its owner mid-read). The members below are unique_ptrs that get reset on close, so those paths must not interleave. Recursive because open() re-enters close(), and set_ma_data_source() re-enters reset().
 	mutable std::recursive_mutex source_mutex;
 	bool set_ma_data_source(ma_data_source* new_src) {
@@ -810,7 +816,7 @@ public:
 	// Reads 32-bit float samples into buffer, as read_script() makes them.
 	unsigned long long read(void* buffer, unsigned long long frame_count) override {
 		std::lock_guard<std::recursive_mutex> guard(source_mutex);
-		if (!src || node && !detach_all_output_buses()) return 0; // A source in another format was never made a node.
+		if (!src || in_use() || node && !detach_all_output_buses()) return 0; // A source in another format was never made a node.
 		if (!frame_count) frame_count = get_advised_read_frame_count();
 		if (!frame_count) return 0;
 		ma_format format = ma_format_f32;
@@ -845,18 +851,18 @@ public:
 	}
 	unsigned long long skip_frames(unsigned long long frame_count) override {
 		ma_uint64 frames_skipped;
-		if (!src) return 0;
+		if (!src || in_use()) return 0;
 		if ((g_soundsystem_last_error = ma_data_source_seek_pcm_frames(src->pDataSource, frame_count, &frames_skipped)) != MA_SUCCESS) return 0;
 		return frames_skipped;
 	}
 	float skip_milliseconds(float ms) override {
 		float skipped;
-		if (!src) return 0;
+		if (!src || in_use()) return 0;
 		if ((g_soundsystem_last_error = ma_data_source_seek_seconds(src->pDataSource, ms / 1000, &skipped)) != MA_SUCCESS) return 0;
 		return skipped * 1000;
 	}
-	bool seek_frames(unsigned long long frame_index) override { return src? (g_soundsystem_last_error = ma_data_source_seek_to_pcm_frame(src->pDataSource, frame_index)) == MA_SUCCESS : false; }
-	bool seek_milliseconds(float ms) override { return src? (g_soundsystem_last_error = ma_data_source_seek_to_second(src->pDataSource, ms / 1000)) == MA_SUCCESS : false; }
+	bool seek_frames(unsigned long long frame_index) override { return src && !in_use()? (g_soundsystem_last_error = ma_data_source_seek_to_pcm_frame(src->pDataSource, frame_index)) == MA_SUCCESS : false; }
+	bool seek_milliseconds(float ms) override { return src && !in_use()? (g_soundsystem_last_error = ma_data_source_seek_to_second(src->pDataSource, ms / 1000)) == MA_SUCCESS : false; }
 	unsigned long long get_cursor_frames() const override {
 		ma_uint64 cursor;
 		if (!src) return 0;
@@ -877,11 +883,11 @@ public:
 		if (!src) return 0;
 		return (g_soundsystem_last_error = ma_data_source_get_length_in_seconds(src->pDataSource, &length)) == MA_SUCCESS? length * 1000 : 0;
 	}
-	bool set_looping(bool looping) override { return src? (g_soundsystem_last_error = ma_data_source_set_looping(src->pDataSource, looping)) == MA_SUCCESS : false; }
+	bool set_looping(bool looping) override { return src && !in_use()? (g_soundsystem_last_error = ma_data_source_set_looping(src->pDataSource, looping)) == MA_SUCCESS : false; }
 	bool get_looping() const override { return src? ma_data_source_is_looping(src->pDataSource) : false; }
-	bool set_range(unsigned long long start_frame, unsigned long long end_frame) override { return src? (g_soundsystem_last_error = ma_data_source_set_range_in_pcm_frames(src->pDataSource, start_frame, end_frame)) == MA_SUCCESS : false; }
+	bool set_range(unsigned long long start_frame, unsigned long long end_frame) override { return src && !in_use()? (g_soundsystem_last_error = ma_data_source_set_range_in_pcm_frames(src->pDataSource, start_frame, end_frame)) == MA_SUCCESS : false; }
 	void get_range(unsigned long long* start_frame, unsigned long long* end_frame) const override { if (src) ma_data_source_get_range_in_pcm_frames(src->pDataSource, start_frame, end_frame); }
-	bool set_loop_point(unsigned long long start_frame, unsigned long long end_frame) override { return src? (g_soundsystem_last_error = ma_data_source_set_loop_point_in_pcm_frames(src->pDataSource, start_frame, end_frame)) == MA_SUCCESS : false; }
+	bool set_loop_point(unsigned long long start_frame, unsigned long long end_frame) override { return src && !in_use()? (g_soundsystem_last_error = ma_data_source_set_loop_point_in_pcm_frames(src->pDataSource, start_frame, end_frame)) == MA_SUCCESS : false; }
 	void get_loop_point(unsigned long long* start_frame, unsigned long long* end_frame) const override { if (src) ma_data_source_get_loop_point_in_pcm_frames(src->pDataSource, start_frame, end_frame); }
 	// A source chained to this one is read into buffers sized for this one's format and channel count, by the audio thread and by read(), and is played at this one's sample rate, so it must match in all three.
 	bool can_chain(audio_data_source* other) const {
@@ -892,7 +898,7 @@ public:
 		return format == their_format && channels == their_channels && sample_rate == their_sample_rate;
 	}
 	bool set_current(audio_data_source* new_current) override {
-		if (!src) return false;
+		if (!src || in_use()) return false;
 		if (new_current && (!can_chain(new_current) || is_sound_owned(new_current))) { // A sound frees its own source when it closes, whatever else reads it.
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
@@ -917,7 +923,7 @@ public:
 		return src? audio_data_source_get(ma_data_source_get_current(src->pDataSource), get_engine()) : nullptr;
 	}
 	bool set_next(audio_data_source* new_next) override {
-		if (!src) return false;
+		if (!src || in_use()) return false;
 		if (new_next && (!can_chain(new_next) || is_sound_owned(new_next))) {
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
