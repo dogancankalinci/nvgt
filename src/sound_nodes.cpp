@@ -555,20 +555,23 @@ public:
 		if (output_mixer) output_mixer->duplicate(); // reverb owns its own reference to output_mixer via attach_output_bus below; this is reverb3d_impl's separate reference for get_mixer().
 		if (reverb) wire_reverb(reverb);
 	}
-	// Attaches this node to the reverb and the reverb to the destination, keeping the reverb only when it took this node's output: that attachment holds its reference, so a reverb it refused, such as one of another channel count, would otherwise be kept after the script let go of it.
+	// Attaches this node to the reverb and the reverb to the destination, keeping the reverb only when it took this node's output, as for one of another channel count it wouldn't. The reverb3d holds a reference of its own to the reverb, as a script can detach this node, which is an audio_node, from it.
 	void wire_reverb(audio_node* verb) {
 		reverb = nullptr;
-		if (!attach_output_bus(0, verb, 0)) return; // reverb is owned automatically via audio_node_impl's output_connections tracking.
+		if (!attach_output_bus(0, verb, 0)) return;
 		reverb = verb;
+		reverb->duplicate();
 		reverb->attach_output_bus(0, output_mixer? static_cast<audio_node*>(output_mixer) : get_engine()->get_endpoint(), 0);
 	}
 	~reverb3d_impl() {
+		if (reverb) reverb->release();
 		if (output_mixer) output_mixer->release();
 	}
 	void set_reverb(audio_node* verb) override {
 		if (reverb) {
 			reverb->detach_output_bus(0); // From the mixer or, without one, the engine's endpoint, which the reverb was attached to alike.
 			detach_output_bus(0);
+			reverb->release();
 		}
 		reverb = nullptr;
 		if (verb) wire_reverb(verb);
