@@ -1077,17 +1077,52 @@ audio_data_source* audio_data_source_get(ma_data_source* ptr, audio_engine* engi
 	}
 	return new audio_data_source_impl(engine, ptr);
 }
+// A ring buffer that the audio thread reads as a data source, as a stream_pcm() sound's and a microphone's are. A ring buffer has one writer and one reader, so dropping what is queued, as starting such a sound or microphone again does, is left to the reader: discard() has the next read skip what is queued now. Resetting the ring buffer from the script's thread moved its positions under the audio thread's read, which then played old frames again.
+struct pcm_queue {
+	ma_data_source_base base; // First: MiniAudio passes this struct as the data source.
+	ma_pcm_rb rb;
+	std::atomic<ma_uint32> skip{0};
+	ma_result init(ma_format format, ma_uint32 channels, ma_uint32 frames) {
+		ma_result result = ma_pcm_rb_init(format, channels, frames, nullptr, nullptr, &rb);
+		if (result != MA_SUCCESS) return result;
+		ma_data_source_config config = ma_data_source_config_init();
+		config.vtable = &vtable;
+		if ((result = ma_data_source_init(&config, &base)) != MA_SUCCESS) ma_pcm_rb_uninit(&rb);
+		return result;
+	}
+	void uninit() {
+		ma_data_source_uninit(&base);
+		ma_pcm_rb_uninit(&rb);
+	}
+	void discard() { skip = ma_pcm_rb_available_read(&rb); }
+	static ma_result on_read(ma_data_source* ds, void* frames_out, ma_uint64 frame_count, ma_uint64* frames_read) {
+		pcm_queue* queue = (pcm_queue*)ds;
+		if (ma_uint32 n = queue->skip.exchange(0)) {
+			ma_uint32 available = ma_pcm_rb_available_read(&queue->rb);
+			ma_pcm_rb_seek_read(&queue->rb, n < available? n : available);
+		}
+		return ma_data_source_read_pcm_frames(&queue->rb, frames_out, frame_count, frames_read);
+	}
+	static ma_result on_get_data_format(ma_data_source* ds, ma_format* format, ma_uint32* channels, ma_uint32* sample_rate, ma_channel* channel_map, size_t channel_map_cap) {
+		return ma_data_source_get_data_format(&((pcm_queue*)ds)->rb, format, channels, sample_rate, channel_map, channel_map_cap);
+	}
+	static inline ma_data_source_vtable vtable = {on_read, nullptr, on_get_data_format, nullptr, nullptr, nullptr, 0};
+};
 class audio_ring_buffer_impl : public audio_data_source_impl, public virtual audio_ring_buffer {
-	unique_ptr<ma_pcm_rb> rb;
+	unique_ptr<pcm_queue> queue;
+	ma_pcm_rb *rb = nullptr; // The queue's.
+protected:
+	void discard_queued() { if (queue) queue->discard(); }
 public:
-	audio_ring_buffer_impl(unsigned int channels, unsigned int size, audio_engine * e) : audio_data_source_impl(e, nullptr), rb(make_unique<ma_pcm_rb>()) {
-		if (ma_pcm_rb_init(ma_format_f32, channels, size, nullptr, nullptr, &*rb) != MA_SUCCESS) throw std::runtime_error("failed to initialize ring buffer");
-		ma_pcm_rb_set_sample_rate(&*rb, get_engine()->get_sample_rate()); // Frames are written at the engine's rate, as the microphone records them; MiniAudio leaves it 0.
-		set_ma_data_source((ma_data_source*)&*rb);
+	audio_ring_buffer_impl(unsigned int channels, unsigned int size, audio_engine * e) : audio_data_source_impl(e, nullptr), queue(make_unique<pcm_queue>()) {
+		if (queue->init(ma_format_f32, channels, size) != MA_SUCCESS) throw std::runtime_error("failed to initialize ring buffer");
+		rb = &queue->rb;
+		ma_pcm_rb_set_sample_rate(rb, get_engine()->get_sample_rate()); // Frames are written at the engine's rate, as the microphone records them; MiniAudio leaves it 0.
+		set_ma_data_source((ma_data_source*)&queue->base);
 	}
 	~audio_ring_buffer_impl() {
 		audio_data_source_impl::reset(); // Qualified: audio_ring_buffer_impl::reset() below overrides a different (ring-buffer-clearing) virtual and would otherwise hide this one.
-		if (rb) ma_pcm_rb_uninit(&*rb);
+		if (rb) queue->uninit();
 	}
 	void reset() override { if (rb) ma_pcm_rb_reset(&*rb); }
 	unsigned int get_advised_read_frame_count() const override { return get_available_read(); }
@@ -2255,7 +2290,7 @@ class sound_impl final : public mixer_impl, public virtual sound {
 	std::string pcm_buffer;      // When loading from raw PCM (like TTS) we store the intermediate wav data here so we can take advantage of async loading to return quickly. Makes a substantial difference in the responsiveness of TTS calls.
 	std::string loaded_filename; // Contains the loaded filename as passed in the load/stream method, used just for convenience.
 	mutable std::atomic_flag load_completed;
-	unique_ptr<ma_pcm_rb> pcm_stream;
+	unique_ptr<pcm_queue> pcm_stream;
 	bool paused;
 	bool fade_paused = false; // Paused by pause_fade(), whose stop is still scheduled, unlike one the script scheduled itself.
 	bool should_autoclose; // If this is true, the release method defers sound destruction until playback has complete.
@@ -2457,16 +2492,16 @@ public:
 			if (!buffer_size) return false;
 			if (!channels) channels = get_engine()->get_channels();
 			if (!sample_rate) sample_rate = get_engine()->get_sample_rate();
-			pcm_stream = make_unique<ma_pcm_rb>();
-			if ((g_soundsystem_last_error = ma_pcm_rb_init(format, channels, buffer_size, nullptr, nullptr, &*pcm_stream)) != MA_SUCCESS) {
+			pcm_stream = make_unique<pcm_queue>();
+			if ((g_soundsystem_last_error = pcm_stream->init(format, channels, buffer_size)) != MA_SUCCESS) {
 				pcm_stream.reset();
 				return false;
 			}
-			ma_pcm_rb_set_sample_rate(&*pcm_stream, sample_rate);
+			ma_pcm_rb_set_sample_rate(&pcm_stream->rb, sample_rate);
 			// As load_special() makes a sound: not attached by MiniAudio, so without the graph lock, and handed to snd once made.
 			unique_ptr<ma_sound> made = make_unique<ma_sound>();
-			if ((g_soundsystem_last_error = ma_sound_init_from_data_source(get_engine()->get_ma_engine(), &*pcm_stream, MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT, nullptr, &*made)) != MA_SUCCESS) {
-				ma_pcm_rb_uninit(&*pcm_stream);
+			if ((g_soundsystem_last_error = ma_sound_init_from_data_source(get_engine()->get_ma_engine(), &pcm_stream->base, MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT, nullptr, &*made)) != MA_SUCCESS) {
+				pcm_stream->uninit();
 				pcm_stream.reset();
 				return false;
 			}
@@ -2477,16 +2512,16 @@ public:
 		if (!pcm_stream) return false;
 		const char* input = (const char*)data;
 		unsigned int frames_written = 0;
-		unsigned int frame_size = ma_get_bytes_per_frame(ma_pcm_rb_get_format(&*pcm_stream), ma_pcm_rb_get_channels(&*pcm_stream));
+		unsigned int frame_size = ma_get_bytes_per_frame(ma_pcm_rb_get_format(&pcm_stream->rb), ma_pcm_rb_get_channels(&pcm_stream->rb));
 		// A full buffer is waited on while the sound plays it out; when nothing has made room for a second, as when the sound was stopped or its engine is never read, the rest is given up rather than waited on forever.
 		std::chrono::steady_clock::time_point waiting_since;
 		bool waiting = false;
 		while (size_in_frames) {
 			void* buffer_ptr = nullptr;
 			unsigned int frames_requested = size_in_frames;
-			if ((g_soundsystem_last_error = ma_pcm_rb_acquire_write(&*pcm_stream, &frames_requested, &buffer_ptr)) != MA_SUCCESS || !buffer_ptr) return false;
+			if ((g_soundsystem_last_error = ma_pcm_rb_acquire_write(&pcm_stream->rb, &frames_requested, &buffer_ptr)) != MA_SUCCESS || !buffer_ptr) return false;
 			if (!frames_requested) {
-				ma_pcm_rb_commit_write(&*pcm_stream, 0);
+				ma_pcm_rb_commit_write(&pcm_stream->rb, 0);
 				if (!waiting) {
 					waiting = true;
 					waiting_since = std::chrono::steady_clock::now();
@@ -2496,7 +2531,7 @@ public:
 			}
 			waiting = false;
 			memcpy(buffer_ptr, input + (frames_written * frame_size), frames_requested * frame_size);
-			if ((g_soundsystem_last_error = ma_pcm_rb_commit_write(&*pcm_stream, frames_requested)) != MA_SUCCESS) return false;
+			if ((g_soundsystem_last_error = ma_pcm_rb_commit_write(&pcm_stream->rb, frames_requested)) != MA_SUCCESS) return false;
 			frames_written += frames_requested;
 			size_in_frames -= frames_requested;
 		}
@@ -2507,10 +2542,10 @@ public:
 			return false;
 		ma_format format = ma_format_from_angelscript_type(buffer->GetElementTypeId());
 		if (pcm_stream) {
-			if (format != ma_pcm_rb_get_format(&*pcm_stream)) return false;
+			if (format != ma_pcm_rb_get_format(&pcm_stream->rb)) return false;
 			format = ma_format_unknown;
 		}
-		int nchannels = pcm_stream? ma_pcm_rb_get_channels(&*pcm_stream) : channels? channels : get_engine()->get_channels();
+		int nchannels = pcm_stream? ma_pcm_rb_get_channels(&pcm_stream->rb) : channels? channels : get_engine()->get_channels();
 		return stream_pcm(buffer->GetBuffer(), buffer->GetSize() / nchannels, format, sample_rate, channels, buffer_size);
 	}
 	bool stream_pcm_script_memory_buffer(script_memory_buffer* buffer, unsigned int sample_rate, unsigned int channels, unsigned int buffer_size) override {
@@ -2518,10 +2553,10 @@ public:
 			return false;
 		ma_format format = ma_format_from_angelscript_type(buffer->subtypeid);
 		if (pcm_stream) {
-			if (format != ma_pcm_rb_get_format(&*pcm_stream)) return false;
+			if (format != ma_pcm_rb_get_format(&pcm_stream->rb)) return false;
 			format = ma_format_unknown;
 		}
-		int nchannels = pcm_stream? ma_pcm_rb_get_channels(&*pcm_stream) : channels? channels : get_engine()->get_channels();
+		int nchannels = pcm_stream? ma_pcm_rb_get_channels(&pcm_stream->rb) : channels? channels : get_engine()->get_channels();
 		return stream_pcm(buffer->ptr, buffer->size / nchannels, format, sample_rate, channels, buffer_size);
 	}
 	bool open(audio_data_source* ds) override {
@@ -2606,7 +2641,7 @@ public:
 		}
 		datasource_opened = false;
 		node = nullptr;
-		if (pcm_stream) ma_pcm_rb_uninit(&*pcm_stream);
+		if (pcm_stream) pcm_stream->uninit();
 		pcm_stream.reset();
 		pcm_buffer.resize(0);
 		loaded_filename.clear();
@@ -2633,7 +2668,8 @@ public:
 	bool play(bool reset_loop_state = true) override {
 		if (fade_paused && snd) clear_stop_for_restart(true); // A pause_fade() still fading out is called off.
 		paused = fade_paused = false;
-		if (pcm_stream) ma_pcm_rb_reset(&*pcm_stream);
+		// A sound that isn't playing drops what was queued before it is started again, through its reader: see pcm_queue. One already playing keeps its queue.
+		if (pcm_stream && !(snd && ma_sound_is_playing(&*snd))) pcm_stream->discard();
 		return mixer_impl::play(reset_loop_state);
 	}
 	bool play_looped() override {
@@ -2868,14 +2904,13 @@ public:
 	}
 	int get_device() const override { return device_index; }
 	bool set_state(ma_node_state state) override {
+		// A microphone started again drops what it recorded before it stopped, through its reader (see pcm_queue), before its node is read again; one already recording keeps its queue.
+		if (capture_device && state == ma_node_state_started && !ma_device_is_started(&*capture_device)) discard_queued();
 		bool ret = audio_node_impl::set_state(state);
 		if (!capture_device) return ret;
 		if (!ret) return false;
 		if (state == ma_node_state_stopped) return ma_device_stop(&*capture_device) == MA_SUCCESS;
-		else if (state == ma_node_state_started) {
-			this->reset();
-			return ma_device_start(&*capture_device) == MA_SUCCESS;
-		}
+		else if (state == ma_node_state_started) return ma_device_start(&*capture_device) == MA_SUCCESS;
 		return false;
 	}
 	void set_volume(float volume) override { if (capture_device) g_soundsystem_last_error = ma_device_set_master_volume_db(&*capture_device, volume); }
