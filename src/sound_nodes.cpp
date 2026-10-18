@@ -1233,8 +1233,8 @@ public:
 		if (!spatializer) goto fail;
 		audio_spatialization_parameters params;
 		if (!spatializer->get_parameters(params)) goto fail;
-		distance = params.listener_distance;
-		if (distance >= params.min_distance) distance -= params.min_distance;
+		distance = params.listener_distance - params.min_distance; // Within min_distance a sound is at full volume, as at min_distance itself, rather than attenuated by its whole distance.
+		if (distance < 0) distance = 0;
 		volume = clamp(distance <= params.max_distance - params.min_distance? ma_volume_db_to_linear(-distance * params.rolloff * 1.75) : 0, params.min_volume, params.max_volume);
 		ma_gainer_set_master_volume(&gainer, volume);
 		if (frameCount > *frame_count_in) frameCount = *frame_count_in;
