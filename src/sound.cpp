@@ -2183,7 +2183,7 @@ class sound_impl final : public mixer_impl, public virtual sound {
 		}
 		return ma_resource_manager_data_buffer_result(buffer) == MA_SUCCESS? nullptr : buffer;
 	}
-	// With the node graph locked and the sound already taken off it, which waited for the audio thread to stop reading it, so nothing reads the failed buffer once it is marked loaded, which makes ma_sound_uninit() free it at once.
+	// With the sound already taken off the graph, which waited for the audio thread to stop reading it, so nothing reads the failed buffer once it is marked loaded, which makes ma_sound_uninit() free it at once.
 	void free_failed_buffer(ma_resource_manager_data_buffer *buffer) { store_job_field(&buffer->result, MA_SUCCESS); }
 	std::string pcm_buffer;      // When loading from raw PCM (like TTS) we store the intermediate wav data here so we can take advantage of async loading to return quickly. Makes a substantial difference in the responsiveness of TTS calls.
 	std::string loaded_filename; // Contains the loaded filename as passed in the load/stream method, used just for convenience.
@@ -2248,7 +2248,8 @@ public:
 			return false;
 		}
 		ma_sound_config cfg = ma_sound_config_init();
-		cfg.flags = ma_flags;
+		// Not attached to the endpoint by MiniAudio, as postload() attaches it to its chain; so making it changes no node's lists and needs no graph lock, which is then not held across the file or network open and decoding that making a sound waits for.
+		cfg.flags = ma_flags | MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT;
 		cfg.pFilePath = triplet.c_str();
 		// Each attempt gets its own load state, so one a failed attempt left with MiniAudio can't be mistaken for the next.
 		auto attempt_init = [&]() {
@@ -2256,7 +2257,7 @@ public:
 			ma_resource_manager_pipeline_notifications notifications = ma_resource_manager_pipeline_notifications_init();
 			if (state) notifications.done.pNotification = &state->notification;
 			cfg.initNotifications = notifications;
-			{ std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); g_soundsystem_last_error = ma_sound_init_ex(engine->get_ma_engine(), &cfg, &*snd); } // auto-attaches to the endpoint
+			g_soundsystem_last_error = ma_sound_init_ex(engine->get_ma_engine(), &cfg, &*snd);
 			if (!state) return;
 			if (g_soundsystem_last_error == MA_SUCCESS) load_state = state;
 			else state->abandon(); // The notification's reference stays with MiniAudio in case it still signals.
@@ -2277,7 +2278,7 @@ public:
 		}
 		// For the time being, give it one more try without any flags if we got -10 (MA_INVALID_FILE) because MA's support for loading mp3 is limited.
 		if (g_soundsystem_last_error == MA_INVALID_FILE) {
-			cfg.flags = 0;
+			cfg.flags = MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT;
 			attempt_init();
 			// Loading without flags reads the file in whole and then decodes it; when the decoding fails, MiniAudio keeps the file it read, cached under the file's name with nothing holding it, so each later load of that name failed on those bytes even once the file changed. That cached entry is let go here.
 			// Only for the decoder's own failures, which come after the file was read and cached: a file that couldn't be read, such as an empty one, leaves no entry, and MiniAudio's unregister of a name it doesn't find returns without unlocking its cache, hanging every later load.
@@ -2463,11 +2464,9 @@ public:
 		if (datasource && !datasource_opened) {
 			if (auto impl = dynamic_cast<audio_data_source_impl*>(datasource)) impl->forget_source();
 		}
-		{
-			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex);
-			if (failed_buffer) free_failed_buffer(failed_buffer);
-			ma_sound_uninit(&*snd);
-		}
+		// Already off the graph, and a sound takes no input, so uninitializing it changes no node's lists: the graph lock isn't held across it, as freeing a stream waits for its reads, a stalled network read included.
+		if (failed_buffer) free_failed_buffer(failed_buffer);
+		ma_sound_uninit(&*snd);
 		snd.reset();
 		if (datasource) {
 			if (datasource_opened) audio_data_source_impl::remove_user(datasource);
