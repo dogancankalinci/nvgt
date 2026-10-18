@@ -578,6 +578,10 @@ public:
 	}
 	audio_node* get_reverb() const override { return reverb; }
 	void set_mixer(mixer* mix) override {
+		if (mix && mix->get_engine() != get_engine()) { // As for a sound's mixer: another engine's mixer is read by that engine's audio thread too.
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return;
+		}
 		if (output_mixer) {
 			if (reverb) reverb->detach_output_bus(0);
 			output_mixer->release();
@@ -870,6 +874,10 @@ public:
 		}
 	}
 	void set_reverb3d(reverb3d* new_reverb, audio_spatializer_reverb3d_placement placement = postpan) override {
+		if (new_reverb && new_reverb->get_engine() != get_engine()) { // Another engine's audio thread reads that reverb3d, which two threads can't read at once.
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return;
+		}
 		if (new_reverb == reverb) {
 			if (reverb && placement != reverb_placement) { // Only moved: the same attachment goes to its new place in the chain.
 				reverb_placement = placement;
