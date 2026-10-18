@@ -1254,7 +1254,10 @@ public:
 	}
 	virtual bool close() override {
 		std::lock_guard<std::recursive_mutex> guard(source_mutex);
-		if (users) return false; // A sound plays it, or another source chains to it, both reading its decoder directly. open() closes first, so it refuses too.
+		if (users) { // A sound plays it, or another source chains to it, both reading its decoder directly. open() closes first, so it refuses too.
+			g_soundsystem_last_error = MA_INVALID_OPERATION;
+			return false;
+		}
 		reset();
 		if (!decoder) return false;
 		if (datastream_ref) {
@@ -2322,6 +2325,7 @@ public:
 		if (!ds) return false;
 		// A sound's own source is freed by that sound when it closes, as this one does to open it, and one another sound or chain reads would be read from two places.
 		if (!ds->get_active() || audio_data_source_impl::is_sound_owned(ds) || audio_data_source_impl::is_used(ds)) {
+			g_soundsystem_last_error = ds->get_active()? MA_INVALID_OPERATION : MA_INVALID_ARGS;
 			ds->release();
 			return false;
 		}
@@ -2585,7 +2589,10 @@ public:
 	}
 	bool set_device(int device) override {
 		if (device == device_index && capture_device) return true; // Without a device open, as after one failed to, it is opened anew.
-		if (device < -1 || device >= int(g_sound_input_devices.size())) return false;
+		if (device < -1 || device >= int(g_sound_input_devices.size())) {
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return false;
+		}
 		if (capture_device) {
 			ma_device_stop(&*capture_device);
 			uninit_device(&*capture_device);
