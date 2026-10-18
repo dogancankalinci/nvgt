@@ -746,9 +746,15 @@ protected:
 	std::atomic<bool> sound_owned{false}; // The source of a sound, wrapped for sound.datasource, which that sound plays at any time and frees when it closes.
 	audio_data_source* held_current = nullptr; // Under held_mutex, see hold_current().
 	std::mutex held_mutex;
-	// A sound playing this source, a chain including it or a head on it reads it on the audio thread or through that chain, and MiniAudio's data sources can't be read, sought or relinked from two places at once; a sound's own source can be played at any time. Calls that do so are refused then.
-	bool in_use() const {
-		if (!users && !sound_owned) return false;
+	// Whether this source's own node is in the graph, whose audio thread then reads the source.
+	bool node_attached() const {
+		if (!node) return false;
+		for (audio_node *n : output_connections) if (n) return true;
+		return false;
+	}
+	// A sound playing this source, a chain including it, a head on it or the graph through its node reads it on the audio thread or through that chain, and MiniAudio's data sources can't be read, sought or relinked from two places at once; a sound's own source can be played at any time. Calls that do so are refused then. read() takes the node off the graph instead, so it leaves that out.
+	bool in_use(bool count_node = true) const {
+		if (!users && !sound_owned && !(count_node && node_attached())) return false;
 		g_soundsystem_last_error = MA_INVALID_OPERATION;
 		return true;
 	}
@@ -869,17 +875,22 @@ public:
 		auto impl = dynamic_cast<audio_data_source_impl*>(ds);
 		return impl && impl->sound_owned;
 	}
-	// Whether another sound, chain link or head already reads the source, so a second reader would read it alongside.
+	// Whether another sound, chain link, head or the graph already reads the source, so a second reader would read it alongside.
 	static bool is_used(audio_data_source* ds) {
 		auto impl = dynamic_cast<audio_data_source_impl*>(ds);
-		return impl && impl->users > 0;
+		return impl && (impl->users > 0 || impl->node_attached());
+	}
+	// The graph's audio thread reads the source once its node is attached, so not while a sound, chain or head reads it, nor a sound's own source.
+	bool attach_output_bus(unsigned int output_bus, audio_node *destination, unsigned int destination_input_bus) override {
+		if (in_use(false)) return false;
+		return audio_node_impl::attach_output_bus(output_bus, destination, destination_input_bus);
 	}
 	ma_data_source* get_ma_data_source() const override { return src? src->pDataSource : nullptr; }
 	unsigned int get_advised_read_frame_count() const override { return SOUNDSYSTEM_FRAMESIZE; }
 	// Reads 32-bit float samples into buffer, as read_script() makes them.
 	unsigned long long read(void* buffer, unsigned long long frame_count) override {
 		std::lock_guard<std::recursive_mutex> guard(source_mutex);
-		if (!src || in_use() || node && !detach_all_output_buses()) return 0; // A source in another format was never made a node.
+		if (!src || in_use(false) || node && !detach_all_output_buses()) return 0; // A source in another format was never made a node.
 		if (!frame_count) frame_count = get_advised_read_frame_count();
 		if (!frame_count) return 0;
 		ma_format format = ma_format_f32;
