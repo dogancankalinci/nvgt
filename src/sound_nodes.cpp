@@ -277,13 +277,15 @@ class low_pass_filter_node_impl : public audio_node_impl, public virtual low_pas
 		}
 	}
 	void set_cutoff_frequency(double freq) override {
+		auto previous = cfg.lpf.cutoffFrequency;
 		cfg.lpf.cutoffFrequency = freq;
-		ma_lpf_node_reinit(&cfg.lpf, &*fn);
+		if ((g_soundsystem_last_error = ma_lpf_node_reinit(&cfg.lpf, &*fn)) != MA_SUCCESS) cfg.lpf.cutoffFrequency = previous; // MiniAudio refuses some changes, as of a filter's order, which is fixed when it is made; the filter then keeps what it had, and so does this.
 	}
 	double get_cutoff_frequency() const override { return cfg.lpf.cutoffFrequency; }
 	void set_order(unsigned int order) override {
+		auto previous = cfg.lpf.order;
 		cfg.lpf.order = order;
-		ma_lpf_node_reinit(&cfg.lpf, &*fn);
+		if ((g_soundsystem_last_error = ma_lpf_node_reinit(&cfg.lpf, &*fn)) != MA_SUCCESS) cfg.lpf.order = previous;
 	}
 	unsigned int get_order() const override { return cfg.lpf.order; }
 };
@@ -305,13 +307,15 @@ class high_pass_filter_node_impl : public audio_node_impl, public virtual high_p
 		}
 	}
 	void set_cutoff_frequency(double freq) override {
+		auto previous = cfg.hpf.cutoffFrequency;
 		cfg.hpf.cutoffFrequency = freq;
-		ma_hpf_node_reinit(&cfg.hpf, &*fn);
+		if ((g_soundsystem_last_error = ma_hpf_node_reinit(&cfg.hpf, &*fn)) != MA_SUCCESS) cfg.hpf.cutoffFrequency = previous;
 	}
 	double get_cutoff_frequency() const override { return cfg.hpf.cutoffFrequency; }
 	void set_order(unsigned int order) override {
+		auto previous = cfg.hpf.order;
 		cfg.hpf.order = order;
-		ma_hpf_node_reinit(&cfg.hpf, &*fn);
+		if ((g_soundsystem_last_error = ma_hpf_node_reinit(&cfg.hpf, &*fn)) != MA_SUCCESS) cfg.hpf.order = previous;
 	}
 	unsigned int get_order() const override { return cfg.hpf.order; }
 };
@@ -333,13 +337,15 @@ class band_pass_filter_node_impl : public audio_node_impl, public virtual band_p
 		}
 	}
 	void set_cutoff_frequency(double freq) override {
+		auto previous = cfg.bpf.cutoffFrequency;
 		cfg.bpf.cutoffFrequency = freq;
-		ma_bpf_node_reinit(&cfg.bpf, &*fn);
+		if ((g_soundsystem_last_error = ma_bpf_node_reinit(&cfg.bpf, &*fn)) != MA_SUCCESS) cfg.bpf.cutoffFrequency = previous;
 	}
 	double get_cutoff_frequency() const override { return cfg.bpf.cutoffFrequency; }
 	void set_order(unsigned int order) override {
+		auto previous = cfg.bpf.order;
 		cfg.bpf.order = order;
-		ma_bpf_node_reinit(&cfg.bpf, &*fn);
+		if ((g_soundsystem_last_error = ma_bpf_node_reinit(&cfg.bpf, &*fn)) != MA_SUCCESS) cfg.bpf.order = previous;
 	}
 	unsigned int get_order() const override { return cfg.bpf.order; }
 };
@@ -361,13 +367,15 @@ class notch_filter_node_impl : public audio_node_impl, public virtual notch_filt
 		}
 	}
 	void set_q(double q) override {
+		auto previous = cfg.notch.q;
 		cfg.notch.q = q;
-		ma_notch_node_reinit(&cfg.notch, &*fn);
+		if ((g_soundsystem_last_error = ma_notch_node_reinit(&cfg.notch, &*fn)) != MA_SUCCESS) cfg.notch.q = previous;
 	}
 	double get_q() const override { return cfg.notch.q; }
 	void set_frequency(double freq) override {
+		auto previous = cfg.notch.frequency;
 		cfg.notch.frequency = freq;
-		ma_notch_node_reinit(&cfg.notch, &*fn);
+		if ((g_soundsystem_last_error = ma_notch_node_reinit(&cfg.notch, &*fn)) != MA_SUCCESS) cfg.notch.frequency = previous;
 	}
 	double get_frequency() const override { return cfg.notch.frequency; }
 };
@@ -389,18 +397,21 @@ class peak_filter_node_impl : public audio_node_impl, public virtual peak_filter
 		}
 	}
 	void set_gain(double gain) override {
+		auto previous = cfg.peak.gainDB;
 		cfg.peak.gainDB = gain;
-		ma_peak_node_reinit(&cfg.peak, &*fn);
+		if ((g_soundsystem_last_error = ma_peak_node_reinit(&cfg.peak, &*fn)) != MA_SUCCESS) cfg.peak.gainDB = previous;
 	}
 	double get_gain() const override { return cfg.peak.gainDB; }
 	void set_q(double q) override {
+		auto previous = cfg.peak.q;
 		cfg.peak.q = q;
-		ma_peak_node_reinit(&cfg.peak, &*fn);
+		if ((g_soundsystem_last_error = ma_peak_node_reinit(&cfg.peak, &*fn)) != MA_SUCCESS) cfg.peak.q = previous;
 	}
 	double get_q() const override { return cfg.peak.q; }
 	void set_frequency(double freq) override {
+		auto previous = cfg.peak.frequency;
 		cfg.peak.frequency = freq;
-		ma_peak_node_reinit(&cfg.peak, &*fn);
+		if ((g_soundsystem_last_error = ma_peak_node_reinit(&cfg.peak, &*fn)) != MA_SUCCESS) cfg.peak.frequency = previous;
 	}
 	double get_frequency() const override { return cfg.peak.frequency; }
 };
@@ -422,18 +433,21 @@ class low_shelf_filter_node_impl : public audio_node_impl, public virtual low_sh
 		}
 	}
 	void set_gain(double gain) override {
+		auto previous = cfg.loshelf.gainDB;
 		cfg.loshelf.gainDB = gain;
-		ma_loshelf_node_reinit(&cfg.loshelf, &*fn);
+		if ((g_soundsystem_last_error = ma_loshelf_node_reinit(&cfg.loshelf, &*fn)) != MA_SUCCESS) cfg.loshelf.gainDB = previous;
 	}
 	double get_gain() const override { return cfg.loshelf.gainDB; }
 	void set_q(double q) override {
+		auto previous = cfg.loshelf.shelfSlope;
 		cfg.loshelf.shelfSlope = q;
-		ma_loshelf_node_reinit(&cfg.loshelf, &*fn);
+		if ((g_soundsystem_last_error = ma_loshelf_node_reinit(&cfg.loshelf, &*fn)) != MA_SUCCESS) cfg.loshelf.shelfSlope = previous;
 	}
 	double get_q() const override { return cfg.loshelf.shelfSlope; }
 	void set_frequency(double freq) override {
+		auto previous = cfg.loshelf.frequency;
 		cfg.loshelf.frequency = freq;
-		ma_loshelf_node_reinit(&cfg.loshelf, &*fn);
+		if ((g_soundsystem_last_error = ma_loshelf_node_reinit(&cfg.loshelf, &*fn)) != MA_SUCCESS) cfg.loshelf.frequency = previous;
 	}
 	double get_frequency() const override { return cfg.loshelf.frequency; }
 };
@@ -455,18 +469,21 @@ class high_shelf_filter_node_impl : public audio_node_impl, public virtual high_
 		}
 	}
 	void set_gain(double gain) override {
+		auto previous = cfg.hishelf.gainDB;
 		cfg.hishelf.gainDB = gain;
-		ma_hishelf_node_reinit(&cfg.hishelf, &*fn);
+		if ((g_soundsystem_last_error = ma_hishelf_node_reinit(&cfg.hishelf, &*fn)) != MA_SUCCESS) cfg.hishelf.gainDB = previous;
 	}
 	double get_gain() const override { return cfg.hishelf.gainDB; }
 	void set_q(double q) override {
+		auto previous = cfg.hishelf.shelfSlope;
 		cfg.hishelf.shelfSlope = q;
-		ma_hishelf_node_reinit(&cfg.hishelf, &*fn);
+		if ((g_soundsystem_last_error = ma_hishelf_node_reinit(&cfg.hishelf, &*fn)) != MA_SUCCESS) cfg.hishelf.shelfSlope = previous;
 	}
 	double get_q() const override { return cfg.hishelf.shelfSlope; }
 	void set_frequency(double freq) override {
+		auto previous = cfg.hishelf.frequency;
 		cfg.hishelf.frequency = freq;
-		ma_hishelf_node_reinit(&cfg.hishelf, &*fn);
+		if ((g_soundsystem_last_error = ma_hishelf_node_reinit(&cfg.hishelf, &*fn)) != MA_SUCCESS) cfg.hishelf.frequency = previous;
 	}
 	double get_frequency() const override { return cfg.hishelf.frequency; }
 };
