@@ -53,11 +53,22 @@ public:
 	unsigned int get_output_bus_count() { return node ? ma_node_get_output_bus_count(node) : 0; }
 	unsigned int get_input_channels(unsigned int bus) { return node ? ma_node_get_input_channels(node, bus) : 0; }
 	unsigned int get_output_channels(unsigned int bus) { return node ? ma_node_get_output_channels(node, bus) : 0; }
+	// Whether an engine is this node's engine, or is mixed into it through engines attached into one another.
+	bool feeds_engine(audio_engine *target) const {
+		std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); // Which output_connections change under.
+		for (int depth = 0; target && depth < 64; depth++) {
+			if (target == engine) return true;
+			auto target_node = dynamic_cast<const audio_node_impl*>(target);
+			audio_node *next = target_node && !target_node->output_connections.empty()? target_node->output_connections[0] : nullptr;
+			target = next? next->get_engine() : nullptr;
+		}
+		return false;
+	}
 	// The node this one was attached to is let go of after the graph lock: letting go can destroy it, and a destructor, such as a spatializer's, takes locks that are taken before the graph lock elsewhere.
 	bool attach_output_bus(unsigned int output_bus, audio_node *destination, unsigned int destination_input_bus) {
 		if (!node || !destination) return false;
-		// Only into this node's own engine, whose audio thread alone reads its graph: a node read by two engines' threads at once crashes. An engine itself is the exception, as a no-device engine is mixed into another through its own node, which only that other engine's thread then reads.
-		if (destination->get_engine() != engine && !is_engine()) {
+		// Only into this node's own engine, whose audio thread alone reads its graph: a node read by two engines' threads at once crashes. An engine itself is the exception, as a no-device engine is mixed into another through its own node, which only that other engine's thread then reads; an engine with a device would be read by its own device thread too, and one fed back into itself, directly or through other engines, would read itself without end.
+		if (is_engine()? !(engine->get_flags() & audio_engine::NO_DEVICE) || feeds_engine(destination->get_engine()) : destination->get_engine() != engine) {
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
