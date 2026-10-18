@@ -209,8 +209,8 @@ bool phonon_init() {
 	return true;
 }
 
+// Sets the defaults and the enabled components each time, as the docs say it does, whatever get_global_hrtf() read before: enabling both components by hand left the defaults as they were.
 bool set_global_hrtf(bool enabled) {
-	if (enabled == get_global_hrtf()) return true;
 	if (enabled) {
 		if (!phonon_init()) return false;
 		if (!sound_set_spatialization(g_audio_phonon_hrtf_panner, g_audio_phonon_attenuator)) return false;
