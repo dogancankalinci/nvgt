@@ -2011,6 +2011,12 @@ public:
 	ma_uint64 get_time() const override {
 		return snd ? ((get_engine()->get_flags() & audio_engine::DURATIONS_IN_FRAMES) ? get_time_in_frames() : get_time_in_milliseconds()) : 0;
 	}
+	// In the unit get_time() reads, milliseconds unless the engine counts durations in frames.
+	bool set_time(unsigned long long time) override {
+		if (!snd) return false;
+		if (!(get_engine()->get_flags() & audio_engine::DURATIONS_IN_FRAMES)) time = time * ma_engine_get_sample_rate(ma_sound_get_engine(&*snd)) / 1000;
+		return (g_soundsystem_last_error = ma_node_set_time(&*snd, time)) == MA_SUCCESS;
+	}
 	ma_uint64 get_time_in_frames() const override {
 		return snd ? ma_sound_get_time_in_pcm_frames(&*snd) : 0;
 	}
