@@ -100,6 +100,10 @@ public:
 	bool add_node(audio_node* node, audio_node* after, unsigned int input_bus_index) override {
 		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		if (!node) return false;
+		if (node == static_cast<audio_node*>(this) || node == endpoint || index_of(node) != -1) { // The chain itself, its endpoint or a node already in it, which would loop the chain.
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return false;
+		}
 		unsigned int new_idx = 0;
 		if (after) {
 			new_idx = index_of(after);
@@ -108,10 +112,14 @@ public:
 		}
 		audio_node* prev = new_idx? nodes[new_idx -1] : nullptr;
 		audio_node* next = new_idx? (new_idx < nodes.size()? nodes[new_idx] : endpoint) : (!nodes.empty()? first() : endpoint);
-		// The node is attached to the next one first, so a node that can't feed it, as with another channel count, is refused with the chain untouched, and the next node keeps a reference from one of the two attachments throughout.
-		if (next && !node->attach_output_bus(0, next, input_bus_index)) return false;
-		if (prev? !prev->attach_output_bus(0, node, 0) : !audio_node_impl::attach_output_bus(0, node, 0)) {
-			if (next) node->detach_output_bus(0);
+		// The node before is attached to the new one first, which a node that takes no input, as a sound or data source, refuses with nothing changed; the next one, which the chain or the node after holds, is then attached to, and when the new node can't feed it, as with another channel count, the node before goes back to it.
+		if (prev && !prev->attach_output_bus(0, node, 0)) return false;
+		else if (!prev && !audio_node_impl::attach_output_bus(0, node, 0)) return false;
+		if (next && !node->attach_output_bus(0, next, input_bus_index)) {
+			ma_result error = g_soundsystem_last_error;
+			if (prev) prev->attach_output_bus(0, next, 0);
+			else audio_node_impl::attach_output_bus(0, next, 0);
+			g_soundsystem_last_error = error;
 			return false;
 		}
 		nodes.insert(nodes.begin() + new_idx, node);
