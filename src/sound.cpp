@@ -2179,8 +2179,9 @@ public:
 		snd = make_unique < ma_sound > ();
 		// The sound service converts our file name into a "tripplet" which includes information about the origin an asset is expected to come from. This guarantees that we don't mistake assets from different origins as the same just because they have the same name.
 		std::string triplet = g_sound_service->prepare_triplet(filename, protocol_slot, protocol_directive, filter_slot, filter_directive);
-		if (triplet.empty()) {
+		if (triplet.empty()) { // A name the sound service can't make one of, such as one that isn't valid UTF-8.
 			snd.reset();
+			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
 		ma_sound_config cfg = ma_sound_config_init();
