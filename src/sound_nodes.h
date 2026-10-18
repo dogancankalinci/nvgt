@@ -53,6 +53,12 @@ public:
 	unsigned int get_output_bus_count() { return node ? ma_node_get_output_bus_count(node) : 0; }
 	unsigned int get_input_channels(unsigned int bus) { return node ? ma_node_get_input_channels(node, bus) : 0; }
 	unsigned int get_output_channels(unsigned int bus) { return node ? ma_node_get_output_channels(node, bus) : 0; }
+	// Whether this node's output goes anywhere, which then reads it on that engine's audio thread.
+	bool output_attached() const {
+		std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); // Which output_connections change under.
+		for (audio_node *n : output_connections) if (n) return true;
+		return false;
+	}
 	// Whether an engine is this node's engine, or is mixed into it through engines attached into one another.
 	bool feeds_engine(audio_engine *target) const {
 		std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); // Which output_connections change under.

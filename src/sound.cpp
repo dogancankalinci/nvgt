@@ -609,6 +609,10 @@ public:
 		if (!engine)
 			return nullptr;
 		if ((flags & NO_DEVICE) == 0) return CScriptArray::Create(get_array_type("array<float>")); // Its device reads it on its own thread, and MiniAudio's engine can't be read from two at once.
+		if (output_attached()) { // Mixed into another engine, whose audio thread reads it there.
+			g_soundsystem_last_error = MA_INVALID_OPERATION;
+			return CScriptArray::Create(get_array_type("array<float>"));
+		}
 		unsigned int channels = ma_engine_get_channels(&*engine);
 		if (frame_count > 0xFFFFFFFF / channels) throw runtime_error("too many frames requested");
 		CScriptArray *result = CScriptArray::Create(get_array_type("array<float>"), frame_count * channels);
