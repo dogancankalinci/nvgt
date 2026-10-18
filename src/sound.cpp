@@ -1828,7 +1828,8 @@ public:
 			spatialization_params_mutex.unlock();
 			return false;
 		}
-		reactphysics3d::Vector3 listener_pos = get_engine()->get_listener_position(get_listener()), listener_dir = get_direction_to_listener(), pos = get_position_3d();
+		reactphysics3d::Vector3 listener_pos = get_engine()->get_listener_position(get_listener()), listener_dir = get_direction_to_listener();
+		ma_vec3f pos = ma_sound_get_position(&*snd); // Where the sound plays from, which the distance and direction above are from too: a shaped sound's get_position_3d() is the position the script set, not the shape's point it plays from.
 		params.listener_x = listener_pos.x;
 		params.listener_y = listener_pos.y;
 		params.listener_z = listener_pos.z;
