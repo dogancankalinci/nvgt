@@ -653,6 +653,10 @@ public:
 		return ma_volume_db_to_linear(clamp(v, -70.0f, max_volume));
 	}
 	splitter_node* create_attachment(audio_node* dry_input, audio_node* dry_output) override {
+		if (dry_input && dry_input->get_engine() != get_engine() || dry_output && dry_output->get_engine() != get_engine()) { // Both engines' audio threads would read the splitter.
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return nullptr;
+		}
 		splitter_node* splitter = splitter_node::create(get_engine(), get_output_channels(0));
 		if (dry_output && !splitter->attach_output_bus(0, dry_output, 0)) {
 			splitter->release();
