@@ -98,12 +98,10 @@ public:
 		}
 		audio_node* prev = new_idx? nodes[new_idx -1] : nullptr;
 		audio_node* next = new_idx? (new_idx < nodes.size()? nodes[new_idx] : endpoint) : (!nodes.empty()? first() : endpoint);
-		if (prev && !prev->attach_output_bus(0, node, 0)) return false;
-		else if (!prev && !audio_node_impl::attach_output_bus(0, node, 0)) return false;
-		if (next && !node->attach_output_bus(0, next, input_bus_index)) {
-			// The node can't feed the next one, as with another channel count, so the chain goes back to how it was rather than ending at a node that leads nowhere.
-			if (prev) prev->attach_output_bus(0, next, 0);
-			else audio_node_impl::attach_output_bus(0, next, 0);
+		// The node is attached to the next one first, so a node that can't feed it, as with another channel count, is refused with the chain untouched, and the next node keeps a reference from one of the two attachments throughout.
+		if (next && !node->attach_output_bus(0, next, input_bus_index)) return false;
+		if (prev? !prev->attach_output_bus(0, node, 0) : !audio_node_impl::attach_output_bus(0, node, 0)) {
+			if (next) node->detach_output_bus(0);
 			return false;
 		}
 		nodes.insert(nodes.begin() + new_idx, node);
