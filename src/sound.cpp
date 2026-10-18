@@ -2158,6 +2158,7 @@ public:
 	sound_impl(audio_engine *e) : paused(false), should_autoclose(false), datasource(nullptr), pcm_stream(nullptr), mixer_impl(dynamic_cast <audio_engine_impl*> (e), false), load_state(nullptr), pcm_buffer() {
 		init_sound_context();
 		snd = nullptr;
+		garbage_collect_inline_sounds(); // Autoclosed sounds that finished are freed whenever sounds are made or loaded, which scripts do all the time, not only by engine.play().
 	}
 	~sound_impl() {
 		close();
@@ -2174,6 +2175,7 @@ public:
 		}
 	}
 	bool load_special(const std::string &filename, const size_t protocol_slot = 0, directive_t protocol_directive = nullptr, const size_t filter_slot = 0, directive_t filter_directive = nullptr, ma_uint32 ma_flags = MA_SOUND_FLAG_DECODE) override {
+		garbage_collect_inline_sounds();
 		if (snd)
 			close();
 		snd = make_unique < ma_sound > ();
