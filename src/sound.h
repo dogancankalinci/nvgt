@@ -234,12 +234,12 @@ public:
 };
 class sound_shape {
 	// This facility allows sounds to be attached to any arbitrary shape for positioning.
-	// When a shape is attached to a sound or mixer, set_position_3d exhibits different functionality. if sound_shape::contains returns true based on whether listener_position is within the shape, spatialization is disabled on the sound. Otherwise, the sound's position is set to the sound_position vector passed to the contains callback, the callback can alter it to point at the nearest edge of the shape if needed and should be overridden by subclasses. Do not override is_in_shape as it's a base function which calls contains.
-	// We keep track of the original sound position before it was mutated so that sound::get_position_3d works as expected.
+	// When a shape is attached to a sound or mixer, set_position_3d exhibits different functionality. if sound_shape::contains returns true based on whether listener_position is within the shape, the sound plays from the listener. Otherwise, the sound's position is set to the sound_position vector passed to the contains callback, the callback can alter it to point at the nearest edge of the shape if needed and should be overridden by subclasses. Do not override is_in_shape as it's a base function which calls contains.
+	// The sound or mixer keeps the position the script set, as one shape can be given to several, and places itself again from it whenever a listener of its engine moves; contains can be called from whichever thread moved the listener.
 	mutable int refcount;
 	reactphysics3d::Vector3 position;
 public:
-	mixer* connected_sound; // If set, this object is not threadsafe.
+	mixer* connected_sound; // Not used by the engine.
 	sound_shape() : refcount(1), connected_sound(nullptr) {}
 	void duplicate() const { asAtomicInc(refcount); }
 	void release() const { if (asAtomicDec(refcount) < 1) delete this; }

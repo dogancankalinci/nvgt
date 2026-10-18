@@ -328,23 +328,11 @@ void garbage_collect_inline_sounds() {
 // Sound shapes let mixer/sound::set_position_3d position the sound as though it was more than one tile wide in each direction.
 typedef sound_shape* sound_shape_setup_callback(mixer* connected_sound, CScriptHandle* shape_reference);
 std::unordered_map<int, sound_shape_setup_callback*> g_sound_shape_setup_callbacks;
-std::unordered_set<sound_shape*> g_blocking_sound_shapes; // Most built-in shapes are threadsafe, thus when the listener moves we can safely update the sound position from audio processing threads. Sometimes however such as in the case of script callbacks, we wish to insilate the scripter from being threadsafe, and we store all such non-threadsafe shapes here.
-bool register_blocking_sound_shape(sound_shape* shape, mixer* connected_sound) {
-	if (!shape || !connected_sound) return false;
-	shape->connected_sound = connected_sound;
-	g_blocking_sound_shapes.insert(shape);
-	return true;
-}
-bool unregister_blocking_sound_shape(sound_shape* shape) {
-	auto it = g_blocking_sound_shapes.find(shape);
-	if (it == g_blocking_sound_shapes.end()) return false;
-	shape->connected_sound = nullptr;
-	g_blocking_sound_shapes.erase(it);
-	return true;
-}
-void update_blocking_sound_shapes() {
-	for (sound_shape* s : g_blocking_sound_shapes) s->connected_sound->set_position_3d_vector(s->get_position());
-}
+// A shaped sound or mixer is placed from where its listener is, so each move of a listener places those of its engine again, on the thread that moved it. Taken before a mixer's spatialization_params_mutex.
+class mixer_impl;
+static std::mutex g_shaped_mixers_mutex;
+static std::unordered_set<mixer_impl*> g_shaped_mixers;
+static void place_shaped_mixers(audio_engine* engine);
 sound_shape* sound_shape_builtin_standard_setup(mixer* snd, CScriptHandle* shape_ref) {
 	// This assumes that the shape object has already been created by the scripter and is contained within the CScriptHandle we've received.
 	sound_shape* shape = (sound_shape*)(shape_ref->GetRef());
@@ -673,12 +661,12 @@ public:
 	void set_listener_position(unsigned int index, float x, float y, float z) override {
 		if (engine)
 			ma_engine_listener_set_position(&*engine, index, x, y, z);
-		update_blocking_sound_shapes();
+		place_shaped_mixers(this);
 	}
 	void set_listener_position_vector(unsigned int index, const reactphysics3d::Vector3 &position) override {
 		if (engine)
 			ma_engine_listener_set_position(&*engine, index, position.x, position.y, position.z);
-		update_blocking_sound_shapes();
+		place_shaped_mixers(this);
 	}
 	reactphysics3d::Vector3 get_listener_position(unsigned int index) const override { return engine ? ma_vec3_to_rp_vec3(ma_engine_listener_get_position(&*engine, index)) : reactphysics3d::Vector3(); }
 	void set_listener_direction(unsigned int index, float x, float y, float z) override {
@@ -1708,6 +1696,7 @@ public:
 		play();
 	}
 	~mixer_impl() {
+		track_shape(false);
 		stop();
 		unique_lock<mutex> lock(spatialization_params_mutex);
 		if (spatializer) {
@@ -1721,10 +1710,7 @@ public:
 			effects_chain->release();
 		if (parent_mixer)
 			parent_mixer->release();
-		if (shape) {
-			if (shape->connected_sound) unregister_blocking_sound_shape(shape);
-			shape->release();
-		}
+		if (shape) shape->release();
 		if (snd) { std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); ma_sound_group_uninit(&*snd); } // a sound group is a graph node: its uninit edits the endpoint's input list
 	}
 	audio_spatializer* get_spatializer() const {
@@ -1793,18 +1779,23 @@ public:
 		shape_handle = CScriptHandle();
 		if (old_shape) old_shape->release();
 		if (!new_shape.GetRef()) { // A null shape clears it, which is done, back at the position the script set.
+			track_shape(false);
 			if (snd && get_spatialization_enabled()) set_position_3d(position.x, position.y, position.z);
 			return true;
 		}
 		sound_shape* new_shape_obj = g_sound_shape_setup_callbacks[ot](this, &new_shape);
-		if (!new_shape_obj) return false;
+		if (!new_shape_obj) {
+			track_shape(false);
+			return false;
+		}
 		new_shape_obj->set_position(position);
-		shape_anchor = position;
 		{
 			unique_lock<mutex> lock(spatialization_params_mutex);
 			shape = new_shape_obj;
+			shape_anchor = position;
 		}
 		shape_handle = new_shape;
+		track_shape(true);
 		if (snd && get_spatialization_enabled()) set_position_3d(position.x, position.y, position.z); // Applied now rather than at the next set_position_3d(), for a sound already placed, which set_position_3d() would otherwise make spatialized.
 		return true;
 	}
@@ -1947,14 +1938,28 @@ public:
 		set_spatialization_enabled(true);
 		if (sound_get_default_3d_panner() >= 0 && get_preferred_3d_panner() < 0) set_3d_panner(sound_get_default_3d_panner());
 		if (sound_get_default_3d_attenuator() >= 0 && get_preferred_3d_attenuator() < 0) set_3d_attenuator(sound_get_default_3d_attenuator());
+		unique_lock<mutex> lock(spatialization_params_mutex); // Which a listener's move places a shaped sound under.
 		if (shape) {
-			reactphysics3d::Vector3 pos(x, y, z);
-			shape_anchor = pos;
-			reactphysics3d::Vector3 listener = get_engine()->get_listener_position(get_listener());
-			bool is_contained = shape->is_in_shape(listener, pos);
-			if (!is_contained) ma_sound_set_position(&*snd, pos.x, pos.y, pos.z);
-			else ma_sound_set_position(&*snd, listener.x, listener.y, listener.z);
+			shape_anchor = reactphysics3d::Vector3(x, y, z);
+			place_in_shape_locked();
 		} else ma_sound_set_position(&*snd, x, y, z);
+	}
+	// Under spatialization_params_mutex, with snd and shape set: plays the sound from the shape's point nearest the listener, or from the listener within the shape.
+	void place_in_shape_locked() {
+		reactphysics3d::Vector3 pos = shape_anchor, listener = get_engine()->get_listener_position(get_listener());
+		if (shape->contains(listener, pos)) pos = listener;
+		ma_sound_set_position(&*snd, pos.x, pos.y, pos.z);
+	}
+	// After a listener of this mixer's engine moved, on the thread that moved it.
+	void place_in_shape() {
+		unique_lock<mutex> lock(spatialization_params_mutex);
+		if (snd && shape && ma_sound_is_spatialization_enabled(&*snd)) place_in_shape_locked();
+	}
+	// Whether a listener's move places this mixer again; taken out first by its destructors, before anything they free.
+	void track_shape(bool shaped) {
+		std::lock_guard<std::mutex> lock(g_shaped_mixers_mutex);
+		if (shaped) g_shaped_mixers.insert(this);
+		else g_shaped_mixers.erase(this);
 	}
 	void set_position_3d_vector(const reactphysics3d::Vector3& position) override { set_position_3d(position.x, position.y, position.z); }
 	reactphysics3d::Vector3 get_position_3d() const override {
@@ -2134,6 +2139,12 @@ public:
 };
 // MiniAudio's resource manager takes a buffer whose synchronous load failed out of its cache without the cache's own lock, which its asynchronous loads take for that. Every buffer is therefore loaded asynchronously, except by load_special()'s retry without flags, which loads synchronously as only that leaves the cached file it unregisters reliably. That retry and its unregister hold this exclusively; every other making and freeing of a source in the cache holds it shared, so those wait only for such a retry and not for one another's loading. Streams don't use the cache.
 static std::shared_mutex g_resource_tree_mutex;
+static void place_shaped_mixers(audio_engine* engine) {
+	std::lock_guard<std::mutex> lock(g_shaped_mixers_mutex);
+	for (mixer_impl* m : g_shaped_mixers) {
+		if (m->get_engine() == engine) m->place_in_shape();
+	}
+}
 class sound_impl final : public mixer_impl, public virtual sound {
 	// Tracks an asynchronous load, which MiniAudio reports done through a notification, the last thing its job thread does with it. A fence won't do: miniaudio still touches one after its counter reaches zero, which is all a waiter sees, so a sound destroyed just as its load finished had its memory written after it was freed. The state therefore lives on the heap, and whichever of the sound and the job thread lets go of it last frees it. Only asynchronous loads get one; the others complete before they return and are given no notification.
 	struct async_load_state;
@@ -2260,6 +2271,7 @@ public:
 		garbage_collect_inline_sounds(); // Autoclosed sounds that finished are freed whenever sounds are made or loaded, which scripts do all the time, not only by engine.play().
 	}
 	~sound_impl() {
+		track_shape(false);
 		close();
 	}
 	inline void release() override {
@@ -2531,11 +2543,17 @@ public:
 			spatializer->release();
 			spatializer = nullptr;
 		}
+		// Taken out of snd under the lock a listener's move and the audio thread read snd under, so neither reads the sound while it is freed.
+		unique_ptr<ma_sound> closing;
+		{
+			unique_lock<mutex> lock(spatialization_params_mutex);
+			closing = std::move(snd);
+		}
 		ma_resource_manager_data_buffer *failed_buffer = finish_load_jobs(source.get());
 		// Off the graph first, which waits for the audio thread to stop reading the sound, so nothing reads what is let go of below.
 		{
 			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex);
-			ma_node_detach_all_output_buses(&*snd);
+			ma_node_detach_all_output_buses(&*closing);
 		}
 		// A wrapper the script got of the sound's own source is emptied before the source is freed with the sound, rather than left pointing at it; this also lets go of sources chained to it. Not under the graph lock, which the wrapper takes after its own.
 		if (datasource && !datasource_opened) {
@@ -2543,7 +2561,7 @@ public:
 		}
 		// Already off the graph, and a sound takes no input, so uninitializing it changes no node's lists: the graph lock isn't held across it, nor across freeing its source, as freeing a stream waits for its reads, a stalled network read included. A buffer in the resource cache is freed under the cache's lock, as it is made.
 		if (failed_buffer) free_failed_buffer(failed_buffer);
-		ma_sound_uninit(&*snd); // The sound doesn't own its source, which is freed after it.
+		ma_sound_uninit(&*closing); // The sound doesn't own its source, which is freed after it.
 		if (source) {
 			{
 				std::shared_lock<std::shared_mutex> tree_lock(g_resource_tree_mutex, std::defer_lock);
@@ -2552,7 +2570,7 @@ public:
 			}
 			source.reset();
 		}
-		snd.reset();
+		closing.reset();
 		if (datasource) {
 			if (datasource_opened) audio_data_source_impl::remove_user(datasource);
 			datasource->release();
