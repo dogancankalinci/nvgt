@@ -73,6 +73,9 @@ class audio_node_chain_impl : public passthrough_node_impl, public virtual audio
 	std::vector<audio_node*> nodes;
 	audio_node* endpoint;
 	unsigned int endpoint_input_bus_index;
+protected:
+	// Every change and read of the chain's nodes and endpoint takes this, as one script thread can change a sound's chain while another changes it too, such as a global panner change rewiring every spatializer. Recursive because the changes call one another; never taken on the audio thread, which only reads the MiniAudio graph.
+	mutable std::recursive_mutex chain_mutex;
 public:
 	audio_node_chain_impl(audio_node* source, audio_node* endpoint, audio_engine* e) : passthrough_node_impl(e), endpoint(nullptr) {
 		if (source) source->attach_output_bus(0, this, 0);
@@ -84,12 +87,18 @@ public:
 		if (endpoint) endpoint->release();
 	}
 	bool attach_output_bus(unsigned int bus_index, audio_node* node, unsigned int input_bus_index) override {
+		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		set_endpoint(node, input_bus_index);
 		return endpoint == node;
 	}
-	bool detach_output_bus(unsigned int bus_index) override { set_endpoint(nullptr, 0); return endpoint == nullptr; }
+	bool detach_output_bus(unsigned int bus_index) override {
+		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		set_endpoint(nullptr, 0);
+		return endpoint == nullptr;
+	}
 	bool detach_all_output_buses() override { return detach_output_bus(0); }
 	bool add_node(audio_node* node, audio_node* after, unsigned int input_bus_index) override {
+		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		if (!node) return false;
 		unsigned int new_idx = 0;
 		if (after) {
@@ -110,11 +119,13 @@ public:
 		return true;
 	}
 	bool add_node_at(audio_node* node, int after, unsigned int input_bus_index) override {
+		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		if (after < -1 || after >= nodes.size()) return false;
 		audio_node* insert_after = after > -1? nodes[after] : nullptr;
 		return add_node(node, insert_after, input_bus_index);
 	}
 	bool remove_node(audio_node* node) override {
+		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		if (!node) return false;
 		auto it = find(nodes.begin(), nodes.end(), node);
 		if (it == nodes.end()) return false;
@@ -132,10 +143,12 @@ public:
 		return success;
 	}
 	bool remove_node_at(unsigned int index) override {
+		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		if (index >= nodes.size()) return false;
 		return remove_node(nodes[index]);
 	}
 	bool clear(bool detach_nodes) override {
+		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		bool success = audio_node_impl::detach_output_bus(0);
 		for (audio_node* node : nodes) {
 			if (success && detach_nodes) success = node->detach_output_bus(0);
@@ -147,6 +160,7 @@ public:
 	}
 	// The chain holds a reference of its own to the endpoint. The attachment to it, whichever node it is from, holds another, but every insert, removal or clear rewires that attachment, which let go of the endpoint's only reference before the endpoint was attached to again, and a script can detach a node of the chain through the audio_node API.
 	void set_endpoint(audio_node* node, unsigned int input_bus_index) override {
+		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); // detach-then-attach must be one graph mutation, not two that another thread can interleave
 		audio_node *old = endpoint;
 		if (old) {
@@ -163,25 +177,35 @@ public:
 		}
 		if (old) old->release(); // Last, as it can be the node just attached again.
 	}
-	audio_node* get_endpoint() const override { return endpoint; }
+	audio_node* get_endpoint() const override {
+		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		return endpoint;
+	}
 	audio_node* first() const override {
+		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		if (nodes.empty()) return nullptr;
 		return nodes[0];
 	}
 	audio_node* last() const override {
+		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		if (nodes.empty()) return nullptr;
 		return nodes[nodes.size() -1];
 	}
 	audio_node* operator[](unsigned int index) const override {
+		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		if (nodes.size() <= index) return nullptr;
 		return nodes[index];
 	}
 	int index_of(audio_node* node) const override {
+		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		auto it = find(nodes.begin(), nodes.end(), node);
 		if (it == nodes.end()) return -1;
 		return distance(nodes.begin(), it);
 	}
-	unsigned int get_node_count() const override { return nodes.size(); }
+	unsigned int get_node_count() const override {
+		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		return nodes.size();
+	}
 };
 audio_node_chain* audio_node_chain::create(audio_node* source, audio_node* endpoint, audio_engine* engine) { return new audio_node_chain_impl(source, endpoint, engine); }
 
@@ -813,6 +837,7 @@ private:
 	int preferred_panner_id, preferred_attenuator_id;
 	int current_panner_id, current_attenuator_id;
 	void position_reverb() {
+		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		if (!reverb_attachment) return;
 		remove_node(reverb_attachment);
 		switch (reverb_placement) {
@@ -831,6 +856,7 @@ private:
 		}
 	}
 	bool set_fallback_panner() {
+		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		for (const auto& pair : g_audio_panners) {
 			if (!pair.second.enabled) continue;
 			spatializer_component_node* fallback_panner = create_audio_panner(pair.first, this, get_engine());
@@ -842,6 +868,7 @@ private:
 		return false;
 	}
 	bool set_fallback_attenuator() {
+		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		for (const auto& pair : g_audio_attenuators) {
 			if (!pair.second.enabled) continue;
 			spatializer_component_node* fallback_attenuator = create_audio_attenuator(pair.first, this, get_engine());
@@ -869,6 +896,7 @@ public:
 		if (reverb) reverb->release();
 	}
 	void set_panner(spatializer_component_node* new_panner) override {
+		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		if (panner) {
 			remove_node(panner);
 			panner->release();
@@ -880,6 +908,7 @@ public:
 		}
 	}
 	void set_attenuator(spatializer_component_node* new_attenuator) override {
+		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		if (attenuator) {
 			remove_node(attenuator);
 			attenuator->release();
@@ -893,6 +922,7 @@ public:
 		}
 	}
 	void set_reverb3d(reverb3d* new_reverb, audio_spatializer_reverb3d_placement placement = postpan) override {
+		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		if (new_reverb && new_reverb->get_engine() != get_engine()) { // Another engine's audio thread reads that reverb3d, which two threads can't read at once.
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return;
@@ -926,13 +956,26 @@ public:
 		}
 		reverb = new_reverb;
 	}
-	spatializer_component_node* get_panner() const override { return panner; }
-	spatializer_component_node* get_attenuator() const override { return attenuator; }
-	reverb3d* get_reverb3d() const override { return reverb; }
-	splitter_node* get_reverb3d_attachment() const override { return reverb_attachment; }
+	spatializer_component_node* get_panner() const override {
+		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		return panner;
+	}
+	spatializer_component_node* get_attenuator() const override {
+		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		return attenuator;
+	}
+	reverb3d* get_reverb3d() const override {
+		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		return reverb;
+	}
+	splitter_node* get_reverb3d_attachment() const override {
+		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		return reverb_attachment;
+	}
 	audio_spatializer_reverb3d_placement get_reverb3d_placement() const override { return reverb_placement; }
 	mixer* get_mixer() const override { return attached_mixer; }
 	void set_panner_by_id(int panner_id) override {
+		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		preferred_panner_id = panner_id;
 		spatializer_component_node* new_panner = create_audio_panner(panner_id, this, get_engine());
 		if (new_panner) {
@@ -944,6 +987,7 @@ public:
 		}
 	}
 	void set_attenuator_by_id(int attenuator_id) override {
+		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		preferred_attenuator_id = attenuator_id;
 		spatializer_component_node* new_attenuator = create_audio_attenuator(attenuator_id, this, get_engine());
 		if (new_attenuator) {
@@ -968,12 +1012,16 @@ public:
 		return true;
 	}
 	void process(const float** frames_in, unsigned int* frame_count_in, float** frames_out, unsigned int* frame_count_out) override {
+		// On the audio thread, which mustn't wait: while a script thread rewires this spatializer, freeing the reverb or its attachment read below, the parameters keep their last values for this block.
+		std::unique_lock<std::recursive_mutex> chain_lock(chain_mutex, std::try_to_lock);
+		if (!chain_lock.owns_lock()) return;
 		if (attached_mixer && (panner || attenuator || reverb)) {
 			parameters_valid = attached_mixer->get_spatialization_parameters(spatialization_params);
 			if (parameters_valid && reverb) reverb_attachment->set_output_bus_volume(1, reverb->get_volume_at(spatialization_params.listener_distance));
 		} else parameters_valid = false;
 	}
 	void on_panner_enabled_changed(int panner_id, bool enabled) override {
+		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		if (enabled) {
 			if (preferred_panner_id == panner_id && preferred_panner_id != current_panner_id) {
 				spatializer_component_node* new_panner = create_audio_panner(panner_id, this, get_engine());
@@ -990,6 +1038,7 @@ public:
 		}
 	}
 	void on_attenuator_enabled_changed(int attenuator_id, bool enabled) override {
+		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		if (enabled) {
 			if (preferred_attenuator_id == attenuator_id && preferred_attenuator_id != current_attenuator_id) {
 				spatializer_component_node* new_attenuator = create_audio_attenuator(attenuator_id, this, get_engine());
