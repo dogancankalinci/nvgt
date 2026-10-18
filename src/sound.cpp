@@ -944,9 +944,16 @@ public:
 	bool set_looping(bool looping) override { return src && !in_use()? (g_soundsystem_last_error = ma_data_source_set_looping(src->pDataSource, looping)) == MA_SUCCESS : false; }
 	bool get_looping() const override { return src? ma_data_source_is_looping(src->pDataSource) : false; }
 	bool set_range(unsigned long long start_frame, unsigned long long end_frame) override { return src && !in_use()? (g_soundsystem_last_error = ma_data_source_set_range_in_pcm_frames(src->pDataSource, start_frame, end_frame)) == MA_SUCCESS : false; }
-	void get_range(unsigned long long* start_frame, unsigned long long* end_frame) const override { if (src) ma_data_source_get_range_in_pcm_frames(src->pDataSource, start_frame, end_frame); }
+	// Without a source, 0 for both, as AngelScript leaves &out values unset.
+	void get_range(unsigned long long* start_frame, unsigned long long* end_frame) const override {
+		*start_frame = *end_frame = 0;
+		if (src) ma_data_source_get_range_in_pcm_frames(src->pDataSource, start_frame, end_frame);
+	}
 	bool set_loop_point(unsigned long long start_frame, unsigned long long end_frame) override { return src && !in_use()? (g_soundsystem_last_error = ma_data_source_set_loop_point_in_pcm_frames(src->pDataSource, start_frame, end_frame)) == MA_SUCCESS : false; }
-	void get_loop_point(unsigned long long* start_frame, unsigned long long* end_frame) const override { if (src) ma_data_source_get_loop_point_in_pcm_frames(src->pDataSource, start_frame, end_frame); }
+	void get_loop_point(unsigned long long* start_frame, unsigned long long* end_frame) const override {
+		*start_frame = *end_frame = 0;
+		if (src) ma_data_source_get_loop_point_in_pcm_frames(src->pDataSource, start_frame, end_frame);
+	}
 	// A source chained to this one is read into buffers sized for this one's format and channel count, by the audio thread and by read(), and is played at this one's sample rate, so it must match in all three.
 	bool can_chain(audio_data_source* other) const {
 		ma_data_source *theirs = other->get_ma_data_source();
@@ -1001,7 +1008,12 @@ public:
 		}
 		return src? audio_data_source_get(ma_data_source_get_next(src->pDataSource), get_engine()) : nullptr;
 	}
-	bool get_data_format(ma_format *format, unsigned int *channels, unsigned int *sample_rate) const override { return src? (g_soundsystem_last_error = ma_data_source_get_data_format(src->pDataSource, format, channels, sample_rate, nullptr, 0)) == MA_SUCCESS : false; }
+	bool get_data_format(ma_format *format, unsigned int *channels, unsigned int *sample_rate) const override {
+		if (format) *format = ma_format_unknown; // As MiniAudio sets them when it fails, for a source there isn't.
+		if (channels) *channels = 0;
+		if (sample_rate) *sample_rate = 0;
+		return src? (g_soundsystem_last_error = ma_data_source_get_data_format(src->pDataSource, format, channels, sample_rate, nullptr, 0)) == MA_SUCCESS : false;
+	}
 	unsigned int get_channels() const override {
 		unsigned int channels;
 		return get_data_format(nullptr, &channels, nullptr)? channels : 0;
@@ -2533,6 +2545,9 @@ public:
 		return 0;
 	}
 	bool get_data_format(ma_format *format, unsigned int *channels, unsigned int *sample_rate) override {
+		if (format) *format = ma_format_unknown; // As MiniAudio sets them when it fails, for a sound without anything loaded.
+		if (channels) *channels = 0;
+		if (sample_rate) *sample_rate = 0;
 		if (snd) {
 			g_soundsystem_last_error = ma_sound_get_data_format(&*snd, format, channels, sample_rate, nullptr, 0);
 			return g_soundsystem_last_error == MA_SUCCESS;
