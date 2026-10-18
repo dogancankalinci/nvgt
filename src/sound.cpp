@@ -2127,6 +2127,8 @@ public:
 		return snd ? ma_sound_is_playing(&*snd) : false;
 	}
 };
+// MiniAudio's resource manager drops a buffer whose synchronous load failed from its cache without the cache's own lock, so every making and freeing of a sound that loads into that cache, unlike a stream or a data source, takes this lock instead. It was the graph lock until making a sound no longer needed that one.
+static std::mutex g_resource_tree_mutex;
 class sound_impl final : public mixer_impl, public virtual sound {
 	// Tracks an asynchronous load, which MiniAudio reports done through a notification, the last thing its job thread does with it. A fence won't do: miniaudio still touches one after its counter reaches zero, which is all a waiter sees, so a sound destroyed just as its load finished had its memory written after it was freed. The state therefore lives on the heap, and whichever of the sound and the job thread lets go of it last frees it. Only asynchronous loads get one; the others complete before they return and are given no notification.
 	struct async_load_state;
@@ -2257,7 +2259,11 @@ public:
 			ma_resource_manager_pipeline_notifications notifications = ma_resource_manager_pipeline_notifications_init();
 			if (state) notifications.done.pNotification = &state->notification;
 			cfg.initNotifications = notifications;
-			g_soundsystem_last_error = ma_sound_init_ex(engine->get_ma_engine(), &cfg, &*snd);
+			{
+				std::unique_lock<std::mutex> tree_lock(g_resource_tree_mutex, std::defer_lock);
+				if (!(cfg.flags & MA_SOUND_FLAG_STREAM)) tree_lock.lock();
+				g_soundsystem_last_error = ma_sound_init_ex(engine->get_ma_engine(), &cfg, &*snd);
+			}
 			if (!state) return;
 			if (g_soundsystem_last_error == MA_SUCCESS) load_state = state;
 			else state->abandon(); // The notification's reference stays with MiniAudio in case it still signals.
@@ -2282,7 +2288,10 @@ public:
 			attempt_init();
 			// Loading without flags reads the file in whole and then decodes it; when the decoding fails, MiniAudio keeps the file it read, cached under the file's name with nothing holding it, so each later load of that name failed on those bytes even once the file changed. That cached entry is let go here.
 			// Only for the decoder's own failures, which come after the file was read and cached: a file that couldn't be read, such as an empty one, leaves no entry, and MiniAudio's unregister of a name it doesn't find returns without unlocking its cache, hanging every later load.
-			if (g_soundsystem_last_error == MA_INVALID_FILE || g_soundsystem_last_error == MA_NO_BACKEND) ma_resource_manager_unregister_file(ma_engine_get_resource_manager(get_engine()->get_ma_engine()), triplet.c_str());
+			if (g_soundsystem_last_error == MA_INVALID_FILE || g_soundsystem_last_error == MA_NO_BACKEND) {
+				std::lock_guard<std::mutex> tree_lock(g_resource_tree_mutex);
+				ma_resource_manager_unregister_file(ma_engine_get_resource_manager(get_engine()->get_ma_engine()), triplet.c_str());
+			}
 		}
 
 		if (g_soundsystem_last_error != MA_SUCCESS)
@@ -2464,9 +2473,13 @@ public:
 		if (datasource && !datasource_opened) {
 			if (auto impl = dynamic_cast<audio_data_source_impl*>(datasource)) impl->forget_source();
 		}
-		// Already off the graph, and a sound takes no input, so uninitializing it changes no node's lists: the graph lock isn't held across it, as freeing a stream waits for its reads, a stalled network read included.
+		// Already off the graph, and a sound takes no input, so uninitializing it changes no node's lists: the graph lock isn't held across it, as freeing a stream waits for its reads, a stalled network read included. A buffer in the resource cache is freed under the cache's lock, as it is made.
 		if (failed_buffer) free_failed_buffer(failed_buffer);
-		ma_sound_uninit(&*snd);
+		{
+			std::unique_lock<std::mutex> tree_lock(g_resource_tree_mutex, std::defer_lock);
+			if (snd->pResourceManagerDataSource && !(snd->pResourceManagerDataSource->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM)) tree_lock.lock();
+			ma_sound_uninit(&*snd);
+		}
 		snd.reset();
 		if (datasource) {
 			if (datasource_opened) audio_data_source_impl::remove_user(datasource);
