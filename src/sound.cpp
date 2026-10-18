@@ -1674,6 +1674,8 @@ public:
 			node_chain->release();
 		if (effects_chain)
 			effects_chain->release();
+		if (parent_mixer)
+			parent_mixer->release();
 		if (shape) {
 			if (shape->connected_sound) unregister_blocking_sound_shape(shape);
 			shape->release();
@@ -1708,7 +1710,10 @@ public:
 			g_soundsystem_last_error = error;
 			return false;
 		}
-		parent_mixer = mix; // Non-owning cache; node_chain's endpoint tracking is the sole owner of this reference.
+		// Held by this mixer too, not only through the chain, whose endpoint the rewiring above let go of and a script can change through internal_node_chain.
+		if (mix) mix->duplicate();
+		if (parent_mixer) parent_mixer->release();
+		parent_mixer = mix;
 		return true;
 	}
 	mixer *get_mixer() const override { return parent_mixer; }
