@@ -372,6 +372,11 @@ public:
 	~audio_engine_endpoint() { engine = nullptr; } // So the node doesn't give it back a second time.
 	void duplicate() override { engine->duplicate(); }
 	void release() override { engine->release(); }
+	// Nothing reads an endpoint's output but a loop back into the endpoint, which MiniAudio reads without end through a passthrough node such as a chain or an encoder. An engine is mixed into another through its own node instead.
+	bool attach_output_bus(unsigned int output_bus, audio_node *destination, unsigned int destination_input_bus) override {
+		g_soundsystem_last_error = MA_INVALID_OPERATION;
+		return false;
+	}
 };
 // Miniaudio objects must be allocated on the heap as nvgt's API introduces the concept of an uninitialized sound, which a stack based system would make more difficult to implement.
 class audio_engine_impl final : public audio_node_impl, public virtual audio_engine {
