@@ -1840,7 +1840,8 @@ public:
 	audio_node_chain* get_internal_node_chain() override { return node_chain; }
 	bool get_spatialization_parameters(audio_spatialization_parameters& params) override {
 		if (!spatialization_params_mutex.try_lock()) return false;
-		if (!snd || !get_spatialization_enabled()) { // Checked under the lock a sound's loads hand snd over under.
+		// Checked under the lock a sound's loads hand snd over and close() lets go of the spatializer under; without a spatializer there is no rolloff to give, and get_spatializer() would make one, which the audio thread mustn't.
+		if (!snd || !spatializer || !get_spatialization_enabled()) {
 			spatialization_params_mutex.unlock();
 			return false;
 		}
@@ -1860,7 +1861,7 @@ public:
 		params.max_distance = get_max_distance();
 		params.min_volume = get_min_gain();
 		params.max_volume = get_max_gain();
-		params.rolloff = get_rolloff();
+		params.rolloff = spatializer->get_rolloff();
 		params.distance_model = linear;
 		spatialization_params_mutex.unlock();
 		return true;
@@ -2559,15 +2560,15 @@ public:
 		}
 		if (!snd) return false;
 		if (spatializer) {
-			audio_spatializer *forgotten;
+			// Not under this sound's lock, which no chain's lock is taken inside: forgetting the mixer takes the spatializer's, and taking it out of the chain rewires the chains around it, and each of these, like letting go of the spatializer itself, can let go of the last reference to a mixer, such as one a reverb3d made or one the script pointed a chain at. A mixer's destructor takes g_shaped_mixers_mutex, which a listener's move holds while it waits for this sound's lock.
+			// The spatializer forgets this sound before the sound lets go of it, so that it stops asking the sound for its parameters first.
+			audio_spatializer *forgotten = spatializer;
+			forgotten->forget_mixer();
 			{
 				unique_lock<mutex> lock(spatialization_params_mutex);
-				spatializer->forget_mixer();
-				node_chain->remove_node(spatializer);
-				forgotten = spatializer;
 				spatializer = nullptr;
 			}
-			// After the lock: letting go of the spatializer can free a reverb3d and the mixer it made, whose destructor takes g_shaped_mixers_mutex, which a listener's move holds while it waits for this sound's lock.
+			node_chain->remove_node(forgotten);
 			forgotten->release();
 		}
 		// Taken out of snd under the lock a listener's move and the audio thread read snd under, so neither reads the sound while it is freed.
