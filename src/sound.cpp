@@ -2219,13 +2219,13 @@ class sound_impl final : public mixer_impl, public virtual sound {
 		}
 		src.reset();
 	}
-	// Frees a source that was made, whether or not it loaded, once its jobs are done, as close() frees a sound's; no sound may be playing it.
-	static void discard_source(unique_ptr<ma_resource_manager_data_source> &src) {
+	// Frees a source that was made, whether or not it loaded, once its jobs are done, as close() frees a sound's; no sound may be playing it. tree_held tells that the caller holds g_resource_tree_mutex already.
+	static void discard_source(unique_ptr<ma_resource_manager_data_source> &src, bool tree_held = false) {
 		ma_resource_manager_data_buffer *failed_buffer = finish_load_jobs(&*src);
 		if (failed_buffer) free_failed_buffer(failed_buffer);
 		{
 			std::shared_lock<std::shared_mutex> tree_lock(g_resource_tree_mutex, std::defer_lock);
-			if (!(src->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM)) tree_lock.lock();
+			if (!tree_held && !(src->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM)) tree_lock.lock();
 			ma_resource_manager_data_source_uninit(&*src);
 		}
 		src.reset();
@@ -2301,6 +2301,7 @@ public:
 		bool wait_for_load = !(ma_flags & (MA_SOUND_FLAG_ASYNC | MA_SOUND_FLAG_STREAM));
 		ma_uint32 flags = ma_flags | (wait_for_load? MA_SOUND_FLAG_ASYNC : 0);
 		unique_ptr<ma_resource_manager_data_source> made_source;
+		bool tree_held = false; // The retry below holds g_resource_tree_mutex around its attempt.
 		// Each attempt gets its own load state, so one a failed attempt left with MiniAudio can't be mistaken for the next. It makes the source and then the sound from it, as ma_sound_init_ex() would from the file's name, but keeps the source: see source.
 		auto attempt_init = [&]() {
 			async_load_state *state = (flags & MA_SOUND_FLAG_ASYNC)? new async_load_state(this) : nullptr;
@@ -2314,7 +2315,7 @@ public:
 			{
 				std::shared_lock<std::shared_mutex> shared_tree_lock(g_resource_tree_mutex, std::defer_lock);
 				std::unique_lock<std::shared_mutex> tree_lock(g_resource_tree_mutex, std::defer_lock);
-				if (!(flags & MA_SOUND_FLAG_STREAM)) {
+				if (!tree_held && !(flags & MA_SOUND_FLAG_STREAM)) {
 					if (flags & MA_SOUND_FLAG_ASYNC) shared_tree_lock.lock();
 					else tree_lock.lock();
 				}
@@ -2326,7 +2327,7 @@ public:
 				// Not attached to the endpoint by MiniAudio, as postload() attaches it to its chain; so making it changes no node's lists and needs no graph lock.
 				cfg.flags = flags | MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT;
 				cfg.pDataSource = &*made_source;
-				if ((g_soundsystem_last_error = ma_sound_init_ex(engine->get_ma_engine(), &cfg, &*made)) != MA_SUCCESS) discard_source(made_source);
+				if ((g_soundsystem_last_error = ma_sound_init_ex(engine->get_ma_engine(), &cfg, &*made)) != MA_SUCCESS) discard_source(made_source, tree_held);
 				else if (wait_for_load) {
 					{
 						std::unique_lock<std::mutex> lock(state->mtx);
@@ -2361,16 +2362,16 @@ public:
 		// For the time being, give it one more try without any flags if we got -10 (MA_INVALID_FILE) because MA's support for loading mp3 is limited.
 		// Not for a source of unknown length, such as a URL: loading without flags reads the source in whole, which needs its size, so it only opened the source again to fail with an error in place of the decoder's.
 		if (g_soundsystem_last_error == MA_INVALID_FILE && !(ma_flags & MA_SOUND_FLAG_UNKNOWN_LENGTH)) {
-			// Synchronously: an asynchronous load leaves the cached file below only at times, and unregistering a name MiniAudio doesn't find hangs every later load.
+			// Synchronously: an asynchronous load leaves the cached file below only at times, and unregistering a name MiniAudio doesn't find hangs every later load. Under the cache's lock throughout, with the unregister: another thread's load of that name in between found the cached file, failed on it too and kept it cached for good.
+			std::lock_guard<std::shared_mutex> tree_lock(g_resource_tree_mutex);
+			tree_held = true;
 			flags = 0;
 			wait_for_load = false;
 			attempt_init();
 			// Loading without flags reads the file in whole and then decodes it; when the decoding fails, MiniAudio keeps the file it read, cached under the file's name with nothing holding it, so each later load of that name failed on those bytes even once the file changed. That cached entry is let go here.
 			// Only for the decoder's own failures, which come after the file was read and cached: a file that couldn't be read, such as an empty one, leaves no entry, and MiniAudio's unregister of a name it doesn't find returns without unlocking its cache, hanging every later load.
-			if (g_soundsystem_last_error == MA_INVALID_FILE || g_soundsystem_last_error == MA_NO_BACKEND) {
-				std::lock_guard<std::shared_mutex> tree_lock(g_resource_tree_mutex);
+			if (g_soundsystem_last_error == MA_INVALID_FILE || g_soundsystem_last_error == MA_NO_BACKEND)
 				ma_resource_manager_unregister_file(ma_engine_get_resource_manager(get_engine()->get_ma_engine()), triplet.c_str());
-			}
 		}
 
 		if (g_soundsystem_last_error == MA_SUCCESS) {
