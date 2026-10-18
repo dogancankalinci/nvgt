@@ -601,6 +601,7 @@ public:
 	CScriptArray *read_script(unsigned long long frame_count) override {
 		if (!engine)
 			return nullptr;
+		if ((flags & NO_DEVICE) == 0) return CScriptArray::Create(get_array_type("array<float>")); // Its device reads it on its own thread, and MiniAudio's engine can't be read from two at once.
 		unsigned int channels = ma_engine_get_channels(&*engine);
 		if (frame_count > 0xFFFFFFFF / channels) throw runtime_error("too many frames requested");
 		CScriptArray *result = CScriptArray::Create(get_array_type("array<float>"), frame_count * channels);
