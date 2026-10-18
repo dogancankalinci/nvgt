@@ -274,6 +274,8 @@ void thread_begin(Thread* thread, asIScriptFunction* func, CScriptDictionary* ar
 		func->Release();
 		throw SystemException("thread already running");
 	}
+	// A run that has finished but was never joined is joined now; Poco's start() would otherwise replace its thread without ever joining it, so that thread would keep its stack until the process ends. Poco marks a thread as no longer running and done in one step, so this never waits, and it does nothing for a thread that was joined already.
+	thread->tryJoin(0);
 	angelscript_refcounted_duplicate<Thread>(thread);
 	script_runnable* runnable = new script_runnable(func, args, thread);
 	try {
