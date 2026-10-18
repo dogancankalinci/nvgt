@@ -2537,11 +2537,16 @@ public:
 		}
 		if (!snd) return false;
 		if (spatializer) {
-			unique_lock<mutex> lock(spatialization_params_mutex);
-			spatializer->forget_mixer();
-			node_chain->remove_node(spatializer);
-			spatializer->release();
-			spatializer = nullptr;
+			audio_spatializer *forgotten;
+			{
+				unique_lock<mutex> lock(spatialization_params_mutex);
+				spatializer->forget_mixer();
+				node_chain->remove_node(spatializer);
+				forgotten = spatializer;
+				spatializer = nullptr;
+			}
+			// After the lock: letting go of the spatializer can free a reverb3d and the mixer it made, whose destructor takes g_shaped_mixers_mutex, which a listener's move holds while it waits for this sound's lock.
+			forgotten->release();
 		}
 		// Taken out of snd under the lock a listener's move and the audio thread read snd under, so neither reads the sound while it is freed.
 		unique_ptr<ma_sound> closing;
