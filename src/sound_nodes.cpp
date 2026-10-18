@@ -705,11 +705,13 @@ class plugin_node_impl : public audio_node_impl, public virtual plugin_node {
 	plugin_node_impl(audio_plugin_node_interface* impl, unsigned char input_bus_count, unsigned char output_bus_count, unsigned int flags, audio_engine* engine) : pn(make_unique<ma_plugin_node>()), audio_node_impl(nullptr, engine), impl(impl) {
 		vtable = { ma_plugin_node_process_pcm_frames, nullptr, input_bus_count, output_bus_count, flags };
 		ma_node_config cfg = ma_node_config_init();
-		ma_uint32 channels = get_engine()->get_channels();
+		// MiniAudio reads a channel count for each bus, as effect_node_impl gives it.
+		vector<ma_uint32> channels_in(input_bus_count, get_engine()->get_channels()), channels_out(output_bus_count, get_engine()->get_channels());
 		cfg.vtable          = &vtable;
-		cfg.pInputChannels  = &channels;
-		cfg.pOutputChannels = &channels;
+		if (input_bus_count > 0) cfg.pInputChannels = &channels_in[0];
+		if (output_bus_count > 0) cfg.pOutputChannels = &channels_out[0];
 		if ((g_soundsystem_last_error = ma_node_init(ma_engine_get_node_graph(get_engine()->get_ma_engine()), &cfg, nullptr, (ma_node_base*)&*pn)) != MA_SUCCESS) throw std::runtime_error("failed to create plugin_node");
+		pn->impl = this; // Which the processing callback calls; it did nothing without it.
 		node = (ma_node_base*)&*pn;
 	}
 	~plugin_node_impl() {
