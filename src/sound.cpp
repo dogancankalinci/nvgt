@@ -1305,6 +1305,29 @@ public:
 };
 class audio_wav_encoder_impl : public audio_encoder_impl, public virtual audio_wav_encoder {
 	unique_ptr<ma_encoder> encoder;
+	// Where a stream's output goes. The stream is looked up on every call, as closing the datastream deletes it while the encoder still holds the datastream, and offsets count from where the stream was when the encoder opened, as it can already hold data.
+	struct stream_output {
+		datastream *ds = nullptr;
+		std::streamoff base = 0;
+	} output;
+	static ma_result stream_write(ma_encoder *pEncoder, const void *pBufferIn, size_t bytesToWrite, size_t *pBytesWritten) {
+		stream_output *out = static_cast<stream_output *>(pEncoder->pUserData);
+		std::ostream *stream = out->ds? out->ds->get_ostr() : nullptr;
+		*pBytesWritten = 0;
+		if (!stream) return MA_ERROR;
+		stream->write((const char *)pBufferIn, bytesToWrite);
+		if (!stream->good()) return MA_ERROR;
+		*pBytesWritten = bytesToWrite;
+		return MA_SUCCESS;
+	}
+	static ma_result stream_seek(ma_encoder *pEncoder, ma_int64 offset, ma_seek_origin origin) {
+		if (origin != ma_seek_origin_start) return MA_NOT_IMPLEMENTED;
+		stream_output *out = static_cast<stream_output *>(pEncoder->pUserData);
+		std::ostream *stream = out->ds? out->ds->get_ostr() : nullptr;
+		if (!stream) return MA_ERROR;
+		stream->seekp(out->base + offset);
+		return stream->good()? MA_SUCCESS : MA_ERROR;
+	}
 protected:
 	bool open_impl(const string& filename, datastream* ds, unsigned int sample_rate, unsigned int channels, unsigned int flags) override {
 		ma_format target_format;
@@ -1316,7 +1339,12 @@ protected:
 		else throw runtime_error("pcm format not given");
 		encoder = make_unique<ma_encoder>();
 		ma_encoder_config cfg = ma_encoder_config_init(ma_encoding_format_wav, target_format, channels, sample_rate);
-		if (ds && ds->can_write()) g_soundsystem_last_error = ma_encoder_init(wav_write_proc, wav_seek_proc, ds->get_ostr(), &cfg, &*encoder);
+		if (ds && ds->can_write()) {
+			output.ds = ds;
+			std::streampos start = ds->get_ostr()->tellp();
+			output.base = start == std::streampos(-1)? 0 : std::streamoff(start);
+			g_soundsystem_last_error = ma_encoder_init(stream_write, stream_seek, &output, &cfg, &*encoder);
+		}
 		else if (!filename.empty()) g_soundsystem_last_error = ma_encoder_init_file(filename.c_str(), &cfg, &*encoder);
 		else throw runtime_error("no encoding output source provided");
 		if (g_soundsystem_last_error != MA_SUCCESS) {
@@ -1350,7 +1378,8 @@ class audio_opus_encoder_impl : public audio_encoder_impl, public virtual audio_
 	int bitrate, complexity, signal_type, application, packet_loss_percent;
 	bool vbr, cvbr, dtx;
 	static int write_callback(void* user_data, const unsigned char* ptr, opus_int32 len) {
-		ostream* ostr = static_cast<ostream*>(user_data);
+		datastream* ds = static_cast<datastream*>(user_data);
+		ostream* ostr = ds? ds->get_ostr() : nullptr; // Looked up each time, as closing the datastream deletes it while the encoder still holds the datastream.
 		if (!ostr) return 1;
 		ostr->write((const char*)ptr, len);
 		return ostr->good()? 0 : 1;
@@ -1363,7 +1392,7 @@ protected:
 		if (!comments) return false;
 		if (ds && ds->can_write()) {
 			OpusEncCallbacks callbacks = {write_callback, close_callback};
-			encoder = ope_encoder_create_callbacks(&callbacks, ds->get_ostr(), comments, sample_rate, channels, 0, &error);
+			encoder = ope_encoder_create_callbacks(&callbacks, ds, comments, sample_rate, channels, 0, &error);
 		} else if (!filename.empty()) encoder = ope_encoder_create_file(filename.c_str(), comments, sample_rate, channels, 0, &error);
 		if (!encoder) {
 			// close_impl() only runs its cleanup for an open encoder, so the comments made above would never be freed.
