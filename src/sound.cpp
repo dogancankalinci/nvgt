@@ -735,6 +735,7 @@ class audio_data_source_impl : public audio_node_impl, public virtual audio_data
 	audio_data_source* src_cur;
 	audio_data_source* src_next;
 protected:
+	std::atomic<int> users{0}; // Sounds playing this source and sources chaining to it, which read its MiniAudio data source directly, so close() and open() mustn't free it under them.
 	// One script thread may be reading from or closing this object while another opens it (a shared decoder handle, or a wrapper destroyed by its owner mid-read). The members below are unique_ptrs that get reset on close, so those paths must not interleave. Recursive because open() re-enters close(), and set_ma_data_source() re-enters reset().
 	mutable std::recursive_mutex source_mutex;
 	bool set_ma_data_source(ma_data_source* new_src) {
@@ -771,13 +772,27 @@ protected:
 			node = nullptr;
 			src.reset();
 		}
-		if (src_cur) src_cur->release();
-		if (src_next) src_next->release();
+		if (src_cur) {
+			remove_user(src_cur);
+			src_cur->release();
+		}
+		if (src_next) {
+			remove_user(src_next);
+			src_next->release();
+		}
 		src_cur = src_next = nullptr;
 	}
 public:
 	audio_data_source_impl(audio_engine* e, ma_data_source* initial_src = nullptr) : audio_node_impl(nullptr, e), src_cur(nullptr), src_next(nullptr), src(nullptr) { if (initial_src) set_ma_data_source(initial_src); }
 	~audio_data_source_impl() { reset(); }
+	static void add_user(audio_data_source* ds) {
+		if (auto impl = dynamic_cast<audio_data_source_impl*>(ds)) impl->users++;
+	}
+	static void remove_user(audio_data_source* ds) {
+		if (auto impl = dynamic_cast<audio_data_source_impl*>(ds)) impl->users--;
+	}
+	// Lets go of the MiniAudio data source wrapped, for a wrapper of a sound's own source when the sound frees it; the wrapper stays, empty.
+	void forget_source() { set_ma_data_source(nullptr); }
 	ma_data_source* get_ma_data_source() const override { return src? src->pDataSource : nullptr; }
 	unsigned int get_advised_read_frame_count() const override { return SOUNDSYSTEM_FRAMESIZE; }
 	unsigned long long read(void* buffer, unsigned long long frame_count) override {
@@ -848,9 +863,15 @@ public:
 	bool set_current(audio_data_source* new_current) override {
 		if (!src) return false;
 		if ((g_soundsystem_last_error = ma_data_source_set_current(src->pDataSource, new_current? new_current->get_ma_data_source() : nullptr)) != MA_SUCCESS) return false;
-		if (src_cur) src_cur->release();
+		if (src_cur) {
+			remove_user(src_cur);
+			src_cur->release();
+		}
 		src_cur = new_current;
-		if (src_cur) src_cur->duplicate();
+		if (src_cur) {
+			src_cur->duplicate();
+			add_user(src_cur);
+		}
 		return true;
 	}
 	audio_data_source* get_current() const override {
@@ -863,9 +884,15 @@ public:
 	bool set_next(audio_data_source* new_next) override {
 		if (!src) return false;
 		if ((g_soundsystem_last_error = ma_data_source_set_next(src->pDataSource, new_next? new_next->get_ma_data_source() : nullptr)) != MA_SUCCESS) return false;
-		if (src_next) src_next->release();
+		if (src_next) {
+			remove_user(src_next);
+			src_next->release();
+		}
 		src_next = new_next;
-		if (src_next) src_next->duplicate();
+		if (src_next) {
+			src_next->duplicate();
+			add_user(src_next);
+		}
 		return true;
 	}
 	audio_data_source* get_next() const override {
@@ -1113,6 +1140,7 @@ public:
 	}
 	virtual bool close() override {
 		std::lock_guard<std::recursive_mutex> guard(source_mutex);
+		if (users) return false; // A sound plays it, or another source chains to it, both reading its decoder directly. open() closes first, so it refuses too.
 		reset();
 		if (!decoder) return false;
 		if (datastream_ref) {
@@ -1830,6 +1858,7 @@ class sound_impl final : public mixer_impl, public virtual sound {
 	bool paused;
 	bool should_autoclose; // If this is true, the release method defers sound destruction until playback has complete.
 	mutable audio_data_source* datasource; // Avoid the need to keep looking up the pointer to the c++ ma_data_source wrapper associated with this sound.
+	bool datasource_opened = false; // datasource is one open() was given and plays, rather than a wrapper of the sound's own source.
 	inline void postload(const string& filename, bool async_load = false) {
 		loaded_filename = filename;
 		node = (ma_node_base *)&*snd;
@@ -2042,6 +2071,8 @@ public:
 			return false;
 		}
 		datasource = ds;
+		datasource_opened = true;
+		audio_data_source_impl::add_user(ds); // So it can't be closed while this sound reads it.
 		postload(":datasource", false);
 		return true;
 	}
@@ -2065,12 +2096,18 @@ public:
 			spatializer->release();
 			spatializer = nullptr;
 		}
+		// A wrapper the script got of the sound's own source is emptied before the source is freed with the sound, rather than left pointing at it.
+		if (datasource && !datasource_opened) {
+			if (auto impl = dynamic_cast<audio_data_source_impl*>(datasource)) impl->forget_source();
+		}
 		{ std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); ma_sound_uninit(&*snd); }
 		snd.reset();
 		if (datasource) {
+			if (datasource_opened) audio_data_source_impl::remove_user(datasource);
 			datasource->release();
 			datasource = nullptr;
 		}
+		datasource_opened = false;
 		node = nullptr;
 		if (pcm_stream) ma_pcm_rb_uninit(&*pcm_stream);
 		pcm_stream.reset();
