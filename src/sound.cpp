@@ -1219,7 +1219,14 @@ public:
 		if (get_active()) close();
 		unique_lock<mutex> lock(write_mtx);
 		if (flags & ENCODER_DEFAULTS) flags = (flags & ~ENCODER_DEFAULTS) | get_default_open_flags();
-		if (!open_impl("", ds, sample_rate, channels, flags)) {
+		bool opened;
+		try {
+			opened = open_impl("", ds, sample_rate, channels, flags);
+		} catch (...) { // The script's reference to the stream, given to this function, isn't kept then either.
+			ds->release();
+			throw;
+		}
+		if (!opened) {
 			ds->release();
 			return false;
 		}
