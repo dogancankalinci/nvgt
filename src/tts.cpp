@@ -1166,7 +1166,7 @@ bool tts_voice::set_language(const string& language) {
 	};
 	current_language = language;
 	list_voices_again(false, true);
-	voice_remembered = false; // A language chosen now replaces a voice that left the list, and the filter leaving out the chosen voice is no voice leaving.
+	if (!language.empty()) voice_remembered = false; // A language chosen now replaces a voice that left the list, and the filter leaving out the chosen voice is no voice leaving. An empty one only lifts the filter.
 	if (voices.empty()) return restore();
 	// Asking for a language is asking for one of its voices, so the voice refresh() picked from the filtered list is pushed onto the engine like a set_voice() call, and when the engine refuses it, the other voices of the language are tried in turn. An empty language only lifts the filter and changes nothing about the selection.
 	if (!language.empty() && get_voice_info(current_voice_index)) {
