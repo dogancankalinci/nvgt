@@ -24,6 +24,7 @@ vcpkg_from_github(
         fix-system-call-arg-ownership.patch
         fix-delegate-return-value.patch
         fix-refcast-script-methods.patch
+        fix-global-behaviour-callconvs.patch
 )
 
 vcpkg_cmake_configure(
