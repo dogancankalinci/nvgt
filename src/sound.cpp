@@ -955,10 +955,18 @@ public:
 	}
 	ma_data_source* get_ma_data_source() const override { return src? src->pDataSource : nullptr; }
 	unsigned int get_advised_read_frame_count() const override { return SOUNDSYSTEM_FRAMESIZE; }
+	// Frames a reader was asked to drop, which this thread, reading the source itself, drops first; see audio_ring_buffer_impl.
+	virtual void drop_pending_frames() {}
+	// Under source_mutex: takes the source's own node off the graph, so that this thread is the only reader, and drops what it is to drop. False when the source can't be read here now.
+	bool ready_to_read() {
+		if (!src || in_use(false) || node && !detach_all_output_buses()) return false; // A source in another format was never made a node.
+		drop_pending_frames();
+		return true;
+	}
 	// Reads 32-bit float samples into buffer, as read_script() makes them.
 	unsigned long long read(void* buffer, unsigned long long frame_count) override {
 		std::lock_guard<std::recursive_mutex> guard(source_mutex);
-		if (!src || in_use(false) || node && !detach_all_output_buses()) return 0; // A source in another format was never made a node.
+		if (!ready_to_read()) return 0;
 		if (!frame_count) frame_count = get_advised_read_frame_count();
 		if (!frame_count) return 0;
 		ma_format format = ma_format_f32;
@@ -977,7 +985,7 @@ public:
 	}
 	CScriptArray* read_script(unsigned long long frame_count) override {
 		std::lock_guard<std::recursive_mutex> guard(source_mutex);
-		if (!frame_count) frame_count = get_advised_read_frame_count();
+		if (!frame_count && ready_to_read()) frame_count = get_advised_read_frame_count(); // Counted once what was to be dropped is gone, which an advised count leaves out.
 		unsigned int channels = get_channels();
 		if (channels && frame_count > 0xFFFFFFFF / channels) throw runtime_error("too many frames requested");
 		CScriptArray* array = CScriptArray::Create(get_array_type("array<float>"), frame_count * channels);
@@ -1148,12 +1156,16 @@ struct pcm_queue {
 		ma_uint32 available = ma_pcm_rb_available_read(&rb), skipping = skip;
 		return available > skipping? available - skipping : 0;
 	}
+	// By the reader only.
+	void drop_pending() {
+		if (ma_uint32 n = skip.exchange(0)) {
+			ma_uint32 available = ma_pcm_rb_available_read(&rb);
+			ma_pcm_rb_seek_read(&rb, n < available? n : available);
+		}
+	}
 	static ma_result on_read(ma_data_source* ds, void* frames_out, ma_uint64 frame_count, ma_uint64* frames_read) {
 		pcm_queue* queue = (pcm_queue*)ds;
-		if (ma_uint32 n = queue->skip.exchange(0)) {
-			ma_uint32 available = ma_pcm_rb_available_read(&queue->rb);
-			ma_pcm_rb_seek_read(&queue->rb, n < available? n : available);
-		}
+		queue->drop_pending();
 		return ma_data_source_read_pcm_frames(&queue->rb, frames_out, frame_count, frames_read);
 	}
 	static ma_result on_get_data_format(ma_data_source* ds, ma_format* format, ma_uint32* channels, ma_uint32* sample_rate, ma_channel* channel_map, size_t channel_map_cap) {
@@ -1166,6 +1178,7 @@ class audio_ring_buffer_impl : public audio_data_source_impl, public virtual aud
 	ma_pcm_rb *rb = nullptr; // The queue's.
 protected:
 	void discard_queued() { if (queue) queue->discard(); }
+	void drop_pending_frames() override { if (queue) queue->drop_pending(); }
 public:
 	audio_ring_buffer_impl(unsigned int channels, unsigned int size, audio_engine * e) : audio_data_source_impl(e, nullptr), queue(make_unique<pcm_queue>()) {
 		if (queue->init(ma_format_f32, channels, size) != MA_SUCCESS) throw std::runtime_error("failed to initialize ring buffer");
