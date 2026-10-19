@@ -95,14 +95,35 @@ bool add_decoder(ma_decoding_backend_vtable *vtable) {
 	}
 }
 #ifdef MA_SUPPORT_AAUDIO
-// AAudio's error callback hands a disconnected or rerouted stream to the context's job thread as a reroute job that holds a raw pointer to the device, and ma_device_uninit only waits for a reroute that is already running, not for one still sitting in the queue. Such a job then runs after the device is gone: it locks the destroyed reroute mutex and reopens streams through freed memory. So before a device is uninitialized, raise its tear-down flag (the error callback then queues nothing new and a queued reroute returns at once), and wait until the job thread has worked through what is already queued. The thread runs its jobs one at a time in order, so once a job posted now has run, every reroute queued before it has finished. The second pass covers an error callback that read the flag just before it was raised and posted its job just after the first marker.
+// MiniAudio's AAudio error callback reads the device's tear-down flag and then queues a reroute job. A callback that read the flag just before drain_aaudio_reroutes() raised it, and was then held up past the drain until the device was gone, still queued a job for freed memory. So the callback MiniAudio registers runs inside one that holds g_aaudio_error_mutex, which the drain also holds while it raises the flag: a callback either sees the flag or has queued its job before the drain starts waiting.
+typedef void (*aaudio_error_callback)(void* stream, void* user_data, int32_t error);
+static std::mutex g_aaudio_error_mutex;
+static std::atomic<aaudio_error_callback> g_ma_aaudio_error_callback{nullptr};
+static ma_proc g_aaudio_builder_set_error_callback = nullptr;
+static void aaudio_error_callback_locked(void* stream, void* user_data, int32_t error) {
+	std::lock_guard<std::mutex> lock(g_aaudio_error_mutex);
+	g_ma_aaudio_error_callback.load()(stream, user_data, error);
+}
+static void set_aaudio_error_callback_locked(void* builder, aaudio_error_callback callback, void* user_data) {
+	g_ma_aaudio_error_callback = callback;
+	((void (*)(void*, aaudio_error_callback, void*))g_aaudio_builder_set_error_callback)(builder, aaudio_error_callback_locked, user_data);
+}
+static void lock_aaudio_error_callbacks(ma_context* context) {
+	if (context->backend != ma_backend_aaudio || !context->aaudio.AAudioStreamBuilder_setErrorCallback || context->aaudio.AAudioStreamBuilder_setErrorCallback == (ma_proc)set_aaudio_error_callback_locked) return;
+	g_aaudio_builder_set_error_callback = context->aaudio.AAudioStreamBuilder_setErrorCallback;
+	context->aaudio.AAudioStreamBuilder_setErrorCallback = (ma_proc)set_aaudio_error_callback_locked;
+}
+// AAudio's error callback hands a disconnected or rerouted stream to the context's job thread as a reroute job that holds a raw pointer to the device, and ma_device_uninit only waits for a reroute that is already running, not for one still sitting in the queue. Such a job then runs after the device is gone: it locks the destroyed reroute mutex and reopens streams through freed memory. So before a device is uninitialized, raise its tear-down flag (the error callback then queues nothing new and a queued reroute returns at once), and wait until the job thread has worked through what is already queued. The thread runs its jobs one at a time in order, so once a job posted now has run, every reroute queued before it has finished. The second pass covers a context whose error callback could not be wrapped, where a callback that read the flag just before it was raised can post its job just after the first marker.
 static ma_result aaudio_job_queue_marker(ma_job* job) {
 	ma_event_signal((ma_event*)job->data.custom.data0);
 	return MA_SUCCESS;
 }
 static void drain_aaudio_reroutes(ma_device* device) {
 	if (!device || !device->pContext || device->pContext->backend != ma_backend_aaudio || ma_device_get_state(device) == ma_device_state_uninitialized) return;
-	__atomic_store_n(&device->aaudio.isTearingDown.value, MA_TRUE, __ATOMIC_SEQ_CST);
+	{
+		std::lock_guard<std::mutex> lock(g_aaudio_error_mutex);
+		__atomic_store_n(&device->aaudio.isTearingDown.value, MA_TRUE, __ATOMIC_SEQ_CST);
+	}
 	for (int pass = 0; pass < 2; pass++) {
 		ma_event done;
 		if (ma_event_init(&done) != MA_SUCCESS) return;
@@ -168,6 +189,7 @@ bool init_sound_context() {
 		return false;
 	#ifdef MA_SUPPORT_AAUDIO
 	delay_aaudio_stream_closes(&g_sound_context);
+	lock_aaudio_error_callbacks(&g_sound_context);
 	#endif
 	g_sound_service = sound_service::make();
 	if (g_sound_service == nullptr) {
