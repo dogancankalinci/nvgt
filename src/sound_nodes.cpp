@@ -297,6 +297,7 @@ class splitter_node_impl : public audio_node_impl, public virtual splitter_node 
 	unique_ptr<ma_splitter_node> sn;
 	public:
 	splitter_node_impl(audio_engine* e, int channels) : sn(make_unique<ma_splitter_node>()), audio_node_impl(nullptr, e) {
+		if (channels < 1 || channels > MA_MAX_CHANNELS) throw std::runtime_error("invalid channel count"); // A node's channel count is kept in 8 bits.
 		ma_splitter_node_config cfg = ma_splitter_node_config_init(channels);
 		if ((g_soundsystem_last_error = ma_splitter_node_init(ma_engine_get_node_graph(get_engine()->get_ma_engine()), &cfg, nullptr, &*sn)) != MA_SUCCESS) throw std::runtime_error("ma_splitter_node was not initialized");
 		node = (ma_node_base*)&*sn;

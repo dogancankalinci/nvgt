@@ -1242,6 +1242,7 @@ protected:
 	unsigned long long frames_to_take(unsigned long long frame_count) override { return queue? std::min<unsigned long long>(frame_count, queue->readable()) : 0; }
 public:
 	audio_ring_buffer_impl(unsigned int channels, unsigned int size, audio_engine * e) : audio_data_source_impl(e, nullptr), queue(make_unique<pcm_queue>()) {
+		if (channels > MA_MAX_CHANNELS) throw runtime_error(Poco::format("exceeded maximum channel count of %d", MA_MAX_CHANNELS)); // A node's channel count is kept in 8 bits, as for an engine.
 		if (queue->init(ma_format_f32, channels, size) != MA_SUCCESS) throw std::runtime_error("failed to initialize ring buffer");
 		rb = &queue->rb;
 		ma_pcm_rb_set_sample_rate(rb, get_engine()->get_sample_rate()); // Frames are written at the engine's rate, as the microphone records them; MiniAudio leaves it 0.
@@ -2657,6 +2658,10 @@ public:
 			if (!buffer_size) buffer_size = size_in_frames * 2;
 			if (!buffer_size) return false;
 			if (!channels) channels = get_engine()->get_channels();
+			if (channels > MA_MAX_CHANNELS) { // More than a node can describe, as for a ring buffer.
+				g_soundsystem_last_error = MA_INVALID_ARGS;
+				return false;
+			}
 			if (!sample_rate) sample_rate = get_engine()->get_sample_rate();
 			pcm_stream = make_unique<pcm_queue>();
 			if ((g_soundsystem_last_error = pcm_stream->init(format, channels, buffer_size)) != MA_SUCCESS) {
