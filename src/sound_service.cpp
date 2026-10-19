@@ -341,20 +341,6 @@ private:
 	static ma_result onSeek(ma_vfs *pVFS, ma_vfs_file file, ma_int64 offset, ma_seek_origin origin) {
 		file_cast(file);
 		stream->clear();
-		// A seek by nothing from where it is, which libvorbisfile and opusfile make to ask whether a stream can seek: a stream that can't, as a URL's, answered it as it answers where it is, and they then took that for its end, so an Ogg Opus stream stopped after what was read while opening and an Ogg Vorbis one reported a wrong length. Whether it can is tried by seeking to its end and back.
-		if (origin == ma_seek_origin_current && offset == 0) {
-			std::streampos at = stream->tellg();
-			stream->clear();
-			stream->seekg(0, stream->end);
-			bool can_seek = at >= 0 && !stream->fail();
-			stream->clear();
-			if (at >= 0) {
-				stream->seekg(at);
-				if (stream->fail()) can_seek = false;
-				stream->clear();
-			}
-			return can_seek? MA_SUCCESS : MA_NOT_IMPLEMENTED;
-		}
 		std::ios_base::seekdir dir;
 		switch (origin) {
 			case ma_seek_origin_start:

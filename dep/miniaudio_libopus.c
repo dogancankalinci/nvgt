@@ -69,6 +69,24 @@ static int ma_libopus_of_callback__seek(void* pUserData, ogg_int64_t offset, int
     ma_result result;
     ma_seek_origin origin;
 
+    /*
+    NVGT: libvorbisfile and opusfile ask whether a stream can seek with a seek by nothing from where it is, which a stream that can't seek
+    answers as the no-op it is, and they then took where they were for the stream's end, cutting it short. The question is answered here,
+    and only here, as dr_wav makes that same seek as a no-op that must succeed: by trying the stream's end and coming back to where it was.
+    */
+    if (offset == 0 && whence == SEEK_CUR) {
+        ma_int64 cursor;
+        ma_bool32 seekable;
+        if (pOpus->onTell == NULL || pOpus->onTell(pOpus->pReadSeekTellUserData, &cursor) != MA_SUCCESS) {
+            return -1;
+        }
+        seekable = pOpus->onSeek(pOpus->pReadSeekTellUserData, 0, ma_seek_origin_end) == MA_SUCCESS;
+        if (pOpus->onSeek(pOpus->pReadSeekTellUserData, cursor, ma_seek_origin_start) != MA_SUCCESS) {
+            return -1;
+        }
+        return seekable ? 0 : -1;
+    }
+
     if (whence == SEEK_SET) {
         origin = ma_seek_origin_start;
     } else if (whence == SEEK_END) {
