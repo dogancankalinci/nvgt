@@ -1,0 +1,124 @@
+diff --git a/sdk/angelscript/source/as_callfunc.h b/sdk/angelscript/source/as_callfunc.h
+--- a/sdk/angelscript/source/as_callfunc.h
++++ b/sdk/angelscript/source/as_callfunc.h
+@@ -62,6 +62,10 @@
+ // narrower than 32 bits to be passed (see as_callfunc.cpp)
+ asDWORD ExtendSubwordArg(const asCDataType &type, asDWORD value);
+ 
++// ALTERED: releases or frees the arguments of a registered method that isn't called because its object pointer is null
++// (see as_callfunc.cpp). args points at the first value after the object pointer.
++void CleanArgsOfUnmadeCall(asCContext *context, asCScriptFunction *descr, asDWORD *args);
++
+ inline asPWORD FuncPtrToUInt(asFUNCTION_t func)
+ {
+ 	// A little trickery as the C++ standard doesn't allow direct
+diff --git a/sdk/angelscript/source/as_callfunc.cpp b/sdk/angelscript/source/as_callfunc.cpp
+--- a/sdk/angelscript/source/as_callfunc.cpp
++++ b/sdk/angelscript/source/as_callfunc.cpp
+@@ -207,6 +207,52 @@
+ #endif
+ }
+ 
++// ALTERED: CallSystemFunction and CallGeneric returned without touching the arguments when the object pointer of a method
++// was null, but the arguments the caller pushed belong to the called function: the reference held by a handle argument and
++// the copy of an object passed by value were never released or freed, as neither the compiled script nor the exception
++// handler cleans up the arguments of a system function call. They are released and freed here and their stack slots
++// cleared, so the arguments are consumed whether the function is called or not.
++void CleanArgsOfUnmadeCall(asCContext *context, asCScriptFunction *descr, asDWORD *args)
++{
++	// The arguments of a variadic function follow a count of them, which this doesn't walk
++	if( descr->IsVariadic() )
++		return;
++
++	asCScriptEngine *engine = context->m_engine;
++	int offset = 0;
++	if( descr->DoesReturnOnStack() )
++		offset += AS_PTR_SIZE;
++	for( asUINT n = 0; n < descr->parameterTypes.GetLength(); n++ )
++	{
++		asCDataType &dt = descr->parameterTypes[n];
++		if( (dt.IsObject() || dt.IsFuncdef()) && !dt.IsReference() )
++		{
++			void **addr = (void**)&args[offset];
++			if( *addr )
++			{
++				if( dt.GetTypeInfo()->flags & asOBJ_FUNCDEF )
++					reinterpret_cast<asCScriptFunction*>(*addr)->Release();
++				else if( dt.GetTypeInfo()->flags & asOBJ_REF )
++				{
++					asSTypeBehaviour *beh = &CastToObjectType(dt.GetTypeInfo())->beh;
++					asASSERT( (dt.GetTypeInfo()->flags & asOBJ_NOCOUNT) || beh->release );
++					if( beh->release )
++						engine->CallObjectMethod(*addr, beh->release);
++				}
++				else
++				{
++					asSTypeBehaviour *beh = &CastToObjectType(dt.GetTypeInfo())->beh;
++					if( beh->destruct )
++						engine->CallObjectMethod(*addr, beh->destruct);
++					engine->CallFree(*addr);
++				}
++				*addr = 0;
++			}
++		}
++		offset += dt.GetSizeOnStackDWords();
++	}
++}
++
+ // This function should prepare system functions so that it will be faster to call them
+ int PrepareSystemFunctionGeneric(asCScriptFunction *func, asSSystemFunctionInterface *internal, asCScriptEngine *engine)
+ {
+@@ -723,6 +769,7 @@
+ 			if( obj == 0 )
+ 			{
+ 				context->SetInternalException(TXT_NULL_POINTER_ACCESS);
++				CleanArgsOfUnmadeCall(context, descr, args + AS_PTR_SIZE);
+ 				return 0;
+ 			}
+ 
+@@ -777,6 +824,7 @@
+ 			if( tempPtr == 0 )
+ 			{
+ 				context->SetInternalException(TXT_NULL_POINTER_ACCESS);
++				CleanArgsOfUnmadeCall(context, descr, args + AS_PTR_SIZE);
+ 				return 0;
+ 			}
+ 
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -1717,6 +1717,26 @@
+ 		// Was the call successful?
+ 		if( m_status == asEXECUTION_ACTIVE )
+ 			m_status = asEXECUTION_FINISHED;
++		else if( !m_currentFunction->IsVariadic() )
++		{
++			// ALTERED: CallSystemFunction consumes the arguments: the function releases or frees what it owns, and
++			// CallSystemFunction cleans up the rest after the call (or instead of it, see CleanArgsOfUnmadeCall). They were
++			// left on the stack, and when the function raised an exception CleanStackFrame destroyed and freed each object
++			// passed by value and released each handle a second time when the context was unprepared, a double free (a
++			// registered function, or a delegate of a registered method, run by a context of its own). Clear them.
++			int offset = 0;
++			if( m_currentFunction->objectType )
++				offset += AS_PTR_SIZE;
++			if( m_currentFunction->DoesReturnOnStack() )
++				offset += AS_PTR_SIZE;
++			for( asUINT n = 0; n < m_currentFunction->parameterTypes.GetLength(); n++ )
++			{
++				asCDataType &dt = m_currentFunction->parameterTypes[n];
++				if( (dt.IsObject() || dt.IsFuncdef()) && !dt.IsReference() )
++					*(asPWORD*)&m_regs.stackFramePointer[offset] = 0;
++				offset += dt.GetSizeOnStackDWords();
++			}
++		}
+ 	}
+ 	else
+ 	{
+@@ -5899,6 +5919,7 @@
+ 		if( currentObject == 0 )
+ 		{
+ 			SetInternalException(TXT_NULL_POINTER_ACCESS);
++			CleanArgsOfUnmadeCall(this, descr, args + AS_PTR_SIZE);
+ 			return 0;
+ 		}
+ 
