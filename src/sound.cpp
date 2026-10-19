@@ -1446,6 +1446,7 @@ public:
 		ma_decoder_config cfg = decoder_config_init(sample_rate, channels);
 		cursor = make_unique<stream_cursor>();
 		cursor->ds = ds;
+		ds->get_istr()->clear(); // A stream an earlier call left failed, as a seek it refused, would report no position.
 		std::streampos at = ds->get_istr()->tellg(); // A stream partly read already, as after the script read a header from it, is decoded from where it is.
 		if (at >= 0) cursor->base = at;
 		ds->get_istr()->clear();
