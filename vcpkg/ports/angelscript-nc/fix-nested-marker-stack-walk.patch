@@ -1,0 +1,74 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -2021,19 +2021,24 @@
+ {
+ 	if( stackLevel >= GetCallstackSize() ) return asINVALID_ARG;
+ 
++	// ALTERED: the function at a stack level is null for the marker of a nested call made outside a registered function
++	// (PushState stores the calling system function there), such as the destructor of a script class run when a script
++	// released its last handle, but it was dereferenced before the null check below: an exception callback or a
++	// registered function walking the call stack of such a nested call crashed (NVGT's exception callback does, so an
++	// exception raised in a script class destructor ended the process).
+ 	asCScriptFunction *func;
+ 	asDWORD *bytePos;
+ 	if( stackLevel == 0 )
+ 	{
+ 		func = m_currentFunction;
+-		if( func->scriptData == 0 ) return 0;
++		if( func && func->scriptData == 0 ) return 0;
+ 		bytePos = m_regs.programPointer;
+ 	}
+ 	else
+ 	{
+ 		asPWORD *s = m_callStack.AddressOf() + (GetCallstackSize()-stackLevel-1)*CALLSTACK_FRAME_SIZE;
+ 		func = (asCScriptFunction*)s[1];
+-		if( func->scriptData == 0 ) return 0;
++		if( func && func->scriptData == 0 ) return 0;
+ 		bytePos = (asDWORD*)s[2];
+ 
+ 		// Subract 1 from the bytePos, because we want the line where
+@@ -5303,17 +5308,18 @@
+ 	asCScriptFunction *func;
+ 	asUINT pos;
+ 
++	// ALTERED: the function is null at the marker of a nested call, see GetLineNumber
+ 	if( stackLevel == 0 )
+ 	{
+ 		func = m_currentFunction;
+-		if( func->scriptData == 0 ) return false;
++		if( func == 0 || func->scriptData == 0 ) return false;
+ 		pos = asUINT(m_regs.programPointer - func->scriptData->byteCode.AddressOf());
+ 	}
+ 	else
+ 	{
+ 		asPWORD *s = m_callStack.AddressOf() + (GetCallstackSize()-stackLevel-1)*CALLSTACK_FRAME_SIZE;
+ 		func = (asCScriptFunction*)s[1];
+-		if( func->scriptData == 0 ) return false;
++		if( func == 0 || func->scriptData == 0 ) return false;
+ 		pos = asUINT((asDWORD*)s[2] - func->scriptData->byteCode.AddressOf());
+ 	}
+ 
+@@ -6508,6 +6514,11 @@
+ 		progPointer = (asDWORD*)s[2];
+ 	}
+ 
++	// ALTERED: there are no arguments to find at the marker of a nested call (a null function, see GetLineNumber) or in a
++	// registered function, which has no bytecode
++	if( func == 0 || func->scriptData == 0 )
++		return asERROR;
++
+ 	// Determine the highest stack position for local variables
+ 	// asCScriptFunction::variableSpace give this value
+ 	// If the stack pointer is higher than that, then there are data pushed on the stack
+@@ -6619,6 +6630,10 @@
+ 		progPointer = (asDWORD*)s[2];
+ 	}
+ 
++	// ALTERED: see GetArgsOnStackCount
++	if( func == 0 || func->scriptData == 0 )
++		return asERROR;
++
+ 	// If a function is already being called at a higher call stack position, subtract the args for that function
+ 	asCScriptFunction* calledFunc = 0;
+ 	if (stackLevel == 1)
