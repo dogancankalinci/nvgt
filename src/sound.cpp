@@ -1092,8 +1092,12 @@ public:
 		*start_frame = *end_frame = 0;
 		if (src) ma_data_source_get_loop_point_in_pcm_frames(src->pDataSource, start_frame, end_frame);
 	}
+	// A queue that something else fills as it is read, as a ring buffer or microphone, rather than a source with a start.
+	virtual bool is_live_queue() const { return false; }
 	// A source chained to this one is read into buffers sized for this one's format and channel count, by the audio thread and by read(), and is played at this one's sample rate, so it must match in all three.
+	// Nor a live queue: moving on to the next source seeks it to its start, which a queue has none of, and a queue pads every read with silence, which a script reading the chain would get as frames read.
 	bool can_chain(audio_data_source* other) const {
+		if (auto impl = dynamic_cast<audio_data_source_impl*>(other); impl && impl->is_live_queue()) return false;
 		ma_data_source *theirs = other->get_ma_data_source();
 		ma_format format, their_format;
 		ma_uint32 channels, their_channels, sample_rate, their_sample_rate;
@@ -1225,6 +1229,7 @@ class audio_ring_buffer_impl : public audio_data_source_impl, public virtual aud
 protected:
 	void discard_queued() { if (queue) queue->discard(); }
 	void drop_pending_frames() override { if (queue) queue->drop_pending(); }
+	bool is_live_queue() const override { return true; }
 	// The script's reads and skips take only what is queued: the ring buffer's data source pads a read with silence, which the graph's reader needs so that a sound doesn't end at a buffer empty for a moment, but which a script's read(n) returned as n frames read, as if they had been written.
 	unsigned long long frames_to_take(unsigned long long frame_count) override { return queue? std::min<unsigned long long>(frame_count, queue->readable()) : 0; }
 public:
