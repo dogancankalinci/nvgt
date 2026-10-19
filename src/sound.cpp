@@ -2949,11 +2949,14 @@ public:
 
 class microphone_impl : public audio_ring_buffer_impl, public virtual microphone {
 	unique_ptr<ma_device> capture_device;
+	std::mutex capture_write_mutex; // See reset().
 	bool follows_default = true; // Opened as the system's default, which reads as -1, rather than as a device of the list.
 	ma_device_id device_id{}; // The device of the list it was opened as, whose index is looked up in the list as it is now.
 	static void capture_data_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount) {
 		microphone_impl* node = (microphone_impl*)pDevice->pUserData;
-		if (node && pInput && frameCount > 0) node->write((float*)pInput, frameCount);
+		if (!node || !pInput || !frameCount) return;
+		std::unique_lock<std::mutex> lock(node->capture_write_mutex, std::try_to_lock);
+		if (lock.owns_lock()) node->write((float*)pInput, frameCount);
 	}
 public:
 	// Opens capture_device on the device with that id, or the system's default for null, without starting it.
@@ -3015,6 +3018,11 @@ public:
 		return true;
 	}
 	int get_device() const override { return !capture_device || follows_default? -1 : audio_device_index(ma_device_type_capture, device_id); }
+	// A ring buffer has one writer and one reader, and resetting it moves both positions: reset() while the capture thread wrote into it could leave that writer writing past its end. reset() therefore holds this, which the capture thread only tries for, dropping what it captured meanwhile rather than waiting.
+	void reset() override {
+		std::lock_guard<std::mutex> lock(capture_write_mutex);
+		audio_ring_buffer_impl::reset();
+	}
 	bool set_state(ma_node_state state) override {
 		// A microphone started again drops what it recorded before it stopped, through its reader (see pcm_queue), before its node is read again; one already recording keeps its queue.
 		if (capture_device && state == ma_node_state_started && !ma_device_is_started(&*capture_device)) discard_queued();
