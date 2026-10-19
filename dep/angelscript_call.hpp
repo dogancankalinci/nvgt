@@ -76,8 +76,9 @@ template<typename R, typename... Args> R angelscript_call(asIScriptContext* ctx,
 	int index = 0;
 	((set_argument(ctx, index++, std::forward<Args>(args))), ...);
 	
-	// Execute the function
-	int result = ctx->Execute();
+	// Execute the function. A nested execution (a call made on the script's own context) can't be left suspended: popping the nested state then restores the interrupted execution from the callback's frames (see execute_nested in scriptstuff.cpp). It is resumed until it ends.
+	int result;
+	while ((result = ctx->Execute()) == asEXECUTION_SUSPENDED) {}
 	
 	// Handle execution result
 	if (result != asEXECUTION_FINISHED) {

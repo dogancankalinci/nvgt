@@ -18,6 +18,7 @@
 #include <vector>
 #include <angelscript_call.hpp>
 #include "nvgt.h"
+#include "scriptstuff.h"
 
 // DO not instanciate manually, instances are created by engine_event.
 class engine_event;
@@ -68,10 +69,12 @@ public:
 };
 
 // Must be in the header because of being a template.
+// Returns true to stop the event: the listener said so, or the script is ending (exit() was called, or the listener's execution was aborted), whereupon no more listeners run.
 template<typename... Args> inline bool engine_event_listener::fire(Args&&... args) {
+	asIScriptContext* ACtx = asGetActiveContext();
+	if (script_callbacks_stopped(ACtx)) return true;
 	void* obj_strong = obj? obj->Get() : nullptr;
 	if (obj && !obj_strong || !func) return false; // Object this listener belongs to has died or we have no calling function.
-	asIScriptContext* ACtx = asGetActiveContext();
 	bool new_context = ACtx == NULL || ACtx->PushState() < 0;
 	asIScriptContext* ctx = (new_context ? g_ScriptEngine->RequestContext() : ACtx);
 	if (!ctx) {
@@ -87,9 +90,11 @@ template<typename... Args> inline bool engine_event_listener::fire(Args&&... arg
 	bool ret = false; // pass to next event.
 	if (func->GetReturnTypeId() == asTYPEID_VOID) angelscript_call(ctx, std::forward<Args>(args)...);
 	else ret = angelscript_call<bool>(ctx, std::forward<Args>(args)...);
-	new_context? g_ScriptEngine->ReturnContext(ctx) : (void)ctx->PopState();
+	if (ctx->GetState() == asEXECUTION_ABORTED) ret = true;
+	// The abort of a listener calling exit() is passed on to the execution that fired the event, which went on running after exit() when the nested state was popped with PopState().
+	new_context? g_ScriptEngine->ReturnContext(ctx) : pop_nested_state(ctx);
 	if (obj_strong) obj->GetRefType()->GetEngine()->ReleaseScriptObject(obj_strong, obj->GetRefType());
-	return ret;
+	return ret || script_callbacks_stopped(ACtx);
 }
 
 
