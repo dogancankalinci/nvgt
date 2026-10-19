@@ -39,6 +39,7 @@ vcpkg_from_github(
         fix-prepare-stack-overflow-cleanup.patch
         fix-failed-prepare-object-release.patch
         fix-nested-marker-stack-walk.patch
+        fix-exception-before-suspend.patch
 )
 
 vcpkg_cmake_configure(

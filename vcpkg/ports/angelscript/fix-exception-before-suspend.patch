@@ -1,0 +1,107 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -3119,23 +3119,29 @@
+ 
+ 			if( m_regs.doProcessSuspend )
+ 			{
+-				// Should the execution be suspended?
+-				if( m_doSuspend )
++				// ALTERED: an exception is handled before a suspend request. A registered function that raised a script
++				// exception while a suspend was requested (by itself, by another thread, or before a nested call that put
++				// the request back) had its exception replaced by the suspension: Execute returned asEXECUTION_SUSPENDED,
++				// and when resumed the script went on after the failed call as if it had succeeded. The request stays
++				// pending for the next suspend point after the exception is handled.
++
++				// An exception might have been raised
++				if( m_status != asEXECUTION_ACTIVE )
+ 				{
+ 					m_regs.programPointer    = l_bc;
+ 					m_regs.stackPointer      = l_sp;
+ 					m_regs.stackFramePointer = l_fp;
+ 
+-					m_status = asEXECUTION_SUSPENDED;
+ 					return;
+ 				}
+-				// An exception might have been raised
+-				if( m_status != asEXECUTION_ACTIVE )
++				// Should the execution be suspended?
++				if( m_doSuspend )
+ 				{
+ 					m_regs.programPointer    = l_bc;
+ 					m_regs.stackPointer      = l_sp;
+ 					m_regs.stackFramePointer = l_fp;
+ 
++					m_status = asEXECUTION_SUSPENDED;
+ 					return;
+ 				}
+ 			}
+@@ -3302,26 +3308,29 @@
+ 
+ 				if( m_regs.doProcessSuspend )
+ 				{
+-					// Should the execution be suspended?
+-					if( m_doSuspend )
++					// ALTERED: an exception is handled before a suspend request, see asBC_CALLSYS (here the memory of an object
++					// whose constructor failed was left in the variable, and destroyed as an object later)
++
++					// An exception might have been raised
++					if( m_status != asEXECUTION_ACTIVE )
+ 					{
+ 						m_regs.programPointer    = l_bc;
+ 						m_regs.stackPointer      = l_sp;
+ 						m_regs.stackFramePointer = l_fp;
+ 
+-						m_status = asEXECUTION_SUSPENDED;
++						m_engine->CallFree(mem);
++						if( a ) *a = 0;
++
+ 						return;
+ 					}
+-					// An exception might have been raised
+-					if( m_status != asEXECUTION_ACTIVE )
++					// Should the execution be suspended?
++					if( m_doSuspend )
+ 					{
+ 						m_regs.programPointer    = l_bc;
+ 						m_regs.stackPointer      = l_sp;
+ 						m_regs.stackFramePointer = l_fp;
+ 
+-						m_engine->CallFree(mem);
+-						if( a ) *a = 0;
+-
++						m_status = asEXECUTION_SUSPENDED;
+ 						return;
+ 					}
+ 				}
+@@ -5044,23 +5053,25 @@
+ 
+ 			if( m_regs.doProcessSuspend )
+ 			{
+-				// Should the execution be suspended?
+-				if( m_doSuspend )
++				// ALTERED: an exception is handled before a suspend request, see asBC_CALLSYS
++
++				// An exception might have been raised
++				if( m_status != asEXECUTION_ACTIVE )
+ 				{
+ 					m_regs.programPointer    = l_bc;
+ 					m_regs.stackPointer      = l_sp;
+ 					m_regs.stackFramePointer = l_fp;
+ 
+-					m_status = asEXECUTION_SUSPENDED;
+ 					return;
+ 				}
+-				// An exception might have been raised
+-				if( m_status != asEXECUTION_ACTIVE )
++				// Should the execution be suspended?
++				if( m_doSuspend )
+ 				{
+ 					m_regs.programPointer    = l_bc;
+ 					m_regs.stackPointer      = l_sp;
+ 					m_regs.stackFramePointer = l_fp;
+ 
++					m_status = asEXECUTION_SUSPENDED;
+ 					return;
+ 				}
+ 			}
