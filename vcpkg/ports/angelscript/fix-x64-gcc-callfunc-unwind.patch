@@ -1,0 +1,56 @@
+diff --git a/sdk/angelscript/source/as_callfunc_x64_gcc.cpp b/sdk/angelscript/source/as_callfunc_x64_gcc.cpp
+--- a/sdk/angelscript/source/as_callfunc_x64_gcc.cpp
++++ b/sdk/angelscript/source/as_callfunc_x64_gcc.cpp
+@@ -36,6 +36,10 @@
+  * Initial author: niteice
+  *
+  * Added support for functor methods by Jordi Oliveras Rovira in April, 2014.
++ *
++ * ALTERED: X64_CallFunction no longer moves the unwinder's frame address to r15 while it calls the function (that was
++ * only right when the compiler omitted the frame pointer, and broke unwinding on macOS, where clang keeps it); the
++ * function is made to keep a frame pointer instead, so its frame address never depends on rsp.
+  */
+ 
+ // Useful references for the System V AMD64 ABI:
+@@ -84,12 +88,6 @@
+ 
+ 	// Backup stack pointer in R15 that is guaranteed to maintain its value over function calls
+ 		"  movq %%rsp, %%r15 \n"
+-#if defined(__clang__) && defined(__OPTIMIZE__)
+-	// Make sure the stack unwind logic knows we've backed up the stack pointer in register r15
+-	// This should only be done if any optimization is done. If no optimization (-O0) is used,
+-	// then the compiler already backups the rsp before entering the inline assembler code
+-		" .cfi_def_cfa_register r15 \n"
+-#endif
+ 
+ 	// Skip the first 128 bytes on the stack frame, called "red zone",  
+ 	// that might be used by the compiler to store temporary values
+@@ -141,12 +139,6 @@
+ 
+ 	// Restore stack pointer
+ 		"  mov %%r15, %%rsp \n"
+-#if defined(__clang__) && defined(__OPTIMIZE__)
+-	// Inform the stack unwind logic that the stack pointer has been restored
+-	// This should only be done if any optimization is done. If no optimization (-O0) is used,
+-	// then the compiler already backups the rsp before entering the inline assembler code
+-		" .cfi_def_cfa_register rsp \n"
+-#endif
+ 
+ 	// Put return value in retQW1 and retQW2, using either RAX:RDX or XMM0:XMM1 depending on type of return value
+ 		"  movl %5, %%ecx \n"
+@@ -162,7 +154,14 @@
+ 		"  movq %%rdx, %4 \n"
+ 		"Lendcall: \n"
+ 
+-		: : "g" ((asQWORD)cnt), "g" (args), "g" (func), "m" (retQW1), "m" (retQW2), "m" (returnFloat)
++		: : "g" ((asQWORD)cnt), "g" (args), "g" (func), "m" (retQW1), "m" (retQW2), "m" (returnFloat),
++		// Not used by the code above. Taking the frame address makes the compiler give this function a frame pointer,
++		// so the unwind information it generates locates the frame through rbp, which the code above leaves alone,
++		// instead of through rsp, which it moves. A C++ exception thrown by the called function then unwinds through
++		// here correctly whatever the optimization level, the compiler, and its frame pointer default (on macOS clang
++		// keeps frame pointers in optimized code too, where the .cfi_def_cfa_register r15 used before took the frame
++		// address from r15 with rbp's offset and pointed the unwinder at the wrong return address).
++		  "r" (__builtin_frame_address(0))
+ 		: "%xmm0", "%xmm1", "%xmm2", "%xmm3", "%xmm4", "%xmm5", "%xmm6", "%xmm7", 
+ 		  "%rdi", "%rsi", "%rax", "%rdx", "%rcx", "%r8", "%r9", "%r10", "%r11", "%r15");
+ 		

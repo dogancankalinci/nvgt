@@ -9,6 +9,7 @@ vcpkg_from_github(
         mark-threads-private.patch
         fix-dependency.patch
         fix-double-literal-precision.patch
+        fix-x64-gcc-callfunc-unwind.patch
 )
 
 vcpkg_cmake_configure(
