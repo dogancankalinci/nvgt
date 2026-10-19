@@ -2996,7 +2996,7 @@ class microphone_impl : public audio_ring_buffer_impl, public virtual microphone
 		microphone_impl* node = (microphone_impl*)pDevice->pUserData;
 		if (!node || !pInput || !frameCount) return;
 		std::unique_lock<std::mutex> lock(node->capture_write_mutex, std::try_to_lock);
-		if (lock.owns_lock()) node->write((float*)pInput, frameCount);
+		if (lock.owns_lock()) node->audio_ring_buffer_impl::write((float*)pInput, frameCount); // Not write(), which takes this lock.
 	}
 public:
 	// Opens capture_device on the device with that id, or the system's default for null, without starting it.
@@ -3062,6 +3062,11 @@ public:
 	void reset() override {
 		std::lock_guard<std::mutex> lock(capture_write_mutex);
 		audio_ring_buffer_impl::reset();
+	}
+	// The script's writes, which the capture thread's would otherwise overlap as a second writer, the two then committing over each other and leaving later writes granted space past the buffer's end. They take turns as reset() does.
+	unsigned int write(const float* frames_in, unsigned int frame_count) override {
+		std::lock_guard<std::mutex> lock(capture_write_mutex);
+		return audio_ring_buffer_impl::write(frames_in, frame_count);
 	}
 	bool set_state(ma_node_state state) override {
 		// A microphone started again drops what it recorded before it stopped, through its reader (see pcm_queue), before its node is read again; one already recording keeps its queue.
