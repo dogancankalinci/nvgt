@@ -475,7 +475,8 @@ public class TTS {
 	}
 	public TTS() { this(null); }
 
-	public boolean isActive() { return this.isTTSInitialized; }
+	// An engine whose app was removed while this object used it is not active any more.
+	public boolean isActive() { return isTTSInitialized && (enginePackage == null || isEngineInstalled(enginePackage)); }
 	public boolean isSpeaking() { return isActive()? tts.isSpeaking() : false; }
 	// Whether this object's own speech is still to be heard: speech it queued that hasn't ended, while the service speaks,
 	// or for ten seconds after it was queued until the service picks it up, since an engine that dies reports no end. The
