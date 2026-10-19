@@ -42,6 +42,7 @@ vcpkg_from_github(
         fix-nested-marker-stack-walk.patch
         fix-exception-before-suspend.patch
         fix-call-stack-overflow-args.patch
+        fix-copy-behaviour-handle-return.patch
 )
 
 vcpkg_cmake_configure(

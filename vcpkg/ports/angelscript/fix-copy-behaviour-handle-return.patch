@@ -1,0 +1,15 @@
+diff --git a/sdk/angelscript/source/as_scriptengine.cpp b/sdk/angelscript/source/as_scriptengine.cpp
+--- a/sdk/angelscript/source/as_scriptengine.cpp
++++ b/sdk/angelscript/source/as_scriptengine.cpp
+@@ -5926,7 +5926,10 @@
+ {
+ 	asCScriptFunction *func = scriptFunctions[funcId];
+ 	asASSERT( func && func->funcType == asFUNC_SYSTEM && func->parameterTypes.GetLength() == 1 );
+-	if( func->parameterTypes[0].IsReference() && !func->DoesReturnOnStack() )
++	// ALTERED: not for an opAssign that returns a handle either (such as R@ opAssign(const R &in)), whose returned
++	// reference CallObjectMethod dropped, so every such assignment leaked one reference to the destination. The context
++	// releases the returned handle when it is unprepared.
++	if( func->parameterTypes[0].IsReference() && !func->DoesReturnOnStack() && !func->returnType.IsObjectHandle() )
+ 	{
+ 		CallObjectMethod(dst, src, func->sysFuncIntf, func);
+ 		return asSUCCESS;
