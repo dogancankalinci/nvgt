@@ -1281,6 +1281,27 @@ class audio_decoder_impl : public audio_data_source_impl, public virtual audio_d
 			sc->pos = static_cast<size_t>(target); // inside the window, so no real seek is needed
 			return MA_SUCCESS;
 		}
+		// Past the window while it mirrors the stream: the stream sits at the window's end, which the decoder can be behind after a rewind, as after probing formats, so a seek from the current position would be counted from the wrong place. The stream is sought from its start instead, or, when it can't seek, read forward up to the target, which the window keeps while it can.
+		if (sc->mirrors_stream() && target >= 0) {
+			stream->clear();
+			stream->seekg(target, stream->beg);
+			if (stream->fail()) {
+				stream->clear();
+				sc->pos = sc->window.size();
+				char skipped[4096];
+				for (size_t left = static_cast<size_t>(target) - sc->pos; left;) {
+					size_t got = 0;
+					vfs_read(nullptr, f, skipped, std::min(left, sizeof(skipped)), &got);
+					if (!got) return MA_AT_END;
+					left -= got;
+				}
+				return MA_SUCCESS;
+			}
+			sc->pos = static_cast<size_t>(stream->tellg());
+			std::string().swap(sc->window);
+			sc->window_moved = true;
+			return MA_SUCCESS;
+		}
 		std::ios_base::seekdir dir;
 		switch (origin) {
 			case ma_seek_origin_start:
