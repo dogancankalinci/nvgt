@@ -975,12 +975,18 @@ public:
 	// The graph's audio thread reads the source once its node is attached, so not while a sound, chain or head reads it, nor a sound's own source.
 	bool attach_output_bus(unsigned int output_bus, audio_node *destination, unsigned int destination_input_bus) override {
 		if (in_use(false)) return false;
+		prepare_length();
 		return audio_node_impl::attach_output_bus(output_bus, destination, destination_input_bus);
 	}
 	ma_data_source* get_ma_data_source() const override { return src? src->pDataSource : nullptr; }
 	unsigned int get_advised_read_frame_count() const override { return SOUNDSYSTEM_FRAMESIZE; }
 	// Frames a reader was asked to drop, which this thread, reading the source itself, drops first; see audio_ring_buffer_impl.
 	virtual void drop_pending_frames() {}
+	// Works out, while nothing else reads the source yet, what a later read of its length needs; see audio_decoder_impl. Called as a sound, a chain or the graph starts reading it.
+	virtual void prepare_length() {}
+	static void prepare_length_of(audio_data_source* ds) {
+		if (auto impl = dynamic_cast<audio_data_source_impl*>(ds)) impl->prepare_length();
+	}
 	// How many of frame_count frames the script's own read or skip takes: all of them, except from a ring buffer, which has only what is queued.
 	virtual unsigned long long frames_to_take(unsigned long long frame_count) { return frame_count; }
 	// Under source_mutex: takes the source's own node off the graph, so that this thread is the only reader, and drops what it is to drop. False when the source can't be read here now.
@@ -1115,6 +1121,7 @@ public:
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
+		if (new_current && !self) prepare_length_of(new_current);
 		if ((g_soundsystem_last_error = ma_data_source_set_current(src->pDataSource, new_current? new_current->get_ma_data_source() : nullptr)) != MA_SUCCESS) return false;
 		if (src_cur) let_go(src_cur);
 		audio_data_source *held; // This head is on new_current now, off a source it was holding.
@@ -1144,6 +1151,7 @@ public:
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
+		if (new_next && !self) prepare_length_of(new_next);
 		if ((g_soundsystem_last_error = ma_data_source_set_next(src->pDataSource, new_next? new_next->get_ma_data_source() : nullptr)) != MA_SUCCESS) return false;
 		if (src_next) let_go(src_next);
 		src_next = self? nullptr : new_next;
@@ -1300,6 +1308,8 @@ public:
 audio_ring_buffer* audio_ring_buffer::create(unsigned int channels, unsigned int size, audio_engine* e) { return new audio_ring_buffer_impl(channels, size, e); }
 class audio_decoder_impl : public audio_data_source_impl, public virtual audio_decoder {
 	unique_ptr<ma_decoder> decoder;
+	// The decoder's own length in frames once worked out, -1 before. Some formats count it by reading the whole file, as an MP3 without a header giving it does, from the start and back, which a read of the length while a sound or the graph read the decoder did at the same time, corrupting what was played or hanging the audio thread. So it is worked out only while nothing else reads the decoder, as a reader starts (prepare_length()) or when the script asks before then, and kept.
+	mutable std::atomic<long long> length_frames{-1};
 	datastream* datastream_ref; // If the user opens a datastream, we must maintain a reference to it encase the user drops their handle.
 	// Rewind window so a datastream that can't seek (a live socket) can still be probed and decoded; answers rewinds from memory instead of the stream until the window outgrows CAP or a real seek moves the stream.
 	struct stream_cursor {
@@ -1497,6 +1507,7 @@ public:
 			return false;
 		}
 		reset();
+		length_frames = -1;
 		if (!decoder) return false;
 		if (datastream_ref) {
 			datastream_ref->release();
@@ -1511,6 +1522,25 @@ public:
 	}
 	virtual unsigned int get_sample_rate() const override { return decoder? decoder->outputSampleRate : 0; }
 	virtual unsigned int get_channels() const override { return decoder? decoder->outputChannels : 0; }
+	void prepare_length() override { get_length_frames(); }
+	unsigned long long get_length_frames() const override {
+		std::lock_guard<std::recursive_mutex> guard(source_mutex);
+		ma_data_source* source = get_ma_data_source();
+		if (!decoder || !source) return 0;
+		ma_uint64 range_begin = 0, range_end = 0;
+		ma_data_source_get_range_in_pcm_frames(source, &range_begin, &range_end);
+		if (range_end != ~(ma_uint64)0) return audio_data_source_impl::get_length_frames(); // MiniAudio counts a range itself, without asking the decoder.
+		long long known = length_frames;
+		if (known >= 0) return known;
+		if (users || node_attached()) return 0; // Read elsewhere, and not worked out before: unknown rather than counted under that reader.
+		unsigned long long length = audio_data_source_impl::get_length_frames();
+		if (g_soundsystem_last_error == MA_SUCCESS) length_frames = length;
+		return length;
+	}
+	float get_length_milliseconds() const override {
+		unsigned int sample_rate = get_sample_rate();
+		return sample_rate? get_length_frames() * 1000.0f / sample_rate : 0;
+	}
 };
 audio_decoder* audio_decoder::create(audio_engine* e) { return new audio_decoder_impl(e); }
 class audio_encoder_impl : public effect_node_impl, public virtual audio_encoder {
@@ -2739,6 +2769,7 @@ public:
 			return false;
 		}
 		if (snd) close();
+		audio_data_source_impl::prepare_length_of(ds); // Before the sound reads it.
 		unique_ptr<ma_sound> made = make_unique<ma_sound>(); // As load_special() makes a sound.
 		if ((g_soundsystem_last_error = ma_sound_init_from_data_source(get_engine()->get_ma_engine(), ds->get_ma_data_source(), MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT, nullptr, &*made)) != MA_SUCCESS) {
 			ds->release();
@@ -2993,6 +3024,7 @@ public:
 			return get_length_in_milliseconds();
 	}
 	unsigned long long get_length_in_frames() override {
+		if (snd && datasource_opened && datasource) return datasource->get_length_frames(); // The source the script opened answers for itself, as a decoder's length is worked out only while nothing reads it.
 		if (snd) {
 			ma_uint64 len;
 			g_soundsystem_last_error = ma_sound_get_length_in_pcm_frames(&*snd, &len);
@@ -3001,6 +3033,7 @@ public:
 		return 0;
 	}
 	unsigned long long get_length_in_milliseconds() override {
+		if (snd && datasource_opened && datasource) return (unsigned long long)datasource->get_length_milliseconds(); // As get_length_in_frames().
 		if (snd) {
 			float len;
 			g_soundsystem_last_error = ma_sound_get_length_in_seconds(&*snd, &len);
