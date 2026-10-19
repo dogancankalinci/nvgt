@@ -9,9 +9,12 @@ on:
       - "*"
     paths-ignore:
       - "web/**"
+# A push does not cancel the run in progress: it waits as the one pending run, and a later push replaces it. A cancelled
+# run never saves the dependencies it built, and after a runner image update every port has to be rebuilt (vcpkg's ABI
+# hashes include the compiler), which takes longer than the time between pushes, so cancelling kept repeating it.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 jobs:
   generate_config:
     runs-on: ubuntu-latest
@@ -83,7 +86,8 @@ jobs:
       with:
         path: iosdev
         key: iosdev-${{ steps.depkey.outputs.ios }}
-    - name: build macos dependencies
+    - id: build_macos
+      name: build macos dependencies
       if: ${{ steps.cache_macos.outputs.cache-hit != 'true' }}
       run: python3 vcpkg/build_dependencies.py --archive
     - name: save macos dependencies cache
@@ -92,6 +96,14 @@ jobs:
       with:
         path: macosdev
         key: macosdev-${{ steps.depkey.outputs.macos }}
+    # The macOS ports are saved before the iOS ones are built too, so a run stopped during the iOS build keeps them
+    # (both triplets rebuilt from nothing take about 35 minutes). The save below adds the iOS ports.
+    - name: save vcpkg binary cache after the macos dependencies
+      if: ${{ steps.build_macos.outcome == 'success' && steps.vcpkg_binaries.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@v4
+      with:
+        path: vcpkg-binaries
+        key: vcpkg-binaries-mac-${{ steps.depkey.outputs.macos }}-${{ steps.depkey.outputs.ios }}-macos
     - name: build ios dependencies
       if: ${{ steps.cache_ios.outputs.cache-hit != 'true' }}
       run: python3 vcpkg/build_dependencies.py arm64-ios --archive
