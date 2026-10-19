@@ -2037,12 +2037,14 @@ public:
 		return effects_chain;
 	}
 	audio_node_chain* get_internal_node_chain() override { return node_chain; }
+	bool last_parameters_valid = false; // What get_spatialization_parameters() last answered; only the audio thread reads and writes it.
 	bool get_spatialization_parameters(audio_spatialization_parameters& params) override {
-		if (!spatialization_params_mutex.try_lock()) return false;
+		// The audio thread mustn't wait for the lock, which a script thread holds briefly, as set_position_3d() does at each call. While it is busy the spatializer keeps the parameters it was last given, which params still holds, rather than playing that block unattenuated and unpanned, as answering that there were none did.
+		if (!spatialization_params_mutex.try_lock()) return last_parameters_valid;
 		// Checked under the lock a sound's loads hand snd over and close() lets go of the spatializer under; without a spatializer there is no rolloff to give, and get_spatializer() would make one, which the audio thread mustn't.
 		if (!snd || !spatializer || !get_spatialization_enabled()) {
 			spatialization_params_mutex.unlock();
-			return false;
+			return last_parameters_valid = false;
 		}
 		reactphysics3d::Vector3 listener_pos = get_engine()->get_listener_position(get_listener()), listener_dir = get_direction_to_listener();
 		ma_vec3f pos = ma_sound_get_position(&*snd); // Where the sound plays from, which the distance and direction above are from too: a shaped sound's get_position_3d() is the position the script set, not the shape's point it plays from.
@@ -2063,7 +2065,7 @@ public:
 		params.rolloff = spatializer->get_rolloff();
 		params.distance_model = linear;
 		spatialization_params_mutex.unlock();
-		return true;
+		return last_parameters_valid = true;
 	}
 	bool fade_from_stop = false; // The fade is one a stop with a fade set, as pause_fade() does, rather than one the script set since.
 	// Decibels to the linear volumes MiniAudio fades between, on an engine with PERCENTAGE_ATTRIBUTES; FLT_MAX starts from the current volume.
