@@ -720,14 +720,25 @@ tts_engine *tts_voice::active_engine(bool force_sync, bool *voice_applied) {
 	return entry.engine.get();
 }
 int tts_voice::platform_voice_index() {
-	tts_engine *engine = active_engine();
-	voice_info *voice = get_voice_info(current_voice_index);
-	if (!engine || !voice) return -1;
-	int engine_voice = engine->get_current_voice();
-	if (engine_voice < 0) return -1;
-	int index = find_listed_voice(voices, voice->engine_name, engine_voice, engine->get_voice_name(engine_voice), engine->get_voice_language(engine_voice));
-	if (index >= 0) current_voice_index = index;
-	return index;
+	for (int attempt = 0; attempt < 2; attempt++) {
+		tts_engine *engine = active_engine();
+		voice_info *voice = get_voice_info(current_voice_index);
+		if (!engine || !voice) return -1;
+		int engine_voice = engine->get_current_voice();
+		if (engine_voice < 0) return -1;
+		string name = engine->get_voice_name(engine_voice), language = engine->get_voice_language(engine_voice);
+		int index = find_listed_voice(voices, voice->engine_name, engine_voice, name, language);
+		if (index >= 0) {
+			current_voice_index = index;
+			return index;
+		}
+		// The user's settings can select a voice the list was made without, one installed while the program runs for instance, or on Android a voice of the language the user chose since that needs a network connection. Without a voice the script chose, the list is made again, once for each such voice, as a language filter can leave it out for good.
+		string unlisted = voice->engine_name + '\n' + name + '\n' + language;
+		if (voice_set || voice_state != VOICES_FULL || unlisted == relisted_for) return -1;
+		relisted_for = unlisted;
+		refresh();
+	}
+	return -1;
 }
 void *tts_voice::speak_to_pcm(const string &text, tts_audio_data** datablock) {
 	ensure_default();

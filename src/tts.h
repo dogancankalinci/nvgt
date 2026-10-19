@@ -142,6 +142,7 @@ class tts_voice {
 	std::vector<std::string> engine_names; // Candidate engines this voice may draw from. Engine objects are NOT instantiated here; binding is deferred until a voice is actually selected/used.
 	bool all_engines; // Whether engine_names are all the registered engines rather than a list the script gave, so that an engine registered later joins them.
 	std::string followed_engine; // The preferred engine as it was when the default voice was last picked; see follow_preferred_engine().
+	std::string relisted_for; // The voice, missing from the list, that the list was last made again for; see platform_voice_index().
 	std::unordered_map<std::string, engine_entry> engines; // This object's engines by name, bound as they are first needed; see engine_entry.
 	std::shared_ptr<tts_engine> current_engine; // The single live (bound) engine backing the currently selected voice, or null if nothing has been used yet.
 	std::string current_engine_name;
