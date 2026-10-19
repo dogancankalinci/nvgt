@@ -993,6 +993,12 @@ int ExecuteScript(asIScriptEngine *engine, const string &scriptFile) {
 	ShowAngelscriptMessages(); // Display any warnings or extra info if the user has asked for it.
 	g_initialising_globals = false;
 	ctx = g_ctxMgr->AddContext(engine, func, true);
+	if (!ctx) { // Its Prepare() failed, e.g. main() needs more stack than scripting.max_stack_size allows; the null context was used below.
+		g_scriptMessagesInfo = "";
+		engine->WriteMessage(scriptFile.c_str(), 0, 0, asMSGTYPE_ERROR, "Unable to prepare the entry point for execution (does it need more stack than scripting.max_stack_size allows?)");
+		discard_module(engine, mod);
+		return -1;
+	}
 	#ifndef NVGT_STUB
 	if (g_dbg) {
 		cout << "Debugging, waiting for commands. Type 'h' for help." << endl;
