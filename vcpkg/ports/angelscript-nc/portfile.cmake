@@ -43,6 +43,7 @@ vcpkg_from_github(
         fix-exception-before-suspend.patch
         fix-call-stack-overflow-args.patch
         fix-copy-behaviour-handle-return.patch
+        fix-template-constructor-failure.patch
 )
 
 vcpkg_cmake_configure(

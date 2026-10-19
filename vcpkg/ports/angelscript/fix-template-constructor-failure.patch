@@ -1,0 +1,58 @@
+diff --git a/sdk/angelscript/source/as_scriptengine.cpp b/sdk/angelscript/source/as_scriptengine.cpp
+--- a/sdk/angelscript/source/as_scriptengine.cpp
++++ b/sdk/angelscript/source/as_scriptengine.cpp
+@@ -5800,7 +5800,14 @@
+ 			if (objType->flags & asOBJ_TEMPLATE)
+ 			{
+ 				// Templates of value types create script functions as the constructors
+-				CallScriptObjectMethod(ptr, funcIndex);
++				// ALTERED: the object isn't constructed if the constructor failed (an exception, or a context that couldn't
++				// be prepared), and it was returned anyway, so the caller used it and later destroyed it as an object. The
++				// memory is freed and no object is returned, as when a registered constructor throws.
++				if( CallScriptObjectMethod(ptr, funcIndex) < 0 )
++				{
++					CallFree(ptr);
++					ptr = 0;
++				}
+ 			}
+ 			else
+ 			{
+@@ -6145,7 +6152,18 @@
+ 			// CreateScriptObject does. A template instance never has a copy constructor recorded, so this is the path for
+ 			// every value template returned by value from a generic function.
+ 			if( scriptFunctions[funcIndex]->funcType != asFUNC_SYSTEM )
+-				CallScriptObjectMethod(mem, funcIndex);
++			{
++				// ALTERED: nothing is assigned to an object whose constructor failed. The failure is reported to the active
++				// context, if CallScriptObjectMethod hasn't forwarded an exception already, so the function that returns the
++				// object by value fails with it and the unconstructed object isn't taken for its return value.
++				if( CallScriptObjectMethod(mem, funcIndex) < 0 )
++				{
++					asIScriptContext *ctx = asGetActiveContext();
++					if( ctx && ctx->GetState() != asEXECUTION_EXCEPTION )
++						ctx->SetException(TXT_EXCEPTION_IN_NESTED_CALL);
++					return;
++				}
++			}
+ 			else
+ 				CallObjectMethod(mem, funcIndex);
+ 		}
+diff --git a/sdk/angelscript/source/as_scriptobject.cpp b/sdk/angelscript/source/as_scriptobject.cpp
+--- a/sdk/angelscript/source/as_scriptobject.cpp
++++ b/sdk/angelscript/source/as_scriptobject.cpp
+@@ -1088,7 +1088,14 @@
+ 		{
+ 			// The value template's constructor stub is run by a context, as CreateScriptObject does
+ 			if( engine->scriptFunctions[funcIndex]->funcType != asFUNC_SYSTEM )
+-				engine->CallScriptObjectMethod(ptr, funcIndex);
++			{
++				// ALTERED: an object whose constructor failed isn't kept, see CreateScriptObject
++				if( engine->CallScriptObjectMethod(ptr, funcIndex) < 0 )
++				{
++					engine->CallFree(ptr);
++					ptr = 0;
++				}
++			}
+ 			else
+ 				engine->CallObjectMethod(ptr, funcIndex);
+ 		}
