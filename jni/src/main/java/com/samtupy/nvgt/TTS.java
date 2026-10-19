@@ -915,9 +915,10 @@ public class TTS {
 			if (availableVoices != null) return;
 		}
 		availableVoices = listed;
-		// The voice the user's settings selected is listed even when the filter above would drop it (a network voice, for instance), so that the current voice can always be reported.
-		Voice settingsVoice = defaultVoice;
+		// The voice the user's settings selected, and one the script chose, are listed even when the filter above would drop them (a network voice, for instance), so that the current voice can always be reported and a chosen one isn't taken as removed.
+		Voice settingsVoice = defaultVoice, chosen = chosenVoice;
 		if (settingsVoice != null) listVoice(settingsVoice);
+		if (chosen != null) listVoice(chosen);
 	}
 	// Lists the voices again, as voices can be installed or removed while the app runs; their indices can change.
 	public void refreshVoices() { initializeVoices(); }
