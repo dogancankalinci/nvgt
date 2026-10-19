@@ -996,14 +996,15 @@ public:
 		ma_format format = ma_format_f32;
 		ma_uint32 channels = 0;
 		ma_data_source_get_data_format(src->pDataSource, &format, &channels, nullptr, nullptr, 0);
+		// The frames read are returned even with an error, which g_soundsystem_last_error keeps: MiniAudio reports one with the frames it read before it, as when a chain's next source refuses to be sought to its start.
 		ma_uint64 frames_read = 0;
 		if (format == ma_format_f32) {
-			if ((g_soundsystem_last_error = ma_data_source_read_pcm_frames(src->pDataSource, buffer, frame_count, &frames_read)) != MA_SUCCESS) return 0;
+			g_soundsystem_last_error = ma_data_source_read_pcm_frames(src->pDataSource, buffer, frame_count, &frames_read);
 			return frames_read;
 		}
 		// Another format, such as a 16-bit file the resource manager keeps as it is, is read as it is and converted.
 		std::vector<char> raw(frame_count * ma_get_bytes_per_frame(format, channels));
-		if ((g_soundsystem_last_error = ma_data_source_read_pcm_frames(src->pDataSource, raw.data(), frame_count, &frames_read)) != MA_SUCCESS) return 0;
+		g_soundsystem_last_error = ma_data_source_read_pcm_frames(src->pDataSource, raw.data(), frame_count, &frames_read);
 		ma_pcm_convert(buffer, ma_format_f32, raw.data(), format, frames_read * channels, ma_dither_mode_none);
 		return frames_read;
 	}
