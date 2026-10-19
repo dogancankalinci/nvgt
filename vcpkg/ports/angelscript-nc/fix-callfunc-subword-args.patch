@@ -1,0 +1,117 @@
+diff --git a/sdk/angelscript/source/as_callfunc.cpp b/sdk/angelscript/source/as_callfunc.cpp
+index 866757e..eef788f 100644
+--- a/sdk/angelscript/source/as_callfunc.cpp
++++ b/sdk/angelscript/source/as_callfunc.cpp
+@@ -176,6 +176,37 @@ int DetectCallingConvention(bool isMethod, const asSFuncPtr &ptr, int callConv,
+ 	return 0;
+ }
+ 
++// ALTERED: The script stack holds every 8 and 16 bit argument zero-extended to 32 bits, signed or not, but the native
++// calling conventions of clang on x86-64, Apple's arm64 ABI and 32-bit ARM (AAPCS) have the caller extend such an argument
++// to 32 bits according to its type, and the code clang generates relies on it: a function taking an int8 read -1 as 255.
++// The CallSystemFunctionNative implementations pass every 32-bit primitive argument through this.
++asDWORD ExtendSubwordArg(const asCDataType &type, asDWORD value)
++{
++#ifdef AS_BIG_ENDIAN
++	// The value is not in the low bits of the DWORD
++	return value;
++#else
++	if( type.IsReference() || type.IsObjectHandle() )
++		return value;
++
++	eTokenType tokenType = type.GetTokenType();
++	if( type.IsEnumType() )
++		tokenType = CastToEnumType(type.GetTypeInfo())->enumType.GetTokenType();
++
++	switch( tokenType )
++	{
++	case ttInt8:   return asDWORD(int(asINT8(value)));
++	case ttInt16:  return asDWORD(int(asINT16(value)));
++	case ttUInt8:  return value & 0xFF;
++	case ttUInt16: return value & 0xFFFF;
++#if AS_SIZEOF_BOOL == 1
++	case ttBool:   return value & 0xFF;
++#endif
++	default:       return value;
++	}
++#endif
++}
++
+ // This function should prepare system functions so that it will be faster to call them
+ int PrepareSystemFunctionGeneric(asCScriptFunction *func, asSSystemFunctionInterface *internal, asCScriptEngine *engine)
+ {
+diff --git a/sdk/angelscript/source/as_callfunc.h b/sdk/angelscript/source/as_callfunc.h
+index 8bb6ffe..4f64b47 100644
+--- a/sdk/angelscript/source/as_callfunc.h
++++ b/sdk/angelscript/source/as_callfunc.h
+@@ -47,6 +47,7 @@ class asCContext;
+ class asCScriptEngine;
+ class asCScriptFunction;
+ class asCObjectType;
++class asCDataType;
+ struct asSSystemFunctionInterface;
+ 
+ int DetectCallingConvention(bool isMethod, const asSFuncPtr &ptr, int callConv, void *auxiliary, asSSystemFunctionInterface *internal);
+@@ -57,6 +58,10 @@ int PrepareSystemFunction(asCScriptFunction *func, asSSystemFunctionInterface *i
+ 
+ int CallSystemFunction(int id, asCContext *context);
+ 
++// ALTERED: returns an argument's 32-bit stack value extended the way the native calling convention expects a type
++// narrower than 32 bits to be passed (see as_callfunc.cpp)
++asDWORD ExtendSubwordArg(const asCDataType &type, asDWORD value);
++
+ inline asPWORD FuncPtrToUInt(asFUNCTION_t func)
+ {
+ 	// A little trickery as the C++ standard doesn't allow direct
+diff --git a/sdk/angelscript/source/as_callfunc_arm.cpp b/sdk/angelscript/source/as_callfunc_arm.cpp
+index af45818..d8d48ee 100644
+--- a/sdk/angelscript/source/as_callfunc_arm.cpp
++++ b/sdk/angelscript/source/as_callfunc_arm.cpp
+@@ -193,7 +193,11 @@ asQWORD CallSystemFunctionNative(asCContext *context, asCScriptFunction *descr,
+ #endif
+ 
+ 				// Copy the value directly
+-				paramBuffer[dpos++] = args[spos++];
++				// ALTERED: an 8 or 16 bit type extended to 32 bits as AAPCS requires of the caller
++				if( descr->parameterTypes[n].GetSizeOnStackDWords() == 1 )
++					paramBuffer[dpos++] = ExtendSubwordArg(descr->parameterTypes[n], args[spos++]);
++				else
++					paramBuffer[dpos++] = args[spos++];
+ 				if( descr->parameterTypes[n].GetSizeOnStackDWords() > 1 )
+ 					paramBuffer[dpos++] = args[spos++];
+ 				paramSize += descr->parameterTypes[n].GetSizeOnStackDWords();
+diff --git a/sdk/angelscript/source/as_callfunc_arm64.cpp b/sdk/angelscript/source/as_callfunc_arm64.cpp
+index ccb054a..ae4b754 100644
+--- a/sdk/angelscript/source/as_callfunc_arm64.cpp
++++ b/sdk/angelscript/source/as_callfunc_arm64.cpp
+@@ -364,7 +364,14 @@ asQWORD CallSystemFunctionNative(asCContext *context, asCScriptFunction *descr,
+ 			else
+ #endif
+ 			{
+-				memcpy(&argsArray[numArgs], (void*)(args+argsPos), parmDWords * 4);
++				if( parmDWords == 1 )
++				{
++					// ALTERED: 8 and 16 bit types extended to 32 bits, which Apple's ABI requires of the caller
++					const asDWORD value = ExtendSubwordArg(parmType, args[argsPos]);
++					memcpy(&argsArray[numArgs], &value, sizeof(asDWORD));
++				}
++				else
++					memcpy(&argsArray[numArgs], (void*)(args+argsPos), parmDWords * 4);
+ 				numArgs += parmQWords;
+ 			}
+ 
+diff --git a/sdk/angelscript/source/as_callfunc_x64_gcc.cpp b/sdk/angelscript/source/as_callfunc_x64_gcc.cpp
+index 7abd84f..229e317 100644
+--- a/sdk/angelscript/source/as_callfunc_x64_gcc.cpp
++++ b/sdk/angelscript/source/as_callfunc_x64_gcc.cpp
+@@ -341,7 +341,9 @@ asQWORD CallSystemFunctionNative(asCContext *context, asCScriptFunction *descr,
+ 			argsType[argIndex] = x64INTARG;
+ 			if( parmType.GetSizeOnStackDWords() == 1 )
+ 			{
+-				memcpy(paramBuffer + argIndex, stack_pointer, sizeof(asDWORD));
++				// ALTERED: 8 and 16 bit types extended to 32 bits as the callee expects
++				asDWORD value = ExtendSubwordArg(parmType, *stack_pointer);
++				memcpy(paramBuffer + argIndex, &value, sizeof(asDWORD));
+ 				stack_pointer++;
+ 			}
+ 			else
