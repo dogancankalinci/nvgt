@@ -7,6 +7,7 @@ vcpkg_from_github(
     PATCHES
         android-fixes.patch
         android-startup-focus-loss-anr.patch
+        android-no-glfinish-on-minimize.patch
 )
 
 string(COMPARE EQUAL "${VCPKG_LIBRARY_LINKAGE}" "static" SDL_STATIC)

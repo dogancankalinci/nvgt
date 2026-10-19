@@ -1,0 +1,26 @@
+diff --git a/src/render/opengles2/SDL_render_gles2.c b/src/render/opengles2/SDL_render_gles2.c
+index a37f2b1..63e8386 100644
+--- a/src/render/opengles2/SDL_render_gles2.c
++++ b/src/render/opengles2/SDL_render_gles2.c
+@@ -311,12 +311,21 @@ static bool GLES2_ActivateRenderer(SDL_Renderer *renderer)
+ 
+ static void GLES2_WindowEvent(SDL_Renderer *renderer, const SDL_WindowEvent *event)
+ {
++#ifdef SDL_PLATFORM_ANDROID
++    /* Android doesn't require GL work to be finished before an app goes to the background, and there the minimize
++       event arrives while the app is being paused, from an event watcher called with the window event watch list
++       locked. Some drivers (Mali) block in glFinish at that point while the UI thread waits for the same lock to
++       deliver the focus change, so the app stopped responding. */
++    (void)renderer;
++    (void)event;
++#else
+     GLES2_RenderData *data = (GLES2_RenderData *)renderer->internal;
+ 
+     if (event->type == SDL_EVENT_WINDOW_MINIMIZED) {
+         // According to Apple documentation, we need to finish drawing NOW!
+         data->glFinish();
+     }
++#endif
+ }
+ 
+ static GLenum GetBlendFunc(SDL_BlendFactor factor)
