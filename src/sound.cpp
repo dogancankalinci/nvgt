@@ -650,7 +650,9 @@ public:
 		}
 		ma_device *old_dev = ma_engine_get_device(&*engine);
 		bool old_open = old_dev && ma_device_get_state(old_dev) != ma_device_state_uninitialized;
-		if (!old_dev || old_open && device > -1 && ma_device_id_equal(&old_dev->playback.id, &requested_id)) return false;
+		if (!old_dev) return false;
+		// Nothing to change: the default asked for while following it, or a device asked for that is open as that device. A device open as the default follows the system's default, even while it is the device asked for by its index, so that one is opened anew as the device itself.
+		if (old_open && (device == -1? device_follows_default : !device_follows_default && ma_device_id_equal(&old_dev->playback.id, &requested_id))) return true;
 		ma_engine_stop(&*engine);
 		// As the constructor opens the device, with the engine's own format, which stays the same whichever device it is on and is still known after a device couldn't be opened.
 		ma_device_config cfg = ma_device_config_init(ma_device_type_playback);
