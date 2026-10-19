@@ -1179,6 +1179,11 @@ public:
 	}
 	void reset() override {
 		if (!rb) return;
+		// While the graph, a sound or a chain reads it on the audio thread, what is queued is dropped by that reader (see pcm_queue): resetting the ring buffer under it had it play old frames again. Either way get_available_read() reads 0 at once and what is written after this is kept.
+		if (is_used(this)) {
+			queue->discard();
+			return;
+		}
 		ma_pcm_rb_reset(&*rb);
 		queue->skip = 0; // What was queued is gone already; skipping it later would drop frames written after this.
 	}
