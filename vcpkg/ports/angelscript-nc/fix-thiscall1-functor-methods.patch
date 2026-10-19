@@ -1,0 +1,22 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+index 2f0f229..9cc815d 100644
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -4885,9 +4885,15 @@ static const void *const dispatch_table[256] = {
+ 			m_regs.stackPointer      = l_sp;
+ 			m_regs.stackFramePointer = l_fp;
+ 
+-			// Pop the thispointer from the stack
++			// ALTERED: CallObjectMethodRetPtr calls a method registered with asCALL_THISCALL_OBJLAST or OBJFIRST as if it
++			// were a plain function taking the object, not as a method of the auxiliary object, so the method ran with the
++			// script object as its this pointer and the int where the object should be. Those are called the way
++			// asBC_CALLSYS calls them; the arguments on the stack are the same.
+ 			void *obj = *(void**)l_sp;
+-			if (obj == 0)
++			if( m_engine->scriptFunctions[i]->sysFuncIntf->callConv >= ICC_THISCALL_OBJLAST )
++				l_sp += CallSystemFunction(i, this);
++			// Pop the thispointer from the stack
++			else if (obj == 0)
+ 				SetInternalException(TXT_NULL_POINTER_ACCESS);
+ 			else
+ 			{
