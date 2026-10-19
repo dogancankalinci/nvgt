@@ -125,10 +125,17 @@ public:
 		if (voices) [voices release];
 		[currentVoice release];
 	}
+	// speak_wait() speaks with the object's lock released, so another thread can choose a voice while apply() reads it, and the voice it replaces can be held by currentVoice alone since the voices were listed again.
+	mutable std::mutex currentVoiceLock;
 	void chooseVoice(AVSpeechSynthesisVoice* voice) {
 		[voice retain];
-		[currentVoice release];
-		currentVoice = voice;
+		AVSpeechSynthesisVoice* replaced;
+		{
+			std::lock_guard<std::mutex> lock(currentVoiceLock);
+			replaced = currentVoice;
+			currentVoice = voice;
+		}
+		[replaced release];
 	}
 	// Lists the installed voices again, as voices can be downloaded or removed while the program runs.
 	void refreshVoices() {
@@ -157,7 +164,13 @@ public:
 		if (rateSet) utterance.rate = rate;
 		if (volumeSet && withVolume) utterance.volume = volume;
 		if (pitchSet) utterance.pitchMultiplier = pitch;
-		if (currentVoice) utterance.voice = currentVoice;
+		AVSpeechSynthesisVoice* voice;
+		{
+			std::lock_guard<std::mutex> lock(currentVoiceLock);
+			voice = [currentVoice retain];
+		}
+		if (voice) utterance.voice = voice;
+		[voice release];
 	}
 	// The voice that actually speaks: the chosen one, otherwise the system default, which Apple documents as the default voice for the system's language and region.
 	AVSpeechSynthesisVoice* effectiveVoice() const { return currentVoice? currentVoice : [AVSpeechSynthesisVoice voiceWithLanguage:nil]; }
