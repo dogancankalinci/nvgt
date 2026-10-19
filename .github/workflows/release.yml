@@ -528,7 +528,14 @@ jobs:
       run: |
         cd install
         codesign --deep --force --options runtime --entitlements macos-entitlements.plist --timestamp -s ${{secrets.MACOS_SIGNING_TEAM_ID}} nvgt.app
-        hdiutil create -srcfolder nvgt.app nvgt_${{env.nvgt_version}}.dmg
+        # On the hosted runners hdiutil now and then fails with "create failed - Resource busy" (the volume it mounts is
+        # still held by something else), so it is tried a few times before the job fails.
+        for attempt in 1 2 3 4 5; do
+          rm -f nvgt_${{env.nvgt_version}}.dmg
+          hdiutil create -srcfolder nvgt.app nvgt_${{env.nvgt_version}}.dmg && break
+          [ $attempt -lt 5 ] || exit 1
+          sleep 15
+        done
         codesign --deep --force --options runtime --entitlements macos-entitlements.plist --timestamp -s ${{secrets.MACOS_SIGNING_TEAM_ID}} nvgt_${{env.nvgt_version}}.dmg
         xcrun notarytool submit nvgt_${{env.nvgt_version}}.dmg --wait ${{secrets.MACOS_SIGNING_NOTARY_AUTH}}
         xcrun stapler staple nvgt_${{env.nvgt_version}}.dmg
@@ -537,7 +544,13 @@ jobs:
       if: github.event.repository.fork == true
       run: |
         cd install
-        hdiutil create -srcfolder nvgt.app nvgt_${{env.nvgt_version}}.dmg
+        # retried as in sign_package
+        for attempt in 1 2 3 4 5; do
+          rm -f nvgt_${{env.nvgt_version}}.dmg
+          hdiutil create -srcfolder nvgt.app nvgt_${{env.nvgt_version}}.dmg && break
+          [ $attempt -lt 5 ] || exit 1
+          sleep 15
+        done
         cd ..
     - uses: actions/upload-artifact@v7
       with:
