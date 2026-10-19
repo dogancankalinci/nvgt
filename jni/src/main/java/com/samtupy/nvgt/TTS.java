@@ -212,7 +212,7 @@ public class TTS {
 	}
 
 	// Voice management fields
-	private List<Voice> availableVoices;
+	private volatile List<Voice> availableVoices; // Replaced whole when the voices are listed again.
 
 	// TextToSpeech finishes connecting to an engine on an AsyncTask that catches only RemoteException. When the engine's
 	// own setCallback or default language code throws, the exception comes back through binder (a NullPointerException,
@@ -783,29 +783,37 @@ public class TTS {
 	public float getVolume() { return ttsVolume; }
 	public float getPan() { return ttsPan; }
 
-	// Initialize voice management
+	// Lists the engine's installed voices. A list that can't be read now, while the connection is down for instance, leaves the one there was.
 	private void initializeVoices() {
 		if (!isActive()) return;
-		availableVoices = new ArrayList<>();
+		List<Voice> listed = new ArrayList<>();
 		try {
 			Set<Voice> voices = tts.getVoices();
+			if (voices == null && availableVoices != null) return;
 			if (voices != null) {
 				for (Voice voice : voices) {
 					if (!voice.isNetworkConnectionRequired() && !voice.getFeatures().contains("notInstalled"))
-						availableVoices.add(voice);
+						listed.add(voice);
 				}
 			}
-			// The voice the user's settings selected is listed even when the filter above would drop it (a network voice, for instance), so that the current voice can always be reported.
-			if (defaultVoice != null) listVoice(defaultVoice);
-		} catch (Exception e) {}
+		} catch (Exception e) {
+			if (availableVoices != null) return;
+		}
+		availableVoices = listed;
+		// The voice the user's settings selected is listed even when the filter above would drop it (a network voice, for instance), so that the current voice can always be reported.
+		Voice settingsVoice = defaultVoice;
+		if (settingsVoice != null) listVoice(settingsVoice);
 	}
+	// Lists the voices again, as voices can be installed or removed while the app runs; their indices can change.
+	public void refreshVoices() { initializeVoices(); }
 	// Adds a voice the user's settings selected to the list when it isn't there, at its end, so that indices stay as they were.
 	private void listVoice(Voice voice) {
-		if (availableVoices == null) return;
-		for (Voice listed : availableVoices) {
+		List<Voice> voices = availableVoices;
+		if (voices == null) return;
+		for (Voice listed : voices) {
 			if (listed.getName().equals(voice.getName())) return;
 		}
-		availableVoices.add(voice);
+		voices.add(voice);
 	}
 
 	// Set up permanent UtteranceProgressListener for PCM synthesis

@@ -81,7 +81,7 @@ public:
 	bool rateSet = false, volumeSet = false, pitchSet = false;
 	AVSpeechSynthesizer* synth;
 	AVSpeechSynthesizer* pcmSynth = nil; // Made on first use, see pcmSynthesizer().
-	AVSpeechSynthesisVoice* currentVoice; // Only non-nil once a voice was chosen; while nil, the system's default voice speaks.
+	AVSpeechSynthesisVoice* currentVoice; // Only non-nil once a voice was chosen; while nil, the system's default voice speaks. Retained, since the voice list it came from can be replaced (see refreshVoices()).
 	NSArray<AVSpeechSynthesisVoice *> *voices;
 	// The synthesizer's delegate, which it doesn't retain, and the state the delegate writes. Neither is freed with the engine: a delegate call already under way when the engine goes, which Apple doesn't rule out, would use them, and an engine is only destroyed as the program ends or when a tts_voice lets go of one it can't hand on.
 	nvgt_speech_wait_state* waitState = new nvgt_speech_wait_state;
@@ -102,6 +102,20 @@ public:
 		pcmSynth.delegate = nil;
 		[pcmSynth release];
 		if (voices) [voices release];
+		[currentVoice release];
+	}
+	void chooseVoice(AVSpeechSynthesisVoice* voice) {
+		[voice retain];
+		[currentVoice release];
+		currentVoice = voice;
+	}
+	// Lists the installed voices again, as voices can be downloaded or removed while the program runs.
+	void refreshVoices() {
+		@autoreleasepool {
+			NSArray<AVSpeechSynthesisVoice *> *listed = [[AVSpeechSynthesisVoice speechVoices] retain];
+			[voices release];
+			voices = listed;
+		}
 	}
 	void setDelegate() {
 		waiter = [[NVGTSpeechWaiter alloc] init];
@@ -138,7 +152,7 @@ public:
 	void resetRate() { rate = defaultRate; rateSet = false; }
 	void resetVolume() { volume = defaultVolume; volumeSet = false; }
 	void resetPitch() { pitch = defaultPitch; pitchSet = false; }
-	void resetVoice() { currentVoice = nil; }
+	void resetVoice() { chooseVoice(nil); }
 	// Synthesis to PCM gets a synthesizer of its own, so that it doesn't wait behind speech queued on the other.
 	AVSpeechSynthesizer* pcmSynthesizer() {
 		if (!pcmSynth) {
@@ -254,7 +268,7 @@ public:
 			NSString *nsname = [NSString stringWithUTF8String:name.c_str()];
 			for (AVSpeechSynthesisVoice *voice in voices) {
 				if (![voice.name isEqualToString:nsname]) continue;
-				currentVoice = voice;
+				chooseVoice(voice);
 				break;
 			}
 		}
@@ -264,7 +278,7 @@ public:
 			NSString *nslanguage = [NSString stringWithUTF8String:language.c_str()];
 			for (AVSpeechSynthesisVoice *voice in voices) {
 				if (![voice.language isEqualToString:nslanguage]) continue;
-				currentVoice = voice;
+				chooseVoice(voice);
 				break;
 			}
 		}
@@ -285,16 +299,9 @@ public:
 		}
 	}
 	bool setVoiceByIndex(NSUInteger index) {
-		AVSpeechSynthesisVoice *oldVoice = currentVoice;
-		@autoreleasepool {
-			@try {
-				currentVoice = [voices objectAtIndex:index];
-				return true;
-			} @catch (NSException *exception) {
-				currentVoice = oldVoice;
-				return false;
-			}
-		}
+		if (index >= voices.count) return false;
+		chooseVoice([voices objectAtIndex:index]);
+		return true;
 	}
 	std::string getVoiceName(NSUInteger index) {
 		@autoreleasepool {
@@ -374,6 +381,7 @@ bool AVTTSVoice::reset_rate() { if (!impl) return false; impl->resetRate(); retu
 bool AVTTSVoice::reset_pitch() { if (!impl) return false; impl->resetPitch(); return true; }
 bool AVTTSVoice::reset_volume() { if (!impl) return false; impl->resetVolume(); return true; }
 bool AVTTSVoice::reset_voice() { if (!impl) return false; impl->resetVoice(); return true; }
+void AVTTSVoice::refresh_voices() { if (impl) impl->refreshVoices(); }
 std::string AVTTSVoice::getCurrentLanguage() const {
 	return impl->getCurrentLanguage();
 }

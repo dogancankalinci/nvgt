@@ -1005,6 +1005,7 @@ bool tts_voice::refresh() {
 		engine_entry &entry = get_engine_entry(name);
 		tts_engine *engine = entry.engine.get();
 		if (!engine || !engine->is_available()) continue;
+		engine->refresh_voices();
 		engine_default_voice[name] = tts_engine_default_voice(entry);
 		int voice_count = engine->get_voice_count();
 		for (int i = 0; i < voice_count; i++) {

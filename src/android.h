@@ -92,7 +92,7 @@ class android_tts_engine : public tts_engine_impl {
 	jmethodID midSpeakPcm, midGetPcmSampleRate, midGetPcmAudioFormat, midGetPcmChannelCount;
 	jmethodID midGetVoiceCount, midGetVoiceName, midGetVoiceLanguage, midSetVoiceByIndex, midGetCurrentVoiceIndex;
 	jmethodID midGetEngineLabel;
-	jmethodID midResetRate, midResetPitch, midResetVolume, midResetVoice;
+	jmethodID midResetRate, midResetPitch, midResetVolume, midResetVoice, midRefreshVoices;
 	jmethodID midSpeakTracked, midIsTrackedDone, midHasPendingSpeech, midShutdown;
 	jobject TTSObj = nullptr; // Global reference.
 	std::mutex pcm_mutex; // The Java side keeps one synthesis result at a time, read back over several calls.
@@ -126,4 +126,5 @@ public:
 	virtual bool reset_pitch() override;
 	virtual bool reset_volume() override;
 	virtual bool reset_voice() override;
+	virtual void refresh_voices() override;
 };

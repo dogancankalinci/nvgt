@@ -77,6 +77,7 @@ public:
 	virtual bool reset_pitch() { return false; }
 	virtual bool reset_volume() { return false; }
 	virtual bool reset_voice() { return false; }
+	virtual void refresh_voices() {} // Lists the installed voices again where the engine keeps a list of its own, as voices can be installed or removed while the program runs. Their indices can change.
 };
 
 class tts_engine_impl : public tts_engine {

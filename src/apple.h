@@ -66,6 +66,7 @@ public:
 	virtual bool reset_pitch() override;
 	virtual bool reset_volume() override;
 	virtual bool reset_voice() override;
+	virtual void refresh_voices() override;
 	bool speakWait(const std::string& text, bool interrupt);
 	bool stopSpeech();
 	bool pauseSpeech();
