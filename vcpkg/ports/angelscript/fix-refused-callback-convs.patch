@@ -1,0 +1,32 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -5859,7 +5859,12 @@
+ 	m_exceptionCallbackObj = obj;
+ 	bool isObj = false;
+ 	if( (unsigned)callConv == asCALL_GENERIC || (unsigned)callConv == asCALL_THISCALL_OBJFIRST || (unsigned)callConv == asCALL_THISCALL_OBJLAST )
++	{
++		// ALTERED: the callback was left enabled, so the next script exception called the function kept from before (with
++		// the new object), or a null function pointer if no callback had been set
++		m_exceptionCallback = false;
+ 		return asNOT_SUPPORTED;
++	}
+ 	if( (unsigned)callConv >= asCALL_THISCALL )
+ 	{
+ 		isObj = true;
+diff --git a/sdk/angelscript/source/as_scriptengine.cpp b/sdk/angelscript/source/as_scriptengine.cpp
+--- a/sdk/angelscript/source/as_scriptengine.cpp
++++ b/sdk/angelscript/source/as_scriptengine.cpp
+@@ -7183,7 +7183,12 @@
+ 	translateExceptionCallbackObj = param;
+ 	bool isObj = false;
+ 	if ((unsigned)callConv == asCALL_GENERIC || (unsigned)callConv == asCALL_THISCALL_OBJFIRST || (unsigned)callConv == asCALL_THISCALL_OBJLAST)
++	{
++		// ALTERED: the callback was left enabled, see asCContext::SetExceptionCallback (here the next C++ exception from
++		// a registered function called the kept function, or a null function pointer)
++		translateExceptionCallback = false;
+ 		return asNOT_SUPPORTED;
++	}
+ 	if ((unsigned)callConv >= asCALL_THISCALL)
+ 	{
+ 		isObj = true;

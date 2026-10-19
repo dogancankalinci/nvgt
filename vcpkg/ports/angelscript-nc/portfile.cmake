@@ -31,6 +31,7 @@ vcpkg_from_github(
         fix-functor-object-offset.patch
         fix-funcdef-autohandle-return.patch
         fix-thiscall1-variadic-methods.patch
+        fix-refused-callback-convs.patch
 )
 
 vcpkg_cmake_configure(
