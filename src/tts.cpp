@@ -665,7 +665,6 @@ void tts_voice::follow_installed_voices() {
 		refresh();
 		return;
 	}
-	for (auto &[name, entry] : engines) if (entry.engine) entry.engine->refresh_voices(); // ensure_default() reads the engines' own lists.
 	voice_state = VOICES_NONE;
 	ensure_default();
 }

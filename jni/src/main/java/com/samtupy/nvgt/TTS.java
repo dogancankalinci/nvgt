@@ -241,7 +241,17 @@ public class TTS {
 	}
 	// Changes when the voices of an engine may have changed: when a package was installed, removed or updated, or when a
 	// window of the app gained focus again, as voices are installed and removed in the engine's own settings.
-	public int getVoicesGeneration() { return packageGeneration + focusGeneration; }
+	public int getVoicesGeneration() { return packageGeneration + focusGeneration + connectionChanges; }
+	// Raised when the voices are worth listing again for this engine alone: when recoverConnection() made a new connection,
+	// and when an engine answers again after a listing found its connection down, as one does while its app is updated.
+	private volatile int connectionChanges = 0;
+	private volatile boolean listingMissed = false;
+	private int listedAt = Integer.MIN_VALUE; // getVoicesGeneration() when the voices were last listed. Guarded by the object.
+	// Lists the voices again when they may have changed since they were listed (see getVoicesGeneration()), so that an
+	// engine, also one that waited in NVGT's pool meanwhile, never lists voices that were removed or leaves out new ones.
+	private synchronized void listVoicesIfChanged() {
+		if (listedAt != getVoicesGeneration()) initializeVoices();
+	}
 
 	// Then, the instantiable object that interfaces directly with the Android TextToSpeech system.
 	private volatile TextToSpeech tts; // volatile: written on the constructor (game) thread, read from JNI/finalizer threads.
@@ -672,6 +682,7 @@ public class TTS {
 			if (pitchExplicit) replacement.setPitch(ttsPitch);
 			else pitchPinned = false;
 			tts = replacement;
+			connectionChanges++;
 			connectionLostAt = 0;
 			allTrackedEnded();
 			shutDown(failed);
@@ -868,11 +879,14 @@ public class TTS {
 	public float getPan() { return ttsPan; }
 
 	// Lists the engine's installed voices. A list that can't be read now, while the connection is down for instance, leaves the one there was.
-	private void initializeVoices() {
+	private synchronized void initializeVoices() {
 		if (!isActive()) return;
+		int generation = getVoicesGeneration();
 		List<Voice> listed = new ArrayList<>();
 		try {
 			Set<Voice> voices = tts.getVoices();
+			if (voices == null) listingMissed = true; // Listed again once the engine answers.
+			else listedAt = generation;
 			if (voices == null && availableVoices != null) return;
 			if (voices != null) {
 				for (Voice voice : voices) {
@@ -881,6 +895,7 @@ public class TTS {
 				}
 			}
 		} catch (Exception e) {
+			listingMissed = true;
 			if (availableVoices != null) return;
 		}
 		availableVoices = listed;
@@ -907,6 +922,10 @@ public class TTS {
 			public void onStart(String utteranceId) {
 				PcmRequest request = pcmRequestFor(utteranceId);
 				if (request != null) request.started = true;
+				if (listingMissed) {
+					listingMissed = false;
+					connectionChanges++;
+				}
 			}
 			@Override
 			public void onBeginSynthesis(String utteranceId, int sampleRateInHz, int audioFormat, int channelCount) {
@@ -950,7 +969,12 @@ public class TTS {
 		});
 	}
 
-	public int getVoiceCount() { return isActive() && availableVoices != null? availableVoices.size() : 0; }
+	public int getVoiceCount() {
+		if (!isActive()) return 0;
+		listVoicesIfChanged();
+		List<Voice> voices = availableVoices;
+		return voices != null? voices.size() : 0;
+	}
 	public String getVoiceName(int index) {
 		if (!isActive() || availableVoices == null || index < 0 || index >= availableVoices.size()) return "";
 		return availableVoices.get(index).getName();
@@ -979,7 +1003,9 @@ public class TTS {
 	}
 	// The voice TextToSpeech is actually speaking with: the one a script set, otherwise the one it took from the user's settings. -1 if it has none, which happens when the engine doesn't support the language the settings name.
 	public int getCurrentVoiceIndex() {
-		if (!isActive() || availableVoices == null) return -1;
+		if (!isActive()) return -1;
+		listVoicesIfChanged();
+		if (availableVoices == null) return -1;
 		followDefaultVoice();
 		Voice current;
 		try {

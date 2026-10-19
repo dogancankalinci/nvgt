@@ -77,7 +77,7 @@ public:
 	virtual bool reset_pitch() { return false; }
 	virtual bool reset_volume() { return false; }
 	virtual bool reset_voice() { return false; }
-	virtual void refresh_voices() {} // Lists the installed voices again where the engine keeps a list of its own, as voices can be installed or removed while the program runs. Their indices can change.
+	virtual void refresh_voices() {} // Lists the installed voices again where the engine keeps a list of its own, for a change it can't tell of (see voices_generation(); one it can tell of it takes up by itself). Their indices can change.
 	virtual uint64_t voices_generation() { return 0; } // Changes when the engine's installed voices may have changed, where the engine can tell; see tts_voice::follow_installed_voices().
 };
 

@@ -73,6 +73,23 @@ struct nvgt_speech_wait_state {
 }
 @end
 
+// Voices can be downloaded or deleted while the program runs. Apple reports it from iOS 17 and macOS 14 on; before that the user could only do it in the system's settings, after which the app becomes active again, so that counts as a change instead.
+static std::atomic<uint64_t> g_apple_voices_changes{0};
+static void apple_watch_voices() {
+	static std::once_flag once;
+	std::call_once(once, [] {
+		@autoreleasepool { // For the observer the center hands back, on a thread that may have no pool.
+			void (^changed)(NSNotification*) = ^(NSNotification* notification) { g_apple_voices_changes++; };
+			NSNotificationCenter* center = [NSNotificationCenter defaultCenter];
+			if (@available(iOS 17.0, macOS 14.0, *)) [center addObserverForName:AVSpeechSynthesisAvailableVoicesDidChangeNotification object:nil queue:nil usingBlock:changed];
+#if TARGET_OS_IOS
+			else [center addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:nil usingBlock:changed];
+#else
+			else [center addObserverForName:NSApplicationDidBecomeActiveNotification object:nil queue:nil usingBlock:changed];
+#endif
+		}
+	});
+}
 // AVTTSVoice::impl class created by Gruia Chiscop on 6/6/24.
 class AVTTSVoice::Impl {
 public:
@@ -89,8 +106,11 @@ public:
 	NVGTSpeechWaiter* waiter;
 	nvgt_speech_wait_state* pcmWaitState = new nvgt_speech_wait_state; // The same for synthesis to PCM, whose end the delegate reports.
 	NVGTSpeechWaiter* pcmWaiter = nil;
+	uint64_t listedChanges = 0; // g_apple_voices_changes when the voices were listed.
 	Impl() : currentVoice(nil) {
 		@autoreleasepool {
+			apple_watch_voices();
+			listedChanges = g_apple_voices_changes;
 			voices = [[AVSpeechSynthesisVoice speechVoices] retain];
 			readDefaults();
 			synth = [[AVSpeechSynthesizer alloc] init];
@@ -113,6 +133,7 @@ public:
 	// Lists the installed voices again, as voices can be downloaded or removed while the program runs.
 	void refreshVoices() {
 		@autoreleasepool {
+			listedChanges = g_apple_voices_changes;
 			NSArray<AVSpeechSynthesisVoice *> *listed = [[AVSpeechSynthesisVoice speechVoices] retain];
 			[voices release];
 			voices = listed;
@@ -154,6 +175,8 @@ public:
 	void resetVolume() { volume = defaultVolume; volumeSet = false; }
 	void resetPitch() { pitch = defaultPitch; pitchSet = false; }
 	void resetVoice() { chooseVoice(nil); }
+	// Lists the voices again when Apple reported a change since they were listed, so that an engine, also one that waited in NVGT's pool meanwhile, never lists voices that were removed or leaves out new ones.
+	void listVoicesIfChanged() { if (listedChanges != g_apple_voices_changes) refreshVoices(); }
 	// Synthesis to PCM gets a synthesizer of its own, so that it doesn't wait behind speech queued on the other.
 	AVSpeechSynthesizer* pcmSynthesizer() {
 		if (!pcmSynth) {
@@ -383,23 +406,6 @@ bool AVTTSVoice::reset_pitch() { if (!impl) return false; impl->resetPitch(); re
 bool AVTTSVoice::reset_volume() { if (!impl) return false; impl->resetVolume(); return true; }
 bool AVTTSVoice::reset_voice() { if (!impl) return false; impl->resetVoice(); return true; }
 void AVTTSVoice::refresh_voices() { if (impl) impl->refreshVoices(); }
-// Voices can be downloaded or deleted while the program runs. Apple reports it from iOS 17 and macOS 14 on; before that the user could only do it in the system's settings, after which the app becomes active again, so that counts as a change instead.
-static std::atomic<uint64_t> g_apple_voices_changes{0};
-static void apple_watch_voices() {
-	static std::once_flag once;
-	std::call_once(once, [] {
-		@autoreleasepool { // For the observer the center hands back, on a thread that may have no pool.
-			void (^changed)(NSNotification*) = ^(NSNotification* notification) { g_apple_voices_changes++; };
-			NSNotificationCenter* center = [NSNotificationCenter defaultCenter];
-			if (@available(iOS 17.0, macOS 14.0, *)) [center addObserverForName:AVSpeechSynthesisAvailableVoicesDidChangeNotification object:nil queue:nil usingBlock:changed];
-#if TARGET_OS_IOS
-			else [center addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:nil usingBlock:changed];
-#else
-			else [center addObserverForName:NSApplicationDidBecomeActiveNotification object:nil queue:nil usingBlock:changed];
-#endif
-		}
-	});
-}
 uint64_t AVTTSVoice::voices_generation() {
 	apple_watch_voices();
 	return g_apple_voices_changes;
@@ -430,7 +436,11 @@ bool AVTTSVoice::get_rate_range(float& minimum, float& midpoint, float& maximum)
 bool AVTTSVoice::get_pitch_range(float& minimum, float& midpoint, float& maximum) { minimum = 0.5; midpoint = 1; maximum = 2; return true; } // The range Apple documents for pitchMultiplier.
 bool AVTTSVoice::get_volume_range(float& minimum, float& midpoint, float& maximum) { minimum = 0; midpoint = 0.5; maximum = 1; return true; }
 
-int AVTTSVoice::get_voice_count() { return impl ? static_cast<int>(impl->getVoicesCount()) : 0; }
+int AVTTSVoice::get_voice_count() {
+	if (!impl) return 0;
+	impl->listVoicesIfChanged();
+	return static_cast<int>(impl->getVoicesCount());
+}
 
 std::string AVTTSVoice::get_voice_name(int index) {
 	if (!impl || index < 0 || index >= get_voice_count()) return "";
@@ -448,6 +458,7 @@ bool AVTTSVoice::set_voice(int voice_index) {
 
 int AVTTSVoice::get_current_voice() {
 	if (!impl) return -1;
+	impl->listVoicesIfChanged();
 	return impl->effectiveVoiceIndex();
 }
 
