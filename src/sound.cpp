@@ -1247,6 +1247,7 @@ class audio_decoder_impl : public audio_data_source_impl, public virtual audio_d
 		size_t pos = 0;          // logical read position, which is where the decoder believes it is
 		bool window_full = false;   // hit CAP, so it no longer holds everything read
 		bool window_moved = false;  // a real seek happened, so it no longer starts at byte 0
+		std::streamoff base = 0;    // where the stream was when the decoder opened it, which the decoder's positions count from
 		bool mirrors_stream() const { return !window_full && !window_moved; }
 	};
 	// The cursor is handed to the decoder through a VFS rather than ma_decoder_init's raw read/seek pair, because that form leaves
@@ -1311,7 +1312,7 @@ class audio_decoder_impl : public audio_data_source_impl, public virtual audio_d
 		// Past the window while it mirrors the stream: the stream sits at the window's end, which the decoder can be behind after a rewind, as after probing formats, so a seek from the current position would be counted from the wrong place. The stream is sought from its start instead, or, when it can't seek, read forward up to the target, which the window keeps while it can.
 		if (sc->mirrors_stream() && target >= 0) {
 			stream->clear();
-			stream->seekg(target, stream->beg);
+			stream->seekg(sc->base + target, stream->beg);
 			if (stream->fail()) {
 				stream->clear();
 				sc->pos = sc->window.size();
@@ -1324,7 +1325,7 @@ class audio_decoder_impl : public audio_data_source_impl, public virtual audio_d
 				}
 				return MA_SUCCESS;
 			}
-			sc->pos = static_cast<size_t>(stream->tellg());
+			sc->pos = static_cast<size_t>(target);
 			std::string().swap(sc->window);
 			sc->window_moved = true;
 			return MA_SUCCESS;
@@ -1333,6 +1334,7 @@ class audio_decoder_impl : public audio_data_source_impl, public virtual audio_d
 		switch (origin) {
 			case ma_seek_origin_start:
 				dir = stream->beg;
+				offset += sc->base;
 				break;
 			case ma_seek_origin_current:
 				dir = stream->cur;
@@ -1350,7 +1352,8 @@ class audio_decoder_impl : public audio_data_source_impl, public virtual audio_d
 			return MA_NOT_IMPLEMENTED;
 		}
 		// The stream really moved, so the window no longer describes where the decoder is; from here the stream answers for itself. It can never mirror again, so free it rather than just clearing it.
-		sc->pos = static_cast<size_t>(stream->tellg());
+		std::streamoff at = stream->tellg();
+		sc->pos = at > sc->base? static_cast<size_t>(at - sc->base) : 0;
 		std::string().swap(sc->window);
 		sc->window_moved = true;
 		return MA_SUCCESS;
@@ -1404,6 +1407,9 @@ public:
 		ma_decoder_config cfg = decoder_config_init(sample_rate, channels);
 		cursor = make_unique<stream_cursor>();
 		cursor->ds = ds;
+		std::streampos at = ds->get_istr()->tellg(); // A stream partly read already, as after the script read a header from it, is decoded from where it is.
+		if (at >= 0) cursor->base = at;
+		ds->get_istr()->clear();
 		ds_vfs = make_unique<ds_vfs_t>();
 		ds_vfs->cb.onOpen  = vfs_open;  ds_vfs->cb.onOpenW = nullptr;
 		ds_vfs->cb.onClose = vfs_close; ds_vfs->cb.onRead  = vfs_read;
