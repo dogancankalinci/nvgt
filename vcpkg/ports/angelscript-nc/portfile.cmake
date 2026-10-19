@@ -17,6 +17,7 @@ vcpkg_from_github(
         fix-callfunc-functor-arg-cleanup.patch
         fix-x64-gcc-composite-args.patch
         fix-arm64-composite-args.patch
+        fix-x64-msvc-odd-size-objects.patch
 )
 
 vcpkg_cmake_configure(

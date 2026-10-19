@@ -1,0 +1,53 @@
+diff --git a/sdk/angelscript/source/as_callfunc.cpp b/sdk/angelscript/source/as_callfunc.cpp
+index 392b5e3..226834f 100644
+--- a/sdk/angelscript/source/as_callfunc.cpp
++++ b/sdk/angelscript/source/as_callfunc.cpp
+@@ -375,6 +375,19 @@ int PrepareSystemFunction(asCScriptFunction *func, asSSystemFunctionInterface *i
+ #endif
+ 				}
+ 
++#ifdef AS_X64_MSVC
++				// ALTERED: The Windows x64 convention returns only a type of 1, 2, 4 or 8 bytes in RAX, any other size in
++				// memory. A 3, 5, 6 or 7 byte type was taken from RAX while the function wrote it through the first
++				// argument, taken for the hidden return pointer.
++				{
++					int bytes = func->returnType.GetSizeInMemoryBytes();
++					if( bytes != 1 && bytes != 2 && bytes != 4 && bytes != 8 )
++					{
++						internal->hostReturnInMemory = true;
++						internal->hostReturnSize     = sizeof(void*)/4;
++					}
++				}
++#endif
+ #ifdef THISCALL_RETURN_SIMPLE_IN_MEMORY
+ 				if((internal->callConv == ICC_THISCALL ||
+ #ifdef AS_NO_THISCALL_FUNCTOR_METHOD
+@@ -544,6 +557,10 @@ int PrepareSystemFunction(asCScriptFunction *func, asSSystemFunctionInterface *i
+ #endif
+ #ifdef AS_LARGE_OBJS_PASSED_BY_REF
+ 		if( dt.GetSizeInMemoryDWords() >= AS_LARGE_OBJ_MIN_SIZE ) needFree = true;
++#endif
++#ifdef AS_X64_MSVC
++		// ALTERED: Windows x64 passes an object of any size other than 1, 2, 4 or 8 bytes by reference
++		if( dt.GetSizeInMemoryBytes() != 1 && dt.GetSizeInMemoryBytes() != 2 && dt.GetSizeInMemoryBytes() != 4 && dt.GetSizeInMemoryBytes() != 8 ) needFree = true;
+ #endif
+ 		if( needFree &&
+ 			dt.IsObject() &&
+diff --git a/sdk/angelscript/source/as_callfunc_x64_msvc.cpp b/sdk/angelscript/source/as_callfunc_x64_msvc.cpp
+index 8af5adc..ece235e 100644
+--- a/sdk/angelscript/source/as_callfunc_x64_msvc.cpp
++++ b/sdk/angelscript/source/as_callfunc_x64_msvc.cpp
+@@ -118,8 +118,12 @@ asQWORD CallSystemFunctionNative(asCContext *context, asCScriptFunction *descr,
+ 		asCDataType &dt = descr->parameterTypes[n];
+ 		if( dt.IsObject() && !dt.IsObjectHandle() && !dt.IsReference() )
+ 		{
++			// ALTERED: Windows x64 passes an object of any size other than 1, 2, 4 or 8 bytes by reference, a 3, 5, 6 or 7
++			// byte one too (its memory is freed after the call, like that of a large object)
++			const int bytes = dt.GetSizeInMemoryBytes();
+ 			if( dt.GetSizeInMemoryDWords() >= AS_LARGE_OBJ_MIN_SIZE ||
+-				(dt.GetTypeInfo()->flags & COMPLEX_MASK) )
++				(dt.GetTypeInfo()->flags & COMPLEX_MASK) ||
++				(bytes != 1 && bytes != 2 && bytes != 4 && bytes != 8) )
+ 			{
+ 				allArgBuffer[dpos++] = *(asQWORD*)&args[spos];
+ 				spos += AS_PTR_SIZE;
