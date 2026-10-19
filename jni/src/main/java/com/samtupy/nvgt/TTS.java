@@ -822,16 +822,19 @@ public class TTS {
 	public boolean resetVoice() {
 		if (!isActive()) return false;
 		synchronized (followLock) {
-			boolean reset;
-			if (defaultVoice != null) reset = tts.setVoice(defaultVoice) == TextToSpeech.SUCCESS;
-			// An engine can name no voice for the settings' language and still speak it; asking for that language again then
-			// brings its default back.
-			else reset = defaultLanguage != null && tts.setLanguage(defaultLanguage) >= TextToSpeech.LANG_AVAILABLE;
+			// The settings' voice as it is now, as the one kept from before can have been replaced or removed while a voice was
+			// chosen; failing that, the one kept, or the settings' language, as an engine can name no voice for it and still
+			// speak it, and asking for that language again then brings its default back.
+			String settings = languageSettings();
+			int focus = focusGeneration;
+			boolean reset = takeDefaultVoice(tts);
+			if (!reset && defaultVoice != null) reset = tts.setVoice(defaultVoice) == TextToSpeech.SUCCESS;
+			if (!reset && defaultLanguage != null) reset = tts.setLanguage(defaultLanguage) >= TextToSpeech.LANG_AVAILABLE;
 			if (!reset) return false;
 			chosenVoice = null;
-			followedSettings = null; // The settings may have changed while the voice was chosen.
+			followedSettings = settings;
+			followedFocus = focus;
 		}
-		followDefaultVoice();
 		return true;
 	}
 
