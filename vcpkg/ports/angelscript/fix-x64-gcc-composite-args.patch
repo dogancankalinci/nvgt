@@ -1,0 +1,123 @@
+diff --git a/sdk/angelscript/source/as_callfunc_x64_gcc.cpp b/sdk/angelscript/source/as_callfunc_x64_gcc.cpp
+index 229e317..d73579e 100644
+--- a/sdk/angelscript/source/as_callfunc_x64_gcc.cpp
++++ b/sdk/angelscript/source/as_callfunc_x64_gcc.cpp
+@@ -57,7 +57,8 @@
+ 
+ BEGIN_AS_NAMESPACE
+ 
+-enum argTypes { x64INTARG = 0, x64FLOATARG = 1 };
++// ALTERED: x64MEMARG marks the eightbytes of an object passed in memory, i.e. on the stack, never in registers
++enum argTypes { x64INTARG = 0, x64FLOATARG = 1, x64MEMARG = 2 };
+ typedef asQWORD ( *funcptr_t )( void );
+ 
+ #define X64_MAX_ARGS             32
+@@ -213,6 +214,8 @@ asQWORD CallSystemFunctionNative(asCContext *context, asCScriptFunction *descr,
+ 	// Determine the type of the arguments, and prepare the input array for the X64_CallFunction 
+ 	asQWORD  paramBuffer[X64_CALLSTACK_SIZE] = { 0 };
+ 	asBYTE	 argsType[X64_CALLSTACK_SIZE] = { 0 };
++	// ALTERED: 2 at the first of the two eightbytes of an object passed in registers, which must both get one
++	asBYTE   argsPair[X64_CALLSTACK_SIZE] = { 0 };
+ 
+ #pragma GCC diagnostic push
+ #pragma GCC diagnostic ignored "-Wimplicit-fallthrough"
+@@ -356,14 +359,30 @@ asQWORD CallSystemFunctionNative(asCContext *context, asCScriptFunction *descr,
+ 		else
+ 		{
+ 			// An object is being passed by value
+-			if( (parmType.GetTypeInfo()->flags & COMPLEX_MASK) ||
+-			    parmType.GetSizeInMemoryDWords() > 4 )
++			if( (parmType.GetTypeInfo()->flags & COMPLEX_MASK) )
+ 			{
+ 				// Copy the address of the object
+ 				argsType[argIndex] = x64INTARG;
+ 				memcpy(paramBuffer + argIndex, stack_pointer, sizeof(asQWORD));
+ 				argIndex++;
+ 			}
++			else if( parmType.GetSizeInMemoryDWords() > 4 )
++			{
++				// ALTERED: An object larger than 16 bytes that isn't complex is passed in memory, i.e. its bytes are
++				// copied to the stack, not its address to a register. The memory is freed with the other arguments
++				// after the call (AS_LARGE_OBJS_PASSED_BY_REF).
++				asUINT qwords = (parmType.GetSizeInMemoryBytes() + 7) / 8;
++				if( argIndex + qwords > X64_CALLSTACK_SIZE - MAX_CALL_INT_REGISTERS - MAX_CALL_SSE_REGISTERS )
++				{
++					// More than the buffers here can hold on the stack
++					context->SetInternalException(TXT_INVALID_CALLING_CONVENTION);
++					return 0;
++				}
++				memcpy(paramBuffer + argIndex, *(void**)stack_pointer, parmType.GetSizeInMemoryBytes());
++				for( asUINT q = 0; q < qwords; q++ )
++					argsType[argIndex + q] = x64MEMARG;
++				argIndex += qwords;
++			}
+ 			else if( (parmType.GetTypeInfo()->flags & asOBJ_APP_CLASS_ALLINTS) ||
+ 			         (parmType.GetTypeInfo()->flags & asOBJ_APP_PRIMITIVE) )
+ 			{
+@@ -372,6 +391,7 @@ asQWORD CallSystemFunctionNative(asCContext *context, asCScriptFunction *descr,
+ 				{
+ 					argsType[argIndex] = x64INTARG;
+ 					argsType[argIndex+1] = x64INTARG;
++					argsPair[argIndex] = 2;
+ 					memcpy(paramBuffer + argIndex, *(asDWORD**)stack_pointer, parmType.GetSizeInMemoryBytes());
+ 					argIndex += 2;
+ 				}
+@@ -392,6 +412,7 @@ asQWORD CallSystemFunctionNative(asCContext *context, asCScriptFunction *descr,
+ 				{
+ 					argsType[argIndex] = x64FLOATARG;
+ 					argsType[argIndex+1] = x64FLOATARG;
++					argsPair[argIndex] = 2;
+ 					memcpy(paramBuffer + argIndex, *(asDWORD**)stack_pointer, parmType.GetSizeInMemoryBytes());
+ 					argIndex += 2;
+ 				}
+@@ -447,23 +468,42 @@ asQWORD CallSystemFunctionNative(asCContext *context, asCScriptFunction *descr,
+ 	int     used_sse_regs   = 0;
+ 	int     used_stack_args = 0;
+ 	int     idx             = 0;
+-	for ( n = 0; ( n < totalArgumentCount ) && ( used_int_regs < MAX_CALL_INT_REGISTERS ); n++ ) 
++	// ALTERED: The two eightbytes of an object get two registers or both go on the stack (if only one register is left,
++	// the object goes on the stack and the register stays free for the following arguments), and x64MEMARG eightbytes
++	// never get a register. Before, an object could be split between the last register and the stack.
++	for ( n = 0; n < totalArgumentCount; n++ )
+ 	{
+ 		if ( argsType[n] == x64INTARG ) 
+ 		{
+-			argsSet[n] = 1;
+-			tempBuff[idx++] = paramBuffer[n];
+-			used_int_regs++;
++			int count = argsPair[n] == 2 ? 2 : 1;
++			if ( used_int_regs + count <= MAX_CALL_INT_REGISTERS )
++			{
++				for ( int i = 0; i < count; i++ )
++				{
++					argsSet[n + i] = 1;
++					tempBuff[idx++] = paramBuffer[n + i];
++					used_int_regs++;
++				}
++			}
++			n += count - 1;
+ 		}
+ 	}
+ 	idx = MAX_CALL_INT_REGISTERS;
+-	for ( n = 0; ( n < totalArgumentCount ) && ( used_sse_regs < MAX_CALL_SSE_REGISTERS ); n++ ) 
++	for ( n = 0; n < totalArgumentCount; n++ )
+ 	{
+ 		if ( argsType[n] == x64FLOATARG ) 
+ 		{
+-			argsSet[n] = 1;
+-			tempBuff[idx++] = paramBuffer[n];
+-			used_sse_regs++;
++			int count = argsPair[n] == 2 ? 2 : 1;
++			if ( used_sse_regs + count <= MAX_CALL_SSE_REGISTERS )
++			{
++				for ( int i = 0; i < count; i++ )
++				{
++					argsSet[n + i] = 1;
++					tempBuff[idx++] = paramBuffer[n + i];
++					used_sse_regs++;
++				}
++			}
++			n += count - 1;
+ 		}
+ 	}
+ 	idx = MAX_CALL_INT_REGISTERS + MAX_CALL_SSE_REGISTERS;
