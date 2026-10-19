@@ -1,0 +1,55 @@
+diff --git a/sdk/angelscript/source/as_scriptengine.cpp b/sdk/angelscript/source/as_scriptengine.cpp
+--- a/sdk/angelscript/source/as_scriptengine.cpp
++++ b/sdk/angelscript/source/as_scriptengine.cpp
+@@ -4936,18 +4936,38 @@
+ 	}
+ }
+ 
++// ALTERED: these two call the factories of registered types for CreateScriptObject, CreateScriptObjectCopy and the
++// members of an uninitialized script object. A factory declared to return an auto handle (T@+) adds no reference for
++// the object it returns, and the reference the caller then owns was never added, as CallSystemFunction (or CallGeneric,
++// in the default generic call mode) adds it when a script calls the factory: the object was destroyed while the factory
++// still held it once the caller released what it was given. The reference is added here the same way.
++void asCScriptEngine::AddRefAutoHandleReturn(void *ptr, asCScriptFunction *s) const
++{
++	if( ptr == 0 || !s->sysFuncIntf->returnAutoHandle )
++		return;
++	if( (s->sysFuncIntf->callConv == ICC_GENERIC_FUNC || s->sysFuncIntf->callConv == ICC_GENERIC_METHOD) && ep.genericCallMode != 1 )
++		return;
++	asCObjectType *ot = CastToObjectType(s->returnType.GetTypeInfo());
++	if( ot && ot->beh.addref )
++		CallObjectMethod(ptr, ot->beh.addref);
++}
++
+ void *asCScriptEngine::CallGlobalFunctionRetPtr(int func) const
+ {
+ 	asCScriptFunction *s = scriptFunctions[func];
+ 	asASSERT( s != 0 );
+-	return CallGlobalFunctionRetPtr(s->sysFuncIntf, s);
++	void *ptr = CallGlobalFunctionRetPtr(s->sysFuncIntf, s);
++	AddRefAutoHandleReturn(ptr, s);
++	return ptr;
+ }
+ 
+ void *asCScriptEngine::CallGlobalFunctionRetPtr(int func, void *param1) const
+ {
+ 	asCScriptFunction *s = scriptFunctions[func];
+ 	asASSERT( s != 0 );
+-	return CallGlobalFunctionRetPtr(s->sysFuncIntf, s, param1);
++	void *ptr = CallGlobalFunctionRetPtr(s->sysFuncIntf, s, param1);
++	AddRefAutoHandleReturn(ptr, s);
++	return ptr;
+ }
+ 
+ void *asCScriptEngine::CallGlobalFunctionRetPtr(asSSystemFunctionInterface *i, asCScriptFunction *s) const
+diff --git a/sdk/angelscript/source/as_scriptengine.h b/sdk/angelscript/source/as_scriptengine.h
+--- a/sdk/angelscript/source/as_scriptengine.h
++++ b/sdk/angelscript/source/as_scriptengine.h
+@@ -233,6 +233,7 @@
+ 	void *CallAlloc(const asCObjectType *objType) const;
+ 	void  CallFree(void *obj) const;
+ 
++	void  AddRefAutoHandleReturn(void *ptr, asCScriptFunction *s) const; // ALTERED: see as_scriptengine.cpp
+ 	void *CallGlobalFunctionRetPtr(int func) const;
+ 	void *CallGlobalFunctionRetPtr(int func, void *param1) const;
+ 	void *CallGlobalFunctionRetPtr(asSSystemFunctionInterface *func, asCScriptFunction *desc) const;
