@@ -398,7 +398,7 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 	ctx->SetLineCallback(asFUNCTION(script_function_line_callback), &call_data, asCALL_CDECL);
 	int xr;
 	xr = execute_nested(ctx);
-	ctx->SetLineCallback(asFUNCTION(profiler_callback), NULL, asCALL_CDECL);
+	ctx->SetLineCallback(asFUNCTION(nvgt_line_callback), NULL, asCALL_CDECL); // The one every context has (profiler_callback alone had the debugger stop at no breakpoint after a call).
 	if (xr != asEXECUTION_FINISHED) {
 		if (xr == asEXECUTION_EXCEPTION) {
 			char msg[4096];
@@ -510,7 +510,7 @@ std::string script_function_get_script_property(asIScriptFunction* func) {
 	return std::string(script);
 }
 void script_function_line_callback(asIScriptContext* ctx, script_function_call_data* data) {
-	profiler_callback(ctx, NULL);
+	nvgt_line_callback(ctx, NULL);
 	if (data->max_statement_count < 1) return;
 	data->current_statement_count += 1;
 	if (data->current_statement_count > data->max_statement_count) {

@@ -18,6 +18,7 @@
 
 bool script_compiled();
 void profiler_callback(asIScriptContext* ctx, void* obj);
+void nvgt_line_callback(asIScriptContext* ctx, void* obj); // Every context's line callback (nvgt_angelscript.cpp): the debugger's, then profiler_callback.
 extern int g_GCMode;
 void prepare_profiler();
 void garbage_collect_action();
