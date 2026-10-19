@@ -1,0 +1,40 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -974,6 +974,14 @@
+ 			if( m_initialFunction->objectType )
+ 				offset += AS_PTR_SIZE;
+ 
++			// ALTERED: SetProgramPointer pushes the object of a delegate in front of the arguments and moves the stack
++			// frame pointer down over it, so with a delegate prepared the return value's address is one pointer further
++			// up. It was read from the object's slot: a delegate whose method returns an object by value (e.g. a string,
++			// run by a context of its own) handed back its own object as the returned value, and when the context was
++			// unprepared the value type's destructor ran on that object while the returned value leaked.
++			if( m_initialFunction->funcType == asFUNC_DELEGATE )
++				offset += AS_PTR_SIZE;
++
+ 			return *(void**)(&m_regs.stackFramePointer[offset]);
+ 		}
+ 
+@@ -1002,6 +1010,10 @@
+ 			if( m_initialFunction->objectType )
+ 				offset += AS_PTR_SIZE;
+ 
++			// ALTERED: and after the object of a delegate, see GetReturnAddress
++			if( m_initialFunction->funcType == asFUNC_DELEGATE )
++				offset += AS_PTR_SIZE;
++
+ 			return *(void**)(&m_regs.stackFramePointer[offset]);
+ 		}
+ 
+@@ -1028,6 +1040,10 @@
+ 				if( m_initialFunction->objectType )
+ 					offset += AS_PTR_SIZE;
+ 
++				// ALTERED: and after the object of a delegate, see GetReturnAddress
++				if( m_initialFunction->funcType == asFUNC_DELEGATE )
++					offset += AS_PTR_SIZE;
++
+ 				return *(void**)(&m_regs.stackFramePointer[offset]);
+ 			}
+ 

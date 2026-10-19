@@ -23,6 +23,7 @@ vcpkg_from_github(
         fix-functor-behaviour-calls.patch
         fix-app-float-args.patch
         fix-system-call-arg-ownership.patch
+        fix-delegate-return-value.patch
 )
 
 vcpkg_cmake_configure(
