@@ -1128,8 +1128,17 @@ bool tts_voice::set_language(const string& language) {
 	int previous_voice_index = current_voice_index;
 	bool previous_voice_set = voice_set;
 	shared_ptr<tts_engine> previous_engine = current_engine;
+	string previous_followed_engine = followed_engine;
+	unordered_map<string, uint64_t> previous_generations;
+	for (auto &[name, entry] : engines) previous_generations[name] = entry.voices_generation;
 	auto restore = [&]() {
 		current_language = previous_language;
+		// The list put back is the one made before, so a preferred engine or a change of the voices the new list already took up is still to be followed.
+		followed_engine = previous_followed_engine;
+		for (auto &[name, generation] : previous_generations) {
+			auto entry = engines.find(name);
+			if (entry != engines.end()) entry->second.voices_generation = generation;
+		}
 		voices = previous_voices;
 		voice_state = previous_state;
 		current_voice_index = previous_voice_index;
