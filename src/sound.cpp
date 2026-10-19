@@ -1343,6 +1343,7 @@ class audio_decoder_impl : public audio_data_source_impl, public virtual audio_d
 		// While the decoder's length is asked for on a stream that can't seek: only what the window holds is read or sought in, and anything past it is refused and noted, so a format that counts its length by reading to the end leaves the stream as it was rather than consuming it.
 		bool length_query = false;
 		bool length_query_refused = false;
+		bool seekable = true; // As the decoder's.
 	};
 	// The cursor is handed to the decoder through a VFS rather than ma_decoder_init's raw read/seek pair, because that form leaves
 	// the decoder's onTell null (ma_decoder_init passes NULL where ma_decoder_init_vfs passes ma_decoder__on_tell_vfs). The custom
@@ -1399,6 +1400,8 @@ class audio_decoder_impl : public audio_data_source_impl, public virtual audio_d
 		if (!sc || !sc->ds) return MA_ERROR;
 		istream* stream = sc->ds->get_istr();
 		if (!stream) return MA_ERROR;
+		// A seek by nothing from where it is, which libvorbisfile and opusfile make to ask whether a stream can seek: answered from the window, it told them that a stream that can't could, and they then took where they were while opening for its end, so an Ogg Opus stream stopped after that much and an Ogg Vorbis one reported a wrong length.
+		if (origin == ma_seek_origin_current && offset == 0 && !sc->seekable) return MA_NOT_IMPLEMENTED;
 		// Where this wants to land, when that can be worked out; a seek from the end is left for the stream to accept or refuse, since a live stream's length is unknown.
 		ma_int64 target = -1;
 		if (origin == ma_seek_origin_start) target = offset;
@@ -1525,6 +1528,7 @@ public:
 			if (in->fail()) seekable = false;
 			in->clear();
 		}
+		cursor->seekable = seekable;
 		ds_vfs = make_unique<ds_vfs_t>();
 		ds_vfs->cb.onOpen  = vfs_open;  ds_vfs->cb.onOpenW = nullptr;
 		ds_vfs->cb.onClose = vfs_close; ds_vfs->cb.onRead  = vfs_read;
