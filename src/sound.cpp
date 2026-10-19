@@ -2923,18 +2923,27 @@ class microphone_impl : public audio_ring_buffer_impl, public virtual microphone
 		if (node && pInput && frameCount > 0) node->write((float*)pInput, frameCount);
 	}
 public:
-	// An index out of range opens the default device, as -1 does, and reads as -1 then.
-	microphone_impl(audio_engine* e, int device) : audio_ring_buffer_impl(e->get_channels(), 8192, e), capture_device(make_unique<ma_device>()) {
-		follows_default = !(device >= 0 && audio_device_id(ma_device_type_capture, device, device_id));
+	// Opens capture_device on the device with that id, or the system's default for null, without starting it.
+	bool open_capture(const ma_device_id* id) {
 		ma_device_config device_config = ma_device_config_init(ma_device_type_capture);
 		device_config.capture.format = ma_format_f32;
-		device_config.capture.channels = e->get_channels();
-		device_config.sampleRate = e->get_sample_rate();
+		device_config.capture.channels = get_engine()->get_channels();
+		device_config.sampleRate = get_engine()->get_sample_rate();
 		device_config.dataCallback = capture_data_callback;
 		device_config.pUserData = this;
 		device_config.periodSizeInFrames = SOUNDSYSTEM_FRAMESIZE * 2;
-		device_config.capture.pDeviceID = follows_default? nullptr : &device_id;
-		if ((g_soundsystem_last_error = ma_device_init(&g_sound_context, &device_config, &*capture_device)) != MA_SUCCESS) throw std::runtime_error("failed to initialize capture device");
+		device_config.capture.pDeviceID = id;
+		capture_device = make_unique<ma_device>();
+		if ((g_soundsystem_last_error = ma_device_init(&g_sound_context, &device_config, &*capture_device)) != MA_SUCCESS) {
+			capture_device.reset();
+			return false;
+		}
+		return true;
+	}
+	// An index out of range opens the default device, as -1 does, and reads as -1 then.
+	microphone_impl(audio_engine* e, int device) : audio_ring_buffer_impl(e->get_channels(), 8192, e) {
+		follows_default = !(device >= 0 && audio_device_id(ma_device_type_capture, device, device_id));
+		if (!open_capture(follows_default? nullptr : &device_id)) throw std::runtime_error("failed to initialize capture device");
 		if ((g_soundsystem_last_error = ma_device_start(&*capture_device)) != MA_SUCCESS) audio_node_impl::set_state(ma_node_state_stopped);
 	}
 	~microphone_impl() {
@@ -2947,25 +2956,22 @@ public:
 			return false;
 		}
 		if (capture_device && (device == -1? follows_default : !follows_default && ma_device_id_equal(&requested_id, &device_id))) return true; // Without a device open, as after one failed to, it is opened anew.
-		if (capture_device) {
+		const bool had_device = capture_device != nullptr, recording = get_state() == ma_node_state_started;
+		if (had_device) {
 			ma_device_stop(&*capture_device);
 			uninit_device(&*capture_device);
 		}
-		ma_device_config device_config = ma_device_config_init(ma_device_type_capture);
-		device_config.capture.format = ma_format_f32;
-		device_config.capture.channels = get_engine()->get_channels();
-		device_config.sampleRate = get_engine()->get_sample_rate();
-		device_config.dataCallback = capture_data_callback;
-		device_config.pUserData = this;
-		device_config.periodSizeInFrames = SOUNDSYSTEM_FRAMESIZE * 2; // As the constructor opens it.
-		device_config.capture.pDeviceID = device > -1? &requested_id : nullptr;
-		capture_device = make_unique<ma_device>();
-		if ((g_soundsystem_last_error = ma_device_init(&g_sound_context, &device_config, &*capture_device)) != MA_SUCCESS) {
-			capture_device.reset();
+		if (!open_capture(device > -1? &requested_id : nullptr)) {
+			// The device asked for couldn't be opened: the one in use before is opened again, as an engine's set_device() does, so that asking for it changes nothing. The error reported stays that of the device asked for.
+			ma_result error = g_soundsystem_last_error;
+			if (had_device && open_capture(follows_default? nullptr : &device_id) && recording) ma_device_start(&*capture_device);
+			g_soundsystem_last_error = error;
 			return false;
 		}
 		follows_default = device == -1;
 		if (!follows_default) device_id = requested_id;
+		// A microphone the script stopped stays stopped on the new device, as set_state() starts it, dropping what it held then.
+		if (!recording) return true;
 		if ((g_soundsystem_last_error = ma_device_start(&*capture_device)) != MA_SUCCESS) {
 			audio_node_impl::set_state(ma_node_state_stopped);
 			follows_default = true;
@@ -2975,7 +2981,7 @@ public:
 		}
 		return true;
 	}
-	int get_device() const override { return follows_default? -1 : audio_device_index(ma_device_type_capture, device_id); }
+	int get_device() const override { return !capture_device || follows_default? -1 : audio_device_index(ma_device_type_capture, device_id); }
 	bool set_state(ma_node_state state) override {
 		// A microphone started again drops what it recorded before it stopped, through its reader (see pcm_queue), before its node is read again; one already recording keeps its queue.
 		if (capture_device && state == ma_node_state_started && !ma_device_is_started(&*capture_device)) discard_queued();
