@@ -1,6 +1,8 @@
 package com.samtupy.nvgt;
 
 import android.accessibilityservice.AccessibilityServiceInfo;
+import android.app.Activity;
+import android.app.Application;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -19,6 +21,7 @@ import android.speech.tts.TextToSpeech.OnInitListener;
 import android.speech.tts.UtteranceProgressListener;
 import android.speech.tts.Voice;
 import android.util.Log;
+import android.view.ViewTreeObserver;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityManager;
 import java.io.File;
@@ -164,13 +167,23 @@ public class TTS {
 	private float ttsVolume = 1.0f;
 	private float ttsRate = 1.0f;
 	private float ttsPitch = 1.0f;
-	// Nothing reaches the engine unless a script explicitly sets it. Until then an utterance carries no rate, pitch, volume or pan, so the TTS service fills them in from the user's own settings on every request, and the voice stays the one TextToSpeech took from the user's language setting while connecting (see defaultVoice).
+	// Nothing reaches the engine unless a script explicitly sets it. Until then an utterance carries no rate, pitch, volume or pan, so the TTS service fills them in from the user's own settings on every request, and the voice is the one the user's settings select (see followedSettings).
 	private boolean rateExplicit = false, pitchExplicit = false, volumeExplicit = false, panExplicit = false;
 	// TextToSpeech cannot clear a rate or pitch once one has been set. After such a value is reset we therefore re-apply the current system value before each utterance instead (see followSystemSettings()).
 	private boolean ratePinned = false, pitchPinned = false;
-	private Voice defaultVoice; // The voice TextToSpeech selected from the user's settings when it connected, which resetVoice() restores.
+	private Voice defaultVoice; // The voice the user's settings select, as TextToSpeech took it while connecting and followDefaultVoice() since, which resetVoice() restores.
 	private volatile Voice chosenVoice; // The voice a script set, if any, which a replacement TextToSpeech is given too.
 	private Locale defaultLanguage; // The language TextToSpeech took from the user's settings when it connected.
+	// While no voice was chosen, the voice follows the user's settings as they are now: the language set for the engine, or
+	// the phone's, and the voice the engine itself names as its default for it. TextToSpeech looks both up only as it
+	// connects and then names that voice in every request, so a change made while the app runs went unheard, and unreported,
+	// until it started again. The language settings are read before every utterance, which costs nothing while they are
+	// unchanged. The engine's own default voice changes only in the engine's settings, which take the user out of the app's
+	// window, so it is looked up again once the window has had focus back (see followDefaultVoice()).
+	private final Object followLock = new Object(); // Guards chosenVoice changes, defaultVoice, defaultLanguage and the two below.
+	private String followedSettings; // The language settings the voice was last brought in line with, null to look again.
+	private int followedFocus = -1; // focusGeneration when it was.
+	private static volatile int focusGeneration = 0; // Raised, on the main thread only, each time an app window gains focus.
 	private volatile boolean isTTSInitialized = false;
 	private volatile int ttsInitStatus = TextToSpeech.ERROR; // status handed off from onInit (main thread) to the constructor via the latch.
 	private CountDownLatch isTTSInitializedLatch;
@@ -284,8 +297,51 @@ public class TTS {
 		} catch (Exception e) {}
 	}
 
+	// Counts the times a window of the app gains focus, as it does when the user comes back from settings, also from a
+	// window beside it. Activities are watched as they resume, so one that replaces another is watched too.
+	private static boolean focusWatchInstalled = false;
+	private static synchronized void installFocusWatch() {
+		if (focusWatchInstalled) return;
+		Context context = SDL.getContext();
+		if (context == null) return;
+		final Application application = (Application) context.getApplicationContext();
+		if (application == null) return;
+		focusWatchInstalled = true;
+		final ViewTreeObserver.OnWindowFocusChangeListener focusListener = hasFocus -> {
+			if (hasFocus) focusGeneration++;
+		};
+		final Set<Activity> watched = Collections.newSetFromMap(new java.util.WeakHashMap<>()); // Used on the main thread only.
+		final Runnable watchActivity = () -> {
+			if (!(context instanceof Activity)) return;
+			Activity activity = (Activity) context;
+			if (!watched.add(activity)) return;
+			try {
+				activity.getWindow().getDecorView().getViewTreeObserver().addOnWindowFocusChangeListener(focusListener);
+			} catch (Exception e) {}
+		};
+		new android.os.Handler(Looper.getMainLooper()).post(() -> {
+			watchActivity.run();
+			application.registerActivityLifecycleCallbacks(new Application.ActivityLifecycleCallbacks() {
+				@Override public void onActivityResumed(Activity activity) {
+					focusGeneration++;
+					if (!watched.add(activity)) return;
+					try {
+						activity.getWindow().getDecorView().getViewTreeObserver().addOnWindowFocusChangeListener(focusListener);
+					} catch (Exception e) {}
+				}
+				@Override public void onActivityCreated(Activity activity, Bundle savedInstanceState) {}
+				@Override public void onActivityStarted(Activity activity) {}
+				@Override public void onActivityPaused(Activity activity) {}
+				@Override public void onActivityStopped(Activity activity) {}
+				@Override public void onActivitySaveInstanceState(Activity activity, Bundle outState) {}
+				@Override public void onActivityDestroyed(Activity activity) {}
+			});
+		});
+	}
+
 	public TTS(String enginePkg) {
 		installConnectionGuard();
+		installFocusWatch();
 		Context context = SDL.getContext();
 		enginePackage = enginePkg;
 		isTTSInitializedLatch = new CountDownLatch(1);
@@ -317,6 +373,10 @@ public class TTS {
 		}
 		// Registered before TextToSpeech exists, since its connection can fail or call onInit before the constructor returns.
 		synchronized (textToSpeechOwners) { textToSpeechOwners.add(this); }
+		synchronized (followLock) { // The settings the connection takes its voice from, read before it does.
+			followedSettings = languageSettings();
+			followedFocus = focusGeneration;
+		}
 		try {
 			tts = enginePackage != null ? new TextToSpeech(context, listener, enginePackage) : new TextToSpeech(context, listener);
 		} catch (Exception e) {
@@ -425,12 +485,14 @@ public class TTS {
 		if (!isActive()) return -1;
 		synchronized (queueLock) {
 			followSystemSettings();
+			followDefaultVoice();
 			long serial = trackedSerial + 1;
 			TextToSpeech speaking = tts;
 			int queued = queueText(text, interrupt, TRACKED_UTTERANCE + serial);
 			if (queued == NOTHING_QUEUED) {
 				if (!recoverConnection(speaking)) return -1;
 				followSystemSettings();
+				followDefaultVoice();
 				queued = queueText(text, interrupt, TRACKED_UTTERANCE + serial);
 			}
 			if (queued == NOTHING_QUEUED) return -1;
@@ -510,14 +572,17 @@ public class TTS {
 			}
 			useAccessibilityStream(replacement);
 			setupPcmListener(replacement);
-			try {
-				Voice settingsVoice = replacement.getVoice();
-				if (settingsVoice != null) defaultVoice = settingsVoice;
-				Locale settingsLanguage = replacement.getLanguage();
-				if (settingsLanguage != null) defaultLanguage = settingsLanguage;
-				Voice voice = chosenVoice;
-				if (voice != null) replacement.setVoice(voice);
-			} catch (Exception e) {}
+			synchronized (followLock) {
+				try {
+					Voice settingsVoice = replacement.getVoice();
+					if (settingsVoice != null) defaultVoice = settingsVoice;
+					Locale settingsLanguage = replacement.getLanguage();
+					if (settingsLanguage != null) defaultLanguage = settingsLanguage;
+					Voice voice = chosenVoice;
+					if (voice != null) replacement.setVoice(voice);
+				} catch (Exception e) {}
+				followedSettings = null;
+			}
 			// A fresh TextToSpeech holds no rate or pitch, so only those a script set are given to it.
 			if (rateExplicit) replacement.setSpeechRate(ttsRate);
 			else ratePinned = false;
@@ -563,14 +628,48 @@ public class TTS {
 			if (pitch != ttsPitch && tts.setPitch(pitch) == TextToSpeech.SUCCESS) ttsPitch = pitch;
 		}
 	}
+	// The language setting of every engine (Settings.Secure.TTS_DEFAULT_LOCALE, hidden from the SDK but readable by apps), and
+	// the phone's language, which an engine without one of its own speaks.
+	private static String languageSettings() {
+		String setting = null;
+		try {
+			setting = Settings.Secure.getString(SDL.getContext().getContentResolver(), "tts_default_locale");
+		} catch (Exception e) {}
+		return setting + "|" + Locale.getDefault().toLanguageTag();
+	}
+	// Brings the voice in line with the user's settings while no voice was chosen (see followedSettings): the engine's
+	// default voice for its language as the settings name it now, as TextToSpeech would have taken it while connecting. An
+	// engine that names no voice for that language keeps the one it has.
+	private void followDefaultVoice() {
+		if (chosenVoice != null || !isActive()) return;
+		String settings = languageSettings();
+		int focus = focusGeneration;
+		synchronized (followLock) {
+			if (chosenVoice != null || (focus == followedFocus && settings.equals(followedSettings))) return;
+			followedSettings = settings;
+			followedFocus = focus;
+			TextToSpeech target = tts;
+			try {
+				Voice voice = target.getDefaultVoice();
+				if (voice == null) return;
+				defaultVoice = voice;
+				if (voice.getLocale() != null) defaultLanguage = voice.getLocale();
+				listVoice(voice);
+				Voice current = target.getVoice();
+				if (current == null || !current.getName().equals(voice.getName())) target.setVoice(voice);
+			} catch (Exception e) {}
+		}
+	}
 	public boolean silence() {
 		if (!isActive()) return false;
 		allTrackedEnded();
 		return tts.stop() == TextToSpeech.SUCCESS;
 	}
 	public String getVoice() { 
-		if (!isActive() || tts.getVoice() == null) return null;
-		return tts.getVoice().getName(); 
+		if (!isActive()) return null;
+		followDefaultVoice();
+		Voice voice = tts.getVoice();
+		return voice != null? voice.getName() : null;
 	}
 
 	public boolean setRate(float rate) {
@@ -614,13 +713,17 @@ public class TTS {
 	}
 	public boolean resetVoice() {
 		if (!isActive()) return false;
-		boolean reset;
-		if (defaultVoice != null) reset = tts.setVoice(defaultVoice) == TextToSpeech.SUCCESS;
-		// An engine can name no voice for the settings' language and still speak it; asking for that language again then
-		// brings its default back.
-		else reset = defaultLanguage != null && tts.setLanguage(defaultLanguage) >= TextToSpeech.LANG_AVAILABLE;
-		if (!reset) return false;
-		chosenVoice = null;
+		synchronized (followLock) {
+			boolean reset;
+			if (defaultVoice != null) reset = tts.setVoice(defaultVoice) == TextToSpeech.SUCCESS;
+			// An engine can name no voice for the settings' language and still speak it; asking for that language again then
+			// brings its default back.
+			else reset = defaultLanguage != null && tts.setLanguage(defaultLanguage) >= TextToSpeech.LANG_AVAILABLE;
+			if (!reset) return false;
+			chosenVoice = null;
+			followedSettings = null; // The settings may have changed while the voice was chosen.
+		}
+		followDefaultVoice();
 		return true;
 	}
 
@@ -653,8 +756,10 @@ public class TTS {
 		if (voices == null) return false;
 		for (Voice voice : voices) {
 			if (!voice.getName().equals(name)) continue;
-			if (tts.setVoice(voice) != TextToSpeech.SUCCESS) return false;
-			chosenVoice = voice;
+			synchronized (followLock) {
+				if (tts.setVoice(voice) != TextToSpeech.SUCCESS) return false;
+				chosenVoice = voice;
+			}
 			return true;
 		}
 		return false;
@@ -691,17 +796,16 @@ public class TTS {
 				}
 			}
 			// The voice the user's settings selected is listed even when the filter above would drop it (a network voice, for instance), so that the current voice can always be reported.
-			if (defaultVoice != null) {
-				boolean listed = false;
-				for (Voice voice : availableVoices) {
-					if (voice.getName().equals(defaultVoice.getName())) {
-						listed = true;
-						break;
-					}
-				}
-				if (!listed) availableVoices.add(defaultVoice);
-			}
+			if (defaultVoice != null) listVoice(defaultVoice);
 		} catch (Exception e) {}
+	}
+	// Adds a voice the user's settings selected to the list when it isn't there, at its end, so that indices stay as they were.
+	private void listVoice(Voice voice) {
+		if (availableVoices == null) return;
+		for (Voice listed : availableVoices) {
+			if (listed.getName().equals(voice.getName())) return;
+		}
+		availableVoices.add(voice);
 	}
 
 	// Set up permanent UtteranceProgressListener for PCM synthesis
@@ -775,13 +879,16 @@ public class TTS {
 	public boolean setVoiceByIndex(int index) {
 		if (!isActive() || availableVoices == null || index < 0 || index >= availableVoices.size()) return false;
 		Voice voice = availableVoices.get(index);
-		if (tts.setVoice(voice) != TextToSpeech.SUCCESS) return false;
-		chosenVoice = voice;
+		synchronized (followLock) {
+			if (tts.setVoice(voice) != TextToSpeech.SUCCESS) return false;
+			chosenVoice = voice;
+		}
 		return true;
 	}
 	// The voice TextToSpeech is actually speaking with: the one a script set, otherwise the one it took from the user's settings. -1 if it has none, which happens when the engine doesn't support the language the settings name.
 	public int getCurrentVoiceIndex() {
 		if (!isActive() || availableVoices == null) return -1;
+		followDefaultVoice();
 		Voice current;
 		try {
 			current = tts.getVoice();
@@ -849,10 +956,12 @@ public class TTS {
 		// late is replaced by the next request.
 		File file = new File(SDL.getContext().getCacheDir(), "nvgt_speech_" + (enginePackage != null ? enginePackage : "default") + "_" + instanceSerial + ".wav");
 		followSystemSettings();
+		followDefaultVoice();
 		TextToSpeech synthesizing = tts;
 		int result = synthesizing.synthesizeToFile(text, utteranceParams(false), file, request.id);
 		if (result != TextToSpeech.SUCCESS && recoverConnection(synthesizing)) {
 			followSystemSettings();
+			followDefaultVoice();
 			result = tts.synthesizeToFile(text, utteranceParams(false), file, request.id);
 		}
 		if (result != TextToSpeech.SUCCESS) {
