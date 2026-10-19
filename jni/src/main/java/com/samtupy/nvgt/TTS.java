@@ -711,11 +711,12 @@ public class TTS {
 			try {
 				Voice voice = target.getDefaultVoice();
 				if (voice == null) return;
+				Voice current = target.getVoice();
+				// A voice the engine refuses leaves it with the one it has, and isn't taken as the default to put back either.
+				if ((current == null || !current.getName().equals(voice.getName())) && target.setVoice(voice) != TextToSpeech.SUCCESS) return;
 				defaultVoice = voice;
 				if (voice.getLocale() != null) defaultLanguage = voice.getLocale();
 				listVoice(voice);
-				Voice current = target.getVoice();
-				if (current == null || !current.getName().equals(voice.getName())) target.setVoice(voice);
 			} catch (Exception e) {}
 		}
 	}
