@@ -1018,7 +1018,7 @@ bool tts_voice::get_speaking() {
 	return false;
 }
 bool tts_voice::refresh() { return list_voices_again(true, true); }
-// The object's list made again. Only refresh() as the script calls it has the engines list their voices again, which costs a call to the platform's speech service each, as a change an engine reports it takes up by itself, and tries again the engines that couldn't be bound for this object, which can each take as long as binding waits.
+// The object's list made again. Only refresh() as the script calls it has the engines list their voices again, which costs a call to the platform's speech service each, as a change an engine reports it takes up by itself. Engines that couldn't be bound for this object, which can each take as long as binding waits to fail again, are tried again by refresh(), set_language() and the first full list, as they always were, but not when the list is made again to follow the user's settings or installed voices.
 bool tts_voice::list_voices_again(bool relist_engines, bool retry_unbound) {
 	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
 	// An engine this object couldn't bind is tried again, unless it never bound anywhere: one that has worked can fail for a while, while it restarts for instance, and the object would otherwise go without it for good.
