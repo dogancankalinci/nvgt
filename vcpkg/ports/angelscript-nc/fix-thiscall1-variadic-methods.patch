@@ -1,0 +1,15 @@
+diff --git a/sdk/angelscript/source/as_compiler.cpp b/sdk/angelscript/source/as_compiler.cpp
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -17932,7 +17932,11 @@
+ 			// Check if we can use the faster asBC_Thiscall1 instruction, i.e. one of
+ 			//    type &obj::func(int)
+ 			//    type &obj::func(uint)
++			// ALTERED: not for a variadic method such as type &obj::func(int ...), whose arguments are a count followed by
++			// any number of ints. asBC_Thiscall1 passes and pops a single int, so the method got the count as its only
++			// argument and the variadic arguments were left on the stack, where the caller took them for its own values.
+ 			if (descr->GetObjectType() && descr->returnType.IsReference() &&
++				!descr->IsVariadic() &&
+ 				descr->parameterTypes.GetLength() == 1 &&
+ 				(descr->parameterTypes[0].IsIntegerType() || descr->parameterTypes[0].IsUnsignedType()) &&
+ 				descr->parameterTypes[0].GetSizeInMemoryBytes() == 4 &&
