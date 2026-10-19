@@ -866,6 +866,10 @@ bool tts_voice::speak_wait(const string &text, bool interrupt) {
 			chain.unlock();
 			wait(10);
 			chain.lock();
+			// Another thread can have chosen another voice, or the voices can have been listed again, meanwhile.
+			engine = active_engine();
+			if (!engine) return false;
+			pcm = engine->get_pcm_generation_state() == PCM_PREFERRED;
 		}
 	}
 	if (pcm) {
