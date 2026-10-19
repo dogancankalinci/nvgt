@@ -1,0 +1,27 @@
+diff --git a/sdk/angelscript/source/as_callfunc.cpp b/sdk/angelscript/source/as_callfunc.cpp
+index 226834f..786808d 100644
+--- a/sdk/angelscript/source/as_callfunc.cpp
++++ b/sdk/angelscript/source/as_callfunc.cpp
+@@ -526,7 +526,10 @@ int PrepareSystemFunction(asCScriptFunction *func, asSSystemFunctionInterface *i
+ #ifdef COMPLEX_OBJS_PASSED_BY_REF
+ 			    !(func->parameterTypes[n].GetTypeInfo()->flags & COMPLEX_MASK) &&
+ #endif
+-#ifdef LARGE_OBJS_PASS_BY_REF
++#ifdef AS_LARGE_OBJS_PASSED_BY_REF
++				// ALTERED: this tested LARGE_OBJS_PASS_BY_REF, which nothing defines, so an object of AS_LARGE_OBJ_MIN_SIZE
++				// dwords or more was refused unless it was flagged as all ints or all floats, although such an object is
++				// passed in memory whatever its members are
+ 			    func->parameterTypes[n].GetSizeInMemoryDWords() < AS_LARGE_OBJ_MIN_SIZE &&
+ #endif
+ 			    !(func->parameterTypes[n].GetTypeInfo()->flags & (asOBJ_APP_PRIMITIVE | asOBJ_APP_FLOAT | asOBJ_APP_CLASS_ALLINTS | asOBJ_APP_CLASS_ALLFLOATS)) )
+@@ -539,7 +542,9 @@ int PrepareSystemFunction(asCScriptFunction *func, asSSystemFunctionInterface *i
+ 				engine->ConfigError(asINVALID_CONFIGURATION, 0, 0, 0);
+ 			}
+ #endif
+-			break;
++			// ALTERED: no break here any more. The loop stopped at the first object passed by value, so the checks above
++			// were never made for the others, and one the native calling code can't pass was accepted and then left out
++			// of the call (on x86-64 SysV, a small object that is neither all ints nor all floats).
+ 		}
+ 	}
+ 
