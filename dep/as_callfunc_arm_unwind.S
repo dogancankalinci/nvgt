@@ -41,8 +41,11 @@
    exception thrown by a registered native function cannot unwind through them to the catch in CallSystemFunction: the
    process ends in std::terminate instead of the script getting the exception. Each routine now also saves r10 and r11 (r10
    only keeps the stack 8-byte aligned), keeps its frame in r11 for the unwinder, as the stack it hands to the callee moves by
-   a variable amount, reads its fifth argument 32 bytes up instead of 24, and restores sp from r11. Everything else is the
-   original code. NVGT links this object ahead of the prebuilt AngelScript library, so the library's own copy is not used.
+   a variable amount, reads its fifth argument 32 bytes up instead of 24, and restores sp from r11. The stack arguments are
+   copied through r12 instead of by moving sp over them, and the ObjLast routines store the object pointer through r11
+   after moving sp, not before: the original left both below sp for a moment, where a signal handler running on this
+   thread would overwrite them. Everything else is the original code. NVGT links this object ahead of the prebuilt
+   AngelScript library, so the library's own copy is not used.
 */
 
 #if defined(__arm__) && !defined(__aarch64__) && !defined(AS_MAX_PORTABILITY)
@@ -80,10 +83,9 @@ armFunc:
 	sub	sp, sp, r8
 	mov	r12, sp
 2:	ldr	r5, [r6], #4
-	str	r5, [sp], #4
+	str	r5, [r12], #4
 	subs	r7, r7, #4
 	bne	2b
-	mov	sp, r12
 1:	blx	r4
 	mov	sp, r11
 	pop	{r4, r5, r6, r7, r8, r10, r11, pc}
@@ -120,17 +122,16 @@ armFuncObjLast:
 	sub	r7, r7, #16
 	add	r8, r7, #8
 	bic	r8, r8, #4
-	str	r5, [sp, #-4]
-	str	r5, [sp, #-8]
 	sub	sp, sp, r8
+	str	r5, [r11, #-4]
+	str	r5, [r11, #-8]
 	cmp	r7, #0
 	beq	1f
 	mov	r12, sp
 2:	ldr	r5, [r6], #4
-	str	r5, [sp], #4
+	str	r5, [r12], #4
 	subs	r7, r7, #4
 	bne	2b
-	mov	sp, r12
 1:	blx	r4
 	mov	sp, r11
 	pop	{r4, r5, r6, r7, r8, r10, r11, pc}
@@ -165,17 +166,16 @@ armFuncR0ObjLast:
 	sub	r7, r7, #12
 	add	r8, r7, #8
 	bic	r8, r8, #4
-	str	r5, [sp, #-4]
-	str	r5, [sp, #-8]
 	sub	sp, sp, r8
+	str	r5, [r11, #-4]
+	str	r5, [r11, #-8]
 	cmp	r7, #0
 	beq	1f
 	mov	r12, sp
 2:	ldr	r5, [r6], #4
-	str	r5, [sp], #4
+	str	r5, [r12], #4
 	subs	r7, r7, #4
 	bne	2b
-	mov	sp, r12
 1:	blx	r4
 	mov	sp, r11
 	pop	{r4, r5, r6, r7, r8, r10, r11, pc}
@@ -209,10 +209,9 @@ armFuncR0:
 	sub	sp, sp, r8
 	mov	r12, sp
 2:	ldr	r5, [r6], #4
-	str	r5, [sp], #4
+	str	r5, [r12], #4
 	subs	r7, r7, #4
 	bne	2b
-	mov	sp, r12
 1:	blx	r4
 	mov	sp, r11
 	pop	{r4, r5, r6, r7, r8, r10, r11, pc}
@@ -245,10 +244,9 @@ armFuncR0R1:
 	sub	sp, sp, r8
 	mov	r12, sp
 2:	ldr	r5, [r6], #4
-	str	r5, [sp], #4
+	str	r5, [r12], #4
 	subs	r7, r7, #4
 	bne	2b
-	mov	sp, r12
 1:	blx	r4
 	mov	sp, r11
 	pop	{r4, r5, r6, r7, r8, r10, r11, pc}
