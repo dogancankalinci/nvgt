@@ -1063,8 +1063,25 @@ public:
 		drop_pending_frames();
 		return skip_by_reading(frames_to_take((unsigned long long)(ms / 1000 * sample_rate))) * 1000.0f / sample_rate;
 	}
-	bool seek_frames(unsigned long long frame_index) override { return src && !in_use()? (g_soundsystem_last_error = ma_data_source_seek_to_pcm_frame(src->pDataSource, frame_index)) == MA_SUCCESS : false; }
-	bool seek_milliseconds(float ms) override { return src && !in_use()? (g_soundsystem_last_error = ma_data_source_seek_to_second(src->pDataSource, ms / 1000)) == MA_SUCCESS : false; }
+	bool seek_frames(unsigned long long frame_index) override {
+		if (!src || in_use()) return false;
+		unsigned long long length = get_length_frames(); // 0 when unknown, as for a ring buffer or a stream that can't seek.
+		if (length && frame_index > length) { // As sound.seek(): MiniAudio's decoders take such a seek and then read nothing.
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return false;
+		}
+		return (g_soundsystem_last_error = ma_data_source_seek_to_pcm_frame(src->pDataSource, frame_index)) == MA_SUCCESS;
+	}
+	bool seek_milliseconds(float ms) override {
+		if (!src || in_use()) return false;
+		if (!(ms >= 0)) { // Negative, or not a number: MiniAudio turns it into a frame index near 2^64.
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return false;
+		}
+		ma_uint32 sample_rate = 0;
+		if ((g_soundsystem_last_error = ma_data_source_get_data_format(src->pDataSource, nullptr, nullptr, &sample_rate, nullptr, 0)) != MA_SUCCESS || !sample_rate) return false;
+		return seek_frames((unsigned long long)(ms / 1000 * sample_rate)); // As MiniAudio's seek to a second counts it.
+	}
 	unsigned long long get_cursor_frames() const override {
 		ma_uint64 cursor;
 		if (!src) return 0;
