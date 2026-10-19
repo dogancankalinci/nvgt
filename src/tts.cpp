@@ -636,6 +636,7 @@ void tts_voice::ensure_default() {
 		current_engine = entry.engine;
 		current_engine_name = name;
 		voice_state = VOICES_DEFAULT_ONLY;
+		entry.synced = false; // An engine the object goes back to, after following the user's settings away from it, still carries the settings of then.
 		return;
 	}
 	voices.clear();
