@@ -109,6 +109,11 @@ public class TTS {
 	}
 
 	public static List<String> getEnginePackages() {
+		List<String> packages = queryEnginePackages();
+		return packages != null? packages : new ArrayList<>();
+	}
+	// The installed engines, or null when the package manager couldn't be asked.
+	private static List<String> queryEnginePackages() {
 		Context context = SDL.getContext();
 		List<String> packages = new ArrayList<>();
 		try {
@@ -120,13 +125,19 @@ public class TTS {
 					if (info.serviceInfo != null && info.serviceInfo.packageName != null) packages.add(info.serviceInfo.packageName);
 				}
 			}
-		} catch (Exception e) {}
+		} catch (Exception e) {
+			return null;
+		}
 		return packages;
 	}
 	// The same engines in the order Android itself falls back through them (TtsEngines.getEngines): those that are part of
 	// the system image first, then by the priority their intent filter declares. getEnginePackages() keeps the package
 	// manager's order, which voice indices depend on.
 	public static List<String> getRankedEnginePackages() {
+		List<String> packages = queryRankedEnginePackages();
+		return packages != null? packages : new ArrayList<>();
+	}
+	private static List<String> queryRankedEnginePackages() {
 		Context context = SDL.getContext();
 		List<String> packages = new ArrayList<>();
 		try {
@@ -142,7 +153,9 @@ public class TTS {
 			for (ResolveInfo info : ranked) {
 				if (info.serviceInfo != null && info.serviceInfo.packageName != null) packages.add(info.serviceInfo.packageName);
 			}
-		} catch (Exception e) {}
+		} catch (Exception e) {
+			return null;
+		}
 		return packages;
 	}
 	private static boolean isSystemEngine(ResolveInfo info) {
@@ -150,9 +163,10 @@ public class TTS {
 		return app != null && (app.flags & ApplicationInfo.FLAG_SYSTEM) != 0;
 	}
 
-	// The engine TextToSpeech uses when none is asked for, as TextToSpeech.getDefaultEngine() reports it, minus the bind
-	// that constructing a TextToSpeech for it would make: the user's default engine from the settings while it is
-	// installed, otherwise the highest ranked one, as the setting goes on naming an engine whose app was removed.
+	// The engine to use when none is asked for, read without the bind that constructing a TextToSpeech would make: the
+	// user's default engine from the settings while it is installed, otherwise the highest ranked one, as the setting goes
+	// on naming an engine whose app was removed. TextToSpeech.getDefaultEngine() falls back only to an engine of the
+	// system image; any installed engine does here, which is still better than none.
 	public static String getDefaultEnginePackage() {
 		Context context = SDL.getContext();
 		String defaultEngine = null;
@@ -168,11 +182,16 @@ public class TTS {
 	// after a package changed, so whether an engine is still installed costs nothing to check otherwise. An app being
 	// updated is removed and added again, and counts as installed meanwhile.
 	private static volatile int packageGeneration = 0; // Raised on the main thread only.
-	private static int listedGeneration = -1; // packageGeneration when the lists below were made. Guarded by the class.
-	private static List<String> installedPackages = new ArrayList<>(), rankedPackages = new ArrayList<>(); // Guarded by the class.
-	private static final Set<String> updatingPackages = new HashSet<>(); // Guarded by the class.
-	private static boolean packageWatchInstalled = false; // Guarded by the class.
-	private static synchronized void installPackageWatch() {
+	private static final Object packageListsLock = new Object(); // Guards the three below, and is never held while the package manager is asked.
+	private static int listedGeneration = -1; // packageGeneration when the lists below were made.
+	private static List<String> installedPackages = new ArrayList<>(), rankedPackages = new ArrayList<>();
+	private static final Set<String> updatingPackages = Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>()); // Used without a lock, so the main thread never waits for one.
+	private static volatile boolean packageWatchInstalled = false; // Set under the class lock.
+	private static void installPackageWatch() {
+		if (packageWatchInstalled) return;
+		synchronized (TTS.class) { installPackageWatchLocked(); }
+	}
+	private static void installPackageWatchLocked() {
 		if (packageWatchInstalled) return;
 		Context context = SDL.getContext();
 		if (context == null || context.getApplicationContext() == null) return;
@@ -182,10 +201,8 @@ public class TTS {
 			public void onReceive(Context c, Intent intent) {
 				String pkg = intent.getData() != null? intent.getData().getSchemeSpecificPart() : null;
 				boolean updating = Intent.ACTION_PACKAGE_REMOVED.equals(intent.getAction()) && intent.getBooleanExtra(Intent.EXTRA_REPLACING, false);
-				synchronized (TTS.class) {
-					if (pkg != null && updating) updatingPackages.add(pkg);
-					else if (pkg != null) updatingPackages.remove(pkg);
-				}
+				if (pkg != null && updating) updatingPackages.add(pkg);
+				else if (pkg != null) updatingPackages.remove(pkg);
 				packageGeneration++;
 			}
 		};
@@ -201,18 +218,25 @@ public class TTS {
 			else context.getApplicationContext().registerReceiver(receiver, filter);
 		} catch (Exception e) {}
 	}
-	// The installed engines in the package manager's order, or ranked as Android falls back through them.
-	private static synchronized List<String> installedEngines(boolean ranked) {
+	// The installed engines in the package manager's order, or ranked as Android falls back through them. Lists the
+	// package manager couldn't give leave the ones there were, to be asked for again on the next call.
+	private static List<String> installedEngines(boolean ranked) {
 		installPackageWatch();
 		int generation = packageGeneration;
-		if (generation != listedGeneration) {
-			installedPackages = getEnginePackages();
-			rankedPackages = getRankedEnginePackages();
-			listedGeneration = generation;
+		synchronized (packageListsLock) {
+			if (generation == listedGeneration) return ranked? rankedPackages : installedPackages;
 		}
-		return ranked? rankedPackages : installedPackages;
+		List<String> installed = queryEnginePackages(), rankedList = queryRankedEnginePackages();
+		synchronized (packageListsLock) {
+			if (installed != null && rankedList != null && generation != listedGeneration) {
+				installedPackages = installed;
+				rankedPackages = rankedList;
+				listedGeneration = generation;
+			}
+			return ranked? rankedPackages : installedPackages;
+		}
 	}
-	private static synchronized boolean isEngineInstalled(String pkg) {
+	private static boolean isEngineInstalled(String pkg) {
 		return installedEngines(false).contains(pkg) || updatingPackages.contains(pkg);
 	}
 	// Changes when the voices of an engine may have changed: when a package was installed, removed or updated, or when a
