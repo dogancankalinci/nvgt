@@ -1120,7 +1120,7 @@ void RegisterCorePhysicsTypes(asIScriptEngine* engine) {
 	// Forward declare types to be registered later
 	engine->RegisterObjectType("physics_body", 0, asOBJ_REF);
 	engine->RegisterObjectType("physics_collider", 0, asOBJ_REF);
-	engine->RegisterObjectType("physics_entity", sizeof(Entity), asOBJ_VALUE | asOBJ_POD | asGetTypeTraits<Entity>() | asOBJ_APP_CLASS_ALLFLOATS);
+	engine->RegisterObjectType("physics_entity", sizeof(Entity), asOBJ_VALUE | asOBJ_POD | asGetTypeTraits<Entity>() | asOBJ_APP_CLASS_ALLINTS);
 	engine->RegisterObjectBehaviour("physics_entity", asBEHAVE_CONSTRUCT, "void f(uint index, uint generation)", asFUNCTION((rp_construct<Entity, uint32, uint32>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectBehaviour("physics_entity", asBEHAVE_DESTRUCT, "void f()", asFUNCTION(rp_destruct<Entity>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectProperty("physics_entity", "uint id", asOFFSET(Entity, id));
