@@ -37,6 +37,7 @@ vcpkg_from_github(
         fix-nested-call-pending-requests.patch
         fix-generic-variadic-arg-access.patch
         fix-prepare-stack-overflow-cleanup.patch
+        fix-failed-prepare-object-release.patch
 )
 
 vcpkg_cmake_configure(

@@ -1,0 +1,57 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -708,6 +708,15 @@
+ 		return asCONTEXT_ACTIVE;
+ 	}
+ 
++	// ALTERED: a previous Prepare that couldn't reserve the stack its function needs (see below) set up no stack frame for
++	// it, so there is neither an object pointer to release nor space for the arguments. Its stack frame pointer was left
++	// where the stack overflow was detected, past the end of the first stack block for a new context, or below the stack
++	// pointer of the interrupted function for a nested call, and the object pointer was read from there: when that
++	// function was a script class method, such as the destructor of a script class that needs more stack than
++	// asEP_MAX_STACK_SIZE allows, the next Prepare and Unprepare called Release() on whatever pointer they found there
++	// (and Prepare wrote a null pointer there). This is determined before CleanStack, which clears the flag.
++	bool hasStackFrame = !(m_isStackMemoryNotAllocated && m_regs.programPointer == 0);
++
+ 	// Clean the stack if not done before
+ 	if( m_status != asEXECUTION_FINISHED && m_status != asEXECUTION_UNINITIALIZED )
+ 		CleanStack();
+@@ -722,7 +731,7 @@
+ 	if (m_initialFunction)
+ 	{
+ 		// Release the previous object, if it is a script object
+-		if (m_initialFunction && m_initialFunction->objectType && (m_initialFunction->objectType->flags & asOBJ_SCRIPT_OBJECT))
++		if (hasStackFrame && m_initialFunction->objectType && (m_initialFunction->objectType->flags & asOBJ_SCRIPT_OBJECT))
+ 		{
+ 			asCScriptObject* obj = *(asCScriptObject**)&m_regs.stackFramePointer[0];
+ 			if (obj)
+@@ -738,7 +747,8 @@
+ 		asASSERT(int(m_stackIndex) == DetermineStackIndex(m_regs.stackPointer));
+ 	}
+ 
+-	if( m_initialFunction && m_initialFunction == func )
++	// ALTERED: not when the previous Prepare of the same function failed, which reserved no stack for it
++	if( m_initialFunction && m_initialFunction == func && hasStackFrame )
+ 	{
+ 		// If the same function is executed again, we can skip a lot of the setup
+ 		m_currentFunction = m_initialFunction;
+@@ -863,6 +873,9 @@
+ 	asDWORD count = m_refCount.get();
+ 	UNUSED_VAR(count);
+ 
++	// ALTERED: a Prepare that failed set up no stack frame and stored no object pointer, see Prepare
++	bool hasStackFrame = !(m_isStackMemoryNotAllocated && m_regs.programPointer == 0);
++
+ 	// Only clean the stack if the context was prepared but not executed until the end
+ 	if( m_status != asEXECUTION_UNINITIALIZED &&
+ 		m_status != asEXECUTION_FINISHED )
+@@ -879,7 +892,7 @@
+ 	asPopActiveContext(tld, this);
+ 
+ 	// Release the object if it is a script object
+-	if( m_initialFunction && m_initialFunction->objectType && (m_initialFunction->objectType->flags & asOBJ_SCRIPT_OBJECT) )
++	if( hasStackFrame && m_initialFunction && m_initialFunction->objectType && (m_initialFunction->objectType->flags & asOBJ_SCRIPT_OBJECT) )
+ 	{
+ 		asCScriptObject *obj = *(asCScriptObject**)&m_regs.stackFramePointer[0];
+ 		if( obj )
