@@ -979,6 +979,8 @@ public:
 	unsigned int get_advised_read_frame_count() const override { return SOUNDSYSTEM_FRAMESIZE; }
 	// Frames a reader was asked to drop, which this thread, reading the source itself, drops first; see audio_ring_buffer_impl.
 	virtual void drop_pending_frames() {}
+	// How many of frame_count frames the script's own read or skip takes: all of them, except from a ring buffer, which has only what is queued.
+	virtual unsigned long long frames_to_take(unsigned long long frame_count) { return frame_count; }
 	// Under source_mutex: takes the source's own node off the graph, so that this thread is the only reader, and drops what it is to drop. False when the source can't be read here now.
 	bool ready_to_read() {
 		if (!src || in_use(false) || node && !detach_all_output_buses()) return false; // A source in another format was never made a node.
@@ -990,7 +992,7 @@ public:
 		std::lock_guard<std::recursive_mutex> guard(source_mutex);
 		if (!ready_to_read()) return 0;
 		if (!frame_count) frame_count = get_advised_read_frame_count();
-		if (!frame_count) return 0;
+		if (!(frame_count = frames_to_take(frame_count))) return 0;
 		ma_format format = ma_format_f32;
 		ma_uint32 channels = 0;
 		ma_data_source_get_data_format(src->pDataSource, &format, &channels, nullptr, nullptr, 0);
@@ -1041,14 +1043,16 @@ public:
 	}
 	unsigned long long skip_frames(unsigned long long frame_count) override {
 		if (!src || in_use()) return 0;
-		return skip_by_reading(frame_count);
+		drop_pending_frames(); // As read() does: the script is the only reader here.
+		return skip_by_reading(frames_to_take(frame_count));
 	}
 	float skip_milliseconds(float ms) override {
 		if (!src || in_use()) return 0;
 		ma_uint32 sample_rate = 0;
 		if ((g_soundsystem_last_error = ma_data_source_get_data_format(src->pDataSource, nullptr, nullptr, &sample_rate, nullptr, 0)) != MA_SUCCESS || !sample_rate) return 0;
 		if (ms <= 0) return 0;
-		return skip_by_reading((unsigned long long)(ms / 1000 * sample_rate)) * 1000.0f / sample_rate;
+		drop_pending_frames();
+		return skip_by_reading(frames_to_take((unsigned long long)(ms / 1000 * sample_rate))) * 1000.0f / sample_rate;
 	}
 	bool seek_frames(unsigned long long frame_index) override { return src && !in_use()? (g_soundsystem_last_error = ma_data_source_seek_to_pcm_frame(src->pDataSource, frame_index)) == MA_SUCCESS : false; }
 	bool seek_milliseconds(float ms) override { return src && !in_use()? (g_soundsystem_last_error = ma_data_source_seek_to_second(src->pDataSource, ms / 1000)) == MA_SUCCESS : false; }
@@ -1218,6 +1222,8 @@ class audio_ring_buffer_impl : public audio_data_source_impl, public virtual aud
 protected:
 	void discard_queued() { if (queue) queue->discard(); }
 	void drop_pending_frames() override { if (queue) queue->drop_pending(); }
+	// The script's reads and skips take only what is queued: the ring buffer's data source pads a read with silence, which the graph's reader needs so that a sound doesn't end at a buffer empty for a moment, but which a script's read(n) returned as n frames read, as if they had been written.
+	unsigned long long frames_to_take(unsigned long long frame_count) override { return queue? std::min<unsigned long long>(frame_count, queue->readable()) : 0; }
 public:
 	audio_ring_buffer_impl(unsigned int channels, unsigned int size, audio_engine * e) : audio_data_source_impl(e, nullptr), queue(make_unique<pcm_queue>()) {
 		if (queue->init(ma_format_f32, channels, size) != MA_SUCCESS) throw std::runtime_error("failed to initialize ring buffer");
