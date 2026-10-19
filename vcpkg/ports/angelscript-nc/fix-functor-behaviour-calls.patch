@@ -1,0 +1,196 @@
+diff --git a/sdk/angelscript/source/as_scriptengine.cpp b/sdk/angelscript/source/as_scriptengine.cpp
+index 0392c44..5fdd45b 100644
+--- a/sdk/angelscript/source/as_scriptengine.cpp
++++ b/sdk/angelscript/source/as_scriptengine.cpp
+@@ -4561,6 +4561,26 @@ bool asCScriptEngine::CallObjectMethodRetBool(void *obj, int func) const
+ 		bool (asCSimpleDummy::*f)() = (bool (asCSimpleDummy::*)())(p.mthd);
+ 		return (((asCSimpleDummy*)obj)->*f)();
+ 	}
++	else if( i->callConv >= ICC_THISCALL_OBJLAST )
++	{
++		// ALTERED: a method registered with asCALL_THISCALL_OBJLAST or OBJFIRST is a method of the auxiliary object that
++		// takes the object as its only (other) argument. It was called as a plain function taking the object, so a
++		// behaviour registered that way (the garbage collector's, the weak reference flag, a copy constructor) ran with
++		// the wrong this pointer and the object where its argument should be.
++		union
++		{
++			asSIMPLEMETHOD_t mthd;
++			struct
++			{
++				asFUNCTION_t func;
++				asPWORD baseOffset;
++			} f;
++		} p;
++		p.f.func = (asFUNCTION_t)(i->func);
++		p.f.baseOffset = asPWORD(i->baseOffset);
++		bool (asCSimpleDummy::*f)(void*) = (bool (asCSimpleDummy::*)(void*))(p.mthd);
++		return (((asCSimpleDummy*)i->auxiliary)->*f)(obj);
++	}
+ #endif
+ 	else /*if( i->callConv == ICC_CDECL_OBJLAST || i->callConv == ICC_CDECL_OBJFIRST )*/
+ 	{
+@@ -4586,6 +4606,20 @@ bool asCScriptEngine::CallObjectMethodRetBool(void *obj, int func) const
+ 		obj = (void*)(asPWORD(obj) + i->baseOffset);
+ 		return (((asCSimpleDummy*)obj)->*f)();
+ 	}
++	else if( i->callConv == ICC_THISCALL_OBJFIRST || i->callConv == ICC_THISCALL_OBJLAST )
++	{
++		// ALTERED: a functor method (asCALL_THISCALL_OBJLAST or OBJFIRST) is called on the auxiliary object, see the
++		// comment in CallObjectMethodRetBool
++		union
++		{
++			asSIMPLEMETHOD_t mthd;
++			asFUNCTION_t func;
++		} p;
++		p.func = (asFUNCTION_t)(i->func);
++		bool (asCSimpleDummy::*f)(void*) = (bool (asCSimpleDummy::*)(void*))p.mthd;
++		void *aux = (void*)(asPWORD(i->auxiliary) + i->baseOffset);
++		return (((asCSimpleDummy*)aux)->*f)(obj);
++	}
+ 	else
+ #endif
+ 	if( i->callConv == ICC_GENERIC_METHOD )
+@@ -4640,6 +4674,24 @@ int asCScriptEngine::CallObjectMethodRetInt(void *obj, int func) const
+ 		int (asCSimpleDummy::*f)() = (int (asCSimpleDummy::*)())(p.mthd);
+ 		return (((asCSimpleDummy*)obj)->*f)();
+ 	}
++	else if( i->callConv >= ICC_THISCALL_OBJLAST )
++	{
++		// ALTERED: a functor method (asCALL_THISCALL_OBJLAST or OBJFIRST) is called on the auxiliary object, see the
++		// comment in CallObjectMethodRetBool
++		union
++		{
++			asSIMPLEMETHOD_t mthd;
++			struct
++			{
++				asFUNCTION_t func;
++				asPWORD baseOffset;
++			} f;
++		} p;
++		p.f.func = (asFUNCTION_t)(i->func);
++		p.f.baseOffset = asPWORD(i->baseOffset);
++		int (asCSimpleDummy::*f)(void*) = (int (asCSimpleDummy::*)(void*))(p.mthd);
++		return (((asCSimpleDummy*)i->auxiliary)->*f)(obj);
++	}
+ #endif
+ 	else /*if( i->callConv == ICC_CDECL_OBJLAST || i->callConv == ICC_CDECL_OBJFIRST )*/
+ 	{
+@@ -4665,6 +4717,20 @@ int asCScriptEngine::CallObjectMethodRetInt(void *obj, int func) const
+ 		obj = (void*)(asPWORD(obj) + i->baseOffset);
+ 		return (((asCSimpleDummy*)obj)->*f)();
+ 	}
++	else if( i->callConv == ICC_THISCALL_OBJFIRST || i->callConv == ICC_THISCALL_OBJLAST )
++	{
++		// ALTERED: a functor method (asCALL_THISCALL_OBJLAST or OBJFIRST) is called on the auxiliary object, see the
++		// comment in CallObjectMethodRetBool
++		union
++		{
++			asSIMPLEMETHOD_t mthd;
++			asFUNCTION_t func;
++		} p;
++		p.func = (asFUNCTION_t)(i->func);
++		int (asCSimpleDummy::*f)(void*) = (int (asCSimpleDummy::*)(void*))p.mthd;
++		void *aux = (void*)(asPWORD(i->auxiliary) + i->baseOffset);
++		return (((asCSimpleDummy*)aux)->*f)(obj);
++	}
+ 	else
+ #endif
+ 	if( i->callConv == ICC_GENERIC_METHOD )
+@@ -4719,6 +4785,24 @@ void *asCScriptEngine::CallObjectMethodRetPtr(void *obj, int func) const
+ 		void *(asCSimpleDummy::*f)() = (void *(asCSimpleDummy::*)())(p.mthd);
+ 		return (((asCSimpleDummy*)obj)->*f)();
+ 	}
++	else if( i->callConv >= ICC_THISCALL_OBJLAST )
++	{
++		// ALTERED: a functor method (asCALL_THISCALL_OBJLAST or OBJFIRST) is called on the auxiliary object, see the
++		// comment in CallObjectMethodRetBool
++		union
++		{
++			asSIMPLEMETHOD_t mthd;
++			struct
++			{
++				asFUNCTION_t func;
++				asPWORD baseOffset;
++			} f;
++		} p;
++		p.f.func = (asFUNCTION_t)(i->func);
++		p.f.baseOffset = asPWORD(i->baseOffset);
++		void *(asCSimpleDummy::*f)(void*) = (void *(asCSimpleDummy::*)(void*))(p.mthd);
++		return (((asCSimpleDummy*)i->auxiliary)->*f)(obj);
++	}
+ #endif
+ 	else /*if( i->callConv == ICC_CDECL_OBJLAST || i->callConv == ICC_CDECL_OBJFIRST )*/
+ 	{
+@@ -4744,6 +4828,20 @@ void *asCScriptEngine::CallObjectMethodRetPtr(void *obj, int func) const
+ 		obj = (void*)(asPWORD(obj) + i->baseOffset);
+ 		return (((asCSimpleDummy*)obj)->*f)();
+ 	}
++	else if( i->callConv == ICC_THISCALL_OBJFIRST || i->callConv == ICC_THISCALL_OBJLAST )
++	{
++		// ALTERED: a functor method (asCALL_THISCALL_OBJLAST or OBJFIRST) is called on the auxiliary object, see the
++		// comment in CallObjectMethodRetBool
++		union
++		{
++			asSIMPLEMETHOD_t mthd;
++			asFUNCTION_t func;
++		} p;
++		p.func = (asFUNCTION_t)(i->func);
++		void *(asCSimpleDummy::*f)(void*) = (void *(asCSimpleDummy::*)(void*))p.mthd;
++		void *aux = (void*)(asPWORD(i->auxiliary) + i->baseOffset);
++		return (((asCSimpleDummy*)aux)->*f)(obj);
++	}
+ 	else
+ #endif
+ 	if( i->callConv == ICC_GENERIC_METHOD )
+@@ -4946,6 +5044,27 @@ void asCScriptEngine::CallObjectMethod(void *obj, void *param, asSSystemFunction
+ 		void (asCSimpleDummy::*f)(void*) = (void (asCSimpleDummy::*)(void*))(p.mthd);
+ 		(((asCSimpleDummy*)obj)->*f)(param);
+ 	}
++	else if( i->callConv >= ICC_THISCALL_OBJLAST )
++	{
++		// ALTERED: a functor method (asCALL_THISCALL_OBJLAST or OBJFIRST) is called on the auxiliary object, see the
++		// comment in CallObjectMethodRetBool
++		union
++		{
++			asSIMPLEMETHOD_t mthd;
++			struct
++			{
++				asFUNCTION_t func;
++				asPWORD baseOffset;
++			} f;
++		} p;
++		p.f.func = (asFUNCTION_t)(i->func);
++		p.f.baseOffset = asPWORD(i->baseOffset);
++		void (asCSimpleDummy::*f)(void*, void*) = (void (asCSimpleDummy::*)(void*, void*))(p.mthd);
++		if( i->callConv == ICC_THISCALL_OBJLAST || i->callConv == ICC_VIRTUAL_THISCALL_OBJLAST )
++			(((asCSimpleDummy*)i->auxiliary)->*f)(param, obj);
++		else
++			(((asCSimpleDummy*)i->auxiliary)->*f)(obj, param);
++	}
+ #endif
+ 	else /*if( i->callConv == ICC_CDECL_OBJFIRST */
+ 	{
+@@ -4971,6 +5090,23 @@ void asCScriptEngine::CallObjectMethod(void *obj, void *param, asSSystemFunction
+ 		obj = (void*)(asPWORD(obj) + i->baseOffset);
+ 		(((asCSimpleDummy*)obj)->*f)(param);
+ 	}
++	else if( i->callConv == ICC_THISCALL_OBJFIRST || i->callConv == ICC_THISCALL_OBJLAST )
++	{
++		// ALTERED: a functor method (asCALL_THISCALL_OBJLAST or OBJFIRST) is called on the auxiliary object, see the
++		// comment in CallObjectMethodRetBool
++		union
++		{
++			asSIMPLEMETHOD_t mthd;
++			asFUNCTION_t func;
++		} p;
++		p.func = (asFUNCTION_t)(i->func);
++		void (asCSimpleDummy::*f)(void *, void *) = (void (asCSimpleDummy::*)(void *, void *))p.mthd;
++		void *aux = (void*)(asPWORD(i->auxiliary) + i->baseOffset);
++		if( i->callConv == ICC_THISCALL_OBJLAST )
++			(((asCSimpleDummy*)aux)->*f)(param, obj);
++		else
++			(((asCSimpleDummy*)aux)->*f)(obj, param);
++	}
+ 	else
+ #endif
+ 	if( i->callConv == ICC_CDECL_OBJLAST )
