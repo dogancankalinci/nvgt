@@ -1,0 +1,33 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -4466,12 +4466,27 @@
+ 				}
+ 				else if (func->funcType == asFUNC_IMPORTED)
+ 				{
+-					m_regs.programPointer += 2;
+ 					int funcId = m_engine->importedFunctions[func->id & ~FUNC_IMPORTED]->boundFunctionId;
+-					if (funcId > 0)
++					if (funcId > 0 && m_engine->scriptFunctions[funcId]->funcType == asFUNC_SYSTEM)
++					{
++						// ALTERED: an imported function can be bound to a registered function (asCModule::BindImportedFunction
++						// allows it, and asBC_CALLBND calls it as one), which was run here as a script function, a null
++						// pointer dereference on its missing bytecode. It is called as asBC_CALLBND calls it.
++						m_regs.stackPointer += CallSystemFunction(funcId, this);
++
++						// Update program position after the call so the line number
++						// is correct in case the system function queries it
++						m_regs.programPointer += 2;
++					}
++					else if (funcId > 0)
++					{
++						m_regs.programPointer += 2;
+ 						CallScriptFunction(m_engine->scriptFunctions[funcId]);
++					}
+ 					else
+ 					{
++						m_regs.programPointer += 2;
++
+ 						// Tell the exception handler to clean up the arguments to this method
+ 						m_needToCleanupArgs = true;
+ 

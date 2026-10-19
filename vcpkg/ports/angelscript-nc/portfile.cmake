@@ -33,6 +33,7 @@ vcpkg_from_github(
         fix-thiscall1-variadic-methods.patch
         fix-refused-callback-convs.patch
         fix-value-template-constructor-stubs.patch
+        fix-callptr-import-bound-to-system.patch
 )
 
 vcpkg_cmake_configure(
