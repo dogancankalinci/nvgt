@@ -1143,6 +1143,11 @@ struct pcm_queue {
 		ma_pcm_rb_uninit(&rb);
 	}
 	void discard() { skip = ma_pcm_rb_available_read(&rb); }
+	// What a read can still get: what is queued, less what the next read drops.
+	ma_uint32 readable() {
+		ma_uint32 available = ma_pcm_rb_available_read(&rb), skipping = skip;
+		return available > skipping? available - skipping : 0;
+	}
 	static ma_result on_read(ma_data_source* ds, void* frames_out, ma_uint64 frame_count, ma_uint64* frames_read) {
 		pcm_queue* queue = (pcm_queue*)ds;
 		if (ma_uint32 n = queue->skip.exchange(0)) {
@@ -1172,7 +1177,11 @@ public:
 		audio_data_source_impl::reset(); // Qualified: audio_ring_buffer_impl::reset() below overrides a different (ring-buffer-clearing) virtual and would otherwise hide this one.
 		if (rb) queue->uninit();
 	}
-	void reset() override { if (rb) ma_pcm_rb_reset(&*rb); }
+	void reset() override {
+		if (!rb) return;
+		ma_pcm_rb_reset(&*rb);
+		queue->skip = 0; // What was queued is gone already; skipping it later would drop frames written after this.
+	}
 	unsigned int get_advised_read_frame_count() const override { return get_available_read(); }
 	unsigned int write(const float* frames_in, unsigned int frame_count) override {
 		if (!rb) return 0;
@@ -1203,7 +1212,7 @@ public:
 		if (!frames || !get_channels()) return false;
 		return write((float*)frames->ptr, frames->size / get_channels());
 	}
-	unsigned int get_available_read() const override { return rb? ma_pcm_rb_available_read(&*rb) : 0; }
+	unsigned int get_available_read() const override { return rb? queue->readable() : 0; }
 	unsigned int get_available_write() const override { return rb? ma_pcm_rb_available_write(&*rb) : 0; }
 	unsigned int get_channels() const override { return rb? ma_pcm_rb_get_channels(&*rb) : 0; }
 	unsigned int get_sample_rate() const override { return rb? ma_pcm_rb_get_sample_rate(&*rb) : 0; }
