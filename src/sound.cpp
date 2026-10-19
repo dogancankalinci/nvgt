@@ -2942,7 +2942,15 @@ public:
 		return snd ? ma_sound_at_end(&*snd) : false;
 	}
 	bool seek(unsigned long long position) override { return get_engine()->get_flags() & audio_engine::DURATIONS_IN_FRAMES? seek_in_frames(position) : seek_in_milliseconds(position); }
-	bool seek_in_frames(unsigned long long position) override { return get_length_in_frames() && (g_soundsystem_last_error = ma_sound_seek_to_pcm_frame(&*snd, position)) == MA_SUCCESS; }
+	bool seek_in_frames(unsigned long long position) override {
+		unsigned long long length = get_length_in_frames();
+		if (!length) return false;
+		if (position > length) { // MiniAudio takes such a seek and then ignores it on the audio thread, while the position reads as the target.
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return false;
+		}
+		return (g_soundsystem_last_error = ma_sound_seek_to_pcm_frame(&*snd, position)) == MA_SUCCESS;
+	}
 	bool seek_in_milliseconds(unsigned long long offset) override {
 		ma_uint32 sample_rate = 0; // The sound's own, which its frames count in; the engine's differs for a file at another rate, and is 0 for an engine without a device.
 		if (!snd || ma_sound_get_data_format(&*snd, nullptr, nullptr, &sample_rate, nullptr, 0) != MA_SUCCESS || !sample_rate) return false;
