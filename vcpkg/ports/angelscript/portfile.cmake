@@ -27,6 +27,7 @@ vcpkg_from_github(
         fix-global-behaviour-callconvs.patch
         fix-copy-behaviour-calls.patch
         fix-variadic-behaviours.patch
+        fix-functor-object-offset.patch
 )
 
 vcpkg_cmake_configure(
