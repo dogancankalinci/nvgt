@@ -1,0 +1,28 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -5708,6 +5708,15 @@
+ 	// function needs, which put no arguments on the stack (see Prepare), so there are none to clean up
+ 	bool argsOnStack = !(m_isStackMemoryNotAllocated && m_regs.programPointer == 0);
+ 
++	// ALTERED: whether the function never started: prepared but not executed (or Execute refused it, e.g. for
++	// asEP_MAX_NESTED_CALLS), or a stack overflow on entering it. A function that hands its arguments on to another (a
++	// delegate to its method, the generated factory of a script class to the constructor) doesn't clean them up on an
++	// exception, but until it has started nothing has taken them over, and they leaked: a handle's reference, or the copy
++	// of an object passed by value.
++	bool notStarted = m_regs.programPointer == 0 ||
++	                  (m_isStackMemoryNotAllocated && m_currentFunction->scriptData &&
++	                   m_regs.programPointer == m_currentFunction->scriptData->byteCode.AddressOf());
++
+ 	// Clean object variables on the stack
+ 	// If the stack memory is not allocated or the program pointer
+ 	// is not set, then there is nothing to clean up on the stack frame
+@@ -5845,7 +5854,7 @@
+ 	}
+ 
+ 	// Functions that do not own the object and parameters shouldn't do any clean up
+-	if( m_currentFunction == 0 || m_currentFunction->dontCleanUpOnException || !argsOnStack )
++	if( m_currentFunction == 0 || (m_currentFunction->dontCleanUpOnException && !notStarted) || !argsOnStack )
+ 		return exceptionCaught;
+ 
+ 	// Clean object and parameters
