@@ -26,4 +26,6 @@ extern int profiler_current_line;
 extern const char* profiler_current_section;
 std::string get_call_stack();
 std::string get_call_stack_ctx(asIScriptContext* ctx);
+void pop_nested_state(asIScriptContext* ctx);
+int execute_nested(asIScriptContext* ctx);
 void RegisterScriptstuff(asIScriptEngine* engine);

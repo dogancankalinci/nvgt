@@ -622,11 +622,11 @@ void system_tray_menu_item::invoke_callback() {
 	if (ctx->Prepare(_callback) >= 0) {
 		duplicate(); // give the script one reference for the item parameter
 		ctx->SetArgObject(0, this);
-		ctx->Execute();
+		execute_nested(ctx);
 		release(); // clean up the reference we provided for the parameter
 	}
 	if (new_context) g_ScriptEngine->ReturnContext(ctx);
-	else ctx->PopState();
+	else pop_nested_state(ctx);
 }
 system_tray_menu* system_tray_menu_item::get_submenu() {
 	if (_type != SYSTEM_TRAY_SUBMENU) return nullptr;

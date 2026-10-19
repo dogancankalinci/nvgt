@@ -213,6 +213,26 @@ std::string get_call_stack_ctx(asIScriptContext* ctx) {
 	}
 	return stack;
 }
+// Ends a script call made as a nested call of the script's own context (PushState()). exit() aborts the script's context, so a
+// callback calling it ends the nested execution as aborted, which consumes the abort; it was dropped here, and the script
+// went on running after exit() (with the manager no longer holding its context, see ExecuteScript). The abort is passed
+// on to the interrupted execution, as AngelScript's own nested calls do.
+void pop_nested_state(asIScriptContext* ctx) {
+	bool aborted = ctx->GetState() == asEXECUTION_ABORTED;
+	ctx->PopState();
+	if (aborted) ctx->Abort();
+}
+// Runs a script callback for a registered function, which is usually a nested call of the script's own context (the one
+// calling that function). A nested execution can't be left suspended: the context manager's sleep() or yield() in the
+// callback suspended it, and the nested state was then popped while suspended, which left the callback's frames on the call
+// stack where PopState() expects the nested call's marker and restored the interrupted execution from them (a crash once the
+// callback had called another function). It is resumed until it ends, as AngelScript's own nested calls are, so such a sleep()
+// or yield() returns at once.
+int execute_nested(asIScriptContext* ctx) {
+	int r;
+	while ((r = ctx->Execute()) == asEXECUTION_SUSPENDED) {}
+	return r;
+}
 std::string get_call_stack() {
 	return get_call_stack_ctx(asGetActiveContext());
 }
@@ -301,6 +321,7 @@ void script_message_callback(const asSMessageInfo* msg, void* param) {
 struct script_function_call_data {
 	int max_statement_count;
 	int current_statement_count;
+	bool exceeded; // The limit ended the call: aborted rather than suspended, as a nested call can't be left suspended (see execute_nested), and not passed on to the caller.
 };
 void script_function_line_callback(asIScriptContext* ctx, script_function_call_data* data);
 CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictionary* args, CScriptArray* errors = NULL, int max_statement_count = 0) {
@@ -308,7 +329,7 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 	std::string callstack1 = "";
 	std::string callstack2 = "";
 	g_ScriptEngine->SetMessageCallback(asFUNCTION(script_message_callback), errors, asCALL_CDECL);
-	script_function_call_data call_data {max_statement_count, 0};
+	script_function_call_data call_data {max_statement_count, 0, false};
 	asIScriptContext* ACtx = asGetActiveContext();
 	bool new_context = ACtx == NULL || ACtx->PushState() < 0;
 	asIScriptContext* ctx = (new_context ? g_ScriptEngine->RequestContext() : ACtx);
@@ -376,7 +397,7 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 	call_data.current_statement_count = 0;
 	ctx->SetLineCallback(asFUNCTION(script_function_line_callback), &call_data, asCALL_CDECL);
 	int xr;
-	xr = ctx->Execute();
+	xr = execute_nested(ctx);
 	ctx->SetLineCallback(asFUNCTION(profiler_callback), NULL, asCALL_CDECL);
 	if (xr != asEXECUTION_FINISHED) {
 		if (xr == asEXECUTION_EXCEPTION) {
@@ -388,7 +409,7 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 			int line = ctx->GetExceptionLineNumber(&col, &section);
 			snprintf(msg, 4096, "Exception: %s in %s %s at line %d, %d", exc, section, decl, line, col);
 			failure_reason = msg;
-		} else if (xr == asEXECUTION_SUSPENDED) {
+		} else if (call_data.exceeded) {
 			char msg[128];
 			snprintf(msg, 128, "maximum statement count of %d exceeded", call_data.max_statement_count);
 			failure_reason = msg;
@@ -410,7 +431,7 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 			args->Set("0", ret, ret_type_id);
 	}
 	if (new_context) g_ScriptEngine->ReturnContext(ctx);
-	else ctx->PopState();
+	else pop_nested_state(ctx);
 	g_ScriptEngine->ClearMessageCallback();
 	if (errors)
 		errors->Release();
@@ -425,7 +446,8 @@ failure:
 		if (new_context) {
 			ctx->Unprepare();
 			g_ScriptEngine->ReturnContext(ctx);
-		} else ctx->PopState();
+		} else if (call_data.exceeded) ctx->PopState(); // Our own abort, which ends the called function only
+		else pop_nested_state(ctx);
 	}
 	if (args) {
 		args->DeleteAll();
@@ -491,8 +513,10 @@ void script_function_line_callback(asIScriptContext* ctx, script_function_call_d
 	profiler_callback(ctx, NULL);
 	if (data->max_statement_count < 1) return;
 	data->current_statement_count += 1;
-	if (data->current_statement_count > data->max_statement_count)
-		ctx->Suspend();
+	if (data->current_statement_count > data->max_statement_count) {
+		data->exceeded = true;
+		ctx->Abort();
+	}
 	return;
 }
 class script_module_bytecode_stream : public asIBinaryStream {

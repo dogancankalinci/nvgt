@@ -122,13 +122,13 @@ bool map_area::is_unfiltered(asIScriptFunction* filter_callback) {
 		ctx = fcallback_ctx;
 	} else ctx = ACtx;
 	bool ret = true;
-	if (!ctx || ctx->Prepare(filter_callback) < 0 || ctx->SetArgObject(0, this) < 0 || ctx->Execute() != asEXECUTION_FINISHED) {
-		if (!new_context && ctx) ctx->PopState();
+	if (!ctx || ctx->Prepare(filter_callback) < 0 || ctx->SetArgObject(0, this) < 0 || execute_nested(ctx) != asEXECUTION_FINISHED) {
+		if (!new_context && ctx) pop_nested_state(ctx);
 		return true;
 	}
 	profiler_last_func = NULL;
 	ret = ctx->GetReturnByte() != 0;
-	if (!new_context) ctx->PopState();
+	if (!new_context) pop_nested_state(ctx);
 	return ret;
 }
 void map_area::unframe() {

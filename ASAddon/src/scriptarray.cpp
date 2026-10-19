@@ -1217,6 +1217,17 @@ bool CScriptArray::operator==(const CScriptArray &other) const
 	return isEqual;
 }
 
+// A comparison or sort callback run as a nested call of the script's context can't be left suspended (by the
+// context manager's sleep() or yield() in it): the next Prepare() was refused, and the nested state popped while suspended
+// left the callback's frames where PopState() expects the nested call's marker. It is resumed until it ends, as
+// AngelScript's own nested calls are.
+static int ExecuteResumed(asIScriptContext *ctx)
+{
+	int r;
+	while( (r = ctx->Execute()) == asEXECUTION_SUSPENDED ) {}
+	return r;
+}
+
 // internal
 bool CScriptArray::Equals(const void *a, const void *b, asIScriptContext *ctx, SArrayCache *cache) const
 {
@@ -1268,7 +1279,7 @@ bool CScriptArray::Equals(const void *a, const void *b, asIScriptContext *ctx, S
 				r = ctx->SetArgObject(0, (void*)b); assert(r >= 0);
 			}
 
-			r = ctx->Execute();
+			r = ExecuteResumed(ctx);
 
 			if( r == asEXECUTION_FINISHED )
 				return ctx->GetReturnByte() != 0;
@@ -1293,7 +1304,7 @@ bool CScriptArray::Equals(const void *a, const void *b, asIScriptContext *ctx, S
 				r = ctx->SetArgObject(0, (void*)b); assert(r >= 0);
 			}
 
-			r = ctx->Execute();
+			r = ExecuteResumed(ctx);
 
 			if( r == asEXECUTION_FINISHED )
 				return (int)ctx->GetReturnDWord() == 0;
@@ -1414,6 +1425,10 @@ int CScriptArray::Find(asUINT startAt, void *value) const
 			ret = (int)i;
 			break;
 		}
+		// An aborted comparison (exit() in opEquals) ends the search, so the abort is passed on below and isn't
+		// cleared by the next comparison's Prepare()
+		if( isNested && cmpContext->GetState() == asEXECUTION_ABORTED )
+			break;
 	}
 
 	if( cmpContext )
@@ -1604,6 +1619,9 @@ void CScriptArray::Sort(asUINT startAt, asUINT count, bool asc)
 				if( a == 0 ) return true;
 				if( b == 0 ) return false;
 
+				// No more comparisons once one was aborted (exit() in opCmp), so the abort is passed on afterwards
+				if( cmpFunc && cmpContext->GetState() == asEXECUTION_ABORTED ) return false;
+
 				// Execute object opCmp
 				if( cmpFunc )
 				{
@@ -1611,7 +1629,7 @@ void CScriptArray::Sort(asUINT startAt, asUINT count, bool asc)
 					r = cmpContext->Prepare(cmpFunc); assert(r >= 0);
 					r = cmpContext->SetObject(a); assert(r >= 0);
 					r = cmpContext->SetArgObject(0, b); assert(r >= 0);
-					r = cmpContext->Execute();
+					r = ExecuteResumed(cmpContext);
 
 					if( r == asEXECUTION_FINISHED )
 					{
@@ -1714,7 +1732,7 @@ void CScriptArray::Sort(asIScriptFunction *func, asUINT startAt, asUINT count)
 			cmpContext->Prepare(func);
 			cmpContext->SetArgAddress(0, At(j));
 			cmpContext->SetArgAddress(1, At(best));
-			int r = cmpContext->Execute();
+			int r = ExecuteResumed(cmpContext);
 			if (r != asEXECUTION_FINISHED)
 				break;
 			if (*(bool*)(cmpContext->GetAddressOfReturnValue()))
@@ -1725,6 +1743,10 @@ void CScriptArray::Sort(asIScriptFunction *func, asUINT startAt, asUINT count)
 		// if the GC calls the EnumReferences in the middle of the sorting
 		if( best != i )
 			Swap(GetArrayItemPointer(i), GetArrayItemPointer(best));
+
+		// An aborted callback (exit() in it) ends the sort, so the abort is passed on below
+		if( cmpContext->GetState() == asEXECUTION_ABORTED )
+			break;
 	}
 
 	if (cmpContext)

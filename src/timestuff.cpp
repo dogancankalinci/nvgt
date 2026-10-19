@@ -74,14 +74,14 @@ void timer_queue_item::execute() {
 	ctx->SetArgObject(0, &id);
 	ctx->SetArgObject(1, &callback_data);
 	parent->executing_timers.insert(this);
-	int xr = ctx->Execute();
+	int xr = execute_nested(ctx);
 	parent->executing_timers.erase(this);
 	int ms = 0;
 	if (xr == asEXECUTION_FINISHED) ms = ctx->GetReturnDWord();
 	else if (!is_scheduled || xr == asEXECUTION_EXCEPTION) repeating = false;
 	if (repeating && ms < 1) ms = timeout;
 	if (new_context) g_ScriptEngine->ReturnContext(ctx);
-	else ctx->PopState();
+	else pop_nested_state(ctx);
 	if (!parent->owns(this)) return;
 	if (!is_scheduled) {
 		if (ms > 0) {

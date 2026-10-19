@@ -1013,14 +1013,15 @@ int ExecuteScript(asIScriptEngine *engine, const string &scriptFile) {
 			alert("script terminated", "script terminated unexpectedly");
 			retcode = -1;
 		}
-		if (r != asEXECUTION_ABORTED)
+		if (r != asEXECUTION_ABORTED && !g_exit_called)
 			g_ctxMgr->DoneWithContext(ctx);
 	} else {
 		if (func->GetReturnTypeId() == asTYPEID_INT32)
 			retcode = *(int*)ctx->GetAddressOfReturnValue();
 		else
 			retcode = 0;
-		g_ctxMgr->DoneWithContext(ctx); // Added to be kept, so the manager leaves giving it back to us, as after an exception above.
+		// Added to be kept, so the manager leaves giving it back to us, as after an exception above. Unless exit() was called: the manager's AbortAll() gave it back already, and the script still got here when exit() was called by a callback that a registered function ran as a nested call, which ended that call alone. Given back twice, the context was in the pool twice, and released twice once the module was discarded.
+		if (!g_exit_called) g_ctxMgr->DoneWithContext(ctx);
 	}
 	asIScriptFunction *outfunc = mod->GetFunctionByDecl("void on_exit()");
 	// Run as main() is, so that sleep() and yield() in it resume rather than leave it suspended for good; the manager gives the context back when it is done, as it is added without being kept.

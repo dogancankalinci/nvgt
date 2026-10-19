@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <reactphysics3d/reactphysics3d.h>
 #include "pathfinder.h"
+#include "scriptstuff.h"
 #include <cmath>
 using namespace std;
 static asITypeInfo* VectorArrayType = NULL;
@@ -189,11 +190,11 @@ float pathfinder::get_difficulty(int x, int y, int z, int parent_x, int parent_y
 				callback_data->Retrieve((void*)&ud, StringType->GetTypeId());
 			ctx->SetArgObject(4, (void*)&ud);
 	}
-	if (ctx->Execute() != asEXECUTION_FINISHED) {
+	if (execute_nested(ctx) != asEXECUTION_FINISHED) {
 		if (new_context)
 			g_ScriptEngine->ReturnContext(ctx);
 		else
-			ctx->PopState();
+			pop_nested_state(ctx);
 		return FLT_MAX;
 	}
 	int v = ctx->GetReturnDWord();
@@ -206,7 +207,7 @@ float pathfinder::get_difficulty(int x, int y, int z, int parent_x, int parent_y
 	if (new_context)
 		g_ScriptEngine->ReturnContext(ctx);
 	else
-		ctx->PopState();
+		pop_nested_state(ctx);
 	return val;
 }
 void pathfinder::cancel() {

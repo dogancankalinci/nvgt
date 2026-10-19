@@ -37,7 +37,10 @@ void ScriptSleep(asUINT milliSeconds)
 	{
 		// Get the context manager from the user data
 		CContextMgr *ctxMgr = reinterpret_cast<CContextMgr*>(ctx->GetUserData(CONTEXT_MGR));
-		if( ctxMgr )
+		// Not in a nested call, such as a callback that a registered function runs on the script's own context: that
+		// function resumes the call until it ends, so it can't sleep (as in a context from the pool, which has no
+		// manager), and setting the sleep time would have held back the interrupted execution's next yield() instead.
+		if( ctxMgr && !ctx->IsNested() )
 		{
 			// Suspend its execution. The VM will continue until the current
 			// statement is finished and then return from the Execute() method
@@ -57,7 +60,9 @@ static void ScriptYield()
 	{
 		// Get the context manager from the user data
 		CContextMgr *ctxMgr = reinterpret_cast<CContextMgr*>(ctx->GetUserData(CONTEXT_MGR));
-		if( ctxMgr )
+		// Not in a nested call, see ScriptSleep: moving on to the next co-routine there made the manager take that one for
+		// the interrupted execution once it ended, and remove it instead.
+		if( ctxMgr && !ctx->IsNested() )
 		{
 			// Let the context manager know that it should run the next co-routine
 			ctxMgr->NextCoRoutine();

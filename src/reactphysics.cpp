@@ -21,6 +21,7 @@
 #include "nvgt.h"
 #include "nvgt_angelscript.h"
 #include "reactphysics.h"
+#include "scriptstuff.h"
 
 using namespace std;
 using namespace reactphysics3d;
@@ -116,11 +117,11 @@ void simple_void_callback(asIScriptFunction* callback, const void* data) {
 		return;
 	}
 	ctx->SetArgObject(0, (void*)data);
-	ctx->Execute();
+	execute_nested(ctx);
 	if (new_context)
 		g_ScriptEngine->ReturnContext(ctx);
 	else
-		ctx->PopState();
+		pop_nested_state(ctx);
 }
 
 class raycast_callback : public RaycastCallback {
@@ -141,18 +142,18 @@ public:
 		}
 		physics_callback_scope in_callback;
 		ctx->SetArgObject(0, (void*)&info);
-		if (ctx->Execute() != asEXECUTION_FINISHED) {
+		if (execute_nested(ctx) != asEXECUTION_FINISHED) {
 			if (new_context)
 				g_ScriptEngine->ReturnContext(ctx);
 			else
-				ctx->PopState();
+				pop_nested_state(ctx);
 			return 0;
 		}
 		float v = ctx->GetReturnFloat();
 		if (new_context)
 			g_ScriptEngine->ReturnContext(ctx);
 		else
-			ctx->PopState();
+			pop_nested_state(ctx);
 		return v;
 	}
 };
