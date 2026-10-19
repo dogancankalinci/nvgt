@@ -1,0 +1,64 @@
+From 63a322cdd1ff83ebc99fcda6314dc8fce37127e3 Mon Sep 17 00:00:00 2001
+From: Sam Lantinga <slouken@libsdl.org>
+Date: Mon, 8 Jun 2026 11:32:50 -0700
+Subject: [PATCH] android: fixed ANR if we lose focus at startup
+
+If we lose focus during startup, we need to unlock the activity mutex before waiting for the focus lifecycle event, otherwise it will never be delivered.
+
+Reproduced using testcontroller with a DualSense controller attached and the "Allow the app to access the USB device?" dialog popped up.
+---
+ src/core/android/SDL_android.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/src/core/android/SDL_android.c b/src/core/android/SDL_android.c
+index f0bedf54e15ad..6b532e71bea56 100644
+--- a/src/core/android/SDL_android.c
++++ b/src/core/android/SDL_android.c
+@@ -428,6 +428,7 @@ static AAssetManager *asset_manager = NULL;
+ static jobject javaAssetManagerRef = 0;
+ 
+ static SDL_Mutex *Android_ActivityMutex = NULL;
++static int Android_ActivityMutexCount = 0;
+ static SDL_Mutex *Android_LifecycleMutex = NULL;
+ static SDL_Semaphore *Android_LifecycleEventSem = NULL;
+ static SDL_AndroidLifecycleEvent Android_LifecycleEvents[SDL_NUM_ANDROID_LIFECYCLE_EVENTS];
+@@ -997,6 +998,15 @@ bool Android_WaitLifecycleEvent(SDL_AndroidLifecycleEvent *event, Sint64 timeout
+ {
+     bool got_event = false;
+ 
++    int relock_count = 0;
++    Android_LockActivityMutex();
++    while (Android_ActivityMutexCount > 1) {
++        // We came into this function with the activity lock held, we need to unlock so lifecycle events can be dispatched
++        ++relock_count;
++        Android_UnlockActivityMutex();
++    }
++    Android_UnlockActivityMutex();
++
+     while (!got_event && SDL_WaitSemaphoreTimeoutNS(Android_LifecycleEventSem, timeoutNS)) {
+         SDL_LockMutex(Android_LifecycleMutex);
+         {
+@@ -1008,16 +1018,23 @@ bool Android_WaitLifecycleEvent(SDL_AndroidLifecycleEvent *event, Sint64 timeout
+         }
+         SDL_UnlockMutex(Android_LifecycleMutex);
+     }
++
++    while (relock_count > 0) {
++        Android_LockActivityMutex();
++        --relock_count;
++    }
+     return got_event;
+ }
+ 
+ void Android_LockActivityMutex(void)
+ {
+     SDL_LockMutex(Android_ActivityMutex);
++    ++Android_ActivityMutexCount;
+ }
+ 
+ void Android_UnlockActivityMutex(void)
+ {
++    --Android_ActivityMutexCount;
+     SDL_UnlockMutex(Android_ActivityMutex);
+ }
+ 

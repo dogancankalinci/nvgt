@@ -4,7 +4,9 @@ vcpkg_from_github(
     REF "release-${VERSION}"
     SHA512 10a9c1fa4d6891c7387fa694b786a168f86b6e5447c6c522f85b739e33720e106ee879dfa9e6e537d5521b983cfbd4908927c555c4d3412735129a4231e16fe6
     HEAD_REF main
-    PATCHES android-fixes.patch
+    PATCHES
+        android-fixes.patch
+        android-startup-focus-loss-anr.patch
 )
 
 string(COMPARE EQUAL "${VCPKG_LIBRARY_LINKAGE}" "static" SDL_STATIC)
