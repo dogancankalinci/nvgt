@@ -601,10 +601,11 @@ elif env["NVGT_TARGET"] == "android":
 		# version + lzfse (bundling.cpp's Assets.car encoder) are arch-specific but variant-independent: build once per ABI.
 		shared_objs = [abi_env.Object(f"build/obj_android/{abi}/version", "src/version.cpp")]
 		shared_objs += [abi_env.Object(f"build/obj_android/{abi}/lzfse/{s}", "dep/lzfse/" + s + ".c") for s in lzfse_srcs]
-		# AngelScript's 32-bit ARM call routines with unwind information, so a C++ exception from a native function reaches the
+		# AngelScript's ARM call routines with correct unwind information, so a C++ exception from a native function reaches the
 		# script instead of ending the process. Linked ahead of the prebuilt library, which then leaves out its own copy.
 		# SCons on Windows takes .S for .s and would hand it to the host's assembler, so the ABI's clang assembles it.
-		if abi == "armeabi-v7a": shared_objs.append(abi_env.Object(f"build/obj_android/{abi}/as_callfunc_arm_unwind", "dep/as_callfunc_arm_unwind.S", AS = abi_env["CC"], ASFLAGS = ["-c", "-x", "assembler-with-cpp"]))
+		callfunc_unwind = {"armeabi-v7a": "as_callfunc_arm_unwind", "arm64-v8a": "as_callfunc_arm64_unwind"}.get(abi)
+		if callfunc_unwind: shared_objs.append(abi_env.Object(f"build/obj_android/{abi}/{callfunc_unwind}", f"dep/{callfunc_unwind}.S", AS = abi_env["CC"], ASFLAGS = ["-c", "-x", "assembler-with-cpp"]))
 		if android_static_plugins:
 			# Archives go first so their own shared deps (e.g. BASS for legacy_sound) resolve left to right at link time.
 			abi_env.Prepend(LIBS = abi_static_libs)
