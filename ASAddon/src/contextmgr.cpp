@@ -119,6 +119,12 @@ CContextMgr::CContextMgr()
 	m_getTimeFunc   = 0;
 	m_currentThread = 0;
 
+	m_ownerThread           = std::this_thread::get_id();
+	m_executingCtx          = 0;
+	m_abortAllRequested     = false;
+	m_abortedWhileExecuting = false;
+	m_returnAfterExecution  = 0;
+
 	m_numExecutions         = 0;
 	m_numGCObjectsCreated   = 0;
 	m_numGCObjectsDestroyed = 0;
@@ -167,6 +173,13 @@ int CContextMgr::ExecuteScripts()
 	// TODO: There should be a time out per thread as well. If a thread executes for too
 	//       long, it should be aborted. A group of co-routines count as a single thread.
 
+	// ALTERED: AbortAll called on another thread (exit() in a script thread) only aborted the context being executed
+	if( m_abortAllRequested.exchange(false) )
+	{
+		AbortAll();
+		return 0;
+	}
+
 	// Check if the system time is higher than the time set for the contexts
 	asUINT time = m_getTimeFunc ? m_getTimeFunc() : asUINT(-1);
 	for( m_currentThread = 0; m_currentThread < m_threads.size(); m_currentThread++ )
@@ -175,27 +188,61 @@ int CContextMgr::ExecuteScripts()
 		if( thread->sleepUntil < time )
 		{
 			int currentCoRoutine = thread->currentCoRoutine;
+			asIScriptContext *ctx = thread->coRoutines[currentCoRoutine];
 
 			// Gather some statistics from the GC
-			asIScriptEngine *engine = thread->coRoutines[currentCoRoutine]->GetEngine();
+			asIScriptEngine *engine = ctx->GetEngine();
 			asUINT gcSize1, gcSize2, gcSize3;
 			engine->GetGCStatistics(&gcSize1);
 
+			// ALTERED: published before the request flag is checked, and the flag set before this is read in AbortAll, so
+			// either this sees the request or AbortAll on the other thread sees the context and aborts it
+			m_executingCtx = ctx;
+			if( m_abortAllRequested.exchange(false) )
+			{
+				m_executingCtx = 0;
+				AbortAll();
+				return 0;
+			}
+
 			// Execute the script for this thread and co-routine
-			int r = thread->coRoutines[currentCoRoutine]->Execute();
+			int r = ctx->Execute();
+
+			m_executingCtx = 0;
 
 			// Determine how many new objects were created in the GC
 			engine->GetGCStatistics(&gcSize2);
 			m_numGCObjectsCreated += gcSize2 - gcSize1;
 			m_numExecutions++;
 
+			// ALTERED: AbortAll was called during the execution (exit() in the script). It has emptied the lists and left
+			// this context, which it couldn't give back while it was still running, to be given back now.
+			if( m_abortedWhileExecuting )
+			{
+				m_abortedWhileExecuting = false;
+				if( m_returnAfterExecution )
+				{
+					asIScriptContext *done = m_returnAfterExecution;
+					m_returnAfterExecution = 0;
+					engine->ReturnContext(done);
+				}
+				return 0;
+			}
+
+			// ALTERED: AbortAll called on another thread while this executed aborted it; the rest is done here
+			if( m_abortAllRequested.exchange(false) )
+			{
+				AbortAll();
+				return 0;
+			}
+
 			if( r != asEXECUTION_SUSPENDED )
 			{
 				// The context has terminated execution (for one reason or other)
 				// Unless the application has requested to keep the context we'll return it to the pool now
-				if(m_threads.size()<1) return 0; // AbortAll was probably called from script.
-				if( thread->keepCtxAfterExecution != thread->coRoutines[currentCoRoutine])
-					engine->ReturnContext(thread->coRoutines[currentCoRoutine]);
+				// ALTERED: once it is out of the lists. Giving it back cleans up its stack, which can run script destructors,
+				// and one calling exit() made AbortAll empty the lists, which were then erased past their end here.
+				bool keep = thread->keepCtxAfterExecution == ctx;
 				thread->coRoutines[currentCoRoutine] = 0;
 
 				thread->coRoutines.erase(thread->coRoutines.begin() + thread->currentCoRoutine);
@@ -209,6 +256,9 @@ int CContextMgr::ExecuteScripts()
 					m_threads.erase(m_threads.begin() + m_currentThread);
 					m_currentThread--;
 				}
+
+				if( !keep )
+					engine->ReturnContext(ctx);
 			}
 			/*
 			// Destroy all known garbage if any new objects were created
@@ -245,6 +295,10 @@ void CContextMgr::DoneWithContext(asIScriptContext *ctx)
 
 void CContextMgr::NextCoRoutine()
 {
+	// ALTERED: nothing to switch to once AbortAll has emptied the list (yield() later in the execution that called exit())
+	if( m_currentThread >= m_threads.size() )
+		return;
+
 	m_threads[m_currentThread]->currentCoRoutine++;
 	if( m_threads[m_currentThread]->currentCoRoutine >= m_threads[m_currentThread]->coRoutines.size() )
 		m_threads[m_currentThread]->currentCoRoutine = 0;
@@ -255,30 +309,66 @@ void CContextMgr::AbortAll()
 	// Abort all contexts and release them. The script engine will make
 	// sure that all resources held by the scripts are properly released.
 
-	for( asUINT n = 0; n < m_threads.size(); n++ )
+	// ALTERED: called on another thread (exit() in a script thread), the lists were changed under ExecuteScripts, which
+	// then read a co-routine list already emptied and erased past its end, or gave back a context a second time. Only
+	// the context being executed is aborted here, so that it returns; ExecuteScripts, which must have published it
+	// before reading the flag, does the rest.
+	if( std::this_thread::get_id() != m_ownerThread )
 	{
-		for( asUINT c = 0; c < m_threads[n]->coRoutines.size(); c++ )
+		m_abortAllRequested = true;
+		asIScriptContext *ctx = m_executingCtx;
+		if( ctx )
+			ctx->Abort();
+		return;
+	}
+
+	// ALTERED: the lists are emptied before any context is given back. Giving one back cleans up its stack, which can run
+	// script destructors, and one calling exit() came back here while the lists were being walked: contexts were given
+	// back twice and the lists indexed past their end.
+	std::vector<SContextInfo*> threads;
+	threads.swap(m_threads);
+	m_currentThread = 0;
+
+	asIScriptContext *executing = m_executingCtx;
+	if( executing )
+		m_abortedWhileExecuting = true;
+
+	for( asUINT n = 0; n < threads.size(); n++ )
+	{
+		for( asUINT c = 0; c < threads[n]->coRoutines.size(); c++ )
 		{
-			asIScriptContext *ctx = m_threads[n]->coRoutines[c];
+			asIScriptContext *ctx = threads[n]->coRoutines[c];
 			if( ctx )
 			{
 				ctx->Abort();
-				ctx->GetEngine()->ReturnContext(ctx);
-				ctx = 0;
+
+				// ALTERED: a context added to be kept is the application's to give back (DoneWithContext), as after it
+				// ends normally. It was given back here too, so the application gave it back a second time, or, not to,
+				// had to know whether exit() had been called. And the context still being executed (exit() was called
+				// by its script) went to the pool while running: a destructor run by the garbage collector before its
+				// Execute() returned took it from the pool, and giving it back cleaned up its stack under the running
+				// Execute(), which then returned asERROR; or another thread prepared it while the application read its
+				// state. It is given back once its Execute() has returned.
+				if( ctx == threads[n]->keepCtxAfterExecution )
+					;
+				else if( ctx == executing )
+					m_returnAfterExecution = ctx;
+				else
+					ctx->GetEngine()->ReturnContext(ctx);
 			}
 		}
-		m_threads[n]->coRoutines.resize(0);
+		threads[n]->coRoutines.resize(0);
 
-		m_freeThreads.push_back(m_threads[n]);
+		m_freeThreads.push_back(threads[n]);
 	}
-
-	m_threads.resize(0);
-
-	m_currentThread = 0;
 }
 
 asIScriptContext *CContextMgr::AddContext(asIScriptEngine *engine, asIScriptFunction *func, bool keepCtxAfterExec)
 {
+	// ALTERED: an AbortAll requested by another thread (see AbortAll) is for the contexts there are now, not for this one
+	if( m_abortAllRequested.exchange(false) )
+		AbortAll();
+
 	// Use RequestContext instead of CreateContext so we can take 
 	// advantage of possible context pooling configured with the engine
 	asIScriptContext *ctx = engine->RequestContext();

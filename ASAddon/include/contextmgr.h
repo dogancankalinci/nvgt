@@ -14,6 +14,8 @@
 #endif
 
 #include <vector>
+#include <atomic>
+#include <thread>
 
 BEGIN_AS_NAMESPACE
 
@@ -81,6 +83,10 @@ public:
 	void NextCoRoutine();
 
 	// Abort all scripts
+	// ALTERED: callable from any thread. On the thread that runs ExecuteScripts it aborts every context and gives back
+	// those the manager owns: the one being executed once its Execute() has returned, never one added to be kept (the
+	// application gives that back with DoneWithContext). On another thread it only aborts the context being executed and
+	// leaves the rest to that thread's next ExecuteScripts, since the lists may only be changed there.
 	void AbortAll();
 
 protected:
@@ -88,6 +94,13 @@ protected:
 	std::vector<SContextInfo*> m_freeThreads;
 	asUINT                     m_currentThread;
 	TIMEFUNC_t                 m_getTimeFunc;
+
+	// ALTERED: see AbortAll
+	std::thread::id                 m_ownerThread;      // the thread that created the manager and runs ExecuteScripts
+	std::atomic<asIScriptContext*>  m_executingCtx;     // the context ExecuteScripts is executing, if any
+	std::atomic<bool>               m_abortAllRequested; // AbortAll was called on another thread
+	bool                            m_abortedWhileExecuting; // AbortAll ran while m_executingCtx was executing
+	asIScriptContext               *m_returnAfterExecution; // that context, to give back once its Execute() returns
 
 	// Statistics for Garbage Collection
 	asUINT   m_numExecutions;

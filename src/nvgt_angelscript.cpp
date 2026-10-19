@@ -110,6 +110,7 @@ using namespace Poco;
 using namespace Poco::Util;
 
 CContextMgr* g_ctxMgr = nullptr;
+Mutex g_ctxMgrMutex; // exit() on a script thread uses the manager while the main thread may be deleting it once the script ended.
 #ifndef NVGT_STUB
 	CDebugger* g_dbg = nullptr;
 #endif
@@ -386,7 +387,8 @@ void Exit(int retcode = 0) {
 	g_retcode = retcode;
 	g_exit_called = true;
 	g_exit_count++;
-	if (g_ctxMgr) g_ctxMgr->AbortAll(); // Gone once the script ended, while the destructors that discarding its module runs can still call exit().
+	ScopedLock<Mutex> l(g_ctxMgrMutex); // Recursive, as the destructors AbortAll() runs on this thread can call exit() again.
+	if (g_ctxMgr) g_ctxMgr->AbortAll(); // Gone once the script ended, while the destructors that discarding its module runs can still call exit(). Called on a script thread, it only aborts what the main thread is executing and leaves the rest to it.
 }
 // Whether a registered function that runs script callbacks one after another, called by ctx, must run no more of them: exit() was called since ctx began (by a callback, by a thread, or by the script), so ctx is ending. Passing the abort on (pop_nested_state) isn't enough to stop them, as the next nested call puts it aside until it returns, and a callback with a context of its own isn't aborted at all. A context taken from the pool after exit() was called, like the one on_exit() or a destructor runs in, runs its callbacks.
 bool script_callbacks_stopped(asIScriptContext* ctx) {
@@ -946,9 +948,12 @@ static void report_unhandled_exception(asIScriptContext *ctx) {
 // Lets the module go once the script ended or failed to start. Engines can outlive it, and their processing callbacks, which run on audio threads, take contexts from the pool, so they are stopped first; the destructors that discarding runs use pooled contexts too, so the pool is emptied after.
 static void discard_module(asIScriptEngine *engine, asIScriptModule *mod) {
 	sound_stop_script_callbacks();
-	if (g_ctxMgr) {
-		delete g_ctxMgr;
-		g_ctxMgr = 0;
+	{
+		ScopedLock<Mutex> l(g_ctxMgrMutex);
+		if (g_ctxMgr) {
+			delete g_ctxMgr;
+			g_ctxMgr = 0;
+		}
 	}
 	mod->Discard();
 	engine->GarbageCollect();
@@ -1022,22 +1027,20 @@ int ExecuteScript(asIScriptEngine *engine, const string &scriptFile) {
 		if (r == asEXECUTION_EXCEPTION) {
 			report_unhandled_exception(ctx);
 			retcode = -1;
-		} else if (r == asEXECUTION_ABORTED)
+		} else if (r == asEXECUTION_ABORTED || g_exit_called) // exit() from a script thread before main() first ran aborts the context the manager hasn't executed yet, whose state stays prepared.
 			retcode = g_retcode;
 		else {
 			alert("script terminated", "script terminated unexpectedly");
 			retcode = -1;
 		}
-		if (r != asEXECUTION_ABORTED && !g_exit_called)
-			g_ctxMgr->DoneWithContext(ctx);
 	} else {
 		if (func->GetReturnTypeId() == asTYPEID_INT32)
 			retcode = *(int*)ctx->GetAddressOfReturnValue();
 		else
 			retcode = 0;
-		// Added to be kept, so the manager leaves giving it back to us, as after an exception above. Unless exit() was called: the manager's AbortAll() gave it back already, and the script still got here when exit() was called by a callback that a registered function ran as a nested call, which ended that call alone. Given back twice, the context was in the pool twice, and released twice once the module was discarded.
-		if (!g_exit_called) g_ctxMgr->DoneWithContext(ctx);
 	}
+	// Added to be kept, so the manager leaves giving it back to us however it ended, after exit() too: its AbortAll() aborts but doesn't give back a kept context. It used to, so the context was given back here only when exit() hadn't been called, and while still running if exit() was called by the script, where the pool could hand it out before its execution ended and this read the state of another use. After the debugger's abort it was never given back.
+	g_ctxMgr->DoneWithContext(ctx);
 	asIScriptFunction *outfunc = mod->GetFunctionByDecl("void on_exit()");
 	// Run as main() is, so that sleep() and yield() in it resume rather than leave it suspended for good; the manager gives the context back when it is done, as it is added without being kept.
 	if (outfunc && g_ctxMgr->AddContext(engine, outfunc)) {
