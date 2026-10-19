@@ -1,0 +1,118 @@
+diff --git a/sdk/angelscript/source/as_generic.cpp b/sdk/angelscript/source/as_generic.cpp
+--- a/sdk/angelscript/source/as_generic.cpp
++++ b/sdk/angelscript/source/as_generic.cpp
+@@ -544,6 +544,10 @@
+ 
+ int asCGenericVariadic::GetArgTypeId(asUINT arg, asDWORD* flags) const
+ {
++	// ALTERED: an argument number beyond the count read past the arguments; 0 as the base class returns
++	if (arg >= argCount)
++		return 0;
++
+ 	asUINT idx = arg;
+ 	if (idx >= sysFunction->parameterTypes.GetLength() - 1)
+ 		idx = sysFunction->parameterTypes.GetLength() - 1;
+@@ -571,6 +575,9 @@
+ 
+ asBYTE asCGenericVariadic::GetArgByte(asUINT arg)
+ {
++	if (arg >= argCount)
++		return 0;
++
+ 	// Verify that the type is correct
+ 	asCDataType* dt = GetArgDataType(arg);
+ 	if ((dt->IsObject() || dt->IsFuncdef()) || dt->IsReference())
+@@ -586,6 +593,9 @@
+ 
+ asWORD asCGenericVariadic::GetArgWord(asUINT arg)
+ {
++	if (arg >= argCount)
++		return 0;
++
+ 	// Verify that the type is correct
+ 	asCDataType* dt = GetArgDataType(arg);
+ 	if ((dt->IsObject() || dt->IsFuncdef()) || dt->IsReference())
+@@ -601,6 +611,9 @@
+ 
+ asDWORD asCGenericVariadic::GetArgDWord(asUINT arg)
+ {
++	if (arg >= argCount)
++		return 0;
++
+ 	// Verify that the type is correct
+ 	asCDataType* dt = GetArgDataType(arg);
+ 	if ((dt->IsObject() || dt->IsFuncdef()) || dt->IsReference())
+@@ -616,6 +629,9 @@
+ 
+ asQWORD asCGenericVariadic::GetArgQWord(asUINT arg)
+ {
++	if (arg >= argCount)
++		return 0;
++
+ 	// Verify that the type is correct
+ 	asCDataType* dt = GetArgDataType(arg);
+ 	if ((dt->IsObject() || dt->IsFuncdef()) || dt->IsReference())
+@@ -631,6 +647,9 @@
+ 
+ float asCGenericVariadic::GetArgFloat(asUINT arg)
+ {
++	if (arg >= argCount)
++		return 0;
++
+ 	// Verify that the type is correct
+ 	asCDataType* dt = GetArgDataType(arg);
+ 	if ((dt->IsObject() || dt->IsFuncdef()) || dt->IsReference())
+@@ -646,6 +665,9 @@
+ 
+ double asCGenericVariadic::GetArgDouble(asUINT arg)
+ {
++	if (arg >= argCount)
++		return 0;
++
+ 	// Verify that the type is correct
+ 	asCDataType* dt = GetArgDataType(arg);
+ 	if ((dt->IsObject() || dt->IsFuncdef()) || dt->IsReference())
+@@ -661,6 +683,9 @@
+ 
+ void* asCGenericVariadic::GetArgAddress(asUINT arg)
+ {
++	if (arg >= argCount)
++		return 0;
++
+ 	// Verify that the type is correct
+ 	asCDataType* dt = GetArgDataType(arg);
+ 	if (!dt->IsReference() && !dt->IsObjectHandle())
+@@ -673,6 +698,9 @@
+ 
+ void* asCGenericVariadic::GetArgObject(asUINT arg)
+ {
++	if (arg >= argCount)
++		return 0;
++
+ 	// Verify that the type is correct
+ 	asCDataType* dt = GetArgDataType(arg);
+ 	if (!dt->IsObject() && !dt->IsFuncdef())
+@@ -685,13 +713,19 @@
+ 
+ void* asCGenericVariadic::GetAddressOfArg(asUINT arg)
+ {
++	if (arg >= argCount)
++		return 0;
++
+ 	// Determine the position of the argument
+ 	int offset = GetArgOffsetOnStack(arg);
+ 
+-	// For object variables it's necessary to dereference the pointer to get the address of the value
+-	if (!sysFunction->parameterTypes[arg].IsReference() &&
+-		sysFunction->parameterTypes[arg].IsObject() &&
+-		!sysFunction->parameterTypes[arg].IsObjectHandle())
++	// ALTERED: the type of a variadic argument is the last parameter's, but this indexed the parameter list with the
++	// argument's number, past its end for every variadic argument after the first, and took whatever memory followed
++	// for the argument's type (an object by value was returned undereferenced, or a value was dereferenced)
++	asCDataType *dt = GetArgDataType(arg);
++	if (!dt->IsReference() &&
++		dt->IsObject() &&
++		!dt->IsObjectHandle())
+ 		return *(void**)&stackPointer[offset];
+ 
+ 	// Get the address of the value

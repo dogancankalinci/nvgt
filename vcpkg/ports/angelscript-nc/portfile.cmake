@@ -36,6 +36,7 @@ vcpkg_from_github(
         fix-callptr-import-bound-to-system.patch
         fix-copy-behaviour-argument-leak.patch
         fix-nested-call-pending-requests.patch
+        fix-generic-variadic-arg-access.patch
 )
 
 vcpkg_cmake_configure(
