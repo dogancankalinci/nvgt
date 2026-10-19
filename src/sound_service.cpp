@@ -381,6 +381,8 @@ private:
 		if (stream->fail()) {
 			pInfo->sizeInBytes = 0;
 			stream->clear();
+			stream->seekg(cursor, stream->beg); // Back where it was, as a stream can fail a seek after it moved.
+			stream->clear();
 			return MA_NOT_IMPLEMENTED;
 		}
 		pInfo->sizeInBytes = stream->tellg();

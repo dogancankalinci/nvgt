@@ -1521,11 +1521,9 @@ public:
 			in->seekg(0, std::ios_base::end);
 			seekable = !in->fail();
 			in->clear();
-			if (seekable) {
-				in->seekg(at);
-				seekable = !in->fail();
-				in->clear();
-			}
+			in->seekg(at); // Back whether or not that worked: a stream can fail a seek after it moved, as an encrypted one whose payload is a whole number of blocks does.
+			if (in->fail()) seekable = false;
+			in->clear();
 		}
 		ds_vfs = make_unique<ds_vfs_t>();
 		ds_vfs->cb.onOpen  = vfs_open;  ds_vfs->cb.onOpenW = nullptr;
