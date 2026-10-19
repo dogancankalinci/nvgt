@@ -406,6 +406,7 @@ static std::recursive_mutex g_tts_registry_mutex; // guards engine_registry and 
 static vector<string> engine_names;
 static unordered_map<string, tts_engine_factory> engine_registry;
 static string preferred_engine_name;
+static std::function<string()> preferred_engine_reader;
 static vector<string> engine_ranking; // Engines in the order the platform falls back through them, set where it has such an order; voices keep the registration order.
 bool tts_engine_register(const string &name, tts_engine_factory factory) {
 	std::lock_guard<std::recursive_mutex> lock(g_tts_registry_mutex); // recursive: register_builtin_engines() calls this while the constructor already holds the lock
@@ -417,7 +418,34 @@ bool tts_engine_register(const string &name, tts_engine_factory factory) {
 
 vector<string> tts_get_engine_names() { std::lock_guard<std::recursive_mutex> lock(g_tts_registry_mutex); return engine_names; }
 void tts_set_preferred_engine(const string &name) { preferred_engine_name = name; }
-void tts_set_engine_ranking(const vector<string> &names) { engine_ranking = names; }
+void tts_set_preferred_engine_reader(std::function<string()> reader) {
+	std::lock_guard<std::recursive_mutex> lock(g_tts_registry_mutex);
+	preferred_engine_reader = std::move(reader);
+}
+// The engine the platform prefers as the user has it set now, where they can change it while the program runs; empty elsewhere and when it can't be read.
+static string tts_live_preferred_engine() {
+	std::function<string()> reader;
+	{
+		std::lock_guard<std::recursive_mutex> lock(g_tts_registry_mutex);
+		reader = preferred_engine_reader;
+	}
+	return reader? reader() : "";
+}
+// The engine the platform prefers: as it is set now, otherwise as it was when the engines were registered.
+static string tts_preferred_engine() {
+	string name = tts_live_preferred_engine();
+	if (!name.empty()) return name;
+	std::lock_guard<std::recursive_mutex> lock(g_tts_registry_mutex);
+	return preferred_engine_name;
+}
+void tts_set_engine_ranking(const vector<string> &names) {
+	std::lock_guard<std::recursive_mutex> lock(g_tts_registry_mutex);
+	engine_ranking = names;
+}
+static vector<string> tts_engine_ranking() {
+	std::lock_guard<std::recursive_mutex> lock(g_tts_registry_mutex);
+	return engine_ranking;
+}
 
 shared_ptr<tts_engine> tts_create_engine(const string &name) {
 	tts_engine_factory factory;
@@ -493,7 +521,7 @@ static void register_builtin_engines() {
 }
 
 // tts_voice implementation
-tts_voice::tts_voice(const string &engine_list) : RefCount(1), voice_state(VOICES_NONE), current_voice_index(-1), nvgt_rate(0), nvgt_pitch(0), nvgt_volume(0), rate_set(false), pitch_set(false), volume_set(false), voice_set(false), id(++g_next_tts_voice_id) {
+tts_voice::tts_voice(const string &engine_list) : RefCount(1), all_engines(engine_list.empty()), voice_state(VOICES_NONE), current_voice_index(-1), nvgt_rate(0), nvgt_pitch(0), nvgt_volume(0), rate_set(false), pitch_set(false), volume_set(false), voice_set(false), id(++g_next_tts_voice_id) {
 	{
 		std::lock_guard<std::recursive_mutex> lock(g_tts_registry_mutex);
 		if (engine_registry.empty()) register_builtin_engines();
@@ -572,15 +600,21 @@ voice_info *tts_voice::get_voice_info(int voice_index) {
 	return &voices[voice_index];
 }
 void tts_voice::ensure_default() {
-	if (voice_state != VOICES_NONE) return;
+	if (voice_state != VOICES_NONE) {
+		follow_preferred_engine();
+		return;
+	}
+	string preferred = tts_preferred_engine();
+	followed_engine = preferred;
+	if (all_engines) engine_names = tts_get_engine_names(); // The preferred engine can be one installed since.
 	// Fast path for the common case (speak with the default voice): bind engines one at a time, the preferred/default engine first and then the others in the platform's own order, and select the default voice of the first one that can speak, so we never instantiate or bind every installed engine just to start speaking. Only engines in this object's list count, and the fallback voice is left to refresh() unless it is all the list holds. Full cross-engine enumeration is deferred until the script actually lists or selects voices.
 	vector<string> candidates;
 	auto consider = [&](const string &name) {
 		if (name.empty() || name == "fallback" || find(engine_names.begin(), engine_names.end(), name) == engine_names.end() || find(candidates.begin(), candidates.end(), name) != candidates.end()) return;
 		candidates.push_back(name);
 	};
-	consider(preferred_engine_name);
-	for (const string &name : engine_ranking) consider(name);
+	consider(preferred);
+	for (const string &name : tts_engine_ranking()) consider(name);
 	for (const string &name : engine_names) consider(name);
 	if (candidates.empty() && !engine_names.empty()) candidates.push_back(engine_names.front());
 	for (const string &name : candidates) {
@@ -605,7 +639,22 @@ void tts_voice::ensure_default() {
 	voices.clear();
 	refresh(); // No candidate could speak: fall back to a full search for anything usable.
 }
-void tts_voice::ensure_enumerated() { if (voice_state != VOICES_FULL) refresh(); }
+void tts_voice::ensure_enumerated() {
+	if (voice_state != VOICES_FULL) refresh();
+	else follow_preferred_engine();
+}
+// The user can change the preferred engine while the program runs, as Android's preferred engine setting. Without a voice the script chose, the object then moves to that engine's default voice, as it would have started with it, once, so that an engine that can't speak is not tried again on every call.
+void tts_voice::follow_preferred_engine() {
+	if (voice_set || voice_state == VOICES_NONE) return;
+	string preferred = tts_live_preferred_engine();
+	if (preferred.empty() || preferred == followed_engine) return; // An engine setting that can't be read now changes nothing.
+	if (voice_state == VOICES_FULL) {
+		refresh(); // Lists any engine installed since too, and picks the preferred engine's default voice.
+		return;
+	}
+	voice_state = VOICES_NONE;
+	ensure_default();
+}
 bool tts_voice::sync_engine(engine_entry &entry, bool force) {
 	tts_engine *engine = entry.engine.get();
 	if (!engine) return false;
@@ -939,6 +988,9 @@ bool tts_voice::refresh() {
 		}
 	}
 	voice_state = VOICES_FULL;
+	string preferred = tts_preferred_engine();
+	followed_engine = preferred;
+	if (all_engines) engine_names = tts_get_engine_names(); // Including any registered since, as an engine installed while the program runs is when it becomes the preferred one.
 	voice_info old_voice{};
 	bool had_voice = false;
 	if (current_voice_index >= 0 && current_voice_index < static_cast<int>(voices.size())) {
@@ -968,8 +1020,8 @@ bool tts_voice::refresh() {
 		// Pick an initial voice: prefer the configured/default engine, then the platform's own order, then the first non-fallback engine, then anything, as ensure_default() does. Only an engine with a voice in the list counts: one that could not be bound, or whose voices the language filter left out, would match nothing below and leave the selection on the first voice, the builtin fallback.
 		auto has_voice = [&](const string &name) { for (const auto &v : voices) if (v.engine_name == name) return true; return false; };
 		string chosen_engine;
-		if (!preferred_engine_name.empty() && has_voice(preferred_engine_name)) chosen_engine = preferred_engine_name;
-		if (chosen_engine.empty()) for (const string &name : engine_ranking) if (name != "fallback" && has_voice(name)) { chosen_engine = name; break; }
+		if (!preferred.empty() && has_voice(preferred)) chosen_engine = preferred;
+		if (chosen_engine.empty()) for (const string &name : tts_engine_ranking()) if (name != "fallback" && has_voice(name)) { chosen_engine = name; break; }
 		if (chosen_engine.empty()) for (const auto &v : voices) if (v.engine_name != "fallback") { chosen_engine = v.engine_name; break; }
 		if (chosen_engine.empty()) chosen_engine = voices.front().engine_name;
 		int target = engine_default_voice.count(chosen_engine)? engine_default_voice[chosen_engine] : -1;

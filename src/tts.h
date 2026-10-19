@@ -115,6 +115,7 @@ bool tts_engine_register(const std::string &name, tts_engine_factory factory);
 std::vector<std::string> tts_get_engine_names();
 std::shared_ptr<tts_engine> tts_create_engine(const std::string &name);
 void tts_set_preferred_engine(const std::string &name);
+void tts_set_preferred_engine_reader(std::function<std::string()> reader); // Where the user can change the preferred engine while the program runs: reads it as it is now, an empty string when it can't.
 std::string tts_valid_utf8(const std::string &text); // The text with every malformed UTF-8 sequence replaced by U+FFFD and every NUL by a space.
 void tts_set_engine_ranking(const std::vector<std::string> &names); // The order a platform falls back through its engines when the preferred one can't be used.
 
@@ -138,6 +139,8 @@ struct engine_entry {
 class tts_voice {
 	int RefCount;
 	std::vector<std::string> engine_names; // Candidate engines this voice may draw from. Engine objects are NOT instantiated here; binding is deferred until a voice is actually selected/used.
+	bool all_engines; // Whether engine_names are all the registered engines rather than a list the script gave, so that an engine registered later joins them.
+	std::string followed_engine; // The preferred engine as it was when the default voice was last picked; see follow_preferred_engine().
 	std::unordered_map<std::string, engine_entry> engines; // This object's engines by name, bound as they are first needed; see engine_entry.
 	std::shared_ptr<tts_engine> current_engine; // The single live (bound) engine backing the currently selected voice, or null if nothing has been used yet.
 	std::string current_engine_name;
@@ -171,6 +174,7 @@ class tts_voice {
 	voice_info *get_voice_info(int voice_index);
 	void ensure_default(); // Bind only the default/preferred engine and select its default voice (enough to speak); does not touch other engines.
 	void ensure_enumerated(); // Build the full flattened voice list across all engines (needed to list or select voices).
+	void follow_preferred_engine(); // Without a voice the script chose, moves to the default voice of the engine the platform prefers when the user changed that engine.
 	engine_entry &get_engine_entry(const std::string &name); // This object's entry for an engine, binding the engine the first time.
 	bool sync_engine(engine_entry &entry, bool force); // Make the engine carry exactly this object's settings: the values the script set, and the platform defaults for everything else. Does nothing when the engine already carries them, unless forced. False when the engine refused the voice this object chose.
 	tts_engine *active_engine(bool force_sync = false, bool *voice_applied = nullptr); // Resolves this object's engine for the current voice, syncs our settings onto it, and returns it (or null on failure); voice_applied receives whether the engine took the chosen voice.

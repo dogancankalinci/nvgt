@@ -21,6 +21,7 @@
 #include <Poco/Format.h>
 #include <SDL3/SDL.h>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <mutex>
 #include <stdexcept>
@@ -574,12 +575,40 @@ std::string android_get_default_tts_engine_package() {
 	return from_jstring(env, jresult.get());
 }
 
+static void register_android_tts_engine(const std::string& engine_pkg) { tts_engine_register(engine_pkg, [engine_pkg]() -> std::shared_ptr<tts_engine> { return std::make_shared<android_tts_engine>(engine_pkg); }); }
+// The user's preferred engine as it is set now, which they can change while the program runs. One installed since the engines were registered is registered first, and the ranking listed again with it.
+static std::string android_preferred_tts_engine() {
+	std::string pkg = android_get_default_tts_engine_package();
+	if (pkg.empty()) return pkg;
+	std::vector<std::string> registered = tts_get_engine_names();
+	if (std::find(registered.begin(), registered.end(), pkg) != registered.end()) return pkg;
+	// The setting can name an engine that was uninstalled, which is then looked for at most every 30 seconds rather than on every call.
+	static std::mutex missing_mutex;
+	static std::string missing_pkg;
+	static std::chrono::steady_clock::time_point missing_since;
+	auto now = std::chrono::steady_clock::now();
+	{
+		std::lock_guard<std::mutex> lock(missing_mutex);
+		if (pkg == missing_pkg && now - missing_since < std::chrono::seconds(30)) return pkg;
+	}
+	std::vector<std::string> installed = android_get_tts_engine_packages();
+	if (std::find(installed.begin(), installed.end(), pkg) == installed.end()) { // Not installed, so there is nothing to register; binding it fails as before.
+		std::lock_guard<std::mutex> lock(missing_mutex);
+		missing_pkg = pkg;
+		missing_since = now;
+		return pkg;
+	}
+	for (const auto& engine_pkg : installed) register_android_tts_engine(engine_pkg);
+	tts_set_engine_ranking(android_get_ranked_tts_engine_packages());
+	return pkg;
+}
 void register_native_tts() {
 	std::vector<std::string> android_engines = android_get_tts_engine_packages();
 	std::string default_pkg = android_get_default_tts_engine_package();
 	if (!default_pkg.empty()) tts_set_preferred_engine(default_pkg);
 	tts_set_engine_ranking(android_get_ranked_tts_engine_packages());
-	for (const auto& engine_pkg : android_engines) tts_engine_register(engine_pkg, [engine_pkg]() -> std::shared_ptr<tts_engine> { return std::make_shared<android_tts_engine>(engine_pkg); });
+	for (const auto& engine_pkg : android_engines) register_android_tts_engine(engine_pkg);
+	tts_set_preferred_engine_reader(android_preferred_tts_engine);
 }
 
 // Calls a method of a Java TTS object through the calling thread's JNIEnv, answering with the fallback if there is
