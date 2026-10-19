@@ -1,0 +1,26 @@
+diff --git a/sdk/angelscript/source/as_scriptengine.cpp b/sdk/angelscript/source/as_scriptengine.cpp
+--- a/sdk/angelscript/source/as_scriptengine.cpp
++++ b/sdk/angelscript/source/as_scriptengine.cpp
+@@ -5947,7 +5947,22 @@
+ 		}
+ 		arg = CallAlloc(argType);
+ 		if( argType->beh.copyconstruct )
++		{
++#ifdef AS_NO_EXCEPTIONS
+ 			CallObjectMethod(arg, src, argType->beh.copyconstruct);
++#else
++			// ALTERED: the copy isn't made if the copy constructor throws, but its memory is still to be freed
++			try
++			{
++				CallObjectMethod(arg, src, argType->beh.copyconstruct);
++			}
++			catch(...)
++			{
++				CallFree(arg);
++				throw;
++			}
++#endif
++		}
+ 		else
+ 			memcpy(arg, src, argType->size);
+ 	}

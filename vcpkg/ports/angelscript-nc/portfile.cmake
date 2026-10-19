@@ -34,6 +34,7 @@ vcpkg_from_github(
         fix-refused-callback-convs.patch
         fix-value-template-constructor-stubs.patch
         fix-callptr-import-bound-to-system.patch
+        fix-copy-behaviour-argument-leak.patch
 )
 
 vcpkg_cmake_configure(
