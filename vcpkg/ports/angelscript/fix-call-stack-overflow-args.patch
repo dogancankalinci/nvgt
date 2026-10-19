@@ -1,0 +1,18 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -2198,7 +2198,14 @@
+ 
+ 	// Push the framepointer, function id and programCounter on the stack
+ 	if (PushCallState() < 0)
++	{
++		// ALTERED: the call stack is full (asEP_MAX_CALL_STACK_SIZE), so the function isn't called, but its arguments are
++		// already on the stack and belong to it: the handles and the copies of objects passed by value were never
++		// released or freed, as the exception handler only cleans up the arguments of a call it is told about. They are
++		// cleaned up here, after the object pointer of a method, which the caller holds on to itself.
++		CleanArgsOfUnmadeCall(this, func, m_regs.stackPointer + (func->objectType ? AS_PTR_SIZE : 0));
+ 		return;
++	}
+ 
+ 	// Update the current function and program position before increasing the stack
+ 	// so the exception handler will know what to do if there is a stack overflow
