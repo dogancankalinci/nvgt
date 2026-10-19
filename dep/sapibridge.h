@@ -85,6 +85,7 @@ ISpStream* mem;
 ISpStream* output;
 sbz_sapi_voice* voices;
 int voice_count;
+int voice_chosen; /* A voice was set; until then, or after sb_sapi_reset_voice, SAPI speaks with the user's default voice. */
 int pitch;
 int audio_channels;
 int audio_bit_depth;
@@ -95,7 +96,9 @@ int end;
 int sbz_sapi_is_init(sb_sapi* sapi);
 int sbz_sapi_set_init_flag(sb_sapi* sapi);
 int sbz_sapi_refresh_voices(sb_sapi* sapi);
+int sbz_sapi_get_voice_category(sb_sapi* sapi, ISpObjectTokenCategory** category);
 int sbz_sapi_get_voice_enum(sb_sapi* sapi, IEnumSpObjectTokens** enum_tokens);
+int sbz_sapi_default_voice_index(sb_sapi* sapi);
 int sbz_sapi_populate_voices_from_tokens(sb_sapi* sapi, IEnumSpObjectTokens** enum_tokens, int count);
 char* sbz_sapi_voice_language(sb_sapi* sapi, ISpObjectToken* token, LANGID* langid);
 int sbz_sapi_speak_to_memory(sb_sapi* sapi, char* text, void** buffer, int* size);

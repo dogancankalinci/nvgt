@@ -154,6 +154,7 @@ if(!sb_sapi_refresh_voices(sapi)) return 0;
 if((id<0)||(id>=sapi->voice_count)) return 0;
 HRESULT hr= sapi->voice->lpVtbl->SetVoice(sapi->voice, sapi->voices[id].token);
 if(FAILED(hr)) return 0;
+sapi->voice_chosen=1;
  
 /* Todo: What should we do if this fails? */
 /* Don't want to just return 0 because technically the voice has changed. */
@@ -166,12 +167,19 @@ int sb_sapi_reset_voice(sb_sapi* sapi)
 {
 if(!sbz_sapi_is_init(sapi)) return 0;
 if(FAILED(sapi->voice->lpVtbl->SetVoice(sapi->voice, NULL))) return 0;
+sapi->voice_chosen=0;
 sbz_sapi_cache_audio_attributes(sapi);
 return 1;
 }
 int sb_sapi_get_voice(sb_sapi* sapi)
 {
 if(!sb_sapi_refresh_voices(sapi)) return -1;
+/* Without a chosen voice SAPI follows the user's default voice, but takes up a new default only at its next speech, and GetVoice reports the old one until then. The default voice itself is what speaks next, so it is reported instead. */
+if(!sapi->voice_chosen)
+{
+int x=sbz_sapi_default_voice_index(sapi);
+if(x>=0) return x;
+}
 ISpObjectToken* current=NULL;
 if(FAILED(sapi->voice->lpVtbl->GetVoice(sapi->voice, &current))) return -1;
 for(int x=0; x<sapi->voice_count; x++)
@@ -262,25 +270,52 @@ return 0;
 enum_tokens->lpVtbl->Release(enum_tokens);
 return 1;
 }
-int sbz_sapi_get_voice_enum(sb_sapi* sapi, IEnumSpObjectTokens** enum_tokens)
+int sbz_sapi_get_voice_category(sb_sapi* sapi, ISpObjectTokenCategory** category)
 {
-if(!sapi) return 0;
+if((!sapi)||(!category)) return 0;
+*category=NULL;
 
 /* Like other GUIDs, we're having to declare these manually. */
 CLSID CLSID_SpObjectTokenCategory={0xA910187F, 0x0C7A, 0x45AC, {0x92, 0xCC, 0x59, 0xED, 0xAF, 0xB7, 0x7B, 0x53}};
 IID IID_ISpObjectTokenCategory={0x2D3D3845, 0x39AF, 0x4850, {0xBB, 0xF9, 0x40, 0xB4, 0x97, 0x80, 0x01, 0x1D}};
-ISpObjectTokenCategory* category=NULL;
-if(!sbz_com_create_instance(&sapi->com, &CLSID_SpObjectTokenCategory, &IID_ISpObjectTokenCategory, (void**)&category)) return 0;
-HRESULT hr=category->lpVtbl->SetId(category, SPCAT_VOICES, FALSE);
+if(!sbz_com_create_instance(&sapi->com, &CLSID_SpObjectTokenCategory, &IID_ISpObjectTokenCategory, (void**)category)) return 0;
+HRESULT hr=(*category)->lpVtbl->SetId(*category, SPCAT_VOICES, FALSE);
 if(FAILED(hr))
 {
-category->lpVtbl->Release(category);
+(*category)->lpVtbl->Release(*category);
+*category=NULL;
 return 0;
 }
-hr=category->lpVtbl->EnumTokens(category, NULL, NULL, enum_tokens);
+return 1;
+}
+int sbz_sapi_get_voice_enum(sb_sapi* sapi, IEnumSpObjectTokens** enum_tokens)
+{
+ISpObjectTokenCategory* category=NULL;
+if(!sbz_sapi_get_voice_category(sapi, &category)) return 0;
+HRESULT hr=category->lpVtbl->EnumTokens(category, NULL, NULL, enum_tokens);
 category->lpVtbl->Release(category);
 if(FAILED(hr)) return 0;
 return 1;
+}
+/* The index of the user's default voice in the voice cache, found by its token ID, or -1. */
+int sbz_sapi_default_voice_index(sb_sapi* sapi)
+{
+ISpObjectTokenCategory* category=NULL;
+if(!sbz_sapi_get_voice_category(sapi, &category)) return -1;
+WCHAR* default_id=NULL;
+HRESULT hr=category->lpVtbl->GetDefaultTokenId(category, &default_id);
+category->lpVtbl->Release(category);
+if((FAILED(hr))||(!default_id)) return -1;
+int found=-1;
+for(int x=0; x<sapi->voice_count && found<0; x++)
+{
+WCHAR* id=NULL;
+if(FAILED(sapi->voices[x].token->lpVtbl->GetId(sapi->voices[x].token, &id))||(!id)) continue;
+if(!_wcsicmp(id, default_id)) found=x;
+sbz_com_free_memory(&sapi->com, id);
+}
+sbz_com_free_memory(&sapi->com, default_id);
+return found;
 }
 int sbz_sapi_populate_voices_from_tokens(sb_sapi* sapi, IEnumSpObjectTokens** enum_tokens, int count)
 {
@@ -520,6 +555,7 @@ if(!sapi) return;
 sbz_com_reset(&sapi->com);
 sbz_sapi_reset_voice_cache(sapi);
 sapi->voice = NULL;
+sapi->voice_chosen=0;
 sapi->mem=NULL;
 sapi->output=NULL;
 sapi->pitch=0;
