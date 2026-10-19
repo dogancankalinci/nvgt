@@ -1,0 +1,32 @@
+diff --git a/sdk/angelscript/source/as_scriptengine.cpp b/sdk/angelscript/source/as_scriptengine.cpp
+--- a/sdk/angelscript/source/as_scriptengine.cpp
++++ b/sdk/angelscript/source/as_scriptengine.cpp
+@@ -5508,8 +5508,27 @@
+ 		if( func->name == "opImplCast" ||
+ 			(!useOnlyImplicitCast && func->name == "opCast") )
+ 		{
+-			if( func->returnType.GetTypeInfo() == toType )
++			if( func->returnType.GetTypeInfo() == toType && func->parameterTypes.GetLength() == 0 )
+ 			{
++				// ALTERED: a script class's opImplCast or opCast is a script function, which has no system function
++				// interface, and calling it as a registered method dereferenced a null pointer (casting such an object
++				// with ref, any or dictionary crashed). It is run by a context, like the opCast(?&out) below.
++				if( func->funcType != asFUNC_SYSTEM )
++				{
++					asIScriptContext *ctx = RequestContext();
++					if( ctx )
++					{
++						if( ctx->Prepare(func) >= 0 && ctx->SetObject(obj) >= 0 && ctx->Execute() == asEXECUTION_FINISHED )
++						{
++							// The context releases the handle it returned when it is unprepared
++							*newPtr = ctx->GetReturnObject();
++							AddRefScriptObject(*newPtr, toType);
++						}
++						ReturnContext(ctx);
++					}
++					return asSUCCESS;
++				}
++
+ 				*newPtr = CallObjectMethodRetPtr(obj, func->id);
+ 				// The ref cast behaviour returns a handle with incremented
+ 				// ref counter, so there is no need to call AddRef explicitly
