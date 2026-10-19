@@ -739,21 +739,34 @@ public class TTS {
 		String settings = languageSettings();
 		int focus = focusGeneration;
 		synchronized (followLock) {
-			if (chosenVoice != null || (focus == followedFocus && settings.equals(followedSettings))) return;
+			if (chosenVoice != null || (!followAgain && focus == followedFocus && settings.equals(followedSettings))) return;
 			followedSettings = settings;
 			followedFocus = focus;
-			TextToSpeech target = tts;
-			try {
-				Voice voice = target.getDefaultVoice();
-				if (voice == null) return;
-				Voice current = target.getVoice();
-				// A voice the engine refuses leaves it with the one it has, and isn't taken as the default to put back either.
-				if ((current == null || !current.getName().equals(voice.getName())) && target.setVoice(voice) != TextToSpeech.SUCCESS) return;
+			followAgain = false;
+			takeDefaultVoice(tts);
+		}
+	}
+	// A lookup of the settings' voice that found the engine not answering, made again once it answers (see onStart).
+	private volatile boolean followMissed = false, followAgain = false;
+	// Gives the engine the default voice the user's settings select now. True when the engine has it; false when the settings
+	// select none or the engine refused it, in which case it keeps the voice it has, which isn't taken as the default to put
+	// back either. TextToSpeech answers the same while it isn't connected, so then the lookup is made again later. Called with
+	// followLock held.
+	private boolean takeDefaultVoice(TextToSpeech target) {
+		try {
+			Voice voice = target.getDefaultVoice();
+			Voice current = voice != null? target.getVoice() : null;
+			if (voice != null && ((current != null && current.getName().equals(voice.getName())) || target.setVoice(voice) == TextToSpeech.SUCCESS)) {
 				defaultVoice = voice;
 				if (voice.getLocale() != null) defaultLanguage = voice.getLocale();
 				listVoice(voice);
-			} catch (Exception e) {}
+				return true;
+			}
+			if (target.getVoices() == null) followMissed = true; // The engine isn't answering, so the settings weren't looked up at all.
+		} catch (Exception e) {
+			followMissed = true;
 		}
+		return false;
 	}
 	public boolean silence() {
 		if (!isActive()) return false;
@@ -925,6 +938,10 @@ public class TTS {
 				if (listingMissed) {
 					listingMissed = false;
 					connectionChanges++;
+				}
+				if (followMissed) {
+					followMissed = false;
+					followAgain = true;
 				}
 			}
 			@Override
