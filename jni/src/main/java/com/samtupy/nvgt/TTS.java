@@ -922,13 +922,16 @@ public class TTS {
 	// Lists the voices again, as voices can be installed or removed while the app runs; their indices can change.
 	public void refreshVoices() { initializeVoices(); }
 	// Adds a voice the user's settings selected to the list when it isn't there, at its end, so that indices stay as they were.
-	private void listVoice(Voice voice) {
+	private synchronized void listVoice(Voice voice) {
 		List<Voice> voices = availableVoices;
 		if (voices == null) return;
 		for (Voice listed : voices) {
 			if (listed.getName().equals(voice.getName())) return;
 		}
-		voices.add(voice);
+		// A new list rather than an addition, as the list is read without a lock on other threads.
+		List<Voice> extended = new ArrayList<>(voices);
+		extended.add(voice);
+		availableVoices = extended;
 	}
 
 	// Set up permanent UtteranceProgressListener for PCM synthesis
@@ -996,12 +999,14 @@ public class TTS {
 		return voices != null? voices.size() : 0;
 	}
 	public String getVoiceName(int index) {
-		if (!isActive() || availableVoices == null || index < 0 || index >= availableVoices.size()) return "";
-		return availableVoices.get(index).getName();
+		List<Voice> voices = availableVoices;
+		if (!isActive() || voices == null || index < 0 || index >= voices.size()) return "";
+		return voices.get(index).getName();
 	}
 	public String getVoiceLanguage(int index) {
-		if (!isActive() || availableVoices == null || index < 0 || index >= availableVoices.size()) return "";
-		Locale locale = availableVoices.get(index).getLocale();
+		List<Voice> voices = availableVoices;
+		if (!isActive() || voices == null || index < 0 || index >= voices.size()) return "";
+		Locale locale = voices.get(index).getLocale();
 		if (locale == null) return "";
 		String lang = locale.getLanguage();
 		// Before Android 15, or for an app targeting an earlier version, Locale keeps the codes ISO 639 replaced for Hebrew, Indonesian
@@ -1013,8 +1018,9 @@ public class TTS {
 		return country.isEmpty()? lang.toLowerCase(Locale.ROOT) : (lang + "-" + country).toLowerCase(Locale.ROOT);
 	}
 	public boolean setVoiceByIndex(int index) {
-		if (!isActive() || availableVoices == null || index < 0 || index >= availableVoices.size()) return false;
-		Voice voice = availableVoices.get(index);
+		List<Voice> voices = availableVoices;
+		if (!isActive() || voices == null || index < 0 || index >= voices.size()) return false;
+		Voice voice = voices.get(index);
 		synchronized (followLock) {
 			if (tts.setVoice(voice) != TextToSpeech.SUCCESS) return false;
 			chosenVoice = voice;
@@ -1033,9 +1039,10 @@ public class TTS {
 		} catch (Exception e) {
 			return -1;
 		}
-		if (current == null) return -1;
-		for (int i = 0; i < availableVoices.size(); i++) {
-			if (availableVoices.get(i).getName().equals(current.getName())) return i;
+		List<Voice> voices = availableVoices;
+		if (current == null || voices == null) return -1;
+		for (int i = 0; i < voices.size(); i++) {
+			if (voices.get(i).getName().equals(current.getName())) return i;
 		}
 		return -1;
 	}
