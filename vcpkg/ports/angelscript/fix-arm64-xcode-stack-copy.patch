@@ -1,0 +1,34 @@
+diff --git a/sdk/angelscript/source/as_callfunc_arm64_xcode.S b/sdk/angelscript/source/as_callfunc_arm64_xcode.S
+--- a/sdk/angelscript/source/as_callfunc_arm64_xcode.S
++++ b/sdk/angelscript/source/as_callfunc_arm64_xcode.S
+@@ -32,6 +32,10 @@
+ // Assembly routines for the ARM64/AArch64 call convention used for Linux
+ // Written by Max Waine in July 2020, based on as_callfunc_arm_msvc.asm,
+ // with assistance & guidance provided by Sir Kane
++//
++// ALTERED: _CallARM64 copies the stack arguments through x12 below the already lowered sp instead of moving sp up over
++// them, so no argument it has copied is ever below sp, where a signal handler could overwrite it. (Apple keeps the 128
++// bytes below sp intact, so before this only calls with 19 or more stack argument slots were exposed.)
+ 
+ // Compile with GCC/GAS
+ 
+@@ -106,9 +110,10 @@
+     // Multiply count by 8
+     lsl x10, x5, #3
+     sub sp, sp, x20
++    mov x12, sp
+ LBL_stackArgsLoopStart:
+     ldp     x9,x11, [x4],#16
+-    stp     x9,x11, [sp],#16
++    stp     x9,x11, [x12],#16
+     subs    x10, x10, #16
+     bgt     LBL_stackArgsLoopStart
+ LBL_stackArgsLoopEnd:
+@@ -145,7 +150,6 @@
+ LBL_populateGPRegisterArgsEnd:
+ 
+     // Actually call function
+-    sub     sp, sp, x20
+     blr     x15
+     add     sp, sp, x20
+ 

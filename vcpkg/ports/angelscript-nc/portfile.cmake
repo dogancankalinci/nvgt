@@ -10,6 +10,7 @@ vcpkg_from_github(
         fix-dependency.patch
         fix-double-literal-precision.patch
         fix-x64-gcc-callfunc-unwind.patch
+        fix-arm64-xcode-stack-copy.patch
 )
 
 vcpkg_cmake_configure(
