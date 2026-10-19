@@ -1,0 +1,61 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -780,8 +780,27 @@
+ 			stackSize += m_currentFunction->scriptData->stackNeeded;
+ 
+ 		// Make sure there is enough space on the stack for the arguments and return value
++		bool     hadStack           = m_stackBlocks.GetLength() > 0;
++		asDWORD *stackPointerBefore = m_regs.stackPointer;
++		asUINT   stackIndexBefore   = m_stackIndex;
+ 		if( !ReserveStackSpace(stackSize) )
++		{
++			// ALTERED: nothing was put on the stack for the function, but the context was left with the stack overflow
++			// exception for it, so the clean up that followed (the next Prepare, Unprepare, PopState, or releasing the
++			// context) cleaned up its arguments where they would have been: past the end of the first stack block for a
++			// new context, or for a nested call among the values of the interrupted function, which were released or
++			// destroyed. The program pointer is cleared to tell CleanStackFrame there are no arguments, and the stack
++			// pointer is kept where it was (a new context keeps its first block), so the context can be prepared again.
++			m_regs.programPointer = 0;
++			if( hadStack )
++			{
++				m_regs.stackPointer = stackPointerBefore;
++				m_stackIndex        = stackIndexBefore;
++			}
++			m_originalStackPointer = m_regs.stackPointer;
++			m_originalStackIndex   = m_stackIndex;
+ 			return asOUT_OF_MEMORY;
++		}
+ 
+ 		// Set up the call stack too
+ 		if (m_callStack.GetCapacity() < m_engine->ep.initCallStackSize)
+@@ -2118,6 +2137,9 @@
+ 				// Out of memory
+ 				m_isStackMemoryNotAllocated = true;
+ 
++				// ALTERED: the block wasn't added, so the index goes back to the block the stack pointer is still in
++				m_stackIndex--;
++
+ 				// Set the stackFramePointer, even though the stackPointer wasn't updated
+ 				m_regs.stackFramePointer = m_regs.stackPointer;
+ 
+@@ -5616,6 +5638,10 @@
+ 		return false;
+ 	}
+ 
++	// ALTERED: a stack overflow with the program pointer not set comes from a Prepare that couldn't reserve the stack the
++	// function needs, which put no arguments on the stack (see Prepare), so there are none to clean up
++	bool argsOnStack = !(m_isStackMemoryNotAllocated && m_regs.programPointer == 0);
++
+ 	// Clean object variables on the stack
+ 	// If the stack memory is not allocated or the program pointer
+ 	// is not set, then there is nothing to clean up on the stack frame
+@@ -5753,7 +5779,7 @@
+ 	}
+ 
+ 	// Functions that do not own the object and parameters shouldn't do any clean up
+-	if( m_currentFunction == 0 || m_currentFunction->dontCleanUpOnException )
++	if( m_currentFunction == 0 || m_currentFunction->dontCleanUpOnException || !argsOnStack )
+ 		return exceptionCaught;
+ 
+ 	// Clean object and parameters
