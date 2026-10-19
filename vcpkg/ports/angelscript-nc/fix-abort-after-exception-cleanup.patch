@@ -1,0 +1,63 @@
+diff --git a/sdk/angelscript/source/as_context.h b/sdk/angelscript/source/as_context.h
+--- a/sdk/angelscript/source/as_context.h
++++ b/sdk/angelscript/source/as_context.h
+@@ -217,6 +217,7 @@
+ 	// Exception handling
+ 	bool      m_isStackMemoryNotAllocated;
+ 	bool      m_needToCleanupArgs;
++	bool      m_abortedAfterException; // ALTERED: see Execute
+ 	bool      m_inExceptionHandler;
+ 	asCString m_exceptionString;
+ 	int       m_exceptionFunction;
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -199,6 +199,7 @@
+ 	m_inExceptionHandler        = false;
+ 	m_isStackMemoryNotAllocated = false;
+ 	m_needToCleanupArgs         = false;
++	m_abortedAfterException     = false;
+ 	m_currentFunction           = 0;
+ 	m_callingSystemFunction     = 0;
+ 	m_initialFunction           = 0;
+@@ -829,6 +830,7 @@
+ 	}
+ 	m_status = asEXECUTION_PREPARED;
+ 	m_regs.programPointer = 0;
++	m_abortedAfterException = false; // ALTERED: see Execute
+ 
+ 	// Reserve space for the arguments and return value
+ 	m_regs.stackFramePointer = m_regs.stackPointer - m_argumentsSize - m_returnValueSize;
+@@ -917,6 +919,7 @@
+ 
+ 	// Reset status
+ 	m_status = asEXECUTION_UNINITIALIZED;
++	m_abortedAfterException = false; // ALTERED: see Execute
+ 
+ 	m_regs.stackFramePointer = 0;
+ 
+@@ -1646,6 +1649,14 @@
+ 	{
+ 		m_doAbort = false;
+ 
++		// ALTERED: an abort requested before an exception that the script didn't catch still makes this return
++		// asEXECUTION_ABORTED, but the instruction that raised the exception didn't complete. With the status no longer
++		// asEXECUTION_EXCEPTION, the clean up (Unprepare, the next Prepare, or PopState after a nested call) took it for
++		// completed: the object a registered function was to return by value (which CallSystemFunction had already
++		// destroyed) or a registered constructor was to initialize (which it never did) was destroyed as a live local
++		// variable. DetermineLiveObjects is told the instruction failed.
++		m_abortedAfterException = (m_status == asEXECUTION_EXCEPTION);
++
+ 		m_status = asEXECUTION_ABORTED;
+ 		return asEXECUTION_ABORTED;
+ 	}
+@@ -5425,7 +5436,8 @@
+ 
+ 		pos = asUINT(m_regs.programPointer - func->scriptData->byteCode.AddressOf());
+ 
+-		if( m_status == asEXECUTION_EXCEPTION )
++		// ALTERED: also after an exception that Execute reported as an abort, see Execute
++		if( m_status == asEXECUTION_EXCEPTION || (m_status == asEXECUTION_ABORTED && m_abortedAfterException) )
+ 		{
+ 			// Don't consider the last instruction as executed, as it failed with an exception
+ 			// It's not actually necessary to decrease the exact size of the instruction. Just
