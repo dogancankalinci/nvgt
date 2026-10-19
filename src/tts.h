@@ -180,6 +180,7 @@ class tts_voice {
 	void ensure_enumerated(); // Build the full flattened voice list across all engines (needed to list or select voices).
 	void follow_preferred_engine(); // Without a voice the script chose, moves to the default voice of the engine the platform prefers when the user changed that engine.
 	void follow_installed_voices(); // Lists the voices again when an engine reports that its installed voices may have changed.
+	bool list_voices_again(bool relist_engines, bool retry_unbound); // refresh()'s work, with or without its two costly parts; see refresh().
 	engine_entry &get_engine_entry(const std::string &name); // This object's entry for an engine, binding the engine the first time.
 	bool sync_engine(engine_entry &entry, bool force); // Make the engine carry exactly this object's settings: the values the script set, and the platform defaults for everything else. Does nothing when the engine already carries them, unless forced. False when the engine refused the voice this object chose.
 	tts_engine *active_engine(bool force_sync = false, bool *voice_applied = nullptr); // Resolves this object's engine for the current voice, syncs our settings onto it, and returns it (or null on failure); voice_applied receives whether the engine took the chosen voice.
@@ -229,7 +230,7 @@ public:
 	bool get_pitch_set();
 	bool get_volume_set();
 	bool get_voice_set();
-	bool refresh();
+	bool refresh(); // As the script calls it: every engine lists its voices again, and engines that couldn't be bound for this object are tried again.
 	bool stop();
 	std::string get_engine_name();
 	int get_engine_count();

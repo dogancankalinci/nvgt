@@ -640,10 +640,10 @@ void tts_voice::ensure_default() {
 		return;
 	}
 	voices.clear();
-	refresh(); // No candidate could speak: fall back to a full search for anything usable.
+	list_voices_again(false, true); // No candidate could speak: fall back to a full search for anything usable.
 }
 void tts_voice::ensure_enumerated() {
-	if (voice_state != VOICES_FULL) refresh();
+	if (voice_state != VOICES_FULL) list_voices_again(false, true);
 	else {
 		follow_installed_voices();
 		follow_preferred_engine();
@@ -662,7 +662,7 @@ void tts_voice::follow_installed_voices() {
 	}
 	if (!changed) return;
 	if (voice_state == VOICES_FULL) {
-		refresh();
+		list_voices_again(false, false); // The engines that reported the change list their voices again by themselves.
 		return;
 	}
 	voice_state = VOICES_NONE;
@@ -674,7 +674,7 @@ void tts_voice::follow_preferred_engine() {
 	string preferred = tts_live_preferred_engine();
 	if (preferred.empty() || preferred == followed_engine) return; // An engine setting that can't be read now changes nothing.
 	if (voice_state == VOICES_FULL) {
-		refresh(); // Lists any engine installed since too, and picks the preferred engine's default voice.
+		list_voices_again(false, false); // Lists any engine installed since too, and picks the preferred engine's default voice.
 		return;
 	}
 	voice_state = VOICES_NONE;
@@ -761,7 +761,7 @@ int tts_voice::platform_voice_index() {
 		string unlisted = voice->engine_name + '\n' + name + '\n' + language;
 		if (voice_set || voice_state != VOICES_FULL || unlisted == relisted_for) return -1;
 		relisted_for = unlisted;
-		refresh();
+		list_voices_again(false, false);
 	}
 	return -1;
 }
@@ -1017,10 +1017,12 @@ bool tts_voice::get_speaking() {
 	for (const auto &engine : native_engines) if (engine != current_engine && engine->is_speaking()) return true;
 	return false;
 }
-bool tts_voice::refresh() {
+bool tts_voice::refresh() { return list_voices_again(true, true); }
+// The object's list made again. Only refresh() as the script calls it has the engines list their voices again, which costs a call to the platform's speech service each, as a change an engine reports it takes up by itself, and tries again the engines that couldn't be bound for this object, which can each take as long as binding waits.
+bool tts_voice::list_voices_again(bool relist_engines, bool retry_unbound) {
 	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
 	// An engine this object couldn't bind is tried again, unless it never bound anywhere: one that has worked can fail for a while, while it restarts for instance, and the object would otherwise go without it for good.
-	{
+	if (retry_unbound) {
 		std::lock_guard<std::mutex> lock(g_engine_pool_mutex);
 		for (auto it = engines.begin(); it != engines.end();) {
 			if (!it->second.engine && !g_unusable_engines.count(it->first)) it = engines.erase(it);
@@ -1046,7 +1048,7 @@ bool tts_voice::refresh() {
 		tts_engine *engine = entry.engine.get();
 		if (!engine || !engine->is_available()) continue;
 		entry.voices_generation = engine->voices_generation();
-		engine->refresh_voices();
+		if (relist_engines) engine->refresh_voices();
 		engine_default_voice[name] = tts_engine_default_voice(entry);
 		int voice_count = engine->get_voice_count();
 		for (int i = 0; i < voice_count; i++) {
@@ -1147,7 +1149,7 @@ bool tts_voice::set_language(const string& language) {
 		return false;
 	};
 	current_language = language;
-	refresh();
+	list_voices_again(false, true);
 	if (voices.empty()) return restore();
 	// Asking for a language is asking for one of its voices, so the voice refresh() picked from the filtered list is pushed onto the engine like a set_voice() call, and when the engine refuses it, the other voices of the language are tried in turn. An empty language only lifts the filter and changes nothing about the selection.
 	if (!language.empty() && get_voice_info(current_voice_index)) {
