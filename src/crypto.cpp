@@ -273,11 +273,18 @@ std::streampos chacha_istreambuf::seekpos(std::streampos pos, std::ios_base::ope
 		return -1;
 	// Now we're at the closest byte that we can seek to. Empty the buffer of stale data:
 	this->setg(NULL, NULL, NULL);
-	// Then fill it up again with fresh data:
-	if (underflow() == std::char_traits<char>::eof())
-		return -1;
-	// Finally, throw away however many bytes stand between the start of the block we just selected and the byte that was actually requested by the caller.
 	int skip = (int)((uint64_t)pos % 64);
+	// Then fill it up again with fresh data:
+	if (underflow() == std::char_traits<char>::eof()) {
+		// At the end itself, when the data ends on a block boundary: there is nothing to read there, which is what a seek to the end means, so that seek succeeds with the source put back at that boundary, rather than failing as it did for one stream in 64.
+		if (skip != 0) return -1;
+		source->clear();
+		source->seekg(counter * 64 + source_offset);
+		if (!source->good()) return -1;
+		this->setg(NULL, NULL, NULL);
+		return counter * 64;
+	}
+	// Finally, throw away however many bytes stand between the start of the block we just selected and the byte that was actually requested by the caller.
 	if (skip > egptr() - gptr())
 		return -1;
 	gbump(skip);
