@@ -1,0 +1,53 @@
+diff --git a/sdk/angelscript/source/as_scriptengine.cpp b/sdk/angelscript/source/as_scriptengine.cpp
+--- a/sdk/angelscript/source/as_scriptengine.cpp
++++ b/sdk/angelscript/source/as_scriptengine.cpp
+@@ -6120,7 +6120,17 @@
+ 	{
+ 		funcIndex = type->beh.construct;
+ 		if( funcIndex )
+-			CallObjectMethod(mem, funcIndex);
++		{
++			// ALTERED: the constructor of a value template's instance is a generated script function (a stub that passes
++			// the hidden type argument to the registered constructor), which has no system function interface, and it
++			// was called as a registered method (a null pointer dereference). It is run by a context, as
++			// CreateScriptObject does. A template instance never has a copy constructor recorded, so this is the path for
++			// every value template returned by value from a generic function.
++			if( scriptFunctions[funcIndex]->funcType != asFUNC_SYSTEM )
++				CallScriptObjectMethod(mem, funcIndex);
++			else
++				CallObjectMethod(mem, funcIndex);
++		}
+ 
+ 		AssignScriptObject(mem, obj, type);
+ 	}
+diff --git a/sdk/angelscript/source/as_scriptobject.cpp b/sdk/angelscript/source/as_scriptobject.cpp
+--- a/sdk/angelscript/source/as_scriptobject.cpp
++++ b/sdk/angelscript/source/as_scriptobject.cpp
+@@ -1066,7 +1066,11 @@
+ 		ptr = engine->CallAlloc(in_objType);
+ 		ScriptObject_ConstructUnitialized(in_objType, reinterpret_cast<asCScriptObject*>(ptr));
+ 	}
+-	else if( in_objType->flags & asOBJ_TEMPLATE )
++	// ALTERED: only a reference template stores its registered factory in the construct behaviour. A value template's
++	// construct behaviour is a generated script function (the stub that passes the hidden type argument to the registered
++	// constructor), which was called here as a registered factory: a null pointer dereference when an uninitialized script
++	// object (CreateUninitializedScriptObject) had a member of a value template type, such as weakref<T>.
++	else if( (in_objType->flags & asOBJ_TEMPLATE) && (in_objType->flags & asOBJ_REF) )
+ 	{
+ 		// Templates store the original factory that takes the object
+ 		// type as a hidden parameter in the construct behaviour
+@@ -1081,7 +1085,13 @@
+ 		ptr = engine->CallAlloc(in_objType);
+ 		int funcIndex = in_objType->beh.construct;
+ 		if( funcIndex )
+-			engine->CallObjectMethod(ptr, funcIndex);
++		{
++			// The value template's constructor stub is run by a context, as CreateScriptObject does
++			if( engine->scriptFunctions[funcIndex]->funcType != asFUNC_SYSTEM )
++				engine->CallScriptObjectMethod(ptr, funcIndex);
++			else
++				engine->CallObjectMethod(ptr, funcIndex);
++		}
+ 	}
+ 
+ 	return ptr;

@@ -32,6 +32,7 @@ vcpkg_from_github(
         fix-funcdef-autohandle-return.patch
         fix-thiscall1-variadic-methods.patch
         fix-refused-callback-convs.patch
+        fix-value-template-constructor-stubs.patch
 )
 
 vcpkg_cmake_configure(
