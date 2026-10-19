@@ -1,0 +1,286 @@
+diff --git a/sdk/angelscript/source/as_callfunc_arm_gcc.S b/sdk/angelscript/source/as_callfunc_arm_gcc.S
+index 9fb180a..8438a33 100644
+--- a/sdk/angelscript/source/as_callfunc_arm_gcc.S
++++ b/sdk/angelscript/source/as_callfunc_arm_gcc.S
+@@ -47,6 +47,20 @@
+ 
+ /* iOS, Android, Marmalade, and Linux with soft-float ABI goes here */
+ 
++/* ALTERED: these routines carry ARM EHABI unwind information (.fnstart/.save/.setfp/.fnend). Without it the linker
++   covers them with EXIDX_CANTUNWIND, so a C++ exception thrown by a registered function could not unwind through them
++   to the catch in CallSystemFunction and the process ended in std::terminate. Each routine also saves r10 (only to keep
++   the stack 8-byte aligned) and r11, keeps its frame in r11 for the unwinder because the stack it hands to the callee
++   moves by a variable amount, reads its fifth argument 32 bytes up instead of 24, and restores sp from r11. The stack
++   arguments are copied through r12 below the already lowered sp instead of by moving sp up over them, and the ObjLast
++   routines store the object pointer through r11 after lowering sp rather than below sp before it: until then those
++   values sat below sp, where a signal handler running on the thread would overwrite them. */
++
++    .syntax unified
++    .arm
++    .text
++    .align  2
++
+ .global armFunc
+ .global armFuncR0
+ .global armFuncR0R1
+@@ -59,9 +73,20 @@
+ .type armFuncObjLast, %function
+ .type armFuncR0ObjLast, %function
+ 
++#if defined (__ARM_ARCH_4T__) || defined (__ARM_ARCH_4__)
++/* older ARM didn't support blx */
++#define CALL_R4 mov lr, pc; mov pc, r4
++#else
++#define CALL_R4 blx r4
++#endif
++
+ /* --------------------------------------------------------------------------------------------*/
+ armFunc:
+-    stmdb   sp!, {r4-r8, lr}
++    .fnstart
++    push    {r4-r8, r10, r11, lr}
++    .save   {r4-r8, r10, r11, lr}
++    mov     r11, sp
++    .setfp  r11, sp
+     mov     r6, r0  /* arg table */
+     movs    r7, r1  /* arg size (also set the condition code flags so that we detect if there are no arguments) */
+     mov     r4, r2  /* function address */
+@@ -85,26 +110,26 @@ armFunc:
+     add     r8, r7, #4        /* ensure 8-byte stack alignment */
+     bic     r8, r8, #4
+     sub     sp, sp, r8
+-    mov     r12, sp           /* copy size != frame size, so store frame start sp */
++    mov     r12, sp
+ stackargsloop:
+     ldr     r5, [r6], #4
+-    str     r5, [sp], #4
++    str     r5, [r12], #4
+     subs    r7, r7, #4
+     bne     stackargsloop
+-    mov     sp, r12
+ nomoreargs:
+-#if defined (__ARM_ARCH_4T__) || defined (__ARM_ARCH_4__)
+-    mov    lr, pc   /* older ARM didn't support blx */
+-    mov    pc, r4
+-#else
+-    blx     r4
+-#endif
+-    add     sp, sp, r8
+-    ldmia   sp!, {r4-r8, pc}
++    CALL_R4
++    mov     sp, r11
++    pop     {r4-r8, r10, r11, pc}
++    .fnend
++    .size armFunc, .-armFunc
+ 
+ /* --------------------------------------------------------------------------------------------*/
+ armFuncObjLast:
+-    stmdb   sp!, {r4-r8, lr}
++    .fnstart
++    push    {r4-r8, r10, r11, lr}
++    .save   {r4-r8, r10, r11, lr}
++    mov     r11, sp
++    .setfp  r11, sp
+     mov     r6, r0  /* arg table */
+     movs    r7, r1  /* arg size (also set the condition code flags so that we detect if there are no arguments) */
+     mov     r4, r2  /* function address */
+@@ -133,32 +158,32 @@ armFuncObjLast:
+     sub     r7, r7, #4*4    /* skip the 4 registers already loaded into r0-r3 */
+     add     r8, r7, #8      /* account for the objlast pointer, ensure 8-byte stack alignment */
+     bic     r8, r8, #4
+-    str     r5, [sp,#-4]    /* store the objlast on stack, twice in case we adjusted alignment */
+-    str     r5, [sp,#-8]
+     sub     sp, sp, r8      /* adjust frame */
++    str     r5, [r11, #-4]  /* store the objlast on stack, twice in case we adjusted alignment */
++    str     r5, [r11, #-8]
+     cmp     r7, #0          /* we may also have come here with no extra params */
+     beq     nomoreargsarmFuncObjLast
+-    mov     r12, sp         /* copy size != frame size, so store frame start sp */
++    mov     r12, sp
+ stackargslooparmFuncObjLast:
+     ldr     r5, [r6], #4
+-    str     r5, [sp], #4
++    str     r5, [r12], #4
+     subs    r7, r7, #4
+     bne     stackargslooparmFuncObjLast
+-    mov     sp, r12
+ nomoreargsarmFuncObjLast:
+-#if defined (__ARM_ARCH_4T__) || defined (__ARM_ARCH_4__)
+-    mov    lr, pc   /* older ARM didn't support blx */
+-    mov    pc, r4
+-#else
+-    blx     r4
+-#endif
+-    add     sp, sp, r8
+-    ldmia   sp!, {r4-r8, pc}
++    CALL_R4
++    mov     sp, r11
++    pop     {r4-r8, r10, r11, pc}
++    .fnend
++    .size armFuncObjLast, .-armFuncObjLast
+ 
+ /* --------------------------------------------------------------------------------------------*/
+ armFuncR0ObjLast:
+-    stmdb   sp!, {r4-r8, lr}
+-    ldr     r5, [sp,#6*4]   /* objlast to temp reg */
++    .fnstart
++    push    {r4-r8, r10, r11, lr}
++    .save   {r4-r8, r10, r11, lr}
++    mov     r11, sp
++    .setfp  r11, sp
++    ldr     r5, [sp,#8*4]   /* objlast to temp reg */
+ 
+     mov     r6, r0  /* arg table */
+     movs    r7, r1  /* arg size (also set the condition code flags so that we detect if there are no arguments) */
+@@ -185,31 +210,31 @@ armFuncR0ObjLast:
+     sub     r7, r7, #3*4    /* skip the 3 registers already loaded into r1-r3 */
+     add     r8, r7, #8      /* account for the objlast pointer, ensure 8-byte stack alignment */
+     bic     r8, r8, #4
+-    str     r5, [sp,#-4]    /* store the objlast on stack, twice in case we adjusted alignment */
+-    str     r5, [sp,#-8]
+     sub     sp, sp, r8      /* adjust frame */
++    str     r5, [r11, #-4]  /* store the objlast on stack, twice in case we adjusted alignment */
++    str     r5, [r11, #-8]
+     cmp     r7, #0          /* we may also have come here with no extra params */
+     beq     nomoreargsarmFuncR0ObjLast
+-    mov     r12, sp         /* copy size != frame size, so store frame start sp */
++    mov     r12, sp
+ stackargslooparmFuncR0ObjLast:
+     ldr     r5, [r6], #4
+-    str     r5, [sp], #4
++    str     r5, [r12], #4
+     subs    r7, r7, #4
+     bne     stackargslooparmFuncR0ObjLast
+-    mov     sp, r12
+ nomoreargsarmFuncR0ObjLast:
+-#if defined (__ARM_ARCH_4T__) || defined (__ARM_ARCH_4__)
+-    mov    lr, pc   /* older ARM didn't support blx */
+-    mov    pc, r4
+-#else
+-    blx     r4
+-#endif
+-    add     sp, sp, r8
+-    ldmia   sp!, {r4-r8, pc}
++    CALL_R4
++    mov     sp, r11
++    pop     {r4-r8, r10, r11, pc}
++    .fnend
++    .size armFuncR0ObjLast, .-armFuncR0ObjLast
+ 
+ /* --------------------------------------------------------------------------------------------*/
+ armFuncR0:
+-    stmdb   sp!, {r4-r8, lr}
++    .fnstart
++    push    {r4-r8, r10, r11, lr}
++    .save   {r4-r8, r10, r11, lr}
++    mov     r11, sp
++    .setfp  r11, sp
+     mov     r6, r0  /* arg table */
+     movs    r7, r1  /* arg size (also set the condition code flags so that we detect if there are no arguments) */
+     mov     r4, r2  /* function address */
+@@ -233,33 +258,33 @@ armFuncR0:
+     add     r8, r7, #4      /* ensure 8-byte stack alignment */
+     bic     r8, r8, #4
+     sub     sp, sp, r8
+-    mov     r12, sp         /* copy size != frame size, so store frame start sp */
++    mov     r12, sp
+ stackargslooparmFuncR0:
+     ldr     r5, [r6], #4
+-    str     r5, [sp], #4
++    str     r5, [r12], #4
+     subs    r7, r7, #4
+     bne     stackargslooparmFuncR0
+-    mov     sp, r12
+ nomoreargsarmFuncR0:
+-#if defined (__ARM_ARCH_4T__) || defined (__ARM_ARCH_4__)
+-    mov    lr, pc   /* older ARM didn't support blx */
+-    mov    pc, r4
+-#else
+-    blx     r4
+-#endif
+-    add     sp, sp, r8
+-    ldmia   sp!, {r4-r8, pc}
++    CALL_R4
++    mov     sp, r11
++    pop     {r4-r8, r10, r11, pc}
++    .fnend
++    .size armFuncR0, .-armFuncR0
+ 
+ /* --------------------------------------------------------------------------------------------*/
+ armFuncR0R1:
+-    stmdb   sp!, {r4-r8, lr}
++    .fnstart
++    push    {r4-r8, r10, r11, lr}
++    .save   {r4-r8, r10, r11, lr}
++    mov     r11, sp
++    .setfp  r11, sp
+     mov     r6, r0  /* arg table */
+     movs    r7, r1  /* arg size (also set the condition code flags so that we detect if there are no arguments) */
+     mov     r4, r2  /* function address */
+     mov     r8, #0
+ 
+     mov     r0, r3          /* r0 explicitly set */
+-    ldr     r1, [sp, #6*4]  /* r1 explicitly set too */
++    ldr     r1, [sp, #8*4]  /* r1 explicitly set too */
+ 
+     beq     nomoreargsarmFuncR0R1
+ 
+@@ -275,22 +300,18 @@ armFuncR0R1:
+     add     r8, r7, #4      /* ensure 8-byte stack alignment */
+     bic     r8, r8, #4
+     sub     sp, sp, r8
+-    mov     r12, sp         /* copy size != frame size, so store frame start sp */
++    mov     r12, sp
+ stackargslooparmFuncR0R1:
+     ldr     r5, [r6], #4
+-    str     r5, [sp], #4
++    str     r5, [r12], #4
+     subs    r7, r7, #4
+     bne     stackargslooparmFuncR0R1
+-    mov     sp, r12
+ nomoreargsarmFuncR0R1:
+-#if defined (__ARM_ARCH_4T__) || defined (__ARM_ARCH_4__)
+-    mov    lr, pc   /* older ARM didn't support blx */
+-    mov    pc, r4
+-#else
+-    blx     r4
+-#endif
+-    add     sp, sp, r8
+-    ldmia   sp!, {r4-r8, pc}
++    CALL_R4
++    mov     sp, r11
++    pop     {r4-r8, r10, r11, pc}
++    .fnend
++    .size armFuncR0R1, .-armFuncR0R1
+ 
+ /* --------------------------------------------------------------------------------------------*/
+ #elif defined(__linux__) && !defined(__SOFTFP__) && !defined(__ARM_PCS)
+diff --git a/sdk/angelscript/source/as_config.h b/sdk/angelscript/source/as_config.h
+index 7aa722f..2ddfdd0 100644
+--- a/sdk/angelscript/source/as_config.h
++++ b/sdk/angelscript/source/as_config.h
+@@ -1217,8 +1217,11 @@
+ 			#undef AS_NO_THISCALL_FUNCTOR_METHOD
+ 
+ 			#if (!defined(__LP64__))
+-				// TODO: The stack unwind on exceptions currently fails due to the assembler code in as_callfunc_arm_gcc.S
+-				#define AS_NO_EXCEPTIONS
++				// ALTERED: AS_NO_EXCEPTIONS is no longer defined here. The soft-float routines in as_callfunc_arm_gcc.S now
++				// carry ARM EHABI unwind information, so a C++ exception thrown by a registered function unwinds through
++				// them to the catch in CallSystemFunction and becomes a script exception, as on every other platform.
++				// Without the catch it left asIScriptContext::Execute as a C++ exception and the application's
++				// translate-exception callback could not even be set (asNOT_SUPPORTED).
+ 
+ 				#define THISCALL_RETURN_SIMPLE_IN_MEMORY_MIN_SIZE 2
+ 				#define CDECL_RETURN_SIMPLE_IN_MEMORY_MIN_SIZE 2
+@@ -1226,7 +1229,9 @@
+ 
+ 				#define AS_ARM
+ 				#define AS_SOFTFP
+-				#define AS_CALLEE_DESTROY_OBJ_BY_VAL
++				// ALTERED: AS_CALLEE_DESTROY_OBJ_BY_VAL is not defined either. Android follows the Itanium C++ ABI, where the
++				// caller destroys an object passed by value, so with it defined nothing ever ran the destructor of an
++				// object passed by value to a registered function (a std::string argument leaked its buffer).
+ 			#elif (defined(__LP64__) || defined(__aarch64__))
+ 				#define AS_ARM64
+ 

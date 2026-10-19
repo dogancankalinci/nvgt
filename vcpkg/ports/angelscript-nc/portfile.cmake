@@ -12,6 +12,7 @@ vcpkg_from_github(
         fix-x64-gcc-callfunc-unwind.patch
         fix-arm64-xcode-stack-copy.patch
         fix-arm64-gcc-callfunc-unwind.patch
+        fix-android-arm32-callfunc.patch
 )
 
 vcpkg_cmake_configure(
