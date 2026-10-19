@@ -388,10 +388,21 @@ jobs:
         curl -u "${{secrets.CIFTP}}" -s -T windev.zip ftp://nvgt.dev
         curl -H "X-Auth: ${{secrets.CIPHP}}" -s "https://nvgt.dev/ci/devlibs_update.php"
     - name: build
+      # UPX packs the Windows stubs that every package job ships. It comes from UPX's own GitHub release (Chocolatey's
+      # community feed timed out on it for whole runs), and this step fails if the packed stubs are missing: SCons
+      # quietly builds without them when UPX is absent, which only showed as three failed package jobs.
       run: |
         pip3 install scons
-        choco install -y upx
+        $upx = "upx-5.2.1-win64"
+        Invoke-WebRequest "https://github.com/upx/upx/releases/download/v5.2.1/$upx.zip" -OutFile "$env:RUNNER_TEMP\upx.zip" -MaximumRetryCount 5 -RetryIntervalSec 15
+        if ((Get-FileHash "$env:RUNNER_TEMP\upx.zip" -Algorithm SHA256).Hash -ne "EABC6792A347D45E945BE7748423E7868FD01B0D2BCAA2F4B1031FD71FF69BDA") { throw "The UPX download does not have the expected SHA-256." }
+        Expand-Archive "$env:RUNNER_TEMP\upx.zip" -DestinationPath $env:RUNNER_TEMP -Force
+        $env:PATH = "$env:RUNNER_TEMP\$upx;$env:PATH"
         scons -s no_upx=0
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        foreach ($stub in "nvgt_windows_upx.bin", "nvgt_windows_nc_upx.bin") {
+          if (-not (Test-Path "release/stub/$stub")) { throw "release/stub/$stub was not built." }
+        }
     - uses: actions/upload-artifact@v7
       with:
         name: windows_release
