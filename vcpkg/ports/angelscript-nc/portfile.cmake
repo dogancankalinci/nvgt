@@ -21,6 +21,7 @@ vcpkg_from_github(
         fix-callfunc-by-value-checks.patch
         fix-thiscall1-functor-methods.patch
         fix-functor-behaviour-calls.patch
+        fix-app-float-args.patch
 )
 
 vcpkg_cmake_configure(

@@ -1,0 +1,68 @@
+diff --git a/sdk/angelscript/source/as_callfunc_arm.cpp b/sdk/angelscript/source/as_callfunc_arm.cpp
+index d8d48ee..ec85582 100644
+--- a/sdk/angelscript/source/as_callfunc_arm.cpp
++++ b/sdk/angelscript/source/as_callfunc_arm.cpp
+@@ -159,7 +159,11 @@ asQWORD CallSystemFunctionNative(asCContext *context, asCScriptFunction *descr,
+ #endif
+ 				{
+ #if defined(AS_ANDROID) || defined(AS_LINUX)
+-					if( (descr->parameterTypes[n].GetTypeInfo()->flags & asOBJ_APP_CLASS_ALIGN8) &&
++					// ALTERED: the C++ type of an 8 byte asOBJ_APP_FLOAT or asOBJ_APP_PRIMITIVE type is a double or a 64-bit
++					// integer, which AAPCS aligns to 8 bytes like a class with asOBJ_APP_CLASS_ALIGN8 (a flag only for classes)
++					if( ((descr->parameterTypes[n].GetTypeInfo()->flags & asOBJ_APP_CLASS_ALIGN8) ||
++						 ((descr->parameterTypes[n].GetTypeInfo()->flags & (asOBJ_APP_FLOAT | asOBJ_APP_PRIMITIVE)) &&
++						  descr->parameterTypes[n].GetSizeInMemoryBytes() == 8)) &&
+ 						((dpos & 1) == mask) )
+ 					{
+ 						// 64 bit value align
+diff --git a/sdk/angelscript/source/as_callfunc_arm64.cpp b/sdk/angelscript/source/as_callfunc_arm64.cpp
+index e5a0315..b42cfa0 100644
+--- a/sdk/angelscript/source/as_callfunc_arm64.cpp
++++ b/sdk/angelscript/source/as_callfunc_arm64.cpp
+@@ -212,6 +212,30 @@ asQWORD CallSystemFunctionNative(asCContext *context, asCScriptFunction *descr,
+ 			// address of a complex object only needs one register, not as many as the object's size.
+ 			// The memory of an object larger than 16 bytes is freed with the other arguments after the call
+ 			// (AS_LARGE_OBJS_PASSED_BY_REF), as the function may still be reading it.
++
++			// ALTERED: the C++ type of an asOBJ_APP_FLOAT type is a float or a double, passed in a floating point register
++			// or a stack slot like one, not in a general purpose register as the composite it was taken for
++			if( (parmTypeInfo->flags & asOBJ_APP_FLOAT) && (parmBytes == sizeof(float) || parmBytes == sizeof(double)) )
++			{
++				asQWORD value = 0;
++				memcpy(&value, *(void**)(args+argsPos), parmBytes);
++				if( numFloatRegArgs < FLOAT_ARG_REGISTERS )
++					floatRegArgs[numFloatRegArgs++] = value;
++				else
++				{
++#if defined(AS_IPHONE) || defined(AS_MAC)
++					PadAppleStack(stackArgs, numStackArgs, stackDispositionBytes, parmBytes);
++					memcpy(((asBYTE*)&stackArgs[numStackArgs]) + stackDispositionBytes, &value, parmBytes);
++					stackDispositionBytes += parmBytes;
++#else
++					stackArgs[numStackArgs++] = value;
++#endif
++				}
++				engine->CallFree(*(char**)(args+argsPos));
++				argsPos += AS_PTR_SIZE;
++				continue;
++			}
++
+ 			const bool isHFA = IsRegisterHFA(parmType);
+ 			if( (parmTypeInfo->flags & COMPLEX_MASK) || (parmQWords > 2 && !isHFA) )
+ 			{
+diff --git a/sdk/angelscript/source/as_callfunc_x64_msvc.cpp b/sdk/angelscript/source/as_callfunc_x64_msvc.cpp
+index ece235e..f4422e5 100644
+--- a/sdk/angelscript/source/as_callfunc_x64_msvc.cpp
++++ b/sdk/angelscript/source/as_callfunc_x64_msvc.cpp
+@@ -134,6 +134,11 @@ asQWORD CallSystemFunctionNative(asCContext *context, asCScriptFunction *descr,
+ 				// Copy the object's memory to the buffer
+ 				memcpy(&allArgBuffer[dpos], *(void**)(args+spos), dt.GetSizeInMemoryBytes());
+ 
++				// ALTERED: the C++ type of an asOBJ_APP_FLOAT type is a float or a double, which goes in an XMM register
++				// like any other among the first four arguments, not in the integer register the copy above is for
++				if( paramSize < 4 && (dt.GetTypeInfo()->flags & asOBJ_APP_FLOAT) )
++					floatArgBuffer[dpos] = allArgBuffer[dpos];
++
+ 				// Delete the original memory
+ 				engine->CallFree(*(char**)(args+spos));
+ 				spos += AS_PTR_SIZE;
