@@ -651,8 +651,8 @@ public:
 		ma_device *old_dev = ma_engine_get_device(&*engine);
 		bool old_open = old_dev && ma_device_get_state(old_dev) != ma_device_state_uninitialized;
 		if (!old_dev) return false;
-		// Nothing to change: the default asked for while following it, or a device asked for that is open as that device. A device open as the default follows the system's default, even while it is the device asked for by its index, so that one is opened anew as the device itself.
-		if (old_open && (device == -1? device_follows_default : !device_follows_default && ma_device_id_equal(&old_dev->playback.id, &requested_id))) return true;
+		// Nothing to change: the default asked for while following it, or a device asked for that is open as that device, and running if the engine is. A device open as the default follows the system's default, even while it is the device asked for by its index, so that one is opened anew as the device itself; and one the backend stopped, as after a reroute that failed, is opened anew too, which asking for it again is a script's way to recover.
+		if (old_open && (!started || ma_device_is_started(old_dev)) && (device == -1? device_follows_default : !device_follows_default && ma_device_id_equal(&old_dev->playback.id, &requested_id))) return true;
 		ma_engine_stop(&*engine);
 		// As the constructor opens the device, with the engine's own format, which stays the same whichever device it is on and is still known after a device couldn't be opened.
 		ma_device_config cfg = ma_device_config_init(ma_device_type_playback);
@@ -3045,7 +3045,8 @@ public:
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
-		if (capture_device && (device == -1? follows_default : !follows_default && ma_device_id_equal(&requested_id, &device_id))) return true; // Without a device open, as after one failed to, it is opened anew.
+		// Without a device open, as after one failed to, or with one the backend stopped while the microphone records, it is opened anew.
+		if (capture_device && (get_state() != ma_node_state_started || ma_device_is_started(&*capture_device)) && (device == -1? follows_default : !follows_default && ma_device_id_equal(&requested_id, &device_id))) return true;
 		const bool had_device = capture_device != nullptr, recording = get_state() == ma_node_state_started;
 		if (had_device) {
 			ma_device_stop(&*capture_device);
