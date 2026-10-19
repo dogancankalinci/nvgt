@@ -150,15 +150,70 @@ public class TTS {
 		return app != null && (app.flags & ApplicationInfo.FLAG_SYSTEM) != 0;
 	}
 
+	// The engine TextToSpeech uses when none is asked for, as TextToSpeech.getDefaultEngine() reports it, minus the bind
+	// that constructing a TextToSpeech for it would make: the user's default engine from the settings while it is
+	// installed, otherwise the highest ranked one, as the setting goes on naming an engine whose app was removed.
 	public static String getDefaultEnginePackage() {
 		Context context = SDL.getContext();
+		String defaultEngine = null;
 		try {
-			// Read the user's default TTS engine straight from settings instead of constructing a TextToSpeech (which would bind to it). This is the same value TextToSpeech.getDefaultEngine() reports, minus the bind.
-			String defaultEngine = Settings.Secure.getString(context.getContentResolver(), "tts_default_synth");
-			return defaultEngine != null ? defaultEngine : "";
-		} catch (Exception e) {
-			return "";
+			defaultEngine = Settings.Secure.getString(context.getContentResolver(), "tts_default_synth");
+		} catch (Exception e) {}
+		if (defaultEngine != null && !defaultEngine.isEmpty() && isEngineInstalled(defaultEngine)) return defaultEngine;
+		List<String> ranked = installedEngines(true);
+		return ranked.isEmpty()? "" : ranked.get(0);
+	}
+
+	// Engines the user installs, removes, disables or updates while the app runs. The package manager is asked again only
+	// after a package changed, so whether an engine is still installed costs nothing to check otherwise. An app being
+	// updated is removed and added again, and counts as installed meanwhile.
+	private static volatile int packageGeneration = 0; // Raised on the main thread only.
+	private static int listedGeneration = -1; // packageGeneration when the lists below were made. Guarded by the class.
+	private static List<String> installedPackages = new ArrayList<>(), rankedPackages = new ArrayList<>(); // Guarded by the class.
+	private static final Set<String> updatingPackages = new HashSet<>(); // Guarded by the class.
+	private static boolean packageWatchInstalled = false; // Guarded by the class.
+	private static synchronized void installPackageWatch() {
+		if (packageWatchInstalled) return;
+		Context context = SDL.getContext();
+		if (context == null || context.getApplicationContext() == null) return;
+		packageWatchInstalled = true;
+		BroadcastReceiver receiver = new BroadcastReceiver() {
+			@Override
+			public void onReceive(Context c, Intent intent) {
+				String pkg = intent.getData() != null? intent.getData().getSchemeSpecificPart() : null;
+				boolean updating = Intent.ACTION_PACKAGE_REMOVED.equals(intent.getAction()) && intent.getBooleanExtra(Intent.EXTRA_REPLACING, false);
+				synchronized (TTS.class) {
+					if (pkg != null && updating) updatingPackages.add(pkg);
+					else if (pkg != null) updatingPackages.remove(pkg);
+				}
+				packageGeneration++;
+			}
+		};
+		IntentFilter filter = new IntentFilter();
+		filter.addAction(Intent.ACTION_PACKAGE_ADDED);
+		filter.addAction(Intent.ACTION_PACKAGE_REMOVED);
+		filter.addAction(Intent.ACTION_PACKAGE_CHANGED);
+		filter.addAction(Intent.ACTION_PACKAGE_REPLACED);
+		filter.addDataScheme("package");
+		try {
+			// Only the system sends these, but on Android 13 and later a receiver must say it takes broadcasts from outside the app to get all of them.
+			if (Build.VERSION.SDK_INT >= 33) context.getApplicationContext().registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED);
+			else context.getApplicationContext().registerReceiver(receiver, filter);
+		} catch (Exception e) {}
+	}
+	// The installed engines in the package manager's order, or ranked as Android falls back through them.
+	private static synchronized List<String> installedEngines(boolean ranked) {
+		installPackageWatch();
+		int generation = packageGeneration;
+		if (generation != listedGeneration) {
+			installedPackages = getEnginePackages();
+			rankedPackages = getRankedEnginePackages();
+			listedGeneration = generation;
 		}
+		return ranked? rankedPackages : installedPackages;
+	}
+	private static synchronized boolean isEngineInstalled(String pkg) {
+		return installedEngines(false).contains(pkg) || updatingPackages.contains(pkg);
 	}
 
 	// Then, the instantiable object that interfaces directly with the Android TextToSpeech system.

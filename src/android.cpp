@@ -21,7 +21,6 @@
 #include <Poco/Format.h>
 #include <SDL3/SDL.h>
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <mutex>
 #include <stdexcept>
@@ -576,28 +575,13 @@ std::string android_get_default_tts_engine_package() {
 }
 
 static void register_android_tts_engine(const std::string& engine_pkg) { tts_engine_register(engine_pkg, [engine_pkg]() -> std::shared_ptr<tts_engine> { return std::make_shared<android_tts_engine>(engine_pkg); }); }
-// The user's preferred engine as it is set now, which they can change while the program runs. One installed since the engines were registered is registered first, and the ranking listed again with it.
+// The engine Android uses when none is asked for, as it is now: the user can choose another while the program runs, or remove the app of the one they had chosen. One installed since the engines were registered is registered first, and the ranking listed again with it.
 static std::string android_preferred_tts_engine() {
 	std::string pkg = android_get_default_tts_engine_package();
 	if (pkg.empty()) return pkg;
 	std::vector<std::string> registered = tts_get_engine_names();
 	if (std::find(registered.begin(), registered.end(), pkg) != registered.end()) return pkg;
-	// The setting can name an engine that was uninstalled, which is then looked for at most every 30 seconds rather than on every call.
-	static std::mutex missing_mutex;
-	static std::string missing_pkg;
-	static std::chrono::steady_clock::time_point missing_since;
-	auto now = std::chrono::steady_clock::now();
-	{
-		std::lock_guard<std::mutex> lock(missing_mutex);
-		if (pkg == missing_pkg && now - missing_since < std::chrono::seconds(30)) return pkg;
-	}
 	std::vector<std::string> installed = android_get_tts_engine_packages();
-	if (std::find(installed.begin(), installed.end(), pkg) == installed.end()) { // Not installed, so there is nothing to register; binding it fails as before.
-		std::lock_guard<std::mutex> lock(missing_mutex);
-		missing_pkg = pkg;
-		missing_since = now;
-		return pkg;
-	}
 	for (const auto& engine_pkg : installed) register_android_tts_engine(engine_pkg);
 	tts_set_engine_ranking(android_get_ranked_tts_engine_packages());
 	return pkg;
