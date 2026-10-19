@@ -126,6 +126,7 @@ public:
 					if (!obj) {
 						aCtx->SetException(format("Cannot create empty object for default assign of argument %u of async function call", i + 1).c_str());
 						engine->ReturnContext(ctx);
+						engine->ReturnContext(defCtx);
 						return false;
 					}
 					*(void**)ctx->GetAddressOfArg(i) = obj;
@@ -133,9 +134,12 @@ public:
 				void* default_ref = param_is_value_object? *(void**)ctx->GetAddressOfArg(i) : ctx->GetAddressOfArg(i);
 				if (std::string_view(param_default) == "void") success = ctx->SetArgObject(i, nullptr);
 				else success = ExecuteString(engine, format("return %s;", std::string(param_default)).c_str(), default_ref, param_typeid, func->GetModule(), defCtx);
-				if (success < 0) {
-					aCtx->SetException(format("Angelscript error %d while setting default argument %u in async call to %s", success, i + 1, std::string(func->GetDeclaration())).c_str());
+				// Not only a negative error: ExecuteString returns the result of the execution, and one ending in an exception (or an abort) gave no value, so the call went ahead with the argument left unset.
+				if (success != asEXECUTION_FINISHED) {
+					std::string why = success == asEXECUTION_EXCEPTION? ": " + std::string(defCtx->GetExceptionString()) : "";
+					aCtx->SetException(format("Angelscript error %d while setting default argument %u in async call to %s%s", success, i + 1, std::string(func->GetDeclaration()), why).c_str());
 					engine->ReturnContext(ctx);
+					engine->ReturnContext(defCtx);
 					return false;
 				}
 				continue;

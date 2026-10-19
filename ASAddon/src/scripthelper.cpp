@@ -179,7 +179,11 @@ int ExecuteString(asIScriptEngine *engine, const char *code, void *ref, int refT
 		r = execCtx->Execute();
 
 		// Unless the provided type was void retrieve it's value
-		if (ref != 0 && refTypeId != asTYPEID_VOID)
+		// ALTERED: only from an execution that finished. One ending in an exception or an abort has no return value,
+		// GetAddressOfReturnValue() returns null, and the value was copied from address 0 (an access violation, e.g. for
+		// an async<T> call whose default argument raised an exception, or the debugger's evaluation of an expression
+		// that raised one).
+		if (r == asEXECUTION_FINISHED && ref != 0 && refTypeId != asTYPEID_VOID)
 		{
 			if (refTypeId & asTYPEID_OBJHANDLE)
 			{
