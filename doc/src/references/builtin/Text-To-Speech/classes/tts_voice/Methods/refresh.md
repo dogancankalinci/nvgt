@@ -1,7 +1,9 @@
 # refresh
 Rebuilds the list of TTS voices this object knows about from the voices its engines report.
 
-Each engine lists the voices it has now, so voices installed or removed while the program runs appear or go, and the voice numbers can change. An engine that has never started isn't tried again, and an engine installed while the program runs is only used on Android, once the user makes it the preferred engine. An engine that has worked but couldn't be started for this object, while it restarted for instance, is tried again. When the voice the script chose is no longer listed, the object goes back to the platform's voice, and voice_set turns false.
+Each engine lists the voices it has now, so voices installed or removed while the program runs appear or go, and the voice numbers can change. An engine that has never started isn't tried again, and an engine installed while the program runs is only used on Android, once the user makes it the preferred engine. An engine that has worked but couldn't be started for this object, while it restarted for instance, is tried again.
+
+The object also makes its list again by itself, at its next use, when an engine reports that its installed voices may have changed: on Windows when the voices in the registry change, on Android when an app is installed, removed or updated, or the app's window has focus again after the user may have changed voices in an engine's settings, and on Apple platforms when Apple reports it, from iOS 17 and macOS 14 on, or before that when the app becomes active again. The voices of an Android engine whose app was removed leave the list then. When the voice the script chose is no longer listed, the object goes back to the platform's voice, and voice_set turns false.
 
 `bool tts_voice::refresh();`
 

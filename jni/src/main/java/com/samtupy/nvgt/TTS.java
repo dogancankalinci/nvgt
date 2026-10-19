@@ -215,6 +215,9 @@ public class TTS {
 	private static synchronized boolean isEngineInstalled(String pkg) {
 		return installedEngines(false).contains(pkg) || updatingPackages.contains(pkg);
 	}
+	// Changes when the voices of an engine may have changed: when a package was installed, removed or updated, or when a
+	// window of the app gained focus again, as voices are installed and removed in the engine's own settings.
+	public int getVoicesGeneration() { return packageGeneration + focusGeneration; }
 
 	// Then, the instantiable object that interfaces directly with the Android TextToSpeech system.
 	private volatile TextToSpeech tts; // volatile: written on the constructor (game) thread, read from JNI/finalizer threads.

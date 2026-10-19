@@ -585,6 +585,7 @@ engine_entry &tts_voice::get_engine_entry(const string &name) {
 		}
 	}
 	if (entry.engine) {
+		entry.voices_generation = entry.engine->voices_generation();
 		entry.init_rate = entry.engine->get_rate();
 		entry.init_pitch = entry.engine->get_pitch();
 		entry.init_volume = entry.engine->get_volume();
@@ -601,6 +602,7 @@ voice_info *tts_voice::get_voice_info(int voice_index) {
 }
 void tts_voice::ensure_default() {
 	if (voice_state != VOICES_NONE) {
+		follow_installed_voices();
 		follow_preferred_engine();
 		return;
 	}
@@ -641,7 +643,30 @@ void tts_voice::ensure_default() {
 }
 void tts_voice::ensure_enumerated() {
 	if (voice_state != VOICES_FULL) refresh();
-	else follow_preferred_engine();
+	else {
+		follow_installed_voices();
+		follow_preferred_engine();
+	}
+}
+// The user can install, remove and update voices and engines while the program runs. Engines that can tell report it through voices_generation(), and one whose app was removed reports itself unavailable, so the object then lists its voices again, as refresh() does: a removed voice leaves the list, one the script chose included, which then gives way to the platform's voice, and the voice numbers can change.
+void tts_voice::follow_installed_voices() {
+	if (voice_state == VOICES_NONE) return;
+	bool changed = false;
+	for (auto &[name, entry] : engines) {
+		if (!entry.engine) continue;
+		uint64_t generation = entry.engine->voices_generation();
+		if (generation == entry.voices_generation) continue;
+		entry.voices_generation = generation;
+		changed = true;
+	}
+	if (!changed) return;
+	if (voice_state == VOICES_FULL) {
+		refresh();
+		return;
+	}
+	for (auto &[name, entry] : engines) if (entry.engine) entry.engine->refresh_voices(); // ensure_default() reads the engines' own lists.
+	voice_state = VOICES_NONE;
+	ensure_default();
 }
 // The user can change the preferred engine while the program runs, as Android's preferred engine setting. Without a voice the script chose, the object then moves to that engine's default voice, as it would have started with it, once, so that an engine that can't speak is not tried again on every call.
 void tts_voice::follow_preferred_engine() {
@@ -1016,6 +1041,7 @@ bool tts_voice::refresh() {
 		engine_entry &entry = get_engine_entry(name);
 		tts_engine *engine = entry.engine.get();
 		if (!engine || !engine->is_available()) continue;
+		entry.voices_generation = engine->voices_generation();
 		engine->refresh_voices();
 		engine_default_voice[name] = tts_engine_default_voice(entry);
 		int voice_count = engine->get_voice_count();

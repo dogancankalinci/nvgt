@@ -675,6 +675,7 @@ android_tts_engine::android_tts_engine(const std::string& enginePkg) : tts_engin
 	midResetVolume = method("resetVolume", "()Z");
 	midResetVoice = method("resetVoice", "()Z");
 	midRefreshVoices = method("refreshVoices", "()V");
+	midGetVoicesGeneration = method("getVoicesGeneration", "()I");
 	midSpeakTracked = method("speakTracked", "(Ljava/lang/String;Z)J");
 	midIsTrackedDone = method("isTrackedDone", "(J)Z");
 	LocalRef<jstring> jengine(env, engine_package.empty()? nullptr : to_jstring(env, engine_package));
@@ -748,6 +749,7 @@ bool android_tts_engine::reset_pitch() { return tts_call_bool(TTSObj, midResetPi
 bool android_tts_engine::reset_volume() { return tts_call_bool(TTSObj, midResetVolume); }
 bool android_tts_engine::reset_voice() { return tts_call_bool(TTSObj, midResetVoice); }
 void android_tts_engine::refresh_voices() { tts_call_void(TTSObj, midRefreshVoices); }
+uint64_t android_tts_engine::voices_generation() { return (uint32_t)tts_call_int(TTSObj, 0, midGetVoicesGeneration); }
 
 bool android_tts_engine::get_rate_range(float& minimum, float& midpoint, float& maximum) { minimum = 0.1; midpoint = 1; maximum = 6; return true; }
 bool android_tts_engine::get_pitch_range(float& minimum, float& midpoint, float& maximum) { minimum = 0.25; midpoint = 1; maximum = 4; return true; }

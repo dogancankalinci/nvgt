@@ -25,6 +25,7 @@
 #include <cmath>
 #include <thread>
 #include <memory>
+#include <mutex>
 #include <vector>
 #include <string>
 #include <sys/sysctl.h>
@@ -382,6 +383,25 @@ bool AVTTSVoice::reset_pitch() { if (!impl) return false; impl->resetPitch(); re
 bool AVTTSVoice::reset_volume() { if (!impl) return false; impl->resetVolume(); return true; }
 bool AVTTSVoice::reset_voice() { if (!impl) return false; impl->resetVoice(); return true; }
 void AVTTSVoice::refresh_voices() { if (impl) impl->refreshVoices(); }
+// Voices can be downloaded or deleted while the program runs. Apple reports it from iOS 17 and macOS 14 on; before that the user could only do it in the system's settings, after which the app becomes active again, so that counts as a change instead.
+static std::atomic<uint64_t> g_apple_voices_changes{0};
+static void apple_watch_voices() {
+	static std::once_flag once;
+	std::call_once(once, [] {
+		void (^changed)(NSNotification*) = ^(NSNotification* notification) { g_apple_voices_changes++; };
+		NSNotificationCenter* center = [NSNotificationCenter defaultCenter];
+		if (@available(iOS 17.0, macOS 14.0, *)) [center addObserverForName:AVSpeechSynthesisAvailableVoicesDidChangeNotification object:nil queue:nil usingBlock:changed];
+#if TARGET_OS_IOS
+		else [center addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:nil usingBlock:changed];
+#else
+		else [center addObserverForName:NSApplicationDidBecomeActiveNotification object:nil queue:nil usingBlock:changed];
+#endif
+	});
+}
+uint64_t AVTTSVoice::voices_generation() {
+	apple_watch_voices();
+	return g_apple_voices_changes;
+}
 std::string AVTTSVoice::getCurrentLanguage() const {
 	return impl->getCurrentLanguage();
 }

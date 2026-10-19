@@ -78,6 +78,7 @@ public:
 	virtual bool reset_volume() { return false; }
 	virtual bool reset_voice() { return false; }
 	virtual void refresh_voices() {} // Lists the installed voices again where the engine keeps a list of its own, as voices can be installed or removed while the program runs. Their indices can change.
+	virtual uint64_t voices_generation() { return 0; } // Changes when the engine's installed voices may have changed, where the engine can tell; see tts_voice::follow_installed_voices().
 };
 
 class tts_engine_impl : public tts_engine {
@@ -135,6 +136,7 @@ struct engine_entry {
 	std::string init_voice_name; // Of init_voice, which is found again by name, since indices move when voices are installed or removed while the program runs.
 	bool rate_changed = false, pitch_changed = false, volume_changed = false, voice_changed = false; // Whether a value the object set is on the engine in place of its default.
 	bool synced = false; // Whether the engine carries the object's current settings.
+	uint64_t voices_generation = 0; // The engine's voices_generation() when the object last listed its voices.
 };
 
 class tts_voice {
@@ -177,6 +179,7 @@ class tts_voice {
 	void ensure_default(); // Bind only the default/preferred engine and select its default voice (enough to speak); does not touch other engines.
 	void ensure_enumerated(); // Build the full flattened voice list across all engines (needed to list or select voices).
 	void follow_preferred_engine(); // Without a voice the script chose, moves to the default voice of the engine the platform prefers when the user changed that engine.
+	void follow_installed_voices(); // Lists the voices again when an engine reports that its installed voices may have changed.
 	engine_entry &get_engine_entry(const std::string &name); // This object's entry for an engine, binding the engine the first time.
 	bool sync_engine(engine_entry &entry, bool force); // Make the engine carry exactly this object's settings: the values the script set, and the platform defaults for everything else. Does nothing when the engine already carries them, unless forced. False when the engine refused the voice this object chose.
 	tts_engine *active_engine(bool force_sync = false, bool *voice_applied = nullptr); // Resolves this object's engine for the current voice, syncs our settings onto it, and returns it (or null on failure); voice_applied receives whether the engine took the chosen voice.

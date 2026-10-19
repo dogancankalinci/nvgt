@@ -34,6 +34,12 @@ class sapi5_engine : public tts_engine_impl {
 	bool work_done = false, stopping = false;
 	std::exception_ptr work_error; // What the call threw, thrown again on the calling thread.
 	std::mutex call_mutex; // One call at a time.
+	// SAPI lists voices from the registry, which installing or removing a voice changes, so changes there are watched: the event is set on one, and voices_generation() then counts it.
+	std::mutex voices_watch_mutex; // Guards the three below.
+	HANDLE voices_changed = nullptr;
+	HKEY voices_keys[2] = {};
+	uint64_t voices_changes = 0;
+	void watch_voices();
 	void run(const std::function<void()> &call);
 	void work_loop();
 	void stop_worker();
@@ -58,6 +64,7 @@ public:
 	virtual std::string get_voice_language(int index) override;
 	virtual bool set_voice(int voice) override;
 	virtual bool reset_voice() override;
+	virtual uint64_t voices_generation() override;
 	virtual int get_current_voice() override;
 };
 
