@@ -1,0 +1,146 @@
+diff --git a/sdk/angelscript/source/as_scriptengine.h b/sdk/angelscript/source/as_scriptengine.h
+--- a/sdk/angelscript/source/as_scriptengine.h
++++ b/sdk/angelscript/source/as_scriptengine.h
+@@ -248,6 +248,7 @@
+ 	void  CallGlobalFunction(void *param1, void *param2, asSSystemFunctionInterface *func, asCScriptFunction *desc) const;
+ 	bool  CallGlobalFunctionRetBool(void *param1, void *param2, asSSystemFunctionInterface *func, asCScriptFunction *desc) const;
+ 	int   CallScriptObjectMethod(void *obj, int func);
++	int   CallCopyBehaviour(void *dst, void *src, int func);
+ 
+ 	void ConstructScriptObjectCopy(void *mem, void *obj, asCObjectType *type);
+ 
+diff --git a/sdk/angelscript/source/as_scriptengine.cpp b/sdk/angelscript/source/as_scriptengine.cpp
+--- a/sdk/angelscript/source/as_scriptengine.cpp
++++ b/sdk/angelscript/source/as_scriptengine.cpp
+@@ -5904,6 +5904,105 @@
+ 	return asSUCCESS;
+ }
+ 
++// internal
++// ALTERED: calls a registered type's copy behaviour (opAssign) for AssignScriptObject and for the copying of a script
++// class's members. CallObjectMethod(obj, param) calls a method as if it took a pointer and returned nothing, which is only
++// right for an opAssign that takes its argument by reference and doesn't return an object by value, but any opAssign that
++// takes the type is made the copy behaviour. Registered as W &opAssign(W) it got a pointer where the calling convention
++// passes the object, and as W opAssign(const W &in) the hidden pointer for the returned object was missing, so it took
++// its arguments from the wrong places and left the destination unchanged or wrote through a wrong pointer. Those are
++// called by a context, which passes the arguments and receives the returned object the way the function is declared.
++int asCScriptEngine::CallCopyBehaviour(void *dst, void *src, int funcId)
++{
++	asCScriptFunction *func = scriptFunctions[funcId];
++	asASSERT( func && func->funcType == asFUNC_SYSTEM && func->parameterTypes.GetLength() == 1 );
++	if( func->parameterTypes[0].IsReference() && !func->DoesReturnOnStack() )
++	{
++		CallObjectMethod(dst, src, func->sysFuncIntf, func);
++		return asSUCCESS;
++	}
++
++	// An argument passed by value is a copy that the called function owns. It is made here rather than by SetArgObject,
++	// as CreateScriptObjectCopy may make it with this same opAssign.
++	void *arg = 0;
++	asCObjectType *argType = CastToObjectType(func->parameterTypes[0].GetTypeInfo());
++	if( !func->parameterTypes[0].IsReference() )
++	{
++		if( argType == 0 || !(argType->beh.copyconstruct || (argType->flags & asOBJ_POD)) )
++		{
++			asIScriptContext *active = asGetActiveContext();
++			if( active )
++				active->SetException("Cannot do value assignment");
++			return asNOT_SUPPORTED;
++		}
++		arg = CallAlloc(argType);
++		if( argType->beh.copyconstruct )
++			CallObjectMethod(arg, src, argType->beh.copyconstruct);
++		else
++			memcpy(arg, src, argType->size);
++	}
++
++	// Use a nested call in the active context if possible, else a context of its own, as CallScriptObjectMethod does
++	asIScriptContext *ctx = asGetActiveContext();
++	bool isNested = false;
++	if( ctx && ctx->GetEngine() == this && ctx->PushState() == asSUCCESS )
++		isNested = true;
++	else
++		ctx = RequestContext();
++
++	int r = ctx ? ctx->Prepare(func) : asERROR;
++	if( r >= 0 )
++		r = ctx->SetObject(dst);
++	if( r >= 0 )
++	{
++		if( arg )
++		{
++			// The context passes the copy to the function, which then owns it
++			*(void**)ctx->GetAddressOfArg(0) = arg;
++			arg = 0;
++		}
++		else
++			r = ctx->SetArgObject(0, src);
++	}
++	if( r >= 0 )
++	{
++		for(;;)
++		{
++			r = ctx->Execute();
++
++			// The assignment can't be left suspended
++			if( r != asEXECUTION_SUSPENDED )
++				break;
++		}
++	}
++
++	if( arg )
++	{
++		// The copy never reached the function
++		if( argType->beh.destruct )
++			CallObjectMethod(arg, argType->beh.destruct);
++		CallFree(arg);
++	}
++
++	if( ctx )
++	{
++		if( isNested )
++		{
++			ctx->PopState();
++
++			// An exception or an abort in the nested call is forwarded to the outer execution
++			if( r == asEXECUTION_EXCEPTION )
++				ctx->SetException(TXT_EXCEPTION_IN_NESTED_CALL);
++			else if( r == asEXECUTION_ABORTED )
++				ctx->Abort();
++		}
++		else
++			ReturnContext(ctx);
++	}
++
++	return r == asEXECUTION_FINISHED ? asSUCCESS : asERROR;
++}
++
+ // interface
+ void *asCScriptEngine::CreateUninitializedScriptObject(const asITypeInfo *type)
+ {
+@@ -6040,7 +6139,12 @@
+ 	{
+ 		asCScriptFunction* func = scriptFunctions[objType->beh.copy];
+ 		if (func->funcType == asFUNC_SYSTEM)
+-			CallObjectMethod(dstObj, srcObj, objType->beh.copy);
++		{
++			// ALTERED: see CallCopyBehaviour
++			int r = CallCopyBehaviour(dstObj, srcObj, objType->beh.copy);
++			if( r < 0 )
++				return r;
++		}
+ 		else
+ 		{
+ 			// Call the script class' opAssign method
+diff --git a/sdk/angelscript/source/as_scriptobject.cpp b/sdk/angelscript/source/as_scriptobject.cpp
+--- a/sdk/angelscript/source/as_scriptobject.cpp
++++ b/sdk/angelscript/source/as_scriptobject.cpp
+@@ -1111,7 +1111,7 @@
+ 	{
+ 		asCScriptFunction *func = engine->scriptFunctions[in_objType->beh.copy];
+ 		if( func->funcType == asFUNC_SYSTEM )
+-			engine->CallObjectMethod(dst, const_cast<void*>(src), funcIndex);
++			engine->CallCopyBehaviour(dst, const_cast<void*>(src), funcIndex); // ALTERED: see asCScriptEngine::CallCopyBehaviour
+ 		else
+ 		{
+ 			// Call the script class' opAssign method
