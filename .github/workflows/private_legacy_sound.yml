@@ -32,6 +32,7 @@ concurrency:
   cancel-in-progress: true
 permissions:
   contents: write
+  actions: read   # the dependency cache wait below lists the caches and the release workflow's runs
 jobs:
   ios:
     runs-on: macos-26
@@ -70,6 +71,31 @@ jobs:
         echo "macos=$(python3 vcpkg/deps_cache_key.py arm64-osx x64-osx)" >> "$GITHUB_OUTPUT"
         echo "ios=$(python3 vcpkg/deps_cache_key.py arm64-ios)" >> "$GITHUB_OUTPUT"
         mkdir -p vcpkg-binaries
+    # When the dependencies changed, the release workflow started by the same push builds them too, and this workflow
+    # saves no cache, so building them here as well only doubled the work (over half an hour for macOS alone after a
+    # runner image update). While a release run for this commit is queued or running, wait for it to save the macOS and
+    # iOS dependency caches and restore those below. Without such a run, or if it ends without saving them, they are
+    # built here as before.
+    - name: wait for the release workflow's dependency caches
+      shell: bash
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        MACOS_KEY: macosdev-${{ steps.depkey.outputs.macos }}
+        IOS_KEY: iosdev-${{ steps.depkey.outputs.ios }}
+      run: |
+        api() { curl -sfL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/$1"; }
+        has_cache() { api "actions/caches?key=$1&ref=refs/heads/main" | python3 -c 'import json, sys; sys.exit(0 if any(c["key"] == sys.argv[1] for c in json.load(sys.stdin)["actions_caches"]) else 1)' "$1"; }
+        release_running() { api "actions/workflows/release.yml/runs?head_sha=$GITHUB_SHA&per_page=20" | python3 -c 'import json, sys; sys.exit(0 if any(r["status"] not in ("completed", "cancelled") for r in json.load(sys.stdin)["workflow_runs"]) else 1)'; }
+        for i in $(seq 1 90); do
+          missing=""
+          has_cache "$MACOS_KEY" || missing="$missing $MACOS_KEY"
+          has_cache "$IOS_KEY" || missing="$missing $IOS_KEY"
+          if [ -z "$missing" ]; then echo "the dependency caches are ready"; exit 0; fi
+          if ! release_running; then echo "no release run in progress for $GITHUB_SHA, so these are built here:$missing"; exit 0; fi
+          echo "waiting for the release workflow to save:$missing"
+          sleep 60
+        done
+        echo "gave up waiting after 90 minutes, so these are built here:$missing"
     - uses: actions/cache/restore@v4
       with:
         path: vcpkg-binaries
