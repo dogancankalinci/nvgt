@@ -1309,7 +1309,9 @@ audio_ring_buffer* audio_ring_buffer::create(unsigned int channels, unsigned int
 class audio_decoder_impl : public audio_data_source_impl, public virtual audio_decoder {
 	unique_ptr<ma_decoder> decoder;
 	// The decoder's own length in frames once worked out, -1 before. Some formats count it by reading the whole file, as an MP3 without a header giving it does, from the start and back, which a read of the length while a sound or the graph read the decoder did at the same time, corrupting what was played or hanging the audio thread. So it is worked out only while nothing else reads the decoder, as a reader starts (prepare_length()) or when the script asks before then, and kept.
-	mutable std::atomic<long long> length_frames{-1};
+	mutable std::atomic<long long> length_frames{-1}; // -2 once known to be unknowable without consuming a stream that can't seek.
+	// Whether the stream decoded can seek, which a file can. Counting the length of one that can't, as a live stream, by reading it to its end consumed it, as it couldn't seek back; so its length is asked for only within what the stream_cursor kept, which a format that knows it from a header answers, and is otherwise unknown.
+	bool seekable = true;
 	datastream* datastream_ref; // If the user opens a datastream, we must maintain a reference to it encase the user drops their handle.
 	// Rewind window so a datastream that can't seek (a live socket) can still be probed and decoded; answers rewinds from memory instead of the stream until the window outgrows CAP or a real seek moves the stream.
 	struct stream_cursor {
@@ -1321,6 +1323,9 @@ class audio_decoder_impl : public audio_data_source_impl, public virtual audio_d
 		bool window_moved = false;  // a real seek happened, so it no longer starts at byte 0
 		std::streamoff base = 0;    // where the stream was when the decoder opened it, which the decoder's positions count from
 		bool mirrors_stream() const { return !window_full && !window_moved; }
+		// While the decoder's length is asked for on a stream that can't seek: only what the window holds is read or sought in, and anything past it is refused and noted, so a format that counts its length by reading to the end leaves the stream as it was rather than consuming it.
+		bool length_query = false;
+		bool length_query_refused = false;
 	};
 	// The cursor is handed to the decoder through a VFS rather than ma_decoder_init's raw read/seek pair, because that form leaves
 	// the decoder's onTell null (ma_decoder_init passes NULL where ma_decoder_init_vfs passes ma_decoder__on_tell_vfs). The custom
@@ -1344,6 +1349,11 @@ class audio_decoder_impl : public audio_data_source_impl, public virtual audio_d
 			out += n;
 			total += n;
 			sizeInBytes -= n;
+		}
+		if (sizeInBytes > 0 && sc->length_query) {
+			sc->length_query_refused = true;
+			if (pBytesRead) *pBytesRead = total;
+			return total ? MA_SUCCESS : MA_AT_END;
 		}
 		if (sizeInBytes > 0) {
 			if (!stream->good()) {
@@ -1380,6 +1390,10 @@ class audio_decoder_impl : public audio_data_source_impl, public virtual audio_d
 		if (sc->mirrors_stream() && target >= 0 && static_cast<size_t>(target) <= sc->window.size()) {
 			sc->pos = static_cast<size_t>(target); // inside the window, so no real seek is needed
 			return MA_SUCCESS;
+		}
+		if (sc->length_query) {
+			sc->length_query_refused = true;
+			return MA_NOT_IMPLEMENTED;
 		}
 		// Past the window while it mirrors the stream: the stream sits at the window's end, which the decoder can be behind after a rewind, as after probing formats, so a seek from the current position would be counted from the wrong place. The stream is sought from its start instead, or, when it can't seek, read forward up to the target, which the window keeps while it can.
 		if (sc->mirrors_stream() && target >= 0) {
@@ -1463,6 +1477,7 @@ public:
 	virtual bool open(const std::string& filename, const pack_interface* pack_file, unsigned int sample_rate, unsigned int channels) override {
 		std::lock_guard<std::recursive_mutex> guard(source_mutex);
 		if (decoder && !close()) return false;
+		seekable = true;
 		ma_decoder_config cfg = decoder_config_init(sample_rate, channels);
 		std::string triplet = g_sound_service->prepare_triplet(filename, pack_file && pack_file->get_is_active()? g_pack_protocol_slot : sound_service::fs_protocol_slot, pack_file && pack_file->get_is_active()? std::shared_ptr < const pack_interface > (pack_file->make_immutable()) : nullptr, 0, nullptr); // Without a pack, from disk, as sound.load() reads, rather than from the default protocol, which can be a pack.
 		if ((g_soundsystem_last_error = ma_decoder_init_vfs(g_sound_service->get_vfs(), triplet.c_str(), &cfg, &*decoder)) != MA_SUCCESS) decoder.reset();
@@ -1479,10 +1494,22 @@ public:
 		ma_decoder_config cfg = decoder_config_init(sample_rate, channels);
 		cursor = make_unique<stream_cursor>();
 		cursor->ds = ds;
-		ds->get_istr()->clear(); // A stream an earlier call left failed, as a seek it refused, would report no position.
-		std::streampos at = ds->get_istr()->tellg(); // A stream partly read already, as after the script read a header from it, is decoded from where it is.
+		std::istream* in = ds->get_istr();
+		in->clear(); // A stream an earlier call left failed, as a seek it refused, would report no position.
+		std::streampos at = in->tellg(); // A stream partly read already, as after the script read a header from it, is decoded from where it is.
 		if (at >= 0) cursor->base = at;
-		ds->get_istr()->clear();
+		in->clear();
+		seekable = false;
+		if (at >= 0) { // Tried by seeking to its end and back, before anything else reads it.
+			in->seekg(0, std::ios_base::end);
+			seekable = !in->fail();
+			in->clear();
+			if (seekable) {
+				in->seekg(at);
+				seekable = !in->fail();
+				in->clear();
+			}
+		}
 		ds_vfs = make_unique<ds_vfs_t>();
 		ds_vfs->cb.onOpen  = vfs_open;  ds_vfs->cb.onOpenW = nullptr;
 		ds_vfs->cb.onClose = vfs_close; ds_vfs->cb.onRead  = vfs_read;
@@ -1532,8 +1559,18 @@ public:
 		if (range_end != ~(ma_uint64)0) return audio_data_source_impl::get_length_frames(); // MiniAudio counts a range itself, without asking the decoder.
 		long long known = length_frames;
 		if (known >= 0) return known;
-		if (users || node_attached()) return 0; // Read elsewhere, and not worked out before: unknown rather than counted under that reader.
+		if (known == -2 || users || node_attached()) return 0; // Read elsewhere, and not worked out before: unknown rather than counted under that reader.
+		if (cursor && !seekable) {
+			cursor->length_query = true;
+			cursor->length_query_refused = false;
+		}
 		unsigned long long length = audio_data_source_impl::get_length_frames();
+		bool refused = cursor && cursor->length_query_refused;
+		if (cursor) cursor->length_query = false;
+		if (refused) {
+			length_frames = -2;
+			return 0;
+		}
 		if (g_soundsystem_last_error == MA_SUCCESS) length_frames = length;
 		return length;
 	}
