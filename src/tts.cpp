@@ -1003,6 +1003,7 @@ bool tts_voice::set_voice(int voice) {
 		current_engine_name = previous_engine_name;
 		return false;
 	}
+	voice_remembered = false; // A voice chosen now replaces one that left the list.
 	return true;
 }
 // The queue of speech played through the sound system belongs to this object rather than to an engine, so it is reported and stopped whichever voice is selected now, as is speech on engines this object spoke on before another voice was selected.
@@ -1058,7 +1059,20 @@ bool tts_voice::list_voices_again(bool relist_engines, bool retry_unbound) {
 	}
 	current_voice_index = -1;
 	// Only a voice the script chose is carried over. Without a choice the selection must keep following the platform default, which the block below picks.
-	if (had_voice && voice_set) current_voice_index = find_listed_voice(voices, old_voice.engine_name, old_voice.engine_voice_index, old_voice.name, old_voice.language);
+	if (had_voice && voice_set) {
+		current_voice_index = find_listed_voice(voices, old_voice.engine_name, old_voice.engine_voice_index, old_voice.name, old_voice.language);
+		// A chosen voice can leave the list for good or only for a moment, as while an installer replaces it, so it is remembered and chosen again once a list holds it again, unless the script chooses a voice or a language first.
+		if (current_voice_index < 0) {
+			remembered_voice = old_voice;
+			voice_remembered = true;
+		}
+	} else if (voice_remembered) {
+		current_voice_index = find_listed_voice(voices, remembered_voice.engine_name, remembered_voice.engine_voice_index, remembered_voice.name, remembered_voice.language);
+		if (current_voice_index >= 0) {
+			voice_set = true;
+			voice_remembered = false;
+		}
+	}
 	if (current_voice_index < 0) voice_set = false; // The chosen voice is gone, so fall back to the platform default rather than forcing whichever voice lands on its old index.
 	if (current_voice_index < 0 && !voices.empty()) {
 		// Pick an initial voice: prefer the configured/default engine, then the platform's own order, then the first non-fallback engine, then anything, as ensure_default() does. Only an engine with a voice in the list counts: one that could not be bound, or whose voices the language filter left out, would match nothing below and leave the selection on the first voice, the builtin fallback.
@@ -1132,8 +1146,10 @@ bool tts_voice::set_language(const string& language) {
 	string previous_followed_engine = followed_engine;
 	unordered_map<string, uint64_t> previous_generations;
 	for (auto &[name, entry] : engines) previous_generations[name] = entry.voices_generation;
+	bool previous_voice_remembered = voice_remembered;
 	auto restore = [&]() {
 		current_language = previous_language;
+		voice_remembered = previous_voice_remembered;
 		// The list put back is the one made before, so a preferred engine or a change of the voices the new list already took up is still to be followed.
 		followed_engine = previous_followed_engine;
 		for (auto &[name, generation] : previous_generations) {
@@ -1150,6 +1166,7 @@ bool tts_voice::set_language(const string& language) {
 	};
 	current_language = language;
 	list_voices_again(false, true);
+	voice_remembered = false; // A language chosen now replaces a voice that left the list, and the filter leaving out the chosen voice is no voice leaving.
 	if (voices.empty()) return restore();
 	// Asking for a language is asking for one of its voices, so the voice refresh() picked from the filtered list is pushed onto the engine like a set_voice() call, and when the engine refuses it, the other voices of the language are tried in turn. An empty language only lifts the filter and changes nothing about the selection.
 	if (!language.empty() && get_voice_info(current_voice_index)) {
