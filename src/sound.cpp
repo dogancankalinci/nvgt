@@ -1944,7 +1944,7 @@ public:
 	inline void release() override { audio_node_impl::release(); }
 	bool set_mixer(mixer *mix) override {
 		if (mix == parent_mixer)
-			return false;
+			return true; // Already where it was asked to go.
 		if (mix && mix->get_engine() != get_engine()) return false; // Another engine's mixer is in that engine's graph, which would play this one's sound.
 		// Not into itself, nor into a mixer that already goes into this one: that loop never reaches the engine, and its references to each other keep both alive.
 		for (mixer *above = mix; above; above = above->get_mixer()) {
