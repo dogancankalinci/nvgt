@@ -1,0 +1,18 @@
+diff --git a/sdk/angelscript/source/as_callfunc.cpp b/sdk/angelscript/source/as_callfunc.cpp
+index eef788f..392b5e3 100644
+--- a/sdk/angelscript/source/as_callfunc.cpp
++++ b/sdk/angelscript/source/as_callfunc.cpp
+@@ -975,7 +975,13 @@ int CallSystemFunction(int id, asCContext *context)
+ 
+ 		// Skip the object pointer on the stack
+ 		// TODO: runtime optimize: This check and increment should have been done in PrepareSystemFunction
++		// ALTERED: THISCALL_OBJLAST and THISCALL_OBJFIRST have the auxiliary object set and the script object on the
++		// stack too, so the argument offsets were off by one pointer and the wrong argument was released or freed
++#ifndef AS_NO_THISCALL_FUNCTOR_METHOD
++		if( callConv >= ICC_THISCALL && (sysFunc->auxiliary == 0 || callConv >= ICC_THISCALL_OBJLAST) )
++#else
+ 		if( callConv >= ICC_THISCALL && sysFunc->auxiliary == 0 )
++#endif
+ 			args += AS_PTR_SIZE;
+ 
+ 		asSSystemFunctionInterface::SClean *clean = sysFunc->cleanArgs.AddressOf();

@@ -14,6 +14,7 @@ vcpkg_from_github(
         fix-arm64-gcc-callfunc-unwind.patch
         fix-android-arm32-callfunc.patch
         fix-callfunc-subword-args.patch
+        fix-callfunc-functor-arg-cleanup.patch
 )
 
 vcpkg_cmake_configure(
