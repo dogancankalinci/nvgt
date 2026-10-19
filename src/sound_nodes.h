@@ -10,6 +10,7 @@
  * 3. This notice may not be removed or altered from any source distribution.
 */
 
+#include <cmath>
 #include <exception>
 #include <angelscript.h> // asAtomic
 #include <miniaudio_phonon.h>
@@ -118,7 +119,14 @@ public:
 		for (audio_node *n : previous) n->release();
 		return true;
 	}
-	bool set_output_bus_volume(unsigned int bus, float volume) { return node ? (g_soundsystem_last_error = ma_node_set_output_bus_volume(node, bus, volume)) == MA_SUCCESS : false; }
+	bool set_output_bus_volume(unsigned int bus, float volume) {
+		if (!node) return false;
+		if (!std::isfinite(volume)) { // A NaN or infinite volume made every sample the bus fed NaN.
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return false;
+		}
+		return (g_soundsystem_last_error = ma_node_set_output_bus_volume(node, bus, volume)) == MA_SUCCESS;
+	}
 	float get_output_bus_volume(unsigned int bus) { return node ? ma_node_get_output_bus_volume(node, bus) : 0; }
 	bool set_state(ma_node_state state) { return node ? (g_soundsystem_last_error = ma_node_set_state(node, state)) == MA_SUCCESS : false; }
 	ma_node_state get_state() { return node ? ma_node_get_state(node) : ma_node_state_stopped; }

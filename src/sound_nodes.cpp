@@ -1060,9 +1060,9 @@ public:
 	int get_current_attenuator_id() const override { return current_attenuator_id; }
 	int get_preferred_panner_id() const override { return preferred_panner_id; }
 	int get_preferred_attenuator_id() const override { return preferred_attenuator_id; }
-	void set_rolloff(float rolloff) override { spatialization_params.rolloff = clamp(rolloff, 0.0f, 100.0f); }
+	void set_rolloff(float rolloff) override { if (!std::isnan(rolloff)) spatialization_params.rolloff = clamp(rolloff, 0.0f, 100.0f); } // clamp() passes NaN through, which made every sample NaN.
 	float get_rolloff() const override { return spatialization_params.rolloff; }
-	void set_directional_attenuation_factor(float factor) override { spatialization_params.directional_attenuation_factor = clamp(factor, 0.0f, 100.0f); }
+	void set_directional_attenuation_factor(float factor) override { if (!std::isnan(factor)) spatialization_params.directional_attenuation_factor = clamp(factor, 0.0f, 100.0f); } // As set_rolloff().
 	float get_directional_attenuation_factor() const override { return spatialization_params.directional_attenuation_factor; }
 	bool get_parameters(audio_spatialization_parameters& params) override {
 		if (!parameters_valid) return false;

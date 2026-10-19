@@ -22,6 +22,8 @@
 #include <condition_variable>
 #include <mutex>
 #include <shared_mutex>
+#include <cmath>
+#include <initializer_list>
 #include <vector>
 #include <Poco/FileStream.h>
 #include <Poco/Format.h>
@@ -77,6 +79,16 @@ static bool g_soundsystem_starting = false;
 static std::atomic<bool> g_script_callbacks_stopped{false}; // See sound_stop_script_callbacks().
 static std::atomic<int> g_script_callbacks_running{0}; // Processing callbacks calling the script right now. // Under g_soundsystem_init_mutex: this thread is setting up, so a call re-entering from there is answered at once.
 thread_local ma_result g_soundsystem_last_error = MA_SUCCESS;
+// Whether every value is a finite number, refusing with MA_INVALID_ARGS otherwise: a NaN or infinite volume, gain, distance or the like on one sound made every sample its engine mixed NaN, and a filter after it kept them NaN for good.
+static bool finite_values(std::initializer_list<float> values) {
+	for (float value : values) {
+		if (!std::isfinite(value)) {
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return false;
+		}
+	}
+	return true;
+}
 static unordered_map<ma_data_source*, audio_data_source*> g_data_sources_map; // Only allow one audio_data_source wrapper per ma_data_source, should never be populated enough to be a performance hit.
 static std::mutex g_data_sources_map_mutex; // Every decoder open/close inserts into or erases from this map, from whichever script thread does it; an unlocked unordered_map rehashing under a concurrent erase corrupts the heap.
 static std::unique_ptr<sound_service> g_sound_service;
@@ -744,9 +756,9 @@ public:
 		started = false;
 		return true;
 	}
-	bool set_volume(float volume) override { return engine ? (g_soundsystem_last_error = ma_engine_set_volume(&*engine, volume)) == MA_SUCCESS : false; }
+	bool set_volume(float volume) override { return engine && finite_values({volume})? (g_soundsystem_last_error = ma_engine_set_volume(&*engine, volume)) == MA_SUCCESS : false; }
 	float get_volume() const override { return engine ? ma_engine_get_volume(&*engine) : 0; }
-	bool set_gain(float db) override { return engine ? (g_soundsystem_last_error = ma_engine_set_gain_db(&*engine, db)) == MA_SUCCESS : false; }
+	bool set_gain(float db) override { return engine && finite_values({db, ma_volume_db_to_linear(db)})? (g_soundsystem_last_error = ma_engine_set_gain_db(&*engine, db)) == MA_SUCCESS : false; }
 	float get_gain() const override { return engine ? ma_engine_get_gain_db(&*engine) : 0; }
 	unsigned int get_listener_count() const override { return engine ? ma_engine_get_listener_count(&*engine) : 0; }
 	int find_closest_listener(float x, float y, float z) const override { return engine ? ma_engine_find_closest_listener(&*engine, x, y, z) : -1; }
@@ -2185,8 +2197,9 @@ public:
 	audio_engine *get_engine() const override { return engine; }
 	bool stop() override { return snd ? (g_soundsystem_last_error = ma_sound_stop(&*snd)) == MA_SUCCESS : false; }
 	void set_volume(float volume) override {
-		if (snd)
-			ma_sound_set_volume(&*snd, get_engine()->get_flags() & audio_engine::PERCENTAGE_ATTRIBUTES? ma_volume_db_to_linear(volume) : volume);
+		float linear = get_engine()->get_flags() & audio_engine::PERCENTAGE_ATTRIBUTES? ma_volume_db_to_linear(volume) : volume;
+		if (snd && finite_values({volume, linear}))
+			ma_sound_set_volume(&*snd, linear);
 	}
 	float get_volume() const override { return snd ? (get_engine()->get_flags() & audio_engine::PERCENTAGE_ATTRIBUTES ? ma_volume_linear_to_db(ma_sound_get_volume(&*snd)) : ma_sound_get_volume(&*snd)) : NAN; }
 	void set_pan(float pan) override {
@@ -2204,7 +2217,7 @@ public:
 		return snd ? ma_sound_get_pan_mode(&*snd) : ma_pan_mode_balance;
 	}
 	void set_pitch(float pitch) override {
-		if (snd)
+		if (snd && finite_values({pitch}))
 			ma_sound_set_pitch(&*snd, get_engine()->get_flags() & audio_engine::PERCENTAGE_ATTRIBUTES ? pitch / 100.0f : pitch);
 	}
 	float get_pitch() const override {
@@ -2315,35 +2328,35 @@ public:
 	void set_rolloff(float rolloff) override { get_spatializer()->set_rolloff(rolloff); }
 	float get_rolloff() const override { return get_spatializer()->get_rolloff(); }
 	void set_min_gain(float gain) override {
-		if (snd)
+		if (snd && finite_values({gain}))
 			ma_sound_set_min_gain(&*snd, gain);
 	}
 	float get_min_gain() const override {
 		return snd ? ma_sound_get_min_gain(&*snd) : NAN;
 	}
 	void set_max_gain(float gain) override {
-		if (snd)
+		if (snd && finite_values({gain}))
 			ma_sound_set_max_gain(&*snd, gain);
 	}
 	float get_max_gain() const override {
 		return snd ? ma_sound_get_max_gain(&*snd) : NAN;
 	}
 	void set_min_distance(float distance) override {
-		if (snd)
+		if (snd && finite_values({distance}))
 			ma_sound_set_min_distance(&*snd, distance);
 	}
 	float get_min_distance() const override {
 		return snd ? ma_sound_get_min_distance(&*snd) : NAN;
 	}
 	void set_max_distance(float distance) override {
-		if (snd)
+		if (snd && finite_values({distance}))
 			ma_sound_set_max_distance(&*snd, distance);
 	}
 	float get_max_distance() const override {
 		return snd ? ma_sound_get_max_distance(&*snd) : NAN;
 	}
 	void set_cone(float inner_radians, float outer_radians, float outer_gain) override {
-		if (snd)
+		if (snd && finite_values({inner_radians, outer_radians, outer_gain}))
 			ma_sound_set_cone(&*snd, inner_radians, outer_radians, outer_gain);
 	}
 	void get_cone(float *inner_radians, float *outer_radians, float *outer_gain) const override {
@@ -2359,7 +2372,7 @@ public:
 		}
 	}
 	void set_doppler_factor(float factor) override {
-		if (snd)
+		if (snd && finite_values({factor}))
 			ma_sound_set_doppler_factor(&*snd, factor);
 	}
 	float get_doppler_factor() const override {
@@ -2379,6 +2392,7 @@ public:
 		if (!snd)
 			return;
 		fade_volumes_to_linear(start_volume, end_volume);
+		if (!finite_values({start_volume, end_volume})) return;
 		fade_from_stop = false;
 		ma_sound_set_fade_in_pcm_frames(&*snd, start_volume, end_volume, frames);
 	}
@@ -2386,6 +2400,7 @@ public:
 		if (!snd)
 			return;
 		fade_volumes_to_linear(start_volume, end_volume);
+		if (!finite_values({start_volume, end_volume})) return;
 		fade_from_stop = false;
 		ma_sound_set_fade_in_milliseconds(&*snd, start_volume, end_volume, milliseconds);
 	}
@@ -2980,12 +2995,14 @@ public:
 	void set_timed_fade_in_frames(float start_volume, float end_volume, unsigned long long frames, unsigned long long absolute_time_in_frames) override {
 		if (!snd) return;
 		fade_volumes_to_linear(start_volume, end_volume);
+		if (!finite_values({start_volume, end_volume})) return;
 		fade_from_stop = false;
 		ma_sound_set_fade_start_in_pcm_frames(&*snd, start_volume, end_volume, frames, absolute_time_in_frames);
 	}
 	void set_timed_fade_in_milliseconds(float start_volume, float end_volume, unsigned long long frames, unsigned long long absolute_time_in_frames) override {
 		if (!snd) return;
 		fade_volumes_to_linear(start_volume, end_volume);
+		if (!finite_values({start_volume, end_volume})) return;
 		fade_from_stop = false;
 		ma_sound_set_fade_start_in_milliseconds(&*snd, start_volume, end_volume, frames, absolute_time_in_frames);
 	}
@@ -3201,7 +3218,7 @@ public:
 		else if (state == ma_node_state_started) return ma_device_start(&*capture_device) == MA_SUCCESS;
 		return false;
 	}
-	void set_volume(float volume) override { if (capture_device) g_soundsystem_last_error = ma_device_set_master_volume_db(&*capture_device, volume); }
+	void set_volume(float volume) override { if (capture_device && finite_values({volume, ma_volume_db_to_linear(volume)})) g_soundsystem_last_error = ma_device_set_master_volume_db(&*capture_device, volume); }
 	float get_volume() const override { float result; return capture_device && (g_soundsystem_last_error = ma_device_get_master_volume_db(&*capture_device, &result)) == MA_SUCCESS? result : 0; }
 };
 microphone* microphone::create(int device, audio_engine* engine) {
