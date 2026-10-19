@@ -1229,7 +1229,8 @@ void ReturnContextCallback(asIScriptEngine *engine, asIScriptContext *ctx, void*
 	g_ctxPool.push_back(ctx);
 }
 void ExceptionHandlerCallback(asIScriptContext *ctx, void* obj) {
-	g_last_exception_callstack = get_call_stack();
+	// The call stack of the context raising the exception, not of asGetActiveContext(): a pooled context whose Prepare() fails (a function needing more stack than scripting.max_stack_size allows) raises a stack overflow before it runs, when no context may be active at all (preglobals(), or a destructor run when the module is discarded), and with another context active that context's call stack was recorded instead.
+	g_last_exception_callstack = get_call_stack_ctx(ctx);
 }
 
 asITypeInfo* get_array_type(const std::string &decl) {

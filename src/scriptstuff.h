@@ -25,4 +25,5 @@ extern asIScriptFunction* profiler_last_func;
 extern int profiler_current_line;
 extern const char* profiler_current_section;
 std::string get_call_stack();
+std::string get_call_stack_ctx(asIScriptContext* ctx);
 void RegisterScriptstuff(asIScriptEngine* engine);
