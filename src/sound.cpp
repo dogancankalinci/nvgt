@@ -1021,17 +1021,34 @@ public:
 		array->Resize(frames_read * get_channels());
 		return array;
 	}
+	// Skips by reading into a scratch buffer: MiniAudio's seek by a frame count reads too, but once it reaches the source's end it reports no frames skipped, though the source moved there.
+	unsigned long long skip_by_reading(unsigned long long frame_count) {
+		ma_format format = ma_format_unknown;
+		ma_uint32 channels = 0;
+		if ((g_soundsystem_last_error = ma_data_source_get_data_format(src->pDataSource, &format, &channels, nullptr, nullptr, 0)) != MA_SUCCESS) return 0;
+		ma_uint32 frame_size = ma_get_bytes_per_frame(format, channels);
+		if (!frame_size) return 0;
+		const ma_uint64 chunk_frames = 4096;
+		std::vector<char> scratch(chunk_frames * frame_size);
+		unsigned long long skipped = 0;
+		while (skipped < frame_count) {
+			ma_uint64 chunk = std::min<unsigned long long>(frame_count - skipped, chunk_frames), got = 0;
+			g_soundsystem_last_error = ma_data_source_read_pcm_frames(src->pDataSource, scratch.data(), chunk, &got);
+			skipped += got;
+			if (g_soundsystem_last_error != MA_SUCCESS || got < chunk) break; // At the end, MA_AT_END tells it.
+		}
+		return skipped;
+	}
 	unsigned long long skip_frames(unsigned long long frame_count) override {
-		ma_uint64 frames_skipped;
 		if (!src || in_use()) return 0;
-		if ((g_soundsystem_last_error = ma_data_source_seek_pcm_frames(src->pDataSource, frame_count, &frames_skipped)) != MA_SUCCESS) return 0;
-		return frames_skipped;
+		return skip_by_reading(frame_count);
 	}
 	float skip_milliseconds(float ms) override {
-		float skipped;
 		if (!src || in_use()) return 0;
-		if ((g_soundsystem_last_error = ma_data_source_seek_seconds(src->pDataSource, ms / 1000, &skipped)) != MA_SUCCESS) return 0;
-		return skipped * 1000;
+		ma_uint32 sample_rate = 0;
+		if ((g_soundsystem_last_error = ma_data_source_get_data_format(src->pDataSource, nullptr, nullptr, &sample_rate, nullptr, 0)) != MA_SUCCESS || !sample_rate) return 0;
+		if (ms <= 0) return 0;
+		return skip_by_reading((unsigned long long)(ms / 1000 * sample_rate)) * 1000.0f / sample_rate;
 	}
 	bool seek_frames(unsigned long long frame_index) override { return src && !in_use()? (g_soundsystem_last_error = ma_data_source_seek_to_pcm_frame(src->pDataSource, frame_index)) == MA_SUCCESS : false; }
 	bool seek_milliseconds(float ms) override { return src && !in_use()? (g_soundsystem_last_error = ma_data_source_seek_to_second(src->pDataSource, ms / 1000)) == MA_SUCCESS : false; }
