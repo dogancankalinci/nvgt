@@ -1074,7 +1074,7 @@ public:
 	}
 	bool seek_milliseconds(float ms) override {
 		if (!src || in_use()) return false;
-		if (!(ms >= 0)) { // Negative, or not a number: MiniAudio turns it into a frame index near 2^64.
+		if (!(ms >= 0 && ms <= FLT_MAX)) { // Negative, infinite or not a number: MiniAudio turns it into a frame index near 2^64, or one no integer holds.
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
