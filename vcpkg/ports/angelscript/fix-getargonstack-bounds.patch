@@ -1,0 +1,18 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -6706,8 +6706,13 @@
+ 	if (m_argsOnStackCacheFunc != func || m_argsOnStackCacheProgPos != asUINT(progPointer - &func->scriptData->byteCode[0]))
+ 		GetArgsOnStackCount(stackLevel);
+ 
++	// ALTERED: an argument number not below GetArgsOnStackCount (including any number at a stack level with no arguments
++	// on the stack) wrapped around below and walked the cache far past its end, reading memory it doesn't own until the
++	// process crashed
++	if (arg >= m_argsOnStackCache.GetLength() / 2)
++		return asINVALID_ARG;
++
+ 	// The arg types in the array are stored from top to bottom, so we'll go through them in the inverse order
+-	// TODO: Check that arg is not too high
+ 	arg = m_argsOnStackCache.GetLength() / 2 - arg - 1;
+ 	asUINT stackDelta = 0;
+ 	for (asUINT n = 0; n < arg; n++)

@@ -48,6 +48,7 @@ vcpkg_from_github(
         fix-stack-overflow-frame-position.patch
         fix-abort-after-exception-cleanup.patch
         fix-unstarted-function-args.patch
+        fix-getargonstack-bounds.patch
 )
 
 vcpkg_cmake_configure(
