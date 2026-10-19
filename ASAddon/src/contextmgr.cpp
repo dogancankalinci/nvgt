@@ -90,7 +90,10 @@ void ScriptCreateCoRoutine(asIScriptFunction *func, CScriptDictionary *arg)
 			asIScriptContext *coctx = ctxMgr->AddContextForCoRoutine(ctx, func);
 
 			// Pass the argument to the context
-			coctx->SetArgObject(0, arg);
+			// ALTERED: there is none when the function couldn't be prepared (e.g. it needs more stack than
+			// asEP_MAX_STACK_SIZE allows), and SetArgObject was called on a null pointer
+			if( coctx )
+				coctx->SetArgObject(0, arg);
 
 			// The context manager will call Execute() on the context when it is time
 		}
@@ -339,13 +342,24 @@ asIScriptContext *CContextMgr::AddContextForCoRoutine(asIScriptContext *currCtx,
 
 	// Find the current context thread info
 	// TODO: Start with the current thread so that we can find the group faster
+	bool added = false;
 	for( asUINT n = 0; n < m_threads.size(); n++ )
 	{
 		if( m_threads[n]->coRoutines[m_threads[n]->currentCoRoutine] == currCtx )
 		{
 			// Add the coRoutine to the list
 			m_threads[n]->coRoutines.push_back(coctx);
+			added = true;
+			break;
 		}
+	}
+
+	// ALTERED: the calling context isn't one the manager runs (any more, e.g. after AbortAll): the new context was never
+	// executed nor given back
+	if( !added )
+	{
+		engine->ReturnContext(coctx);
+		return 0;
 	}
 
 	return coctx;
