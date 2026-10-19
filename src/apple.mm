@@ -388,14 +388,16 @@ static std::atomic<uint64_t> g_apple_voices_changes{0};
 static void apple_watch_voices() {
 	static std::once_flag once;
 	std::call_once(once, [] {
-		void (^changed)(NSNotification*) = ^(NSNotification* notification) { g_apple_voices_changes++; };
-		NSNotificationCenter* center = [NSNotificationCenter defaultCenter];
-		if (@available(iOS 17.0, macOS 14.0, *)) [center addObserverForName:AVSpeechSynthesisAvailableVoicesDidChangeNotification object:nil queue:nil usingBlock:changed];
+		@autoreleasepool { // For the observer the center hands back, on a thread that may have no pool.
+			void (^changed)(NSNotification*) = ^(NSNotification* notification) { g_apple_voices_changes++; };
+			NSNotificationCenter* center = [NSNotificationCenter defaultCenter];
+			if (@available(iOS 17.0, macOS 14.0, *)) [center addObserverForName:AVSpeechSynthesisAvailableVoicesDidChangeNotification object:nil queue:nil usingBlock:changed];
 #if TARGET_OS_IOS
-		else [center addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:nil usingBlock:changed];
+			else [center addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:nil usingBlock:changed];
 #else
-		else [center addObserverForName:NSApplicationDidBecomeActiveNotification object:nil queue:nil usingBlock:changed];
+			else [center addObserverForName:NSApplicationDidBecomeActiveNotification object:nil queue:nil usingBlock:changed];
 #endif
+		}
 	});
 }
 uint64_t AVTTSVoice::voices_generation() {
