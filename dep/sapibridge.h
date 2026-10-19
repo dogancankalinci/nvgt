@@ -37,6 +37,7 @@ int sb_sapi_count_voices(sb_sapi* sapi);
 char* sb_sapi_get_voice_name(sb_sapi* sapi, int id);
 char* sb_sapi_get_voice_language(sb_sapi* sapi, int id);
 int sb_sapi_set_voice(sb_sapi* sapi, int id);
+int sb_sapi_reset_voice(sb_sapi* sapi);
 int sb_sapi_get_voice(sb_sapi* sapi);
 int sb_sapi_get_channels(sb_sapi* sapi);
 int sb_sapi_get_sample_rate(sb_sapi* sapi);

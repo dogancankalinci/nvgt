@@ -161,6 +161,14 @@ if(FAILED(hr)) return 0;
 sbz_sapi_cache_audio_attributes(sapi);
 return 1;
 }
+/* Goes back to the user's default voice, which SAPI then follows when the user changes it, as it does before a voice is set. Setting that voice by its token would keep it after the user changed the default. */
+int sb_sapi_reset_voice(sb_sapi* sapi)
+{
+if(!sbz_sapi_is_init(sapi)) return 0;
+if(FAILED(sapi->voice->lpVtbl->SetVoice(sapi->voice, NULL))) return 0;
+sbz_sapi_cache_audio_attributes(sapi);
+return 1;
+}
 int sb_sapi_get_voice(sb_sapi* sapi)
 {
 if(!sb_sapi_refresh_voices(sapi)) return -1;

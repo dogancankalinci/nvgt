@@ -162,6 +162,7 @@ bool sapi5_engine::set_voice(int voice) {
 	run([&] { result = voice >= 0 && voice < inst->voice_count && sb_sapi_set_voice(inst, voice); });
 	return result;
 }
+bool sapi5_engine::reset_voice() { bool result = false; run([&] { result = sb_sapi_reset_voice(inst); }); return result; }
 int sapi5_engine::get_current_voice() { int result = -1; run([&] { result = sb_sapi_get_voice(inst); }); return result; }
 
 // Under a lock, so a second thread waits for the first to turn native speech off rather than being told support is loaded before that. A Poco::AtomicFlag sets itself when tested, so testing one marked support loaded as soon as the first call began.

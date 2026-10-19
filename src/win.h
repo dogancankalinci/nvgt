@@ -56,6 +56,7 @@ public:
 	virtual std::string get_voice_name(int index) override;
 	virtual std::string get_voice_language(int index) override;
 	virtual bool set_voice(int voice) override;
+	virtual bool reset_voice() override;
 	virtual int get_current_voice() override;
 };
 
