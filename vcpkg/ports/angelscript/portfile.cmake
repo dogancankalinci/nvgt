@@ -28,6 +28,7 @@ vcpkg_from_github(
         fix-copy-behaviour-calls.patch
         fix-variadic-behaviours.patch
         fix-functor-object-offset.patch
+        fix-funcdef-autohandle-return.patch
 )
 
 vcpkg_cmake_configure(
