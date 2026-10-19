@@ -26,6 +26,7 @@ vcpkg_from_github(
         fix-refcast-script-methods.patch
         fix-global-behaviour-callconvs.patch
         fix-copy-behaviour-calls.patch
+        fix-variadic-behaviours.patch
 )
 
 vcpkg_cmake_configure(

@@ -1,0 +1,20 @@
+diff --git a/sdk/angelscript/source/as_scriptengine.cpp b/sdk/angelscript/source/as_scriptengine.cpp
+--- a/sdk/angelscript/source/as_scriptengine.cpp
++++ b/sdk/angelscript/source/as_scriptengine.cpp
+@@ -2189,6 +2189,16 @@
+ 	}
+ 	func.name.Format("$beh%d", behaviour);
+ 
++	// ALTERED: as for global functions and methods, a variadic behaviour is only supported with the generic calling
++	// convention. With a native one the variadic arguments and their count were passed as if they were the declared
++	// parameters, and only the declared parameters popped, so the script's stack pointer was left off.
++	if( func.IsVariadic() && callConv != asCALL_GENERIC )
++	{
++		if( listPattern )
++			listPattern->Destroy(this);
++		return ConfigError(asNOT_SUPPORTED, "RegisterObjectBehaviour", objectType->name.AddressOf(), decl);
++	}
++
+ 	if( behaviour != asBEHAVE_FACTORY && behaviour != asBEHAVE_LIST_FACTORY )
+ 	{
+ 		func.objectType = objectType;
