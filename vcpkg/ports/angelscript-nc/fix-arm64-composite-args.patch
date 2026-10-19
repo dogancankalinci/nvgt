@@ -1,0 +1,182 @@
+diff --git a/sdk/angelscript/source/as_callfunc_arm64.cpp b/sdk/angelscript/source/as_callfunc_arm64.cpp
+index ae4b754..e5a0315 100644
+--- a/sdk/angelscript/source/as_callfunc_arm64.cpp
++++ b/sdk/angelscript/source/as_callfunc_arm64.cpp
+@@ -123,21 +123,6 @@ static inline bool IsRegisterHFA(const asCDataType &type)
+ 	return type.GetSizeInMemoryBytes() <= maxAllowedSize;
+ }
+ 
+-//
+-// If it's possible to fit it in registers,
+-// if true is returned there is enough space to fit
+-//
+-static inline bool IsRegisterHFAParameter(const asCDataType &type, const asQWORD numFloatRegArgs)
+-{
+-	if( !IsRegisterHFA(type) )
+-		return false;
+-
+-	const bool doubles = (type.GetTypeInfo()->flags & asOBJ_APP_CLASS_ALIGN8) != 0;
+-	const int registersUsed = type.GetSizeInMemoryDWords() / (doubles ? sizeof(double) : sizeof(float));
+-
+-	return numFloatRegArgs + registersUsed <= FLOAT_ARG_REGISTERS;
+-}
+-
+ #if defined(AS_IPHONE) || defined(AS_MAC)
+ static inline void PadAppleStack(asQWORD* const argsArray, asQWORD& numArgs, asQWORD& stackDispositionBytes, asUINT argSize)
+ {
+@@ -214,59 +199,94 @@ asQWORD CallSystemFunctionNative(asCContext *context, asCScriptFunction *descr,
+ 			const asUINT parmDWords = parmType.GetSizeInMemoryDWords();
+ 			const asUINT parmQWords = (parmDWords >> 1) + (parmDWords & 1);
+ 
+-			const bool passedAsPointer = parmQWords <= 2;
+-			const bool fitsInRegisters = passedAsPointer ? (numGPRegArgs < GP_ARG_REGISTERS) : (numGPRegArgs + parmQWords <= GP_ARG_REGISTERS);
+-			asQWORD *const argsArray = fitsInRegisters ? gpRegArgs : stackArgs;
+-			asQWORD &numArgs = fitsInRegisters ? numGPRegArgs : numStackArgs;
+-
+-			if( (parmTypeInfo->flags & COMPLEX_MASK) )
++			const asUINT parmBytes = parmType.GetSizeInMemoryBytes();
++
++			// ALTERED: Objects are passed as AAPCS64 (and Apple's variant of it) pass composite types, which this did not
++			// do in four ways. An object larger than 16 bytes that is neither complex nor an HFA was copied into registers
++			// or onto the stack instead of being passed by reference, as a pointer to the copy. An HFA was put in the
++			// floating point registers even when too few were left (the count of registers it needs was computed as 0),
++			// overflowing floatRegArgs, and with more than 8 of them CallARM64 jumped into its own code. An HFA that does
++			// not fit, and an object of up to 16 bytes that needs more general purpose registers than are left, now go
++			// on the stack, and no later argument of the same kind takes a register any more (NSRN or NGRN = 8), where
++			// the object used to be split between the last register and an index past the end of gpRegArgs. And the
++			// address of a complex object only needs one register, not as many as the object's size.
++			// The memory of an object larger than 16 bytes is freed with the other arguments after the call
++			// (AS_LARGE_OBJS_PASSED_BY_REF), as the function may still be reading it.
++			const bool isHFA = IsRegisterHFA(parmType);
++			if( (parmTypeInfo->flags & COMPLEX_MASK) || (parmQWords > 2 && !isHFA) )
+ 			{
++				// Passed by reference
++				if( numGPRegArgs < GP_ARG_REGISTERS )
++					gpRegArgs[numGPRegArgs++] = *(asQWORD*)&args[argsPos];
++				else
++				{
+ #if defined(AS_IPHONE) || defined(AS_MAC)
+-				if(!fitsInRegisters) PadAppleStack(argsArray, numArgs, stackDispositionBytes, sizeof(asQWORD));
++					PadAppleStack(stackArgs, numStackArgs, stackDispositionBytes, sizeof(asQWORD));
+ #endif
+-				argsArray[numArgs++] = *(asQWORD*)&args[argsPos];
++					stackArgs[numStackArgs++] = *(asQWORD*)&args[argsPos];
++				}
+ 				argsPos += AS_PTR_SIZE;
++				continue;
+ 			}
+-			else if( IsRegisterHFAParameter(parmType, numFloatRegArgs) )
++
++			if( isHFA )
+ 			{
+-				if( (parmTypeInfo->flags & asOBJ_APP_CLASS_ALIGN8) != 0 )
++				const bool doubles = (parmTypeInfo->flags & asOBJ_APP_CLASS_ALIGN8) != 0;
++				const asUINT memberSize = doubles ? sizeof(double) : sizeof(float);
++				const asUINT members = parmBytes / memberSize;
++				if( numFloatRegArgs + members <= FLOAT_ARG_REGISTERS )
+ 				{
+-					const asQWORD *const contents = *(asQWORD**)&args[argsPos];
+-					for( asUINT i = 0; i < parmQWords; i++ )
+-						floatRegArgs[numFloatRegArgs++] = *(asQWORD*)&contents[i];
++					// One floating point register for each member
++					const asBYTE *const contents = *(asBYTE**)&args[argsPos];
++					for( asUINT i = 0; i < members; i++ )
++					{
++						asQWORD member = 0;
++						memcpy(&member, contents + i * memberSize, memberSize);
++						floatRegArgs[numFloatRegArgs++] = member;
++					}
+ 				}
+ 				else
+ 				{
+-					const asDWORD *const contents = *(asDWORD**)&args[argsPos];
+-					for( asUINT i = 0; i < parmDWords; i++ )
+-						floatRegArgs[numFloatRegArgs++] = *(asDWORD*)&contents[i];
++					numFloatRegArgs = FLOAT_ARG_REGISTERS;
++#if defined(AS_IPHONE) || defined(AS_MAC)
++					// Apple places an HFA on the stack aligned to its members, not to 8 bytes
++					PadAppleStack(stackArgs, numStackArgs, stackDispositionBytes, memberSize);
++					memcpy(((asBYTE*)&stackArgs[numStackArgs]) + stackDispositionBytes, *(void**)(args+argsPos), parmBytes);
++					stackDispositionBytes += parmBytes;
++#else
++					memcpy(&stackArgs[numStackArgs], *(void**)(args+argsPos), parmBytes);
++					numStackArgs += parmQWords;
++#endif
+ 				}
+-				engine->CallFree(*(char**)(args+argsPos));
+-				argsPos += AS_PTR_SIZE;
+ 			}
+ 			else
+ 			{
+-				// Copy the object's memory to the buffer
+-				asUINT parmBytes = parmType.GetSizeInMemoryBytes();
+-#if defined(AS_IPHONE) || defined(AS_MAC)
+-				if(!fitsInRegisters)
++				// Up to 16 bytes, copied into general purpose registers or onto the stack
++				if( numGPRegArgs + parmQWords <= GP_ARG_REGISTERS )
+ 				{
+-					PadAppleStack(argsArray, numArgs, stackDispositionBytes, parmBytes);
+-					memcpy( ((asBYTE*)&argsArray[numArgs]) + stackDispositionBytes, *(void**)(args+argsPos), parmBytes);
+-					stackDispositionBytes += parmBytes;
+-					// numArgs will be fixed on next call to PadAppleStack.
++					memcpy(&gpRegArgs[numGPRegArgs], *(void**)(args+argsPos), parmBytes);
++					numGPRegArgs += parmQWords;
+ 				}
+ 				else
+-#endif
+ 				{
+-					memcpy(&argsArray[numArgs], *(void**)(args+argsPos), parmBytes);
+-					numArgs += parmQWords;
++					numGPRegArgs = GP_ARG_REGISTERS;
++#if defined(AS_IPHONE) || defined(AS_MAC)
++					// Apple places a composite that isn't an HFA on the stack in 8 byte units like AAPCS64
++					PadAppleStack(stackArgs, numStackArgs, stackDispositionBytes, sizeof(asQWORD));
++					memset(&stackArgs[numStackArgs], 0, parmQWords * sizeof(asQWORD));
++					memcpy(&stackArgs[numStackArgs], *(void**)(args+argsPos), parmBytes);
++					numStackArgs += parmQWords;
++#else
++					memcpy(&stackArgs[numStackArgs], *(void**)(args+argsPos), parmBytes);
++					numStackArgs += parmQWords;
++#endif
+ 				}
++			}
+ 
+-				// Delete the original memory
++			// Delete the original memory, unless it is freed after the call
++			if( parmDWords < AS_LARGE_OBJ_MIN_SIZE )
+ 				engine->CallFree(*(char**)(args+argsPos));
+-				argsPos += AS_PTR_SIZE;
+-			}
++			argsPos += AS_PTR_SIZE;
+ 		}
+ 		else if( parmType.IsFloatType() && !parmType.IsReference() )
+ 		{
+@@ -356,7 +376,9 @@ asQWORD CallSystemFunctionNative(asCContext *context, asCScriptFunction *descr,
+ #if defined(AS_IPHONE) || defined(AS_MAC)
+ 			if(!fitsInRegisters)
+ 			{
+-				asUINT parmBytes = parmType.GetSizeInMemoryBytes();
++				// ALTERED: a reference is a pointer, not the size of the type it refers to (4 bytes of the pointer were
++				// copied for an int &, 24 bytes from the argument list for a string &)
++				asUINT parmBytes = (parmType.IsReference() || parmType.IsObjectHandle()) ? AS_PTR_SIZE * 4 : parmType.GetSizeInMemoryBytes();
+ 				PadAppleStack(argsArray, numArgs, stackDispositionBytes, parmBytes);
+ 				memcpy( ((asBYTE*)&argsArray[numArgs]) + stackDispositionBytes, (void*)(args+argsPos), parmBytes);
+ 				stackDispositionBytes += parmBytes;
+diff --git a/sdk/angelscript/source/as_config.h b/sdk/angelscript/source/as_config.h
+index 2ddfdd0..55be74c 100644
+--- a/sdk/angelscript/source/as_config.h
++++ b/sdk/angelscript/source/as_config.h
+@@ -1393,6 +1393,13 @@
+ 	#define AS_USE_DOUBLE_AS_FLOAT	// use 32bit floats instead of doubles
+ #endif
+ 
++// ALTERED: AAPCS64 passes a composite type larger than 16 bytes that isn't an HFA by reference, a pointer to a copy
++// that must live until the function returns, so the copy is freed with the other arguments after the call
++#if defined(AS_ARM64) && !defined(AS_LARGE_OBJS_PASSED_BY_REF)
++	#define AS_LARGE_OBJS_PASSED_BY_REF
++	#define AS_LARGE_OBJ_MIN_SIZE 5
++#endif
++
+ // If there are no current support for native calling
+ // conventions, then compile with AS_MAX_PORTABILITY
+ #if (!defined(AS_X86) && !defined(AS_SH4) && !defined(AS_MIPS) && !defined(AS_PPC) && \
