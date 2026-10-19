@@ -1,0 +1,41 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -2121,6 +2121,15 @@
+ #endif
+ 	}
+ 
++	// ALTERED: where the stack pointer is before moving to other blocks. When the space can't be reserved, the stack pointer
++	// and the stack frame pointer are left here, where the arguments of the function to call are: once the loop below had
++	// moved to the next block (a function needing more stack than that block holds, with asEP_MAX_STACK_SIZE reached on
++	// the block after it, or a block that couldn't be allocated), they were left in that block, where the arguments are
++	// copied only after a successful reservation. The exception handler then cleaned up whatever it found there as the
++	// arguments (stale values from an earlier call) while the real ones leaked.
++	asDWORD *stackPointerBefore = m_regs.stackPointer;
++	asUINT   stackIndexBefore   = m_stackIndex;
++
+ 	// Check if there is enough space on the current stack block, otherwise move
+ 	// to the next one. New and larger blocks will be allocated as necessary
+ 	while( m_regs.stackPointer - (size + RESERVE_STACK) < m_stackBlocks[m_stackIndex] )
+@@ -2133,6 +2142,10 @@
+ 			{
+ 				m_isStackMemoryNotAllocated = true;
+ 
++				// ALTERED: back to where the arguments are, see above
++				m_regs.stackPointer = stackPointerBefore;
++				m_stackIndex        = stackIndexBefore;
++
+ 				// Set the stackFramePointer, even though the stackPointer wasn't updated
+ 				m_regs.stackFramePointer = m_regs.stackPointer;
+ 
+@@ -2158,6 +2171,10 @@
+ 				// ALTERED: the block wasn't added, so the index goes back to the block the stack pointer is still in
+ 				m_stackIndex--;
+ 
++				// ALTERED: and both go back to where the arguments are, see above
++				m_regs.stackPointer = stackPointerBefore;
++				m_stackIndex        = stackIndexBefore;
++
+ 				// Set the stackFramePointer, even though the stackPointer wasn't updated
+ 				m_regs.stackFramePointer = m_regs.stackPointer;
+ 

@@ -44,6 +44,7 @@ vcpkg_from_github(
         fix-copy-behaviour-handle-return.patch
         fix-template-constructor-failure.patch
         fix-factory-autohandle-return.patch
+        fix-stack-overflow-frame-position.patch
 )
 
 vcpkg_cmake_configure(
