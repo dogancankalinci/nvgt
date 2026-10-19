@@ -322,6 +322,15 @@ struct script_function_call_data {
 	int max_statement_count;
 	int current_statement_count;
 	bool exceeded; // The limit ended the call: aborted rather than suspended, as a nested call can't be left suspended (see execute_nested), and not passed on to the caller.
+	asIScriptContext* ctx; // The context running the call.
+	script_function_call_data* outer; // The call on this thread that this one was made in, whose statements this one's are too.
+};
+// The innermost script_function.call() running on this thread. AngelScript can't tell what line callback a context has, so a call made in another put back nvgt_line_callback when it returned, and the outer call's statement limit stopped counting.
+static thread_local script_function_call_data* g_script_function_call = nullptr;
+struct script_function_call_scope {
+	script_function_call_data& data;
+	script_function_call_scope(script_function_call_data& data) : data(data) { g_script_function_call = &data; }
+	~script_function_call_scope() { g_script_function_call = data.outer; }
 };
 void script_function_line_callback(asIScriptContext* ctx, script_function_call_data* data);
 CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictionary* args, CScriptArray* errors = NULL, int max_statement_count = 0) {
@@ -329,7 +338,7 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 	std::string callstack1 = "";
 	std::string callstack2 = "";
 	g_ScriptEngine->SetMessageCallback(asFUNCTION(script_message_callback), errors, asCALL_CDECL);
-	script_function_call_data call_data {max_statement_count, 0, false};
+	script_function_call_data call_data {max_statement_count, 0, false, nullptr, g_script_function_call};
 	asIScriptContext* ACtx = asGetActiveContext();
 	bool new_context = ACtx == NULL || ACtx->PushState() < 0;
 	asIScriptContext* ctx = (new_context ? g_ScriptEngine->RequestContext() : ACtx);
@@ -395,10 +404,16 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 		arg_index += 1;
 	}
 	call_data.current_statement_count = 0;
+	call_data.ctx = ctx;
 	ctx->SetLineCallback(asFUNCTION(script_function_line_callback), &call_data, asCALL_CDECL);
 	int xr;
-	xr = execute_nested(ctx);
-	ctx->SetLineCallback(asFUNCTION(nvgt_line_callback), NULL, asCALL_CDECL); // The one every context has (profiler_callback alone had the debugger stop at no breakpoint after a call).
+	{
+		script_function_call_scope scope(call_data);
+		xr = execute_nested(ctx);
+	}
+	// The one the context had: the statement counter of the call this one was made in, if any is running on this context, else the one every context has (profiler_callback alone had the debugger stop at no breakpoint after a call).
+	if (call_data.outer && call_data.outer->ctx == ctx) ctx->SetLineCallback(asFUNCTION(script_function_line_callback), call_data.outer, asCALL_CDECL);
+	else ctx->SetLineCallback(asFUNCTION(nvgt_line_callback), NULL, asCALL_CDECL);
 	if (xr != asEXECUTION_FINISHED) {
 		if (xr == asEXECUTION_EXCEPTION) {
 			char msg[4096];
@@ -511,13 +526,18 @@ std::string script_function_get_script_property(asIScriptFunction* func) {
 }
 void script_function_line_callback(asIScriptContext* ctx, script_function_call_data* data) {
 	nvgt_line_callback(ctx, NULL);
-	if (data->max_statement_count < 1) return;
-	data->current_statement_count += 1;
-	if (data->current_statement_count > data->max_statement_count) {
-		data->exceeded = true;
-		ctx->Abort();
+	// AngelScript calls the line callback once more as an execution ends (aborted, suspended, finished), which is no statement. Counted as one, at the limit it marked the call as exceeded when exit() had ended it, and script_function_call took exit()'s abort for its own and dropped it: the script went on, and as the context manager had already let go of its context, a later exit() did nothing. And with the call just finished, its Abort() stayed pending on the script's context and ended the script at its next sleep() or yield().
+	if (ctx->GetState() != asEXECUTION_ACTIVE) return;
+	// A statement of this call is one of every call it was made in too, so their limits are counted here as well. A limit exceeded by an outer call aborts this one, which passes the abort on to that call (see pop_nested_state), or, in a context of its own, has it end at that call's next statement.
+	for (script_function_call_data* d = data; d; d = d->outer) {
+		if (d->max_statement_count < 1) continue;
+		d->current_statement_count += 1;
+		if (d->current_statement_count > d->max_statement_count) {
+			d->exceeded = true;
+			ctx->Abort();
+			return;
+		}
 	}
-	return;
 }
 class script_module_bytecode_stream : public asIBinaryStream {
 	std::string data;
