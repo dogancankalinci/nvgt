@@ -1,0 +1,67 @@
+diff --git a/sdk/angelscript/source/as_callfunc_arm64_gcc.S b/sdk/angelscript/source/as_callfunc_arm64_gcc.S
+--- a/sdk/angelscript/source/as_callfunc_arm64_gcc.S
++++ b/sdk/angelscript/source/as_callfunc_arm64_gcc.S
+@@ -32,6 +32,12 @@
+ // Assembly routines for the ARM64/AArch64 call convention used for Linux
+ // Written by Max Waine in July 2020, based on as_callfunc_arm_msvc.asm,
+ // with assistance & guidance provided by Sir Kane
++//
++// ALTERED: the unwind information recorded x20 as saved 16 bytes above the frame address instead of below it, and kept
++// the frame address relative to sp although CallARM64 lowers sp by the size of the stack arguments before the call, so a
++// C++ exception thrown by the called function restored a wrong x20, and with stack arguments could not unwind at all.
++// CallARM64 now takes the frame address from fp, and copies the stack arguments through x12 below the already lowered
++// sp instead of moving sp up over them, where a signal handler running on the thread could overwrite them.
+ 
+ // Compile with GCC/GAS
+ 
+@@ -103,10 +109,11 @@
+     stp     fp, lr, [sp,#-0x20]!
+     str     x20, [sp,#0x10]
+     .cfi_def_cfa_offset 0x20
+-    .cfi_offset 20,  0x10
++    .cfi_offset 20, -0x10
+     .cfi_offset fp, -0x20
+     .cfi_offset lr, -0x18
+     mov     fp, sp
++    .cfi_def_cfa_register fp
+ 
+     mov     x20, #0
+ 
+@@ -119,9 +126,10 @@
+     // Multiply count by 8
+     lsl x10, x5, #3
+     sub sp, sp, x20
++    mov x12, sp
+ stackArgsLoopStart:
+     ldp     x9,x11, [x4],#16
+-    stp     x9,x11, [sp],#16
++    stp     x9,x11, [x12],#16
+     subs    x10, x10, #16
+     bgt     stackArgsLoopStart
+ stackArgsLoopEnd:
+@@ -158,7 +166,6 @@
+ populateGPRegisterArgsEnd:
+ 
+     // Actually call function
+-    sub     sp, sp, x20
+     blr     x15
+     add     sp, sp, x20
+ 
+@@ -168,7 +175,7 @@
+     .cfi_restore lr
+ 	.cfi_restore fp
+     .cfi_restore 20
+-	.cfi_def_cfa_offset 0
++	.cfi_def_cfa sp, 0
+     ret
+     .cfi_endproc
+ 
+@@ -178,7 +185,7 @@
+     stp     fp, lr, [sp,#-0x20]!
+     str     x20, [sp,#0x10]
+     .cfi_def_cfa_offset 0x20
+-    .cfi_offset 20,  0x10
++    .cfi_offset 20, -0x10
+     .cfi_offset fp, -0x20
+     .cfi_offset lr, -0x18
+     mov     fp, sp
