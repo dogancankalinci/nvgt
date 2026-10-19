@@ -115,6 +115,7 @@ void map_area::release() {
 bool map_area::is_unfiltered(asIScriptFunction* filter_callback) {
 	if (filter_callback == NULL) return true;
 	asIScriptContext* ACtx = asGetActiveContext();
+	if (script_callbacks_stopped(ACtx)) return true; // exit() was called since the script called the coordinate_map function, by the filter for an earlier area or by another thread: no more filter calls; the result is never used.
 	bool new_context = ACtx == NULL || ACtx->PushState() < 0;
 	asIScriptContext* ctx = NULL;
 	if (new_context) {

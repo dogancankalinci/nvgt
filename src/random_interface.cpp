@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "random.h"
+#include "scriptstuff.h"
 
 // Wrapper class to make script objects compatible with random_interface
 class script_random_wrapper : public random_interface {
@@ -528,10 +529,12 @@ void random_script_array_shuffle(CScriptArray* array, asIScriptObject* scriptRng
 	asIScriptEngine* engine = scriptRng->GetEngine();
 	asIScriptContext* ctx = engine->CreateContext();
 	asIScriptFunction* rangeFunc = scriptRng->GetObjectType()->GetMethodByDecl("int range(int, int)");
+	asIScriptContext* ACtx = asGetActiveContext();
 	if (rangeFunc && ctx) {
 		// Use temporary slot for swapping
 		array->Resize(array->GetSize() + 1);
 		for (uint32 i = array->GetSize() - 2; i > 0; i--) {
+			if (script_callbacks_stopped(ACtx)) break; // exit() was called since the shuffle began (in the generator's range(), whose context of its own exit() doesn't abort, or by another thread): no more calls.
 			ctx->Prepare(rangeFunc);
 			ctx->SetObject(scriptRng);
 			ctx->SetArgDWord(0, 0);

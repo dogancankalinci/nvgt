@@ -616,6 +616,7 @@ void system_tray_menu_item::set_callback(asIScriptFunction* func) {
 void system_tray_menu_item::invoke_callback() {
 	if (!_callback || !_entry) return;
 	asIScriptContext* ACtx = asGetActiveContext();
+	if (script_callbacks_stopped(ACtx)) return; // exit() was called since the script called the function handling this tray event.
 	bool new_context = ACtx == nullptr || ACtx->PushState() < 0;
 	asIScriptContext* ctx = new_context ? g_ScriptEngine->RequestContext() : ACtx;
 	if (!ctx) return;

@@ -151,6 +151,11 @@ float pathfinder::get_difficulty(int x, int y, int z, int parent_x, int parent_y
 	if (abort)
 		return FLT_MAX;
 	asIScriptContext* ACtx = asGetActiveContext();
+	// exit() was called since the script called find(), by an earlier callback (the abort it passes on to the script only takes effect once find() returns) or by another thread: the search is cancelled, as cancel() does, rather than run the callback for the nodes left.
+	if (script_callbacks_stopped(ACtx)) {
+		cancel();
+		return FLT_MAX;
+	}
 	bool new_context = ACtx == NULL || ACtx->PushState() < 0;
 	asIScriptContext* ctx = (new_context ? g_ScriptEngine->RequestContext() : ACtx);
 	if (!ctx)

@@ -106,6 +106,7 @@ static void check_not_in_physics_callback(const char* what) {
 void simple_void_callback(asIScriptFunction* callback, const void* data) {
 	physics_callback_scope in_callback;
 	asIScriptContext* ACtx = asGetActiveContext();
+	if (script_callbacks_stopped(ACtx)) return; // exit() was called since the script called into the physics world, by the callback for an earlier contact or by another thread: no more callbacks.
 	bool new_context = ACtx == NULL || ACtx->PushState() < 0;
 	asIScriptContext* ctx = (new_context ? g_ScriptEngine->RequestContext() : ACtx);
 	if (!ctx) return;
@@ -130,6 +131,7 @@ public:
 	raycast_callback(asIScriptFunction* callback) : callback(callback) {}
 	decimal notifyRaycastHit(const RaycastInfo& info) override {
 		asIScriptContext* ACtx = asGetActiveContext();
+		if (script_callbacks_stopped(ACtx)) return 0; // exit() was called since the raycast began: 0 ends it.
 		bool new_context = ACtx == NULL || ACtx->PushState() < 0;
 		asIScriptContext* ctx = (new_context ? g_ScriptEngine->RequestContext() : ACtx);
 		if (!ctx) return 0;

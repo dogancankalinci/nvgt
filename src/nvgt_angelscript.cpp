@@ -378,11 +378,20 @@ void TranslateException(asIScriptContext *ctx, void* /*userParam*/) {
 	}
 }
 static std::atomic<bool> g_exit_called{false}; // exit() was called, whose code ExecuteScript() then returns whenever it was.
+// How many times exit() was called. A context the pool hands out after it remembers the count (as user data), so a registered function can tell whether exit() was called since the context calling it began: see script_callbacks_stopped().
+static std::atomic<asPWORD> g_exit_count{0};
+static const asPWORD EXIT_COUNT_USER_DATA = 2001; // Not in the range the add-ons reserve (1000-1999).
 void Exit(int retcode = 0) {
 	g_shutting_down = true;
 	g_retcode = retcode;
 	g_exit_called = true;
+	g_exit_count++;
 	if (g_ctxMgr) g_ctxMgr->AbortAll(); // Gone once the script ended, while the destructors that discarding its module runs can still call exit().
+}
+// Whether a registered function that runs script callbacks one after another, called by ctx, must run no more of them: exit() was called since ctx began (by a callback, by a thread, or by the script), so ctx is ending. Passing the abort on (pop_nested_state) isn't enough to stop them, as the next nested call puts it aside until it returns, and a callback with a context of its own isn't aborted at all. A context taken from the pool after exit() was called, like the one on_exit() or a destructor runs in, runs its callbacks.
+bool script_callbacks_stopped(asIScriptContext* ctx) {
+	asPWORD exits = g_exit_count;
+	return exits && ctx && asPWORD(ctx->GetUserData(EXIT_COUNT_USER_DATA)) != exits;
 }
 asUINT GetTimeCallback() {
 	return ticks();
@@ -1223,6 +1232,10 @@ asIScriptContext* RequestContextCallback(asIScriptEngine *engine, void* /*param*
 		ctx->SetExceptionCallback(asFUNCTION(ExceptionHandlerCallback), NULL, asCALL_CDECL);
 		ctx->SetLineCallback(asFUNCTION(nvgt_line_callback), NULL, asCALL_CDECL);
 	}
+	if (ctx) {
+		asPWORD exits = g_exit_count;
+		if (exits) ctx->SetUserData((void*)exits, EXIT_COUNT_USER_DATA); // See script_callbacks_stopped().
+	}
 	return ctx;
 }
 void ReturnContextCallback(asIScriptEngine *engine, asIScriptContext *ctx, void* /*param*/) {
@@ -1232,6 +1245,7 @@ void ReturnContextCallback(asIScriptEngine *engine, asIScriptContext *ctx, void*
 		ctx->Unprepare();
 	}
 	ctx->SetUserData(nullptr, 1002); // The context manager's pointer (CONTEXT_MGR in contextmgr.cpp), which it sets each time it takes a context: kept, sleep() or yield() in a later user of the context, such as a destructor run after the manager is deleted, reached the deleted manager.
+	if (g_exit_count) ctx->SetUserData(nullptr, EXIT_COUNT_USER_DATA);
 	ScopedLock<Mutex> l(g_ctxPoolMutex);
 	g_ctxPool.push_back(ctx);
 }

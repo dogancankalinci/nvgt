@@ -29,4 +29,5 @@ std::string get_call_stack();
 std::string get_call_stack_ctx(asIScriptContext* ctx);
 void pop_nested_state(asIScriptContext* ctx);
 int execute_nested(asIScriptContext* ctx);
+bool script_callbacks_stopped(asIScriptContext* ctx); // nvgt_angelscript.cpp: exit() was called since ctx (the context calling a registered function) began, so that function must run no more script callbacks.
 void RegisterScriptstuff(asIScriptEngine* engine);

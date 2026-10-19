@@ -47,8 +47,13 @@ static bool g_time_cache_initialized = false;
 static asIScriptContext* callback_ctx = NULL;
 timer_queue_item::timer_queue_item(timer_queue *parent, const std::string &id, asIScriptFunction *callback, const std::string &callback_data, int timeout, bool repeating) : parent(parent), id(id), callback(callback), callback_data(callback_data), timeout(timeout), repeating(repeating), is_scheduled(true) {}
 void timer_queue_item::execute() {
-	is_scheduled = false;
 	asIScriptContext *ACtx = asGetActiveContext();
+	// exit() was called since the script called loop(), by a callback loop() ran (the abort it passes on to the script only takes effect once loop() returns) or by another thread: run no more callbacks. The timer stays due, for a later loop() such as one in on_exit().
+	if (script_callbacks_stopped(ACtx)) {
+		parent->stopped_timers.push_back(this);
+		return;
+	}
+	is_scheduled = false;
 	bool new_context = ACtx == NULL || ACtx->PushState() < 0;
 	asIScriptContext *ctx = (new_context ? g_ScriptEngine->RequestContext() : ACtx);
 	if (!ctx) {
@@ -224,6 +229,10 @@ bool timer_queue::loop(int max_timers, int max_catchup) {
 	if (!open_tick && t <= 0) return true;
 	open_tick = !(max_timers > 0 ? timers.advance(t, max_timers) : timers.advance(t));
 	if (!open_tick) last_looped += t;
+	for (timer_queue_item* item : stopped_timers) {
+		if (owns(item)) timers.schedule(item, 1);
+	}
+	stopped_timers.clear();
 	return !open_tick;
 }
 

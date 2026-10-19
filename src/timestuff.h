@@ -19,6 +19,7 @@
 #include <unordered_map>
 #include <mutex>
 #include <unordered_set>
+#include <vector>
 #include <string>
 
 class CScriptArray;
@@ -51,6 +52,7 @@ class timer_queue {
 public:
 	std::string failures;
 	std::unordered_set<timer_queue_item*> executing_timers;
+	std::vector<timer_queue_item*> stopped_timers; // Due timers loop() didn't run because the script is ending (see timer_queue_item::execute), scheduled again once it has advanced the wheel.
 	bool owns(timer_queue_item* t) {
 		auto it = timer_objects.find(t->id);
 		return it != timer_objects.end() && it->second == t;
