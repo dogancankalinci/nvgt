@@ -2222,9 +2222,12 @@ public:
 	ma_pan_mode get_pan_mode() const override {
 		return snd ? ma_sound_get_pan_mode(&*snd) : ma_pan_mode_balance;
 	}
+	// The highest pitch, as a ratio, which a higher one is held at. There even a sound's lowest audible component, at 20 Hz, plays at 20 kHz, the top of hearing, so a higher pitch can't be heard to rise any more, and past half the engine's sample rate its components fold back down instead, sounding lower. MiniAudio's work grows with the pitch, and with no limit a pitch of a million kept the audio thread from returning at all.
+	static constexpr float max_pitch_ratio = 1000;
 	void set_pitch(float pitch) override {
-		if (snd && finite_values({pitch}))
-			ma_sound_set_pitch(&*snd, get_engine()->get_flags() & audio_engine::PERCENTAGE_ATTRIBUTES ? pitch / 100.0f : pitch);
+		if (!snd || !finite_values({pitch})) return;
+		float ratio = get_engine()->get_flags() & audio_engine::PERCENTAGE_ATTRIBUTES ? pitch / 100.0f : pitch;
+		ma_sound_set_pitch(&*snd, ratio < max_pitch_ratio? ratio : max_pitch_ratio);
 	}
 	float get_pitch() const override {
 		return snd ? (get_engine()->get_flags() & audio_engine::PERCENTAGE_ATTRIBUTES ? ma_sound_get_pitch(&*snd) * 100 : ma_sound_get_pitch(&*snd)) : NAN;
