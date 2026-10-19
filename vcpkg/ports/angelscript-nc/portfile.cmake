@@ -35,6 +35,7 @@ vcpkg_from_github(
         fix-value-template-constructor-stubs.patch
         fix-callptr-import-bound-to-system.patch
         fix-copy-behaviour-argument-leak.patch
+        fix-nested-call-pending-requests.patch
 )
 
 vcpkg_cmake_configure(

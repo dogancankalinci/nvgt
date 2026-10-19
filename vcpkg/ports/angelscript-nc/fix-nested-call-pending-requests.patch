@@ -1,0 +1,50 @@
+diff --git a/sdk/angelscript/source/as_context.h b/sdk/angelscript/source/as_context.h
+--- a/sdk/angelscript/source/as_context.h
++++ b/sdk/angelscript/source/as_context.h
+@@ -204,6 +204,9 @@
+ 	// The call stack holds program pointer, stack pointer, etc for caller functions
+ 	asCArray<size_t>    m_callStack;
+ 
++	// ALTERED: an abort (1) or suspend (2) requested for the execution a nested call interrupted, put back by PopState
++	asCArray<asBYTE>    m_nestedRequests;
++
+ 	// Dynamically growing local stack
+ 	asCArray<asDWORD *> m_stackBlocks;
+ 	asUINT              m_stackBlockSize;
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -1792,6 +1792,14 @@
+ 	// This cannot fail, since the memory was already allocated above
+ 	PushCallState();
+ 
++	// ALTERED: an Abort() or Suspend() requested for the current execution and not yet acted on was cleared by the
++	// Prepare() of the nested call and lost (a registered function that called Abort() and then made a nested call,
++	// such as creating a script object or assigning one through a registered opAssign, returned to a script that kept
++	// running). It is kept here and put back by PopState, so the interrupted execution still acts on it.
++	m_nestedRequests.PushLast(asBYTE((m_doAbort ? 1 : 0) | (m_doSuspend ? 2 : 0)));
++	m_doAbort = false;
++	m_doSuspend = false;
++
+ 	// Push the system function too, which will serve both as a marker and
+ 	// informing which system function that created the nested call
+ 	m_callStack.SetLengthNoConstruct(m_callStack.GetLength() + CALLSTACK_FRAME_SIZE);
+@@ -1869,6 +1877,18 @@
+ 
+ 	m_status = asEXECUTION_ACTIVE;
+ 
++	// ALTERED: put back an abort or suspend requested before the nested call, see PushState
++	if( m_nestedRequests.GetLength() )
++	{
++		asBYTE requests = m_nestedRequests.PopLast();
++		if( requests & 1 )
++			m_doAbort = true;
++		if( requests & 2 )
++			m_doSuspend = true;
++		if( requests )
++			m_regs.doProcessSuspend = true;
++	}
++
+ 	return asSUCCESS;
+ }
+ 
