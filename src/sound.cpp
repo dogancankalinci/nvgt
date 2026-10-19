@@ -1071,9 +1071,10 @@ public:
 		if (!src || in_use()) return 0;
 		ma_uint32 sample_rate = 0;
 		if ((g_soundsystem_last_error = ma_data_source_get_data_format(src->pDataSource, nullptr, nullptr, &sample_rate, nullptr, 0)) != MA_SUCCESS || !sample_rate) return 0;
-		if (ms <= 0) return 0;
+		if (!(ms > 0 && ms <= FLT_MAX)) return 0; // Nothing to skip, or NaN or infinite, whose frame count no integer holds.
 		drop_pending_frames();
-		return skip_by_reading(frames_to_take((unsigned long long)(ms / 1000 * sample_rate))) * 1000.0f / sample_rate;
+		double frames = (double)ms / 1000 * sample_rate;
+		return skip_by_reading(frames_to_take(frames < 9e18? (unsigned long long)frames : 9000000000000000000ULL)) * 1000.0f / sample_rate;
 	}
 	bool seek_frames(unsigned long long frame_index) override {
 		if (!src || in_use()) return false;
@@ -1092,7 +1093,12 @@ public:
 		}
 		ma_uint32 sample_rate = 0;
 		if ((g_soundsystem_last_error = ma_data_source_get_data_format(src->pDataSource, nullptr, nullptr, &sample_rate, nullptr, 0)) != MA_SUCCESS || !sample_rate) return false;
-		return seek_frames((unsigned long long)(ms / 1000 * sample_rate)); // As MiniAudio's seek to a second counts it.
+		double frames = (double)ms / 1000 * sample_rate; // As MiniAudio's seek to a second counts it, in double so that a huge time can't overflow.
+		if (frames >= 9e18) {
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return false;
+		}
+		return seek_frames((unsigned long long)frames);
 	}
 	unsigned long long get_cursor_frames() const override {
 		ma_uint64 cursor;
