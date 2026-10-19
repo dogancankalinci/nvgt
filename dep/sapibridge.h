@@ -29,6 +29,7 @@ int sb_sapi_resume(sb_sapi* sapi);
 int sb_sapi_set_volume(sb_sapi* sapi, int volume);
 int sb_sapi_get_volume(sb_sapi* sapi);
 int sb_sapi_set_rate(sb_sapi* sapi, int rate);
+int sb_sapi_reset_rate(sb_sapi* sapi);
 int sb_sapi_get_rate(sb_sapi* sapi);
 int sb_sapi_set_pitch(sb_sapi* sapi, int pitch);
 int sb_sapi_get_pitch(sb_sapi* sapi);
@@ -86,6 +87,7 @@ ISpStream* output;
 sbz_sapi_voice* voices;
 int voice_count;
 int voice_chosen; /* A voice was set; until then, or after sb_sapi_reset_voice, SAPI speaks with the user's default voice. */
+int rate_chosen; /* A rate was set; until then, or after sb_sapi_reset_rate, the user's default rate is set before each speech. */
 int pitch;
 int audio_channels;
 int audio_bit_depth;
@@ -99,6 +101,8 @@ int sbz_sapi_refresh_voices(sb_sapi* sapi);
 int sbz_sapi_get_voice_category(sb_sapi* sapi, ISpObjectTokenCategory** category);
 int sbz_sapi_get_voice_enum(sb_sapi* sapi, IEnumSpObjectTokens** enum_tokens);
 int sbz_sapi_default_voice_index(sb_sapi* sapi);
+int sbz_sapi_default_rate(void);
+void sbz_sapi_follow_default_rate(sb_sapi* sapi);
 int sbz_sapi_populate_voices_from_tokens(sb_sapi* sapi, IEnumSpObjectTokens** enum_tokens, int count);
 char* sbz_sapi_voice_language(sb_sapi* sapi, ISpObjectToken* token, LANGID* langid);
 int sbz_sapi_speak_to_memory(sb_sapi* sapi, char* text, void** buffer, int* size);

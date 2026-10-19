@@ -47,6 +47,7 @@ public:
 	virtual float get_pitch() override;
 	virtual float get_volume() override;
 	virtual void set_rate(float rate) override;
+	virtual bool reset_rate() override;
 	virtual void set_pitch(float pitch) override;
 	virtual void set_volume(float volume) override;
 	virtual bool get_rate_range(float& minimum, float& midpoint, float& maximum) override;

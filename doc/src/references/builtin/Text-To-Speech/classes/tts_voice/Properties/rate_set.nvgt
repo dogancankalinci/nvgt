@@ -2,7 +2,7 @@
 	Whether the script set the rate of the voice, with set_rate or the rate property, rather than the voice following the platform's own setting.
 	bool tts_voice::rate_set;
 	## Remarks:
-		This property is read-only. Until the rate is set, the voice speaks at the rate it starts with: on Windows and Android the rate chosen in the system's speech settings, which Android follows when the user changes it; on Apple platforms the system's own, which the rate property reports as Apple's default rate, 0, as Apple doesn't let apps read the user's speech settings; with the builtin voice its own default. Speech Dispatcher on Linux speaks at the rate of its own configuration, and doesn't take a rate set here.
+		This property is read-only. Until the rate is set, the voice speaks at the rate it starts with: on Windows and Android the rate chosen in the system's speech settings, which the voice follows when the user changes it while the program runs; on Apple platforms the system's own, which the rate property reports as Apple's default rate, 0, as Apple doesn't let apps read the user's speech settings; with the builtin voice its own default. Speech Dispatcher on Linux speaks at the rate of its own configuration, and doesn't take a rate set here.
 */
 
 // Example:

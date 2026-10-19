@@ -33,6 +33,7 @@ if(!sbz_sapi_is_init(sapi)) return 0;
 if((!text)||(!*text)) return 0;
 if(interrupt) sb_sapi_stop(sapi);
 if(!sbz_sapi_output_to_device(sapi)) return 0;
+sbz_sapi_follow_default_rate(sapi);
 WCHAR* speak=sbz_char_to_wchar(text);
 if(!speak) return 0;
 HRESULT hr=sapi->voice->lpVtbl->Speak(sapi->voice, speak, SPF_ASYNC, NULL);
@@ -47,6 +48,7 @@ if((!text)||(!*text)) return 0;
 if(!buffer) return 0;
 if(!size) return 0;
 sb_sapi_stop(sapi);
+sbz_sapi_follow_default_rate(sapi);
 return sbz_sapi_speak_to_memory(sapi, text, buffer, size);
 }
 int sb_sapi_is_speaking(sb_sapi* sapi)
@@ -100,11 +102,40 @@ if(!sbz_sapi_is_init(sapi)) return 0;
 if((rate<-10)||(rate>10)) return 0;
 HRESULT hr=sapi->voice->lpVtbl->SetRate(sapi->voice, rate);
 if(FAILED(hr)) return 0;
+sapi->rate_chosen=1;
 return 1;
+}
+/* Goes back to the user's default rate, which is then followed as it changes (see sbz_sapi_follow_default_rate). */
+int sb_sapi_reset_rate(sb_sapi* sapi)
+{
+if(!sbz_sapi_is_init(sapi)) return 0;
+sapi->rate_chosen=0;
+sbz_sapi_follow_default_rate(sapi);
+return 1;
+}
+/* The user's default rate, from the Speech settings where SAPI reads it, or 0 when there is none. */
+int sbz_sapi_default_rate(void)
+{
+DWORD stored=0, size=sizeof(stored);
+if(RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Speech\\Voices", L"DefaultTTSRate", RRF_RT_REG_DWORD, NULL, &stored, &size)!=ERROR_SUCCESS) return 0;
+int rate=(int)stored; /* A negative rate is stored in two's complement. */
+if(rate<-10) rate=-10;
+if(rate>10) rate=10;
+return rate;
+}
+/* Without a chosen rate, sets the user's default rate as it is now. SAPI takes up a change to it on its own only while no rate was ever set, and reports it only after its next speech, so an engine put back to the default rate after a script set one would keep the rate it was given, which could already be an old one. */
+void sbz_sapi_follow_default_rate(sb_sapi* sapi)
+{
+if(sapi->rate_chosen) return;
+int rate=sbz_sapi_default_rate();
+long current=0;
+if(SUCCEEDED(sapi->voice->lpVtbl->GetRate(sapi->voice, &current))&&current==rate) return;
+sapi->voice->lpVtbl->SetRate(sapi->voice, rate);
 }
 int sb_sapi_get_rate(sb_sapi* sapi)
 {
 if(!sbz_sapi_is_init(sapi)) return 0;
+if(!sapi->rate_chosen) return sbz_sapi_default_rate(); /* What the next speech uses; GetRate reports a change to it only after that speech. */
 long rate=0;
 HRESULT hr=sapi->voice->lpVtbl->GetRate(sapi->voice, &rate);
 if(FAILED(hr)) return 0;
@@ -556,6 +587,7 @@ sbz_com_reset(&sapi->com);
 sbz_sapi_reset_voice_cache(sapi);
 sapi->voice = NULL;
 sapi->voice_chosen=0;
+sapi->rate_chosen=0;
 sapi->mem=NULL;
 sapi->output=NULL;
 sapi->pitch=0;

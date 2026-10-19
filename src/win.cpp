@@ -125,6 +125,7 @@ float sapi5_engine::get_pitch() { float result = 0; run([&] { result = sb_sapi_g
 float sapi5_engine::get_volume() { float result = 0; run([&] { result = sb_sapi_get_volume(inst); }); return result; }
 // SAPI takes whole steps, so the value is rounded to the nearest rather than cut toward zero.
 void sapi5_engine::set_rate(float rate) { run([&] { sb_sapi_set_rate(inst, (int)lrintf(rate)); }); }
+bool sapi5_engine::reset_rate() { bool result = false; run([&] { result = sb_sapi_reset_rate(inst); }); return result; }
 void sapi5_engine::set_pitch(float pitch) { run([&] { sb_sapi_set_pitch(inst, (int)lrintf(pitch)); }); }
 void sapi5_engine::set_volume(float volume) { run([&] { sb_sapi_set_volume(inst, (int)lrintf(volume)); }); }
 bool sapi5_engine::get_rate_range(float& minimum, float& midpoint, float& maximum) { minimum = -10; midpoint = 0; maximum = 10; return true; }
