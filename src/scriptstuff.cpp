@@ -339,6 +339,8 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 	std::string callstack2 = "";
 	g_ScriptEngine->SetMessageCallback(asFUNCTION(script_message_callback), errors, asCALL_CDECL);
 	script_function_call_data call_data {max_statement_count, 0, false, nullptr, g_script_function_call};
+	// The values passed to reference parameters, which the arguments point to, so they last until the call returns (8 bytes hold any primitive or a handle).
+	std::vector<asQWORD> ref_values(func->GetParamCount());
 	asIScriptContext* ACtx = asGetActiveContext();
 	bool new_context = ACtx == NULL || ACtx->PushState() < 0;
 	asIScriptContext* ctx = (new_context ? g_ScriptEngine->RequestContext() : ACtx);
@@ -369,6 +371,9 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 			failure_reason = "ERROR: Trying to pass too many arguments.";
 			goto failure;
 		}
+		// The argument of a reference parameter is the address of the value, the dictionary's own object or a copy in ref_values. The value was put there instead: the function took a number for an address (a crash, and with int64 &out a write through it), int &in and float &in were refused by SetArgDWord()/SetArgFloat() and the call failed, and a handle reference got the object's address where a handle's belongs.
+		bool by_ref;
+		by_ref = (arg_tmods & asTM_INOUTREF) != 0;
 		if ((arg_type_id & asTYPEID_MASK_OBJECT)) {
 			int value_type_id = k.GetTypeId();
 			const void* o = k.GetAddressOfValue();
@@ -376,25 +381,45 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 			asITypeInfo* value_type = g_ScriptEngine->GetTypeInfoById(value_type_id);
 			asITypeInfo* arg_type = g_ScriptEngine->GetTypeInfoById(arg_type_id);
 			bool compatible = value_type && arg_type && (value_type == arg_type || value_type->DerivesFrom(arg_type) || value_type->Implements(arg_type));
+			// A handle by reference that the function can assign (&out, &inout) is the dictionary's own handle, so only one of exactly the parameter's type, else the dictionary would hold a handle of another type than the one it records.
+			if (by_ref && (arg_type_id & asTYPEID_OBJHANDLE) && (arg_tmods & asTM_OUTREF) && (value_type != arg_type || !(value_type_id & asTYPEID_OBJHANDLE)))
+				compatible = false;
 			if (!compatible || (!obj && !(arg_type_id & asTYPEID_OBJHANDLE))) {
 				failure_reason = "ERROR: Type mismatch for parameter ";
 				failure_reason += std::to_string(arg_index);
 				goto failure;
 			}
-			ctx->SetArgObject(arg_index - 1, obj);
+			if (by_ref && (arg_type_id & asTYPEID_OBJHANDLE)) {
+				if (value_type_id & asTYPEID_OBJHANDLE) ctx->SetArgAddress(arg_index - 1, const_cast<void*>(o));
+				else {
+					*(void**)&ref_values[arg_index - 1] = obj;
+					ctx->SetArgAddress(arg_index - 1, &ref_values[arg_index - 1]);
+				}
+			} else ctx->SetArgObject(arg_index - 1, obj);
+		} else if (by_ref) {
+			void* value = &ref_values[arg_index - 1];
+			asINT64 ival;
+			double dval;
+			if (k.GetValue(value, arg_type_id)) ;
+			else if (arg_type_id == asTYPEID_INT32 && k.GetValue(ival)) *(int*)value = int(ival);
+			else if (arg_type_id == asTYPEID_FLOAT && k.GetValue(dval)) *(float*)value = float(dval);
+			else if (arg_type_id == asTYPEID_BOOL && k.GetValue(ival)) *(bool*)value = ival != 0;
+			else {
+				failure_reason = "ERROR: Type mismatch for parameter ";
+				failure_reason += std::to_string(arg_index);
+				goto failure;
+			}
+			ctx->SetArgAddress(arg_index - 1, value);
 		} else if (!k.GetValue(arg_value, arg_type_id)) {
-			if (arg_type_id == asTYPEID_INT32) {
-				asINT64 val;
-				k.GetValue(val);
-				ctx->SetArgDWord(arg_index - 1, val);
-			} else if (arg_type_id == asTYPEID_FLOAT) {
-				double val;
-				k.GetValue(val);
-				ctx->SetArgFloat(arg_index - 1, val);
-			} else if (arg_type_id == asTYPEID_BOOL) {
-				asINT64 val;
-				k.GetValue(val);
-				ctx->SetArgByte(arg_index - 1, val);
+			// GetValue() fails for a value that isn't a number too (a string or an object for an int parameter), which left val unset and passed whatever it held.
+			asINT64 ival;
+			double dval;
+			if (arg_type_id == asTYPEID_INT32 && k.GetValue(ival)) {
+				ctx->SetArgDWord(arg_index - 1, ival);
+			} else if (arg_type_id == asTYPEID_FLOAT && k.GetValue(dval)) {
+				ctx->SetArgFloat(arg_index - 1, dval);
+			} else if (arg_type_id == asTYPEID_BOOL && k.GetValue(ival)) {
+				ctx->SetArgByte(arg_index - 1, ival);
 			} else {
 				failure_reason = "ERROR: Type mismatch for parameter ";
 				failure_reason += std::to_string(arg_index);
@@ -402,6 +427,16 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 			}
 		}
 		arg_index += 1;
+	}
+	// A reference parameter left without a value (args has no entry for it) is a null pointer, which the function read or wrote through: the call crashed.
+	for (asUINT p = arg_index - 1; p < func->GetParamCount(); p++) {
+		int param_type_id;
+		asDWORD param_tmods;
+		if (func->GetParam(p, &param_type_id, &param_tmods) >= 0 && (param_tmods & asTM_INOUTREF)) {
+			failure_reason = "ERROR: Missing argument ";
+			failure_reason += std::to_string(p + 1);
+			goto failure;
+		}
 	}
 	call_data.current_statement_count = 0;
 	call_data.ctx = ctx;
@@ -436,14 +471,29 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 	}
 	if (args)
 		args->DeleteAll();
+	asDWORD ret_tmods;
 	int ret_type_id;
-	ret_type_id = func->GetReturnTypeId();
+	ret_type_id = func->GetReturnTypeId(&ret_tmods);
 	if (ret_type_id != asTYPEID_VOID) {
 		void* ret = ctx->GetAddressOfReturnValue();
+		// For a function returning a reference that is where the reference is kept, not the value it refers to, which was read from there: an int & gave the reference's low bits, a string & a string taken from the reference itself.
+		if (ret && (ret_tmods & asTM_INOUTREF)) ret = *(void**)ret;
 		if (ret && !args)
 			args = CScriptDictionary::Create(g_ScriptEngine);
-		if (args && ret)
-			args->Set("0", ret, ret_type_id);
+		if (args && ret) {
+			// A number is kept as an int64 or a double, as the script's own dictionary::set() keeps it, since get() converts only from those: the result of a function returning an int, a float or another size, kept under its own type, couldn't be read back by any get().
+			switch (ret_type_id) {
+				case asTYPEID_INT8: args->Set("0", asINT64(*(asINT8*)ret)); break;
+				case asTYPEID_INT16: args->Set("0", asINT64(*(asINT16*)ret)); break;
+				case asTYPEID_INT32: args->Set("0", asINT64(*(int*)ret)); break;
+				case asTYPEID_UINT8: args->Set("0", asINT64(*(asBYTE*)ret)); break;
+				case asTYPEID_UINT16: args->Set("0", asINT64(*(asWORD*)ret)); break;
+				case asTYPEID_UINT32: args->Set("0", asINT64(*(asDWORD*)ret)); break;
+				case asTYPEID_UINT64: args->Set("0", asINT64(*(asQWORD*)ret)); break;
+				case asTYPEID_FLOAT: args->Set("0", double(*(float*)ret)); break;
+				default: args->Set("0", ret, ret_type_id);
+			}
+		}
 	}
 	if (new_context) g_ScriptEngine->ReturnContext(ctx);
 	else pop_nested_state(ctx);
