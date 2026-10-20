@@ -63,6 +63,17 @@ unsigned int effect_node_impl::required_input_frame_count(unsigned int output_fr
 
 // The following node acts as a simple passthrough, with a callback that does nothing. The purpose is for any object that exists between or in any way handles nodes to be able to exist in the node graph.
 // For example a reverb3d node acts as a high level API to applying reverb to 3d sounds. We want the user to be able to swap underlying reverb effect nodes that all sounds attached to the reverb3d objects are using, but prefferably without keeping track of sounds to reattach. Therefor, reverb3d acts as a passthrough node which all connected sounds are attached to, allowing us to swap the underlying reverb effect in one place rather than for all connected sounds.
+// Whether every value is a finite number, refusing with MA_INVALID_ARGS otherwise: a NaN or infinite filter, delay or reverb setting made every sample its node passed NaN, which the filters and the delay then kept in their state after a good value was set again.
+static bool finite_node_values(std::initializer_list<double> values) {
+	for (double value : values) {
+		if (!std::isfinite(value)) {
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return false;
+		}
+	}
+	return true;
+}
+
 class passthrough_node_impl : public effect_node_impl, public virtual passthrough_node {
 	public:
 	passthrough_node_impl(audio_engine* e) : effect_node_impl(e, 0, 0, 1, 1, MA_NODE_FLAG_PASSTHROUGH | MA_NODE_FLAG_CONTINUOUS_PROCESSING | MA_NODE_FLAG_ALLOW_NULL_INPUT) {}
@@ -287,9 +298,9 @@ class phonon_binaural_node_impl : public audio_node_impl, public virtual phonon_
 				ma_phonon_binaural_node_uninit(&*bn, nullptr);
 			}
 		}
-		void set_direction(float x, float y, float z, float distance) override { ma_phonon_binaural_node_set_direction(&*bn, x, y, z, distance); }
-		void set_direction_vector(const reactphysics3d::Vector3& direction, float distance) override { ma_phonon_binaural_node_set_direction(&*bn, direction.x, direction.y, direction.z, distance); }
-		void set_spatial_blend_max_distance(float max_distance) override { ma_phonon_binaural_node_set_spatial_blend_max_distance(&*bn, max_distance); }
+		void set_direction(float x, float y, float z, float distance) override { if (finite_node_values({x, y, z, distance})) ma_phonon_binaural_node_set_direction(&*bn, x, y, z, distance); }
+		void set_direction_vector(const reactphysics3d::Vector3& direction, float distance) override { set_direction(direction.x, direction.y, direction.z, distance); }
+		void set_spatial_blend_max_distance(float max_distance) override { if (finite_node_values({max_distance})) ma_phonon_binaural_node_set_spatial_blend_max_distance(&*bn, max_distance); }
 };
 phonon_binaural_node* phonon_binaural_node::create(audio_engine* e, int channels, int sample_rate, int frame_size) { return new phonon_binaural_node_impl(e, channels, sample_rate, frame_size); }
 
@@ -316,6 +327,7 @@ class low_pass_filter_node_impl : public audio_node_impl, public virtual low_pas
 	ma_lpf_node_config cfg;
 	public:
 	low_pass_filter_node_impl(double cutoff_frequency, int order, audio_engine* e) : fn(make_unique<ma_lpf_node>()), audio_node_impl(nullptr, e) {
+		if (!finite_node_values({cutoff_frequency})) throw std::invalid_argument("filter setting out of range");
 		cfg = ma_lpf_node_config_init(get_engine()->get_channels(), get_engine()->get_sample_rate(), cutoff_frequency, order);
 		if ((g_soundsystem_last_error = ma_lpf_node_init(ma_engine_get_node_graph(get_engine()->get_ma_engine()), &cfg, nullptr, &*fn)) != MA_SUCCESS) throw std::runtime_error("ma_low_pass_filter_node was not initialized");
 		node = (ma_node_base*)&*fn;
@@ -327,6 +339,7 @@ class low_pass_filter_node_impl : public audio_node_impl, public virtual low_pas
 		}
 	}
 	void set_cutoff_frequency(double freq) override {
+		if (!finite_node_values({freq})) return;
 		auto previous = cfg.lpf.cutoffFrequency;
 		cfg.lpf.cutoffFrequency = freq;
 		if ((g_soundsystem_last_error = ma_lpf_node_reinit(&cfg.lpf, &*fn)) != MA_SUCCESS) cfg.lpf.cutoffFrequency = previous; // MiniAudio refuses some changes, as of a filter's order, which is fixed when it is made; the filter then keeps what it had, and so does this.
@@ -346,6 +359,7 @@ class high_pass_filter_node_impl : public audio_node_impl, public virtual high_p
 	ma_hpf_node_config cfg;
 	public:
 	high_pass_filter_node_impl(double cutoff_frequency, int order, audio_engine* e) : fn(make_unique<ma_hpf_node>()), audio_node_impl(nullptr, e) {
+		if (!finite_node_values({cutoff_frequency})) throw std::invalid_argument("filter setting out of range");
 		cfg = ma_hpf_node_config_init(get_engine()->get_channels(), get_engine()->get_sample_rate(), cutoff_frequency, order);
 		if ((g_soundsystem_last_error = ma_hpf_node_init(ma_engine_get_node_graph(get_engine()->get_ma_engine()), &cfg, nullptr, &*fn)) != MA_SUCCESS) throw std::runtime_error("ma_high_pass_filter_node was not initialized");
 		node = (ma_node_base*)&*fn;
@@ -357,6 +371,7 @@ class high_pass_filter_node_impl : public audio_node_impl, public virtual high_p
 		}
 	}
 	void set_cutoff_frequency(double freq) override {
+		if (!finite_node_values({freq})) return;
 		auto previous = cfg.hpf.cutoffFrequency;
 		cfg.hpf.cutoffFrequency = freq;
 		if ((g_soundsystem_last_error = ma_hpf_node_reinit(&cfg.hpf, &*fn)) != MA_SUCCESS) cfg.hpf.cutoffFrequency = previous;
@@ -376,6 +391,7 @@ class band_pass_filter_node_impl : public audio_node_impl, public virtual band_p
 	ma_bpf_node_config cfg;
 	public:
 	band_pass_filter_node_impl(double cutoff_frequency, int order, audio_engine* e) : fn(make_unique<ma_bpf_node>()), audio_node_impl(nullptr, e) {
+		if (!finite_node_values({cutoff_frequency})) throw std::invalid_argument("filter setting out of range");
 		cfg = ma_bpf_node_config_init(get_engine()->get_channels(), get_engine()->get_sample_rate(), cutoff_frequency, order);
 		if ((g_soundsystem_last_error = ma_bpf_node_init(ma_engine_get_node_graph(get_engine()->get_ma_engine()), &cfg, nullptr, &*fn)) != MA_SUCCESS) throw std::runtime_error("ma_band_pass_filter_node was not initialized");
 		node = (ma_node_base*)&*fn;
@@ -387,6 +403,7 @@ class band_pass_filter_node_impl : public audio_node_impl, public virtual band_p
 		}
 	}
 	void set_cutoff_frequency(double freq) override {
+		if (!finite_node_values({freq})) return;
 		auto previous = cfg.bpf.cutoffFrequency;
 		cfg.bpf.cutoffFrequency = freq;
 		if ((g_soundsystem_last_error = ma_bpf_node_reinit(&cfg.bpf, &*fn)) != MA_SUCCESS) cfg.bpf.cutoffFrequency = previous;
@@ -406,6 +423,7 @@ class notch_filter_node_impl : public audio_node_impl, public virtual notch_filt
 	ma_notch_node_config cfg;
 	public:
 	notch_filter_node_impl(double q, double frequency, audio_engine* e) : fn(make_unique<ma_notch_node>()), audio_node_impl(nullptr, e) {
+		if (!finite_node_values({q, frequency})) throw std::invalid_argument("filter setting out of range");
 		cfg = ma_notch_node_config_init(get_engine()->get_channels(), get_engine()->get_sample_rate(), q, frequency);
 		if ((g_soundsystem_last_error = ma_notch_node_init(ma_engine_get_node_graph(get_engine()->get_ma_engine()), &cfg, nullptr, &*fn)) != MA_SUCCESS) throw std::runtime_error("ma_notch_filter_node was not initialized");
 		node = (ma_node_base*)&*fn;
@@ -417,12 +435,14 @@ class notch_filter_node_impl : public audio_node_impl, public virtual notch_filt
 		}
 	}
 	void set_q(double q) override {
+		if (!finite_node_values({q})) return;
 		auto previous = cfg.notch.q;
 		cfg.notch.q = q;
 		if ((g_soundsystem_last_error = ma_notch_node_reinit(&cfg.notch, &*fn)) != MA_SUCCESS) cfg.notch.q = previous;
 	}
 	double get_q() const override { return cfg.notch.q; }
 	void set_frequency(double freq) override {
+		if (!finite_node_values({freq})) return;
 		auto previous = cfg.notch.frequency;
 		cfg.notch.frequency = freq;
 		if ((g_soundsystem_last_error = ma_notch_node_reinit(&cfg.notch, &*fn)) != MA_SUCCESS) cfg.notch.frequency = previous;
@@ -436,6 +456,7 @@ class peak_filter_node_impl : public audio_node_impl, public virtual peak_filter
 	ma_peak_node_config cfg;
 	public:
 	peak_filter_node_impl(double gain_db, double q, double frequency, audio_engine* e) : fn(make_unique<ma_peak_node>()), audio_node_impl(nullptr, e) {
+		if (!finite_node_values({gain_db, q, frequency})) throw std::invalid_argument("filter setting out of range");
 		cfg = ma_peak_node_config_init(get_engine()->get_channels(), get_engine()->get_sample_rate(), gain_db, q, frequency);
 		if ((g_soundsystem_last_error = ma_peak_node_init(ma_engine_get_node_graph(get_engine()->get_ma_engine()), &cfg, nullptr, &*fn)) != MA_SUCCESS) throw std::runtime_error("ma_peak_filter_node was not initialized");
 		node = (ma_node_base*)&*fn;
@@ -447,18 +468,21 @@ class peak_filter_node_impl : public audio_node_impl, public virtual peak_filter
 		}
 	}
 	void set_gain(double gain) override {
+		if (!finite_node_values({gain})) return;
 		auto previous = cfg.peak.gainDB;
 		cfg.peak.gainDB = gain;
 		if ((g_soundsystem_last_error = ma_peak_node_reinit(&cfg.peak, &*fn)) != MA_SUCCESS) cfg.peak.gainDB = previous;
 	}
 	double get_gain() const override { return cfg.peak.gainDB; }
 	void set_q(double q) override {
+		if (!finite_node_values({q})) return;
 		auto previous = cfg.peak.q;
 		cfg.peak.q = q;
 		if ((g_soundsystem_last_error = ma_peak_node_reinit(&cfg.peak, &*fn)) != MA_SUCCESS) cfg.peak.q = previous;
 	}
 	double get_q() const override { return cfg.peak.q; }
 	void set_frequency(double freq) override {
+		if (!finite_node_values({freq})) return;
 		auto previous = cfg.peak.frequency;
 		cfg.peak.frequency = freq;
 		if ((g_soundsystem_last_error = ma_peak_node_reinit(&cfg.peak, &*fn)) != MA_SUCCESS) cfg.peak.frequency = previous;
@@ -472,6 +496,7 @@ class low_shelf_filter_node_impl : public audio_node_impl, public virtual low_sh
 	ma_loshelf_node_config cfg;
 	public:
 	low_shelf_filter_node_impl(double gain_db, double q, double frequency, audio_engine* e) : fn(make_unique<ma_loshelf_node>()), audio_node_impl(nullptr, e) {
+		if (!finite_node_values({gain_db, q, frequency})) throw std::invalid_argument("filter setting out of range");
 		cfg = ma_loshelf_node_config_init(get_engine()->get_channels(), get_engine()->get_sample_rate(), gain_db, q, frequency);
 		if ((g_soundsystem_last_error = ma_loshelf_node_init(ma_engine_get_node_graph(get_engine()->get_ma_engine()), &cfg, nullptr, &*fn)) != MA_SUCCESS) throw std::runtime_error("ma_low_shelf_filter_node was not initialized");
 		node = (ma_node_base*)&*fn;
@@ -483,18 +508,21 @@ class low_shelf_filter_node_impl : public audio_node_impl, public virtual low_sh
 		}
 	}
 	void set_gain(double gain) override {
+		if (!finite_node_values({gain})) return;
 		auto previous = cfg.loshelf.gainDB;
 		cfg.loshelf.gainDB = gain;
 		if ((g_soundsystem_last_error = ma_loshelf_node_reinit(&cfg.loshelf, &*fn)) != MA_SUCCESS) cfg.loshelf.gainDB = previous;
 	}
 	double get_gain() const override { return cfg.loshelf.gainDB; }
 	void set_q(double q) override {
+		if (!finite_node_values({q})) return;
 		auto previous = cfg.loshelf.shelfSlope;
 		cfg.loshelf.shelfSlope = q;
 		if ((g_soundsystem_last_error = ma_loshelf_node_reinit(&cfg.loshelf, &*fn)) != MA_SUCCESS) cfg.loshelf.shelfSlope = previous;
 	}
 	double get_q() const override { return cfg.loshelf.shelfSlope; }
 	void set_frequency(double freq) override {
+		if (!finite_node_values({freq})) return;
 		auto previous = cfg.loshelf.frequency;
 		cfg.loshelf.frequency = freq;
 		if ((g_soundsystem_last_error = ma_loshelf_node_reinit(&cfg.loshelf, &*fn)) != MA_SUCCESS) cfg.loshelf.frequency = previous;
@@ -508,6 +536,7 @@ class high_shelf_filter_node_impl : public audio_node_impl, public virtual high_
 	ma_hishelf_node_config cfg;
 	public:
 	high_shelf_filter_node_impl(double gain_db, double q, double frequency, audio_engine* e) : fn(make_unique<ma_hishelf_node>()), audio_node_impl(nullptr, e) {
+		if (!finite_node_values({gain_db, q, frequency})) throw std::invalid_argument("filter setting out of range");
 		cfg = ma_hishelf_node_config_init(get_engine()->get_channels(), get_engine()->get_sample_rate(), gain_db, q, frequency);
 		if ((g_soundsystem_last_error = ma_hishelf_node_init(ma_engine_get_node_graph(get_engine()->get_ma_engine()), &cfg, nullptr, &*fn)) != MA_SUCCESS) throw std::runtime_error("ma_high_shelf_filter_node was not initialized");
 		node = (ma_node_base*)&*fn;
@@ -519,18 +548,21 @@ class high_shelf_filter_node_impl : public audio_node_impl, public virtual high_
 		}
 	}
 	void set_gain(double gain) override {
+		if (!finite_node_values({gain})) return;
 		auto previous = cfg.hishelf.gainDB;
 		cfg.hishelf.gainDB = gain;
 		if ((g_soundsystem_last_error = ma_hishelf_node_reinit(&cfg.hishelf, &*fn)) != MA_SUCCESS) cfg.hishelf.gainDB = previous;
 	}
 	double get_gain() const override { return cfg.hishelf.gainDB; }
 	void set_q(double q) override {
+		if (!finite_node_values({q})) return;
 		auto previous = cfg.hishelf.shelfSlope;
 		cfg.hishelf.shelfSlope = q;
 		if ((g_soundsystem_last_error = ma_hishelf_node_reinit(&cfg.hishelf, &*fn)) != MA_SUCCESS) cfg.hishelf.shelfSlope = previous;
 	}
 	double get_q() const override { return cfg.hishelf.shelfSlope; }
 	void set_frequency(double freq) override {
+		if (!finite_node_values({freq})) return;
 		auto previous = cfg.hishelf.frequency;
 		cfg.hishelf.frequency = freq;
 		if ((g_soundsystem_last_error = ma_hishelf_node_reinit(&cfg.hishelf, &*fn)) != MA_SUCCESS) cfg.hishelf.frequency = previous;
@@ -545,6 +577,7 @@ class delay_node_impl : public audio_node_impl, public virtual delay_node {
 	delay_node_impl(unsigned int delay_in_frames, float decay, audio_engine* e) : dn(make_unique<ma_delay_node>()), audio_node_impl(nullptr, e) {
 		// MiniAudio takes neither a delay of 0, by which it divides while processing, nor one whose buffer size overflows 32 bits, which it then allocates too small and overruns.
 		if (delay_in_frames == 0 || uint64_t(delay_in_frames) * get_engine()->get_channels() * sizeof(float) > UINT32_MAX) throw std::invalid_argument("delay out of range");
+		if (!finite_node_values({decay})) throw std::invalid_argument("decay out of range");
 		ma_delay_node_config cfg = ma_delay_node_config_init(get_engine()->get_channels(), get_engine()->get_sample_rate(), delay_in_frames, decay);
 		if ((g_soundsystem_last_error = ma_delay_node_init(ma_engine_get_node_graph(get_engine()->get_ma_engine()), &cfg, nullptr, &*dn)) != MA_SUCCESS) throw std::runtime_error("ma_delay_node was not initialized");
 		node = (ma_node_base*)&*dn;
@@ -555,11 +588,11 @@ class delay_node_impl : public audio_node_impl, public virtual delay_node {
 			ma_delay_node_uninit(&*dn, nullptr);
 		}
 	}
-	void set_wet(float wet) override { ma_delay_node_set_wet(&*dn, wet); }
+	void set_wet(float wet) override { if (finite_node_values({wet})) ma_delay_node_set_wet(&*dn, wet); }
 	float get_wet() const override { return ma_delay_node_get_wet(&*dn); }
-	void set_dry(float dry) override { ma_delay_node_set_dry(&*dn, dry); }
+	void set_dry(float dry) override { if (finite_node_values({dry})) ma_delay_node_set_dry(&*dn, dry); }
 	float get_dry() const override { return ma_delay_node_get_dry(&*dn); }
-	void set_decay(float decay) override { ma_delay_node_set_decay(&*dn, decay); }
+	void set_decay(float decay) override { if (finite_node_values({decay})) ma_delay_node_set_decay(&*dn, decay); }
 	float get_decay() const override { return ma_delay_node_get_decay(&*dn); }
 };
 delay_node* delay_node::create(unsigned int delay_in_frames, float decay, audio_engine* engine) { return new delay_node_impl(delay_in_frames, decay, engine); }
@@ -578,17 +611,17 @@ class freeverb_node_impl : public audio_node_impl, public virtual freeverb_node 
 			ma_reverb_node_uninit(&*rn, nullptr);
 		}
 	}
-	void set_room_size(float size) override { if (rn) verblib_set_room_size(&rn->reverb, size); }
+	void set_room_size(float size) override { if (rn && finite_node_values({size})) verblib_set_room_size(&rn->reverb, size); }
 	float get_room_size() const override { return rn? verblib_get_room_size(&rn->reverb) : -1; }
-	void set_damping(float damping) override { if (rn) verblib_set_damping(&rn->reverb, damping); }
+	void set_damping(float damping) override { if (rn && finite_node_values({damping})) verblib_set_damping(&rn->reverb, damping); }
 	float get_damping() const override { return rn? verblib_get_damping(&rn->reverb) : -1; }
-	void set_width(float width) override { if (rn) verblib_set_width(&rn->reverb, width); }
+	void set_width(float width) override { if (rn && finite_node_values({width})) verblib_set_width(&rn->reverb, width); }
 	float get_width() const override { return rn? verblib_get_width(&rn->reverb) : -1; }
-	void set_wet(float wet) override { if (rn) verblib_set_wet(&rn->reverb, wet); }
+	void set_wet(float wet) override { if (rn && finite_node_values({wet})) verblib_set_wet(&rn->reverb, wet); }
 	float get_wet() const override { return rn? verblib_get_wet(&rn->reverb) : -1; }
-	void set_dry(float dry) override { if (rn) verblib_set_dry(&rn->reverb, dry); }
+	void set_dry(float dry) override { if (rn && finite_node_values({dry})) verblib_set_dry(&rn->reverb, dry); }
 	float get_dry() const override { return rn? verblib_get_dry(&rn->reverb) : -1; }
-	void set_input_width(float width) override { if (rn) verblib_set_input_width(&rn->reverb, width); }
+	void set_input_width(float width) override { if (rn && finite_node_values({width})) verblib_set_input_width(&rn->reverb, width); }
 	float get_input_width() const override { return rn? verblib_get_input_width(&rn->reverb) : -1; }
 	void set_frozen(bool frozen) override { if (rn) verblib_set_mode(&rn->reverb, frozen? 1 : 0); }
 	bool get_frozen() const override { return rn? verblib_get_mode(&rn->reverb) >= 0.5 : false; }
