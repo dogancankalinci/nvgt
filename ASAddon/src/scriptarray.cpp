@@ -37,6 +37,16 @@ static bool ArrayCallbacksStopped(asIScriptContext *callerCtx, asIScriptContext 
 	return false;
 }
 
+// ALTERED: holds an array while script callbacks run for it (comparisons, sort callbacks). A callback can let go of the last
+// handle to the array, which was then freed while the comparisons, the sort or the search went on using it: AngelScript
+// doesn't hold the object of a registered method for the call (only when the method returns a reference).
+struct SArrayHold
+{
+	const CScriptArray *arr;
+	SArrayHold(const CScriptArray *arr) : arr(arr) { arr->AddRef(); }
+	~SArrayHold() { arr->Release(); }
+};
+
 // This macro is used to avoid warnings about unused variables.
 // Usually where the variables are only used in debug mode.
 #define UNUSED_VAR(x) (void)(x)
@@ -1219,6 +1229,7 @@ bool CScriptArray::operator==(const CScriptArray &other) const
 	asIScriptContext *cmpContext = 0;
 	bool isNested = false;
 	asIScriptContext *callerCtx = asGetActiveContext(); // ALTERED: see ArrayCallbacksStopped
+	SArrayHold holdThis(this), holdOther(&other); // ALTERED: see SArrayHold
 
 	if( subTypeId & ~asTYPEID_MASK_SEQNBR )
 	{
@@ -1455,6 +1466,7 @@ int CScriptArray::Find(asUINT startAt, void *value) const
 	asIScriptContext *cmpContext = 0;
 	bool isNested = false;
 	asIScriptContext *callerCtx = asGetActiveContext(); // ALTERED: see ArrayCallbacksStopped
+	SArrayHold hold(this); // ALTERED: see SArrayHold
 
 	if( subTypeId & ~asTYPEID_MASK_SEQNBR )
 	{
@@ -1651,6 +1663,7 @@ void CScriptArray::Sort(asUINT startAt, asUINT count, bool asc)
 		asIScriptContext *cmpContext = 0;
 		bool isNested = false;
 		asIScriptContext *callerCtx = asGetActiveContext(); // ALTERED: see ArrayCallbacksStopped
+		SArrayHold arrayHold(this); // ALTERED: see SArrayHold
 
 		// Try to reuse the active context
 		cmpContext = asGetActiveContext();
@@ -1827,6 +1840,7 @@ void CScriptArray::Sort(asIScriptFunction *func, asUINT startAt, asUINT count)
 	asIScriptContext *cmpContext = 0;
 	bool isNested = false;
 	asIScriptContext *callerCtx = asGetActiveContext(); // ALTERED: see ArrayCallbacksStopped
+	SArrayHold hold(this); // ALTERED: see SArrayHold
 
 	// Try to reuse the active context
 	cmpContext = asGetActiveContext();
