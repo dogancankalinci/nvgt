@@ -3069,7 +3069,10 @@ public:
 	bool pause_fade_in_frames(unsigned long long frames) override {
 		if (snd) {
 			g_soundsystem_last_error = ma_sound_stop_with_fade_in_pcm_frames(&*snd, frames);
-			if (g_soundsystem_last_error == MA_SUCCESS) paused = fade_paused = fade_from_stop = true; // As pause() does, so play() resumes it.
+			if (g_soundsystem_last_error == MA_SUCCESS) {
+				stop_fade_set(frames);
+				paused = fade_paused = true; // As pause() does, so play() resumes it.
+			}
 			return g_soundsystem_last_error == MA_SUCCESS;
 		}
 		return false;
@@ -3077,7 +3080,10 @@ public:
 	bool pause_fade_in_milliseconds(unsigned long long frames) override {
 		if (snd && frames_fit(frames, ma_engine_get_sample_rate(ma_sound_get_engine(&*snd)))) {
 			g_soundsystem_last_error = ma_sound_stop_with_fade_in_milliseconds(&*snd, frames);
-			if (g_soundsystem_last_error == MA_SUCCESS) paused = fade_paused = fade_from_stop = true;
+			if (g_soundsystem_last_error == MA_SUCCESS) {
+				stop_fade_set(frames * ma_engine_get_sample_rate(ma_sound_get_engine(&*snd)) / 1000); // As MiniAudio counts the fade's frames.
+				paused = fade_paused = true;
+			}
 			return g_soundsystem_last_error == MA_SUCCESS;
 		}
 		return false;
@@ -3109,7 +3115,7 @@ public:
 	void set_stop_time_with_fade_in_frames(unsigned long long absolute_time, unsigned long long fade_length) override {
 		if (!snd) return;
 		ma_sound_set_stop_time_with_fade_in_pcm_frames(&*snd, absolute_time, fade_length);
-		fade_from_stop = true;
+		stop_fade_set(fade_length);
 		fade_paused = false;
 	}
 	void set_stop_time_with_fade_in_milliseconds(unsigned long long absolute_time, unsigned long long fade_length) override {
@@ -3117,7 +3123,7 @@ public:
 		ma_uint32 rate = ma_engine_get_sample_rate(ma_sound_get_engine(&*snd));
 		if (!frames_fit(absolute_time, rate) || !frames_fit(fade_length, rate)) return;
 		ma_sound_set_stop_time_with_fade_in_milliseconds(&*snd, absolute_time, fade_length);
-		fade_from_stop = true;
+		stop_fade_set(fade_length * rate / 1000);
 		fade_paused = false;
 	}
 	// A plain stop replaces a stop with a fade too, so that stop's fade goes with it rather than leaving the sound silent until the new stop.
@@ -3134,6 +3140,11 @@ public:
 		if (!snd) return;
 		if (fade_from_stop) ma_sound_reset_fade(&*snd);
 		fade_from_stop = fade_paused = false;
+	}
+	// After a stop with a fade was scheduled, its fade being this many frames long. MiniAudio sets no fade of no length, so such a stop is a plain one, after which play() mustn't reset the script's own fade, and which replaced a stop with a fade along with that stop's fade, as set_stop_time() does.
+	void stop_fade_set(ma_uint64 fade_frames) {
+		if (!fade_frames) forget_stop_fade();
+		fade_from_stop = fade_frames > 0;
 	}
 	void set_looping(bool looping) override {
 		if (snd)
