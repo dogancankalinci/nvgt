@@ -609,7 +609,7 @@ void tts_voice::ensure_default() {
 	string preferred = tts_preferred_engine();
 	followed_engine = preferred;
 	if (all_engines) engine_names = tts_get_engine_names(); // The preferred engine can be one installed since.
-	// Fast path for the common case (speak with the default voice): bind engines one at a time, the preferred/default engine first and then the others in the platform's own order, and select the default voice of the first one that can speak, so we never instantiate or bind every installed engine just to start speaking. Only engines in this object's list count, and the fallback voice is left to refresh() unless it is all the list holds. Full cross-engine enumeration is deferred until the script actually lists or selects voices.
+	// Fast path for the common case (speak with the default voice): bind engines one at a time, the preferred/default engine first and then the others in the platform's own order, and select the default voice of the first one that can speak, so we never instantiate or bind every installed engine just to start speaking. Only engines in this object's list count, and the fallback voice is left to the full list made below unless it is all the list holds. Full cross-engine enumeration is deferred until the script actually lists or selects voices.
 	vector<string> candidates;
 	auto consider = [&](const string &name) {
 		if (name.empty() || name == "fallback" || find(engine_names.begin(), engine_names.end(), name) == engine_names.end() || find(candidates.begin(), candidates.end(), name) != candidates.end()) return;
@@ -649,7 +649,7 @@ void tts_voice::ensure_enumerated() {
 		follow_preferred_engine();
 	}
 }
-// The user can install, remove and update voices and engines while the program runs. Engines that can tell report it through voices_generation(), and one whose app was removed reports itself unavailable, so the object then lists its voices again, as refresh() does: a removed voice leaves the list, one the script chose included, which then gives way to the platform's voice, and the voice numbers can change.
+// The user can install, remove and update voices and engines while the program runs. Engines that can tell report it through voices_generation(), and one whose app was removed reports itself unavailable, so the object then makes its list again from the engines' own lists: a removed voice leaves the list, one the script chose included, which then gives way to the platform's voice, and the voice numbers can change.
 void tts_voice::follow_installed_voices() {
 	if (voice_state == VOICES_NONE) return;
 	bool changed = false;

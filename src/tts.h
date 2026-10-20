@@ -179,7 +179,7 @@ class tts_voice {
 	bool held_starter_running = false; // Under chain_mtx: whether held_starter still goes on. Once it has stopped, it takes the lock no more.
 	std::atomic<bool> held_starter_stop{false}; // Set as the object is destroyed.
 	voice_info *get_voice_info(int voice_index);
-	void ensure_default(); // Bind only the default/preferred engine and select its default voice (enough to speak); does not touch other engines.
+	void ensure_default(); // At first use, bind only the default/preferred engine and select its default voice (enough to speak), touching no other engine; afterwards, follow a change of the installed voices or the preferred engine, which can make the list again (see follow_installed_voices() and follow_preferred_engine()).
 	void ensure_enumerated(); // Build the full flattened voice list across all engines (needed to list or select voices).
 	void follow_preferred_engine(); // Without a voice the script chose, moves to the default voice of the engine the platform prefers when the user changed that engine.
 	void follow_installed_voices(); // Lists the voices again when an engine reports that its installed voices may have changed.
