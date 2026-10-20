@@ -446,7 +446,7 @@ make_add_units(seconds, 0, 0, 0, abs(amount), 0)
 template <class t> bool add_years(t &dt, asINT32 amount) {
 	if (amount == 0)
 		return false;
-	dt.assign(dt.year() + amount, dt.month(), dt.day(), dt.hour(), dt.minute(), dt.second(), dt.microsecond());
+	dt.assign(dt.year() + amount, dt.month(), dt.day(), dt.hour(), dt.minute(), dt.second(), dt.millisecond(), dt.microsecond());
 	return true;
 }
 template <class t> bool add_months(t &dt, asINT32 amount) {
@@ -466,7 +466,7 @@ template <class t> bool add_months(t &dt, asINT32 amount) {
 		}
 	}
 	asINT32 yearToAssign = dt.year() + yearsToAdd;
-	dt.assign(dt.year() + yearsToAdd, monthToAssign, min(dt.day(), DateTime::daysOfMonth(yearToAssign, monthToAssign)), dt.hour(), dt.minute(), dt.second(), dt.microsecond());
+	dt.assign(dt.year() + yearsToAdd, monthToAssign, min(dt.day(), DateTime::daysOfMonth(yearToAssign, monthToAssign)), dt.hour(), dt.minute(), dt.second(), dt.millisecond(), dt.microsecond());
 	return true;
 }
 /**
