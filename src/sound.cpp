@@ -1519,14 +1519,14 @@ class audio_decoder_impl : public audio_data_source_impl, public virtual audio_d
 public:
 	audio_decoder_impl(audio_engine* e) : audio_data_source_impl(e, nullptr), decoder(nullptr), datastream_ref(nullptr) {}
 	~audio_decoder_impl() { close(); }
-	// A sample rate outside those MiniAudio names, 0 aside, which keeps the file's: below them the decoder resampled down to it, so a source read at the engine's rate decoded many thousands of frames for each it gave, slower than the audio played, and above them it resampled up to it, as slowly, as many frames for each.
-	static bool output_rate_in_range(unsigned int sample_rate) {
-		if (!sample_rate || (sample_rate >= ma_standard_sample_rate_min && sample_rate <= ma_standard_sample_rate_max)) return true;
+	// A sample rate outside those MiniAudio names, 0 aside, which keeps the file's: below them the decoder resampled down to it, so a source read at the engine's rate decoded many thousands of frames for each it gave, slower than the audio played, and above them it resampled up to it, as slowly, as many frames for each. And a channel count past MA_MAX_CHANNELS, which MiniAudio refused only once the decoder open had been closed.
+	static bool output_format_in_range(unsigned int sample_rate, unsigned int channels) {
+		if ((!sample_rate || (sample_rate >= ma_standard_sample_rate_min && sample_rate <= ma_standard_sample_rate_max)) && channels <= MA_MAX_CHANNELS) return true;
 		g_soundsystem_last_error = MA_INVALID_ARGS;
 		return false;
 	}
 	virtual bool open(const std::string& filename, const pack_interface* pack_file, unsigned int sample_rate, unsigned int channels) override {
-		if (!output_rate_in_range(sample_rate)) return false;
+		if (!output_format_in_range(sample_rate, channels)) return false;
 		std::lock_guard<std::recursive_mutex> guard(source_mutex);
 		if (decoder && !close()) return false;
 		seekable = true;
@@ -1539,7 +1539,7 @@ public:
 	}
 	virtual bool open_stream(datastream* ds, unsigned int sample_rate = 0, unsigned int channels = 0) override {
 		std::lock_guard<std::recursive_mutex> guard(source_mutex);
-		if (!ds || !ds->get_istr() || !output_rate_in_range(sample_rate) || decoder && !close()) {
+		if (!ds || !ds->get_istr() || !output_format_in_range(sample_rate, channels) || decoder && !close()) {
 			if (ds) ds->release();
 			return false;
 		}
