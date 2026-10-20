@@ -335,9 +335,10 @@ class phonon_binaural_node_impl : public audio_node_impl, public virtual phonon_
 		phonon_binaural_node_impl(audio_engine* e, int channels, int sample_rate, int frame_size = 0) : bn(make_unique<ma_phonon_binaural_node>()), audio_node_impl(nullptr, e) {
 			if (!e) throw std::invalid_argument("no engine provided");
 			if (!phonon_init()) throw std::runtime_error("Steam Audio was not initialized");
-			if (!frame_size) frame_size = SOUNDSYSTEM_FRAMESIZE;
-			IPLAudioSettings audio_settings {sample_rate, frame_size};
-			ma_phonon_binaural_node_config cfg = ma_phonon_binaural_node_config_init(channels, audio_settings, g_phonon_context, g_phonon_hrtf);
+			// The HRTF's own settings, whatever sample_rate and frame_size say: Steam Audio applied the HRTF, made for blocks of SOUNDSYSTEM_FRAMESIZE frames, at the frame size given, which past it made the output wrong, then garbage at many times full scale, and at 65536 crashed; the sample rate changed nothing.
+			(void)sample_rate;
+			(void)frame_size;
+			ma_phonon_binaural_node_config cfg = ma_phonon_binaural_node_config_init(channels, g_phonon_audio_settings, g_phonon_context, g_phonon_hrtf);
 			if ((g_soundsystem_last_error = ma_phonon_binaural_node_init(ma_engine_get_node_graph(e->get_ma_engine()), &cfg, nullptr, &*bn)) != MA_SUCCESS) throw std::runtime_error("phonon_binaural_node was not created");
 			node = (ma_node_base*)&*bn;
 		}
