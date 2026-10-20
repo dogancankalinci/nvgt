@@ -15,6 +15,9 @@
 #include <chrono>
 #include <cstring>
 #include <map>
+#include <string_view>
+#include <tuple>
+#include <utility>
 #include <vector>
 #ifdef _WIN32
 	#include <windows.h>
@@ -332,6 +335,29 @@ struct script_function_call_scope {
 	script_function_call_scope(script_function_call_data& data) : data(data) { g_script_function_call = &data; }
 	~script_function_call_scope() { g_script_function_call = data.outer; }
 };
+// Stores a value of script_function.call()'s result. A number is kept as an int64 or a double, as the script's own dictionary::set() keeps it, since get() converts only from those: the result of a function returning an int, a float or another size, kept under its own type, couldn't be read back by any get().
+static void set_call_result(CScriptDictionary* d, const std::string& key, void* value, int type_id) {
+	switch (type_id) {
+		case asTYPEID_INT8: d->Set(key, asINT64(*(asINT8*)value)); break;
+		case asTYPEID_INT16: d->Set(key, asINT64(*(asINT16*)value)); break;
+		case asTYPEID_INT32: d->Set(key, asINT64(*(int*)value)); break;
+		case asTYPEID_UINT8: d->Set(key, asINT64(*(asBYTE*)value)); break;
+		case asTYPEID_UINT16: d->Set(key, asINT64(*(asWORD*)value)); break;
+		case asTYPEID_UINT32: d->Set(key, asINT64(*(asDWORD*)value)); break;
+		case asTYPEID_UINT64: d->Set(key, asINT64(*(asQWORD*)value)); break;
+		case asTYPEID_FLOAT: d->Set(key, double(*(float*)value)); break;
+		default: d->Set(key, value, type_id);
+	}
+}
+// Releases what script_function.call() made for reference parameters, once the function can no longer use it.
+static void release_made_arguments(std::vector<std::pair<void*, asITypeInfo*>>& objects, std::vector<std::pair<void**, asITypeInfo*>>& handles) {
+	for (auto& o : objects) g_ScriptEngine->ReleaseScriptObject(o.first, o.second);
+	for (auto& h : handles) {
+		if (*h.first) g_ScriptEngine->ReleaseScriptObject(*h.first, h.second);
+	}
+	objects.clear();
+	handles.clear();
+}
 void script_function_line_callback(asIScriptContext* ctx, script_function_call_data* data);
 CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictionary* args, CScriptArray* errors = NULL, int max_statement_count = 0) {
 	std::string failure_reason = "";
@@ -341,6 +367,12 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 	script_function_call_data call_data {max_statement_count, 0, false, nullptr, g_script_function_call};
 	// The values passed to reference parameters, which the arguments point to, so they last until the call returns (8 bytes hold any primitive or a handle).
 	std::vector<asQWORD> ref_values(func->GetParamCount());
+	// Objects made here for reference parameters (a default value, or room for an &out result), and the handles held in ref_values for them, released once the call is over.
+	std::vector<std::pair<void*, asITypeInfo*>> made_objects;
+	std::vector<std::pair<void**, asITypeInfo*>> made_handles;
+	// Where each &out or &inout argument's value is once the function has returned (parameter index, address, type id), given back in the result under the argument's number.
+	std::vector<std::tuple<asUINT, void*, int>> out_args;
+	asIScriptContext* defCtx = nullptr; // Evaluates default arguments, as async does.
 	asIScriptContext* ACtx = asGetActiveContext();
 	bool new_context = ACtx == NULL || ACtx->PushState() < 0;
 	asIScriptContext* ctx = (new_context ? g_ScriptEngine->RequestContext() : ACtx);
@@ -352,91 +384,133 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 		failure_reason = "ERROR: Failed to prepare context.";
 		goto failure;
 	}
-	int arg_index;
-	arg_index = 1;
-	while (args && args->GetSize() > 0) {
+	asUINT param_count;
+	param_count = func->GetParamCount();
+	for (asUINT p = 0; p < param_count; p++) {
 		int arg_type_id;
 		asDWORD arg_tmods;
-		CScriptDictionary::CIterator k = args->find(std::to_string(arg_index));
-		if (k == args->end()) break;
-		if (func->GetParam(arg_index - 1, &arg_type_id, &arg_tmods) < 0) {
-			/*
-			failure_reason="ERROR: Trying to pass too many arguments.";
-			goto failure;
-			*/
-			break;
-		}
-		void* arg_value = ctx->GetAddressOfArg(arg_index - 1);
-		if (!arg_value) {
-			failure_reason = "ERROR: Trying to pass too many arguments.";
+		const char* arg_default = nullptr;
+		if (func->GetParam(p, &arg_type_id, &arg_tmods, nullptr, &arg_default) < 0) {
+			failure_reason = "ERROR: Can't read parameter ";
+			failure_reason += std::to_string(p + 1);
 			goto failure;
 		}
 		// The argument of a reference parameter is the address of the value, the dictionary's own object or a copy in ref_values. The value was put there instead: the function took a number for an address (a crash, and with int64 &out a write through it), int &in and float &in were refused by SetArgDWord()/SetArgFloat() and the call failed, and a handle reference got the object's address where a handle's belongs.
 		bool by_ref;
 		by_ref = (arg_tmods & asTM_INOUTREF) != 0;
-		if ((arg_type_id & asTYPEID_MASK_OBJECT)) {
-			int value_type_id = k.GetTypeId();
-			const void* o = k.GetAddressOfValue();
-			void* obj = (value_type_id & asTYPEID_OBJHANDLE)? *(void**)o : (void*)o;
-			asITypeInfo* value_type = g_ScriptEngine->GetTypeInfoById(value_type_id);
-			asITypeInfo* arg_type = g_ScriptEngine->GetTypeInfoById(arg_type_id);
-			bool compatible = value_type && arg_type && (value_type == arg_type || value_type->DerivesFrom(arg_type) || value_type->Implements(arg_type));
-			// A handle by reference that the function can assign (&out, &inout) is the dictionary's own handle, so only one of exactly the parameter's type, else the dictionary would hold a handle of another type than the one it records.
-			if (by_ref && (arg_type_id & asTYPEID_OBJHANDLE) && (arg_tmods & asTM_OUTREF) && (value_type != arg_type || !(value_type_id & asTYPEID_OBJHANDLE)))
-				compatible = false;
-			if (!compatible || (!obj && !(arg_type_id & asTYPEID_OBJHANDLE))) {
-				failure_reason = "ERROR: Type mismatch for parameter ";
-				failure_reason += std::to_string(arg_index);
-				goto failure;
-			}
-			if (by_ref && (arg_type_id & asTYPEID_OBJHANDLE)) {
-				if (value_type_id & asTYPEID_OBJHANDLE) ctx->SetArgAddress(arg_index - 1, const_cast<void*>(o));
-				else {
-					*(void**)&ref_values[arg_index - 1] = obj;
-					ctx->SetArgAddress(arg_index - 1, &ref_values[arg_index - 1]);
+		bool is_value_object;
+		is_value_object = (arg_type_id & asTYPEID_MASK_OBJECT) && !(arg_type_id & asTYPEID_OBJHANDLE);
+		if (args) {
+			CScriptDictionary::CIterator k = args->find(std::to_string(p + 1));
+			if (k != args->end()) {
+				void* arg_value = ctx->GetAddressOfArg(p);
+				if (!arg_value) {
+					failure_reason = "ERROR: Trying to pass too many arguments.";
+					goto failure;
 				}
-			} else ctx->SetArgObject(arg_index - 1, obj);
-		} else if (by_ref) {
-			void* value = &ref_values[arg_index - 1];
-			asINT64 ival;
-			double dval;
-			if (k.GetValue(value, arg_type_id)) ;
-			else if (arg_type_id == asTYPEID_INT32 && k.GetValue(ival)) *(int*)value = int(ival);
-			else if (arg_type_id == asTYPEID_FLOAT && k.GetValue(dval)) *(float*)value = float(dval);
-			else if (arg_type_id == asTYPEID_BOOL && k.GetValue(ival)) *(bool*)value = ival != 0;
-			else {
-				failure_reason = "ERROR: Type mismatch for parameter ";
-				failure_reason += std::to_string(arg_index);
-				goto failure;
-			}
-			ctx->SetArgAddress(arg_index - 1, value);
-		} else if (!k.GetValue(arg_value, arg_type_id)) {
-			// GetValue() fails for a value that isn't a number too (a string or an object for an int parameter), which left val unset and passed whatever it held.
-			asINT64 ival;
-			double dval;
-			if (arg_type_id == asTYPEID_INT32 && k.GetValue(ival)) {
-				ctx->SetArgDWord(arg_index - 1, ival);
-			} else if (arg_type_id == asTYPEID_FLOAT && k.GetValue(dval)) {
-				ctx->SetArgFloat(arg_index - 1, dval);
-			} else if (arg_type_id == asTYPEID_BOOL && k.GetValue(ival)) {
-				ctx->SetArgByte(arg_index - 1, ival);
-			} else {
-				failure_reason = "ERROR: Type mismatch for parameter ";
-				failure_reason += std::to_string(arg_index);
-				goto failure;
+				if ((arg_type_id & asTYPEID_MASK_OBJECT)) {
+					int value_type_id = k.GetTypeId();
+					const void* o = k.GetAddressOfValue();
+					void* obj = (value_type_id & asTYPEID_OBJHANDLE)? *(void**)o : (void*)o;
+					asITypeInfo* value_type = g_ScriptEngine->GetTypeInfoById(value_type_id);
+					asITypeInfo* arg_type = g_ScriptEngine->GetTypeInfoById(arg_type_id);
+					bool compatible = value_type && arg_type && (value_type == arg_type || value_type->DerivesFrom(arg_type) || value_type->Implements(arg_type));
+					// A handle by reference that the function can assign (&out, &inout) is the dictionary's own handle, so only one of exactly the parameter's type, else the dictionary would hold a handle of another type than the one it records.
+					if (by_ref && (arg_type_id & asTYPEID_OBJHANDLE) && (arg_tmods & asTM_OUTREF) && (value_type != arg_type || !(value_type_id & asTYPEID_OBJHANDLE)))
+						compatible = false;
+					if (!compatible || (!obj && !(arg_type_id & asTYPEID_OBJHANDLE))) {
+						failure_reason = "ERROR: Type mismatch for parameter ";
+						failure_reason += std::to_string(p + 1);
+						goto failure;
+					}
+					if (by_ref && (arg_type_id & asTYPEID_OBJHANDLE)) {
+						if (value_type_id & asTYPEID_OBJHANDLE) ctx->SetArgAddress(p, const_cast<void*>(o));
+						else {
+							*(void**)&ref_values[p] = obj;
+							ctx->SetArgAddress(p, &ref_values[p]);
+						}
+					} else ctx->SetArgObject(p, obj);
+					// An &out or &inout object or handle is the dictionary's own value (an assignable handle always is, see above), which then holds what the function left there.
+					if (arg_tmods & asTM_OUTREF) out_args.emplace_back(p, const_cast<void*>(o), value_type_id);
+				} else if (by_ref) {
+					void* value = &ref_values[p];
+					asINT64 ival;
+					double dval;
+					if (k.GetValue(value, arg_type_id)) ;
+					else if (arg_type_id == asTYPEID_INT32 && k.GetValue(ival)) *(int*)value = int(ival);
+					else if (arg_type_id == asTYPEID_FLOAT && k.GetValue(dval)) *(float*)value = float(dval);
+					else if (arg_type_id == asTYPEID_BOOL && k.GetValue(ival)) *(bool*)value = ival != 0;
+					else {
+						failure_reason = "ERROR: Type mismatch for parameter ";
+						failure_reason += std::to_string(p + 1);
+						goto failure;
+					}
+					ctx->SetArgAddress(p, value);
+					if (arg_tmods & asTM_OUTREF) out_args.emplace_back(p, value, arg_type_id);
+				} else if (!k.GetValue(arg_value, arg_type_id)) {
+					// GetValue() fails for a value that isn't a number too (a string or an object for an int parameter), which left val unset and passed whatever it held.
+					asINT64 ival;
+					double dval;
+					if (arg_type_id == asTYPEID_INT32 && k.GetValue(ival)) {
+						ctx->SetArgDWord(p, ival);
+					} else if (arg_type_id == asTYPEID_FLOAT && k.GetValue(dval)) {
+						ctx->SetArgFloat(p, dval);
+					} else if (arg_type_id == asTYPEID_BOOL && k.GetValue(ival)) {
+						ctx->SetArgByte(p, ival);
+					} else {
+						failure_reason = "ERROR: Type mismatch for parameter ";
+						failure_reason += std::to_string(p + 1);
+						goto failure;
+					}
+				}
+				continue;
 			}
 		}
-		arg_index += 1;
-	}
-	// A reference parameter left without a value (args has no entry for it) is a null pointer, which the function read or wrote through: the call crashed.
-	for (asUINT p = arg_index - 1; p < func->GetParamCount(); p++) {
-		int param_type_id;
-		asDWORD param_tmods;
-		if (func->GetParam(p, &param_type_id, &param_tmods) >= 0 && (param_tmods & asTM_INOUTREF)) {
+		// No value for it in args. It gets its default, evaluated as the script compiler would and as async does; an &out parameter without one gets room for its result; a primitive or handle passed by value is left 0 or null, as it always was; anything else is refused, as a reference parameter left a null pointer the function read or wrote through (a crash) and an object passed by value a null object.
+		bool has_default;
+		has_default = arg_default && std::string_view(arg_default) != "void";
+		if (has_default || (arg_tmods & asTM_INOUTREF) == asTM_OUTREF) {
+			asITypeInfo* arg_type = g_ScriptEngine->GetTypeInfoById(arg_type_id);
+			void* target;
+			if (is_value_object) {
+				void* obj = g_ScriptEngine->CreateScriptObject(arg_type);
+				if (!obj) {
+					failure_reason = "ERROR: Can't create a value for parameter ";
+					failure_reason += std::to_string(p + 1);
+					goto failure;
+				}
+				if (by_ref) {
+					made_objects.emplace_back(obj, arg_type);
+					ctx->SetArgAddress(p, obj);
+				} else *(void**)ctx->GetAddressOfArg(p) = obj; // The function owns an object passed by value, as if it were a copy made by SetArgObject().
+				target = obj;
+			} else if (by_ref) {
+				target = &ref_values[p];
+				if (arg_type_id & asTYPEID_OBJHANDLE) made_handles.emplace_back((void**)target, arg_type);
+				ctx->SetArgAddress(p, target);
+			} else target = ctx->GetAddressOfArg(p);
+			if (arg_tmods & asTM_OUTREF) out_args.emplace_back(p, target, arg_type_id);
+			if (!has_default) continue;
+			if (!defCtx) defCtx = g_ScriptEngine->RequestContext();
+			int dr = defCtx? ExecuteString(g_ScriptEngine, (std::string("return ") + arg_default + ";").c_str(), target, arg_type_id, func->GetModule(), defCtx) : asERROR;
+			if (dr != asEXECUTION_FINISHED) {
+				failure_reason = "ERROR: Can't evaluate the default value of parameter ";
+				failure_reason += std::to_string(p + 1);
+				if (dr == asEXECUTION_EXCEPTION) {
+					failure_reason += ": ";
+					failure_reason += defCtx->GetExceptionString();
+				}
+				goto failure;
+			}
+		} else if (by_ref || is_value_object) {
 			failure_reason = "ERROR: Missing argument ";
 			failure_reason += std::to_string(p + 1);
 			goto failure;
 		}
+	}
+	if (defCtx) {
+		g_ScriptEngine->ReturnContext(defCtx);
+		defCtx = nullptr;
 	}
 	call_data.current_statement_count = 0;
 	call_data.ctx = ctx;
@@ -469,8 +543,10 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 			callstack2 = get_call_stack_ctx(ACtx);
 		goto failure;
 	}
-	if (args)
-		args->DeleteAll();
+	// The result: the return value under "0" and the final value of each &out or &inout argument under its own number, which the caller's dictionary holds in place of the arguments it was given. They are gathered before anything is released, as an &out value can be the dictionary's own and a returned reference can point to an argument.
+	CScriptDictionary* results;
+	results = CScriptDictionary::Create(g_ScriptEngine);
+	for (auto& out : out_args) set_call_result(results, std::to_string(std::get<0>(out) + 1), std::get<1>(out), std::get<2>(out));
 	asDWORD ret_tmods;
 	int ret_type_id;
 	ret_type_id = func->GetReturnTypeId(&ret_tmods);
@@ -478,25 +554,17 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 		void* ret = ctx->GetAddressOfReturnValue();
 		// For a function returning a reference that is where the reference is kept, not the value it refers to, which was read from there: an int & gave the reference's low bits, a string & a string taken from the reference itself.
 		if (ret && (ret_tmods & asTM_INOUTREF)) ret = *(void**)ret;
-		if (ret && !args)
-			args = CScriptDictionary::Create(g_ScriptEngine);
-		if (args && ret) {
-			// A number is kept as an int64 or a double, as the script's own dictionary::set() keeps it, since get() converts only from those: the result of a function returning an int, a float or another size, kept under its own type, couldn't be read back by any get().
-			switch (ret_type_id) {
-				case asTYPEID_INT8: args->Set("0", asINT64(*(asINT8*)ret)); break;
-				case asTYPEID_INT16: args->Set("0", asINT64(*(asINT16*)ret)); break;
-				case asTYPEID_INT32: args->Set("0", asINT64(*(int*)ret)); break;
-				case asTYPEID_UINT8: args->Set("0", asINT64(*(asBYTE*)ret)); break;
-				case asTYPEID_UINT16: args->Set("0", asINT64(*(asWORD*)ret)); break;
-				case asTYPEID_UINT32: args->Set("0", asINT64(*(asDWORD*)ret)); break;
-				case asTYPEID_UINT64: args->Set("0", asINT64(*(asQWORD*)ret)); break;
-				case asTYPEID_FLOAT: args->Set("0", double(*(float*)ret)); break;
-				default: args->Set("0", ret, ret_type_id);
-			}
-		}
+		if (ret) set_call_result(results, "0", ret, ret_type_id);
 	}
+	if (args) {
+		args->DeleteAll();
+		*args = *results;
+		results->Release();
+	} else if (results->GetSize() > 0) args = results;
+	else results->Release();
 	if (new_context) g_ScriptEngine->ReturnContext(ctx);
 	else pop_nested_state(ctx);
+	release_made_arguments(made_objects, made_handles);
 	g_ScriptEngine->ClearMessageCallback();
 	if (errors)
 		errors->Release();
@@ -514,6 +582,8 @@ failure:
 		} else if (call_data.exceeded) ctx->PopState(); // Our own abort, which ends the called function only
 		else pop_nested_state(ctx);
 	}
+	if (defCtx) g_ScriptEngine->ReturnContext(defCtx);
+	release_made_arguments(made_objects, made_handles);
 	if (args) {
 		args->DeleteAll();
 		args->Release();

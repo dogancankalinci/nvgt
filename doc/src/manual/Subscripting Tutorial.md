@@ -85,7 +85,7 @@ string code = """void test() {
 
 // This function needs arguments.
 int64 add(int n1, int n2) {
-	return n1 + n2; // normal int can be passed as argument but not yet for return values, consider it a beta bug.
+	return n1 + n2; // Any number type can be returned too; call() stores numbers as int64 or double, as dictionary::set() does.
 }
 
 // This function will be used to demonstrate how to catch script exceptions.
@@ -129,7 +129,7 @@ void main() {
 	// Now lets demonstrate how to pass function arguments and how to fetch the return value. We'll skip the error check here we know the add function exists.
 	@func = mod.get_function_by_name("add"); // Notice the lack of signature verification here.
 	dictionary@ r = func.call({{1, people[0].age}, {2, people[1].age}}); // Notice how we can access those person objects created from the subscript.
-	// The return value will be stored in a key called 0, and the other values will maintain the indexes that you passed to them encase the function has modified a value using an &out reference.
+	// The return value will be stored in a key called 0, and the final value of each &out or &inout argument under the index you would pass it with (an &out argument you leave out gets room of its own). A parameter you leave out gets its default value.
 	int64 result = 1;
 	r.get(0, result);
 	alert("add test", result);
