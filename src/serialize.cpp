@@ -109,12 +109,18 @@ static bool try_write_value(const void* ref, int type_id, std::string& out) {
 	return true;
 }
 // A dictionary's contents are just however many (key, serialized value) pairs made it through try_write_value; keys whose value can't be serialized are silently dropped.
+// A script object's opCast (see write_script_object) can change the dictionary or let go of it while it is written, so it is held and its keys are listed first, each value looked up again when its turn comes; walking the dictionary itself went on through freed nodes.
 static void write_dictionary_body(Poco::BinaryWriter& w, CScriptDictionary* dict) {
+	std::unique_ptr<CScriptDictionary, void(*)(CScriptDictionary*)> hold((dict->AddRef(), dict), [](CScriptDictionary* d) { d->Release(); });
+	std::vector<std::string> keys;
+	for (CScriptDictionary::CIterator it = dict->begin(); it != dict->end(); it++) keys.push_back(it.GetKey());
 	std::vector<std::pair<std::string, std::string>> entries;
-	for (CScriptDictionary::CIterator it = dict->begin(); it != dict->end(); it++) {
+	for (const std::string& key : keys) {
+		CScriptDictionary::CIterator it = dict->find(key);
+		if (it == dict->end()) continue;
 		std::string bytes;
 		if (try_write_value(it.GetAddressOfValue(), it.GetTypeId(), bytes))
-			entries.emplace_back(it.GetKey(), std::move(bytes));
+			entries.emplace_back(key, std::move(bytes));
 	}
 	w << (Poco::UInt32)entries.size();
 	for (auto& e : entries) {
@@ -123,13 +129,17 @@ static void write_dictionary_body(Poco::BinaryWriter& w, CScriptDictionary* dict
 	}
 }
 // Arrays are homogeneous, so unlike dictionary keys we can't drop individual elements; if any element fails the whole array is unsupported and the caller drops it instead.
+// As for a dictionary, a script object's opCast can resize the array or let go of it while it is written: it is held, and its size read again for each element (an element past a new end was read from outside it). It is written up to its size at the start at most, so that an opCast adding an element each time can't make it go on forever.
 static bool write_array_body(Poco::BinaryWriter& w, CScriptArray* arr) {
+	std::unique_ptr<CScriptArray, void(*)(CScriptArray*)> hold((arr->AddRef(), arr), [](CScriptArray* a) { a->Release(); });
 	int elem_type = arr->GetElementTypeId();
-	asUINT count = arr->GetSize();
-	std::vector<std::string> elems(count);
-	for (asUINT i = 0; i < count; i++) {
-		if (!try_write_value(arr->At(i), elem_type, elems[i])) return false;
+	asUINT start_count = arr->GetSize();
+	std::vector<std::string> elems;
+	for (asUINT i = 0; i < start_count && i < arr->GetSize(); i++) {
+		elems.emplace_back();
+		if (!try_write_value(arr->At(i), elem_type, elems.back())) return false;
 	}
+	asUINT count = (asUINT)elems.size();
 	w << (Poco::UInt32)count;
 	for (auto& e : elems) w.writeRaw(e);
 	return true;
@@ -142,7 +152,10 @@ static bool write_script_object(Poco::BinaryWriter& w, void* obj, asITypeInfo* t
 	w << std::string(ti->GetName());
 	w << is_null;
 	if (is_null) return true;
+	// The object is held while its opCast runs, as that can take it out of the dictionary or array holding it, which freed it in the middle of the call.
+	g_ScriptEngine->AddRefScriptObject(obj, ti);
 	CScriptDictionary* d = (CScriptDictionary*)invoke(opcast, obj);
+	g_ScriptEngine->ReleaseScriptObject(obj, ti);
 	if (!d) return false;
 	write_dictionary_body(w, d);
 	d->Release();
