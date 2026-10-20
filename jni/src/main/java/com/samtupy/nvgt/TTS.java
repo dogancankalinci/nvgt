@@ -760,7 +760,7 @@ public class TTS {
 			if (voice != null && ((current != null && current.getName().equals(voice.getName())) || target.setVoice(voice) == TextToSpeech.SUCCESS)) {
 				defaultVoice = voice;
 				if (voice.getLocale() != null) defaultLanguage = voice.getLocale();
-				listVoice(voice);
+				if (isInstalled(voice)) listVoice(voice); // One that isn't installed is followed, as TextToSpeech itself would, but not listed (see initializeVoices()).
 				return true;
 			}
 			if (target.getVoices() == null) followMissed = true; // The engine isn't answering, so the settings weren't looked up at all.
@@ -824,12 +824,13 @@ public class TTS {
 		if (!isActive()) return false;
 		synchronized (followLock) {
 			// The settings' voice as it is now, as the one kept from before can have been replaced or removed while a voice was
-			// chosen; failing that, the one kept, or the settings' language, as an engine can name no voice for it and still
-			// speak it, and asking for that language again then brings its default back.
+			// chosen; failing that, the one kept, while it is still installed, as setting one that isn't would download again
+			// what the user deleted, or the settings' language, as an engine can name no voice for it and still speak it, and
+			// asking for that language again then brings its default back.
 			String settings = languageSettings();
 			int focus = focusGeneration;
 			boolean reset = takeDefaultVoice(tts);
-			if (!reset && defaultVoice != null) reset = tts.setVoice(defaultVoice) == TextToSpeech.SUCCESS;
+			if (!reset && defaultVoice != null && engineHasInstalled(tts, defaultVoice)) reset = tts.setVoice(defaultVoice) == TextToSpeech.SUCCESS;
 			if (!reset && defaultLanguage != null) reset = tts.setLanguage(defaultLanguage) >= TextToSpeech.LANG_AVAILABLE;
 			if (!reset) return false;
 			chosenVoice = null;
@@ -919,12 +920,29 @@ public class TTS {
 			if (availableVoices != null) return;
 		}
 		availableVoices = listed;
-		// The voice the user's settings selected, and one the script chose, are listed even when the filter above would drop them (a network voice, for instance), so that the current voice can always be reported and a chosen one isn't taken as removed. Only while the engine still has them, though: a voice deleted in the engine's settings has left it, and a chosen one that isn't installed any more can't be spoken with, so both count as removed.
+		// The voice the user's settings selected, and one the script chose, are listed even when the filter above would drop them (a network voice, for instance), so that the current voice can always be reported and a chosen one isn't taken as removed. Only while the engine still has them installed, though: a voice deleted in the engine's settings has left it, or stays listed by it as not installed, and can't be spoken with until it is downloaded again, so it counts as removed, whichever of the two it is.
 		Voice settingsVoice = defaultVoice, chosen = chosenVoice;
-		if (settingsVoice != null && (engineVoices == null || engineVoices.containsKey(settingsVoice.getName()))) listVoice(settingsVoice);
-		if (chosen != null && engineVoices != null) {
-			Voice current = engineVoices.get(chosen.getName());
-			if (current != null && !current.getFeatures().contains("notInstalled")) listVoice(chosen);
+		if (settingsVoice != null && (engineVoices == null || isInstalled(engineVoices.get(settingsVoice.getName())))) listVoice(settingsVoice);
+		if (chosen != null && engineVoices != null && isInstalled(engineVoices.get(chosen.getName()))) listVoice(chosen);
+	}
+	private static boolean isInstalled(Voice voice) {
+		try {
+			return voice != null && !voice.getFeatures().contains("notInstalled");
+		} catch (Exception e) {
+			return false;
+		}
+	}
+	// Whether the engine has a voice of this name installed now, or can't say.
+	private boolean engineHasInstalled(TextToSpeech target, Voice voice) {
+		try {
+			Set<Voice> voices = target.getVoices();
+			if (voices == null) return true;
+			for (Voice listed : voices) {
+				if (listed.getName().equals(voice.getName())) return isInstalled(listed);
+			}
+			return false;
+		} catch (Exception e) {
+			return true;
 		}
 	}
 	// Lists the voices again, as voices can be installed or removed while the app runs; their indices can change.
