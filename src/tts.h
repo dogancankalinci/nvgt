@@ -137,7 +137,7 @@ struct engine_entry {
 	std::string init_voice_name; // Of init_voice, which is found again by name, since indices move when voices are installed or removed while the program runs.
 	bool rate_changed = false, pitch_changed = false, volume_changed = false, voice_changed = false; // Whether a value the object set is on the engine in place of its default.
 	bool synced = false; // Whether the engine carries the object's current settings.
-	uint64_t voices_generation = 0; // The engine's voices_generation() when the object last listed its voices.
+	uint64_t voices_generation = 0; // The engine's voices_generation() when the object bound it or last listed its voices.
 };
 
 class tts_voice {

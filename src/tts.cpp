@@ -488,13 +488,13 @@ static int tts_engine_init_voice_index(engine_entry &entry) {
 	for (int i = 0; i < count; i++) if (entry.engine->get_voice_name(i) == entry.init_voice_name) return i;
 	return -1;
 }
-// Puts back the voice an engine had before the object set one: through the engine when it can reset it, otherwise by finding that voice again. False when neither worked.
+// Puts back the platform's voice on an engine the object set one on: through the engine when it can reset it, which on Windows and Android gives the voice the user's settings select now, otherwise by finding the voice the engine had when it was bound and giving it that one as the platform's. False when neither worked.
 static bool tts_engine_restore_voice(engine_entry &entry) {
 	if (entry.engine->reset_voice()) return true;
 	int index = tts_engine_init_voice_index(entry);
 	return index >= 0 && entry.engine->restore_voice(index);
 }
-// The engine's own default voice: its current voice, unless the object set one on it, in which case the voice it had when it was bound, which is also what resetting it restores.
+// The engine's own default voice: its current voice, unless the object set one on it, in which case the voice it had when it was bound. The user's settings can have moved on since, which resetting the voice follows; the getters find the voice the engine then speaks with by its name (see platform_voice_index()).
 static int tts_engine_default_voice(engine_entry &entry) {
 	if (!entry.engine) return -1;
 	return entry.voice_changed? tts_engine_init_voice_index(entry) : entry.engine->get_current_voice();
@@ -905,7 +905,7 @@ sound *tts_voice::speak_to_sound(const string &text) {
 	}
 	return s;
 }
-// A parameter the script never set is read from the engine each time, so it reports the platform's current value (on Android the user's own speech settings, on Apple platforms the values a new utterance starts with) rather than a copy taken at startup.
+// A parameter the script never set is read from the engine each time, so it reports the platform's current value (on Windows and Android the user's own speech settings, on Apple platforms the values a new utterance starts with) rather than a copy taken at startup.
 float tts_voice::get_rate() {
 	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
 	if (rate_set) return fRound(nvgt_rate, 3);
@@ -1191,7 +1191,7 @@ bool tts_voice::set_language(const string& language) {
 	list_voices_again(false, true, true);
 	if (!language.empty()) voice_remembered = false; // A language chosen now replaces a voice that left the list, and the filter leaving out the chosen voice is no voice leaving. An empty one only lifts the filter.
 	if (voices.empty()) return restore();
-	// Asking for a language is asking for one of its voices, so the voice refresh() picked from the filtered list is pushed onto the engine like a set_voice() call, and when the engine refuses it, the other voices of the language are tried in turn. An empty language only lifts the filter and changes nothing about the selection.
+	// Asking for a language is asking for one of its voices, so the voice the listing picked from the filtered list is pushed onto the engine like a set_voice() call, and when the engine refuses it, the other voices of the language are tried in turn. An empty language only lifts the filter and changes nothing about the selection.
 	if (!language.empty() && get_voice_info(current_voice_index)) {
 		voice_set = true;
 		int picked = current_voice_index;
