@@ -1659,7 +1659,9 @@ void CScriptArray::Sort(asUINT startAt, asUINT count, bool asc)
 				int r = 0;
 
 				// Allow sort to work even if the array contains null handles
-				if( a == 0 ) return true;
+				// ALTERED: a null handle sorts before every object, and two of them compare equal. Each was less than the other,
+				// so std::sort walked out of the elements (see below).
+				if( a == 0 ) return b != 0;
 				if( b == 0 ) return false;
 
 				// No more comparisons once one was aborted (exit() in opCmp), so the abort is passed on afterwards
@@ -1684,9 +1686,9 @@ void CScriptArray::Sort(asUINT startAt, asUINT count, bool asc)
 				return false;
 			}
 		} customLess = {asc, cmpContext, cache ? cache->cmpFunc : 0, callerCtx};
-		// ALTERED: std::sort works on a copy of the elements' pointers, each object held by a reference, not on the array's
+		// ALTERED: the sort works on a copy of the elements' pointers, each object held by a reference, not on the array's
 		// buffer: an opCmp that changed the array (resized it, removed or replaced an element) freed the buffer or the
-		// objects that std::sort was still reading and writing. The sorted order is written back only if the array still
+		// objects that the sort was still reading and writing. The sorted order is written back only if the array still
 		// has its size and the elements that were sorted, in the same places; otherwise it is left as the comparisons left
 		// it and the script gets an exception. The buffer keeps all its references throughout, for the garbage collector.
 		asIScriptEngine *engine = objType->GetEngine();
@@ -1698,7 +1700,30 @@ void CScriptArray::Sort(asUINT startAt, asUINT count, bool asc)
 		if( hold )
 			for( void *p : before )
 				if( p ) engine->AddRefScriptObject(p, subType);
-		std::sort(items.begin(), items.end(), customLess);
+		// ALTERED: a merge sort, which reads and writes only inside the elements whatever the comparisons answer. std::sort
+		// requires a strict weak ordering and relies on it to stop at the ends of the range: the script's opCmp is not
+		// bound to give one (one saying less for equal elements, one that changes its answers), and libstdc++ and libc++
+		// then read and wrote past the elements, calling opCmp on whatever was there. It is also stable.
+		{
+			size_t n = items.size();
+			std::vector<void*> merged(n);
+			for( size_t width = 1; width < n; width *= 2 )
+			{
+				for( size_t lo = 0; lo < n; lo += 2 * width )
+				{
+					size_t mid = lo + width < n ? lo + width : n;
+					size_t hi = lo + 2 * width < n ? lo + 2 * width : n;
+					size_t i = lo, j = mid, k = lo;
+					while( i < mid && j < hi )
+						merged[k++] = customLess(items[j], items[i]) ? items[j++] : items[i++];
+					while( i < mid )
+						merged[k++] = items[i++];
+					while( j < hi )
+						merged[k++] = items[j++];
+				}
+				items.swap(merged);
+			}
+		}
 		bool changed = buffer->numElements != size || memcmp(GetArrayItemPointer(start), before.data(), before.size() * sizeof(void*)) != 0;
 		if( !changed )
 			memcpy(GetArrayItemPointer(start), items.data(), items.size() * sizeof(void*));
