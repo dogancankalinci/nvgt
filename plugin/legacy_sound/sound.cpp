@@ -571,6 +571,9 @@ DWORD CALLBACK bass_readproc_script(void* buffer, DWORD length, void* user) {
 	if (data.size() > length) data.resize(length);
 	if (data.size() > 0)
 		memcpy(buffer, &data[0], data.size());
+	// BASS takes the returned count of bytes from the buffer, which holds only what was copied from data (at most length): a script returning more (its length argument, or anything larger) gave BASS bytes never written and a count past the buffer it asked to fill, and a negative count other than -1 (the error) arrived as a count of billions.
+	if (ret > int(data.size())) ret = int(data.size());
+	else if (ret < -1) ret = -1;
 finish:
 	g_ScriptEngine->ReturnContext(ctx);
 	asThreadCleanup();
