@@ -2466,9 +2466,8 @@ public:
 		if (!snd)
 			return;
 		fade_volumes_to_linear(start_volume, end_volume);
-		if (!finite_values({start_volume, end_volume})) return;
+		if (!finite_values({start_volume, end_volume}) || !frames_fit(milliseconds, ma_engine_get_sample_rate(ma_sound_get_engine(&*snd)))) return;
 		fade_from_stop = false;
-		if (!frames_fit(milliseconds, ma_engine_get_sample_rate(ma_sound_get_engine(&*snd)))) return;
 		ma_sound_set_fade_in_milliseconds(&*snd, start_volume, end_volume, milliseconds);
 	}
 	float get_current_fade_volume() const override {
