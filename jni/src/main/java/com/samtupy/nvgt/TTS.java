@@ -1053,6 +1053,20 @@ public class TTS {
 		}
 		return true;
 	}
+	// Gives the engine a voice in place of the settings' one when resetVoice() failed, as when no voice of the settings'
+	// language is installed: the voice isn't taken as chosen, so the settings are followed again as soon as they select a
+	// voice the engine has, which they are looked up for again at the next use.
+	public boolean restoreVoiceByIndex(int index) {
+		List<Voice> voices = availableVoices;
+		if (!isActive() || voices == null || index < 0 || index >= voices.size()) return false;
+		Voice voice = voices.get(index);
+		synchronized (followLock) {
+			if (tts.setVoice(voice) != TextToSpeech.SUCCESS) return false;
+			chosenVoice = null;
+			followedSettings = null;
+		}
+		return true;
+	}
 	// The voice TextToSpeech is actually speaking with: the one a script set, otherwise the one it took from the user's settings. -1 if it has none, which happens when the engine doesn't support the language the settings name.
 	public int getCurrentVoiceIndex() {
 		if (!isActive()) return -1;

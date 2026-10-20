@@ -492,7 +492,7 @@ static int tts_engine_init_voice_index(engine_entry &entry) {
 static bool tts_engine_restore_voice(engine_entry &entry) {
 	if (entry.engine->reset_voice()) return true;
 	int index = tts_engine_init_voice_index(entry);
-	return index >= 0 && entry.engine->set_voice(index);
+	return index >= 0 && entry.engine->restore_voice(index);
 }
 // The engine's own default voice: its current voice, unless the object set one on it, in which case the voice it had when it was bound, which is also what resetting it restores.
 static int tts_engine_default_voice(engine_entry &entry) {

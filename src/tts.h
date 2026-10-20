@@ -77,6 +77,7 @@ public:
 	virtual bool reset_pitch() { return false; }
 	virtual bool reset_volume() { return false; }
 	virtual bool reset_voice() { return false; }
+	virtual bool restore_voice(int voice) { return set_voice(voice); } // Gives the engine one of its voices in place of the platform's when reset_voice() failed, as the platform's: an engine that follows the user's settings goes on following them, as it does after a reset, rather than keeping the voice as one a script chose.
 	virtual void refresh_voices() {} // Lists the installed voices again where the engine keeps a list of its own, for a change it can't tell of (see voices_generation(); one it can tell of it takes up by itself). Their indices can change.
 	virtual uint64_t voices_generation() { return 0; } // Changes when the engine's installed voices may have changed, where the engine can tell; see tts_voice::follow_installed_voices().
 };

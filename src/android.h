@@ -90,7 +90,7 @@ jclass android_find_app_class(JNIEnv* env, const char* name);
 class android_tts_engine : public tts_engine_impl {
 	jmethodID constructor, midIsActive, midIsSpeaking, midSpeak, midSilence, midGetVoice, midSetRate, midSetPitch, midSetPan, midSetVolume, midGetVoices, midSetVoice, midGetMaxSpeechInputLength, midGetPitch, midGetPan, midGetRate, midGetVolume;
 	jmethodID midSpeakPcm, midGetPcmSampleRate, midGetPcmAudioFormat, midGetPcmChannelCount;
-	jmethodID midGetVoiceCount, midGetVoiceName, midGetVoiceLanguage, midSetVoiceByIndex, midGetCurrentVoiceIndex;
+	jmethodID midGetVoiceCount, midGetVoiceName, midGetVoiceLanguage, midSetVoiceByIndex, midRestoreVoiceByIndex, midGetCurrentVoiceIndex;
 	jmethodID midGetEngineLabel;
 	jmethodID midResetRate, midResetPitch, midResetVolume, midResetVoice, midRefreshVoices, midGetVoicesGeneration;
 	jmethodID midSpeakTracked, midIsTrackedDone, midHasPendingSpeech, midShutdown;
@@ -121,6 +121,7 @@ public:
 	virtual std::string get_voice_name(int index) override;
 	virtual std::string get_voice_language(int index) override;
 	virtual bool set_voice(int voice) override;
+	virtual bool restore_voice(int voice) override;
 	virtual int get_current_voice() override;
 	virtual bool reset_rate() override;
 	virtual bool reset_pitch() override;

@@ -668,6 +668,7 @@ android_tts_engine::android_tts_engine(const std::string& enginePkg) : tts_engin
 	midGetVoiceName = method("getVoiceName", "(I)Ljava/lang/String;");
 	midGetVoiceLanguage = method("getVoiceLanguage", "(I)Ljava/lang/String;");
 	midSetVoiceByIndex = method("setVoiceByIndex", "(I)Z");
+	midRestoreVoiceByIndex = method("restoreVoiceByIndex", "(I)Z");
 	midGetCurrentVoiceIndex = method("getCurrentVoiceIndex", "()I");
 	midGetEngineLabel = method("getEngineLabel", "()Ljava/lang/String;");
 	midResetRate = method("resetRate", "()Z");
@@ -765,6 +766,7 @@ std::string android_tts_engine::get_voice_name(int index) {
 
 std::string android_tts_engine::get_voice_language(int index) { return tts_call_string(TTSObj, midGetVoiceLanguage, (jint)index); }
 bool android_tts_engine::set_voice(int voice) { return tts_call_bool(TTSObj, midSetVoiceByIndex, (jint)voice); }
+bool android_tts_engine::restore_voice(int voice) { return tts_call_bool(TTSObj, midRestoreVoiceByIndex, (jint)voice); }
 int android_tts_engine::get_current_voice() { return tts_call_int(TTSObj, -1, midGetCurrentVoiceIndex); }
 
 tts_audio_data* android_tts_engine::speak_to_pcm(const std::string &text) {
