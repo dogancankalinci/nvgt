@@ -2112,20 +2112,22 @@ static void hold_rate(ma_node* node) {
 	}
 	s->rate.store(rate, std::memory_order_relaxed);
 }
-// MiniAudio's processing of a sound plays first from a cache of the source's frames it read and converted to float but hadn't played yet, up to a block of them, which two things left wrong. A seek, made there from seekTarget, moved the source but kept the cache, so a sound not read in whole blocks, at a pitch other than 1 or a source rate other than the engine's, played up to that many frames from where it had been, at a pitch of 0.3 for 18 ms; the seek is taken over here, the cache emptied with it. And a source not in float is converted in steps, the last of which reads its end and marks the sound at it, ending the block, while that read's frames are still in the cache, so the sound stopped before playing them: its last part of a block was never heard, a sound shorter than a block not at all, and that part played first when the sound played again. Then the mark is taken back and the cached frames are played in the rest of the block. On the thread reading the engine.
+// MiniAudio's processing of a sound plays first from a cache of the source's frames it read and converted to float but hadn't played yet, up to a block of them, which two things left wrong. A seek, made there from seekTarget, moved the source but kept the cache, so a sound not read in whole blocks, at a pitch other than 1 or a source rate other than the engine's, played up to that many frames from where it had been, at a pitch of 0.3 for 18 ms; the seek is taken over here, the cache emptied with it, and the target cleared only after it, as MiniAudio does, as the sound's position reads the target until then. And a source not in float is converted in steps, the last of which reads its end and marks the sound at it, ending the block, while that read's frames are still in the cache, so the sound stopped before playing them: its last part of a block was never heard, a sound shorter than a block not at all, and that part played first when the sound played again. Then the mark is taken back and the cached frames are played in the rest of the block. On the thread reading the engine.
 static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32* frame_count_in, float** frames_out, ma_uint32* frame_count_out) {
 	hold_rate(node);
 	ma_sound* s = (ma_sound*)node;
-	ma_uint64 target = reinterpret_cast<std::atomic<ma_uint64>*>(&s->seekTarget)->exchange(~(ma_uint64)0); // MiniAudio's "no seek".
-	if (target != ~(ma_uint64)0) {
-		ma_data_source_seek_to_pcm_frame(s->pDataSource, target);
-		ma_node_set_time(s, target);
-		s->processingCacheFramesRemaining = 0;
-	}
+	std::atomic<ma_uint64>& seek_target = *reinterpret_cast<std::atomic<ma_uint64>*>(&s->seekTarget);
 	ma_uint32 wanted = *frame_count_out, done = 0, channels = ma_node_get_output_channels(node, 0);
 	for (;;) {
 		ma_uint32 cached = s->processingCacheFramesRemaining;
 		if (cached && ma_sound_at_end(s)) reinterpret_cast<std::atomic<ma_bool32>*>(&s->atEnd)->store(MA_FALSE);
+		ma_uint64 target = seek_target.load();
+		if (target != ~(ma_uint64)0) { // ~0 is MiniAudio's "no seek".
+			ma_data_source_seek_to_pcm_frame(s->pDataSource, target);
+			ma_node_set_time(s, target);
+			s->processingCacheFramesRemaining = cached = 0;
+			seek_target.compare_exchange_strong(target, ~(ma_uint64)0); // A seek made meanwhile stays for the next call.
+		}
 		float* out = frames_out[0] + (size_t)done * channels;
 		ma_uint32 count = wanted - done;
 		g_ma_sound_process(node, frames_in, frame_count_in, &out, &count);
