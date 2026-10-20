@@ -9,9 +9,32 @@
 
 #include "scriptarray.h"
 
+#ifndef NVGT_PLUGIN_INCLUDE
+// ALTERED: nvgt_angelscript.cpp, see ArrayCallbacksStopped below. A plugin's copy of this add-on can't reach it.
+bool script_callbacks_stopped(asIScriptContext* ctx);
+#endif
+
 using namespace std;
 
 BEGIN_AS_NAMESPACE
+
+// ALTERED: whether the comparison or sort callbacks must stop because the script is ending: the last one was aborted
+// (exit() in it, when it runs as a nested call of the script's context), or exit() was called since the script that asked
+// for them began (NVGT's script_callbacks_stopped). Only the first was looked at, which is never true in a context of the
+// add-on's own, used when the script's context can't take a nested call (PushState() fails at asEP_MAX_CALL_STACK_SIZE):
+// exit() doesn't abort that context, so every remaining callback ran, each calling exit() again.
+static bool ArrayCallbacksStopped(asIScriptContext *callerCtx, asIScriptContext *cmpCtx)
+{
+	if( cmpCtx && cmpCtx->GetState() == asEXECUTION_ABORTED )
+		return true;
+#ifndef NVGT_PLUGIN_INCLUDE
+	if( script_callbacks_stopped(callerCtx) )
+		return true;
+#else
+	(void)callerCtx;
+#endif
+	return false;
+}
 
 // This macro is used to avoid warnings about unused variables.
 // Usually where the variables are only used in debug mode.
@@ -1170,6 +1193,7 @@ bool CScriptArray::operator==(const CScriptArray &other) const
 
 	asIScriptContext *cmpContext = 0;
 	bool isNested = false;
+	asIScriptContext *callerCtx = asGetActiveContext(); // ALTERED: see ArrayCallbacksStopped
 
 	if( subTypeId & ~asTYPEID_MASK_SEQNBR )
 	{
@@ -1195,11 +1219,16 @@ bool CScriptArray::operator==(const CScriptArray &other) const
 	bool isEqual = true;
 	SArrayCache *cache = reinterpret_cast<SArrayCache*>(objType->GetUserData(ARRAY_CACHE));
 	for( asUINT n = 0; n < GetSize(); n++ )
+	{
 		if( !Equals(At(n), other.At(n), cmpContext, cache) )
 		{
 			isEqual = false;
 			break;
 		}
+		// ALTERED: no more opEquals calls once the script is ending, see ArrayCallbacksStopped
+		if( cmpContext && ArrayCallbacksStopped(callerCtx, cmpContext) )
+			break;
+	}
 
 	if( cmpContext )
 	{
@@ -1392,6 +1421,7 @@ int CScriptArray::Find(asUINT startAt, void *value) const
 
 	asIScriptContext *cmpContext = 0;
 	bool isNested = false;
+	asIScriptContext *callerCtx = asGetActiveContext(); // ALTERED: see ArrayCallbacksStopped
 
 	if( subTypeId & ~asTYPEID_MASK_SEQNBR )
 	{
@@ -1427,7 +1457,8 @@ int CScriptArray::Find(asUINT startAt, void *value) const
 		}
 		// An aborted comparison (exit() in opEquals) ends the search, so the abort is passed on below and isn't
 		// cleared by the next comparison's Prepare()
-		if( isNested && cmpContext->GetState() == asEXECUTION_ABORTED )
+		// ALTERED: as does exit() in a comparison run in a context of the add-on's own, see ArrayCallbacksStopped
+		if( cmpContext && ArrayCallbacksStopped(callerCtx, cmpContext) )
 			break;
 	}
 
@@ -1585,6 +1616,7 @@ void CScriptArray::Sort(asUINT startAt, asUINT count, bool asc)
 	{
 		asIScriptContext *cmpContext = 0;
 		bool isNested = false;
+		asIScriptContext *callerCtx = asGetActiveContext(); // ALTERED: see ArrayCallbacksStopped
 
 		// Try to reuse the active context
 		cmpContext = asGetActiveContext();
@@ -1603,6 +1635,7 @@ void CScriptArray::Sort(asUINT startAt, asUINT count, bool asc)
 			bool               asc;
 			asIScriptContext  *cmpContext;
 			asIScriptFunction *cmpFunc;
+			asIScriptContext  *callerCtx;
 			bool operator()(void *a, void *b) const
 			{
 				if( !asc )
@@ -1620,7 +1653,8 @@ void CScriptArray::Sort(asUINT startAt, asUINT count, bool asc)
 				if( b == 0 ) return false;
 
 				// No more comparisons once one was aborted (exit() in opCmp), so the abort is passed on afterwards
-				if( cmpFunc && cmpContext->GetState() == asEXECUTION_ABORTED ) return false;
+				// ALTERED: or exit() was called in a context of the add-on's own, see ArrayCallbacksStopped
+				if( cmpFunc && ArrayCallbacksStopped(callerCtx, cmpContext) ) return false;
 
 				// Execute object opCmp
 				if( cmpFunc )
@@ -1639,7 +1673,7 @@ void CScriptArray::Sort(asUINT startAt, asUINT count, bool asc)
 
 				return false;
 			}
-		} customLess = {asc, cmpContext, cache ? cache->cmpFunc : 0};
+		} customLess = {asc, cmpContext, cache ? cache->cmpFunc : 0, callerCtx};
 		std::sort((void**)GetArrayItemPointer(start), (void**)GetArrayItemPointer(end), customLess);
 
 		// Clean up
@@ -1705,6 +1739,7 @@ void CScriptArray::Sort(asIScriptFunction *func, asUINT startAt, asUINT count)
 
 	asIScriptContext *cmpContext = 0;
 	bool isNested = false;
+	asIScriptContext *callerCtx = asGetActiveContext(); // ALTERED: see ArrayCallbacksStopped
 
 	// Try to reuse the active context
 	cmpContext = asGetActiveContext();
@@ -1729,6 +1764,9 @@ void CScriptArray::Sort(asIScriptFunction *func, asUINT startAt, asUINT count)
 		asUINT best = i;
 		for (asUINT j = i + 1; j < end; j++)
 		{
+			// ALTERED: see ArrayCallbacksStopped
+			if (ArrayCallbacksStopped(callerCtx, cmpContext))
+				break;
 			cmpContext->Prepare(func);
 			cmpContext->SetArgAddress(0, At(j));
 			cmpContext->SetArgAddress(1, At(best));
@@ -1745,7 +1783,8 @@ void CScriptArray::Sort(asIScriptFunction *func, asUINT startAt, asUINT count)
 			Swap(GetArrayItemPointer(i), GetArrayItemPointer(best));
 
 		// An aborted callback (exit() in it) ends the sort, so the abort is passed on below
-		if( cmpContext->GetState() == asEXECUTION_ABORTED )
+		// ALTERED: as does exit() in a callback run in a context of the add-on's own, see ArrayCallbacksStopped
+		if( ArrayCallbacksStopped(callerCtx, cmpContext) )
 			break;
 	}
 
