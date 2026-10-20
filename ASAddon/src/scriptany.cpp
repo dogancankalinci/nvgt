@@ -200,6 +200,11 @@ void RegisterScriptAny_Generic(asIScriptEngine *engine)
 
 CScriptAny &CScriptAny::operator=(const CScriptAny &other)
 {
+	// ALTERED: assigning an any to itself (a = a) released its value before copying it from itself, which left it empty and
+	// leaked the reference to the value's type taken below (the module then couldn't free that type)
+	if( &other == this )
+		return *this;
+
 	// Hold on to the object type reference so it isn't destroyed too early
 	if( (other.value.typeId & asTYPEID_MASK_OBJECT) )
 	{
