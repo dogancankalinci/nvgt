@@ -1995,6 +1995,8 @@ public:
 audio_opus_encoder* audio_opus_encoder::create(audio_engine* e) { return new audio_opus_encoder_impl(e); }
 // The highest rate, as a ratio, which a sound or mixer plays at, and a higher pitch is held at. There even a sound's lowest audible component, at 20 Hz, plays at 20 kHz, the top of hearing, so a higher rate can't be heard to rise any more, and past half the engine's sample rate its components fold back down instead, sounding lower. MiniAudio's work grows with the rate, and with no limit a pitch of a million kept the audio thread from returning at all.
 static constexpr float max_pitch_ratio = 1000;
+// The lowest rate MiniAudio's resampler takes, and a lower pitch is held at: it refuses one whose ratio times 1000 is below 1 and keeps the rate it had, which could be far faster than hold_rate() then allows.
+static constexpr float min_pitch_ratio = 1.0f / 1000;
 // A MiniAudio sound or group as sounds and mixers make them, whose rate MiniAudio is given held by hold_rate().
 struct held_sound : ma_sound {
 	std::atomic<float> pitch{1}; // The pitch the script set, which MiniAudio is given only held.
@@ -2028,7 +2030,7 @@ static float downstream_rate(ma_node_base* node) {
 static void hold_rate(ma_node* node) {
 	held_sound* s = held((ma_sound*)node);
 	float pitch = ma_sound_get_pitch(s);
-	if (pitch != s->given && pitch > 0) s->pitch.store(std::min(pitch, max_pitch_ratio), std::memory_order_relaxed); // Given through MiniAudio by code that has the ma_sound, as a plugin may.
+	if (pitch != s->given && pitch > 0) s->pitch.store(std::clamp(pitch, min_pitch_ratio, max_pitch_ratio), std::memory_order_relaxed); // Given through MiniAudio by code that has the ma_sound, as a plugin may.
 	float& doppler = s->engineNode.spatializer.dopplerPitch;
 	if (!ma_sound_is_spatialization_enabled(s) || doppler != doppler) doppler = 1;
 	else if (doppler > max_pitch_ratio) doppler = max_pitch_ratio;
@@ -2036,8 +2038,12 @@ static void hold_rate(ma_node* node) {
 	pitch = s->pitch.load(std::memory_order_relaxed);
 	if (base * pitch * doppler > limit) pitch = limit / (base * doppler);
 	if (pitch > 0) ma_sound_set_pitch(s, s->given = pitch);
-	float rate = base * s->given * doppler; // As MiniAudio works it out; it keeps the rate it had instead of one below 1 / 1000.
-	if (rate * 1000 >= 1) s->rate.store(rate, std::memory_order_relaxed);
+	float rate = base * s->given * doppler; // As MiniAudio works it out.
+	if (rate * 1000 < 1) { // Below min_pitch_ratio, as with a doppler ratio near 0 for a listener going away at the speed of sound, the doppler ratio is raised to where the rate is just at it.
+		doppler = min_pitch_ratio / (base * s->given) * 1.0001f;
+		rate = base * s->given * doppler;
+	}
+	s->rate.store(rate, std::memory_order_relaxed);
 }
 static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32* frame_count_in, float** frames_out, ma_uint32* frame_count_out) {
 	hold_rate(node);
@@ -2305,7 +2311,7 @@ public:
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return;
 		}
-		held(&*snd)->pitch.store(ratio < max_pitch_ratio? ratio : max_pitch_ratio); // MiniAudio is given it held, by hold_rate().
+		held(&*snd)->pitch.store(std::clamp(ratio, min_pitch_ratio, max_pitch_ratio)); // MiniAudio is given it held, by hold_rate().
 	}
 	float get_pitch() const override {
 		if (!snd) return NAN;
