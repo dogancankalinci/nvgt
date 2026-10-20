@@ -2113,7 +2113,7 @@ static void hold_rate(ma_node* node) {
 	}
 	s->rate.store(rate, std::memory_order_relaxed);
 }
-// MiniAudio's processing of a sound plays first from a cache of the source's frames it read and converted to float but hadn't played yet, up to a block of them, which two things left wrong. A seek, made there from seekTarget, moved the source but kept the cache, so a sound not read in whole blocks, at a pitch other than 1 or a source rate other than the engine's, played up to that many frames from where it had been, at a pitch of 0.3 for 18 ms; the seek is taken over here, the cache emptied with it, and the target cleared only after it, as MiniAudio does, as the sound's position reads the target until then. A sound at its end is stopped in the block first, and a seek kept for when it plays again, as MiniAudio keeps it. And a source not in float is converted in steps, the last of which reads its end and marks the sound at it, ending the block, while that read's frames are still in the cache, so the sound stopped before playing them: its last part of a block was never heard, a sound shorter than a block not at all, and that part played first when the sound played again. Then the mark is taken back and the cached frames are played in the rest of the block. On the thread reading the engine.
+// MiniAudio's processing of a sound plays first from a cache of the source's frames it read and converted to float but hadn't played yet, up to a block of them. A seek, made there from seekTarget, moved the source but kept the cache, so a sound not read in whole blocks, at a pitch other than 1 or a source rate other than the engine's, played up to that many frames from where it had been, at a pitch of 0.3 for 18 ms; the seek is taken over here, the cache emptied with it, and the target cleared only after it, as MiniAudio does, as the sound's position reads the target until then. A sound at its end is stopped in the block first, and a seek kept for when it plays again, as MiniAudio keeps it. On the thread reading the engine.
 static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32* frame_count_in, float** frames_out, ma_uint32* frame_count_out) {
 	hold_rate(node);
 	ma_sound* s = (ma_sound*)node;
@@ -2124,24 +2124,65 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 		*frame_count_out = 0;
 		return;
 	}
-	ma_uint32 wanted = *frame_count_out, done = 0, channels = ma_node_get_output_channels(node, 0);
-	for (;;) {
-		ma_uint32 cached = s->processingCacheFramesRemaining;
-		if (cached && ma_sound_at_end(s)) reinterpret_cast<std::atomic<ma_bool32>*>(&s->atEnd)->store(MA_FALSE);
-		ma_uint64 target = seek_target.load();
-		if (target != ~(ma_uint64)0 && !ma_sound_at_end(s)) { // ~0 is MiniAudio's "no seek".
-			ma_data_source_seek_to_pcm_frame(s->pDataSource, target);
-			ma_node_set_time(s, target);
-			s->processingCacheFramesRemaining = cached = 0;
-			seek_target.compare_exchange_strong(target, ~(ma_uint64)0); // A seek made meanwhile stays for the next call.
-		}
-		float* out = frames_out[0] + (size_t)done * channels;
-		ma_uint32 count = wanted - done;
-		g_ma_sound_process(node, frames_in, frame_count_in, &out, &count);
-		done += count;
-		if (done >= wanted || !ma_sound_at_end(s) || !s->processingCacheFramesRemaining || !count && s->processingCacheFramesRemaining == cached) break; // The last for want of progress.
+	ma_uint64 target = seek_target.load();
+	if (target != ~(ma_uint64)0 && !ma_sound_at_end(s)) { // ~0 is MiniAudio's "no seek".
+		ma_data_source_seek_to_pcm_frame(s->pDataSource, target);
+		ma_node_set_time(s, target);
+		s->processingCacheFramesRemaining = 0;
+		seek_target.compare_exchange_strong(target, ~(ma_uint64)0); // A seek made meanwhile stays for the next block.
 	}
-	*frame_count_out = done;
+	g_ma_sound_process(node, frames_in, frame_count_in, frames_out, frame_count_out);
+}
+// MiniAudio converts a sound's source that isn't in float in steps, the last of which reads its end and marks the sound at it, ending the block, while that read's frames are still in its cache, so the sound stopped before playing them: sounds from 16-bit files, PCM, tones and speech lost up to a block at their end, a sound shorter than a block played nothing, and the lost part played first when the sound played again. A source in float is read whole, with no such step. So a sound reads a source in another format through this, which reads it and gives its frames in float, everything else passing through: MiniAudio's end then comes with nothing left unplayed. The sound's own source stays what scripts see, by sound.datasource and in the format sound.get_data_format() gives.
+struct float_view {
+	ma_data_source_base base;
+	ma_data_source* inner;
+	ma_format format;
+	ma_uint32 channels;
+	~float_view() { ma_data_source_uninit(&base); } // Only views made in full are kept.
+};
+static ma_result float_view_read(ma_data_source* source, void* frames_out, ma_uint64 frame_count, ma_uint64* frames_read) {
+	float_view* view = (float_view*)source;
+	ma_uint8 temp[4096];
+	ma_uint64 capacity = sizeof(temp) / ma_get_bytes_per_frame(view->format, view->channels), total = 0;
+	ma_result result = MA_SUCCESS;
+	while (total < frame_count) {
+		ma_uint64 wanted = std::min(capacity, frame_count - total), got = 0;
+		result = ma_data_source_read_pcm_frames(view->inner, temp, wanted, &got);
+		ma_convert_pcm_frames_format((float*)frames_out + total * view->channels, ma_format_f32, temp, view->format, got, view->channels, ma_dither_mode_none);
+		total += got;
+		if (result != MA_SUCCESS || got < wanted) break;
+	}
+	if (frames_read) *frames_read = total;
+	return total? MA_SUCCESS : result;
+}
+static ma_result float_view_seek(ma_data_source* source, ma_uint64 frame) { return ma_data_source_seek_to_pcm_frame(((float_view*)source)->inner, frame); }
+static ma_result float_view_get_data_format(ma_data_source* source, ma_format* format, ma_uint32* channels, ma_uint32* sample_rate, ma_channel* channel_map, size_t channel_map_capacity) {
+	ma_result result = ma_data_source_get_data_format(((float_view*)source)->inner, nullptr, channels, sample_rate, channel_map, channel_map_capacity);
+	if (format) *format = ma_format_f32;
+	return result;
+}
+static ma_result float_view_get_cursor(ma_data_source* source, ma_uint64* cursor) { return ma_data_source_get_cursor_in_pcm_frames(((float_view*)source)->inner, cursor); }
+static ma_result float_view_get_length(ma_data_source* source, ma_uint64* length) { return ma_data_source_get_length_in_pcm_frames(((float_view*)source)->inner, length); }
+static ma_result float_view_set_looping(ma_data_source* source, ma_bool32 looping) { return ma_data_source_set_looping(((float_view*)source)->inner, looping); } // A stream loops seamlessly only when it loops itself.
+static ma_data_source_vtable g_float_view_vtable = {float_view_read, float_view_seek, float_view_get_data_format, float_view_get_cursor, float_view_get_length, float_view_set_looping, 0};
+// The source a sound reads: the one given if it is in float, or else a float_view of it made in view.
+static ma_data_source* float_source(ma_data_source* source, unique_ptr<float_view>& view) {
+	view.reset();
+	ma_format format = ma_format_unknown;
+	ma_uint32 channels = 0;
+	if (ma_data_source_get_data_format(source, &format, &channels, nullptr, nullptr, 0) != MA_SUCCESS || format == ma_format_f32 || format == ma_format_unknown || !channels) return source;
+	view = make_unique<float_view>();
+	ma_data_source_config cfg = ma_data_source_config_init();
+	cfg.vtable = &g_float_view_vtable;
+	if (ma_data_source_init(&cfg, &view->base) != MA_SUCCESS) {
+		view.reset();
+		return source;
+	}
+	view->inner = source;
+	view->format = format;
+	view->channels = channels;
+	return &view->base;
 }
 static void held_group_process(ma_node* node, const float** frames_in, ma_uint32* frame_count_in, float** frames_out, ma_uint32* frame_count_out) {
 	hold_rate(node);
@@ -2748,6 +2789,8 @@ class sound_impl final : public mixer_impl, public virtual sound {
 	std::string loaded_filename; // Contains the loaded filename as passed in the load/stream method, used just for convenience.
 	mutable std::atomic_flag load_completed;
 	unique_ptr<pcm_queue> pcm_stream;
+	unique_ptr<float_view> view; // What the sound reads its source through when that isn't in float, freed after the sound.
+	ma_data_source* own_source() const { return view? view->inner : snd->pDataSource; } // With snd set.
 	bool paused;
 	bool fade_paused = false; // Paused by pause_fade(), whose stop is still scheduled, unlike one the script scheduled itself.
 	bool should_autoclose; // If this is true, the release method defers sound destruction until playback has complete.
@@ -2872,6 +2915,7 @@ public:
 		bool wait_for_load = !(ma_flags & (MA_SOUND_FLAG_ASYNC | MA_SOUND_FLAG_STREAM));
 		ma_uint32 flags = ma_flags | (wait_for_load? MA_SOUND_FLAG_ASYNC : 0);
 		unique_ptr<ma_resource_manager_data_source> made_source;
+		unique_ptr<float_view> made_view;
 		bool tree_held = false; // The retry below holds g_resource_tree_mutex around its attempt.
 		// Each attempt gets its own load state, so one a failed attempt left with MiniAudio can't be mistaken for the next. It makes the source and then the sound from it, as ma_sound_init_ex() would from the file's name, but keeps the source: see source.
 		auto attempt_init = [&]() {
@@ -2897,7 +2941,7 @@ public:
 				ma_sound_config cfg = ma_sound_config_init();
 				// Not attached to the endpoint by MiniAudio, as postload() attaches it to its chain; so making it changes no node's lists and needs no graph lock.
 				cfg.flags = flags | MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT;
-				cfg.pDataSource = &*made_source;
+				cfg.pDataSource = float_source((ma_data_source*)&*made_source, made_view);
 				if ((g_soundsystem_last_error = ma_sound_init_ex(engine->get_ma_engine(), &cfg, &*made)) != MA_SUCCESS) discard_source(made_source, tree_held);
 				else if (wait_for_load) {
 					{
@@ -2948,6 +2992,7 @@ public:
 		if (g_soundsystem_last_error == MA_SUCCESS) {
 			if (made_source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM) held(&*made)->stream = &made_source->backend.stream;
 			source = std::move(made_source);
+			view = std::move(made_view);
 			adopt_sound(std::move(made));
 			postload(filename, (flags & MA_SOUND_FLAG_ASYNC) && !wait_for_load);
 		}
@@ -3024,7 +3069,8 @@ public:
 			ma_pcm_rb_set_sample_rate(&pcm_stream->rb, sample_rate);
 			// As load_special() makes a sound: not attached by MiniAudio, so without the graph lock, and handed to snd once made.
 			held_sound_ptr made(new held_sound());
-			if ((g_soundsystem_last_error = ma_sound_init_from_data_source(get_engine()->get_ma_engine(), &pcm_stream->base, MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT, nullptr, &*made)) != MA_SUCCESS) {
+			if ((g_soundsystem_last_error = ma_sound_init_from_data_source(get_engine()->get_ma_engine(), float_source(&pcm_stream->base, view), MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT, nullptr, &*made)) != MA_SUCCESS) {
+				view.reset();
 				pcm_stream->uninit();
 				pcm_stream.reset();
 				return false;
@@ -3094,7 +3140,8 @@ public:
 		if (snd) close();
 		audio_data_source_impl::prepare_length_of(ds); // Before the sound reads it.
 		held_sound_ptr made(new held_sound()); // As load_special() makes a sound.
-		if ((g_soundsystem_last_error = ma_sound_init_from_data_source(get_engine()->get_ma_engine(), ds->get_ma_data_source(), MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT, nullptr, &*made)) != MA_SUCCESS) {
+		if ((g_soundsystem_last_error = ma_sound_init_from_data_source(get_engine()->get_ma_engine(), float_source(ds->get_ma_data_source(), view), MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT, nullptr, &*made)) != MA_SUCCESS) {
+			view.reset();
 			ds->release();
 			return false;
 		}
@@ -3150,6 +3197,7 @@ public:
 		// Already off the graph, and a sound takes no input, so uninitializing it changes no node's lists: the graph lock isn't held across it, nor across freeing its source, as freeing a stream waits for its reads, a stalled network read included. A buffer in the resource cache is freed under the cache's lock, as it is made.
 		if (failed_buffer) free_failed_buffer(failed_buffer);
 		ma_sound_uninit(&*closing); // The sound doesn't own its source, which is freed after it.
+		view.reset();
 		if (source) {
 			{
 				std::shared_lock<std::shared_mutex> tree_lock(g_resource_tree_mutex, std::defer_lock);
@@ -3179,7 +3227,7 @@ public:
 	const std::string &get_loaded_filename() const override { return loaded_filename; }
 	audio_data_source* get_datasource() const override {
 		if (!datasource && snd) {
-			if ((datasource = audio_data_source_get(snd->pDataSource, get_engine())) == nullptr) return nullptr;
+			if ((datasource = audio_data_source_get(own_source(), get_engine())) == nullptr) return nullptr;
 			if (auto impl = dynamic_cast<audio_data_source_impl*>(datasource)) impl->mark_sound_owned();
 		}
 		return datasource;
@@ -3387,7 +3435,7 @@ public:
 		if (channels) *channels = 0;
 		if (sample_rate) *sample_rate = 0;
 		if (snd) {
-			g_soundsystem_last_error = ma_sound_get_data_format(&*snd, format, channels, sample_rate, nullptr, 0);
+			g_soundsystem_last_error = ma_data_source_get_data_format(own_source(), format, channels, sample_rate, nullptr, 0); // The source's own, which a float_view gives in float.
 			return g_soundsystem_last_error == MA_SUCCESS;
 		}
 		return false;
