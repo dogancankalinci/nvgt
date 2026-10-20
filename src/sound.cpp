@@ -2866,9 +2866,9 @@ public:
 		// Also, our PCM buffer is a permanent class property so we can enjoy the speed of async loading.
 		return load_special(":pcm", g_memory_protocol_slot, memory_protocol::directive(&pcm_buffer[0], pcm_buffer.size()), sound_service::null_filter_slot, nullptr, MA_SOUND_FLAG_DECODE | MA_SOUND_FLAG_ASYNC);
 	}
-	// A script's PCM below the lowest sample rate MiniAudio names was resampled up to the engine's as it loaded, so that a second at 1 Hz took gigabytes.
-	static bool pcm_rate_in_range(int samplerate) {
-		if (samplerate >= ma_standard_sample_rate_min) return true;
+	// A script's PCM below the lowest sample rate MiniAudio names was resampled up to the engine's as it loaded, so that a second at 1 Hz took gigabytes. A channel count past MA_MAX_CHANNELS was refused only once the sound already loaded had been closed, and dr_wav keeps the count in 16 bits, so one past 65535 loaded other audio, or at a multiple of 65536 divided by zero.
+	static bool pcm_format_in_range(int samplerate, int channels) {
+		if (samplerate >= ma_standard_sample_rate_min && channels >= 1 && channels <= MA_MAX_CHANNELS) return true;
 		g_soundsystem_last_error = MA_INVALID_ARGS;
 		return false;
 	}
@@ -2876,14 +2876,14 @@ public:
 		if (!buffer)
 			return false;
 		ma_format format = ma_format_from_angelscript_type(buffer->GetElementTypeId());
-		if (format == ma_format_unknown || !pcm_rate_in_range(samplerate)) return false;
+		if (format == ma_format_unknown || !pcm_format_in_range(samplerate, channels)) return false;
 		return load_pcm(buffer->GetBuffer(), buffer->GetSize() * buffer->GetElementSize(), format, samplerate, channels);
 	}
 	bool load_pcm_script_memory_buffer(script_memory_buffer* buffer, int samplerate, int channels) override {
 		if (!buffer)
 			return false;
 		ma_format format = ma_format_from_angelscript_type(buffer->subtypeid);
-		if (format == ma_format_unknown || !pcm_rate_in_range(samplerate)) return false;
+		if (format == ma_format_unknown || !pcm_format_in_range(samplerate, channels)) return false;
 		return load_pcm(buffer->ptr, buffer->size * buffer->get_element_size(), format, samplerate, channels);
 	}
 	bool stream_pcm(const void* data, unsigned int size_in_frames, ma_format format, unsigned int sample_rate, unsigned int channels, unsigned int buffer_size) override {
@@ -3581,6 +3581,7 @@ static bool write_pcm_as_wav(const void *buffer, unsigned int size, ma_format fo
 	return stream.good();
 }
 bool sound::pcm_to_wav(const void *buffer, unsigned int size, ma_format format, int samplerate, int channels, std::string &output) {
+	if (channels < 1 || channels > MA_MAX_CHANNELS) return false; // dr_wav keeps the count in 16 bits, and divided by it cut to 0.
 	int frame_size = pcm_frame_size(format, channels);
 	if (!frame_size)
 		return false;
