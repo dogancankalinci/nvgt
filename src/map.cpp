@@ -321,6 +321,12 @@ map_area* coordinate_map::add_area(float minx, float maxx, float miny, float max
 	return a;
 }
 void coordinate_map::get_areas(float minx, float maxx, float miny, float maxy, float minz, float maxz, float d, std::vector<map_area*>& local_areas, bool priority_check, asIScriptFunction* filter_callback, asINT64 flags, asINT64 excluded_flags) {
+	// The filter callback can let go of the last handle to this map, which was then deleted while the search went on reading its frames. AngelScript doesn't hold the object of a registered method for the call, so the search holds the map; the areas found hold references of their own.
+	struct holder {
+		coordinate_map* m;
+		holder(coordinate_map* m) : m(m) { m->add_ref(); }
+		~holder() { m->release(); }
+	} hold(this);
 	int p = -1;
 	if (minx == maxx && miny == maxy && minz == maxz && d < 1) {
 		for (int i = total_frame_sizes - 1; i >= 0; i--) {
