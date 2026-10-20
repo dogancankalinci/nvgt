@@ -1,0 +1,39 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -5653,11 +5653,22 @@
+ 	m_needToCleanupArgs = false;
+ }
+ 
++// ALTERED: this must find exactly the try block that CleanStack(true) will catch the exception in, as Execute unwinds
++// the stack with it when this says the exception will be caught, and CleanStack(true) cleans up every frame it passes
++// without catching. When nothing caught the exception there, Execute returned asEXECUTION_EXCEPTION with those frames
++// already cleaned up, and the Unprepare, Prepare or PopState that followed cleaned up the last of them a second time:
++// each value type local on the stack (a string, an object with a destructor) was destroyed twice. That happened in two
++// cases. The search went on past the marker of a nested call, where CleanStack stops, so an exception in a nested call
++// (a script class destructor run when the last handle is released, or a callback a registered function runs on the
++// script's context) made while the interrupted function was inside a try block was taken to be caught; the exception of
++// a nested call never leaves it, it ends the nested execution and the application decides what the interrupted one
++// does with it. And the function at the top was searched even when it never started (the stack overflow on entering
++// it, or a Prepare that failed), where CleanStackFrame doesn't look for a try block.
+ bool asCContext::FindExceptionTryCatch()
+ {
+ 	// Check each of the script functions on the callstack to see if
+ 	// the current program position is within a try/catch block
+-	if (m_currentFunction && m_currentFunction->scriptData)
++	if (m_currentFunction && m_currentFunction->scriptData && !m_isStackMemoryNotAllocated && m_regs.programPointer)
+ 	{
+ 		asUINT currPos = asUINT(m_regs.programPointer - m_currentFunction->scriptData->byteCode.AddressOf());
+ 		for (asUINT n = 0; n < m_currentFunction->scriptData->tryCatchInfo.GetLength(); n++)
+@@ -5672,6 +5683,11 @@
+ 	for (int level = 1; level < stackSize; level++)
+ 	{
+ 		asPWORD *s = m_callStack.AddressOf() + (stackSize - level - 1)*CALLSTACK_FRAME_SIZE;
++
++		// ALTERED: not past the marker of a nested call, see above
++		if (s[0] == 0)
++			break;
++
+ 		asCScriptFunction *func = (asCScriptFunction*)s[1];
+ 		if (func && func->scriptData)
+ 		{
