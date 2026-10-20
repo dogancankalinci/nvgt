@@ -49,6 +49,7 @@ vcpkg_from_github(
         fix-unstarted-function-args.patch
         fix-getargonstack-bounds.patch
         fix-nested-exception-catch.patch
+        fix-abort-after-last-suspend.patch
 )
 
 vcpkg_cmake_configure(

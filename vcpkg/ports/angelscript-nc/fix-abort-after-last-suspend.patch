@@ -1,0 +1,51 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -819,15 +819,19 @@
+ 	}
+ 
+ 	// Reset state
+-	// Most of the time the previous state will be asEXECUTION_FINISHED, in which case the values are already initialized
+ 	ClearException();
+-	if( m_status != asEXECUTION_FINISHED )
+-	{
+-		m_doAbort                 = false;
+-		m_doSuspend               = false;
+-		m_regs.doProcessSuspend   = m_lineCallback;
+-		m_externalSuspendRequest  = false;
+-	}
++	// ALTERED: also after asEXECUTION_FINISHED. An Abort() that came after the last point where the finished execution
++	// could act on it (see Execute) was kept, and the next execution prepared on the context carried it as its own: it
++	// ended at its first suspend point (or at a later Suspend(), if the request had been left half cleared) for an abort
++	// that had been meant for the one before. In a context of its own the request is dropped, as the execution it was for
++	// is over; in a nested call it is meant for the interrupted execution, which gets it with the requests PushState put
++	// aside, so that preparing the next nested call (such as the next comparison of a sort) doesn't lose it.
++	if( m_status == asEXECUTION_FINISHED && m_doAbort && m_nestedRequests.GetLength() )
++		m_nestedRequests[m_nestedRequests.GetLength() - 1] |= 3;
++	m_doAbort                 = false;
++	m_doSuspend               = false;
++	m_regs.doProcessSuspend   = m_lineCallback;
++	m_externalSuspendRequest  = false;
+ 	m_status = asEXECUTION_PREPARED;
+ 	m_regs.programPointer = 0;
+ 	m_abortedAfterException = false; // ALTERED: see Execute
+@@ -1642,6 +1646,19 @@
+ 	if( m_status == asEXECUTION_FINISHED )
+ 	{
+ 		m_regs.objectType = m_initialFunction->returnType.GetTypeInfo();
++
++		// ALTERED: an Abort() made after the execution's last suspend point (by the line callback called above, which
++		// sees the context finished, by a script destructor or a registered function with no suspend point after it,
++		// or by another thread) has nothing left to stop here, and only its suspend half was cleared above. The abort
++		// is kept whole, as Abort() makes it: after a nested call PopState hands it to the interrupted execution, which
++		// stops at its next suspend point. Half kept, it stayed dormant there and turned the next Suspend() (a
++		// co-routine's yield) into an abort. In a context of its own the next Prepare drops it.
++		if( m_doAbort )
++		{
++			m_doSuspend = true;
++			m_regs.doProcessSuspend = true;
++		}
++
+ 		return asEXECUTION_FINISHED;
+ 	}
+ 
