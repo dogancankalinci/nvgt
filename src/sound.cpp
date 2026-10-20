@@ -1519,9 +1519,9 @@ class audio_decoder_impl : public audio_data_source_impl, public virtual audio_d
 public:
 	audio_decoder_impl(audio_engine* e) : audio_data_source_impl(e, nullptr), decoder(nullptr), datastream_ref(nullptr) {}
 	~audio_decoder_impl() { close(); }
-	// A sample rate below the lowest MiniAudio names, 0 aside, which keeps the file's: the decoder resampled down to it, so a source read at the engine's rate decoded many thousands of frames for each it gave, slower than the audio played.
+	// A sample rate outside those MiniAudio names, 0 aside, which keeps the file's: below them the decoder resampled down to it, so a source read at the engine's rate decoded many thousands of frames for each it gave, slower than the audio played, and above them it resampled up to it, as slowly, as many frames for each.
 	static bool output_rate_in_range(unsigned int sample_rate) {
-		if (!sample_rate || sample_rate >= ma_standard_sample_rate_min) return true;
+		if (!sample_rate || (sample_rate >= ma_standard_sample_rate_min && sample_rate <= ma_standard_sample_rate_max)) return true;
 		g_soundsystem_last_error = MA_INVALID_ARGS;
 		return false;
 	}
