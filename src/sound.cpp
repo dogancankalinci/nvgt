@@ -1919,9 +1919,12 @@ class audio_opus_encoder_impl : public audio_encoder_impl, public virtual audio_
 protected:
 	unsigned int max_output_channels() const override { return 2; } // Mapping family 0, which open_impl() asks libopusenc for, takes mono and stereo only.
 	bool open_impl(const string& filename, datastream* ds, unsigned int sample_rate, unsigned int channels, unsigned int flags) override {
-		int error;
+		int error = OPE_BAD_ARG; // As when there is no output to open.
 		comments = ope_comments_create();
-		if (!comments) return false;
+		if (!comments) {
+			g_soundsystem_last_error = MA_OUT_OF_MEMORY;
+			return false;
+		}
 		if (ds && ds->can_write()) {
 			OpusEncCallbacks callbacks = {write_callback, close_callback};
 			encoder = ope_encoder_create_callbacks(&callbacks, ds, comments, sample_rate, channels, 0, &error);
@@ -1930,6 +1933,7 @@ protected:
 			// close_impl() only runs its cleanup for an open encoder, so the comments made above would never be freed.
 			ope_comments_destroy(comments);
 			comments = nullptr;
+			g_soundsystem_last_error = error == OPE_ALLOC_FAIL? MA_OUT_OF_MEMORY : error == OPE_BAD_ARG || error == OPE_UNIMPLEMENTED? MA_INVALID_ARGS : MA_ERROR; // Rather than leave SOUNDSYSTEM_LAST_ERROR reading success.
 			return false;
 		}
 		ope_encoder_ctl(encoder, OPUS_SET_BITRATE(bitrate));
