@@ -237,6 +237,12 @@ void pathfinder::reset() {
 	}
 }
 CScriptArray* pathfinder::find(int start_x, int start_y, int start_z, int end_x, int end_y, int end_z, CScriptAny* data) {
+	// A callback can let go of the last handle to this pathfinder (a script replacing it), and the garbage collector run as that callback's execution ended deleted it while find() was still searching with it. AngelScript doesn't hold the object of a registered method for the call, so find() holds itself.
+	struct holder {
+		pathfinder* p;
+		holder(pathfinder* p) : p(p) { p->AddRef(); }
+		~holder() { p->Release(); }
+	} hold(this);
 	if (!VectorArrayType) VectorArrayType = g_ScriptEngine->GetTypeInfoByDecl("array<vector>");
 	CScriptArray* array = CScriptArray::Create(VectorArrayType);
 	if (solving) return array;
