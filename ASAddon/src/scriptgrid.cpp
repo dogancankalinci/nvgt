@@ -755,6 +755,12 @@ void CScriptGrid::Construct(SGridBuffer *buf)
 			}
 		}
 	}
+	else
+	{
+		// ALTERED: primitives are set to zero, as the array add-on sets them. They were left as the memory was: the cells of a
+		// new grid<int>(w, h) and those resize() adds read whatever the allocation held before.
+		memset(buf->data, 0, (buf->width*buf->height)*elementSize);
+	}
 }
 
 // internal
