@@ -2009,7 +2009,7 @@ static held_sound* held(ma_sound* s) { return static_cast<held_sound*>(s); }
 static void (*g_ma_sound_process)(ma_node*, const float**, ma_uint32*, float**, ma_uint32*) = nullptr;
 static void (*g_ma_group_process)(ma_node*, const float**, ma_uint32*, float**, ma_uint32*) = nullptr;
 static ma_node_vtable g_held_sound_vtable, g_held_group_vtable;
-// How many times faster than its own rate a node is read: the product of the rates of the groups the engine reads it through. Only output buses being read at that moment are followed, as MiniAudio's detach waits for such a read to end, so the node reading one can't be detached or freed meanwhile; of a splitter's buses, that is the one whose read reached this node.
+// How many times faster than its own rate a node is read: the product of the rates of the groups the engine reads it through. Only output buses being read at that moment are followed, as MiniAudio's detach waits for such a read to end, so the node reading one can't be detached or freed meanwhile; of a splitter's buses, that is the one whose read reached this node. An engine's endpoint is read by its graph rather than through a bus, and that graph is a node another engine reads through a bus, so the walk goes on from it into the engine an engine plays into.
 static float downstream_rate(ma_node_base* node) {
 	float rate = 1;
 	for (int depth = 0; node && depth < 1000; depth++) {
@@ -2018,6 +2018,7 @@ static float downstream_rate(ma_node_base* node) {
 			ma_node_output_bus* bus = &node->pOutputBuses[i];
 			if (*(volatile ma_uint32*)&bus->refCount > 0) next = (ma_node_base*)*(ma_node* volatile*)&bus->pInputNode;
 		}
+		if (!next && node->pNodeGraph && node == &node->pNodeGraph->endpoint) next = &node->pNodeGraph->base;
 		if (next && next->vtable == &g_held_group_vtable) rate *= held((ma_sound*)next)->rate.load(std::memory_order_relaxed);
 		node = next;
 	}
