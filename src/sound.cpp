@@ -23,6 +23,7 @@
 #include <mutex>
 #include <shared_mutex>
 #include <cmath>
+#include <cstring>
 #include <initializer_list>
 #include <vector>
 #include <Poco/FileStream.h>
@@ -2745,6 +2746,37 @@ public:
 			}
 		}
 	}
+	// MiniAudio's hash of a resource's name, ma_hash_string_32(), which isn't exported: MurmurHash3 x86_32 of the name up to its first NUL, read in little-endian blocks, with MiniAudio's seed, 42. Its resource manager keys loaded buffers by it alone.
+	static ma_uint32 resource_name_hash(const char* name) {
+		auto rotl = [](ma_uint32 x, int r) { return (x << r) | (x >> (32 - r)); };
+		const ma_uint8* data = (const ma_uint8*)name;
+		int len = (int)strlen(name), blocks = len / 4;
+		ma_uint32 h1 = 42, c1 = 0xcc9e2d51, c2 = 0x1b873593, k1;
+		for (int i = 0; i < blocks; i++) {
+			k1 = data[i * 4] | data[i * 4 + 1] << 8 | data[i * 4 + 2] << 16 | (ma_uint32)data[i * 4 + 3] << 24;
+			k1 *= c1; k1 = rotl(k1, 15); k1 *= c2;
+			h1 ^= k1; h1 = rotl(h1, 13); h1 = h1 * 5 + 0xe6546b64;
+		}
+		const ma_uint8* tail = data + blocks * 4;
+		k1 = 0;
+		switch (len & 3) {
+			case 3: k1 ^= tail[2] << 16; [[fallthrough]];
+			case 2: k1 ^= tail[1] << 8; [[fallthrough]];
+			case 1: k1 ^= tail[0]; k1 *= c1; k1 = rotl(k1, 15); k1 *= c2; h1 ^= k1;
+		}
+		h1 ^= len;
+		h1 ^= h1 >> 16; h1 *= 0x85ebca6b; h1 ^= h1 >> 13; h1 *= 0xc2b2ae35; h1 ^= h1 >> 16;
+		return h1;
+	}
+	// Whether the resource manager holds a buffer under the name already, which a load then shares rather than decoding the source again; searched as MiniAudio searches its tree, under its lock.
+	static bool resource_cached(ma_resource_manager* manager, const std::string& name) {
+		ma_uint32 hash = resource_name_hash(name.c_str());
+		ma_mutex_lock(&manager->dataBufferBSTLock);
+		ma_resource_manager_data_buffer_node* node = manager->pRootDataBufferNode;
+		while (node && node->hashedName32 != hash) node = hash < node->hashedName32? node->pChildLo : node->pChildHi;
+		ma_mutex_unlock(&manager->dataBufferBSTLock);
+		return node != nullptr;
+	}
 	// A source's own sample rate, from its header read by a decoder of its own through the sound service, or 0 when none could read it.
 	static ma_uint32 native_sample_rate(const std::string& triplet) {
 		ma_decoder_config cfg = ma_decoder_config_init(ma_format_unknown, 0, 0); // No conversion, so the decoder's output is the source's own format.
@@ -2770,9 +2802,10 @@ public:
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
-		// A buffer is decoded at the resource manager's rate, the engine's unless an engine without a device was made without one, when buffers keep their own. So one whose own rate was far below it, as a header could claim 1 Hz, came out that many times larger: a 4 KB file took 192 MB and seconds to decode, and one of 400 KB more memory than there was. A buffer whose rate is below that by more than the widest ratio the sample rates refused elsewhere leave, 384000 to 8000, is refused. The resource manager gives a source's own rate no way out, so the file's header is read first by a decoder of its own; a source of unknown length isn't, as opening it twice would read it from its start again.
-		ma_uint32 decoded_rate = ma_engine_get_resource_manager(engine->get_ma_engine())->config.decodedSampleRate;
-		if (decoded_rate && (ma_flags & MA_SOUND_FLAG_DECODE) && !(ma_flags & (MA_SOUND_FLAG_STREAM | MA_SOUND_FLAG_UNKNOWN_LENGTH))) {
+		// A buffer is decoded at the resource manager's rate, the engine's unless an engine without a device was made without one, when buffers keep their own. So one whose own rate was far below it, as a header could claim 1 Hz, came out that many times larger: a 4 KB file took 192 MB and seconds to decode, and one of 400 KB more memory than there was. A buffer whose rate is below that by more than the widest ratio the sample rates refused elsewhere leave, 384000 to 8000, is refused. The resource manager gives a source's own rate no way out, so the file's header is read first by a decoder of its own, unless the resource manager holds the buffer already, as for a sound played again by its name, which that cost many times over; a source of unknown length isn't, as opening it twice would read it from its start again.
+		ma_resource_manager* manager = ma_engine_get_resource_manager(engine->get_ma_engine());
+		ma_uint32 decoded_rate = manager->config.decodedSampleRate;
+		if (decoded_rate && (ma_flags & MA_SOUND_FLAG_DECODE) && !(ma_flags & (MA_SOUND_FLAG_STREAM | MA_SOUND_FLAG_UNKNOWN_LENGTH)) && !resource_cached(manager, triplet)) {
 			ma_uint32 own_rate = native_sample_rate(triplet);
 			if (own_rate && (ma_uint64)own_rate * (ma_standard_sample_rate_max / ma_standard_sample_rate_min) < decoded_rate) {
 				g_sound_service->cleanup_triplet(triplet);
