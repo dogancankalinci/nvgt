@@ -198,6 +198,18 @@ void RegisterScriptAny_Generic(asIScriptEngine *engine)
 }
 
 
+// Releases a value that the any no longer holds: its object or handle and its type's reference
+static void ReleaseAnyValue(asIScriptEngine *engine, void *obj, int typeId)
+{
+	if( typeId & asTYPEID_MASK_OBJECT )
+	{
+		asITypeInfo *ti = engine->GetTypeInfoById(typeId);
+		engine->ReleaseScriptObject(obj, ti);
+		if( ti )
+			ti->Release();
+	}
+}
+
 CScriptAny &CScriptAny::operator=(const CScriptAny &other)
 {
 	// ALTERED: assigning an any to itself (a = a) released its value before copying it from itself, which left it empty and
@@ -205,33 +217,41 @@ CScriptAny &CScriptAny::operator=(const CScriptAny &other)
 	if( &other == this )
 		return *this;
 
+	// ALTERED: the new value is made first and the previous one released last, once the any holds the new one. The previous
+	// value was released while the any still held it, so a destructor run by that release that stored into or cleared this
+	// same any released it a second time (freed during its own destructor) and its type with it.
+	valueStruct nv;
+	nv.valueInt = 0;
+	nv.typeId = other.value.typeId;
+
 	// Hold on to the object type reference so it isn't destroyed too early
-	if( (other.value.typeId & asTYPEID_MASK_OBJECT) )
+	if( (nv.typeId & asTYPEID_MASK_OBJECT) )
 	{
-		asITypeInfo *ti = engine->GetTypeInfoById(other.value.typeId);
+		asITypeInfo *ti = engine->GetTypeInfoById(nv.typeId);
 		if( ti )
 			ti->AddRef();
 	}
 
-	FreeObject();
-
-	value.typeId = other.value.typeId;
-	if( value.typeId & asTYPEID_OBJHANDLE )
+	if( nv.typeId & asTYPEID_OBJHANDLE )
 	{
 		// For handles, copy the pointer and increment the reference count
-		value.valueObj = other.value.valueObj;
-		engine->AddRefScriptObject(value.valueObj, engine->GetTypeInfoById(value.typeId));
+		nv.valueObj = other.value.valueObj;
+		engine->AddRefScriptObject(nv.valueObj, engine->GetTypeInfoById(nv.typeId));
 	}
-	else if( value.typeId & asTYPEID_MASK_OBJECT )
+	else if( nv.typeId & asTYPEID_MASK_OBJECT )
 	{
 		// Create a copy of the object
-		value.valueObj = engine->CreateScriptObjectCopy(other.value.valueObj, engine->GetTypeInfoById(value.typeId));
+		nv.valueObj = engine->CreateScriptObjectCopy(other.value.valueObj, engine->GetTypeInfoById(nv.typeId));
 	}
 	else
 	{
 		// Primitives can be copied directly
-		value.valueInt = other.value.valueInt;
+		nv.valueInt = other.value.valueInt;
 	}
+
+	valueStruct old = value;
+	value = nv;
+	ReleaseAnyValue(engine, old.valueObj, old.typeId);
 
 	return *this;
 }
@@ -283,6 +303,11 @@ void CScriptAny::Store(void *ref, int refTypeId)
 	// This method is not expected to be used for primitive types, except for bool, int64, or double
 	assert( refTypeId > asTYPEID_DOUBLE || refTypeId == asTYPEID_VOID || refTypeId == asTYPEID_BOOL || refTypeId == asTYPEID_INT64 || refTypeId == asTYPEID_DOUBLE );
 
+	// ALTERED: the new value is made first and the previous one released last, as in operator=
+	valueStruct nv;
+	nv.valueInt = 0;
+	nv.typeId = refTypeId;
+
 	// Hold on to the object type reference so it isn't destroyed too early
 	if( (refTypeId & asTYPEID_MASK_OBJECT) )
 	{
@@ -291,30 +316,28 @@ void CScriptAny::Store(void *ref, int refTypeId)
 			ti->AddRef();
 	}
 
-	FreeObject();
-
-	value.typeId = refTypeId;
-	if( value.typeId & asTYPEID_OBJHANDLE )
+	if( nv.typeId & asTYPEID_OBJHANDLE )
 	{
 		// We're receiving a reference to the handle, so we need to dereference it
-		value.valueObj = *(void**)ref;
-		engine->AddRefScriptObject(value.valueObj, engine->GetTypeInfoById(value.typeId));
+		nv.valueObj = *(void**)ref;
+		engine->AddRefScriptObject(nv.valueObj, engine->GetTypeInfoById(nv.typeId));
 	}
-	else if( value.typeId & asTYPEID_MASK_OBJECT )
+	else if( nv.typeId & asTYPEID_MASK_OBJECT )
 	{
 		// Create a copy of the object
-		value.valueObj = engine->CreateScriptObjectCopy(ref, engine->GetTypeInfoById(value.typeId));
+		nv.valueObj = engine->CreateScriptObjectCopy(ref, engine->GetTypeInfoById(nv.typeId));
 	}
 	else
 	{
-		// Primitives can be copied directly
-		value.valueInt = 0;
-
 		// Copy the primitive value
 		// We receive a pointer to the value.
-		int size = engine->GetSizeOfPrimitiveType(value.typeId);
-		memcpy(&value.valueInt, ref, size);
+		int size = engine->GetSizeOfPrimitiveType(nv.typeId);
+		memcpy(&nv.valueInt, ref, size);
 	}
+
+	valueStruct old = value;
+	value = nv;
+	ReleaseAnyValue(engine, old.valueObj, old.typeId);
 }
 
 void CScriptAny::Store(double &ref)
@@ -415,16 +438,14 @@ void CScriptAny::FreeObject()
 	// If it is a handle or a ref counted object, call release
 	if( value.typeId & asTYPEID_MASK_OBJECT )
 	{
-		// Let the engine release the object
-		asITypeInfo *ti = engine->GetTypeInfoById(value.typeId);
-		engine->ReleaseScriptObject(value.valueObj, ti);
-
-		// Release the object type info
-		if( ti )
-			ti->Release();
-
+		// ALTERED: the any is emptied before the object is released, not after (see operator=)
+		void *obj = value.valueObj;
+		int typeId = value.typeId;
 		value.valueObj = 0;
 		value.typeId = 0;
+
+		// Let the engine release the object and the object type info
+		ReleaseAnyValue(engine, obj, typeId);
 	}
 
 	// For primitives, there's nothing to do
