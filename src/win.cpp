@@ -152,7 +152,7 @@ void sapi5_engine::set_volume(float volume) { run([&] { sb_sapi_set_volume(inst,
 bool sapi5_engine::get_rate_range(float& minimum, float& midpoint, float& maximum) { minimum = -10; midpoint = 0; maximum = 10; return true; }
 bool sapi5_engine::get_pitch_range(float& minimum, float& midpoint, float& maximum) { minimum = -10; midpoint = 0; maximum = 10; return true; }
 bool sapi5_engine::get_volume_range(float& minimum, float& midpoint, float& maximum) { minimum = 0; midpoint = 50; maximum = 100; return true; }
-// The voices are listed again first, as the other calls do, so the count follows voices installed or removed while the program runs.
+// The voices are listed again first, so the count follows voices installed or removed while the program runs; the names, languages and voices asked for by number afterwards come from this listing (see sbz_sapi_listed_voices()).
 int sapi5_engine::get_voice_count() {
 	int result = 0;
 	run([&] {

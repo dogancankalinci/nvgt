@@ -689,7 +689,7 @@ bool tts_voice::sync_engine(engine_entry &entry, bool force) {
 	voice_info *voice = get_voice_info(current_voice_index);
 	bool voice_applied = true;
 	if (voice_set && voice) {
-		// The index the list was built with names another voice once voices are installed or removed while the program runs, as SAPI lists them again on every call, so the voice is then found again by its name and language (names repeat on Apple platforms, which list some voices once per language), or, as in find_listed_voice, kept when only its language changed and no other voice of the engine has its name.
+		// The index the list was built with names another voice once voices are installed or removed while the program runs, or on Windows once the user's default voice changed, as SAPI lists that one first, so the voice is then found again by its name and language (names repeat on Apple platforms, which list some voices once per language), or, as in find_listed_voice, kept when only its language changed and no other voice of the engine has its name.
 		int index = voice->engine_voice_index;
 		if (engine->get_voice_name(index) != voice->name || engine->get_voice_language(index) != voice->language) {
 			int count = engine->get_voice_count(), named = 0, found = -1;
