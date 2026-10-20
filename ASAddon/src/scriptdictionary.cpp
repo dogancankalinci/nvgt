@@ -20,6 +20,36 @@ static std::mutex &StructureLock(const void *dictionary)
 	return locks[((address >> 4) ^ (address >> 12)) & 63];
 }
 
+// ALTERED: an enum is of its underlying type's size and signedness (enum E : int8 takes one byte, enum E : uint64 eight).
+// Every enum was read and written here as a 32-bit int: get() into an 8-byte enum set only its low half and left the upper
+// one as it was (-7 read back as 8589934585, or as 4294967289 by script_function.call()), the value of an 8-byte enum was
+// read as its low half, and that of a 1 or 2-byte enum together with whatever bytes followed it in the stored value.
+static asINT64 EnumToInt64(asIScriptEngine *engine, int enumTypeId, const void *src)
+{
+	asITypeInfo *ti = engine->GetTypeInfoById(enumTypeId);
+	switch( ti ? ti->GetUnderlyingTypeId() : asTYPEID_INT32 )
+	{
+	case asTYPEID_INT8:   return *(const asINT8*)src;
+	case asTYPEID_INT16:  return *(const asINT16*)src;
+	case asTYPEID_INT64:  return *(const asINT64*)src;
+	case asTYPEID_UINT8:  return *(const asBYTE*)src;
+	case asTYPEID_UINT16: return *(const asWORD*)src;
+	case asTYPEID_UINT32: return *(const asDWORD*)src;
+	case asTYPEID_UINT64: return asINT64(*(const asQWORD*)src);
+	default:              return *(const int*)src;
+	}
+}
+static void Int64ToEnum(asIScriptEngine *engine, int enumTypeId, asINT64 value, void *dst)
+{
+	switch( engine->GetSizeOfPrimitiveType(enumTypeId) )
+	{
+	case 1:  *(asBYTE*)dst = asBYTE(value); break;
+	case 2:  *(asWORD*)dst = asWORD(value); break;
+	case 8:  *(asINT64*)dst = value; break;
+	default: *(int*)dst = int(value); break;
+	}
+}
+
 //------------------------------------------------------------------------
 // Object types are cached as user data to avoid costly runtime lookups
 
@@ -828,12 +858,7 @@ bool CScriptDictValue::Get(void *value, int typeId) const
 				*(double*)value = localValue ? 1.0 : 0.0;
 			}
 			else if (m_typeId > asTYPEID_DOUBLE && (m_typeId & asTYPEID_MASK_OBJECT) == 0)
-			{
-				// Use memcpy instead of type cast to make sure the code is endianess agnostic
-				int localValue;
-				memcpy(&localValue, &m_valueInt, sizeof(int));
-				*(double*)value = double(localValue); // enums are 32bit
-			}
+				*(double*)value = double(EnumToInt64(m_engine, m_typeId, &m_valueInt)); // ALTERED: see EnumToInt64
 			else
 			{
 				// The stored type is an object
@@ -855,12 +880,7 @@ bool CScriptDictValue::Get(void *value, int typeId) const
 				*(asINT64*)value = localValue ? 1 : 0;
 			}
 			else if (m_typeId > asTYPEID_DOUBLE && (m_typeId & asTYPEID_MASK_OBJECT) == 0)
-			{
-				// Use memcpy instead of type cast to make sure the code is endianess agnostic
-				int localValue;
-				memcpy(&localValue, &m_valueInt, sizeof(int));
-				*(asINT64*)value = localValue; // enums are 32bit
-			}
+				*(asINT64*)value = EnumToInt64(m_engine, m_typeId, &m_valueInt); // ALTERED: see EnumToInt64
 			else
 			{
 				// The stored type is an object
@@ -872,30 +892,26 @@ bool CScriptDictValue::Get(void *value, int typeId) const
 		}
 		else if( typeId > asTYPEID_DOUBLE && (m_typeId & asTYPEID_MASK_OBJECT) == 0 )
 		{
-			// The desired type is an enum. These are always 32bit integers
+			// The desired type is an enum
+			// ALTERED: of its underlying type's size, see EnumToInt64
 			if( m_typeId == asTYPEID_DOUBLE )
-				*(int*)value = int(m_valueFlt);
+				Int64ToEnum(m_engine, typeId, asINT64(m_valueFlt), value);
 			else if( m_typeId == asTYPEID_INT64 )
-				*(int*)value = int(m_valueInt);
+				Int64ToEnum(m_engine, typeId, m_valueInt, value);
 			else if (m_typeId == asTYPEID_BOOL)
 			{
 				// Use memcpy instead of type cast to make sure the code is endianess agnostic
 				char localValue;
 				memcpy(&localValue, &m_valueInt, sizeof(char));
-				*(int*)value = localValue ? 1 : 0;
+				Int64ToEnum(m_engine, typeId, localValue ? 1 : 0, value);
 			}
 			else if (m_typeId > asTYPEID_DOUBLE && (m_typeId & asTYPEID_MASK_OBJECT) == 0)
-			{
-				// Use memcpy instead of type cast to make sure the code is endianess agnostic
-				int localValue;
-				memcpy(&localValue, &m_valueInt, sizeof(int));
-				*(int*)value = localValue; // enums are 32bit
-			}
+				Int64ToEnum(m_engine, typeId, EnumToInt64(m_engine, m_typeId, &m_valueInt), value);
 			else
 			{
 				// The stored type is an object
 				// TODO: Check if the object has a conversion operator to a primitive value
-				*(int*)value = 0;
+				Int64ToEnum(m_engine, typeId, 0, value);
 				return false;
 			}
 			return true;
