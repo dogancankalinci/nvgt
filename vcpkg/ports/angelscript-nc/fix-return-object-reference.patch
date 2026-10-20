@@ -1,0 +1,17 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -1038,8 +1038,12 @@
+ 
+ 	if( !dt->IsObject() && !dt->IsFuncdef() ) return 0;
+ 
++	// ALTERED: the value register holds the address the function returned. For a reference to a handle (T@&) that is the
++	// address of the handle, which holds the object; for a reference to an object (T&) it is the object itself, which was
++	// also read as a handle: a function returning a string& or a script class& (of a global or a member) gave a pointer taken
++	// out of the object's first bytes, and an application copying the returned object copied from wherever that pointed.
+ 	if( dt->IsReference() )
+-		return *(void**)(asPWORD)m_regs.valueRegister;
++		return dt->IsObjectHandle() ? *(void**)(asPWORD)m_regs.valueRegister : (void*)(asPWORD)m_regs.valueRegister;
+ 	else
+ 	{
+ 		if( m_initialFunction->DoesReturnOnStack() )
