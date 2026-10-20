@@ -2745,6 +2745,19 @@ public:
 			}
 		}
 	}
+	// A source's own sample rate, from its header read by a decoder of its own through the sound service, or 0 when none could read it.
+	static ma_uint32 native_sample_rate(const std::string& triplet) {
+		ma_decoder_config cfg = ma_decoder_config_init(ma_format_unknown, 0, 0); // No conversion, so the decoder's output is the source's own format.
+		if (!g_decoders.empty()) {
+			cfg.ppCustomBackendVTables = &g_decoders[0];
+			cfg.customBackendCount = g_decoders.size();
+		}
+		ma_decoder decoder;
+		if (ma_decoder_init_vfs(g_sound_service->get_vfs(), triplet.c_str(), &cfg, &decoder) != MA_SUCCESS) return 0;
+		ma_uint32 rate = decoder.outputSampleRate;
+		ma_decoder_uninit(&decoder);
+		return rate;
+	}
 	bool load_special(const std::string &filename, const size_t protocol_slot = 0, directive_t protocol_directive = nullptr, const size_t filter_slot = 0, directive_t filter_directive = nullptr, ma_uint32 ma_flags = MA_SOUND_FLAG_DECODE) override {
 		garbage_collect_inline_sounds();
 		if (snd)
@@ -2756,6 +2769,15 @@ public:
 		if (triplet.empty()) { // A name the sound service can't make one of, such as one that isn't valid UTF-8.
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
+		}
+		// A buffer is decoded at the engine's rate, so one whose own rate was far below it, as a header could claim 1 Hz, came out that many times larger: a 4 KB file took 192 MB and seconds to decode, and one of 400 KB more memory than there was. A buffer whose rate is below the engine's by more than the widest ratio the sample rates refused elsewhere leave, 384000 to 8000, is refused. The resource manager gives a source's own rate no way out, so the file's header is read first by a decoder of its own; a source of unknown length isn't, as opening it twice would read it from its start again.
+		if ((ma_flags & MA_SOUND_FLAG_DECODE) && !(ma_flags & (MA_SOUND_FLAG_STREAM | MA_SOUND_FLAG_UNKNOWN_LENGTH))) {
+			ma_uint32 own_rate = native_sample_rate(triplet);
+			if (own_rate && (ma_uint64)own_rate * (ma_standard_sample_rate_max / ma_standard_sample_rate_min) < ma_engine_get_sample_rate(engine->get_ma_engine())) {
+				g_sound_service->cleanup_triplet(triplet);
+				g_soundsystem_last_error = MA_FORMAT_NOT_SUPPORTED;
+				return false;
+			}
 		}
 		// A buffer MiniAudio would load synchronously, as for load_memory(), is loaded asynchronously and waited for: see g_resource_tree_mutex.
 		bool wait_for_load = !(ma_flags & (MA_SOUND_FLAG_ASYNC | MA_SOUND_FLAG_STREAM));
