@@ -373,7 +373,9 @@ static bool get_call_number(CScriptDictionary::CIterator& k, void* dest, int typ
 	asINT64 i = 0;
 	double d = 0;
 	if (real ? !k.GetValue(d) : !k.GetValue(i)) return false;
-	if (real && type_id != asTYPEID_FLOAT) i = call_real_to_int64(d);
+	// A uint64 holds the reals from 2^63 up to 2^64, beyond an int64: they were clamped to 2^63 - 1 (1e19 arrived as 9223372036854775807, while a direct call passes 10000000000000000000).
+	if (real && type_id == asTYPEID_UINT64 && d >= 9223372036854775808.0) i = asINT64(d < 18446744073709551616.0 ? asQWORD(d) : ~asQWORD(0));
+	else if (real && type_id != asTYPEID_FLOAT) i = call_real_to_int64(d);
 	switch (type_id) {
 		case asTYPEID_INT8: *(asINT8*)dest = asINT8(i); break;
 		case asTYPEID_INT16: *(asINT16*)dest = asINT16(i); break;

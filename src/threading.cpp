@@ -74,7 +74,9 @@ static bool convert_number(asIScriptEngine* engine, int from_type, const void* f
 		*(asBYTE*)to = (real ? d != 0 : i != 0) ? 1 : 0;
 		return true;
 	}
-	if (real && to_type != asTYPEID_FLOAT && to_type != asTYPEID_DOUBLE) i = real_to_int64(d);
+	// A uint64 holds the reals from 2^63 up to 2^64, beyond an int64: they were clamped to 2^63 - 1 (1e19 arrived as 9223372036854775807, while a direct call passes 10000000000000000000).
+	if (real && to_type == asTYPEID_UINT64 && d >= 9223372036854775808.0) i = asINT64(d < 18446744073709551616.0 ? asQWORD(d) : ~asQWORD(0));
+	else if (real && to_type != asTYPEID_FLOAT && to_type != asTYPEID_DOUBLE) i = real_to_int64(d);
 	switch (to_type) {
 		case asTYPEID_INT8: *(asINT8*)to = asINT8(i); break;
 		case asTYPEID_INT16: *(asINT16*)to = asINT16(i); break;
