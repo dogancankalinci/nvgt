@@ -269,7 +269,15 @@ public:
 				ctx->GetEngine()->AddRefScriptObject(*(void**)value, subtype->GetSubType());
 			} else if (subtypeid == asTYPEID_BOOL || subtypeid == asTYPEID_INT8 || subtypeid == asTYPEID_UINT8) *(char*)value = ctx->GetReturnByte();
 			else if (subtypeid == asTYPEID_INT16 || subtypeid == asTYPEID_UINT16) *(short*)value = ctx->GetReturnWord();
-			else if (subtypeid == asTYPEID_INT32 || subtypeid == asTYPEID_UINT32 || subtypeid > asTYPEID_DOUBLE) *(int*)value = ctx->GetReturnDWord();
+			else if (subtypeid > asTYPEID_DOUBLE) {
+				// An enum, of its underlying type's size (enum E : int8 takes one byte), which is the room made for it above: it was written as 4 bytes, past the end of that room for a 1 or 2-byte enum, and only half of an 8-byte one was.
+				asUINT size = ctx->GetEngine()->GetSizeOfPrimitiveType(subtypeid);
+				if (size == 1) *(asBYTE*)value = ctx->GetReturnByte();
+				else if (size == 2) *(asWORD*)value = ctx->GetReturnWord();
+				else if (size == 8) *(asQWORD*)value = ctx->GetReturnQWord();
+				else *(asDWORD*)value = ctx->GetReturnDWord();
+			}
+			else if (subtypeid == asTYPEID_INT32 || subtypeid == asTYPEID_UINT32) *(int*)value = ctx->GetReturnDWord();
 			else if (subtypeid == asTYPEID_FLOAT) *(float*)value = ctx->GetReturnFloat();
 			else if (subtypeid == asTYPEID_INT64 || subtypeid == asTYPEID_UINT64) *(asQWORD*)value = ctx->GetReturnQWord();
 			else if (subtypeid == asTYPEID_DOUBLE) *(double*)value = ctx->GetReturnDouble();
