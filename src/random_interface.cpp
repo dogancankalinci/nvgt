@@ -65,8 +65,15 @@ public:
 			ctx->Release();
 	}
 
+	// Holds the generator while its script runs: set_default_random() in that script lets go of the default generator, and when that was this one, it was deleted together with the context still running the script (a use of freed memory).
+	struct running {
+		script_random_wrapper* self;
+		running(script_random_wrapper* self) : self(self) { self->add_ref(); }
+		~running() { self->release(); }
+	};
 	uint32 next() override {
 		if (!nextFunc || !ctx) return 0;
+		running hold(this);
 		ctx->Prepare(nextFunc);
 		ctx->SetObject(scriptObj);
 		ctx->Execute();
@@ -75,6 +82,7 @@ public:
 
 	float32 nextf() override {
 		if (!nextfFunc || !ctx) return 0.0f;
+		running hold(this);
 		ctx->Prepare(nextfFunc);
 		ctx->SetObject(scriptObj);
 		ctx->Execute();
@@ -83,6 +91,7 @@ public:
 
 	int64 next64() override {
 		if (!next64Func || !ctx) return 0;
+		running hold(this);
 		ctx->Prepare(next64Func);
 		ctx->SetObject(scriptObj);
 		ctx->Execute();
@@ -91,6 +100,7 @@ public:
 
 	int32 range(int32 min, int32 max) override {
 		if (!rangeFunc || !ctx) return min;
+		running hold(this);
 		ctx->Prepare(rangeFunc);
 		ctx->SetObject(scriptObj);
 		ctx->SetArgDWord(0, min);
@@ -101,6 +111,7 @@ public:
 
 	int64 range64(int64 min, int64 max) override {
 		if (!range64Func || !ctx) return min;
+		running hold(this);
 		ctx->Prepare(range64Func);
 		ctx->SetObject(scriptObj);
 		ctx->SetArgQWord(0, min);
@@ -488,9 +499,17 @@ static bool shuffle_swap(CScriptArray* array, asUINT size, asUINT i, asUINT j) {
 	return true;
 }
 
+// Holds the array being shuffled and the generator shuffling it while script code runs: a generator's range() and an element's opAssign can let go of the last handle to the array, and the default generator's range() can replace it (set_default_random()), and both went on being used after they were freed. AngelScript doesn't hold the object of a registered method for the call.
+struct shuffle_hold {
+	CScriptArray* array;
+	random_interface* rng;
+	shuffle_hold(CScriptArray* array, random_interface* rng) : array(array), rng(rng) { array->AddRef(); if (rng) rng->add_ref(); }
+	~shuffle_hold() { if (rng) rng->release(); array->Release(); }
+};
 void random_array_shuffle(CScriptArray* array, random_interface* rng) {
 	if (!rng) rng = get_default_random();
 	if (array->GetSize() < 2) return;
+	shuffle_hold hold(array, rng);
 	asIScriptContext* ACtx = asGetActiveContext();
 	// Use temporary slot for swapping
 	array->Resize(array->GetSize() + 1);
@@ -562,6 +581,7 @@ void random_script_array_shuffle(CScriptArray* array, asIScriptObject* scriptRng
 		return;
 	}
 	if (array->GetSize() < 2) return;
+	shuffle_hold hold(array, nullptr); // The generator is held by the call (@+); see random_array_shuffle().
 	asIScriptEngine* engine = scriptRng->GetEngine();
 	asIScriptContext* ctx = engine->CreateContext();
 	if (ctx) ctx->SetLineCallback(asFUNCTION(nvgt_line_callback), NULL, asCALL_CDECL); // See script_random_wrapper.
