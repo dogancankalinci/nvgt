@@ -1012,7 +1012,11 @@ bool tts_voice::set_voice(int voice) {
 bool tts_voice::get_rate_set() { std::lock_guard<std::recursive_mutex> chain(chain_mtx); return rate_set; }
 bool tts_voice::get_pitch_set() { std::lock_guard<std::recursive_mutex> chain(chain_mtx); return pitch_set; }
 bool tts_voice::get_volume_set() { std::lock_guard<std::recursive_mutex> chain(chain_mtx); return volume_set; }
-bool tts_voice::get_voice_set() { std::lock_guard<std::recursive_mutex> chain(chain_mtx); return voice_set; }
+bool tts_voice::get_voice_set() {
+	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
+	if (voice_state != VOICES_NONE) ensure_default(); // Takes up a change of the installed voices first, which can drop the chosen voice or bring it back; an object not used yet has chosen none.
+	return voice_set;
+}
 bool tts_voice::get_speaking() {
 	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
 	if (!held.empty() || queue_speaking()) return true;
@@ -1200,6 +1204,7 @@ bool tts_voice::set_language(const string& language) {
 // The language filter the script set, or, without one, the language of the voice actually in use.
 string tts_voice::get_language() {
 	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
+	if (voice_state != VOICES_NONE) ensure_default(); // Takes up a change of the installed voices first, which can lift the filter.
 	if (!current_language.empty()) return current_language;
 	ensure_default();
 	voice_info *voice = get_voice_info(voice_set? current_voice_index : platform_voice_index());

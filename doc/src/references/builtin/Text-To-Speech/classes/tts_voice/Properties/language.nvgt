@@ -2,7 +2,7 @@
 	The language set with set_language, or, when none was set, the language of the selected voice.
 	string tts_voice::language;
 	## Remarks:
-		This property is read-only; set_language changes it. Without a language set, it is empty when the selected voice can't be told, as on Android while the voice of the user's settings isn't installed, when the voice property is -1 too.
+		This property is read-only; set_language changes it, and the filter can be lifted by itself, as set_language describes. Without a language set, it is empty when the selected voice can't be told, as on Android while the voice of the user's settings isn't installed, when the voice property is -1 too.
 */
 
 // Example:
