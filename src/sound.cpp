@@ -542,6 +542,7 @@ public:
 		if (channels > MA_MAX_CHANNELS) throw runtime_error(Poco::format("exceeded maximum channel count of %d", MA_MAX_CHANNELS));
 		if (sample_rate < 0) sample_rate = 0; // As 0, the device's own rate or the default without a device, rather than a rate of over four billion, which a negative one became in MiniAudio's unsigned fields.
 		if (sample_rate > ma_standard_sample_rate_max) throw runtime_error(Poco::format("exceeded maximum sample rate of %d", int(ma_standard_sample_rate_max))); // At a higher one, the highest MiniAudio has a name for, a device's every period needed many times the frames it plays resampled, more than the audio thread could keep up with.
+		if (sample_rate && sample_rate < ma_standard_sample_rate_min) throw runtime_error(Poco::format("below minimum sample rate of %d", int(ma_standard_sample_rate_min))); // Below the lowest MiniAudio names; under 1000, its resource manager's pages, 1000 * (rate / 1000) frames, held none, and every sound loaded or streamed on the engine played silence while its load succeeded.
 		if (!init_sound_context()) throw runtime_error(Poco::format("failed to initialize sound context %d", int(g_soundsystem_last_error)));
 		engine = std::make_unique<ma_engine>();
 		// We need a self-managed device because at least on Windows, we can't meet low-latency requirements without specific configurations.
