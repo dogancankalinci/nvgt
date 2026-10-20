@@ -788,10 +788,15 @@ void CScriptDictValue::FreeValue()
 	// If it is a handle or a ref counted object, call release
 	if( m_typeId & asTYPEID_MASK_OBJECT )
 	{
-		// Let the engine release the object
-		m_engine->ReleaseScriptObject(m_valueObj, m_engine->GetTypeInfoById(m_typeId));
+		// ALTERED: the value is emptied before the object is released, not after: a destructor run by the release that set or
+		// cleared this same value (a dictionaryValue, or one the garbage collector releases) released the object a second time
+		void *obj = m_valueObj;
+		int typeId = m_typeId;
 		m_valueObj = 0;
 		m_typeId = 0;
+
+		// Let the engine release the object
+		m_engine->ReleaseScriptObject(obj, m_engine->GetTypeInfoById(typeId));
 	}
 
 	// For primitives, there's nothing to do
