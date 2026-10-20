@@ -462,13 +462,39 @@ void random_array_choice_wrapper(asIScriptGeneric* gen) {
 		gen->SetReturnAddress(nullptr);
 }
 
+// Swaps elements i and j of an array being shuffled, through its temporary last slot. Setting an element of a script class runs its opAssign, script code that can change the array: the objects are held while it runs, as one could be freed under it, and false is returned as soon as the array hasn't the size it is being shuffled at, since the indexes and the temporary slot are those of the array as it was (the final resize removed one of its elements).
+static bool shuffle_swap(CScriptArray* array, asUINT size, asUINT i, asUINT j) {
+	asITypeInfo* subtype = array->GetArrayObjectType()->GetSubType();
+	int type_id = array->GetElementTypeId();
+	bool hold = (type_id & asTYPEID_MASK_OBJECT) && !(type_id & asTYPEID_OBJHANDLE) && subtype && (subtype->GetFlags() & asOBJ_REF) && !(subtype->GetFlags() & (asOBJ_NOCOUNT | asOBJ_SCOPED));
+	asIScriptEngine* engine = array->GetArrayObjectType()->GetEngine();
+	const asUINT moves[3][2] = {{size - 1, i}, {i, j}, {j, size - 1}};
+	for (const auto& move : moves) {
+		void* to = array->At(move[0]);
+		void* from = array->At(move[1]);
+		if (hold) {
+			engine->AddRefScriptObject(to, subtype);
+			engine->AddRefScriptObject(from, subtype);
+		}
+		array->SetValue(move[0], from);
+		if (hold) {
+			engine->ReleaseScriptObject(to, subtype);
+			engine->ReleaseScriptObject(from, subtype);
+		}
+		if (array->GetSize() != size) return false;
+	}
+	return true;
+}
+
 void random_array_shuffle(CScriptArray* array, random_interface* rng) {
 	if (!rng) rng = get_default_random();
 	if (array->GetSize() < 2) return;
+	asIScriptContext* ACtx = asGetActiveContext();
 	// Use temporary slot for swapping
 	array->Resize(array->GetSize() + 1);
 	asUINT size = array->GetSize();
 	for (uint32 i = array->GetSize() - 2; i > 0; i--) {
+		if (script_callbacks_stopped(ACtx)) break; // exit() was called since the shuffle began, in the script's range() of a generator set with set_default_random() or in an element's opAssign: no more calls, see random_script_array_shuffle().
 		int32 j = rng->range(0, i);
 		// A generator set with set_default_random() runs the script's range(), which can change the array, see random_script_array_shuffle().
 		if (array->GetSize() != size) {
@@ -480,9 +506,10 @@ void random_array_shuffle(CScriptArray* array, random_interface* rng) {
 			if (asIScriptContext* active = asGetActiveContext()) active->SetException("random generator returned an index out of range");
 			return;
 		}
-		array->SetValue(array->GetSize() - 1, array->At(i));
-		array->SetValue(i, array->At(j));
-		array->SetValue(j, array->At(array->GetSize() - 1));
+		if (!shuffle_swap(array, size, i, j)) {
+			if (asIScriptContext* active = asGetActiveContext()) active->SetException("the array was changed while it was being shuffled");
+			return;
+		}
 	}
 	array->Resize(array->GetSize() - 1);
 }
@@ -562,9 +589,11 @@ void random_script_array_shuffle(CScriptArray* array, asIScriptObject* scriptRng
 				if (asIScriptContext* active = asGetActiveContext()) active->SetException("random generator returned an index out of range");
 				return;
 			}
-			array->SetValue(array->GetSize() - 1, array->At(i));
-			array->SetValue(i, array->At(j));
-			array->SetValue(j, array->At(array->GetSize() - 1));
+			if (!shuffle_swap(array, size, i, j)) {
+				ctx->Release();
+				if (asIScriptContext* active = asGetActiveContext()) active->SetException("the array was changed while it was being shuffled");
+				return;
+			}
 		}
 		array->Resize(array->GetSize() - 1);
 		ctx->Release();
