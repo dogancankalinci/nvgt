@@ -723,8 +723,8 @@ class plugin_node_impl : public audio_node_impl, public virtual plugin_node {
 		if (input_bus_count > 0) cfg.pInputChannels = &channels_in[0];
 		if (output_bus_count > 0) cfg.pOutputChannels = &channels_out[0];
 		if ((g_soundsystem_last_error = ma_node_init(ma_engine_get_node_graph(get_engine()->get_ma_engine()), &cfg, nullptr, (ma_node_base*)&*pn)) != MA_SUCCESS) throw std::runtime_error("failed to create plugin_node");
-		pn->impl = this; // Which the processing callback calls; it did nothing without it.
 		node = (ma_node_base*)&*pn;
+		pn->impl = this;
 	}
 	~plugin_node_impl() {
 		std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex);
