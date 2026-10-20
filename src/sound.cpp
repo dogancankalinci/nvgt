@@ -445,6 +445,10 @@ class mixer_impl;
 static std::mutex g_shaped_mixers_mutex;
 static std::unordered_set<mixer_impl*> g_shaped_mixers;
 static void place_shaped_mixers(audio_engine* engine);
+// Every sound and mixer, so that a change of a listener's velocity can hold the doppler factor of those of its engine again (see mixer_impl::apply_doppler_locked()). Lock order as g_shaped_mixers_mutex: before a mixer's spatialization_params_mutex.
+static std::mutex g_doppler_mixers_mutex;
+static std::unordered_set<mixer_impl*> g_doppler_mixers;
+static void hold_doppler_of_mixers(audio_engine* engine);
 sound_shape* sound_shape_builtin_standard_setup(mixer* snd, CScriptHandle* shape_ref) {
 	// This assumes that the shape object has already been created by the scripter and is contained within the CScriptHandle we've received.
 	sound_shape* shape = (sound_shape*)(shape_ref->GetRef());
@@ -792,10 +796,12 @@ public:
 	void set_listener_velocity(unsigned int index, float x, float y, float z) override {
 		if (engine && finite_values({x, y, z}))
 			ma_engine_listener_set_velocity(&*engine, index, x, y, z);
+		hold_doppler_of_mixers(this);
 	}
 	void set_listener_velocity_vector(unsigned int index, const reactphysics3d::Vector3 &velocity) override {
 		if (engine && finite_values({velocity.x, velocity.y, velocity.z}))
 			ma_engine_listener_set_velocity(&*engine, index, velocity.x, velocity.y, velocity.z);
+		hold_doppler_of_mixers(this);
 	}
 	reactphysics3d::Vector3 get_listener_velocity(unsigned int index) const override { return engine ? ma_vec3_to_rp_vec3(ma_engine_listener_get_velocity(&*engine, index)) : reactphysics3d::Vector3(); }
 	void set_listener_cone(unsigned int index, float inner_radians, float outer_radians, float outer_gain) override {
@@ -2006,12 +2012,14 @@ protected:
 	reactphysics3d::Vector3 shape_anchor;
 	mutable audio_spatializer *spatializer;
 	mutex spatialization_params_mutex;
+	float pitch_ratio = 1, doppler_factor = 1; // As the script set them, under spatialization_params_mutex; MiniAudio is given a doppler factor held below the one set (see apply_doppler_locked()).
 	audio_node_chain* node_chain;
 	audio_node_chain* effects_chain;
 public:
 	mixer_impl(audio_engine *e, bool sound_group = true) : audio_node_impl(nullptr, e), snd(nullptr), shape(nullptr), node_chain(audio_node_chain::create(nullptr, nullptr, e)), effects_chain(nullptr), parent_mixer(nullptr), spatializer(nullptr) {
 		init_sound_context();
 		node_chain->set_endpoint(e->get_endpoint());
+		track_doppler(true);
 		if (!sound_group) return;
 		snd = make_unique<ma_sound>();
 		{ std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); ma_sound_group_init(e->get_ma_engine(), 0, nullptr, &*snd); } // with no parent group miniaudio attaches the new group to the endpoint here, editing the same input list as every concurrent attach/detach
@@ -2021,8 +2029,10 @@ public:
 		ma_sound_group_set_directional_attenuation_factor(&*snd, 0); // Our spatializer also controls panning.
 		attach_output_bus(0, node_chain, 0);
 		play();
+		apply_doppler();
 	}
 	~mixer_impl() {
+		track_doppler(false);
 		track_shape(false);
 		stop();
 		unique_lock<mutex> lock(spatialization_params_mutex);
@@ -2233,7 +2243,34 @@ public:
 	void set_pitch(float pitch) override {
 		if (!snd || !finite_values({pitch})) return;
 		float ratio = get_engine()->get_flags() & audio_engine::PERCENTAGE_ATTRIBUTES ? pitch / 100.0f : pitch;
-		ma_sound_set_pitch(&*snd, ratio < max_pitch_ratio? ratio : max_pitch_ratio);
+		unique_lock<mutex> lock(spatialization_params_mutex);
+		if (!snd) return;
+		pitch_ratio = ratio < max_pitch_ratio? ratio : max_pitch_ratio;
+		ma_sound_set_pitch(&*snd, pitch_ratio);
+		apply_doppler_locked();
+	}
+	// MiniAudio multiplies a sound's pitch by its doppler ratio, (c - f*vl) / (c - f*vs) along the line from the listener, c the speed of sound, f the doppler factor, vl and vs the listener's and the sound's velocities, which has no bound: a sound coming at nearly c / f, or a listener going fast enough the other way, made the ratio thousands, past max_pitch_ratio, and kept the audio thread resampling until it didn't return. MiniAudio works it out on the audio thread, block by block, so the doppler factor it is given is held instead, at what keeps pitch times doppler within max_pitch_ratio in the worst direction for the sound's speed and the fastest listener's of its engine. Slower than that, the doppler factor set is given as it is. Under spatialization_params_mutex, with snd set.
+	void apply_doppler_locked() {
+		ma_engine* engine = ma_sound_get_engine(&*snd);
+		float speed_of_sound = FLT_MAX, listener_speed = 0;
+		for (ma_uint32 i = 0; i < ma_engine_get_listener_count(engine); i++) {
+			speed_of_sound = std::min(speed_of_sound, ma_spatializer_listener_get_speed_of_sound(&engine->listeners[i]));
+			ma_vec3f v = ma_engine_listener_get_velocity(engine, i);
+			listener_speed = std::max(listener_speed, std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z));
+		}
+		ma_vec3f v = ma_sound_get_velocity(&*snd);
+		double sound_speed = std::sqrt((double)v.x * v.x + (double)v.y * v.y + (double)v.z * v.z), room = max_pitch_ratio / std::max(pitch_ratio, 1.0f), factor = doppler_factor; // A pitch below 1 leaves doppler no more room, which keeps the divisor well away from 0.
+		if (factor > 0 && listener_speed + room * sound_speed > 0) factor = std::min(factor, speed_of_sound * (room - 1) / (listener_speed + room * sound_speed));
+		ma_sound_set_doppler_factor(&*snd, (float)factor);
+	}
+	void apply_doppler() {
+		unique_lock<mutex> lock(spatialization_params_mutex);
+		if (snd) apply_doppler_locked();
+	}
+	void track_doppler(bool tracked) {
+		std::lock_guard<std::mutex> lock(g_doppler_mixers_mutex);
+		if (tracked) g_doppler_mixers.insert(this);
+		else g_doppler_mixers.erase(this);
 	}
 	float get_pitch() const override {
 		return snd ? (get_engine()->get_flags() & audio_engine::PERCENTAGE_ATTRIBUTES ? ma_sound_get_pitch(&*snd) * 100 : ma_sound_get_pitch(&*snd)) : NAN;
@@ -2322,7 +2359,10 @@ public:
 	void set_velocity(float x, float y, float z) override {
 		if (!snd || !finite_values({x, y, z}))
 			return;
-		return ma_sound_set_velocity(&*snd, x, y, z);
+		unique_lock<mutex> lock(spatialization_params_mutex);
+		if (!snd) return;
+		ma_sound_set_velocity(&*snd, x, y, z);
+		apply_doppler_locked();
 	}
 	void set_velocity_vector(const reactphysics3d::Vector3& velocity) override { set_velocity(velocity.x, velocity.y, velocity.z); }
 	reactphysics3d::Vector3 get_velocity() const override {
@@ -2387,11 +2427,18 @@ public:
 		}
 	}
 	void set_doppler_factor(float factor) override {
-		if (snd && finite_values({factor}))
-			ma_sound_set_doppler_factor(&*snd, factor);
+		if (!snd || !finite_values({factor})) return;
+		if (factor < 0) { // MiniAudio holds the sound's velocity toward the listener at c / f, which for a negative factor makes the ratio's divisor 0 or less whatever the sound does.
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return;
+		}
+		unique_lock<mutex> lock(spatialization_params_mutex);
+		if (!snd) return;
+		doppler_factor = factor;
+		apply_doppler_locked();
 	}
 	float get_doppler_factor() const override {
-		return snd ? ma_sound_get_doppler_factor(&*snd) : NAN;
+		return snd ? doppler_factor : NAN; // The one set, rather than the one MiniAudio is given (see apply_doppler_locked()).
 	}
 	void set_directional_attenuation_factor(float factor) override { get_spatializer()->set_directional_attenuation_factor(factor); }
 	float get_directional_attenuation_factor() const override { return get_spatializer()->get_directional_attenuation_factor(); }
@@ -2484,6 +2531,13 @@ static void place_shaped_mixers(audio_engine* engine) {
 	std::lock_guard<std::mutex> lock(g_shaped_mixers_mutex);
 	for (mixer_impl* m : g_shaped_mixers) {
 		if (m->get_engine() == engine) m->place_in_shape();
+	}
+}
+// After a listener of the engine changed its velocity, on the thread that changed it.
+static void hold_doppler_of_mixers(audio_engine* engine) {
+	std::lock_guard<std::mutex> lock(g_doppler_mixers_mutex);
+	for (mixer_impl* m : g_doppler_mixers) {
+		if (m->get_engine() == engine) m->apply_doppler();
 	}
 }
 class sound_impl final : public mixer_impl, public virtual sound {
@@ -2583,6 +2637,8 @@ class sound_impl final : public mixer_impl, public virtual sound {
 	void adopt_sound(unique_ptr<ma_sound> made) {
 		unique_lock<mutex> lock(spatialization_params_mutex);
 		snd = std::move(made);
+		pitch_ratio = doppler_factor = 1; // A new sound starts with MiniAudio's, as it always did.
+		apply_doppler_locked();
 	}
 	inline void postload(const string& filename, bool async_load = false) {
 		loaded_filename = filename;
@@ -2612,6 +2668,7 @@ public:
 		garbage_collect_inline_sounds(); // Autoclosed sounds that finished are freed whenever sounds are made or loaded, which scripts do all the time, not only by engine.play().
 	}
 	~sound_impl() {
+		track_doppler(false);
 		track_shape(false);
 		close();
 	}
