@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <string.h>
 #include <mutex>
+#include <vector>
 #include "scriptdictionary.h"
 #include "scriptarray.h"
 
@@ -19,6 +20,38 @@ static std::mutex &StructureLock(const void *dictionary)
 	asPWORD address = reinterpret_cast<asPWORD>(dictionary);
 	return locks[((address >> 4) ^ (address >> 12)) & 63];
 }
+
+// ALTERED: holds a dictionary while script code runs for it (the copy of a value, see CScriptDictionary::Set), which can let go
+// of its last handle. AngelScript doesn't hold the object of a registered method for the call (only when the method returns a
+// reference).
+struct SDictionaryHold
+{
+	const CScriptDictionary *dict;
+	SDictionaryHold(const CScriptDictionary *dict) : dict(dict) { dict->AddRef(); }
+	~SDictionaryHold() { dict->Release(); }
+};
+
+// ALTERED: holds a value's object while it is copied or assigned (script code: a copy constructor, opAssign, opCast), which
+// can take it out of the dictionary that held it and free it in the middle of its own copy. Only an object whose type counts
+// references is held: a scoped type (asOBJ_SCOPED) has a release behaviour that destroys it, and a value type is not
+// reference counted.
+struct SDictObjectHold
+{
+	asIScriptEngine *engine;
+	asITypeInfo *type;
+	void *obj;
+	SDictObjectHold(asIScriptEngine *engine, void *obj, int typeId) : engine(engine), type(0), obj(0)
+	{
+		asITypeInfo *ti = obj && (typeId & asTYPEID_MASK_OBJECT) ? engine->GetTypeInfoById(typeId) : 0;
+		if( ti && (ti->GetFlags() & asOBJ_REF) && !(ti->GetFlags() & (asOBJ_NOCOUNT | asOBJ_SCOPED)) )
+		{
+			this->type = ti;
+			this->obj = obj;
+			engine->AddRefScriptObject(obj, ti);
+		}
+	}
+	~SDictObjectHold() { if( obj ) engine->ReleaseScriptObject(obj, type); }
+};
 
 // ALTERED: an enum is of its underlying type's size and signedness (enum E : int8 takes one byte, enum E : uint64 eight).
 // Every enum was read and written here as a 32-bit int: get() into an 8-byte enum set only its low half and left the upper
@@ -310,19 +343,36 @@ void CScriptDictionary::ReleaseAllReferences(asIScriptEngine * /*engine*/)
 
 CScriptDictionary &CScriptDictionary::operator =(const CScriptDictionary &other)
 {
+	// ALTERED: both dictionaries are held, and the keys of the other are copied from a list taken first, each value looked up
+	// again when its turn comes. The copies of the values are script code (see Set), which can let go of either dictionary or
+	// change the other, whose walk went on through freed nodes.
+	SDictionaryHold holdThis(this), holdOther(&other);
+
+	// ALTERED: assigning a dictionary to itself (d = d) emptied it, as everything was deleted before being copied from
+	// itself. It is left as it is, as the array add-on does.
+	if( &other == this )
+		return *this;
+
 	// Clear everything we had before
 	DeleteAll();
 
 	// Do a shallow copy of the dictionary
+	std::vector<dictKey_t> keys;
+	keys.reserve(other.dict.size());
 	dictMap_t::const_iterator it;
 	for( it = other.dict.begin(); it != other.dict.end(); it++ )
+		keys.push_back(it->first);
+	for( size_t n = 0; n < keys.size(); n++ )
 	{
+		it = other.dict.find(keys[n]);
+		if( it == other.dict.end() )
+			continue;
 		if( it->second.m_typeId & asTYPEID_OBJHANDLE )
-			Set(it->first, (void*)const_cast<void**>(&it->second.m_valueObj), it->second.m_typeId);
+			Set(keys[n], (void*)const_cast<void**>(&it->second.m_valueObj), it->second.m_typeId);
 		else if( it->second.m_typeId & asTYPEID_MASK_OBJECT )
-			Set(it->first, (void*)it->second.m_valueObj, it->second.m_typeId);
+			Set(keys[n], (void*)it->second.m_valueObj, it->second.m_typeId);
 		else
-			Set(it->first, (void*)const_cast<asINT64*>(&it->second.m_valueInt), it->second.m_typeId);
+			Set(keys[n], (void*)const_cast<asINT64*>(&it->second.m_valueInt), it->second.m_typeId);
 	}
 
 	return *this;
@@ -367,16 +417,37 @@ const CScriptDictValue *CScriptDictionary::operator[](const dictKey_t &key) cons
 
 void CScriptDictionary::Set(const dictKey_t &key, void *value, int typeId)
 {
+	// ALTERED: the new value is made first, with the dictionary held, then put under the key, and the value it replaces is
+	// released last (by made's destructor). The copy of an object is script code (a copy constructor, opAssign), which can let
+	// go of the dictionary or delete the key: it ran on the key's value in the dictionary, which was then written to after it
+	// had been freed. The key is now added after the copy.
+	// The key is copied first when the copy can run script code, which could change or free the string it refers to (an
+	// element of an array it empties).
+	SDictionaryHold hold(this);
+	dictKey_t keyCopy;
+	const dictKey_t *k = &key;
+	if( (typeId & asTYPEID_MASK_OBJECT) && !(typeId & asTYPEID_OBJHANDLE) )
+	{
+		keyCopy = key;
+		k = &keyCopy;
+	}
+	CScriptDictValue made(engine, value, typeId);
+
 	dictMap_t::iterator it;
-	it = dict.find(key);
+	it = dict.find(*k);
 	if (it == dict.end())
 	{
 		std::lock_guard<std::mutex> guard(StructureLock(this));
-		it = dict.insert(dictMap_t::value_type(key, CScriptDictValue(engine))).first;
+		it = dict.insert(dictMap_t::value_type(*k, CScriptDictValue(engine))).first;
 		iterGuard++;
 	}
 
-	it->second.Set(value, typeId);
+	asINT64 v = it->second.m_valueInt;
+	int t = it->second.m_typeId;
+	it->second.m_valueInt = made.m_valueInt;
+	it->second.m_typeId = made.m_typeId;
+	made.m_valueInt = v;
+	made.m_typeId = t;
 }
 
 // This overloaded method is implemented so that all integer and
@@ -469,7 +540,14 @@ bool CScriptDictionary::Delete(const dictKey_t &key)
 	it = dict.find(key);
 	if( it != dict.end() )
 	{
-		it->second.FreeValue();
+		// ALTERED: the value is taken out of the dictionary and released after the key is gone (by removed's destructor).
+		// Releasing it can run a destructor (script code), which ran while the key was still there and could delete it again
+		// or let go of the dictionary, and the erase then used a freed node.
+		CScriptDictValue removed(engine);
+		removed.m_valueInt = it->second.m_valueInt;
+		removed.m_typeId = it->second.m_typeId;
+		it->second.m_valueObj = 0;
+		it->second.m_typeId = 0;
 		{
 			std::lock_guard<std::mutex> guard(StructureLock(this));
 			dict.erase(it);
@@ -483,13 +561,13 @@ bool CScriptDictionary::Delete(const dictKey_t &key)
 
 void CScriptDictionary::DeleteAll()
 {
-	dictMap_t::iterator it;
-	for( it = dict.begin(); it != dict.end(); it++ )
-		it->second.FreeValue();
-
+	// ALTERED: the values are taken out of the dictionary and released after it is empty (by removed's destructor). Releasing
+	// them can run destructors (script code), which ran during the walk of the dictionary and could delete keys from it, add
+	// to it or let go of it, and the walk went on through freed nodes.
+	dictMap_t removed;
 	{
 		std::lock_guard<std::mutex> guard(StructureLock(this));
-		dict.clear();
+		removed.swap(dict);
 	}
 	iterGuard++;
 }
@@ -740,20 +818,24 @@ void CScriptDictValue::EnumReferences(asIScriptEngine *inEngine)
 
 void CScriptDictValue::Set(void *value, int typeId)
 {
-	FreeValue();
-
-	m_typeId = typeId;
+	// ALTERED: the new value is made before the old one is released, and the old one is released last (by made's destructor,
+	// as made holds it after the swap below). The old one was released first, which destroyed the value being assigned when it
+	// was this very value: d['k'] = d['k'] copied a freed object (a string, or a script class stored by value). The object
+	// being copied is held for its copy, see SDictObjectHold.
+	CScriptDictValue made(m_engine);
+	made.m_typeId = typeId;
 	if( typeId & asTYPEID_OBJHANDLE )
 	{
 		// We're receiving a reference to the handle, so we need to dereference it
-		m_valueObj = *(void**)value;
-		m_engine->AddRefScriptObject(m_valueObj, m_engine->GetTypeInfoById(typeId));
+		made.m_valueObj = *(void**)value;
+		m_engine->AddRefScriptObject(made.m_valueObj, m_engine->GetTypeInfoById(typeId));
 	}
 	else if( typeId & asTYPEID_MASK_OBJECT )
 	{
 		// Create a copy of the object
-		m_valueObj = m_engine->CreateScriptObjectCopy(value, m_engine->GetTypeInfoById(typeId));
-		if( m_valueObj == 0 )
+		SDictObjectHold hold(m_engine, value, typeId);
+		made.m_valueObj = m_engine->CreateScriptObjectCopy(value, m_engine->GetTypeInfoById(typeId));
+		if( made.m_valueObj == 0 )
 		{
 			asIScriptContext *ctx = asGetActiveContext();
 			if( ctx )
@@ -765,8 +847,15 @@ void CScriptDictValue::Set(void *value, int typeId)
 		// Copy the primitive value
 		// We receive a pointer to the value.
 		int size = m_engine->GetSizeOfPrimitiveType(typeId);
-		memcpy(&m_valueInt, value, size);
+		memcpy(&made.m_valueInt, value, size);
 	}
+
+	asINT64 v = m_valueInt;
+	int t = m_typeId;
+	m_valueInt = made.m_valueInt;
+	m_typeId = made.m_typeId;
+	made.m_valueInt = v;
+	made.m_typeId = t;
 }
 
 void CScriptDictValue::Set(CScriptDictValue &value)
@@ -813,6 +902,7 @@ bool CScriptDictValue::Get(void *value, int typeId) const
 				return false;
 
 			// RefCastObject will increment the refcount if successful
+			SDictObjectHold hold(m_engine, m_valueObj, m_typeId); // ALTERED: a cast can be script code, see SDictObjectHold
 			m_engine->RefCastObject(m_valueObj, m_engine->GetTypeInfoById(m_typeId), m_engine->GetTypeInfoById(typeId), reinterpret_cast<void**>(value));
 
 			return true;
@@ -830,6 +920,7 @@ bool CScriptDictValue::Get(void *value, int typeId) const
 		// Copy the object into the given reference
 		if( isCompatible )
 		{
+			SDictObjectHold hold(m_engine, m_valueObj, m_typeId); // ALTERED: opAssign is script code, see SDictObjectHold
 			m_engine->AssignScriptObject(value, m_valueObj, m_engine->GetTypeInfoById(typeId));
 
 			return true;
