@@ -14,8 +14,10 @@
 #include <weakref.h>
 #include <SDL3/SDL_touch.h>
 #include <memory>
+#include <stdexcept> // std::runtime_error, thrown by engine_event_listener::fire
 #include <string>
 #include <vector>
+#include <Poco/Format.h> // Poco::format, used by engine_event_listener::fire
 #include <angelscript_call.hpp>
 #include "nvgt.h"
 #include "scriptstuff.h"
