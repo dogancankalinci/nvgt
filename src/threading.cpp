@@ -271,6 +271,12 @@ public:
 				} else if (!obj && !param_is_handle) success = asINVALID_TYPE; // A null handle for an object, refused like null itself (above): the function got a null reference or object.
 				else {
 					success = ctx->SetArgObject(i, obj);
+					// An object passed by value is copied by SetArgObject(), which leaves the argument null when the copy fails (the copy constructor of a script class raised an exception): the function ran with a null object.
+					if (success >= 0 && !by_ref && !param_is_handle && !*(void**)ctx->GetAddressOfArg(i)) {
+						aCtx->SetException(format("Cannot copy object for argument %u of async function call", i + 1).c_str());
+						engine->ReturnContext(ctx);
+						return false;
+					}
 					// A reference to the object: the caller's handle can be let go of before the function runs on its thread, so the object is held until the call is over.
 					if (success >= 0 && by_ref && obj) {
 						engine->AddRefScriptObject(obj, arg_type);
@@ -293,6 +299,12 @@ public:
 					success = ctx->SetArgObject(i, obj);
 					if (success >= 0) value_args.emplace_back(obj, arg_type);
 					else engine->ReleaseScriptObject(obj, arg_type);
+					// By value, the function gets a copy SetArgObject() makes of the copy, null if that fails (see above).
+					if (success >= 0 && !by_ref && !*(void**)ctx->GetAddressOfArg(i)) {
+						aCtx->SetException(format("Cannot copy object for argument %u of async function call", i + 1).c_str());
+						engine->ReturnContext(ctx);
+						return false;
+					}
 				}
 			}
 			if (success < 0) {
