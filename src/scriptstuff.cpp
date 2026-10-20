@@ -644,18 +644,20 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 		if (ret && (ret_tmods & asTM_INOUTREF)) ret = *(void**)ret;
 		if (ret) set_call_result(results, "0", ret, ret_type_id);
 	}
+	// Copying a result runs script code too (a script class's copy constructor or opAssign): results cut short by the limit are incomplete, and the call fails.
+	if (call_data.exceeded) {
+		results->Release();
+		failure_reason = "maximum statement count of " + std::to_string(call_data.max_statement_count) + " exceeded";
+		goto failure;
+	}
+	// What follows is the call's clean up, which runs no statement of the call (see failure): emptying args releases the caller's objects, whose destructors ran under the limit and failed a call whose function had completed.
+	scope.end();
 	if (args) {
 		args->DeleteAll();
 		*args = *results;
 		results->Release();
 	} else if (results->GetSize() > 0) args = results;
 	else results->Release();
-	// Copying a result runs script code too (a script class's copy constructor or opAssign): results cut short by the limit are incomplete, and the call fails.
-	if (call_data.exceeded) {
-		failure_reason = "maximum statement count of " + std::to_string(call_data.max_statement_count) + " exceeded";
-		goto failure;
-	}
-	scope.end(); // The clean up runs no statement of the call (see failure).
 	if (new_context) g_ScriptEngine->ReturnContext(ctx);
 	else pop_nested_state(ctx);
 	release_made_arguments(made_objects, made_handles);
@@ -740,14 +742,31 @@ std::string script_function_get_script_property(asIScriptFunction* func) {
 	if (!func || func->GetDeclaredAt(&script, &row, &col) < 0) return "";
 	return std::string(script);
 }
+// Whether the execution running on ctx began in a script class's destructor, whose name the compiler starts with '~'. Its first function is the last script function before the marker of the nested call it runs in (which holds null or the registered function making that call) or the bottom of the call stack.
+static bool executing_script_destructor(asIScriptContext* ctx) {
+	asIScriptFunction* first = nullptr;
+	asUINT levels = ctx->GetCallstackSize();
+	for (asUINT level = 0; level < levels; level++) {
+		asIScriptFunction* func = ctx->GetFunction(level);
+		if (!func || func->GetFuncType() != asFUNC_SCRIPT) break;
+		first = func;
+	}
+	return first && first->GetName()[0] == '~';
+}
 // Counts a statement run on this thread, by any context, towards the limits of the script_function.call()s running on it (see script_function_call). nvgt_line_callback, every context's line callback, calls it.
 void script_function_call_count_statement(asIScriptContext* ctx) {
 	script_function_call_data* data = g_script_function_call;
 	if (!data) return;
 	// AngelScript calls the line callback once more as an execution ends (aborted, suspended, finished), which is no statement. Counted as one, at the limit it marked the call as exceeded when exit() had ended it, and script_function_call took exit()'s abort for its own and dropped it: the script went on, and as the context manager had already let go of its context, a later exit() did nothing. And with the call just finished, its Abort() stayed pending on the script's context and ended the script at its next sleep() or yield().
 	if (ctx->GetState() != asEXECUTION_ACTIVE) return;
+	// Only calls with a limit count, and with none on this thread the call stack isn't walked below.
+	script_function_call_data* limited = data;
+	while (limited && limited->max_statement_count < 1) limited = limited->outer;
+	if (!limited) return;
+	// A script class's destructor runs whole and uncounted, with the functions it calls, as one run while the call cleans up does. Counted, a destructor run past the limit was aborted at its first statement, and as AngelScript marks a destructor called before running it, its body never ran: that of garbage the collector destroys as the function's execution ends (the caller's too, made before the call), for one. A callback such a destructor makes (a sort comparison) is an execution of its own, and counts.
+	if (executing_script_destructor(ctx)) return;
 	// A statement of this call is one of every call it was made in too, so their limits are counted here as well. A limit exceeded by an outer call aborts this one, which passes the abort on to that call (see pop_nested_state), or, in a context of its own, has it end at that call's next statement.
-	for (script_function_call_data* d = data; d; d = d->outer) {
+	for (script_function_call_data* d = limited; d; d = d->outer) {
 		if (d->max_statement_count < 1) continue;
 		d->current_statement_count += 1;
 		if (d->current_statement_count > d->max_statement_count) {
