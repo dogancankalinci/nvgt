@@ -265,7 +265,7 @@ public class TTS {
 	private boolean ratePinned = false, pitchPinned = false;
 	private Voice defaultVoice; // The voice the user's settings select, as TextToSpeech took it while connecting and followDefaultVoice() since, which resetVoice() restores.
 	private volatile Voice chosenVoice; // The voice a script set, if any, which a replacement TextToSpeech is given too.
-	private Locale defaultLanguage; // The language TextToSpeech took from the user's settings when it connected.
+	private Locale defaultLanguage; // The language of the user's settings, as TextToSpeech took it while connecting and takeDefaultVoice() since.
 	// While no voice was chosen, the voice follows the user's settings as they are now: the language set for the engine, or
 	// the phone's, and the voice the engine itself names as its default for it. TextToSpeech looks both up only as it
 	// connects and then names that voice in every request, so a change made while the app runs went unheard, and unreported,
