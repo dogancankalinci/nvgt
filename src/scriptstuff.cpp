@@ -521,15 +521,28 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 			} else target = ctx->GetAddressOfArg(p);
 			if (arg_tmods & asTM_OUTREF) out_args.emplace_back(p, target, arg_type_id);
 			if (!has_default) continue;
-			if (!defCtx) defCtx = g_ScriptEngine->RequestContext();
-			// In the function's namespace, where the compiler evaluates it: a default naming something of that namespace failed to compile.
-			int dr = defCtx? ExecuteString(g_ScriptEngine, (std::string("return ") + arg_default + ";").c_str(), target, arg_type_id, func->GetModule(), defCtx, func->GetNamespace()) : asERROR;
+			if (!defCtx) {
+				defCtx = g_ScriptEngine->RequestContext();
+				// A default is evaluated as part of the call, so the statements it runs count towards the call's limit (and those of the calls it is made in), as the call's own do: on a context of its own with no limit, a default that called a function looping forever hung the script whatever the limit. Put back before the context goes back to the pool.
+				if (defCtx) defCtx->SetLineCallback(asFUNCTION(script_function_line_callback), &call_data, asCALL_CDECL);
+			}
+			int dr;
+			{
+				call_data.ctx = defCtx; // A call made in the default puts this callback back on defCtx when it returns, as below for ctx.
+				script_function_call_scope scope(call_data);
+				// In the function's namespace, where the compiler evaluates it: a default naming something of that namespace failed to compile.
+				dr = defCtx? ExecuteString(g_ScriptEngine, (std::string("return ") + arg_default + ";").c_str(), target, arg_type_id, func->GetModule(), defCtx, func->GetNamespace()) : asERROR;
+			}
 			if (dr != asEXECUTION_FINISHED) {
 				failure_reason = "ERROR: Can't evaluate the default value of parameter ";
 				failure_reason += std::to_string(p + 1);
 				if (dr == asEXECUTION_EXCEPTION) {
 					failure_reason += ": ";
 					failure_reason += defCtx->GetExceptionString();
+				} else if (call_data.exceeded) {
+					failure_reason += ": maximum statement count of ";
+					failure_reason += std::to_string(call_data.max_statement_count);
+					failure_reason += " exceeded";
 				}
 				goto failure;
 			}
@@ -540,10 +553,10 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 		}
 	}
 	if (defCtx) {
+		defCtx->SetLineCallback(asFUNCTION(nvgt_line_callback), NULL, asCALL_CDECL);
 		g_ScriptEngine->ReturnContext(defCtx);
 		defCtx = nullptr;
 	}
-	call_data.current_statement_count = 0;
 	call_data.ctx = ctx;
 	ctx->SetLineCallback(asFUNCTION(script_function_line_callback), &call_data, asCALL_CDECL);
 	int xr;
@@ -613,7 +626,10 @@ failure:
 		} else if (call_data.exceeded) ctx->PopState(); // Our own abort, which ends the called function only
 		else pop_nested_state(ctx);
 	}
-	if (defCtx) g_ScriptEngine->ReturnContext(defCtx);
+	if (defCtx) {
+		defCtx->SetLineCallback(asFUNCTION(nvgt_line_callback), NULL, asCALL_CDECL);
+		g_ScriptEngine->ReturnContext(defCtx);
+	}
 	release_made_arguments(made_objects, made_handles);
 	if (args) {
 		args->DeleteAll();
