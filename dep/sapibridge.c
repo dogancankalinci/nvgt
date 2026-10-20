@@ -167,21 +167,28 @@ int sb_sapi_count_voices(sb_sapi* sapi)
 if(!sb_sapi_refresh_voices(sapi)) return 0;
 return sapi->voice_count;
 }
+/* The voices as the last count, current voice lookup or refresh listed them, listed now if there are none yet. SAPI lists the user's default voice first, so a list made again after the default changed numbers the voices otherwise, and a name, language or voice asked for by a number must come from the listing the number came from. */
+int sbz_sapi_listed_voices(sb_sapi* sapi)
+{
+if(!sbz_sapi_is_init(sapi)) return 0;
+if((sapi->voices)&&(sapi->voice_count>0)) return 1;
+return sbz_sapi_refresh_voices(sapi);
+}
 char* sb_sapi_get_voice_name(sb_sapi* sapi, int id)
 {
-if(!sb_sapi_refresh_voices(sapi)) return NULL;
+if(!sbz_sapi_listed_voices(sapi)) return NULL;
 if((id<0)||(id>=sapi->voice_count)) return NULL;
 return sapi->voices[id].name;
 }
 char* sb_sapi_get_voice_language(sb_sapi* sapi, int id)
 {
-if(!sb_sapi_refresh_voices(sapi)) return NULL;
+if(!sbz_sapi_listed_voices(sapi)) return NULL;
 if((id<0)||(id>=sapi->voice_count)) return NULL;
 return sapi->voices[id].language;
 }
 int sb_sapi_set_voice(sb_sapi* sapi, int id)
 {
-if(!sb_sapi_refresh_voices(sapi)) return 0;
+if(!sbz_sapi_listed_voices(sapi)) return 0;
 if((id<0)||(id>=sapi->voice_count)) return 0;
 HRESULT hr= sapi->voice->lpVtbl->SetVoice(sapi->voice, sapi->voices[id].token);
 if(FAILED(hr)) return 0;

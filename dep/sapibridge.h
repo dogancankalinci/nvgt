@@ -37,7 +37,7 @@ int sb_sapi_refresh_voices(sb_sapi* sapi);
 int sb_sapi_count_voices(sb_sapi* sapi);
 char* sb_sapi_get_voice_name(sb_sapi* sapi, int id);
 char* sb_sapi_get_voice_language(sb_sapi* sapi, int id);
-int sb_sapi_set_voice(sb_sapi* sapi, int id);
+int sb_sapi_set_voice(sb_sapi* sapi, int id); /* By the number of the voice in the last listing (sb_sapi_count_voices, sb_sapi_get_voice or sb_sapi_refresh_voices), as sb_sapi_get_voice_name and sb_sapi_get_voice_language take it too. */
 int sb_sapi_reset_voice(sb_sapi* sapi);
 int sb_sapi_get_voice(sb_sapi* sapi);
 int sb_sapi_get_channels(sb_sapi* sapi);
@@ -101,6 +101,7 @@ int sbz_sapi_refresh_voices(sb_sapi* sapi);
 int sbz_sapi_get_voice_category(sb_sapi* sapi, ISpObjectTokenCategory** category);
 int sbz_sapi_get_voice_enum(sb_sapi* sapi, IEnumSpObjectTokens** enum_tokens);
 int sbz_sapi_default_voice_index(sb_sapi* sapi);
+int sbz_sapi_listed_voices(sb_sapi* sapi);
 int sbz_sapi_default_rate(void);
 void sbz_sapi_follow_default_rate(sb_sapi* sapi);
 int sbz_sapi_populate_voices_from_tokens(sb_sapi* sapi, IEnumSpObjectTokens** enum_tokens, int count);
