@@ -759,6 +759,7 @@ int tts_voice::platform_voice_index() {
 		int index = find_listed_voice(voices, voice->engine_name, engine_voice, name, language);
 		if (index >= 0) {
 			current_voice_index = index;
+			relisted_for.clear(); // So that the voice is looked for again if it leaves the list later.
 			return index;
 		}
 		// The user's settings can select a voice the list was made without, one installed while the program runs for instance, or on Android a voice of the language the user chose since that needs a network connection. Without a voice the script chose, the list is made again, once for each such voice, as a language filter can leave it out for good.
