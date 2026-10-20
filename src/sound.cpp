@@ -1698,13 +1698,13 @@ public:
 	}
 	bool open_file(const string& filename, unsigned int sample_rate, unsigned int channels, unsigned int flags) override {
 		if (!output_in_range(sample_rate, channels)) return false;
-		if (get_active()) close();
-		unique_lock<mutex> lock(write_mtx);
 		if (flags & ENCODER_DEFAULTS) flags = (flags & ~ENCODER_DEFAULTS) | get_default_open_flags();
-		if (!(flags & ENCODER_OVERWRITE) && FileExists(filename)) { // The encoders would replace it.
+		if (!(flags & ENCODER_OVERWRITE) && FileExists(filename)) { // The encoders would replace it. Refused before the encoder open is closed, as the other arguments are.
 			g_soundsystem_last_error = MA_ALREADY_EXISTS;
 			return false;
 		}
+		if (get_active()) close();
+		unique_lock<mutex> lock(write_mtx);
 		return open_impl(filename, nullptr, sample_rate, channels, flags); // The encoders create the file anew, replacing one there, once their arguments check out; deleting it first lost it to an open that then failed.
 	}
 	bool open_stream(datastream* ds, unsigned int sample_rate, unsigned int channels, unsigned int flags) override {
