@@ -684,6 +684,7 @@ bool tts_voice::sync_engine(engine_entry &entry, bool force) {
 	tts_engine *engine = entry.engine.get();
 	if (!engine) return false;
 	if (!force && entry.synced) return true;
+	bool due = !entry.synced; // Whether the engine is behind the object's settings, rather than synced again only because a setting was just set.
 	// Push only what the script set on this object. Anything else is left alone, or, if the object stopped using a value it set, returned to the platform default, so a script that never sets a parameter always hears the user's own TTS settings.
 	voice_info *voice = get_voice_info(current_voice_index);
 	bool voice_applied = true;
@@ -703,8 +704,9 @@ bool tts_voice::sync_engine(engine_entry &entry, bool force) {
 		}
 		voice_applied = index >= 0 && engine->set_voice(index);
 		if (voice_applied) entry.voice_changed = true;
-	} else if (entry.voice_changed) {
-		entry.voice_changed = !tts_engine_restore_voice(entry); // A voice that couldn't be put back still counts as changed, so the engine isn't handed on with it.
+	} else if (entry.voice_changed && due) {
+		// A voice that couldn't be put back still counts as changed, so the engine isn't handed on with it. It is tried again when the object syncs the engine anew, as after its list was made again, but not on each rate, pitch or volume set meanwhile, as a failing reset can cost many calls to the platform's speech service.
+		entry.voice_changed = !tts_engine_restore_voice(entry);
 	}
 	float lo, mid, hi;
 	if (rate_set) {
