@@ -1,0 +1,188 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+index f76dcf7..f8bbf22 100644
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -3498,19 +3498,23 @@ static const void *const dispatch_table[256] = {
+ 			m_regs.stackPointer      = l_sp;
+ 			m_regs.stackFramePointer = l_fp;
+ 
++			// ALTERED: the previous object is released after the destination holds the new one. It was released while the
++			// destination still held it, so a script class destructor run by that release that cleared the same handle
++			// (@g = null in ~Foo while @g = null ran) released it a second time: the object was freed during its own
++			// destructor and the first release then decremented the freed memory.
++			void *prev = *d;
+ 			// Update ref counter for object types that require it
+-			if( !(objType->flags & (asOBJ_NOCOUNT | asOBJ_VALUE)) )
+-			{
+-				// Release previous object held by destination pointer
+-				if( *d != 0 && beh->release )
+-					m_engine->CallObjectMethod(*d, beh->release);
+-				// Increase ref counter of wanted object
+-				if( s != 0 && beh->addref )
+-					m_engine->CallObjectMethod(s, beh->addref);
+-			}
++			bool counted = !(objType->flags & (asOBJ_NOCOUNT | asOBJ_VALUE));
++			// Increase ref counter of wanted object
++			if( counted && s != 0 && beh->addref )
++				m_engine->CallObjectMethod(s, beh->addref);
+ 
+ 			// Set the new object in the destination
+ 			*d = s;
++
++			// Release previous object held by destination pointer
++			if( counted && prev != 0 && beh->release )
++				m_engine->CallObjectMethod(prev, beh->release);
+ 		}
+ 		l_bc += 1+AS_PTR_SIZE;
+ 		NEXT_INSTRUCTION();
+@@ -4844,19 +4848,23 @@ static const void *const dispatch_table[256] = {
+ 			m_regs.stackPointer      = l_sp;
+ 			m_regs.stackFramePointer = l_fp;
+ 
++			// ALTERED: the previous object is released after the destination holds the new one. It was released while the
++			// destination still held it, so a script class destructor run by that release that cleared the same handle
++			// (@g = null in ~Foo while @g = null ran) released it a second time: the object was freed during its own
++			// destructor and the first release then decremented the freed memory.
++			void *prev = *d;
+ 			// Update ref counter for object types that require it
+-			if( !(objType->flags & (asOBJ_NOCOUNT | asOBJ_VALUE)) )
+-			{
+-				// Release previous object held by destination pointer
+-				if( *d != 0 && beh->release )
+-					m_engine->CallObjectMethod(*d, beh->release);
+-				// Increase ref counter of wanted object
+-				if( s != 0 && beh->addref )
+-					m_engine->CallObjectMethod(s, beh->addref);
+-			}
++			bool counted = !(objType->flags & (asOBJ_NOCOUNT | asOBJ_VALUE));
++			// Increase ref counter of wanted object
++			if( counted && s != 0 && beh->addref )
++				m_engine->CallObjectMethod(s, beh->addref);
+ 
+ 			// Set the new object in the destination
+ 			*d = s;
++
++			// Release previous object held by destination pointer
++			if( counted && prev != 0 && beh->release )
++				m_engine->CallObjectMethod(prev, beh->release);
+ 		}
+ 		l_bc += 1+AS_PTR_SIZE;
+ 		NEXT_INSTRUCTION();
+diff --git a/sdk/angelscript/source/as_module.cpp b/sdk/angelscript/source/as_module.cpp
+index 3fd900f..079cf97 100644
+--- a/sdk/angelscript/source/as_module.cpp
++++ b/sdk/angelscript/source/as_module.cpp
+@@ -485,22 +485,27 @@ void asCModule::UninitializeGlobalProp(asCGlobalProperty *prop)
+ 		{
+ 			asCObjectType *ot = CastToObjectType(prop->type.GetTypeInfo());
+ 
++			// ALTERED: the variable is cleared before the object is released or destroyed, not after. A script class
++			// destructor run by that release which cleared the same variable released the object a second time: it was
++			// freed during its own destructor and the first release then decremented the freed memory.
++			void *ptr = *obj;
++
++			// Set the address to 0 as someone might try to access the variable afterwards
++			*obj = 0;
++
+ 			if (ot->flags & asOBJ_REF)
+ 			{
+ 				asASSERT((ot->flags & asOBJ_NOCOUNT) || ot->beh.release);
+ 				if (ot->beh.release)
+-					m_engine->CallObjectMethod(*obj, ot->beh.release);
++					m_engine->CallObjectMethod(ptr, ot->beh.release);
+ 			}
+ 			else
+ 			{
+ 				if (ot->beh.destruct)
+-					m_engine->CallObjectMethod(*obj, ot->beh.destruct);
++					m_engine->CallObjectMethod(ptr, ot->beh.destruct);
+ 
+-				m_engine->CallFree(*obj);
++				m_engine->CallFree(ptr);
+ 			}
+-
+-			// Set the address to 0 as someone might try to access the variable afterwards
+-			*obj = 0;
+ 		}
+ 	}
+ 	else if (prop->type.IsFuncdef())
+@@ -508,8 +513,10 @@ void asCModule::UninitializeGlobalProp(asCGlobalProperty *prop)
+ 		asCScriptFunction **func = (asCScriptFunction**)prop->GetAddressOfValue();
+ 		if (*func)
+ 		{
+-			(*func)->Release();
++			// ALTERED: cleared before the release, as above (releasing a delegate can destroy its object)
++			asCScriptFunction *f = *func;
+ 			*func = 0;
++			f->Release();
+ 		}
+ 	}
+ }
+diff --git a/sdk/angelscript/source/as_scriptobject.cpp b/sdk/angelscript/source/as_scriptobject.cpp
+index f6f16f5..1012e8d 100644
+--- a/sdk/angelscript/source/as_scriptobject.cpp
++++ b/sdk/angelscript/source/as_scriptobject.cpp
+@@ -855,10 +855,12 @@ void asCScriptObject::ReleaseAllHandles(asIScriptEngine *engine)
+ 				void **ptr = (void**)(((char*)this) + prop->byteOffset);
+ 				if (*ptr)
+ 				{
++					// ALTERED: the member is cleared before the release (see CopyHandle)
++					void *obj = *ptr;
++					*ptr = 0;
+ 					asASSERT((prop->type.GetTypeInfo()->flags & asOBJ_NOCOUNT) || prop->type.GetBehaviour()->release);
+ 					if (prop->type.GetBehaviour()->release)
+-						((asCScriptEngine*)engine)->CallObjectMethod(*ptr, prop->type.GetBehaviour()->release);
+-					*ptr = 0;
++						((asCScriptEngine*)engine)->CallObjectMethod(obj, prop->type.GetBehaviour()->release);
+ 				}
+ 			}
+ 			else if ((prop->type.GetTypeInfo()->flags & asOBJ_VALUE) && (prop->type.GetTypeInfo()->flags & asOBJ_GC))
+@@ -880,8 +882,10 @@ void asCScriptObject::ReleaseAllHandles(asIScriptEngine *engine)
+ 			asCScriptFunction **ptr = (asCScriptFunction**)(((char*)this) + prop->byteOffset);
+ 			if (*ptr)
+ 			{
+-				(*ptr)->Release();
++				// ALTERED: cleared before the release (releasing a delegate can destroy its object)
++				asCScriptFunction *func = *ptr;
+ 				*ptr = 0;
++				func->Release();
+ 			}
+ 		}
+ 	}
+@@ -945,11 +949,13 @@ int asCScriptObject::CopyFromAs(const asCScriptObject *other, asCObjectType *in_
+ 				{
+ 					asCScriptFunction **dst = (asCScriptFunction**)(((char*)this) + prop->byteOffset);
+ 					asCScriptFunction **src = (asCScriptFunction**)(const_cast<char*>((const char*)other) + prop->byteOffset);
+-					if (*dst)
+-						(*dst)->Release();
++					// ALTERED: the previous function is released after the member holds the new one (see CopyHandle)
++					asCScriptFunction *prev = *dst;
+ 					*dst = *const_cast<asCScriptFunction**>(src);
+ 					if (*dst)
+ 						(*dst)->AddRef();
++					if (prev)
++						prev->Release();
+ 				}
+ 				else
+ 				{
+@@ -1145,11 +1151,15 @@ void asCScriptObject::CopyHandle(asPWORD *src, asPWORD *dst, asCObjectType *in_o
+ 	// asOBJ_NOCOUNT doesn't have addref or release behaviours
+ 	asASSERT( (in_objType->flags & asOBJ_NOCOUNT) || (in_objType->beh.release && in_objType->beh.addref) );
+ 
+-	if( *dst && in_objType->beh.release )
+-		engine->CallObjectMethod(*(void**)dst, in_objType->beh.release);
+-	*dst = *src;
+-	if( *dst && in_objType->beh.addref )
+-		engine->CallObjectMethod(*(void**)dst, in_objType->beh.addref);
++	// ALTERED: the previous object is released after the destination holds the new one, as asBC_REFCPY now does (a
++	// destructor run by the release that cleared the same member released the object a second time)
++	asPWORD prev = *dst;
++	asPWORD value = *src;
++	if( value && in_objType->beh.addref )
++		engine->CallObjectMethod((void*)value, in_objType->beh.addref);
++	*dst = value;
++	if( prev && in_objType->beh.release )
++		engine->CallObjectMethod((void*)prev, in_objType->beh.release);
+ }
+ 
+ // TODO: weak: Should move to its own file
