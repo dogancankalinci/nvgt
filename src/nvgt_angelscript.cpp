@@ -321,6 +321,7 @@ void nvgt_line_callback(asIScriptContext *ctx, void* obj) {
 	}
 	#endif
 	profiler_callback(ctx, obj);
+	script_function_call_count_statement(ctx);
 }
 #ifndef NVGT_STUB
 int IncludeCallback(const char* filename, const char* sectionname, CScriptBuilder *builder, void* param) {

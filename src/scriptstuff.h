@@ -18,7 +18,8 @@
 
 bool script_compiled();
 void profiler_callback(asIScriptContext* ctx, void* obj);
-void nvgt_line_callback(asIScriptContext* ctx, void* obj); // Every context's line callback (nvgt_angelscript.cpp): the debugger's, then profiler_callback.
+void nvgt_line_callback(asIScriptContext* ctx, void* obj); // Every context's line callback (nvgt_angelscript.cpp): the debugger's, then profiler_callback and script_function_call_count_statement.
+void script_function_call_count_statement(asIScriptContext* ctx); // Counts a statement towards the limits of the script_function.call()s running on this thread.
 extern int g_GCMode;
 void prepare_profiler();
 void garbage_collect_action();

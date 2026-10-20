@@ -326,16 +326,29 @@ struct script_function_call_data {
 	int max_statement_count;
 	int current_statement_count;
 	bool exceeded; // The limit ended the call: aborted rather than suspended, as a nested call can't be left suspended (see execute_nested), and not passed on to the caller.
-	asIScriptContext* ctx; // The context running the call.
 	script_function_call_data* outer; // The call on this thread that this one was made in, whose statements this one's are too.
 };
-// The innermost script_function.call() running on this thread. AngelScript can't tell what line callback a context has, so a call made in another put back nvgt_line_callback when it returned, and the outer call's statement limit stopped counting.
+// The innermost script_function.call() running on this thread, whose statements are counted by every context's line callback (see script_function_call_count_statement).
 static thread_local script_function_call_data* g_script_function_call = nullptr;
+// Makes a call the innermost one on this thread until end(), which comes before the call cleans up (see script_function_call), or until it returns.
 struct script_function_call_scope {
 	script_function_call_data& data;
-	script_function_call_scope(script_function_call_data& data) : data(data) { g_script_function_call = &data; }
-	~script_function_call_scope() { g_script_function_call = data.outer; }
+	bool active;
+	script_function_call_scope(script_function_call_data& data) : data(data), active(true) { g_script_function_call = &data; }
+	void end() {
+		if (!active) return;
+		g_script_function_call = data.outer;
+		active = false;
+	}
+	~script_function_call_scope() { end(); }
 };
+// Adds to the reason a copy or a default value of a call failed when the call's statement limit cut it short.
+static void add_statement_limit_reason(std::string& reason, const script_function_call_data& data) {
+	if (!data.exceeded) return;
+	reason += ": maximum statement count of ";
+	reason += std::to_string(data.max_statement_count);
+	reason += " exceeded";
+}
 // Stores a value of script_function.call()'s result. A number is kept as an int64 or a double, as the script's own dictionary::set() keeps it, since get() converts only from those: the result of a function returning an int, a float or another size, kept under its own type, couldn't be read back by any get().
 static void set_call_result(CScriptDictionary* d, const std::string& key, void* value, int type_id) {
 	switch (type_id) {
@@ -406,13 +419,14 @@ asIScriptFunction* get_default_args_function(asIScriptFunction* func) {
 	}
 	return func;
 }
-void script_function_line_callback(asIScriptContext* ctx, script_function_call_data* data);
 CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictionary* args, CScriptArray* errors = NULL, int max_statement_count = 0) {
 	std::string failure_reason = "";
 	std::string callstack1 = "";
 	std::string callstack2 = "";
 	g_ScriptEngine->SetMessageCallback(asFUNCTION(script_message_callback), errors, asCALL_CDECL);
-	script_function_call_data call_data {max_statement_count, 0, false, nullptr, g_script_function_call};
+	script_function_call_data call_data {max_statement_count, 0, false, g_script_function_call};
+	// Every statement run on this thread from here until the results are gathered is the call's, whatever context runs it: the copy constructor or opAssign copying an argument or the result (run on a context of their own, as the call's is already prepared), a default value, a callback run on a context of its own, a script random generator. Only the call's own context and its defaults counted, so a copy that never ended hung the script whatever the limit.
+	script_function_call_scope scope(call_data);
 	// The values passed to reference parameters, which the arguments point to, so they last until the call returns (8 bytes hold any primitive or a handle).
 	std::vector<asQWORD> ref_values(func->GetParamCount());
 	// What reference parameters are given, released once the call is over: objects made here (a copy of an argument of a value type, a default value, room for an &out result) or held here (an argument of a reference type), and the handles held in ref_values.
@@ -482,6 +496,7 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 						if (!copy) {
 							failure_reason = "ERROR: Can't copy the value of parameter ";
 							failure_reason += std::to_string(p + 1);
+							add_statement_limit_reason(failure_reason, call_data);
 							goto failure;
 						}
 						made_objects.emplace_back(copy, arg_type);
@@ -511,6 +526,7 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 						if (!(arg_type_id & asTYPEID_OBJHANDLE) && !*(void**)ctx->GetAddressOfArg(p)) {
 							failure_reason = "ERROR: Can't copy the value of parameter ";
 							failure_reason += std::to_string(p + 1);
+							add_statement_limit_reason(failure_reason, call_data);
 							goto failure;
 						}
 					}
@@ -543,6 +559,7 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 				if (!obj) {
 					failure_reason = "ERROR: Can't create a value for parameter ";
 					failure_reason += std::to_string(p + 1);
+					add_statement_limit_reason(failure_reason, call_data);
 					goto failure;
 				}
 				if (by_ref) {
@@ -557,29 +574,18 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 			} else target = ctx->GetAddressOfArg(p);
 			if (arg_tmods & asTM_OUTREF) out_args.emplace_back(p, target, arg_type_id);
 			if (!has_default) continue;
-			if (!defCtx) {
-				defCtx = g_ScriptEngine->RequestContext();
-				// A default is evaluated as part of the call, so the statements it runs count towards the call's limit (and those of the calls it is made in), as the call's own do: on a context of its own with no limit, a default that called a function looping forever hung the script whatever the limit. Put back before the context goes back to the pool.
-				if (defCtx) defCtx->SetLineCallback(asFUNCTION(script_function_line_callback), &call_data, asCALL_CDECL);
-			}
+			// A default is evaluated as part of the call, so the statements it runs count towards the call's limit (and those of the calls it is made in), as the call's own do (see above).
+			if (!defCtx) defCtx = g_ScriptEngine->RequestContext();
 			int dr;
-			{
-				call_data.ctx = defCtx; // A call made in the default puts this callback back on defCtx when it returns, as below for ctx.
-				script_function_call_scope scope(call_data);
-				// In the function's namespace, where the compiler evaluates it: a default naming something of that namespace failed to compile.
-				dr = defCtx? ExecuteString(g_ScriptEngine, (std::string("return ") + arg_default + ";").c_str(), target, arg_type_id, decl_func->GetModule(), defCtx, decl_func->GetNamespace()) : asERROR;
-			}
+			// In the function's namespace, where the compiler evaluates it: a default naming something of that namespace failed to compile.
+			dr = defCtx? ExecuteString(g_ScriptEngine, (std::string("return ") + arg_default + ";").c_str(), target, arg_type_id, decl_func->GetModule(), defCtx, decl_func->GetNamespace()) : asERROR;
 			if (dr != asEXECUTION_FINISHED) {
 				failure_reason = "ERROR: Can't evaluate the default value of parameter ";
 				failure_reason += std::to_string(p + 1);
 				if (dr == asEXECUTION_EXCEPTION) {
 					failure_reason += ": ";
 					failure_reason += defCtx->GetExceptionString();
-				} else if (call_data.exceeded) {
-					failure_reason += ": maximum statement count of ";
-					failure_reason += std::to_string(call_data.max_statement_count);
-					failure_reason += " exceeded";
-				}
+				} else add_statement_limit_reason(failure_reason, call_data);
 				goto failure;
 			}
 		} else if (by_ref || is_value_object) {
@@ -589,20 +595,18 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 		}
 	}
 	if (defCtx) {
-		defCtx->SetLineCallback(asFUNCTION(nvgt_line_callback), NULL, asCALL_CDECL);
 		g_ScriptEngine->ReturnContext(defCtx);
 		defCtx = nullptr;
 	}
-	call_data.ctx = ctx;
-	ctx->SetLineCallback(asFUNCTION(script_function_line_callback), &call_data, asCALL_CDECL);
-	int xr;
-	{
-		script_function_call_scope scope(call_data);
-		xr = execute_nested(ctx);
+	// A copy that reached the limit was cut short, and an opAssign cut short leaves an object only partly copied: the function isn't run.
+	if (call_data.exceeded) {
+		failure_reason = "maximum statement count of " + std::to_string(call_data.max_statement_count) + " exceeded";
+		goto failure;
 	}
-	// The one the context had: the statement counter of the call this one was made in, if any is running on this context, else the one every context has (profiler_callback alone had the debugger stop at no breakpoint after a call).
-	if (call_data.outer && call_data.outer->ctx == ctx) ctx->SetLineCallback(asFUNCTION(script_function_line_callback), call_data.outer, asCALL_CDECL);
-	else ctx->SetLineCallback(asFUNCTION(nvgt_line_callback), NULL, asCALL_CDECL);
+	// NVGT's line callback, which counts the call's statements: every context NVGT makes has it, and one made elsewhere gets it here.
+	ctx->SetLineCallback(asFUNCTION(nvgt_line_callback), NULL, asCALL_CDECL);
+	int xr;
+	xr = execute_nested(ctx);
 	if (xr != asEXECUTION_FINISHED) {
 		if (xr == asEXECUTION_EXCEPTION) {
 			char msg[4096];
@@ -642,6 +646,12 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 		results->Release();
 	} else if (results->GetSize() > 0) args = results;
 	else results->Release();
+	// Copying a result runs script code too (a script class's copy constructor or opAssign): results cut short by the limit are incomplete, and the call fails.
+	if (call_data.exceeded) {
+		failure_reason = "maximum statement count of " + std::to_string(call_data.max_statement_count) + " exceeded";
+		goto failure;
+	}
+	scope.end(); // The clean up runs no statement of the call (see failure).
 	if (new_context) g_ScriptEngine->ReturnContext(ctx);
 	else pop_nested_state(ctx);
 	release_made_arguments(made_objects, made_handles);
@@ -650,6 +660,8 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 		errors->Release();
 	return args;
 failure:
+	// The destructors run as the call cleans up (of the aborted function's locals, of the arguments made for it) aren't statements of the call, and run whole.
+	scope.end();
 	if (errors != NULL && failure_reason != "") {
 		errors->InsertLast(&failure_reason);
 		errors->InsertLast(&callstack1);
@@ -662,10 +674,7 @@ failure:
 		} else if (call_data.exceeded) ctx->PopState(); // Our own abort, which ends the called function only
 		else pop_nested_state(ctx);
 	}
-	if (defCtx) {
-		defCtx->SetLineCallback(asFUNCTION(nvgt_line_callback), NULL, asCALL_CDECL);
-		g_ScriptEngine->ReturnContext(defCtx);
-	}
+	if (defCtx) g_ScriptEngine->ReturnContext(defCtx);
 	release_made_arguments(made_objects, made_handles);
 	if (args) {
 		args->DeleteAll();
@@ -727,8 +736,10 @@ std::string script_function_get_script_property(asIScriptFunction* func) {
 	if (!func || func->GetDeclaredAt(&script, &row, &col) < 0) return "";
 	return std::string(script);
 }
-void script_function_line_callback(asIScriptContext* ctx, script_function_call_data* data) {
-	nvgt_line_callback(ctx, NULL);
+// Counts a statement run on this thread, by any context, towards the limits of the script_function.call()s running on it (see script_function_call). nvgt_line_callback, every context's line callback, calls it.
+void script_function_call_count_statement(asIScriptContext* ctx) {
+	script_function_call_data* data = g_script_function_call;
+	if (!data) return;
 	// AngelScript calls the line callback once more as an execution ends (aborted, suspended, finished), which is no statement. Counted as one, at the limit it marked the call as exceeded when exit() had ended it, and script_function_call took exit()'s abort for its own and dropped it: the script went on, and as the context manager had already let go of its context, a later exit() did nothing. And with the call just finished, its Abort() stayed pending on the script's context and ended the script at its next sleep() or yield().
 	if (ctx->GetState() != asEXECUTION_ACTIVE) return;
 	// A statement of this call is one of every call it was made in too, so their limits are counted here as well. A limit exceeded by an outer call aborts this one, which passes the abort on to that call (see pop_nested_state), or, in a context of its own, has it end at that call's next statement.

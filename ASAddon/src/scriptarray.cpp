@@ -1233,10 +1233,10 @@ bool CScriptArray::operator==(const CScriptArray &other) const
 		}
 		if( cmpContext == 0 )
 		{
-			// TODO: Ideally this context would be retrieved from a pool, so we don't have to
-			//       create a new one everytime. We could keep a context with the array object
-			//       but that would consume a lot of resources as each context is quite heavy.
-			cmpContext = objType->GetEngine()->CreateContext();
+			// ALTERED: from the engine's pool, as for sorting, rather than a new context without the application's
+			// callbacks: NVGT counts the statements of every context it runs towards a script_function.call()'s limit and
+			// has its debugger stop at their breakpoints with its line callback, which a new context lacks.
+			cmpContext = objType->GetEngine()->RequestContext();
 		}
 	}
 
@@ -1269,7 +1269,7 @@ bool CScriptArray::operator==(const CScriptArray &other) const
 				cmpContext->Abort();
 		}
 		else
-			cmpContext->Release();
+			objType->GetEngine()->ReturnContext(cmpContext);
 	}
 
 	return isEqual;
@@ -1469,10 +1469,10 @@ int CScriptArray::Find(asUINT startAt, void *value) const
 		}
 		if( cmpContext == 0 )
 		{
-			// TODO: Ideally this context would be retrieved from a pool, so we don't have to
-			//       create a new one everytime. We could keep a context with the array object
-			//       but that would consume a lot of resources as each context is quite heavy.
-			cmpContext = objType->GetEngine()->CreateContext();
+			// ALTERED: from the engine's pool, as for sorting, rather than a new context without the application's
+			// callbacks: NVGT counts the statements of every context it runs towards a script_function.call()'s limit and
+			// has its debugger stop at their breakpoints with its line callback, which a new context lacks.
+			cmpContext = objType->GetEngine()->RequestContext();
 		}
 	}
 
@@ -1506,7 +1506,7 @@ int CScriptArray::Find(asUINT startAt, void *value) const
 				cmpContext->Abort();
 		}
 		else
-			cmpContext->Release();
+			objType->GetEngine()->ReturnContext(cmpContext);
 	}
 
 	return ret;

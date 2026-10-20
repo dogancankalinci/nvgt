@@ -45,6 +45,8 @@ public:
 			scriptObj->AddRef();
 			asIScriptEngine* engine = scriptObj->GetEngine();
 			ctx = engine->CreateContext();
+			// NVGT's line callback, which every context has (see RequestContextCallback): the generator's statements are counted towards the limit of a script_function.call() it is used in, and the debugger stops at its breakpoints.
+			if (ctx) ctx->SetLineCallback(asFUNCTION(nvgt_line_callback), NULL, asCALL_CDECL);
 			// Get method pointers
 			nextFunc = scriptObj->GetObjectType()->GetMethodByDecl("uint next()");
 			next64Func = scriptObj->GetObjectType()->GetMethodByDecl("int64 next64()");
@@ -526,6 +528,7 @@ void* random_script_array_choice(CScriptArray* array, asIScriptObject* scriptRng
 	}
 	asIScriptEngine* engine = scriptRng->GetEngine();
 	asIScriptContext* ctx = engine->CreateContext();
+	if (ctx) ctx->SetLineCallback(asFUNCTION(nvgt_line_callback), NULL, asCALL_CDECL); // See script_random_wrapper.
 	asIScriptFunction* rangeFunc = scriptRng->GetObjectType()->GetMethodByDecl("int range(int, int)");
 	if (rangeFunc && ctx) {
 		ctx->Prepare(rangeFunc);
@@ -561,6 +564,7 @@ void random_script_array_shuffle(CScriptArray* array, asIScriptObject* scriptRng
 	if (array->GetSize() < 2) return;
 	asIScriptEngine* engine = scriptRng->GetEngine();
 	asIScriptContext* ctx = engine->CreateContext();
+	if (ctx) ctx->SetLineCallback(asFUNCTION(nvgt_line_callback), NULL, asCALL_CDECL); // See script_random_wrapper.
 	asIScriptFunction* rangeFunc = scriptRng->GetObjectType()->GetMethodByDecl("int range(int, int)");
 	asIScriptContext* ACtx = asGetActiveContext();
 	if (rangeFunc && ctx) {
