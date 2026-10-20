@@ -263,7 +263,7 @@ public class TTS {
 	private boolean rateExplicit = false, pitchExplicit = false, volumeExplicit = false, panExplicit = false;
 	// TextToSpeech cannot clear a rate or pitch once one has been set. After such a value is reset we therefore re-apply the current system value before each utterance instead (see followSystemSettings()).
 	private boolean ratePinned = false, pitchPinned = false;
-	private Voice defaultVoice; // The voice the user's settings select, as TextToSpeech took it while connecting and followDefaultVoice() since, which resetVoice() restores.
+	private Voice defaultVoice; // The voice the user's settings select, as TextToSpeech took it while connecting and takeDefaultVoice() and recoverConnection() since; resetVoice() falls back to it while it is installed, when the settings' voice can't be taken as it is now.
 	private volatile Voice chosenVoice; // The voice a script set, if any, which a replacement TextToSpeech is given too.
 	private Locale defaultLanguage; // The language of the user's settings, as TextToSpeech took it while connecting and takeDefaultVoice() since.
 	// While no voice was chosen, the voice follows the user's settings as they are now: the language set for the engine, or
@@ -1067,7 +1067,7 @@ public class TTS {
 		}
 		return true;
 	}
-	// The voice TextToSpeech is actually speaking with: the one a script set, otherwise the one it took from the user's settings. -1 if it has none, which happens when the engine doesn't support the language the settings name.
+	// The voice TextToSpeech is actually speaking with: the one a script set, otherwise the one the user's settings select. -1 if it has none, which happens when the engine doesn't support the language the settings name, or when that voice isn't listed, as while the settings' voice isn't installed.
 	public int getCurrentVoiceIndex() {
 		if (!isActive()) return -1;
 		listVoicesIfChanged();
