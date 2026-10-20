@@ -2069,6 +2069,7 @@ struct held_sound : ma_sound {
 	std::atomic<float> pitch{1}; // The pitch the script set, which MiniAudio is given only held.
 	float given = 1; // The pitch MiniAudio was last given; only the thread reading the engine uses it.
 	std::atomic<float> rate{1}; // The rate MiniAudio last applied, by which a group multiplies those of the nodes it reads (see downstream_rate()).
+	ma_resource_manager_data_stream* stream = nullptr; // The resource manager's stream the sound plays, if it plays one, set before the sound is attached (see held_sound_process()).
 };
 struct held_sound_delete {
 	void operator()(ma_sound* s) const { delete static_cast<held_sound*>(s); }
@@ -2117,6 +2118,12 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 	hold_rate(node);
 	ma_sound* s = (ma_sound*)node;
 	std::atomic<ma_uint64>& seek_target = *reinterpret_cast<std::atomic<ma_uint64>*>(&s->seekTarget);
+	// A stream seeks on the resource manager's job thread, taking a place in its job queue and in the stream's order of execution before it posts the job; when the queue was full, MiniAudio kept both, and the stream returned MA_BUSY for good and couldn't be closed. A sound seeked every block, read faster than it plays, filled it. While a stream's seek is still being made, so that it would only return MA_BUSY and play nothing, the block is left silent without MiniAudio's processing, which would post the next seek; that one waits for the stream.
+	ma_resource_manager_data_stream* stream = held(s)->stream;
+	if (stream && seek_target.load() != ~(ma_uint64)0 && reinterpret_cast<std::atomic<ma_bool32>*>(&stream->seekCounter)->load() > 0) {
+		*frame_count_out = 0;
+		return;
+	}
 	ma_uint32 wanted = *frame_count_out, done = 0, channels = ma_node_get_output_channels(node, 0);
 	for (;;) {
 		ma_uint32 cached = s->processingCacheFramesRemaining;
@@ -2939,6 +2946,7 @@ public:
 		}
 
 		if (g_soundsystem_last_error == MA_SUCCESS) {
+			if (made_source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM) held(&*made)->stream = &made_source->backend.stream;
 			source = std::move(made_source);
 			adopt_sound(std::move(made));
 			postload(filename, (flags & MA_SOUND_FLAG_ASYNC) && !wait_for_load);
