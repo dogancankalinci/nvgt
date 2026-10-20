@@ -105,9 +105,11 @@ class async_result : public RefCountedObject, public Runnable {
 	std::vector<std::pair<void**, asITypeInfo*>> ref_handles; // The handles held in ref_values, released (whatever the function left there) once the call is over.
 	std::string exception; // Set to an exception string if an exception is thrown from within the async function call.
 	bool returns_reference; // The function returns a reference (int& f()), whose value run() reads through it.
+	// The function finished and its result was taken. An empty exception string was the only sign of success, so an execution that ended in an exception whose message is empty (throw("")), or a result whose copy failed, read as a success: failed was false and the value was read from a null pointer.
+	bool succeeded;
 public:
 	Event progress; // Public so that some functions in this object can be called directly from Angelscript such as wait and tryWait.
-	async_result(asITypeInfo* t) : value(nullptr), subtype(t), subtypeid(subtype->GetSubTypeId()), progress(Event::EVENT_MANUALRESET), task(nullptr), ctx(nullptr), returns_reference(false) {}
+	async_result(asITypeInfo* t) : value(nullptr), subtype(t), subtypeid(subtype->GetSubTypeId()), progress(Event::EVENT_MANUALRESET), task(nullptr), ctx(nullptr), returns_reference(false), succeeded(false) {}
 	~async_result() {
 		if (task) angelscript_refcounted_release<Thread>(task);
 		release_value_args();
@@ -119,7 +121,7 @@ public:
 	void* get_value() {
 		if (!ctx) throw NullValueException("Object not initialized");
 		progress.wait();
-		if (exception != "") throw Exception(exception);
+		if (!succeeded) throw Exception(exception);
 		if ((subtypeid & asTYPEID_MASK_OBJECT) && !(subtypeid & asTYPEID_OBJHANDLE))
 			return *(void**)value;
 		else return value;
@@ -336,7 +338,8 @@ public:
 		if (result == asEXECUTION_ABORTED) exception = "function call aborted";
 		else if (result == asEXECUTION_SUSPENDED) exception = "function call suspended";
 		else if (result == asEXECUTION_EXCEPTION) exception = ctx->GetExceptionString();
-		else if (result == asEXECUTION_FINISHED && subtypeid != asTYPEID_VOID) {
+		else if (result == asEXECUTION_FINISHED && subtypeid == asTYPEID_VOID) succeeded = true;
+		else if (result == asEXECUTION_FINISHED) {
 			// Looking at and being heavily enspired from the scriptgrid addon as I write this.
 			// The value is read from where the function left it: the returned object, the returned handle, or the returned number, bool or enum, of its type's size (enum E : int8 takes one byte). A function returning a reference (int& f(), string& f()) leaves the address of the value instead, which is followed here. GetReturnDWord() and the other number getters give 0 for a reference, and GetReturnObject() took a pointer out of the referenced object for the object itself: an int& gave 0, and a string& or a class& was copied from whatever the object's first bytes pointed to.
 			void* ret = ctx->GetAddressOfReturnValue();
@@ -349,6 +352,9 @@ public:
 				ctx->GetEngine()->AddRefScriptObject(*(void**)value, subtype->GetSubType());
 			} else if (ret) memcpy(value, ret, size);
 			else memset(value, 0, size);
+			// The copy of a returned object is null when it failed (its copy constructor raised an exception).
+			if ((subtypeid & ~asTYPEID_MASK_SEQNBR) && !(subtypeid & asTYPEID_OBJHANDLE) && !*(void**)value) exception = "Cannot copy the return value of async function call";
+			else succeeded = true;
 		}
 		ctx->GetEngine()->ReturnContext(ctx);
 		release_value_args();
@@ -366,7 +372,7 @@ public:
 		ref_handles.clear();
 	}
 	bool complete() { return ctx && progress.tryWait(0); }
-	bool failed() { return progress.tryWait(0) && exception != ""; }
+	bool failed() { return progress.tryWait(0) && !succeeded; }
 };
 async_result* async_unprepared_factory(asITypeInfo* type) { return new async_result(type); }
 void async_factory(asIScriptGeneric* gen) {
