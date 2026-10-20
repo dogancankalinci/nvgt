@@ -31,6 +31,22 @@ CDebugger::~CDebugger()
 	SetEngine(0);
 }
 
+// ALTERED: the value of an enum of the given underlying type, held in the low bytes of bits
+static asINT64 EnumAsUnderlying(int underlyingTypeId, asQWORD bits)
+{
+	switch( underlyingTypeId )
+	{
+	case asTYPEID_INT8:   return (signed char)bits;
+	case asTYPEID_INT16:  return (signed short)bits;
+	case asTYPEID_UINT8:  return (unsigned char)bits;
+	case asTYPEID_UINT16: return (unsigned short)bits;
+	case asTYPEID_UINT32: return (unsigned int)bits;
+	case asTYPEID_INT64:
+	case asTYPEID_UINT64: return asINT64(bits);
+	default:              return (signed int)bits;
+	}
+}
+
 string CDebugger::ToString(void *value, asUINT typeId, int expandMembers, asIScriptEngine *engine)
 {
 	if( value == 0 )
@@ -76,17 +92,34 @@ string CDebugger::ToString(void *value, asUINT typeId, int expandMembers, asIScr
 	else if( (typeId & asTYPEID_MASK_OBJECT) == 0 )
 	{
 		// The type is an enum
-		s << *(asUINT*)value;
+		// ALTERED: read as its underlying type, of that type's size (enum E : int8 takes one byte, enum E : int64 eight), and
+		// compared with the enum's values as that type, as a script enum's are kept by their bits (-7 as 4294967289). 4 bytes
+		// were printed and 8 compared: past the end of a smaller one (the room 'e' evaluates into), and a 4-byte one was
+		// compared together with whatever followed it, so its name was shown only when those bytes were 0 (never if negative).
+		asITypeInfo *t = engine ? engine->GetTypeInfoById(typeId) : 0;
+		int underlying = t ? t->GetUnderlyingTypeId() : asTYPEID_INT32;
+		asQWORD bits;
+		switch( engine ? engine->GetSizeOfPrimitiveType(typeId) : 4 )
+		{
+		case 1:  bits = *(asBYTE*)value; break;
+		case 2:  bits = *(asWORD*)value; break;
+		case 8:  bits = *(asQWORD*)value; break;
+		default: bits = *(asDWORD*)value; break;
+		}
+		asINT64 v = EnumAsUnderlying(underlying, bits);
+		if( underlying == asTYPEID_UINT64 )
+			s << asQWORD(v);
+		else
+			s << v;
 
 		// Check if the value matches one of the defined enums
-		if( engine )
+		if( t )
 		{
-			asITypeInfo *t = engine->GetTypeInfoById(typeId);
 			for( int n = t->GetEnumValueCount(); n-- > 0; )
 			{
 				asINT64 enumVal;
 				const char *enumName = t->GetEnumValueByIndex(n, &enumVal);
-				if( enumVal == *(asINT64*)value )
+				if( EnumAsUnderlying(underlying, asQWORD(enumVal)) == v )
 				{
 					s << ", " << enumName;
 					break;
