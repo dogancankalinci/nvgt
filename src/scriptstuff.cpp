@@ -677,8 +677,14 @@ failure:
 		if (new_context) {
 			ctx->Unprepare();
 			g_ScriptEngine->ReturnContext(ctx);
-		} else if (call_data.aborted_ctx && !script_callbacks_stopped(ACtx)) ctx->PopState(); // Our own abort, which ends the called function only, unless exit() was called too (see script_function_call_data::aborted_ctx)
-		else pop_nested_state(ctx);
+		} else if (call_data.aborted_ctx && !script_callbacks_stopped(ACtx)) {
+			// Our own abort, which ends the called function only, unless exit() was called too (see script_function_call_data::aborted_ctx). One made after the function's last suspend point, by a callback or a call() that the destructor of a local makes as the function returns, didn't end it: it finished with the abort still pending, which PopState() hands on to the interrupted execution, as AngelScript does with a late abort (exit()'s must reach the script), and the script that called call() ended there. A context prepared again once unprepared has no request pending.
+			if (ctx->GetState() == asEXECUTION_FINISHED) {
+				ctx->Unprepare();
+				ctx->Prepare(func);
+			}
+			ctx->PopState();
+		} else pop_nested_state(ctx);
 	}
 	if (defCtx) g_ScriptEngine->ReturnContext(defCtx);
 	release_made_arguments(made_objects, made_handles);
