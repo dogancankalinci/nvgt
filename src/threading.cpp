@@ -11,9 +11,12 @@
 */
 
 #include <atomic>
+#include <cstring>
 #include <string>
 #include <thread>
 #include <type_traits>
+#include <utility>
+#include <vector>
 #include <Poco/Event.h>
 #include <Poco/Format.h>
 #include <Poco/Mutex.h>
@@ -40,7 +43,9 @@ class async_result : public RefCountedObject, public Runnable {
 	int subtypeid;
 	Thread* task; // A pointer instead of a direct object because if an async_result object is created from a thread pool or has not yet been set up, a specific thread will not exist for it.
 	asIScriptContext* ctx; // The angelscript context used to call the function asynchronously, stored as a property because we need to pass it between functions in this class without arguments.
-	std::unordered_map<void*, asITypeInfo*> value_args; // Value typed arguments must be copied before being passed to the destination function on another thread, this is because such arguments reside on the stack and so they would otherwise get destroyed when the async_result::call method unwinds but well before the destination function returns. Store pointers to such copied arguments here so they can be released later.
+	std::vector<std::pair<void*, asITypeInfo*>> value_args; // Value typed arguments must be copied before being passed to the destination function on another thread, this is because such arguments reside on the stack and so they would otherwise get destroyed when the async_result::call method unwinds but well before the destination function returns. Store pointers to such copied arguments here so they can be released later. Objects made for reference parameters (a default value) and objects passed by handle to a reference parameter, which the caller can let go of before the function runs, are held here too (a list, as the same object can be passed twice).
+	std::vector<asQWORD> ref_values; // The values whose addresses reference parameters of primitive or handle types are given (8 bytes hold any primitive or a handle), sized once in call() so that the addresses stay valid until the function has run.
+	std::vector<std::pair<void**, asITypeInfo*>> ref_handles; // The handles held in ref_values, released (whatever the function left there) once the call is over.
 	std::string exception; // Set to an exception string if an exception is thrown from within the async function call.
 public:
 	Event progress; // Public so that some functions in this object can be called directly from Angelscript such as wait and tryWait.
@@ -92,6 +97,7 @@ public:
 			engine->ReturnContext(ctx);
 			return false;
 		}
+		ref_values.assign(func->GetParamCount(), 0);
 		asIScriptContext* defCtx = nullptr; // We may need an extra context if we are required to evaluate expressions for default arguments.
 		for (unsigned int i = 0; i < func->GetParamCount(); i++) {
 			// In this context, param will be the argument as being received by the calling function and arg will be the argument as being passed to this async::call function.
@@ -105,6 +111,9 @@ public:
 				engine->ReturnContext(ctx);
 				return false;
 			}
+			// A reference parameter takes the address of its value. A default value or a handle was written in its place, so the function took the value for an address (a crash for a const int &in = 5) or an object's address for a handle's, and an object made for a default value was never released.
+			bool by_ref = (param_flags & asTM_INOUTREF) != 0;
+			bool param_is_handle = (param_typeid & asTYPEID_OBJHANDLE) != 0;
 			if (gen->GetArgCount() - 2 <= i) {
 				if (!param_default) {
 					aCtx->SetException("Not enough arguments");
@@ -120,6 +129,7 @@ public:
 				}
 				param_type = engine->GetTypeInfoById(param_typeid);
 				bool param_is_value_object = param_typeid & asTYPEID_MASK_OBJECT && !(param_typeid & asTYPEID_OBJHANDLE);
+				void* default_ref;
 				if (param_is_value_object) {
 					// Create a copy of the object.
 					void* obj = engine->CreateScriptObject(param_type);
@@ -129,10 +139,18 @@ public:
 						engine->ReturnContext(defCtx);
 						return false;
 					}
-					*(void**)ctx->GetAddressOfArg(i) = obj;
-				}
-				void* default_ref = param_is_value_object? *(void**)ctx->GetAddressOfArg(i) : ctx->GetAddressOfArg(i);
-				if (std::string_view(param_default) == "void") success = ctx->SetArgObject(i, nullptr);
+					if (by_ref) {
+						value_args.emplace_back(obj, param_type); // The function only refers to it.
+						ctx->SetArgAddress(i, obj);
+					} else *(void**)ctx->GetAddressOfArg(i) = obj; // The function owns an object passed by value.
+					default_ref = obj;
+				} else if (by_ref) {
+					default_ref = &ref_values[i];
+					if (param_is_handle) ref_handles.emplace_back((void**)default_ref, param_type);
+					ctx->SetArgAddress(i, default_ref);
+				} else default_ref = ctx->GetAddressOfArg(i);
+				// An &out parameter declared = void gets the room made above for its result (null was passed, which the function wrote through, and SetArgObject() refused a primitive one).
+				if (std::string_view(param_default) == "void") success = asEXECUTION_FINISHED;
 				else success = ExecuteString(engine, format("return %s;", std::string(param_default)).c_str(), default_ref, param_typeid, func->GetModule(), defCtx);
 				// Not only a negative error: ExecuteString returns the result of the execution, and one ending in an exception (or an abort) gave no value, so the call went ahead with the argument left unset.
 				if (success != asEXECUTION_FINISHED) {
@@ -148,25 +166,63 @@ public:
 			arg_type = engine->GetTypeInfoById(arg_typeid);
 			param_type = engine->GetTypeInfoById(param_typeid);
 			success = asINVALID_ARG;
-			if (arg_typeid == asTYPEID_VOID) success = ctx->SetArgAddress(i, nullptr);
+			if (arg_typeid == asTYPEID_VOID) {
+				if (by_ref && param_is_handle) {
+					// A null handle, held here like any other, as the function may store one there.
+					ref_handles.emplace_back((void**)&ref_values[i], param_type);
+					success = ctx->SetArgAddress(i, &ref_values[i]);
+				} else if (by_ref) success = asINVALID_TYPE; // There is no value to refer to, and the function read or wrote through address 0.
+				else success = ctx->SetArgAddress(i, nullptr);
+			}
 			else if (arg_typeid & asTYPEID_MASK_OBJECT && !(arg_type && param_type && (arg_type == param_type || arg_type->DerivesFrom(param_type) || arg_type->Implements(param_type)))) success = asINVALID_TYPE;
+			else if (!(arg_typeid & asTYPEID_MASK_OBJECT) && by_ref) {
+				// A number for a reference parameter: the function refers to a copy of it here, as it would to a temporary in a direct call. SetArgDWord() and the rest refused it, as they take no reference.
+				if (arg_typeid != param_typeid) success = asINVALID_TYPE;
+				else {
+					memcpy(&ref_values[i], gen->GetArgAddress(i + 2), engine->GetSizeOfPrimitiveType(arg_typeid));
+					success = ctx->SetArgAddress(i, &ref_values[i]);
+				}
+			}
 			else if (arg_typeid == asTYPEID_BOOL || arg_typeid == asTYPEID_INT8 || arg_typeid == asTYPEID_UINT8) success = ctx->SetArgByte(i, *(asBYTE*)gen->GetArgAddress(i + 2));
 			else if (arg_typeid == asTYPEID_INT16 || arg_typeid == asTYPEID_UINT16) success = ctx->SetArgWord(i, *(asWORD*)gen->GetArgAddress(i + 2));
 			else if (arg_typeid == asTYPEID_INT32 || arg_typeid == asTYPEID_UINT32) success = ctx->SetArgDWord(i, *(asDWORD*)gen->GetArgAddress(i + 2));
 			else if (arg_typeid == asTYPEID_INT64 || arg_typeid == asTYPEID_UINT64) success = ctx->SetArgQWord(i, *(asQWORD*)gen->GetArgAddress(i + 2));
 			else if (arg_typeid == asTYPEID_FLOAT) success = ctx->SetArgFloat(i, *(float*)gen->GetArgAddress(i + 2));
 			else if (arg_typeid == asTYPEID_DOUBLE) success = ctx->SetArgDouble(i, *(double*)gen->GetArgAddress(i + 2));
-			else if (arg_typeid & asTYPEID_MASK_OBJECT && arg_typeid & asTYPEID_OBJHANDLE) success = ctx->SetArgObject(i, *(void**)gen->GetArgAddress(i + 2));
-			else if (arg_typeid & asTYPEID_MASK_OBJECT) {
+			else if (arg_typeid & asTYPEID_MASK_OBJECT && arg_typeid & asTYPEID_OBJHANDLE) {
+				void* obj = *(void**)gen->GetArgAddress(i + 2);
+				if (by_ref && param_is_handle) {
+					// A reference to a handle takes the address of a handle, held here.
+					*(void**)&ref_values[i] = obj;
+					if (obj) engine->AddRefScriptObject(obj, arg_type);
+					ref_handles.emplace_back((void**)&ref_values[i], param_type);
+					success = ctx->SetArgAddress(i, &ref_values[i]);
+				} else if (!obj && !param_is_handle) success = asINVALID_TYPE; // A null handle for an object, refused like null itself (above): the function got a null reference or object.
+				else {
+					success = ctx->SetArgObject(i, obj);
+					// A reference to the object: the caller's handle can be let go of before the function runs on its thread, so the object is held until the call is over.
+					if (success >= 0 && by_ref && obj) {
+						engine->AddRefScriptObject(obj, arg_type);
+						value_args.emplace_back(obj, arg_type);
+					}
+				}
+			} else if (arg_typeid & asTYPEID_MASK_OBJECT) {
 				void* obj = engine->CreateScriptObjectCopy(gen->GetArgAddress(i + 2), arg_type);
 				if (!obj) {
 					aCtx->SetException(format("Cannot copy object for argument %u of async function call", i + 1).c_str());
 					engine->ReturnContext(ctx);
 					return false;
 				}
-				success = ctx->SetArgObject(i, obj);
-				if (success >= 0) value_args[obj] = arg_type;
-				else engine->ReleaseScriptObject(obj, arg_type);
+				if (by_ref && param_is_handle) {
+					// The copy's reference is the handle the function refers to, which it may replace.
+					*(void**)&ref_values[i] = obj;
+					ref_handles.emplace_back((void**)&ref_values[i], param_type);
+					success = ctx->SetArgAddress(i, &ref_values[i]);
+				} else {
+					success = ctx->SetArgObject(i, obj);
+					if (success >= 0) value_args.emplace_back(obj, arg_type);
+					else engine->ReleaseScriptObject(obj, arg_type);
+				}
 			}
 			if (success < 0) {
 				aCtx->SetException(format("Angelscript error %d while setting argument %u in async call to %s", success, i + 1, std::string(func->GetDeclaration())).c_str());
@@ -218,6 +274,10 @@ public:
 	void release_value_args() {
 		for (const auto& obj : value_args) g_ScriptEngine->ReleaseScriptObject(obj.first, obj.second);
 		value_args.clear();
+		for (const auto& h : ref_handles) {
+			if (*h.first) g_ScriptEngine->ReleaseScriptObject(*h.first, h.second);
+		}
+		ref_handles.clear();
 	}
 	bool complete() { return ctx && progress.tryWait(0); }
 	bool failed() { return progress.tryWait(0) && exception != ""; }
