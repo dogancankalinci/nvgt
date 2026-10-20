@@ -6,6 +6,7 @@
 #include <string>
 #include <algorithm> // std::sort
 #include <mutex>
+#include <vector>
 
 #include "scriptarray.h"
 
@@ -1683,7 +1684,29 @@ void CScriptArray::Sort(asUINT startAt, asUINT count, bool asc)
 				return false;
 			}
 		} customLess = {asc, cmpContext, cache ? cache->cmpFunc : 0, callerCtx};
-		std::sort((void**)GetArrayItemPointer(start), (void**)GetArrayItemPointer(end), customLess);
+		// ALTERED: std::sort works on a copy of the elements' pointers, each object held by a reference, not on the array's
+		// buffer: an opCmp that changed the array (resized it, removed or replaced an element) freed the buffer or the
+		// objects that std::sort was still reading and writing. The sorted order is written back only if the array still
+		// has its size and the elements that were sorted, in the same places; otherwise it is left as the comparisons left
+		// it and the script gets an exception. The buffer keeps all its references throughout, for the garbage collector.
+		asIScriptEngine *engine = objType->GetEngine();
+		asITypeInfo *subType = objType->GetSubType();
+		bool hold = subType && (subType->GetFlags() & asOBJ_REF) && !(subType->GetFlags() & asOBJ_NOCOUNT);
+		asUINT size = buffer->numElements;
+		std::vector<void*> before((void**)GetArrayItemPointer(start), (void**)GetArrayItemPointer(end));
+		std::vector<void*> items(before);
+		if( hold )
+			for( void *p : before )
+				if( p ) engine->AddRefScriptObject(p, subType);
+		std::sort(items.begin(), items.end(), customLess);
+		bool changed = buffer->numElements != size || memcmp(GetArrayItemPointer(start), before.data(), before.size() * sizeof(void*)) != 0;
+		if( !changed )
+			memcpy(GetArrayItemPointer(start), items.data(), items.size() * sizeof(void*));
+		if( hold )
+			for( void *p : before )
+				if( p ) engine->ReleaseScriptObject(p, subType);
+		// ALTERED: not when the script is ending, whose abort is passed on below
+		bool stopped = cmpContext && ArrayCallbacksStopped(callerCtx, cmpContext);
 
 		// Clean up
 		if( cmpContext )
@@ -1698,6 +1721,9 @@ void CScriptArray::Sort(asUINT startAt, asUINT count, bool asc)
 			else
 				objType->GetEngine()->ReturnContext(cmpContext);
 		}
+
+		if( changed && !stopped && callerCtx )
+			callerCtx->SetException("the array was changed while it was being sorted");
 	}
 	else
 	{
