@@ -89,8 +89,14 @@ void random_shuffle(CScriptArray* array) {
 	if (array->GetSize() < 2) return;
 	// Angelscript doesn't make it easy to copy and manipulate objects from the c++ side, For example it's own array implementation's SetValue method is like 63 lines of code and it does not have a swap method. We instead opt to resize the array to size+1 and use the temporary slot for swapping before removing it after the shuffle.
 	array->Resize(array->GetSize() + 1);
+	asUINT size = array->GetSize();
 	for (asUINT i = array->GetSize() - 2; i > 0; i--) {
 		int j = random(0, i);
+		// A generator set with set_default_random() runs the script's range(), which can change the array. The indexes here are of the array as it was, and At() gives null for an element that is no longer there, which SetValue() then read (a crash for an array of handles or numbers). The temporary slot can't be told apart any more, so it is left.
+		if (array->GetSize() != size) {
+			if (asIScriptContext* active = asGetActiveContext()) active->SetException("the array was changed while it was being shuffled");
+			return;
+		}
 		if (j < 0 || j > int64_t(i)) {
 			array->Resize(array->GetSize() - 1);
 			if (asIScriptContext* active = asGetActiveContext()) active->SetException("random generator returned an index out of range");

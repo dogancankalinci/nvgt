@@ -467,8 +467,14 @@ void random_array_shuffle(CScriptArray* array, random_interface* rng) {
 	if (array->GetSize() < 2) return;
 	// Use temporary slot for swapping
 	array->Resize(array->GetSize() + 1);
+	asUINT size = array->GetSize();
 	for (uint32 i = array->GetSize() - 2; i > 0; i--) {
 		int32 j = rng->range(0, i);
+		// A generator set with set_default_random() runs the script's range(), which can change the array, see random_script_array_shuffle().
+		if (array->GetSize() != size) {
+			if (asIScriptContext* active = asGetActiveContext()) active->SetException("the array was changed while it was being shuffled");
+			return;
+		}
 		if (j < 0 || j > int64_t(i)) {
 			array->Resize(array->GetSize() - 1);
 			if (asIScriptContext* active = asGetActiveContext()) active->SetException("random generator returned an index out of range");
@@ -533,6 +539,7 @@ void random_script_array_shuffle(CScriptArray* array, asIScriptObject* scriptRng
 	if (rangeFunc && ctx) {
 		// Use temporary slot for swapping
 		array->Resize(array->GetSize() + 1);
+		asUINT size = array->GetSize();
 		for (uint32 i = array->GetSize() - 2; i > 0; i--) {
 			if (script_callbacks_stopped(ACtx)) break; // exit() was called since the shuffle began (in the generator's range(), whose context of its own exit() doesn't abort, or by another thread): no more calls.
 			ctx->Prepare(rangeFunc);
@@ -541,6 +548,14 @@ void random_script_array_shuffle(CScriptArray* array, asIScriptObject* scriptRng
 			ctx->SetArgDWord(1, i);
 			ctx->Execute();
 			int32 j = ctx->GetReturnDWord();
+			// The generator's range() can change the array. The indexes here are of the array as it was, and At() gives null
+			// for an element that is no longer there, which SetValue() then read (a crash for an array of handles or numbers).
+			// The temporary slot can't be told apart any more, so it is left.
+			if (array->GetSize() != size) {
+				ctx->Release();
+				if (asIScriptContext* active = asGetActiveContext()) active->SetException("the array was changed while it was being shuffled");
+				return;
+			}
 			if (j < 0 || j > int64_t(i)) {
 				array->Resize(array->GetSize() - 1);
 				ctx->Release();
