@@ -13,6 +13,7 @@
 #define NOMINMAX
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <map>
 #include <string_view>
@@ -358,6 +359,34 @@ static void release_made_arguments(std::vector<std::pair<void*, asITypeInfo*>>& 
 	objects.clear();
 	handles.clear();
 }
+// Reads a number of the args dictionary for a parameter of a number type, converted as a direct call converts a number. The dictionary holds every integer as an int64 and every real as a double, as the script's dictionary::set() stores them, and GetValue() converts those only to an int64, a double, a bool or an enum: a parameter of any other number type (uint, int8, uint16, uint64...) was refused with a type mismatch, only int and float were converted here.
+static asINT64 call_real_to_int64(double d) {
+	if (d != d) return 0;
+	if (d >= 9223372036854775807.0) return INT64_MAX;
+	if (d <= -9223372036854775808.0) return INT64_MIN;
+	return asINT64(d);
+}
+static bool get_call_number(CScriptDictionary::CIterator& k, void* dest, int type_id) {
+	if (k.GetValue(dest, type_id)) return true;
+	if (type_id == asTYPEID_VOID || type_id == asTYPEID_BOOL || type_id > asTYPEID_DOUBLE || (k.GetTypeId() & asTYPEID_MASK_OBJECT)) return false; // GetValue() handles every bool and enum
+	bool real = k.GetTypeId() == asTYPEID_DOUBLE || k.GetTypeId() == asTYPEID_FLOAT;
+	asINT64 i = 0;
+	double d = 0;
+	if (real ? !k.GetValue(d) : !k.GetValue(i)) return false;
+	if (real && type_id != asTYPEID_FLOAT) i = call_real_to_int64(d);
+	switch (type_id) {
+		case asTYPEID_INT8: *(asINT8*)dest = asINT8(i); break;
+		case asTYPEID_INT16: *(asINT16*)dest = asINT16(i); break;
+		case asTYPEID_INT32: *(int*)dest = int(i); break;
+		case asTYPEID_UINT8: *(asBYTE*)dest = asBYTE(i); break;
+		case asTYPEID_UINT16: *(asWORD*)dest = asWORD(i); break;
+		case asTYPEID_UINT32: *(asDWORD*)dest = asDWORD(i); break;
+		case asTYPEID_UINT64: *(asQWORD*)dest = asQWORD(i); break;
+		case asTYPEID_FLOAT: *(float*)dest = real ? float(d) : float(i); break;
+		default: return false;
+	}
+	return true;
+}
 void script_function_line_callback(asIScriptContext* ctx, script_function_call_data* data);
 CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictionary* args, CScriptArray* errors = NULL, int max_statement_count = 0) {
 	std::string failure_reason = "";
@@ -451,34 +480,18 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 					} else ctx->SetArgObject(p, obj);
 				} else if (by_ref) {
 					void* value = &ref_values[p];
-					asINT64 ival;
-					double dval;
-					if (k.GetValue(value, arg_type_id)) ;
-					else if (arg_type_id == asTYPEID_INT32 && k.GetValue(ival)) *(int*)value = int(ival);
-					else if (arg_type_id == asTYPEID_FLOAT && k.GetValue(dval)) *(float*)value = float(dval);
-					else if (arg_type_id == asTYPEID_BOOL && k.GetValue(ival)) *(bool*)value = ival != 0;
-					else {
+					if (!get_call_number(k, value, arg_type_id)) {
 						failure_reason = "ERROR: Type mismatch for parameter ";
 						failure_reason += std::to_string(p + 1);
 						goto failure;
 					}
 					ctx->SetArgAddress(p, value);
 					if (arg_tmods & asTM_OUTREF) out_args.emplace_back(p, value, arg_type_id);
-				} else if (!k.GetValue(arg_value, arg_type_id)) {
+				} else if (!get_call_number(k, arg_value, arg_type_id)) {
 					// GetValue() fails for a value that isn't a number too (a string or an object for an int parameter), which left val unset and passed whatever it held.
-					asINT64 ival;
-					double dval;
-					if (arg_type_id == asTYPEID_INT32 && k.GetValue(ival)) {
-						ctx->SetArgDWord(p, ival);
-					} else if (arg_type_id == asTYPEID_FLOAT && k.GetValue(dval)) {
-						ctx->SetArgFloat(p, dval);
-					} else if (arg_type_id == asTYPEID_BOOL && k.GetValue(ival)) {
-						ctx->SetArgByte(p, ival);
-					} else {
-						failure_reason = "ERROR: Type mismatch for parameter ";
-						failure_reason += std::to_string(p + 1);
-						goto failure;
-					}
+					failure_reason = "ERROR: Type mismatch for parameter ";
+					failure_reason += std::to_string(p + 1);
+					goto failure;
 				}
 				continue;
 			}
