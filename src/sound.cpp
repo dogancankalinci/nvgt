@@ -2243,6 +2243,10 @@ public:
 	void set_pitch(float pitch) override {
 		if (!snd || !finite_values({pitch})) return;
 		float ratio = get_engine()->get_flags() & audio_engine::PERCENTAGE_ATTRIBUTES ? pitch / 100.0f : pitch;
+		if (ratio <= 0) { // MiniAudio ignores it, keeping the pitch the sound had.
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return;
+		}
 		unique_lock<mutex> lock(spatialization_params_mutex);
 		if (!snd) return;
 		pitch_ratio = ratio < max_pitch_ratio? ratio : max_pitch_ratio;
