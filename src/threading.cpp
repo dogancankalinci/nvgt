@@ -11,6 +11,7 @@
 */
 
 #include <atomic>
+#include <cstdint>
 #include <cstring>
 #include <string>
 #include <thread>
@@ -36,6 +37,59 @@
 #include "scriptstuff.h"
 #include "threading.h"
 using namespace Poco;
+
+// A number, bool or enum given to async for a parameter of another of those types, converted by its value. It was passed by its size: an int for a float parameter arrived as the bits of the int (5 as 7e-45), an int64 for a double and a float for an int likewise, and a value of another size was refused. A number converts as a direct call converts it, a bool to 1 or 0, and to a bool any value but 0 is true; an enum is read and written as its underlying type (enum E : int8 is one byte). Returns false for a type that isn't one of these.
+static asINT64 real_to_int64(double d) {
+	if (d != d) return 0;
+	if (d >= 9223372036854775807.0) return INT64_MAX;
+	if (d <= -9223372036854775808.0) return INT64_MIN;
+	return asINT64(d);
+}
+static int enum_underlying_type(asIScriptEngine* engine, int type) {
+	if (type <= asTYPEID_DOUBLE || (type & asTYPEID_MASK_OBJECT)) return type;
+	asITypeInfo* ti = engine->GetTypeInfoById(type);
+	return ti ? ti->GetUnderlyingTypeId() : asTYPEID_INT32;
+}
+static bool convert_number(asIScriptEngine* engine, int from_type, const void* from, int to_type, void* to) {
+	from_type = enum_underlying_type(engine, from_type);
+	to_type = enum_underlying_type(engine, to_type);
+	asINT64 i = 0;
+	double d = 0;
+	bool real = false;
+	switch (from_type) {
+		case asTYPEID_BOOL: i = *(const asBYTE*)from ? 1 : 0; break;
+		case asTYPEID_INT8: i = *(const asINT8*)from; break;
+		case asTYPEID_INT16: i = *(const asINT16*)from; break;
+		case asTYPEID_INT32: i = *(const int*)from; break;
+		case asTYPEID_INT64: i = *(const asINT64*)from; break;
+		case asTYPEID_UINT8: i = *(const asBYTE*)from; break;
+		case asTYPEID_UINT16: i = *(const asWORD*)from; break;
+		case asTYPEID_UINT32: i = *(const asDWORD*)from; break;
+		case asTYPEID_UINT64: i = asINT64(*(const asQWORD*)from); break;
+		case asTYPEID_FLOAT: d = *(const float*)from; real = true; break;
+		case asTYPEID_DOUBLE: d = *(const double*)from; real = true; break;
+		default: return false;
+	}
+	if (to_type == asTYPEID_BOOL) {
+		*(asBYTE*)to = (real ? d != 0 : i != 0) ? 1 : 0;
+		return true;
+	}
+	if (real && to_type != asTYPEID_FLOAT && to_type != asTYPEID_DOUBLE) i = real_to_int64(d);
+	switch (to_type) {
+		case asTYPEID_INT8: *(asINT8*)to = asINT8(i); break;
+		case asTYPEID_INT16: *(asINT16*)to = asINT16(i); break;
+		case asTYPEID_INT32: *(int*)to = int(i); break;
+		case asTYPEID_INT64: *(asINT64*)to = i; break;
+		case asTYPEID_UINT8: *(asBYTE*)to = asBYTE(i); break;
+		case asTYPEID_UINT16: *(asWORD*)to = asWORD(i); break;
+		case asTYPEID_UINT32: *(asDWORD*)to = asDWORD(i); break;
+		case asTYPEID_UINT64: *(asQWORD*)to = asQWORD(i); break;
+		case asTYPEID_FLOAT: *(float*)to = real ? float(d) : from_type == asTYPEID_UINT64 ? float(asQWORD(i)) : float(i); break;
+		case asTYPEID_DOUBLE: *(double*)to = real ? d : from_type == asTYPEID_UINT64 ? double(asQWORD(i)) : double(i); break;
+		default: return false;
+	}
+	return true;
+}
 
 // We'll put the code for the highest level of nvgt's multithreading support on the top this time. This allows an nvgt user to write a line of code such as async<string> result(url_get, "https://nvgt.dev"); and after result.try_wait(ms) returns true, user can fetch result with result.value or opImplCast.
 class async_result : public RefCountedObject, public Runnable {
@@ -178,12 +232,16 @@ public:
 			}
 			else if (arg_typeid & asTYPEID_MASK_OBJECT && !(arg_type && param_type && (arg_type == param_type || arg_type->DerivesFrom(param_type) || arg_type->Implements(param_type)))) success = asINVALID_TYPE;
 			else if (!(arg_typeid & asTYPEID_MASK_OBJECT) && by_ref) {
-				// A number for a reference parameter: the function refers to a copy of it here, as it would to a temporary in a direct call. SetArgDWord() and the rest refused it, as they take no reference.
-				if (arg_typeid != param_typeid) success = asINVALID_TYPE;
-				else {
+				// A number for a reference parameter: the function refers to a copy of it here, as it would to a temporary in a direct call, converted if it is of another type (see convert_number()). SetArgDWord() and the rest refused it, as they take no reference.
+				if (arg_typeid == param_typeid) {
 					memcpy(&ref_values[i], gen->GetArgAddress(i + 2), engine->GetSizeOfPrimitiveType(arg_typeid));
 					success = ctx->SetArgAddress(i, &ref_values[i]);
-				}
+				} else if (!(param_typeid & asTYPEID_MASK_OBJECT) && convert_number(engine, arg_typeid, gen->GetArgAddress(i + 2), param_typeid, &ref_values[i])) success = ctx->SetArgAddress(i, &ref_values[i]);
+				else success = asINVALID_TYPE;
+			} else if (!(arg_typeid & asTYPEID_MASK_OBJECT) && !(param_typeid & asTYPEID_MASK_OBJECT) && arg_typeid != param_typeid) {
+				// A number, bool or enum for a parameter of another of those types, see convert_number().
+				void* slot = ctx->GetAddressOfArg(i);
+				success = slot && convert_number(engine, arg_typeid, gen->GetArgAddress(i + 2), param_typeid, slot)? asSUCCESS : asINVALID_TYPE;
 			} else if (!(arg_typeid & asTYPEID_MASK_OBJECT) && arg_typeid > asTYPEID_DOUBLE) {
 				// An enum value, passed by its size; it matched none of the types below and was refused.
 				asUINT size = engine->GetSizeOfPrimitiveType(arg_typeid);
