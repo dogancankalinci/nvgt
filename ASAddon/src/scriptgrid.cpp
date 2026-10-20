@@ -42,6 +42,36 @@ struct SGridBuffer
 	asBYTE  data[1];
 };
 
+// ALTERED: holds a grid while script code runs for it (the constructors, opAssign and destructors of its elements during
+// resize()), which can let go of its last handle: the resize went on in the freed grid. AngelScript doesn't hold the object
+// of a registered method for the call (only when the method returns a reference).
+struct SGridHold
+{
+	const CScriptGrid *grid;
+	SGridHold(const CScriptGrid *grid) : grid(grid) { grid->AddRef(); }
+	~SGridHold() { grid->Release(); }
+};
+
+// ALTERED: holds the object of an element (or of the value being stored in one) while its opAssign (script code) runs,
+// which can take it out of the grid and free it in the middle of its own assignment. Only an object whose type counts
+// references is held: a scoped type (asOBJ_SCOPED) has a release behaviour that destroys it, and a value type is not
+// reference counted.
+struct SGridElementHold
+{
+	asIScriptEngine *engine;
+	asITypeInfo *type;
+	void *obj;
+	SGridElementHold(asIScriptEngine *engine, asITypeInfo *type, void *obj) : engine(engine), type(type), obj(0)
+	{
+		if( obj && (type->GetFlags() & asOBJ_REF) && !(type->GetFlags() & (asOBJ_NOCOUNT | asOBJ_SCOPED)) )
+		{
+			this->obj = obj;
+			engine->AddRefScriptObject(obj, type);
+		}
+	}
+	~SGridElementHold() { if( obj ) engine->ReleaseScriptObject(obj, type); }
+};
+
 CScriptGrid *CScriptGrid::Create(asITypeInfo *ti)
 {
 	return CScriptGrid::Create(ti, 0, 0);
@@ -455,21 +485,22 @@ void CScriptGrid::Resize(asUINT width, asUINT height)
 	if( !CheckMaxSize(width, height) )
 		return;
 
+	// ALTERED: the grid is held while the elements' constructors, opAssign and destructors (script code) run, and the elements
+	// are copied from where they then are: the copy went on through the grid's buffer and size as they were before the
+	// first opAssign, which could resize the grid (freeing that buffer) or let go of it. The buffer installed when the copy
+	// is done is the one released.
+	SGridHold hold(this);
+
 	// Create a new buffer
 	SGridBuffer *tmpBuffer = 0;
 	CreateBuffer(&tmpBuffer, width, height);
 	if( tmpBuffer == 0 )
 		return;
 
-	if( buffer )
-	{
-		// Copy the existing values to the new buffer
-		asUINT w = width > buffer->width ? buffer->width : width;
-		asUINT h = height > buffer->height ? buffer->height : height;
-		for( asUINT y = 0; y < h; y++ )
-			for( asUINT x = 0; x < w; x++ )
-				SetValue(tmpBuffer, x, y, At(buffer, x, y));
-	}
+	// Copy the existing values to the new buffer
+	for( asUINT y = 0; y < height && buffer && y < buffer->height; y++ )
+		for( asUINT x = 0; x < width && buffer && x < buffer->width && y < buffer->height; x++ )
+			SetValue(tmpBuffer, x, y, At(buffer, x, y));
 
 	// Install the new buffer before releasing the old one, see BufferSwapLock. Only a grid the garbage collector
 	// tracks can be walked by it.
@@ -530,7 +561,11 @@ void CScriptGrid::SetValue(SGridBuffer *buf, asUINT x, asUINT y, void *value)
 	if( ptr == 0 ) return;
 
 	if( (subTypeId & ~asTYPEID_MASK_SEQNBR) && !(subTypeId & asTYPEID_OBJHANDLE) )
+	{
+		// ALTERED: the element and the value are held while the assignment runs, see SGridElementHold
+		SGridElementHold holdElement(objType->GetEngine(), objType->GetSubType(), ptr), holdValue(objType->GetEngine(), objType->GetSubType(), value);
 		objType->GetEngine()->AssignScriptObject(ptr, value, objType->GetSubType());
+	}
 	else if( subTypeId & asTYPEID_OBJHANDLE )
 	{
 		void *tmp = *(void**)ptr;
@@ -783,8 +818,15 @@ void CScriptGrid::ReleaseAllHandles(asIScriptEngine*)
 {
 	if( buffer == 0 ) return;
 
-	DeleteBuffer(buffer);
-	buffer = 0;
+	// ALTERED: the buffer is taken out of the grid before its elements are released, as their destructors (script code)
+	// could still reach the grid and its elements being released, see BufferSwapLock
+	SGridBuffer *oldBuffer = buffer;
+	{
+		std::unique_lock<std::mutex> guard(BufferSwapLock(), std::defer_lock);
+		if( objType->GetFlags() & asOBJ_GC ) guard.lock();
+		buffer = 0;
+	}
+	DeleteBuffer(oldBuffer);
 }
 
 void CScriptGrid::AddRef() const
