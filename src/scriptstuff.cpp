@@ -367,7 +367,7 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 	script_function_call_data call_data {max_statement_count, 0, false, nullptr, g_script_function_call};
 	// The values passed to reference parameters, which the arguments point to, so they last until the call returns (8 bytes hold any primitive or a handle).
 	std::vector<asQWORD> ref_values(func->GetParamCount());
-	// Objects made here for reference parameters (a default value, or room for an &out result), and the handles held in ref_values for them, released once the call is over.
+	// What reference parameters are given, released once the call is over: objects made here (a copy of an argument of a value type, a default value, room for an &out result) or held here (an argument of a reference type), and the handles held in ref_values.
 	std::vector<std::pair<void*, asITypeInfo*>> made_objects;
 	std::vector<std::pair<void**, asITypeInfo*>> made_handles;
 	// Where each &out or &inout argument's value is once the function has returned (parameter index, address, type id), given back in the result under the argument's number.
@@ -395,7 +395,7 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 			failure_reason += std::to_string(p + 1);
 			goto failure;
 		}
-		// The argument of a reference parameter is the address of the value, the dictionary's own object or a copy in ref_values. The value was put there instead: the function took a number for an address (a crash, and with int64 &out a write through it), int &in and float &in were refused by SetArgDWord()/SetArgFloat() and the call failed, and a handle reference got the object's address where a handle's belongs.
+		// The argument of a reference parameter is the address of the value: a copy in ref_values or made here, or an object held here (see below). The value was put there instead: the function took a number for an address (a crash, and with int64 &out a write through it), int &in and float &in were refused by SetArgDWord()/SetArgFloat() and the call failed, and a handle reference got the object's address where a handle's belongs.
 		bool by_ref;
 		by_ref = (arg_tmods & asTM_INOUTREF) != 0;
 		bool is_value_object;
@@ -415,23 +415,40 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 					asITypeInfo* value_type = g_ScriptEngine->GetTypeInfoById(value_type_id);
 					asITypeInfo* arg_type = g_ScriptEngine->GetTypeInfoById(arg_type_id);
 					bool compatible = value_type && arg_type && (value_type == arg_type || value_type->DerivesFrom(arg_type) || value_type->Implements(arg_type));
-					// A handle by reference that the function can assign (&out, &inout) is the dictionary's own handle, so only one of exactly the parameter's type, else the dictionary would hold a handle of another type than the one it records.
-					if (by_ref && (arg_type_id & asTYPEID_OBJHANDLE) && (arg_tmods & asTM_OUTREF) && (value_type != arg_type || !(value_type_id & asTYPEID_OBJHANDLE)))
-						compatible = false;
 					if (!compatible || (!obj && !(arg_type_id & asTYPEID_OBJHANDLE))) {
 						failure_reason = "ERROR: Type mismatch for parameter ";
 						failure_reason += std::to_string(p + 1);
 						goto failure;
 					}
+					// A reference parameter never gets the dictionary's own value: the function can reach the dictionary (when it is passed a handle to it, or a global holds one) and empty or change it, which freed a value the function was still using (a value type lives inside the dictionary, and the dictionary may hold the only reference to an object), and an assignment to a handle parameter, even an &in one, released the dictionary's object behind its back. A handle goes in ref_values, a value type is copied, and an object of a reference type is the object itself, each held by call() until the call is over. The result of an &out or &inout one is read from there.
 					if (by_ref && (arg_type_id & asTYPEID_OBJHANDLE)) {
-						if (value_type_id & asTYPEID_OBJHANDLE) ctx->SetArgAddress(p, const_cast<void*>(o));
-						else {
-							*(void**)&ref_values[p] = obj;
-							ctx->SetArgAddress(p, &ref_values[p]);
+						*(void**)&ref_values[p] = obj;
+						if (obj) g_ScriptEngine->AddRefScriptObject(obj, value_type);
+						made_handles.emplace_back((void**)&ref_values[p], arg_type); // Released as the parameter's type, which is what the function may leave there.
+						ctx->SetArgAddress(p, &ref_values[p]);
+						if (arg_tmods & asTM_OUTREF) out_args.emplace_back(p, &ref_values[p], arg_type_id);
+					} else if (by_ref && (arg_type->GetFlags() & asOBJ_VALUE)) {
+						void* copy = g_ScriptEngine->CreateScriptObjectCopy(obj, arg_type);
+						if (!copy) {
+							failure_reason = "ERROR: Can't copy the value of parameter ";
+							failure_reason += std::to_string(p + 1);
+							goto failure;
+						}
+						made_objects.emplace_back(copy, arg_type);
+						ctx->SetArgAddress(p, copy);
+						if (arg_tmods & asTM_OUTREF) out_args.emplace_back(p, copy, arg_type_id);
+					} else if (by_ref) {
+						g_ScriptEngine->AddRefScriptObject(obj, value_type);
+						made_objects.emplace_back(obj, value_type);
+						ctx->SetArgAddress(p, obj);
+						if (arg_tmods & asTM_OUTREF) {
+							// Given back as it was given: a handle to the object, or a copy of it.
+							if (value_type_id & asTYPEID_OBJHANDLE) {
+								*(void**)&ref_values[p] = obj;
+								out_args.emplace_back(p, &ref_values[p], value_type_id);
+							} else out_args.emplace_back(p, obj, value_type_id);
 						}
 					} else ctx->SetArgObject(p, obj);
-					// An &out or &inout object or handle is the dictionary's own value (an assignable handle always is, see above), which then holds what the function left there.
-					if (arg_tmods & asTM_OUTREF) out_args.emplace_back(p, const_cast<void*>(o), value_type_id);
 				} else if (by_ref) {
 					void* value = &ref_values[p];
 					asINT64 ival;
