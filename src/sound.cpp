@@ -1692,14 +1692,21 @@ public:
 	// The most channels the encoder's format takes.
 	virtual unsigned int max_output_channels() const { return MA_MAX_CHANNELS; }
 	// Refused as an engine refuses them, before an open encoder is closed: past the highest sample rate MiniAudio names, encoding a block in the graph took longer than the block lasts, below the lowest the resampler reserved memory for the engine's rate over this one times its output, hundreds of megabytes at 1 Hz, and dr_wav keeps a channel count in 16 bits, cutting a higher one while the open succeeded. No channels, or more than the format takes, the encoders refused themselves only once the encoder open had been closed.
-	bool output_in_range(unsigned int sample_rate, unsigned int channels) const {
-		if (sample_rate >= ma_standard_sample_rate_min && sample_rate <= ma_standard_sample_rate_max && channels >= 1 && channels <= max_output_channels()) return true;
+	// Whether the open flags, defaults filled in, give the encoder what it needs, as a PCM format for WAV.
+	virtual bool flags_in_range(unsigned int flags) const { return true; }
+	unsigned int open_flags(unsigned int flags) const { return flags & ENCODER_DEFAULTS? (flags & ~ENCODER_DEFAULTS) | get_default_open_flags() : flags; }
+	bool output_in_range(unsigned int sample_rate, unsigned int channels, unsigned int flags) const {
+		if (sample_rate >= ma_standard_sample_rate_min && sample_rate <= ma_standard_sample_rate_max && channels >= 1 && channels <= max_output_channels() && flags_in_range(flags)) return true;
 		g_soundsystem_last_error = MA_INVALID_ARGS;
 		return false;
 	}
 	bool open_file(const string& filename, unsigned int sample_rate, unsigned int channels, unsigned int flags) override {
-		if (!output_in_range(sample_rate, channels)) return false;
-		if (flags & ENCODER_DEFAULTS) flags = (flags & ~ENCODER_DEFAULTS) | get_default_open_flags();
+		flags = open_flags(flags);
+		if (!output_in_range(sample_rate, channels, flags)) return false;
+		if (filename.empty()) { // No output to open, which a WAV encoder threw for after closing the one open.
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return false;
+		}
 		if (!(flags & ENCODER_OVERWRITE) && FileExists(filename)) { // The encoders would replace it. Refused before the encoder open is closed, as the other arguments are.
 			g_soundsystem_last_error = MA_ALREADY_EXISTS;
 			return false;
@@ -1710,13 +1717,15 @@ public:
 	}
 	bool open_stream(datastream* ds, unsigned int sample_rate, unsigned int channels, unsigned int flags) override {
 		if (!ds) return false;
-		if (!output_in_range(sample_rate, channels)) {
+		flags = open_flags(flags);
+		bool writable = ds->can_write();
+		if (!writable) g_soundsystem_last_error = MA_INVALID_ARGS; // Nothing to write to, which a WAV encoder threw for after closing the one open.
+		if (!writable || !output_in_range(sample_rate, channels, flags)) {
 			ds->release();
 			return false;
 		}
 		if (get_active()) close();
 		unique_lock<mutex> lock(write_mtx);
-		if (flags & ENCODER_DEFAULTS) flags = (flags & ~ENCODER_DEFAULTS) | get_default_open_flags();
 		bool opened;
 		try {
 			opened = open_impl("", ds, sample_rate, channels, flags);
@@ -1732,7 +1741,7 @@ public:
 		return true;
 	}
 	bool open_pull(unsigned int sample_rate, unsigned int channels, unsigned int flags) override {
-		if (!output_in_range(sample_rate, channels)) return false;
+		if (!output_in_range(sample_rate, channels, open_flags(flags))) return false;
 		if (get_active()) close();
 		if (pull_stream) pull_stream->release();
 		pull_stream = new datastream(new stringstream());
@@ -1856,7 +1865,10 @@ protected:
 		else if (flags & WAV_U8) target_format = ma_format_u8;
 		else if (flags & WAV_S32) target_format = ma_format_s32;
 		else if (flags & WAV_F32) target_format = ma_format_f32;
-		else throw runtime_error("pcm format not given");
+		else { // flags_in_range() refuses this before the opens close anything.
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return false;
+		}
 		encoder = make_unique<ma_encoder>();
 		ma_encoder_config cfg = ma_encoder_config_init(ma_encoding_format_wav, target_format, channels, sample_rate);
 		if (ds && ds->can_write()) {
@@ -1875,7 +1887,11 @@ protected:
 			g_soundsystem_last_error = ma_encoder_init_file(filename.c_str(), &cfg, &*encoder);
 #endif
 		}
-		else throw runtime_error("no encoding output source provided");
+		else { // The opens refuse this before closing anything.
+			encoder.reset();
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return false;
+		}
 		if (g_soundsystem_last_error != MA_SUCCESS) {
 			encoder.reset();
 			return false;
@@ -1900,6 +1916,7 @@ public:
 		close();
 	}
 	unsigned int get_default_open_flags() const override { return audio_encoder_impl::get_default_open_flags() | WAV_S16; }
+	bool flags_in_range(unsigned int flags) const override { return flags & (WAV_S16 | WAV_S24 | WAV_U8 | WAV_S32 | WAV_F32); }
 	string get_format() const override { return "wav"; }
 	ma_format get_wav_format() const override { return get_dc()? get_dc()->formatOut : ma_format_f32; }
 };
