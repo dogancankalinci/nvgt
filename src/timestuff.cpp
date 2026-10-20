@@ -499,19 +499,15 @@ template <class t> asINT64 diff_seconds(t &first, t &second) {
 	return (asINT64)make_diff_timespan(first, second).totalSeconds();
 }
 /**
- * Computes the total duration of the current year as represented by the given object.
+ * The given date and time moved to another year, February 29th becoming the 28th in a year that has none, as add_years() moves it.
  * Used internally by diff_years.
 */
-template <class t> Timespan::TimeDiff get_duration_of_year(t &dt) {
-	return t(dt.year() + 1, 1, 1).utcTime() - t(dt.year(), 1, 1).utcTime();
+template <class t> t date_in_year(t &dt, int year) {
+	return t(year, dt.month(), min(dt.day(), DateTime::daysOfMonth(year, dt.month())), dt.hour(), dt.minute(), dt.second(), dt.millisecond(), dt.microsecond());
 }
 /**
- * Computes the amount of time that has elapsed since the start of the year as represented by the given object.
- * Used internally for diff_years.
+ * The whole years from the earlier time to its last anniversary before the later one, plus the time since that anniversary as a fraction of the year to the next, so that an anniversary gives a whole number.
 */
-template <class t> double time_since_year_start(t &dt) {
-	return (dt.utcTime() - t(dt.year(), 1, 1).utcTime()) / (double)get_duration_of_year(dt);
-}
 template <class t> double diff_years(t &first, t &second) {
 	t *high, * low;
 	if (first.utcTime() > second.utcTime()) {
@@ -521,11 +517,13 @@ template <class t> double diff_years(t &first, t &second) {
 		high = &second;
 		low = &first;
 	}
-	asINT64 years = high->year() - low->year();
-	double delta = time_since_year_start(*low) - time_since_year_start(*high);
-	if (years > 0 && delta > 0)
-		years -= 1;
-	return years + abs(delta);
+	int years = high->year() - low->year();
+	t anniversary = date_in_year(*low, low->year() + years);
+	if (anniversary.utcTime() > high->utcTime())
+		anniversary = date_in_year(*low, low->year() + --years);
+	// The year after the last one there is, 9999, can't be made, so a year ending there is measured by the year before it instead.
+	Timespan::TimeDiff year_length = anniversary.year() < 9999? date_in_year(*low, anniversary.year() + 1).utcTime() - anniversary.utcTime() : anniversary.utcTime() - date_in_year(*low, anniversary.year() - 1).utcTime();
+	return years + (high->utcTime() - anniversary.utcTime()) / (double)year_length;
 }
 /**
  * Computes the span of time that has elapsed since midnight on the current day as represented by the given object.
