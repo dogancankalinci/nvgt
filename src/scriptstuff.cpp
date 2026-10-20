@@ -505,6 +505,12 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 							made_objects.emplace_back(obj, value_type);
 						}
 						ctx->SetArgObject(p, obj);
+						// SetArgObject() leaves the argument null when the copy fails (the copy constructor of a script class raised an exception, which is lost), and the function ran with a null object while the call reported no error.
+						if (!(arg_type_id & asTYPEID_OBJHANDLE) && !*(void**)ctx->GetAddressOfArg(p)) {
+							failure_reason = "ERROR: Can't copy the value of parameter ";
+							failure_reason += std::to_string(p + 1);
+							goto failure;
+						}
 					}
 				} else if (by_ref) {
 					void* value = &ref_values[p];
