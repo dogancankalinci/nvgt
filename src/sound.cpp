@@ -1680,7 +1680,14 @@ public:
 		if (pull_stream) pull_stream->release();
 	}
 	unsigned int get_default_open_flags() const override { return ENCODER_OVERWRITE; }
+	// Refused as an engine refuses them: past the highest sample rate MiniAudio names, encoding a block in the graph took longer than the block lasts, and dr_wav keeps a channel count in 16 bits, cutting a higher one while the open succeeded.
+	static bool output_in_range(unsigned int sample_rate, unsigned int channels) {
+		if (sample_rate <= ma_standard_sample_rate_max && channels <= MA_MAX_CHANNELS) return true;
+		g_soundsystem_last_error = MA_INVALID_ARGS;
+		return false;
+	}
 	bool open_file(const string& filename, unsigned int sample_rate, unsigned int channels, unsigned int flags) override {
+		if (!output_in_range(sample_rate, channels)) return false;
 		if (get_active()) close();
 		unique_lock<mutex> lock(write_mtx);
 		if (flags & ENCODER_DEFAULTS) flags = (flags & ~ENCODER_DEFAULTS) | get_default_open_flags();
@@ -1692,6 +1699,10 @@ public:
 	}
 	bool open_stream(datastream* ds, unsigned int sample_rate, unsigned int channels, unsigned int flags) override {
 		if (!ds) return false;
+		if (!output_in_range(sample_rate, channels)) {
+			ds->release();
+			return false;
+		}
 		if (get_active()) close();
 		unique_lock<mutex> lock(write_mtx);
 		if (flags & ENCODER_DEFAULTS) flags = (flags & ~ENCODER_DEFAULTS) | get_default_open_flags();
@@ -1710,6 +1721,7 @@ public:
 		return true;
 	}
 	bool open_pull(unsigned int sample_rate, unsigned int channels, unsigned int flags) override {
+		if (!output_in_range(sample_rate, channels)) return false;
 		if (get_active()) close();
 		if (pull_stream) pull_stream->release();
 		pull_stream = new datastream(new stringstream());
