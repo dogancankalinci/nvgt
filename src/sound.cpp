@@ -764,36 +764,36 @@ public:
 	int find_closest_listener(float x, float y, float z) const override { return engine ? ma_engine_find_closest_listener(&*engine, x, y, z) : -1; }
 	int find_closest_listener_vector(const reactphysics3d::Vector3 &position) const override { return engine ? ma_engine_find_closest_listener(&*engine, position.x, position.y, position.z) : -1; }
 	void set_listener_position(unsigned int index, float x, float y, float z) override {
-		if (engine)
+		if (engine && finite_values({x, y, z}))
 			ma_engine_listener_set_position(&*engine, index, x, y, z);
 		place_shaped_mixers(this);
 	}
 	void set_listener_position_vector(unsigned int index, const reactphysics3d::Vector3 &position) override {
-		if (engine)
+		if (engine && finite_values({position.x, position.y, position.z}))
 			ma_engine_listener_set_position(&*engine, index, position.x, position.y, position.z);
 		place_shaped_mixers(this);
 	}
 	reactphysics3d::Vector3 get_listener_position(unsigned int index) const override { return engine ? ma_vec3_to_rp_vec3(ma_engine_listener_get_position(&*engine, index)) : reactphysics3d::Vector3(); }
 	void set_listener_direction(unsigned int index, float x, float y, float z) override {
-		if (engine)
+		if (engine && finite_values({x, y, z}))
 			ma_engine_listener_set_direction(&*engine, index, x, y, z);
 	}
 	void set_listener_direction_vector(unsigned int index, const reactphysics3d::Vector3 &direction) override {
-		if (engine)
+		if (engine && finite_values({direction.x, direction.y, direction.z}))
 			ma_engine_listener_set_direction(&*engine, index, direction.x, direction.y, direction.z);
 	}
 	reactphysics3d::Vector3 get_listener_direction(unsigned int index) const override { return engine ? ma_vec3_to_rp_vec3(ma_engine_listener_get_direction(&*engine, index)) : reactphysics3d::Vector3(); }
 	void set_listener_velocity(unsigned int index, float x, float y, float z) override {
-		if (engine)
+		if (engine && finite_values({x, y, z}))
 			ma_engine_listener_set_velocity(&*engine, index, x, y, z);
 	}
 	void set_listener_velocity_vector(unsigned int index, const reactphysics3d::Vector3 &velocity) override {
-		if (engine)
+		if (engine && finite_values({velocity.x, velocity.y, velocity.z}))
 			ma_engine_listener_set_velocity(&*engine, index, velocity.x, velocity.y, velocity.z);
 	}
 	reactphysics3d::Vector3 get_listener_velocity(unsigned int index) const override { return engine ? ma_vec3_to_rp_vec3(ma_engine_listener_get_velocity(&*engine, index)) : reactphysics3d::Vector3(); }
 	void set_listener_cone(unsigned int index, float inner_radians, float outer_radians, float outer_gain) override {
-		if (engine)
+		if (engine && finite_values({inner_radians, outer_radians, outer_gain}))
 			ma_engine_listener_set_cone(&*engine, index, inner_radians, outer_radians, outer_gain);
 	}
 	void get_listener_cone(unsigned int index, float *inner_radians, float *outer_radians, float *outer_gain) const override {
@@ -801,11 +801,11 @@ public:
 			ma_engine_listener_get_cone(&*engine, index, inner_radians, outer_radians, outer_gain);
 	}
 	void set_listener_world_up(unsigned int index, float x, float y, float z) override {
-		if (engine)
+		if (engine && finite_values({x, y, z}))
 			ma_engine_listener_set_world_up(&*engine, index, x, y, z);
 	}
 	void set_listener_world_up_vector(unsigned int index, const reactphysics3d::Vector3 &world_up) override {
-		if (engine)
+		if (engine && finite_values({world_up.x, world_up.y, world_up.z}))
 			ma_engine_listener_set_world_up(&*engine, index, world_up.x, world_up.y, world_up.z);
 	}
 	reactphysics3d::Vector3 get_listener_world_up(unsigned int index) const override { return engine ? ma_vec3_to_rp_vec3(ma_engine_listener_get_world_up(&*engine, index)) : reactphysics3d::Vector3(); }
@@ -2261,7 +2261,7 @@ public:
 	}
 	float get_distance_to_listener() const override { return snd && get_spatialization_enabled()? ma_sound_get_distance_to_listener(&*snd) : 0.0; }
 	void set_position_3d(float x, float y, float z) override {
-		if (!snd)
+		if (!snd || !finite_values({x, y, z})) // A NaN or infinite position or direction poisoned a Steam Audio panner's or attenuator's state for good.
 			return;
 		set_spatialization_enabled(true);
 		if (sound_get_default_3d_panner() >= 0 && get_preferred_3d_panner() < 0) set_3d_panner(sound_get_default_3d_panner());
@@ -2300,7 +2300,7 @@ public:
 		return res;
 	}
 	void set_direction(float x, float y, float z) override {
-		if (!snd)
+		if (!snd || !finite_values({x, y, z}))
 			return;
 		return ma_sound_set_direction(&*snd, x, y, z);
 	}
@@ -2314,7 +2314,7 @@ public:
 		return res;
 	}
 	void set_velocity(float x, float y, float z) override {
-		if (!snd)
+		if (!snd || !finite_values({x, y, z}))
 			return;
 		return ma_sound_set_velocity(&*snd, x, y, z);
 	}
