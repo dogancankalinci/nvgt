@@ -1518,7 +1518,14 @@ class audio_decoder_impl : public audio_data_source_impl, public virtual audio_d
 public:
 	audio_decoder_impl(audio_engine* e) : audio_data_source_impl(e, nullptr), decoder(nullptr), datastream_ref(nullptr) {}
 	~audio_decoder_impl() { close(); }
+	// A sample rate below the lowest MiniAudio names, 0 aside, which keeps the file's: the decoder resampled down to it, so a source read at the engine's rate decoded many thousands of frames for each it gave, slower than the audio played.
+	static bool output_rate_in_range(unsigned int sample_rate) {
+		if (!sample_rate || sample_rate >= ma_standard_sample_rate_min) return true;
+		g_soundsystem_last_error = MA_INVALID_ARGS;
+		return false;
+	}
 	virtual bool open(const std::string& filename, const pack_interface* pack_file, unsigned int sample_rate, unsigned int channels) override {
+		if (!output_rate_in_range(sample_rate)) return false;
 		std::lock_guard<std::recursive_mutex> guard(source_mutex);
 		if (decoder && !close()) return false;
 		seekable = true;
@@ -1531,7 +1538,7 @@ public:
 	}
 	virtual bool open_stream(datastream* ds, unsigned int sample_rate = 0, unsigned int channels = 0) override {
 		std::lock_guard<std::recursive_mutex> guard(source_mutex);
-		if (!ds || !ds->get_istr() || decoder && !close()) {
+		if (!ds || !ds->get_istr() || !output_rate_in_range(sample_rate) || decoder && !close()) {
 			if (ds) ds->release();
 			return false;
 		}
@@ -2859,18 +2866,24 @@ public:
 		// Also, our PCM buffer is a permanent class property so we can enjoy the speed of async loading.
 		return load_special(":pcm", g_memory_protocol_slot, memory_protocol::directive(&pcm_buffer[0], pcm_buffer.size()), sound_service::null_filter_slot, nullptr, MA_SOUND_FLAG_DECODE | MA_SOUND_FLAG_ASYNC);
 	}
+	// A script's PCM below the lowest sample rate MiniAudio names was resampled up to the engine's as it loaded, so that a second at 1 Hz took gigabytes.
+	static bool pcm_rate_in_range(int samplerate) {
+		if (samplerate >= ma_standard_sample_rate_min) return true;
+		g_soundsystem_last_error = MA_INVALID_ARGS;
+		return false;
+	}
 	bool load_pcm_script_array(CScriptArray *buffer, int samplerate, int channels) override {
 		if (!buffer)
 			return false;
 		ma_format format = ma_format_from_angelscript_type(buffer->GetElementTypeId());
-		if (format == ma_format_unknown) return false;
+		if (format == ma_format_unknown || !pcm_rate_in_range(samplerate)) return false;
 		return load_pcm(buffer->GetBuffer(), buffer->GetSize() * buffer->GetElementSize(), format, samplerate, channels);
 	}
 	bool load_pcm_script_memory_buffer(script_memory_buffer* buffer, int samplerate, int channels) override {
 		if (!buffer)
 			return false;
 		ma_format format = ma_format_from_angelscript_type(buffer->subtypeid);
-		if (format == ma_format_unknown) return false;
+		if (format == ma_format_unknown || !pcm_rate_in_range(samplerate)) return false;
 		return load_pcm(buffer->ptr, buffer->size * buffer->get_element_size(), format, samplerate, channels);
 	}
 	bool stream_pcm(const void* data, unsigned int size_in_frames, ma_format format, unsigned int sample_rate, unsigned int channels, unsigned int buffer_size) override {
