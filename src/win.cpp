@@ -57,27 +57,25 @@ sapi5_engine::~sapi5_engine() {
 		inst = nullptr;
 	});
 	stop_worker();
-	for (HKEY key : voices_keys) if (key) RegCloseKey(key); // Which ends its watch.
-	for (HANDLE changed : voices_changed) if (changed) CloseHandle(changed);
+	if (voices_key) RegCloseKey(voices_key); // Which ends its watch.
+	if (voices_changed) CloseHandle(voices_changed);
 }
-// Asks to have a key's event set on the next change under it: the voices of the machine (0) or of the user (1), the user's default voice and rate among them. A watch ends with its first change, so it is asked for again after each.
-void sapi5_engine::watch_voices(int key) {
-	if (!voices_changed[key] && !(voices_changed[key] = CreateEventW(nullptr, TRUE, FALSE, nullptr))) return;
-	if (!voices_keys[key] && RegOpenKeyExW(key == 0? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER, L"SOFTWARE\\Microsoft\\Speech\\Voices", 0, KEY_NOTIFY, &voices_keys[key]) != ERROR_SUCCESS) {
-		voices_keys[key] = nullptr;
+// Asks to have the event set on the next change to the machine's voices, which are where SAPI lists them from. The user's own key holds only the default voice and rate, which are read as they are anyway, and watching it made every change of the default voice list the voices again, in SAPI's order, which puts the default voice first and so moved the numbers a script had for the others. A watch ends with its first change, so it is asked for again after each.
+void sapi5_engine::watch_voices() {
+	if (!voices_changed && !(voices_changed = CreateEventW(nullptr, TRUE, FALSE, nullptr))) return;
+	if (!voices_key && RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Speech\\Voices", 0, KEY_NOTIFY, &voices_key) != ERROR_SUCCESS) {
+		voices_key = nullptr;
 		return;
 	}
-	RegNotifyChangeKeyValue(voices_keys[key], TRUE, REG_NOTIFY_CHANGE_NAME | REG_NOTIFY_CHANGE_LAST_SET | REG_NOTIFY_THREAD_AGNOSTIC, voices_changed[key], TRUE);
+	RegNotifyChangeKeyValue(voices_key, TRUE, REG_NOTIFY_CHANGE_NAME | REG_NOTIFY_CHANGE_LAST_SET | REG_NOTIFY_THREAD_AGNOSTIC, voices_changed, TRUE);
 }
 uint64_t sapi5_engine::voices_generation() {
 	std::lock_guard<std::mutex> lock(voices_watch_mutex);
-	for (int key = 0; key < 2; key++) {
-		if (!voices_changed[key]) watch_voices(key);
-		else if (WaitForSingleObject(voices_changed[key], 0) == WAIT_OBJECT_0) {
-			ResetEvent(voices_changed[key]);
-			watch_voices(key);
-			voices_changes++;
-		}
+	if (!voices_changed) watch_voices();
+	else if (WaitForSingleObject(voices_changed, 0) == WAIT_OBJECT_0) {
+		ResetEvent(voices_changed);
+		watch_voices();
+		voices_changes++;
 	}
 	return voices_changes;
 }

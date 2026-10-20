@@ -36,10 +36,10 @@ class sapi5_engine : public tts_engine_impl {
 	std::mutex call_mutex; // One call at a time.
 	// SAPI lists voices from the registry, which installing or removing a voice changes, so changes there are watched: the event is set on one, and voices_generation() then counts it.
 	std::mutex voices_watch_mutex; // Guards the three below.
-	HANDLE voices_changed[2] = {}; // One for each key, so that a watch is asked for again only on the key whose watch ended.
-	HKEY voices_keys[2] = {};
+	HANDLE voices_changed = nullptr;
+	HKEY voices_key = nullptr;
 	uint64_t voices_changes = 0;
-	void watch_voices(int key);
+	void watch_voices();
 	void run(const std::function<void()> &call);
 	void work_loop();
 	void stop_worker();
