@@ -243,9 +243,16 @@ int CContextMgr::ExecuteScripts()
 				// ALTERED: once it is out of the lists. Giving it back cleans up its stack, which can run script destructors,
 				// and one calling exit() made AbortAll empty the lists, which were then erased past their end here.
 				bool keep = thread->keepCtxAfterExecution == ctx;
-				thread->coRoutines[currentCoRoutine] = 0;
 
-				thread->coRoutines.erase(thread->coRoutines.begin() + thread->currentCoRoutine);
+				// ALTERED: the co-routine that ended is removed from where it is, not from the current position. A yield() that its
+				// execution never acted on had already moved the current position on to the next co-routine: one called through a
+				// function handle or a delegate is only acted on at the next suspend point, and in a build without line cues (NVGT's
+				// compiled release builds) the function could end first. The next co-routine was removed instead, never to run or be
+				// given back, and the slot of the one that ended, left null, was executed by the next ExecuteScripts (a crash). The
+				// current position keeps pointing at the co-routine it was moved to.
+				thread->coRoutines.erase(thread->coRoutines.begin() + currentCoRoutine);
+				if( thread->currentCoRoutine > asUINT(currentCoRoutine) )
+					thread->currentCoRoutine--;
 				if( thread->currentCoRoutine >= thread->coRoutines.size() )
 					thread->currentCoRoutine = 0;
 
