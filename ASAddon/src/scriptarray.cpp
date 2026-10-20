@@ -41,6 +41,29 @@ static bool ArrayCallbacksStopped(asIScriptContext *callerCtx, asIScriptContext 
 // Usually where the variables are only used in debug mode.
 #define UNUSED_VAR(x) (void)(x)
 
+// ALTERED: an enum is stored in the size of its underlying type (enum E : int8 takes one byte, enum E : int64 eight) and
+// compares as that type. Every enum was written and compared as a 32-bit int: an element of an 8-byte enum was stored
+// with its upper half left as it was (insertLast(E64::big) read back as its low 32 bits), and elements of a 1 or 2-byte
+// enum were sorted and found by reading the bytes of the elements that follow too, so sort() mixed them up and find()
+// failed. Returns -1, 0 or 1.
+static int CompareEnum(const void *a, const void *b, asITypeInfo *enumType)
+{
+	int underlying = enumType ? enumType->GetUnderlyingTypeId() : asTYPEID_INT32;
+	switch( underlying )
+	{
+		#define COMPARE(T) (*((T*)a) < *((T*)b) ? -1 : *((T*)b) < *((T*)a) ? 1 : 0)
+		case asTYPEID_INT8:   return COMPARE(asINT8);
+		case asTYPEID_INT16:  return COMPARE(asINT16);
+		case asTYPEID_INT64:  return COMPARE(asINT64);
+		case asTYPEID_UINT8:  return COMPARE(asBYTE);
+		case asTYPEID_UINT16: return COMPARE(asWORD);
+		case asTYPEID_UINT32: return COMPARE(asDWORD);
+		case asTYPEID_UINT64: return COMPARE(asQWORD);
+		default:              return COMPARE(signed int);
+		#undef COMPARE
+	}
+}
+
 // Set the default memory routines
 // Use the angelscript engine's memory routines by default
 static asALLOCFUNC_t userAlloc = asAllocMem;
@@ -681,13 +704,14 @@ void CScriptArray::SetValue(asINT64 index, void *value)
 		*(short*)ptr = *(short*)value;
 	else if( subTypeId == asTYPEID_INT32 ||
 			 subTypeId == asTYPEID_UINT32 ||
-			 subTypeId == asTYPEID_FLOAT ||
-			 subTypeId > asTYPEID_DOUBLE ) // enums have a type id larger than doubles
+			 subTypeId == asTYPEID_FLOAT )
 		*(int*)ptr = *(int*)value;
 	else if( subTypeId == asTYPEID_INT64 ||
 			 subTypeId == asTYPEID_UINT64 ||
 			 subTypeId == asTYPEID_DOUBLE )
 		*(double*)ptr = *(double*)value;
+	else // ALTERED: an enum (they have a type id larger than doubles), of its underlying type's size, see CompareEnum
+		memcpy(ptr, value, elementSize);
 }
 
 CScriptArray::~CScriptArray()
@@ -1159,7 +1183,7 @@ bool CScriptArray::Less(const void *a, const void *b, bool asc)
 			case asTYPEID_UINT64: return COMPARE(asQWORD);
 			case asTYPEID_FLOAT:  return COMPARE(float);
 			case asTYPEID_DOUBLE: return COMPARE(double);
-			default: return COMPARE(signed int); // All enums fall in this case. TODO: update this when enums can have different sizes and types
+			default: return CompareEnum(a, b, objType->GetSubType()) < 0; // ALTERED: all enums fall in this case, see CompareEnum
 			#undef COMPARE
 		}
 	}
@@ -1286,7 +1310,7 @@ bool CScriptArray::Equals(const void *a, const void *b, asIScriptContext *ctx, S
 			case asTYPEID_UINT64: return COMPARE(asQWORD);
 			case asTYPEID_FLOAT:  return COMPARE(float);
 			case asTYPEID_DOUBLE: return COMPARE(double);
-			default: return COMPARE(signed int); // All enums fall here. TODO: update this when enums can have different sizes and types
+			default: return CompareEnum(a, b, objType->GetSubType()) == 0; // ALTERED: all enums fall here, see CompareEnum
 			#undef COMPARE
 		}
 	}

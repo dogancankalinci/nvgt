@@ -548,13 +548,14 @@ void CScriptGrid::SetValue(SGridBuffer *buf, asUINT x, asUINT y, void *value)
 		*(short*)ptr = *(short*)value;
 	else if( subTypeId == asTYPEID_INT32 ||
 			 subTypeId == asTYPEID_UINT32 ||
-			 subTypeId == asTYPEID_FLOAT ||
-			 subTypeId > asTYPEID_DOUBLE ) // enums have a type id larger than doubles
+			 subTypeId == asTYPEID_FLOAT )
 		*(int*)ptr = *(int*)value;
 	else if( subTypeId == asTYPEID_INT64 ||
 			 subTypeId == asTYPEID_UINT64 ||
 			 subTypeId == asTYPEID_DOUBLE )
 		*(double*)ptr = *(double*)value;
+	else // ALTERED: an enum (they have a type id larger than doubles) is of its underlying type's size, which can be 1, 2 or 8 bytes (enum E : int64): it was written as a 32-bit int
+		memcpy(ptr, value, elementSize);
 }
 
 CScriptGrid::~CScriptGrid()
