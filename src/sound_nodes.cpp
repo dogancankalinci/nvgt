@@ -82,14 +82,15 @@ static bool frequency_in_range(double frequency, audio_engine* engine) { return 
 static bool q_in_range(double q) { return node_value_in_range(q > 0); }
 static bool gain_in_range(double gain_db) { return node_value_in_range(gain_db >= -100 && gain_db <= 100); }
 static bool unit_in_range(double value) { return node_value_in_range(value >= 0 && value <= 1); }
-// MiniAudio divides a biquad filter's coefficients by a0 and keeps them as floats, and one that wasn't finite there made the filter's output NaN for good, as above: a q so near 0 that sin(w) / 2q overflowed did that. At a frequency so low that w is tiny, the poles lie so close to 1 that rounding a1 and a2 to floats could put one outside the unit circle: below about 1.35 Hz at 48 kHz, about half the frequencies made the output grow from the first sample until it was infinite, then NaN for good. Settings are refused unless MiniAudio's coefficients, worked out as it does, all come out finite, and the float filter's poles, the roots of z^2 + a1 z + a2, both lie inside the unit circle.
+// MiniAudio divides a biquad filter's coefficients by a0 and keeps them as floats, and one that wasn't finite there made the filter's output NaN for good, as above: a q so near 0 that sin(w) / 2q overflowed did that. At a frequency so low that w is tiny, the poles lie so close to 1 that rounding a1 and a2 to floats could put one outside the unit circle: below about 1.35 Hz at 48 kHz, about half the frequencies made the output grow from the first sample until it was infinite, then NaN for good. And a pole the rounding left just inside it, within a fraction of a hertz of 0 or of half the sample rate, no longer had its zeros cancel it, so the filter's own rounding was amplified to hundreds of times full scale. Settings are refused unless MiniAudio's coefficients, worked out as it does, all come out finite, and the float filter's poles, the roots of z^2 + a1 z + a2, both lie at least 1e-5 inside the unit circle.
 static constexpr double filter_pi = 3.14159265358979323846264; // MiniAudio's MA_PI_D.
 static bool biquad_in_range(double b0, double b1, double b2, double a0, double a1, double a2) {
 	for (double coefficient : {b0, b1, b2, a1, a2}) {
 		if (!std::isfinite((float)(coefficient / a0))) return node_value_in_range(false);
 	}
-	double a1f = (float)(a1 / a0), a2f = (float)(a2 / a0);
-	return node_value_in_range(std::fabs(a2f) < 1 && std::fabs(a1f) < 1 + a2f);
+	double a1f = (float)(a1 / a0), a2f = (float)(a2 / a0), discriminant = a1f * a1f - 4 * a2f; // Exact in double, as the coefficients are floats.
+	double radius = discriminant < 0? std::sqrt(a2f) : (std::fabs(a1f) + std::sqrt(discriminant)) / 2; // Of the pole farthest out.
+	return node_value_in_range(radius <= 1 - 1e-5);
 }
 // The second-order sections MiniAudio makes a low-, high- or band-pass filter of, a first-order one being stable at any frequency.
 enum class pass_filter { low, high, band };
