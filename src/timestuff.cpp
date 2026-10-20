@@ -222,6 +222,12 @@ void timer_queue::flush() {
 	last_looped = ticks();
 }
 bool timer_queue::loop(int max_timers, int max_catchup) {
+	// A callback can let go of the last handle to this queue (a script replacing its timers, @q = timer_queue()), and the queue was deleted while loop() was still running that callback and went on using it. AngelScript doesn't hold the object of a registered method for the call, so loop() holds itself; declared before the lock, it is let go of after the lock is.
+	struct holder {
+		timer_queue* q;
+		holder(timer_queue* q) : q(q) { q->add_ref(); }
+		~holder() { q->release(); }
+	} hold(this);
 	std::lock_guard<std::recursive_mutex> l(mtx);
 	purge_deleting_timers();
 	uint64_t t = !open_tick ? ticks() - last_looped : 0;
