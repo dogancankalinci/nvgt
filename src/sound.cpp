@@ -2112,8 +2112,16 @@ static void hold_rate(ma_node* node) {
 	}
 	s->rate.store(rate, std::memory_order_relaxed);
 }
+// MiniAudio's processing of a sound plays first from a cache of the source's frames it read and converted to float but hadn't played yet, up to a block of them. A seek, made there from seekTarget, moved the source but kept the cache, so a sound not read in whole blocks, at a pitch other than 1 or a source rate other than the engine's, played up to that many frames from where it had been, at a pitch of 0.3 for 18 ms; the seek is taken over here, the cache emptied with it. On the thread reading the engine.
 static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32* frame_count_in, float** frames_out, ma_uint32* frame_count_out) {
 	hold_rate(node);
+	ma_sound* s = (ma_sound*)node;
+	ma_uint64 target = reinterpret_cast<std::atomic<ma_uint64>*>(&s->seekTarget)->exchange(~(ma_uint64)0); // MiniAudio's "no seek".
+	if (target != ~(ma_uint64)0) {
+		ma_data_source_seek_to_pcm_frame(s->pDataSource, target);
+		ma_node_set_time(s, target);
+		s->processingCacheFramesRemaining = 0;
+	}
 	g_ma_sound_process(node, frames_in, frame_count_in, frames_out, frame_count_out);
 }
 static void held_group_process(ma_node* node, const float** frames_in, ma_uint32* frame_count_in, float** frames_out, ma_uint32* frame_count_out) {
