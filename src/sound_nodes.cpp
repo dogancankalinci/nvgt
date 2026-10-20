@@ -82,6 +82,22 @@ static bool frequency_in_range(double frequency, audio_engine* engine) { return 
 static bool q_in_range(double q) { return node_value_in_range(q > 0); }
 static bool gain_in_range(double gain_db) { return node_value_in_range(gain_db >= -100 && gain_db <= 100); }
 static bool unit_in_range(double value) { return node_value_in_range(value >= 0 && value <= 1); }
+// MiniAudio divides a biquad filter's coefficients by a0 and keeps them as floats, and one that wasn't finite there made the filter's output NaN for good, as above: a q so near 0 that sin(w) / 2q overflowed did that. Peak and notch settings are refused unless MiniAudio's coefficients, worked out as it does, all come out finite.
+static constexpr double filter_pi = 3.14159265358979323846264; // MiniAudio's MA_PI_D.
+static bool biquad_in_range(double b0, double b1, double b2, double a0, double a1, double a2) {
+	for (double coefficient : {b0, b1, b2, a1, a2}) {
+		if (!std::isfinite((float)(coefficient / a0))) return node_value_in_range(false);
+	}
+	return true;
+}
+static bool notch_in_range(double q, double frequency, ma_uint32 sample_rate) {
+	double w = 2 * filter_pi * frequency / sample_rate, c = std::cos(w), a = std::sin(w) / (2 * q);
+	return biquad_in_range(1, -2 * c, 1, 1 + a, -2 * c, 1 - a);
+}
+static bool peak_in_range(double gain_db, double q, double frequency, ma_uint32 sample_rate) {
+	double w = 2 * filter_pi * frequency / sample_rate, c = std::cos(w), a = std::sin(w) / (2 * q), A = std::pow(10.0, gain_db / 40);
+	return biquad_in_range(1 + (a * A), -2 * c, 1 - (a * A), 1 + (a / A), -2 * c, 1 - (a / A));
+}
 // A shelf filter's q is its slope S, which MiniAudio puts under a square root, sqrt((A + 1/A) * (1/S - 1) + 2) with A = 10^(gain/40): a slope above 1 makes that negative once the gain is far enough from 0, and the filter's output NaN for good, as above. The pair is refused while the root's argument isn't clearly above 0, so rounding can't take MiniAudio's below it.
 static bool shelf_in_range(double gain_db, double slope) {
 	double A = std::pow(10.0, gain_db / 40), spread = (A + 1 / A) * (1 / slope - 1);
@@ -440,7 +456,7 @@ class notch_filter_node_impl : public audio_node_impl, public virtual notch_filt
 	ma_notch_node_config cfg;
 	public:
 	notch_filter_node_impl(double q, double frequency, audio_engine* e) : fn(make_unique<ma_notch_node>()), audio_node_impl(nullptr, e) {
-		if (!finite_node_values({q, frequency}) || !q_in_range(q) || !frequency_in_range(frequency, get_engine())) throw std::invalid_argument("filter setting out of range");
+		if (!finite_node_values({q, frequency}) || !q_in_range(q) || !frequency_in_range(frequency, get_engine()) || !notch_in_range(q, frequency, get_engine()->get_sample_rate())) throw std::invalid_argument("filter setting out of range");
 		cfg = ma_notch_node_config_init(get_engine()->get_channels(), get_engine()->get_sample_rate(), q, frequency);
 		if ((g_soundsystem_last_error = ma_notch_node_init(ma_engine_get_node_graph(get_engine()->get_ma_engine()), &cfg, nullptr, &*fn)) != MA_SUCCESS) throw std::runtime_error("ma_notch_filter_node was not initialized");
 		node = (ma_node_base*)&*fn;
@@ -453,7 +469,7 @@ class notch_filter_node_impl : public audio_node_impl, public virtual notch_filt
 	}
 	void set_q(double q) override {
 		if (!finite_node_values({q})) return;
-		if (!q_in_range(q)) return;
+		if (!q_in_range(q) || !notch_in_range(q, cfg.notch.frequency, cfg.notch.sampleRate)) return;
 		auto previous = cfg.notch.q;
 		cfg.notch.q = q;
 		if ((g_soundsystem_last_error = ma_notch_node_reinit(&cfg.notch, &*fn)) != MA_SUCCESS) cfg.notch.q = previous;
@@ -461,7 +477,7 @@ class notch_filter_node_impl : public audio_node_impl, public virtual notch_filt
 	double get_q() const override { return cfg.notch.q; }
 	void set_frequency(double freq) override {
 		if (!finite_node_values({freq})) return;
-		if (!frequency_in_range(freq, get_engine())) return;
+		if (!frequency_in_range(freq, get_engine()) || !notch_in_range(cfg.notch.q, freq, cfg.notch.sampleRate)) return;
 		auto previous = cfg.notch.frequency;
 		cfg.notch.frequency = freq;
 		if ((g_soundsystem_last_error = ma_notch_node_reinit(&cfg.notch, &*fn)) != MA_SUCCESS) cfg.notch.frequency = previous;
@@ -475,7 +491,7 @@ class peak_filter_node_impl : public audio_node_impl, public virtual peak_filter
 	ma_peak_node_config cfg;
 	public:
 	peak_filter_node_impl(double gain_db, double q, double frequency, audio_engine* e) : fn(make_unique<ma_peak_node>()), audio_node_impl(nullptr, e) {
-		if (!finite_node_values({gain_db, q, frequency}) || !gain_in_range(gain_db) || !q_in_range(q) || !frequency_in_range(frequency, get_engine())) throw std::invalid_argument("filter setting out of range");
+		if (!finite_node_values({gain_db, q, frequency}) || !gain_in_range(gain_db) || !q_in_range(q) || !frequency_in_range(frequency, get_engine()) || !peak_in_range(gain_db, q, frequency, get_engine()->get_sample_rate())) throw std::invalid_argument("filter setting out of range");
 		cfg = ma_peak_node_config_init(get_engine()->get_channels(), get_engine()->get_sample_rate(), gain_db, q, frequency);
 		if ((g_soundsystem_last_error = ma_peak_node_init(ma_engine_get_node_graph(get_engine()->get_ma_engine()), &cfg, nullptr, &*fn)) != MA_SUCCESS) throw std::runtime_error("ma_peak_filter_node was not initialized");
 		node = (ma_node_base*)&*fn;
@@ -488,7 +504,7 @@ class peak_filter_node_impl : public audio_node_impl, public virtual peak_filter
 	}
 	void set_gain(double gain) override {
 		if (!finite_node_values({gain})) return;
-		if (!gain_in_range(gain)) return;
+		if (!gain_in_range(gain) || !peak_in_range(gain, cfg.peak.q, cfg.peak.frequency, cfg.peak.sampleRate)) return;
 		auto previous = cfg.peak.gainDB;
 		cfg.peak.gainDB = gain;
 		if ((g_soundsystem_last_error = ma_peak_node_reinit(&cfg.peak, &*fn)) != MA_SUCCESS) cfg.peak.gainDB = previous;
@@ -496,7 +512,7 @@ class peak_filter_node_impl : public audio_node_impl, public virtual peak_filter
 	double get_gain() const override { return cfg.peak.gainDB; }
 	void set_q(double q) override {
 		if (!finite_node_values({q})) return;
-		if (!q_in_range(q)) return;
+		if (!q_in_range(q) || !peak_in_range(cfg.peak.gainDB, q, cfg.peak.frequency, cfg.peak.sampleRate)) return;
 		auto previous = cfg.peak.q;
 		cfg.peak.q = q;
 		if ((g_soundsystem_last_error = ma_peak_node_reinit(&cfg.peak, &*fn)) != MA_SUCCESS) cfg.peak.q = previous;
@@ -504,7 +520,7 @@ class peak_filter_node_impl : public audio_node_impl, public virtual peak_filter
 	double get_q() const override { return cfg.peak.q; }
 	void set_frequency(double freq) override {
 		if (!finite_node_values({freq})) return;
-		if (!frequency_in_range(freq, get_engine())) return;
+		if (!frequency_in_range(freq, get_engine()) || !peak_in_range(cfg.peak.gainDB, cfg.peak.q, freq, cfg.peak.sampleRate)) return;
 		auto previous = cfg.peak.frequency;
 		cfg.peak.frequency = freq;
 		if ((g_soundsystem_last_error = ma_peak_node_reinit(&cfg.peak, &*fn)) != MA_SUCCESS) cfg.peak.frequency = previous;
