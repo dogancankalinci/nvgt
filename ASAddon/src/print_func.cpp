@@ -7,6 +7,7 @@
 #include <cinttypes>
 #include <cassert>
 #include <array>
+#include <vector>
 
 #include <sstream>
 #include <iostream>
@@ -57,18 +58,20 @@ bool Print::PrintAddonTypes(std::ostream & dst, void const *objPtr, int typeId, 
         else
             array = reinterpret_cast<CScriptArray const*>(objPtr);
 
-        if(array->GetSize() == 0)
-            dst << "[]";
-        else
+        // ALTERED: the array is held while it is printed, and its size read again for each element: an element's string
+        // conversion can be script code (see PrintTemplate), which can let go of the array or change it. The closing bracket
+        // is printed after the loop, as it was missed when the array shrank under the last element printed. It is printed up to
+        // its size at the start at most, so that a conversion adding an element each time can't make it go on forever.
+        array->AddRef();
+        const uint32_t startSize = array->GetSize();
+        dst << "[";
+        for(uint32_t i = 0; i < startSize && i < array->GetSize(); ++i)
         {
-            dst << "[";
-
-            for(uint32_t i = 0; i < array->GetSize(); ++i)
-            {
-                Print::PrintTemplate(dst, array->At(i), array->GetElementTypeId(), depth+1);
-                dst << ((i+1 == array->GetSize())? "]" : ", ");
-            }
+            if(i > 0) dst << ", ";
+            Print::PrintTemplate(dst, array->At(i), array->GetElementTypeId(), depth+1);
         }
+        dst << "]";
+        array->Release();
 
         return true;
     }
@@ -86,15 +89,27 @@ bool Print::PrintAddonTypes(std::ostream & dst, void const *objPtr, int typeId, 
 
         dst << "{\n";
 
-        bool printed = false;
+        // ALTERED: the dictionary is held while it is printed, and its keys are listed first, each value looked up again when
+        // its turn comes: a value's string conversion can be script code (see PrintTemplate), which can let go of the
+        // dictionary or change it, and the walk went on through freed nodes.
+        dictionary->AddRef();
+        std::vector<dictKey_t> keys;
         for(auto const& pair : *dictionary)
+            keys.push_back(pair.GetKey());
+
+        bool printed = false;
+        for(auto const& key : keys)
         {
+            auto pair = dictionary->find(key);
+            if(pair == dictionary->end()) continue;
+
             if(printed) dst << ",\n";
             printed = true;
 
-            dst << indent << '"' << pair.GetKey() << "\":";
+            dst << indent << '"' << key << "\":";
             Print::PrintTemplate(dst, pair.GetAddressOfValue(), pair.GetTypeId(), depth+1);
         }
+        dictionary->Release();
 
         dst << '\n' << indent.substr(0, indent.size()-1) << '}';
 
@@ -234,6 +249,11 @@ void Print::PrintTemplate(std::ostream & dst, void const* objPtr, int typeId, in
 	if (func) {
 		// Need to create a new context or save the current state
 		asIScriptContext* callCtx = engine->RequestContext();
+		// ALTERED: the object is held while its conversion runs, as that can be script code, which can take it out of the
+		// array or dictionary holding it and free it in the middle of its own call. Only an object whose type counts
+		// references (not a value type, nor a scoped or NOCOUNT one) can be held.
+		bool hold = callCtx && (typeInfo->GetFlags() & asOBJ_REF) && !(typeInfo->GetFlags() & (asOBJ_NOCOUNT | asOBJ_SCOPED));
+		if (hold) engine->AddRefScriptObject(const_cast<void*>(objPtr), typeInfo);
 		if (callCtx) {
 			// Call the string conversion method
 			callCtx->Prepare(func);
@@ -243,11 +263,13 @@ void Print::PrintTemplate(std::ostream & dst, void const* objPtr, int typeId, in
 				if (strPtr) {
 					dst << *strPtr;
 					engine->ReturnContext(callCtx);
+					if (hold) engine->ReleaseScriptObject(const_cast<void*>(objPtr), typeInfo);
 					return;
 				}
 			}
 			engine->ReturnContext(callCtx);
 		}
+		if (hold) engine->ReleaseScriptObject(const_cast<void*>(objPtr), typeInfo);
 	}
 
         dst << "RegisteredObject";
