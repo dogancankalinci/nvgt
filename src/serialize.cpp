@@ -378,7 +378,20 @@ static CScriptDictionary* read_dictionary_body(Poco::BinaryReader& r, asIScriptM
 	for (Poco::UInt32 i = 0; i < count; i++) {
 		std::string key;
 		r >> key;
-		read_value(r, mod, [&](void* v, int t) { dict->Set(key, v, t); });
+		read_value(r, mod, [&](void* v, int t) {
+			// A number is kept as an int64 or a double, as the script's dictionary::set() keeps it: get() converts only from those, so a float or an integer of another size (from the data of an array element, say) couldn't be read back as a double or an int64, and script_function.call() refused it.
+			switch (t) {
+				case asTYPEID_INT8: dict->Set(key, asINT64(*(int8_t*)v)); break;
+				case asTYPEID_UINT8: dict->Set(key, asINT64(*(uint8_t*)v)); break;
+				case asTYPEID_INT16: dict->Set(key, asINT64(*(int16_t*)v)); break;
+				case asTYPEID_UINT16: dict->Set(key, asINT64(*(uint16_t*)v)); break;
+				case asTYPEID_INT32: dict->Set(key, asINT64(*(int32_t*)v)); break;
+				case asTYPEID_UINT32: dict->Set(key, asINT64(*(uint32_t*)v)); break;
+				case asTYPEID_UINT64: dict->Set(key, asINT64(*(uint64_t*)v)); break;
+				case asTYPEID_FLOAT: dict->Set(key, double(*(float*)v)); break;
+				default: dict->Set(key, v, t); break;
+			}
+		});
 	}
 	return dict.release();
 }
