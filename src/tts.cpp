@@ -1066,6 +1066,13 @@ bool tts_voice::list_voices_again(bool relist_engines, bool retry_unbound, bool 
 	};
 	list_engine_voices(true);
 	current_voice_index = -1;
+	// When the language filter holds no voice but the builtin one once the voice the script chose has left, whether in this listing or an earlier one, the filter is lifted, as set_language("") would, so that the object speaks with the platform's voice rather than not at all or with the builtin voice. Not as set_language() lists, as a voice its filter leaves out hasn't left.
+	auto lift_emptied_filter = [&](const voice_info &left) {
+		if (keep_filter || current_language.empty() || !tts_language_matches(left.language, current_language)) return;
+		for (const voice_info &voice : voices) if (voice.engine_name != "fallback") return;
+		current_language.clear();
+		list_engine_voices(false);
+	};
 	// Only a voice the script chose is carried over. Without a choice the selection must keep following the platform default, which the block below picks.
 	if (had_voice && voice_set) {
 		current_voice_index = find_listed_voice(voices, old_voice.engine_name, old_voice.engine_voice_index, old_voice.name, old_voice.language);
@@ -1073,20 +1080,14 @@ bool tts_voice::list_voices_again(bool relist_engines, bool retry_unbound, bool 
 		if (current_voice_index < 0) {
 			remembered_voice = old_voice;
 			voice_remembered = true;
-			// When the language filter holds no voice but the builtin one once the chosen voice left, the filter is lifted, as set_language("") would, so that the object speaks with the platform's voice rather than not at all or with the builtin voice. Not as set_language() lists, as a voice its filter leaves out hasn't left.
-			bool only_builtin = true;
-			for (const voice_info &voice : voices) if (voice.engine_name != "fallback") { only_builtin = false; break; }
-			if (!keep_filter && only_builtin && !current_language.empty() && tts_language_matches(old_voice.language, current_language)) {
-				current_language.clear();
-				list_engine_voices(false);
-			}
+			lift_emptied_filter(old_voice);
 		}
 	} else if (voice_remembered) {
 		current_voice_index = find_listed_voice(voices, remembered_voice.engine_name, remembered_voice.engine_voice_index, remembered_voice.name, remembered_voice.language);
 		if (current_voice_index >= 0) {
 			voice_set = true;
 			voice_remembered = false;
-		}
+		} else lift_emptied_filter(remembered_voice);
 	}
 	if (current_voice_index < 0) voice_set = false; // The chosen voice is gone, so fall back to the platform default rather than forcing whichever voice lands on its old index.
 	if (current_voice_index < 0 && !voices.empty()) {
