@@ -918,9 +918,9 @@ public class TTS {
 			if (availableVoices != null) return;
 		}
 		availableVoices = listed;
-		// The voice the user's settings selected, and one the script chose, are listed even when the filter above would drop them (a network voice, for instance), so that the current voice can always be reported and a chosen one isn't taken as removed. A chosen one only while the engine still has it installed, though: one deleted in the engine's settings can't be spoken with, and counts as removed.
+		// The voice the user's settings selected, and one the script chose, are listed even when the filter above would drop them (a network voice, for instance), so that the current voice can always be reported and a chosen one isn't taken as removed. Only while the engine still has them, though: a voice deleted in the engine's settings has left it, and a chosen one that isn't installed any more can't be spoken with, so both count as removed.
 		Voice settingsVoice = defaultVoice, chosen = chosenVoice;
-		if (settingsVoice != null) listVoice(settingsVoice);
+		if (settingsVoice != null && (engineVoices == null || engineVoices.containsKey(settingsVoice.getName()))) listVoice(settingsVoice);
 		if (chosen != null && engineVoices != null) {
 			Voice current = engineVoices.get(chosen.getName());
 			if (current != null && !current.getFeatures().contains("notInstalled")) listVoice(chosen);
