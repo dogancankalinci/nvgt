@@ -52,6 +52,7 @@ vcpkg_from_github(
         fix-abort-after-last-suspend.patch
         fix-pushstate-capacity-check.patch
         fix-return-object-reference.patch
+        fix-callptr-suspend.patch
 )
 
 vcpkg_cmake_configure(
