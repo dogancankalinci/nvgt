@@ -616,8 +616,9 @@ public class TTS {
 	// On Android 12 and later, once its engine's process dies a TextToSpeech has no engine for good: the system ends its
 	// session with the engine and TextToSpeech never asks for another, so everything it is asked to do fails. When a request
 	// fails on a TextToSpeech that has no working connection any more (getVoices() is null only then), a new one is made for
-	// the same engine and given what the script set, and the old one is shut down. The voice list is kept, so voice indices
-	// stay as they were. One attempt is made at most every 30 seconds, because a failed one waits out the connection timeout.
+	// the same engine and given what the script set, and the old one is shut down. The voices are listed again at the next
+	// use, as the new connection can have other voices, so voice indices can change. One attempt is made at most every 30
+	// seconds, because a failed one waits out the connection timeout.
 	private long lastRecovery = 0; // Guarded by queueLock.
 	private long connectionLostAt = 0; // When a request first found the connection gone, 0 while it works. Guarded by queueLock.
 	private boolean recoverConnection(TextToSpeech failed) {
