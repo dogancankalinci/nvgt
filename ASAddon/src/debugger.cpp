@@ -593,7 +593,6 @@ bool CDebugger::InterpretCommand(const string &cmd, asIScriptContext *ctx)
 			if (r == asEXECUTION_FINISHED)
 			{
 				Output(ToString(ref, typeId, 0, GetEngine()) + "\n");
-				if (typeId & asTYPEID_MASK_OBJECT) GetEngine()->ReleaseScriptObject(ref, GetEngine()->GetTypeInfoById(typeId));
 			}
 			else if (r == asEXECUTION_EXCEPTION)
 			{
@@ -603,6 +602,13 @@ bool CDebugger::InterpretCommand(const string &cmd, asIScriptContext *ctx)
 			{
 				Output("suspend or abort while evaluating statement\n");
 			}
+			// ALTERED: for a handle type ref is the room holding the handle, whose object is the one to release: ref itself was released as the object, so evaluating a handle (e dictionary@ d) ran the type's release behaviour on that room, and the reference ExecuteString() added to the object leaked. An object of a value type is released however the evaluation ended (it leaked unless it finished).
+			if (typeId & asTYPEID_OBJHANDLE)
+			{
+				if (*(void**)ref) GetEngine()->ReleaseScriptObject(*(void**)ref, GetEngine()->GetTypeInfoById(typeId));
+			}
+			else if (typeId & asTYPEID_MASK_OBJECT)
+				GetEngine()->ReleaseScriptObject(ref, GetEngine()->GetTypeInfoById(typeId));
 			if (!(typeId & asTYPEID_MASK_OBJECT) || typeId & asTYPEID_OBJHANDLE) free(ref);
 			if (execCtx) GetEngine()->ReturnContext(execCtx);
 		}
