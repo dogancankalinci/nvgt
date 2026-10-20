@@ -226,7 +226,15 @@ async_result* async_unprepared_factory(asITypeInfo* type) { return new async_res
 void async_factory(asIScriptGeneric* gen) {
 	asITypeInfo* ti = *(asITypeInfo**)gen->GetAddressOfArg(0);
 	async_result* r = new async_result(ti);
-	if (!r->call(gen)) delete r;
+	bool started;
+	// call() throws when the thread can't be started, after giving back what it took for the call; the object itself, which nothing else holds yet, was never deleted.
+	try {
+		started = r->call(gen);
+	} catch (...) {
+		delete r;
+		throw;
+	}
+	if (!started) delete r;
 	else *(async_result**)gen->GetAddressOfReturnLocation() = r;
 }
 
