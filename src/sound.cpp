@@ -1999,6 +1999,7 @@ static constexpr float max_pitch_ratio = 1000;
 struct held_sound : ma_sound {
 	std::atomic<float> pitch{1}; // The pitch the script set, which MiniAudio is given only held.
 	float given = 1; // The pitch MiniAudio was last given; only the thread reading the engine uses it.
+	std::atomic<float> rate{1}; // The rate MiniAudio last applied, by which a group multiplies those of the nodes it reads (see downstream_rate()).
 };
 struct held_sound_delete {
 	void operator()(ma_sound* s) const { delete static_cast<held_sound*>(s); }
@@ -2008,7 +2009,21 @@ static held_sound* held(ma_sound* s) { return static_cast<held_sound*>(s); }
 static void (*g_ma_sound_process)(ma_node*, const float**, ma_uint32*, float**, ma_uint32*) = nullptr;
 static void (*g_ma_group_process)(ma_node*, const float**, ma_uint32*, float**, ma_uint32*) = nullptr;
 static ma_node_vtable g_held_sound_vtable, g_held_group_vtable;
-// MiniAudio works a sound's or group's rate out at the start of each block, from its source's sample rate over the engine's, its pitch and the doppler ratio its spatializer worked out in the block before, (c - f*vl) / (c - f*vs) along the line from the listener, with c the speed of sound, f the doppler factor and vl and vs the listener's and the sound's velocities each held at c / f. That ratio has no bound, and is infinite for a sound coming at c / f or faster, or NaN if the listener also goes away that fast; while spatialization is off none is worked out, and MiniAudio kept applying the last one for good. The rate then went far past max_pitch_ratio, or wasn't a number, and the audio thread took seconds per block or didn't return. Just before MiniAudio works it out, an infinite ratio is held at max_pitch_ratio, a NaN one or one while spatialization is off is set to 1, and the pitch MiniAudio is given is held so that the rate stays within max_pitch_ratio. On the thread reading the engine.
+// How many times faster than its own rate a node is read: the product of the rates of the groups the engine reads it through. Only output buses being read at that moment are followed, as MiniAudio's detach waits for such a read to end, so the node reading one can't be detached or freed meanwhile; of a splitter's buses, that is the one whose read reached this node.
+static float downstream_rate(ma_node_base* node) {
+	float rate = 1;
+	for (int depth = 0; node && depth < 1000; depth++) {
+		ma_node_base* next = nullptr;
+		for (ma_uint32 i = 0; i < ma_node_get_output_bus_count(node) && !next; i++) {
+			ma_node_output_bus* bus = &node->pOutputBuses[i];
+			if (*(volatile ma_uint32*)&bus->refCount > 0) next = (ma_node_base*)*(ma_node* volatile*)&bus->pInputNode;
+		}
+		if (next && next->vtable == &g_held_group_vtable) rate *= held((ma_sound*)next)->rate.load(std::memory_order_relaxed);
+		node = next;
+	}
+	return rate;
+}
+// MiniAudio works a sound's or group's rate out at the start of each block, from its source's sample rate over the engine's, its pitch and the doppler ratio its spatializer worked out in the block before, (c - f*vl) / (c - f*vs) along the line from the listener, with c the speed of sound, f the doppler factor and vl and vs the listener's and the sound's velocities each held at c / f. That ratio has no bound, and is infinite for a sound coming at c / f or faster, or NaN if the listener also goes away that fast; while spatialization is off none is worked out, and MiniAudio kept applying the last one for good. The rate then went far past max_pitch_ratio, or wasn't a number, and the audio thread took seconds per block or didn't return. A sound is moreover read as many times faster as the mixers it plays through, which with each at max_pitch_ratio went past it too. Just before MiniAudio works the rate out, an infinite ratio is held at max_pitch_ratio, a NaN one or one while spatialization is off is set to 1, and the pitch MiniAudio is given is held so that neither the rate nor the rate times those of the groups the node is read through goes past max_pitch_ratio. A group's rate rising takes effect on the nodes it reads from their next read, a block's first read of them having come before the group's own processing. On the thread reading the engine.
 static void hold_rate(ma_node* node) {
 	held_sound* s = held((ma_sound*)node);
 	float pitch = ma_sound_get_pitch(s);
@@ -2016,10 +2031,12 @@ static void hold_rate(ma_node* node) {
 	float& doppler = s->engineNode.spatializer.dopplerPitch;
 	if (!ma_sound_is_spatialization_enabled(s) || doppler != doppler) doppler = 1;
 	else if (doppler > max_pitch_ratio) doppler = max_pitch_ratio;
-	float base = (float)s->engineNode.sampleRate / ma_engine_get_sample_rate(s->engineNode.pEngine);
+	float base = (float)s->engineNode.sampleRate / ma_engine_get_sample_rate(s->engineNode.pEngine), limit = max_pitch_ratio / std::max(downstream_rate((ma_node_base*)node), 1.0f);
 	pitch = s->pitch.load(std::memory_order_relaxed);
-	if (base * pitch * doppler > max_pitch_ratio) pitch = max_pitch_ratio / (base * doppler);
+	if (base * pitch * doppler > limit) pitch = limit / (base * doppler);
 	if (pitch > 0) ma_sound_set_pitch(s, s->given = pitch);
+	float rate = base * s->given * doppler; // As MiniAudio works it out; it keeps the rate it had instead of one below 1 / 1000.
+	if (rate * 1000 >= 1) s->rate.store(rate, std::memory_order_relaxed);
 }
 static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32* frame_count_in, float** frames_out, ma_uint32* frame_count_out) {
 	hold_rate(node);
