@@ -82,6 +82,11 @@ static bool frequency_in_range(double frequency, audio_engine* engine) { return 
 static bool q_in_range(double q) { return node_value_in_range(q > 0); }
 static bool gain_in_range(double gain_db) { return node_value_in_range(gain_db >= -100 && gain_db <= 100); }
 static bool unit_in_range(double value) { return node_value_in_range(value >= 0 && value <= 1); }
+// A shelf filter's q is its slope S, which MiniAudio puts under a square root, sqrt((A + 1/A) * (1/S - 1) + 2) with A = 10^(gain/40): a slope above 1 makes that negative once the gain is far enough from 0, and the filter's output NaN for good, as above. The pair is refused while the root's argument isn't clearly above 0, so rounding can't take MiniAudio's below it.
+static bool shelf_in_range(double gain_db, double slope) {
+	double A = std::pow(10.0, gain_db / 40), spread = (A + 1 / A) * (1 / slope - 1);
+	return node_value_in_range(spread + 2 > 1e-12 * (std::fabs(spread) + 2));
+}
 
 class passthrough_node_impl : public effect_node_impl, public virtual passthrough_node {
 	public:
@@ -513,7 +518,7 @@ class low_shelf_filter_node_impl : public audio_node_impl, public virtual low_sh
 	ma_loshelf_node_config cfg;
 	public:
 	low_shelf_filter_node_impl(double gain_db, double q, double frequency, audio_engine* e) : fn(make_unique<ma_loshelf_node>()), audio_node_impl(nullptr, e) {
-		if (!finite_node_values({gain_db, q, frequency}) || !gain_in_range(gain_db) || !q_in_range(q) || !frequency_in_range(frequency, get_engine())) throw std::invalid_argument("filter setting out of range");
+		if (!finite_node_values({gain_db, q, frequency}) || !gain_in_range(gain_db) || !q_in_range(q) || !shelf_in_range(gain_db, q) || !frequency_in_range(frequency, get_engine())) throw std::invalid_argument("filter setting out of range");
 		cfg = ma_loshelf_node_config_init(get_engine()->get_channels(), get_engine()->get_sample_rate(), gain_db, q, frequency);
 		if ((g_soundsystem_last_error = ma_loshelf_node_init(ma_engine_get_node_graph(get_engine()->get_ma_engine()), &cfg, nullptr, &*fn)) != MA_SUCCESS) throw std::runtime_error("ma_low_shelf_filter_node was not initialized");
 		node = (ma_node_base*)&*fn;
@@ -526,7 +531,7 @@ class low_shelf_filter_node_impl : public audio_node_impl, public virtual low_sh
 	}
 	void set_gain(double gain) override {
 		if (!finite_node_values({gain})) return;
-		if (!gain_in_range(gain)) return;
+		if (!gain_in_range(gain) || !shelf_in_range(gain, cfg.loshelf.shelfSlope)) return;
 		auto previous = cfg.loshelf.gainDB;
 		cfg.loshelf.gainDB = gain;
 		if ((g_soundsystem_last_error = ma_loshelf_node_reinit(&cfg.loshelf, &*fn)) != MA_SUCCESS) cfg.loshelf.gainDB = previous;
@@ -534,7 +539,7 @@ class low_shelf_filter_node_impl : public audio_node_impl, public virtual low_sh
 	double get_gain() const override { return cfg.loshelf.gainDB; }
 	void set_q(double q) override {
 		if (!finite_node_values({q})) return;
-		if (!q_in_range(q)) return;
+		if (!q_in_range(q) || !shelf_in_range(cfg.loshelf.gainDB, q)) return;
 		auto previous = cfg.loshelf.shelfSlope;
 		cfg.loshelf.shelfSlope = q;
 		if ((g_soundsystem_last_error = ma_loshelf_node_reinit(&cfg.loshelf, &*fn)) != MA_SUCCESS) cfg.loshelf.shelfSlope = previous;
@@ -556,7 +561,7 @@ class high_shelf_filter_node_impl : public audio_node_impl, public virtual high_
 	ma_hishelf_node_config cfg;
 	public:
 	high_shelf_filter_node_impl(double gain_db, double q, double frequency, audio_engine* e) : fn(make_unique<ma_hishelf_node>()), audio_node_impl(nullptr, e) {
-		if (!finite_node_values({gain_db, q, frequency}) || !gain_in_range(gain_db) || !q_in_range(q) || !frequency_in_range(frequency, get_engine())) throw std::invalid_argument("filter setting out of range");
+		if (!finite_node_values({gain_db, q, frequency}) || !gain_in_range(gain_db) || !q_in_range(q) || !shelf_in_range(gain_db, q) || !frequency_in_range(frequency, get_engine())) throw std::invalid_argument("filter setting out of range");
 		cfg = ma_hishelf_node_config_init(get_engine()->get_channels(), get_engine()->get_sample_rate(), gain_db, q, frequency);
 		if ((g_soundsystem_last_error = ma_hishelf_node_init(ma_engine_get_node_graph(get_engine()->get_ma_engine()), &cfg, nullptr, &*fn)) != MA_SUCCESS) throw std::runtime_error("ma_high_shelf_filter_node was not initialized");
 		node = (ma_node_base*)&*fn;
@@ -569,7 +574,7 @@ class high_shelf_filter_node_impl : public audio_node_impl, public virtual high_
 	}
 	void set_gain(double gain) override {
 		if (!finite_node_values({gain})) return;
-		if (!gain_in_range(gain)) return;
+		if (!gain_in_range(gain) || !shelf_in_range(gain, cfg.hishelf.shelfSlope)) return;
 		auto previous = cfg.hishelf.gainDB;
 		cfg.hishelf.gainDB = gain;
 		if ((g_soundsystem_last_error = ma_hishelf_node_reinit(&cfg.hishelf, &*fn)) != MA_SUCCESS) cfg.hishelf.gainDB = previous;
@@ -577,7 +582,7 @@ class high_shelf_filter_node_impl : public audio_node_impl, public virtual high_
 	double get_gain() const override { return cfg.hishelf.gainDB; }
 	void set_q(double q) override {
 		if (!finite_node_values({q})) return;
-		if (!q_in_range(q)) return;
+		if (!q_in_range(q) || !shelf_in_range(cfg.hishelf.gainDB, q)) return;
 		auto previous = cfg.hishelf.shelfSlope;
 		cfg.hishelf.shelfSlope = q;
 		if ((g_soundsystem_last_error = ma_hishelf_node_reinit(&cfg.hishelf, &*fn)) != MA_SUCCESS) cfg.hishelf.shelfSlope = previous;
