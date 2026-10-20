@@ -52,13 +52,17 @@ void CScriptHandle::ReleaseHandle()
 {
 	if( m_ref && m_type )
 	{
-		asIScriptEngine *engine = m_type->GetEngine();
-		engine->ReleaseScriptObject(m_ref, m_type);
-
-		engine->Release();
-
+		// The handle is cleared before the object is released: a destructor run by the release that cleared or set this
+		// same ref again released the object a second time (freed during its own destructor) and the engine with it.
+		void *ref = m_ref;
+		asITypeInfo *type = m_type;
 		m_ref  = 0;
 		m_type = 0;
+
+		asIScriptEngine *engine = type->GetEngine();
+		engine->ReleaseScriptObject(ref, type);
+
+		engine->Release();
 	}
 }
 
@@ -86,12 +90,23 @@ void CScriptHandle::Set(void *ref, asITypeInfo *type)
 {
 	if( m_ref == ref ) return;
 
-	ReleaseHandle();
+	// The new object is held first and the previous one released last, once this ref holds the new one, so a destructor
+	// run by that release sees this ref as it now is, and what it sets here is kept and later released.
+	void *oldRef = m_ref;
+	asITypeInfo *oldType = m_type;
 
 	m_ref  = ref;
 	m_type = type;
 
 	AddRefHandle();
+
+	if( oldRef && oldType )
+	{
+		asIScriptEngine *engine = oldType->GetEngine();
+		engine->ReleaseScriptObject(oldRef, oldType);
+
+		engine->Release();
+	}
 }
 
 void *CScriptHandle::GetRef()
