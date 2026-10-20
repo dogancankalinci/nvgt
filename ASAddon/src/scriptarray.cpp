@@ -1220,7 +1220,9 @@ bool CScriptArray::operator==(const CScriptArray &other) const
 	SArrayCache *cache = reinterpret_cast<SArrayCache*>(objType->GetUserData(ARRAY_CACHE));
 	for( asUINT n = 0; n < GetSize(); n++ )
 	{
-		if( !Equals(At(n), other.At(n), cmpContext, cache) )
+		// ALTERED: an opEquals can change either array. At() gives null for an element that is no longer there, which was
+		// then read as the element (a crash for an array of handles); arrays that changed size aren't equal any more.
+		if( n >= other.GetSize() || !Equals(At(n), other.At(n), cmpContext, cache) )
 		{
 			isEqual = false;
 			break;
@@ -1229,6 +1231,8 @@ bool CScriptArray::operator==(const CScriptArray &other) const
 		if( cmpContext && ArrayCallbacksStopped(callerCtx, cmpContext) )
 			break;
 	}
+	if( isEqual && GetSize() != other.GetSize() )
+		isEqual = false;
 
 	if( cmpContext )
 	{
@@ -1260,6 +1264,10 @@ static int ExecuteResumed(asIScriptContext *ctx)
 // internal
 bool CScriptArray::Equals(const void *a, const void *b, asIScriptContext *ctx, SArrayCache *cache) const
 {
+	// ALTERED: not an element that isn't there (see operator==)
+	if( a == 0 || b == 0 )
+		return false;
+
 	if( !(subTypeId & ~asTYPEID_MASK_SEQNBR) )
 	{
 		// Simple compare of values
@@ -1445,9 +1453,10 @@ int CScriptArray::Find(asUINT startAt, void *value) const
 
 	// Find the matching element
 	int ret = -1;
-	asUINT size = GetSize();
 
-	for( asUINT i = startAt; i < size; i++ )
+	// ALTERED: the size is read again after each comparison, as an opEquals can shrink the array; the element past its new
+	// end was read as null, a crash for an array of handles
+	for( asUINT i = startAt; i < GetSize(); i++ )
 	{
 		// value passed by reference
 		if( Equals(At(i), value, cmpContext, cache) )
@@ -1759,6 +1768,11 @@ void CScriptArray::Sort(asIScriptFunction *func, asUINT startAt, asUINT count)
 
 	// Bubble sort
 	// TODO: optimize: Use an efficient sort algorithm
+	// ALTERED: the callback can resize the array. Past a new end the elements are no longer there: they were passed to it as
+	// null references (a crash) and swapped in memory the array no longer owns. The sort ends there and the script gets an
+	// exception.
+	asUINT size = GetSize();
+	bool changed = false;
 	for (asUINT i = start; i+1 < end; i++)
 	{
 		asUINT best = i;
@@ -1773,9 +1787,17 @@ void CScriptArray::Sort(asIScriptFunction *func, asUINT startAt, asUINT count)
 			int r = ExecuteResumed(cmpContext);
 			if (r != asEXECUTION_FINISHED)
 				break;
+			// ALTERED: see above
+			if (GetSize() != size)
+			{
+				changed = true;
+				break;
+			}
 			if (*(bool*)(cmpContext->GetAddressOfReturnValue()))
 				best = j;
 		}
+		if (changed)
+			break;
 
 		// With Swap we guarantee that the array always sees all references
 		// if the GC calls the EnumReferences in the middle of the sorting
@@ -1787,6 +1809,8 @@ void CScriptArray::Sort(asIScriptFunction *func, asUINT startAt, asUINT count)
 		if( ArrayCallbacksStopped(callerCtx, cmpContext) )
 			break;
 	}
+	// ALTERED: not when the script is ending, whose abort is passed on below
+	bool stopped = ArrayCallbacksStopped(callerCtx, cmpContext);
 
 	if (cmpContext)
 	{
@@ -1800,6 +1824,9 @@ void CScriptArray::Sort(asIScriptFunction *func, asUINT startAt, asUINT count)
 		else
 			objType->GetEngine()->ReturnContext(cmpContext);
 	}
+
+	if (changed && !stopped && callerCtx)
+		callerCtx->SetException("the array was changed while it was being sorted");
 }
 
 // internal
