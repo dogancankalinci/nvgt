@@ -321,6 +321,9 @@ void nvgt_line_callback(asIScriptContext *ctx, void* obj) {
 	}
 	#endif
 	profiler_callback(ctx, obj);
+	#ifndef NVGT_STUB
+	if (g_dbg && g_dbg->IsTakingCommands()) return; // An expression the debugger evaluates while stopped (its e command) isn't the script's: it ended a call() whose statement limit it reached.
+	#endif
 	script_function_call_count_statement(ctx);
 }
 #ifndef NVGT_STUB
