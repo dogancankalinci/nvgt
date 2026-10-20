@@ -2896,14 +2896,13 @@ public:
 	}
 	bool stream_pcm(const void* data, unsigned int size_in_frames, ma_format format, unsigned int sample_rate, unsigned int channels, unsigned int buffer_size) override {
 		if (format != ma_format_unknown) {
-			if (snd) close();
 			if (!buffer_size) buffer_size = size_in_frames * 2;
-			if (!buffer_size) return false;
 			if (!channels) channels = get_engine()->get_channels();
-			if (channels > MA_MAX_CHANNELS) { // More than a node can describe, as for a ring buffer.
+			if (!buffer_size || channels > MA_MAX_CHANNELS) { // Nothing to size a buffer by, or more channels than a node can describe, as for a ring buffer: refused before the sound loaded already goes.
 				g_soundsystem_last_error = MA_INVALID_ARGS;
 				return false;
 			}
+			if (snd) close();
 			if (!sample_rate) sample_rate = get_engine()->get_sample_rate();
 			pcm_stream = make_unique<pcm_queue>();
 			if ((g_soundsystem_last_error = pcm_stream->init(format, channels, buffer_size)) != MA_SUCCESS) {
