@@ -2866,9 +2866,9 @@ public:
 		// Also, our PCM buffer is a permanent class property so we can enjoy the speed of async loading.
 		return load_special(":pcm", g_memory_protocol_slot, memory_protocol::directive(&pcm_buffer[0], pcm_buffer.size()), sound_service::null_filter_slot, nullptr, MA_SOUND_FLAG_DECODE | MA_SOUND_FLAG_ASYNC);
 	}
-	// A script's PCM below the lowest sample rate MiniAudio names was resampled up to the engine's as it loaded, so that a second at 1 Hz took gigabytes. A channel count past MA_MAX_CHANNELS was refused only once the sound already loaded had been closed, and dr_wav keeps the count in 16 bits, so one past 65535 loaded other audio, or at a multiple of 65536 divided by zero.
+	// A script's PCM below the lowest sample rate MiniAudio names was resampled up to the engine's as it loaded, so that a second at 1 Hz took gigabytes. Above the highest, and with a channel count past MA_MAX_CHANNELS, it was refused only once the sound already loaded had been closed, and dr_wav keeps the count in 16 bits, so one past 65535 loaded other audio, or at a multiple of 65536 divided by zero.
 	static bool pcm_format_in_range(int samplerate, int channels) {
-		if (samplerate >= ma_standard_sample_rate_min && channels >= 1 && channels <= MA_MAX_CHANNELS) return true;
+		if (samplerate >= ma_standard_sample_rate_min && samplerate <= ma_standard_sample_rate_max && channels >= 1 && channels <= MA_MAX_CHANNELS) return true;
 		g_soundsystem_last_error = MA_INVALID_ARGS;
 		return false;
 	}
