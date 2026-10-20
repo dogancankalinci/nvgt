@@ -2225,7 +2225,7 @@ public:
 	}
 	float get_volume() const override { return snd ? (get_engine()->get_flags() & audio_engine::PERCENTAGE_ATTRIBUTES ? ma_volume_linear_to_db(ma_sound_get_volume(&*snd)) : ma_sound_get_volume(&*snd)) : NAN; }
 	void set_pan(float pan) override {
-		if (snd)
+		if (snd && finite_values({pan})) // MiniAudio's clamp turns NaN into 1, all the way right.
 			ma_sound_set_pan(&*snd, get_engine()->get_flags() & audio_engine::PERCENTAGE_ATTRIBUTES ? pan_db_to_linear(pan) : pan);
 	}
 	float get_pan() const override {
