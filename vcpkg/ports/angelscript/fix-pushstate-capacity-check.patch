@@ -1,0 +1,18 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -1835,7 +1835,13 @@
+ 	}
+ 
+ 	// Allocate space on the callstack for at least two states
+-	if (m_callStack.GetLength() >= m_callStack.GetCapacity() - 2*CALLSTACK_FRAME_SIZE)
++	// ALTERED: the capacity less the room for two states was computed unsigned, and with a call stack array that holds
++	// fewer than two states (asEP_INIT_CALL_STACK_SIZE 1, before a call has grown it) it wrapped around: no room was made
++	// and asEP_MAX_CALL_STACK_SIZE wasn't checked. When that limit was reached PushCallState then didn't store the state
++	// of the interrupted function, PushState went on and reported success, and PopState restored the state of that
++	// function's caller instead: the function was abandoned, the caller's code after the call never ran, and the
++	// execution finished with the abandoned function's return value.
++	if (m_callStack.GetLength() + 2*CALLSTACK_FRAME_SIZE >= m_callStack.GetCapacity())
+ 	{
+ 		if (m_engine->ep.maxCallStackSize > 0 && m_callStack.GetLength() >= m_engine->ep.maxCallStackSize*CALLSTACK_FRAME_SIZE)
+ 		{
