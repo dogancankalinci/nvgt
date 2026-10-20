@@ -742,16 +742,11 @@ std::string script_function_get_script_property(asIScriptFunction* func) {
 	if (!func || func->GetDeclaredAt(&script, &row, &col) < 0) return "";
 	return std::string(script);
 }
-// Whether the execution running on ctx began in a script class's destructor, whose name the compiler starts with '~'. Its first function is the last script function before the marker of the nested call it runs in (which holds null or the registered function making that call) or the bottom of the call stack.
+// Whether the execution running on ctx began in a script class's destructor, whose name the compiler starts with '~'. That is the function the execution was prepared with, which the context keeps for its current nested call (the state registers of level 0). It was found by walking the call stack down to the marker of the nested call, a step per frame at every statement of a call with a limit: a function recursing without end inside such a call ran in time growing with the square of the limit (80000 statements took 13 seconds instead of milliseconds).
 static bool executing_script_destructor(asIScriptContext* ctx) {
 	asIScriptFunction* first = nullptr;
-	asUINT levels = ctx->GetCallstackSize();
-	for (asUINT level = 0; level < levels; level++) {
-		asIScriptFunction* func = ctx->GetFunction(level);
-		if (!func || func->GetFuncType() != asFUNC_SCRIPT) break;
-		first = func;
-	}
-	return first && first->GetName()[0] == '~';
+	ctx->GetStateRegisters(0, nullptr, &first, nullptr, nullptr, nullptr, nullptr, nullptr);
+	return first && first->GetFuncType() == asFUNC_SCRIPT && first->GetName()[0] == '~';
 }
 // Counts a statement run on this thread, by any context, towards the limits of the script_function.call()s running on it (see script_function_call). nvgt_line_callback, every context's line callback, calls it.
 void script_function_call_count_statement(asIScriptContext* ctx) {
