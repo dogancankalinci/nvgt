@@ -509,7 +509,8 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 			if (arg_tmods & asTM_OUTREF) out_args.emplace_back(p, target, arg_type_id);
 			if (!has_default) continue;
 			if (!defCtx) defCtx = g_ScriptEngine->RequestContext();
-			int dr = defCtx? ExecuteString(g_ScriptEngine, (std::string("return ") + arg_default + ";").c_str(), target, arg_type_id, func->GetModule(), defCtx) : asERROR;
+			// In the function's namespace, where the compiler evaluates it: a default naming something of that namespace failed to compile.
+			int dr = defCtx? ExecuteString(g_ScriptEngine, (std::string("return ") + arg_default + ";").c_str(), target, arg_type_id, func->GetModule(), defCtx, func->GetNamespace()) : asERROR;
 			if (dr != asEXECUTION_FINISHED) {
 				failure_reason = "ERROR: Can't evaluate the default value of parameter ";
 				failure_reason += std::to_string(p + 1);

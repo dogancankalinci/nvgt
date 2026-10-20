@@ -26,7 +26,9 @@ int ExecuteString(asIScriptEngine *engine, const char *code, asIScriptModule *mo
 // Compile and execute simple statements with option of return value
 // The module is optional. If given the statements can access the entitites compiled in the module.
 // The caller can optionally provide its own context, for example if a context should be reused.
-int ExecuteString(asIScriptEngine *engine, const char *code, void *ret, int retTypeId, asIScriptModule *mod = 0, asIScriptContext *ctx = 0);
+// ALTERED: and a namespace to compile the statements in (the module's default namespace is used for them and then put back),
+// as the script compiler evaluates a default argument in the namespace of its function
+int ExecuteString(asIScriptEngine *engine, const char *code, void *ret, int retTypeId, asIScriptModule *mod = 0, asIScriptContext *ctx = 0, const char *nameSpace = 0);
 
 // Write the registered application interface to a file for an offline compiler.
 // The format is compatible with the offline compiler in /sdk/samples/asbuild/.

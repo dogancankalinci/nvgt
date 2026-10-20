@@ -138,7 +138,7 @@ int ExecuteString(asIScriptEngine *engine, const char *code, asIScriptModule *mo
 	return ExecuteString(engine, code, 0, asTYPEID_VOID, mod, ctx);
 }
 
-int ExecuteString(asIScriptEngine *engine, const char *code, void *ref, int refTypeId, asIScriptModule *mod, asIScriptContext *ctx)
+int ExecuteString(asIScriptEngine *engine, const char *code, void *ref, int refTypeId, asIScriptModule *mod, asIScriptContext *ctx, const char *nameSpace)
 {
 	// Wrap the code in a function so that it can be compiled and executed
 	string funcCode = " ExecuteString() {\n";
@@ -165,8 +165,18 @@ int ExecuteString(asIScriptEngine *engine, const char *code, void *ref, int refT
 		type->Release();
 
 	// Compile the function that can be executed
+	// ALTERED: in the namespace given, if any
+	string oldNameSpace;
+	if( nameSpace )
+	{
+		const char *current = execMod->GetDefaultNamespace();
+		oldNameSpace = current ? current : "";
+		execMod->SetDefaultNamespace(nameSpace);
+	}
 	asIScriptFunction *func = 0;
 	int r = execMod->CompileFunction("ExecuteString", funcCode.c_str(), -1, 0, &func);
+	if( nameSpace )
+		execMod->SetDefaultNamespace(oldNameSpace.c_str());
 	if( r < 0 )
 		return r;
 

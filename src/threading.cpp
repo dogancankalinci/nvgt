@@ -151,7 +151,7 @@ public:
 				} else default_ref = ctx->GetAddressOfArg(i);
 				// An &out parameter declared = void gets the room made above for its result (null was passed, which the function wrote through, and SetArgObject() refused a primitive one).
 				if (std::string_view(param_default) == "void") success = asEXECUTION_FINISHED;
-				else success = ExecuteString(engine, format("return %s;", std::string(param_default)).c_str(), default_ref, param_typeid, func->GetModule(), defCtx);
+				else success = ExecuteString(engine, format("return %s;", std::string(param_default)).c_str(), default_ref, param_typeid, func->GetModule(), defCtx, func->GetNamespace()); // In the function's namespace, as the compiler evaluates it.
 				// Not only a negative error: ExecuteString returns the result of the execution, and one ending in an exception (or an abort) gave no value, so the call went ahead with the argument left unset.
 				if (success != asEXECUTION_FINISHED) {
 					std::string why = success == asEXECUTION_EXCEPTION? ": " + std::string(defCtx->GetExceptionString()) : "";
