@@ -218,18 +218,27 @@ struct android_permission_request_callback_data {
 		if (ctx->SetArgObject(0, &permission) < 0 || ctx->SetArgByte(1, granted) < 0 || ctx->SetArgObject(2, &callback_data) < 0) goto done;
 		ctx->Execute();
 		done:
-		g_ScriptEngine->ReturnContext(ctx);
+		if (ctx) g_ScriptEngine->ReturnContext(ctx); // None when the pool couldn't make one, which NVGT's ReturnContextCallback can't take.
 		if (func) func->Release();
 		completed.set();
 	}
 };
 void android_permission_request_callback(void* raw_data, const char* permission, bool granted) {
 	android_permission_request_callback_data* data = reinterpret_cast<android_permission_request_callback_data*>(raw_data);
+	// With a callback nothing waits for the answer, and the request's data was never freed: it is freed here once the callback has run. Without one, request_android_permission waits for the answer and frees it.
+	bool has_callback = data->func != nullptr;
 	data->execute(permission, granted);
+	if (has_callback) delete data;
 }
 bool request_android_permission(const std::string& permission, asIScriptFunction* callback, const std::string& callback_data) {
 	android_permission_request_callback_data* data = new android_permission_request_callback_data(callback, callback_data);
 	bool result = SDL_RequestAndroidPermission(permission.c_str(), android_permission_request_callback, data);
+	// A request SDL couldn't submit never gets an answer (SDL calls no callback then): the call without a callback waited for one for good, and with one the data and the callback's reference were never let go of.
+	if (!result) {
+		if (callback) callback->Release();
+		delete data;
+		return false;
+	}
 	if (!callback) {
 		data->completed.wait();
 		result = data->was_granted;
