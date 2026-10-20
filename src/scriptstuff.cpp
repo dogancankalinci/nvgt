@@ -387,6 +387,10 @@ static bool get_call_number(CScriptDictionary::CIterator& k, void* dest, int typ
 	}
 	return true;
 }
+// Whether script_function.call() can hold a reference to an object of this type while the call lasts. A scoped type's release behaviour destroys the object (it has no addref, and AddRefScriptObject() does nothing for it), so letting go of such an object given for a reference parameter destroyed the args dictionary's own.
+static bool call_can_hold(asITypeInfo* type) {
+	return type && (type->GetFlags() & asOBJ_REF) && !(type->GetFlags() & (asOBJ_NOCOUNT | asOBJ_SCOPED));
+}
 void script_function_line_callback(asIScriptContext* ctx, script_function_call_data* data);
 CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictionary* args, CScriptArray* errors = NULL, int max_statement_count = 0) {
 	std::string failure_reason = "";
@@ -467,8 +471,10 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 						ctx->SetArgAddress(p, copy);
 						if (arg_tmods & asTM_OUTREF) out_args.emplace_back(p, copy, arg_type_id);
 					} else if (by_ref) {
-						g_ScriptEngine->AddRefScriptObject(obj, value_type);
-						made_objects.emplace_back(obj, value_type);
+						if (call_can_hold(value_type)) {
+							g_ScriptEngine->AddRefScriptObject(obj, value_type);
+							made_objects.emplace_back(obj, value_type);
+						}
 						ctx->SetArgAddress(p, obj);
 						if (arg_tmods & asTM_OUTREF) {
 							// Given back as it was given: a handle to the object, or a copy of it.
@@ -477,7 +483,14 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 								out_args.emplace_back(p, &ref_values[p], value_type_id);
 							} else out_args.emplace_back(p, obj, value_type_id);
 						}
-					} else ctx->SetArgObject(p, obj);
+					} else {
+						// An object passed by value is copied from the dictionary's object (or the object of its handle), and copying a script class runs its code (a copy constructor or opAssign), which can empty the dictionary: the object being copied was freed under the copy. It is held until the call is over. A handle parameter gets a reference at once.
+						if (!(arg_type_id & asTYPEID_OBJHANDLE) && obj && call_can_hold(value_type)) {
+							g_ScriptEngine->AddRefScriptObject(obj, value_type);
+							made_objects.emplace_back(obj, value_type);
+						}
+						ctx->SetArgObject(p, obj);
+					}
 				} else if (by_ref) {
 					void* value = &ref_values[p];
 					if (!get_call_number(k, value, arg_type_id)) {
