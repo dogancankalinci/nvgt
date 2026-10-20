@@ -239,8 +239,9 @@ public class TTS {
 	private static boolean isEngineInstalled(String pkg) {
 		return installedEngines(false).contains(pkg) || updatingPackages.contains(pkg);
 	}
-	// Changes when the voices of an engine may have changed: when a package was installed, removed or updated, or when a
-	// window of the app gained focus again, as voices are installed and removed in the engine's own settings.
+	// Changes when the voices of an engine may have changed: when a package was installed, removed or updated, when a
+	// window of the app gained focus again, as voices are installed and removed in the engine's own settings, or when the
+	// engine's connection changed (see connectionChanges).
 	public int getVoicesGeneration() { return packageGeneration + focusGeneration + connectionChanges; }
 	// Raised when the voices are worth listing again for this engine alone: when recoverConnection() made a new connection,
 	// and when an engine answers again after a listing found its connection down, as one does while its app is updated.
@@ -265,7 +266,7 @@ public class TTS {
 	private boolean ratePinned = false, pitchPinned = false;
 	private Voice defaultVoice; // The voice the user's settings select, as TextToSpeech took it while connecting and takeDefaultVoice() and recoverConnection() since; resetVoice() falls back to it while it is installed, when the settings' voice can't be taken as it is now.
 	private volatile Voice chosenVoice; // The voice a script set, if any, which a replacement TextToSpeech is given too.
-	private Locale defaultLanguage; // The language of the user's settings, as TextToSpeech took it while connecting and takeDefaultVoice() since.
+	private Locale defaultLanguage; // The language of the user's settings, as TextToSpeech took it while connecting and takeDefaultVoice() and recoverConnection() since.
 	// While no voice was chosen, the voice follows the user's settings as they are now: the language set for the engine, or
 	// the phone's, and the voice the engine itself names as its default for it. TextToSpeech looks both up only as it
 	// connects and then names that voice in every request, so a change made while the app runs went unheard, and unreported,
