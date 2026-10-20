@@ -134,7 +134,7 @@ protected:
 	void  Resize(int delta, asUINT at);
 	void  CreateBuffer(SArrayBuffer **buf, asUINT numElements);
 	void  DeleteBuffer(SArrayBuffer *buf);
-	void  CopyBuffer(SArrayBuffer *dst, SArrayBuffer *src);
+	void  CopyElements(const CScriptArray &other); // ALTERED: was CopyBuffer, see scriptarray.cpp
 	void  Construct(SArrayBuffer *buf, asUINT start, asUINT end);
 	void  Destruct(SArrayBuffer *buf, asUINT start, asUINT end);
 	bool  Equals(const void *a, const void *b, asIScriptContext *ctx, SArrayCache *cache) const;

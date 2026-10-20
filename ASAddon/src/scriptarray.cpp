@@ -47,6 +47,26 @@ struct SArrayHold
 	~SArrayHold() { arr->Release(); }
 };
 
+// ALTERED: holds the object of an element (or of a value being stored in one) while script code runs for it: an opAssign or
+// opHndlAssign, or the constructor or destructor of another element, can take it out of its array, which freed it in the
+// middle of its own assignment. Only an object whose type counts references is held: a scoped type (asOBJ_SCOPED) has a
+// release behaviour that destroys it, and a value type is not reference counted.
+struct SElementHold
+{
+	asIScriptEngine *engine;
+	asITypeInfo *type;
+	void *obj;
+	SElementHold(asIScriptEngine *engine, asITypeInfo *type, void *obj) : engine(engine), type(type), obj(0)
+	{
+		if( obj && (type->GetFlags() & asOBJ_REF) && !(type->GetFlags() & (asOBJ_NOCOUNT | asOBJ_SCOPED)) )
+		{
+			this->obj = obj;
+			engine->AddRefScriptObject(obj, type);
+		}
+	}
+	~SElementHold() { if( obj ) engine->ReleaseScriptObject(obj, type); }
+};
+
 // This macro is used to avoid warnings about unused variables.
 // Usually where the variables are only used in debug mode.
 #define UNUSED_VAR(x) (void)(x)
@@ -463,11 +483,14 @@ CScriptArray &CScriptArray::operator=(const CScriptArray &other)
 	if( &other != this &&
 		other.GetArrayObjectType() == GetArrayObjectType() )
 	{
+		// ALTERED: both arrays are held, see CopyElements
+		SArrayHold holdThis(this), holdOther(&other);
+
 		// Make sure the arrays are of the same size
 		Resize(other.buffer->numElements);
 
 		// Copy the value of each element
-		CopyBuffer(buffer, other.buffer);
+		CopyElements(other);
 	}
 
 	return *this;
@@ -669,6 +692,9 @@ void CScriptArray::SetValue(asINT64 index, void *value)
 	if ((subTypeId & ~asTYPEID_MASK_SEQNBR) && !(subTypeId & asTYPEID_OBJHANDLE))
 	{
 		asITypeInfo *subType = objType->GetSubType();
+		// ALTERED: the element and the value are held while the assignment runs, see SElementHold. A caller that goes on using
+		// the array after this holds it.
+		SElementHold holdElement(objType->GetEngine(), subType, ptr), holdValue(objType->GetEngine(), subType, value);
 		if (subType->GetFlags() & asOBJ_ASHANDLE)
 		{
 			// For objects that should work as handles we must use the opHndlAssign method
@@ -809,17 +835,44 @@ void CScriptArray::RemoveRange(asUINT start, asUINT count)
 	if (count > buffer->numElements - start)
 		count = buffer->numElements - start;
 
-	// Destroy the elements that are being removed
-	Destruct(buffer, start, start + count);
+	// ALTERED: the removed elements are taken out of the array first and released after, with the array held. Their
+	// destructors are script code, which can let go of the array or change it: they ran while the elements were still in
+	// it, and the removal then went on releasing and compacting a buffer they had freed or moved.
+	SArrayHold hold(this);
+	void *few[8];
+	std::vector<void*> many;
+	void **removed = 0;
+	if( subTypeId & asTYPEID_MASK_OBJECT )
+	{
+		if( count > 8 )
+			many.resize(count);
+		removed = count > 8 ? &many[0] : few;
+		memcpy(removed, buffer->data + start*elementSize, count*sizeof(void*));
+	}
 
 	// Compact the elements
 	// As objects in arrays of objects are not stored inline, it is safe to use memmove here
 	// since we're just copying the pointers to objects and not the actual objects.
 	memmove(buffer->data + start*elementSize, buffer->data + (start + count)*elementSize, (buffer->numElements - start - count)*elementSize);
 	buffer->numElements -= count;
+
+	// Destroy the elements that were removed
+	if( removed )
+	{
+		asIScriptEngine *engine = objType->GetEngine();
+		asITypeInfo *subType = objType->GetSubType();
+		for( asUINT n = 0; n < count; n++ )
+			if( removed[n] )
+				engine->ReleaseScriptObject(removed[n], subType);
+	}
 }
 
 // Internal
+// ALTERED: the constructors and destructors of the elements are script code, which can let go of the array or change it. The
+// array is held for the call, the new elements are made before the array is changed and then put in where it then is, and
+// removed elements are taken out before they are released (see RemoveRange). Constructors ran into a buffer not yet
+// installed, so the resize then installed it over whatever they had done (an element they added was lost, one they removed
+// was released again) or into a freed array, and destructors ran on elements still in the array.
 void CScriptArray::Resize(int delta, asUINT at)
 {
 	if( delta < 0 )
@@ -828,23 +881,47 @@ void CScriptArray::Resize(int delta, asUINT at)
 			delta = -(int)buffer->numElements;
 		if( at > buffer->numElements + delta )
 			at = buffer->numElements + delta;
-	}
-	else if( delta > 0 )
-	{
-		// Make sure the array size isn't too large for us to handle
-		if( delta > 0 && !CheckMaxSize(buffer->numElements + delta) )
-			return;
-
-		if( at > buffer->numElements )
-			at = buffer->numElements;
+		if( delta < 0 )
+			RemoveRange(at, (asUINT)-delta);
+		return;
 	}
 
 	if( delta == 0 ) return;
 
-	if( buffer->maxElements < buffer->numElements + delta )
+	// Make sure the array size isn't too large for us to handle
+	if( !CheckMaxSize(buffer->numElements + delta) )
+		return;
+
+	SArrayHold hold(this);
+	asIScriptEngine *engine = objType->GetEngine();
+	asITypeInfo *subType = objType->GetSubType();
+
+	// Create an object using the default constructor/factory for each new element of an array of objects. If one fails the
+	// rest are left null, so the destructor won't attempt to destroy invalid objects later. There is no need to set an
+	// exception on the context, as CreateScriptObject has already done that
+	void *few[8];
+	std::vector<void*> many;
+	void **made = 0;
+	if( (subTypeId & asTYPEID_MASK_OBJECT) && !(subTypeId & asTYPEID_OBJHANDLE) )
+	{
+		if( delta > 8 )
+			many.resize(delta);
+		made = delta > 8 ? &many[0] : few;
+		memset(made, 0, delta*sizeof(void*));
+		for( int n = 0; n < delta; n++ )
+			if( (made[n] = engine->CreateScriptObject(subType)) == 0 )
+				break;
+	}
+
+	// The constructors may have changed the array
+	if( at > buffer->numElements )
+		at = buffer->numElements;
+	bool fits = CheckMaxSize(buffer->numElements + delta);
+	SArrayBuffer *newBuffer = 0;
+	if( fits && buffer->maxElements < buffer->numElements + delta )
 	{
 		// Allocate memory for the buffer
-		SArrayBuffer *newBuffer = reinterpret_cast<SArrayBuffer*>(userAlloc(sizeof(SArrayBuffer)-1 + elementSize*(buffer->numElements + delta)));
+		newBuffer = reinterpret_cast<SArrayBuffer*>(userAlloc(sizeof(SArrayBuffer)-1 + elementSize*(buffer->numElements + delta)));
 		if( newBuffer )
 		{
 			newBuffer->numElements = buffer->numElements + delta;
@@ -856,18 +933,32 @@ void CScriptArray::Resize(int delta, asUINT at)
 			asIScriptContext *ctx = asGetActiveContext();
 			if( ctx )
 				ctx->SetException("Out of memory");
-			return;
+			fits = false;
 		}
+	}
+	if( !fits )
+	{
+		for( int n = 0; made && n < delta; n++ )
+			if( made[n] )
+				engine->ReleaseScriptObject(made[n], subType);
+		return;
+	}
 
-		// As objects in arrays of objects are not stored inline, it is safe to use memcpy here
-		// since we're just copying the pointers to objects and not the actual objects.
+	// As objects in arrays of objects are not stored inline, it is safe to use memcpy and memmove here
+	// since we're just copying the pointers to objects and not the actual objects.
+	SArrayBuffer *dst = newBuffer ? newBuffer : buffer;
+	if( newBuffer )
 		memcpy(newBuffer->data, buffer->data, at*elementSize);
-		if( at < buffer->numElements )
-			memcpy(newBuffer->data + (at+delta)*elementSize, buffer->data + at*elementSize, (buffer->numElements-at)*elementSize);
+	memmove(dst->data + (at+delta)*elementSize, buffer->data + at*elementSize, (buffer->numElements - at)*elementSize);
 
-		// Initialize the new elements with default values
-		Construct(newBuffer, at, at+delta);
+	// Initialize the new elements with the objects made above, or set them to zero whether they are handles or primitives
+	if( made )
+		memcpy(dst->data + at*elementSize, made, delta*sizeof(void*));
+	else
+		memset(dst->data + at*elementSize, 0, delta*elementSize);
 
+	if( newBuffer )
+	{
 		// Install the new buffer before releasing the old one, see BufferSwapLock. Only an array the garbage collector
 		// tracks can be walked by it.
 		SArrayBuffer *oldBuffer = buffer;
@@ -878,22 +969,8 @@ void CScriptArray::Resize(int delta, asUINT at)
 		}
 		userFree(oldBuffer);
 	}
-	else if( delta < 0 )
-	{
-		Destruct(buffer, at, at-delta);
-		// As objects in arrays of objects are not stored inline, it is safe to use memmove here
-		// since we're just copying the pointers to objects and not the actual objects.
-		memmove(buffer->data + at*elementSize, buffer->data + (at-delta)*elementSize, (buffer->numElements - (at-delta))*elementSize);
-		buffer->numElements += delta;
-	}
 	else
-	{
-		// As objects in arrays of objects are not stored inline, it is safe to use memmove here
-		// since we're just copying the pointers to objects and not the actual objects.
-		memmove(buffer->data + (at+delta)*elementSize, buffer->data + at*elementSize, (buffer->numElements - at)*elementSize);
-		Construct(buffer, at, at+delta);
 		buffer->numElements += delta;
-	}
 }
 
 // internal
@@ -952,6 +1029,17 @@ void CScriptArray::InsertAt(asUINT index, void *value)
 		return;
 	}
 
+	// ALTERED: the array and the value are held while the new element is made and assigned (script code, see Resize and
+	// SetValue). A handle is read before, as its variable can be changed.
+	SArrayHold hold(this);
+	void *handle = 0;
+	if( subTypeId & asTYPEID_OBJHANDLE )
+	{
+		handle = *(void**)value;
+		value = &handle;
+	}
+	SElementHold holdValue(objType->GetEngine(), objType->GetSubType(), (subTypeId & asTYPEID_OBJHANDLE) ? handle : ((subTypeId & asTYPEID_MASK_OBJECT) ? value : 0));
+
 	// Make room for the new element
 	Resize(1, index);
 
@@ -979,6 +1067,9 @@ void CScriptArray::InsertAt(asUINT index, const CScriptArray &arr)
 		return;
 	}
 
+	// ALTERED: both arrays are held while the new elements are made and assigned (script code, see Resize and SetValue). The
+	// elements are read from where they then are, as the assignments can change either array.
+	SArrayHold holdThis(this), holdOther(&arr);
 	asUINT elements = arr.GetSize();
 	Resize(elements, index);
 	if (&arr != this)
@@ -1922,84 +2013,74 @@ void CScriptArray::Sort(asIScriptFunction *func, asUINT startAt, asUINT count)
 }
 
 // internal
-void CScriptArray::CopyBuffer(SArrayBuffer *dst, SArrayBuffer *src)
+// ALTERED: copies the elements of another array of the same type into this one, from where each then is in both arrays, up
+// to the end of the shorter one. The copies are script code (opAssign or opHndlAssign, or the destructor of a replaced
+// handle), which can let go of either array or change it: CopyBuffer went on through the two buffers as they were at the
+// start, which the script code could have freed or moved, and the elements of the copy weren't held (see SElementHold). The
+// caller holds both arrays.
+void CScriptArray::CopyElements(const CScriptArray &other)
 {
 	asIScriptEngine *engine = objType->GetEngine();
-	if( subTypeId & asTYPEID_OBJHANDLE )
+	asITypeInfo *subType = objType->GetSubType();
+	if( !(subTypeId & asTYPEID_MASK_OBJECT) )
 	{
-		// Copy the references and increase the reference counters
-		if( dst->numElements > 0 && src->numElements > 0 )
+		// Primitives are copied byte for byte
+		asUINT count = buffer->numElements > other.buffer->numElements ? other.buffer->numElements : buffer->numElements;
+		if( count > 0 )
+			memcpy(buffer->data, other.buffer->data, count*elementSize);
+		return;
+	}
+
+	asIScriptFunction *hndlAssign = 0;
+	asIScriptContext *ctx = 0;
+	if( !(subTypeId & asTYPEID_OBJHANDLE) && (subType->GetFlags() & asOBJ_ASHANDLE) )
+	{
+		// For objects that should work as handles we must use the opHndlAssign method
+		// TODO: Must support alternative syntaxes as well
+		// TODO: Move the lookup of the opHndlAssign method to Precache() so it is only done once
+		string decl = string(subType->GetName()) + "& opHndlAssign(const " + string(subType->GetName()) + "&in)";
+		hndlAssign = subType->GetMethodByDecl(decl.c_str());
+		// TODO: Reuse active context if existing
+		if( hndlAssign )
+			ctx = engine->RequestContext();
+	}
+
+	for( asUINT n = 0; n < buffer->numElements && n < other.buffer->numElements; n++ )
+	{
+		void **d = (void**)(buffer->data + n * sizeof(void*));
+		void **s = (void**)(other.buffer->data + n * sizeof(void*));
+		if( subTypeId & asTYPEID_OBJHANDLE )
 		{
-			int count = dst->numElements > src->numElements ? src->numElements : dst->numElements;
+			// Copy the reference and increase the reference counter
+			void *tmp = *d;
+			*d = *s;
+			if( *d )
+				engine->AddRefScriptObject(*d, subType);
+			// Release the old ref after incrementing the new to avoid problem incase it is the same ref
+			if( tmp )
+				engine->ReleaseScriptObject(tmp, subType);
+			continue;
+		}
 
-			void **max = (void**)(dst->data + count * sizeof(void*));
-			void **d   = (void**)dst->data;
-			void **s   = (void**)src->data;
-
-			for( ; d < max; d++, s++ )
-			{
-				void *tmp = *d;
-				*d = *s;
-				if( *d )
-					engine->AddRefScriptObject(*d, objType->GetSubType());
-				// Release the old ref after incrementing the new to avoid problem incase it is the same ref
-				if( tmp )
-					engine->ReleaseScriptObject(tmp, objType->GetSubType());
-			}
+		// Call the assignment operator on the object
+		SElementHold holdDst(engine, subType, *d), holdSrc(engine, subType, *s);
+		if( ctx )
+		{
+			ctx->Prepare(hndlAssign);
+			ctx->SetObject(*d);
+			ctx->SetArgAddress(0, *s);
+			// TODO: Handle errors
+			ctx->Execute();
+		}
+		else
+		{
+			// opHndlAssign doesn't exist, so try ordinary value assign instead
+			engine->AssignScriptObject(*d, *s, subType);
 		}
 	}
-	else
-	{
-		if( dst->numElements > 0 && src->numElements > 0 )
-		{
-			int count = dst->numElements > src->numElements ? src->numElements : dst->numElements;
-			if( subTypeId & asTYPEID_MASK_OBJECT )
-			{
-				// Call the assignment operator on all of the objects
-				void **max = (void**)(dst->data + count * sizeof(void*));
-				void **d   = (void**)dst->data;
-				void **s   = (void**)src->data;
 
-				asITypeInfo *subType = objType->GetSubType();
-				if (subType->GetFlags() & asOBJ_ASHANDLE)
-				{
-					// For objects that should work as handles we must use the opHndlAssign method
-					// TODO: Must support alternative syntaxes as well
-					// TODO: Move the lookup of the opHndlAssign method to Precache() so it is only done once
-					string decl = string(subType->GetName()) + "& opHndlAssign(const " + string(subType->GetName()) + "&in)";
-					asIScriptFunction *func = subType->GetMethodByDecl(decl.c_str());
-					if (func)
-					{
-						// TODO: Reuse active context if existing
-						asIScriptContext* ctx = engine->RequestContext();
-						for (; d < max; d++, s++)
-						{
-							ctx->Prepare(func);
-							ctx->SetObject(*d);
-							ctx->SetArgAddress(0, *s);
-							// TODO: Handle errors
-							ctx->Execute();
-						}
-						engine->ReturnContext(ctx);
-					}
-					else
-					{
-						// opHndlAssign doesn't exist, so try ordinary value assign instead
-						for (; d < max; d++, s++)
-							engine->AssignScriptObject(*d, *s, subType);
-					}
-				}
-				else
-					for( ; d < max; d++, s++ )
-						engine->AssignScriptObject(*d, *s, subType);
-			}
-			else
-			{
-				// Primitives are copied byte for byte
-				memcpy(dst->data, src->data, count*elementSize);
-			}
-		}
-	}
+	if( ctx )
+		engine->ReturnContext(ctx);
 }
 
 // internal
