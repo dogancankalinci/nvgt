@@ -82,11 +82,26 @@ static bool frequency_in_range(double frequency, audio_engine* engine) { return 
 static bool q_in_range(double q) { return node_value_in_range(q > 0); }
 static bool gain_in_range(double gain_db) { return node_value_in_range(gain_db >= -100 && gain_db <= 100); }
 static bool unit_in_range(double value) { return node_value_in_range(value >= 0 && value <= 1); }
-// MiniAudio divides a biquad filter's coefficients by a0 and keeps them as floats, and one that wasn't finite there made the filter's output NaN for good, as above: a q so near 0 that sin(w) / 2q overflowed did that. Peak and notch settings are refused unless MiniAudio's coefficients, worked out as it does, all come out finite.
+// MiniAudio divides a biquad filter's coefficients by a0 and keeps them as floats, and one that wasn't finite there made the filter's output NaN for good, as above: a q so near 0 that sin(w) / 2q overflowed did that. At a frequency so low that w is tiny, the poles lie so close to 1 that rounding a1 and a2 to floats could put one outside the unit circle: below about 1.35 Hz at 48 kHz, about half the frequencies made the output grow from the first sample until it was infinite, then NaN for good. Settings are refused unless MiniAudio's coefficients, worked out as it does, all come out finite, and the float filter's poles, the roots of z^2 + a1 z + a2, both lie inside the unit circle.
 static constexpr double filter_pi = 3.14159265358979323846264; // MiniAudio's MA_PI_D.
 static bool biquad_in_range(double b0, double b1, double b2, double a0, double a1, double a2) {
 	for (double coefficient : {b0, b1, b2, a1, a2}) {
 		if (!std::isfinite((float)(coefficient / a0))) return node_value_in_range(false);
+	}
+	double a1f = (float)(a1 / a0), a2f = (float)(a2 / a0);
+	return node_value_in_range(std::fabs(a2f) < 1 && std::fabs(a1f) < 1 + a2f);
+}
+// The second-order sections MiniAudio makes a low-, high- or band-pass filter of, a first-order one being stable at any frequency.
+enum class pass_filter { low, high, band };
+static bool sections_in_range(pass_filter kind, double frequency, int order, ma_uint32 sample_rate) {
+	if (order < 1 || order > MA_MAX_FILTER_ORDER) return true; // MiniAudio refuses it itself.
+	double w = 2 * filter_pi * frequency / sample_rate, s = std::sin(w), c = std::cos(w);
+	for (int i = 0; i < order / 2; i++) {
+		double q = 0.707107;
+		if (kind != pass_filter::band) q = 1 / (2 * std::cos(order % 2? (1 + i * 1) * (filter_pi / (order * 1)) : (1 + i * 2) * (filter_pi / (order * 2)))); // Butterworth, as MiniAudio has it.
+		double a = s / (2 * q);
+		bool in_range = kind == pass_filter::low? biquad_in_range((1 - c) / 2, 1 - c, (1 - c) / 2, 1 + a, -2 * c, 1 - a) : kind == pass_filter::high? biquad_in_range((1 + c) / 2, -(1 + c), (1 + c) / 2, 1 + a, -2 * c, 1 - a) : biquad_in_range(q * a, 0, -q * a, 1 + a, -2 * c, 1 - a);
+		if (!in_range) return false;
 	}
 	return true;
 }
@@ -98,10 +113,13 @@ static bool peak_in_range(double gain_db, double q, double frequency, ma_uint32 
 	double w = 2 * filter_pi * frequency / sample_rate, c = std::cos(w), a = std::sin(w) / (2 * q), A = std::pow(10.0, gain_db / 40);
 	return biquad_in_range(1 + (a * A), -2 * c, 1 - (a * A), 1 + (a / A), -2 * c, 1 - (a / A));
 }
-// A shelf filter's q is its slope S, which MiniAudio puts under a square root, sqrt((A + 1/A) * (1/S - 1) + 2) with A = 10^(gain/40): a slope above 1 makes that negative once the gain is far enough from 0, and the filter's output NaN for good, as above. The pair is refused while the root's argument isn't clearly above 0, so rounding can't take MiniAudio's below it.
-static bool shelf_in_range(double gain_db, double slope) {
+// A shelf filter's q is its slope S, which MiniAudio puts under a square root, sqrt((A + 1/A) * (1/S - 1) + 2) with A = 10^(gain/40): a slope above 1 makes that negative once the gain is far enough from 0, and the filter's output NaN for good, as above. The pair is refused while the root's argument isn't clearly above 0, so rounding can't take MiniAudio's below it, and the coefficients are then checked as the other filters' are.
+static bool shelf_in_range(bool high, double gain_db, double slope, double frequency, ma_uint32 sample_rate) {
 	double A = std::pow(10.0, gain_db / 40), spread = (A + 1 / A) * (1 / slope - 1);
-	return node_value_in_range(spread + 2 > 1e-12 * (std::fabs(spread) + 2));
+	if (!node_value_in_range(spread + 2 > 1e-12 * (std::fabs(spread) + 2))) return false;
+	double w = 2 * filter_pi * frequency / sample_rate, s = std::sin(w), c = std::cos(w), a = s / 2 * std::sqrt(spread + 2), sqrtA = 2 * std::sqrt(A) * a;
+	if (high) return biquad_in_range(A * ((A + 1) + (A - 1) * c + sqrtA), -2 * A * ((A - 1) + (A + 1) * c), A * ((A + 1) + (A - 1) * c - sqrtA), (A + 1) - (A - 1) * c + sqrtA, 2 * ((A - 1) - (A + 1) * c), (A + 1) - (A - 1) * c - sqrtA);
+	return biquad_in_range(A * ((A + 1) - (A - 1) * c + sqrtA), 2 * A * ((A - 1) - (A + 1) * c), A * ((A + 1) - (A - 1) * c - sqrtA), (A + 1) + (A - 1) * c + sqrtA, -2 * ((A - 1) + (A + 1) * c), (A + 1) + (A - 1) * c - sqrtA);
 }
 
 class passthrough_node_impl : public effect_node_impl, public virtual passthrough_node {
@@ -357,7 +375,7 @@ class low_pass_filter_node_impl : public audio_node_impl, public virtual low_pas
 	ma_lpf_node_config cfg;
 	public:
 	low_pass_filter_node_impl(double cutoff_frequency, int order, audio_engine* e) : fn(make_unique<ma_lpf_node>()), audio_node_impl(nullptr, e) {
-		if (!finite_node_values({cutoff_frequency}) || !frequency_in_range(cutoff_frequency, get_engine())) throw std::invalid_argument("filter setting out of range");
+		if (!finite_node_values({cutoff_frequency}) || !frequency_in_range(cutoff_frequency, get_engine()) || !sections_in_range(pass_filter::low, cutoff_frequency, order, get_engine()->get_sample_rate())) throw std::invalid_argument("filter setting out of range");
 		cfg = ma_lpf_node_config_init(get_engine()->get_channels(), get_engine()->get_sample_rate(), cutoff_frequency, order);
 		if ((g_soundsystem_last_error = ma_lpf_node_init(ma_engine_get_node_graph(get_engine()->get_ma_engine()), &cfg, nullptr, &*fn)) != MA_SUCCESS) throw std::runtime_error("ma_low_pass_filter_node was not initialized");
 		node = (ma_node_base*)&*fn;
@@ -370,7 +388,7 @@ class low_pass_filter_node_impl : public audio_node_impl, public virtual low_pas
 	}
 	void set_cutoff_frequency(double freq) override {
 		if (!finite_node_values({freq})) return;
-		if (!frequency_in_range(freq, get_engine())) return;
+		if (!frequency_in_range(freq, get_engine()) || !sections_in_range(pass_filter::low, freq, cfg.lpf.order, cfg.lpf.sampleRate)) return;
 		auto previous = cfg.lpf.cutoffFrequency;
 		cfg.lpf.cutoffFrequency = freq;
 		if ((g_soundsystem_last_error = ma_lpf_node_reinit(&cfg.lpf, &*fn)) != MA_SUCCESS) cfg.lpf.cutoffFrequency = previous; // MiniAudio refuses some changes, as of a filter's order, which is fixed when it is made; the filter then keeps what it had, and so does this.
@@ -390,7 +408,7 @@ class high_pass_filter_node_impl : public audio_node_impl, public virtual high_p
 	ma_hpf_node_config cfg;
 	public:
 	high_pass_filter_node_impl(double cutoff_frequency, int order, audio_engine* e) : fn(make_unique<ma_hpf_node>()), audio_node_impl(nullptr, e) {
-		if (!finite_node_values({cutoff_frequency}) || !frequency_in_range(cutoff_frequency, get_engine())) throw std::invalid_argument("filter setting out of range");
+		if (!finite_node_values({cutoff_frequency}) || !frequency_in_range(cutoff_frequency, get_engine()) || !sections_in_range(pass_filter::high, cutoff_frequency, order, get_engine()->get_sample_rate())) throw std::invalid_argument("filter setting out of range");
 		cfg = ma_hpf_node_config_init(get_engine()->get_channels(), get_engine()->get_sample_rate(), cutoff_frequency, order);
 		if ((g_soundsystem_last_error = ma_hpf_node_init(ma_engine_get_node_graph(get_engine()->get_ma_engine()), &cfg, nullptr, &*fn)) != MA_SUCCESS) throw std::runtime_error("ma_high_pass_filter_node was not initialized");
 		node = (ma_node_base*)&*fn;
@@ -403,7 +421,7 @@ class high_pass_filter_node_impl : public audio_node_impl, public virtual high_p
 	}
 	void set_cutoff_frequency(double freq) override {
 		if (!finite_node_values({freq})) return;
-		if (!frequency_in_range(freq, get_engine())) return;
+		if (!frequency_in_range(freq, get_engine()) || !sections_in_range(pass_filter::high, freq, cfg.hpf.order, cfg.hpf.sampleRate)) return;
 		auto previous = cfg.hpf.cutoffFrequency;
 		cfg.hpf.cutoffFrequency = freq;
 		if ((g_soundsystem_last_error = ma_hpf_node_reinit(&cfg.hpf, &*fn)) != MA_SUCCESS) cfg.hpf.cutoffFrequency = previous;
@@ -423,7 +441,7 @@ class band_pass_filter_node_impl : public audio_node_impl, public virtual band_p
 	ma_bpf_node_config cfg;
 	public:
 	band_pass_filter_node_impl(double cutoff_frequency, int order, audio_engine* e) : fn(make_unique<ma_bpf_node>()), audio_node_impl(nullptr, e) {
-		if (!finite_node_values({cutoff_frequency}) || !frequency_in_range(cutoff_frequency, get_engine())) throw std::invalid_argument("filter setting out of range");
+		if (!finite_node_values({cutoff_frequency}) || !frequency_in_range(cutoff_frequency, get_engine()) || !sections_in_range(pass_filter::band, cutoff_frequency, order, get_engine()->get_sample_rate())) throw std::invalid_argument("filter setting out of range");
 		cfg = ma_bpf_node_config_init(get_engine()->get_channels(), get_engine()->get_sample_rate(), cutoff_frequency, order);
 		if ((g_soundsystem_last_error = ma_bpf_node_init(ma_engine_get_node_graph(get_engine()->get_ma_engine()), &cfg, nullptr, &*fn)) != MA_SUCCESS) throw std::runtime_error("ma_band_pass_filter_node was not initialized");
 		node = (ma_node_base*)&*fn;
@@ -436,7 +454,7 @@ class band_pass_filter_node_impl : public audio_node_impl, public virtual band_p
 	}
 	void set_cutoff_frequency(double freq) override {
 		if (!finite_node_values({freq})) return;
-		if (!frequency_in_range(freq, get_engine())) return;
+		if (!frequency_in_range(freq, get_engine()) || !sections_in_range(pass_filter::band, freq, cfg.bpf.order, cfg.bpf.sampleRate)) return;
 		auto previous = cfg.bpf.cutoffFrequency;
 		cfg.bpf.cutoffFrequency = freq;
 		if ((g_soundsystem_last_error = ma_bpf_node_reinit(&cfg.bpf, &*fn)) != MA_SUCCESS) cfg.bpf.cutoffFrequency = previous;
@@ -534,7 +552,7 @@ class low_shelf_filter_node_impl : public audio_node_impl, public virtual low_sh
 	ma_loshelf_node_config cfg;
 	public:
 	low_shelf_filter_node_impl(double gain_db, double q, double frequency, audio_engine* e) : fn(make_unique<ma_loshelf_node>()), audio_node_impl(nullptr, e) {
-		if (!finite_node_values({gain_db, q, frequency}) || !gain_in_range(gain_db) || !q_in_range(q) || !shelf_in_range(gain_db, q) || !frequency_in_range(frequency, get_engine())) throw std::invalid_argument("filter setting out of range");
+		if (!finite_node_values({gain_db, q, frequency}) || !gain_in_range(gain_db) || !q_in_range(q) || !frequency_in_range(frequency, get_engine()) || !shelf_in_range(false, gain_db, q, frequency, get_engine()->get_sample_rate())) throw std::invalid_argument("filter setting out of range");
 		cfg = ma_loshelf_node_config_init(get_engine()->get_channels(), get_engine()->get_sample_rate(), gain_db, q, frequency);
 		if ((g_soundsystem_last_error = ma_loshelf_node_init(ma_engine_get_node_graph(get_engine()->get_ma_engine()), &cfg, nullptr, &*fn)) != MA_SUCCESS) throw std::runtime_error("ma_low_shelf_filter_node was not initialized");
 		node = (ma_node_base*)&*fn;
@@ -547,7 +565,7 @@ class low_shelf_filter_node_impl : public audio_node_impl, public virtual low_sh
 	}
 	void set_gain(double gain) override {
 		if (!finite_node_values({gain})) return;
-		if (!gain_in_range(gain) || !shelf_in_range(gain, cfg.loshelf.shelfSlope)) return;
+		if (!gain_in_range(gain) || !shelf_in_range(false, gain, cfg.loshelf.shelfSlope, cfg.loshelf.frequency, cfg.loshelf.sampleRate)) return;
 		auto previous = cfg.loshelf.gainDB;
 		cfg.loshelf.gainDB = gain;
 		if ((g_soundsystem_last_error = ma_loshelf_node_reinit(&cfg.loshelf, &*fn)) != MA_SUCCESS) cfg.loshelf.gainDB = previous;
@@ -555,7 +573,7 @@ class low_shelf_filter_node_impl : public audio_node_impl, public virtual low_sh
 	double get_gain() const override { return cfg.loshelf.gainDB; }
 	void set_q(double q) override {
 		if (!finite_node_values({q})) return;
-		if (!q_in_range(q) || !shelf_in_range(cfg.loshelf.gainDB, q)) return;
+		if (!q_in_range(q) || !shelf_in_range(false, cfg.loshelf.gainDB, q, cfg.loshelf.frequency, cfg.loshelf.sampleRate)) return;
 		auto previous = cfg.loshelf.shelfSlope;
 		cfg.loshelf.shelfSlope = q;
 		if ((g_soundsystem_last_error = ma_loshelf_node_reinit(&cfg.loshelf, &*fn)) != MA_SUCCESS) cfg.loshelf.shelfSlope = previous;
@@ -563,7 +581,7 @@ class low_shelf_filter_node_impl : public audio_node_impl, public virtual low_sh
 	double get_q() const override { return cfg.loshelf.shelfSlope; }
 	void set_frequency(double freq) override {
 		if (!finite_node_values({freq})) return;
-		if (!frequency_in_range(freq, get_engine())) return;
+		if (!frequency_in_range(freq, get_engine()) || !shelf_in_range(false, cfg.loshelf.gainDB, cfg.loshelf.shelfSlope, freq, cfg.loshelf.sampleRate)) return;
 		auto previous = cfg.loshelf.frequency;
 		cfg.loshelf.frequency = freq;
 		if ((g_soundsystem_last_error = ma_loshelf_node_reinit(&cfg.loshelf, &*fn)) != MA_SUCCESS) cfg.loshelf.frequency = previous;
@@ -577,7 +595,7 @@ class high_shelf_filter_node_impl : public audio_node_impl, public virtual high_
 	ma_hishelf_node_config cfg;
 	public:
 	high_shelf_filter_node_impl(double gain_db, double q, double frequency, audio_engine* e) : fn(make_unique<ma_hishelf_node>()), audio_node_impl(nullptr, e) {
-		if (!finite_node_values({gain_db, q, frequency}) || !gain_in_range(gain_db) || !q_in_range(q) || !shelf_in_range(gain_db, q) || !frequency_in_range(frequency, get_engine())) throw std::invalid_argument("filter setting out of range");
+		if (!finite_node_values({gain_db, q, frequency}) || !gain_in_range(gain_db) || !q_in_range(q) || !frequency_in_range(frequency, get_engine()) || !shelf_in_range(true, gain_db, q, frequency, get_engine()->get_sample_rate())) throw std::invalid_argument("filter setting out of range");
 		cfg = ma_hishelf_node_config_init(get_engine()->get_channels(), get_engine()->get_sample_rate(), gain_db, q, frequency);
 		if ((g_soundsystem_last_error = ma_hishelf_node_init(ma_engine_get_node_graph(get_engine()->get_ma_engine()), &cfg, nullptr, &*fn)) != MA_SUCCESS) throw std::runtime_error("ma_high_shelf_filter_node was not initialized");
 		node = (ma_node_base*)&*fn;
@@ -590,7 +608,7 @@ class high_shelf_filter_node_impl : public audio_node_impl, public virtual high_
 	}
 	void set_gain(double gain) override {
 		if (!finite_node_values({gain})) return;
-		if (!gain_in_range(gain) || !shelf_in_range(gain, cfg.hishelf.shelfSlope)) return;
+		if (!gain_in_range(gain) || !shelf_in_range(true, gain, cfg.hishelf.shelfSlope, cfg.hishelf.frequency, cfg.hishelf.sampleRate)) return;
 		auto previous = cfg.hishelf.gainDB;
 		cfg.hishelf.gainDB = gain;
 		if ((g_soundsystem_last_error = ma_hishelf_node_reinit(&cfg.hishelf, &*fn)) != MA_SUCCESS) cfg.hishelf.gainDB = previous;
@@ -598,7 +616,7 @@ class high_shelf_filter_node_impl : public audio_node_impl, public virtual high_
 	double get_gain() const override { return cfg.hishelf.gainDB; }
 	void set_q(double q) override {
 		if (!finite_node_values({q})) return;
-		if (!q_in_range(q) || !shelf_in_range(cfg.hishelf.gainDB, q)) return;
+		if (!q_in_range(q) || !shelf_in_range(true, cfg.hishelf.gainDB, q, cfg.hishelf.frequency, cfg.hishelf.sampleRate)) return;
 		auto previous = cfg.hishelf.shelfSlope;
 		cfg.hishelf.shelfSlope = q;
 		if ((g_soundsystem_last_error = ma_hishelf_node_reinit(&cfg.hishelf, &*fn)) != MA_SUCCESS) cfg.hishelf.shelfSlope = previous;
@@ -606,7 +624,7 @@ class high_shelf_filter_node_impl : public audio_node_impl, public virtual high_
 	double get_q() const override { return cfg.hishelf.shelfSlope; }
 	void set_frequency(double freq) override {
 		if (!finite_node_values({freq})) return;
-		if (!frequency_in_range(freq, get_engine())) return;
+		if (!frequency_in_range(freq, get_engine()) || !shelf_in_range(true, cfg.hishelf.gainDB, cfg.hishelf.shelfSlope, freq, cfg.hishelf.sampleRate)) return;
 		auto previous = cfg.hishelf.frequency;
 		cfg.hishelf.frequency = freq;
 		if ((g_soundsystem_last_error = ma_hishelf_node_reinit(&cfg.hishelf, &*fn)) != MA_SUCCESS) cfg.hishelf.frequency = previous;
