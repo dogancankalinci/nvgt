@@ -182,6 +182,14 @@ public:
 					memcpy(&ref_values[i], gen->GetArgAddress(i + 2), engine->GetSizeOfPrimitiveType(arg_typeid));
 					success = ctx->SetArgAddress(i, &ref_values[i]);
 				}
+			} else if (!(arg_typeid & asTYPEID_MASK_OBJECT) && arg_typeid > asTYPEID_DOUBLE) {
+				// An enum value, passed by its size; it matched none of the types below and was refused.
+				asUINT size = engine->GetSizeOfPrimitiveType(arg_typeid);
+				void* value = gen->GetArgAddress(i + 2);
+				if (size == 1) success = ctx->SetArgByte(i, *(asBYTE*)value);
+				else if (size == 2) success = ctx->SetArgWord(i, *(asWORD*)value);
+				else if (size == 8) success = ctx->SetArgQWord(i, *(asQWORD*)value);
+				else success = ctx->SetArgDWord(i, *(asDWORD*)value);
 			}
 			else if (arg_typeid == asTYPEID_BOOL || arg_typeid == asTYPEID_INT8 || arg_typeid == asTYPEID_UINT8) success = ctx->SetArgByte(i, *(asBYTE*)gen->GetArgAddress(i + 2));
 			else if (arg_typeid == asTYPEID_INT16 || arg_typeid == asTYPEID_UINT16) success = ctx->SetArgWord(i, *(asWORD*)gen->GetArgAddress(i + 2));
