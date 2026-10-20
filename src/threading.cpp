@@ -278,6 +278,8 @@ public:
 		release_value_args();
 		progress.set();
 		release();
+		// This thread's AngelScript data (the list of active contexts and more) was never freed, a leak with every async call made on a thread of its own, which then ends. It is freed last, after release(), which can delete this object and run script destructors here.
+		asThreadCleanup();
 	}
 	void release_value_args() {
 		for (const auto& obj : value_args) g_ScriptEngine->ReleaseScriptObject(obj.first, obj.second);
