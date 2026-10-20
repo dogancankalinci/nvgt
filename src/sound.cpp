@@ -1688,9 +1688,11 @@ public:
 		if (pull_stream) pull_stream->release();
 	}
 	unsigned int get_default_open_flags() const override { return ENCODER_OVERWRITE; }
-	// Refused as an engine refuses them: past the highest sample rate MiniAudio names, encoding a block in the graph took longer than the block lasts, below the lowest the resampler reserved memory for the engine's rate over this one times its output, hundreds of megabytes at 1 Hz, and dr_wav keeps a channel count in 16 bits, cutting a higher one while the open succeeded.
-	static bool output_in_range(unsigned int sample_rate, unsigned int channels) {
-		if (sample_rate >= ma_standard_sample_rate_min && sample_rate <= ma_standard_sample_rate_max && channels <= MA_MAX_CHANNELS) return true;
+	// The most channels the encoder's format takes.
+	virtual unsigned int max_output_channels() const { return MA_MAX_CHANNELS; }
+	// Refused as an engine refuses them, before an open encoder is closed: past the highest sample rate MiniAudio names, encoding a block in the graph took longer than the block lasts, below the lowest the resampler reserved memory for the engine's rate over this one times its output, hundreds of megabytes at 1 Hz, and dr_wav keeps a channel count in 16 bits, cutting a higher one while the open succeeded. No channels, or more than the format takes, the encoders refused themselves only once the encoder open had been closed.
+	bool output_in_range(unsigned int sample_rate, unsigned int channels) const {
+		if (sample_rate >= ma_standard_sample_rate_min && sample_rate <= ma_standard_sample_rate_max && channels >= 1 && channels <= max_output_channels()) return true;
 		g_soundsystem_last_error = MA_INVALID_ARGS;
 		return false;
 	}
@@ -1915,6 +1917,7 @@ class audio_opus_encoder_impl : public audio_encoder_impl, public virtual audio_
 	}
 	static int close_callback(void* user_data) { return 0; }
 protected:
+	unsigned int max_output_channels() const override { return 2; } // Mapping family 0, which open_impl() asks libopusenc for, takes mono and stereo only.
 	bool open_impl(const string& filename, datastream* ds, unsigned int sample_rate, unsigned int channels, unsigned int flags) override {
 		int error;
 		comments = ope_comments_create();
