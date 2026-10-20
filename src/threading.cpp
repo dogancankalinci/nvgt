@@ -102,9 +102,10 @@ class async_result : public RefCountedObject, public Runnable {
 	std::vector<asQWORD> ref_values; // The values whose addresses reference parameters of primitive or handle types are given (8 bytes hold any primitive or a handle), sized once in call() so that the addresses stay valid until the function has run.
 	std::vector<std::pair<void**, asITypeInfo*>> ref_handles; // The handles held in ref_values, released (whatever the function left there) once the call is over.
 	std::string exception; // Set to an exception string if an exception is thrown from within the async function call.
+	bool returns_reference; // The function returns a reference (int& f()), whose value run() reads through it.
 public:
 	Event progress; // Public so that some functions in this object can be called directly from Angelscript such as wait and tryWait.
-	async_result(asITypeInfo* t) : value(nullptr), subtype(t), subtypeid(subtype->GetSubTypeId()), progress(Event::EVENT_MANUALRESET), task(nullptr), ctx(nullptr) {}
+	async_result(asITypeInfo* t) : value(nullptr), subtype(t), subtypeid(subtype->GetSubTypeId()), progress(Event::EVENT_MANUALRESET), task(nullptr), ctx(nullptr), returns_reference(false) {}
 	~async_result() {
 		if (task) angelscript_refcounted_release<Thread>(task);
 		release_value_args();
@@ -142,10 +143,12 @@ public:
 			aCtx->SetException("Cannot call a null function asynchronously");
 			return false;
 		}
-		if (func->GetReturnTypeId() != subtypeid) {
+		asDWORD return_flags = 0;
+		if (func->GetReturnTypeId(&return_flags) != subtypeid) {
 			aCtx->SetException(format("return type of %s is incompatible with async result type %s", std::string(func->GetDeclaration()), std::string(engine->GetTypeDeclaration(subtypeid))).c_str());
 			return false;
 		}
+		returns_reference = (return_flags & asTM_INOUTREF) != 0;
 		ctx = engine->RequestContext();
 		if (!ctx || ctx->Prepare(func) < 0) {
 			aCtx->SetException("Async can't prepare calling context");
@@ -321,26 +324,17 @@ public:
 		else if (result == asEXECUTION_EXCEPTION) exception = ctx->GetExceptionString();
 		else if (result == asEXECUTION_FINISHED && subtypeid != asTYPEID_VOID) {
 			// Looking at and being heavily enspired from the scriptgrid addon as I write this.
-			if (subtypeid & asTYPEID_MASK_OBJECT) value = malloc(sizeof(asPWORD));
-			else value = malloc(ctx->GetEngine()->GetSizeOfPrimitiveType(subtypeid));
-			if ((subtypeid & ~asTYPEID_MASK_SEQNBR) && !(subtypeid & asTYPEID_OBJHANDLE)) *(void**)value = ctx->GetEngine()->CreateScriptObjectCopy(ctx->GetReturnObject(), subtype->GetSubType());
+			// The value is read from where the function left it: the returned object, the returned handle, or the returned number, bool or enum, of its type's size (enum E : int8 takes one byte). A function returning a reference (int& f(), string& f()) leaves the address of the value instead, which is followed here. GetReturnDWord() and the other number getters give 0 for a reference, and GetReturnObject() took a pointer out of the referenced object for the object itself: an int& gave 0, and a string& or a class& was copied from whatever the object's first bytes pointed to.
+			void* ret = ctx->GetAddressOfReturnValue();
+			if (ret && returns_reference) ret = *(void**)ret;
+			asUINT size = (subtypeid & asTYPEID_MASK_OBJECT) ? sizeof(asPWORD) : ctx->GetEngine()->GetSizeOfPrimitiveType(subtypeid);
+			value = malloc(size);
+			if ((subtypeid & ~asTYPEID_MASK_SEQNBR) && !(subtypeid & asTYPEID_OBJHANDLE)) *(void**)value = ret ? ctx->GetEngine()->CreateScriptObjectCopy(ret, subtype->GetSubType()) : nullptr;
 			else if (subtypeid & asTYPEID_OBJHANDLE) {
-				*(void**)value = ctx->GetReturnObject();
+				*(void**)value = ret ? *(void**)ret : nullptr;
 				ctx->GetEngine()->AddRefScriptObject(*(void**)value, subtype->GetSubType());
-			} else if (subtypeid == asTYPEID_BOOL || subtypeid == asTYPEID_INT8 || subtypeid == asTYPEID_UINT8) *(char*)value = ctx->GetReturnByte();
-			else if (subtypeid == asTYPEID_INT16 || subtypeid == asTYPEID_UINT16) *(short*)value = ctx->GetReturnWord();
-			else if (subtypeid > asTYPEID_DOUBLE) {
-				// An enum, of its underlying type's size (enum E : int8 takes one byte), which is the room made for it above: it was written as 4 bytes, past the end of that room for a 1 or 2-byte enum, and only half of an 8-byte one was.
-				asUINT size = ctx->GetEngine()->GetSizeOfPrimitiveType(subtypeid);
-				if (size == 1) *(asBYTE*)value = ctx->GetReturnByte();
-				else if (size == 2) *(asWORD*)value = ctx->GetReturnWord();
-				else if (size == 8) *(asQWORD*)value = ctx->GetReturnQWord();
-				else *(asDWORD*)value = ctx->GetReturnDWord();
-			}
-			else if (subtypeid == asTYPEID_INT32 || subtypeid == asTYPEID_UINT32) *(int*)value = ctx->GetReturnDWord();
-			else if (subtypeid == asTYPEID_FLOAT) *(float*)value = ctx->GetReturnFloat();
-			else if (subtypeid == asTYPEID_INT64 || subtypeid == asTYPEID_UINT64) *(asQWORD*)value = ctx->GetReturnQWord();
-			else if (subtypeid == asTYPEID_DOUBLE) *(double*)value = ctx->GetReturnDouble();
+			} else if (ret) memcpy(value, ret, size);
+			else memset(value, 0, size);
 		}
 		ctx->GetEngine()->ReturnContext(ctx);
 		release_value_args();
