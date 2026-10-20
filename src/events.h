@@ -27,6 +27,7 @@ class engine_event;
 class engine_event_listener {
 	std::shared_ptr<CScriptWeakRef> obj;
 	asIScriptFunction* func;
+	std::shared_ptr<asIScriptFunction> func_ref; // The reference to func the listener owns (a function, or a delegate it holds as it is), let go of with the last copy of the listener.
 	bool is_object;
 public:
 	engine_event_listener(asIScriptObject* obj, const engine_event* parent);

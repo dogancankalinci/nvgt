@@ -27,11 +27,21 @@ engine_event_listener::engine_event_listener(asIScriptObject* obj, const engine_
 	if (!func) throw std::runtime_error(Poco::format("engine_event_listener instanciation for %s failed, no void/bool %s method", std::string(ot? ot->GetName() : "unknown"), parent->callback_declaration()));
 }
 engine_event_listener::engine_event_listener(asIScriptFunction* func) : obj(nullptr), func(func), is_object(false) {
+	// The handle given (a parameter declared T@, not T@+) is a reference the listener owns. It was never let go of, so every insert(), find() and remove() of a function kept a reference to it for good.
+	asITypeInfo* weak_type = nullptr;
 	if (func->GetFuncType() == asFUNC_DELEGATE) {
-		this->obj = std::make_shared<CScriptWeakRef>(func->GetDelegateObject(), func->GetDelegateObjectType()->GetModule()->GetTypeInfoByDecl(Poco::format("weakref<%s::%s>", func->GetDelegateObjectType()->GetNamespace()? std::string(func->GetDelegateObjectType()->GetNamespace()) : "", std::string(func->GetDelegateObjectType()->GetName())).c_str()));
-		this->func = func->GetDelegateFunction();
-		func->Release();
+		asITypeInfo* ot = func->GetDelegateObjectType();
+		asIScriptModule* mod = ot? ot->GetModule() : nullptr;
+		if (mod) weak_type = mod->GetTypeInfoByDecl(Poco::format("weakref<%s::%s>", ot->GetNamespace()? std::string(ot->GetNamespace()) : "", std::string(ot->GetName())).c_str());
 	}
+	if (!weak_type) {
+		// A function, or a delegate of a registered class's method: such a class belongs to no module to find its weak reference type in (GetModule() is null, and calling through it crashed), so the listener holds the delegate itself, and with it the object, until it is removed.
+		func_ref = std::shared_ptr<asIScriptFunction>(func, [](asIScriptFunction* f) { f->Release(); });
+		return;
+	}
+	this->obj = std::make_shared<CScriptWeakRef>(func->GetDelegateObject(), weak_type);
+	this->func = func->GetDelegateFunction();
+	func->Release();
 }
 engine_event_listener::~engine_event_listener() {}
 bool engine_event_listener::good() const {
@@ -43,7 +53,8 @@ bool engine_event_listener::good() const {
 	return true;
 }
 bool engine_event_listener::operator==(const engine_event_listener& other) const {
-	if (func != other.func) return false;
+	// Two delegates of the same method of the same registered object (held as they are, see the constructor) are the same listener.
+	if (func != other.func) return func && other.func && func->GetFuncType() == asFUNC_DELEGATE && other.func->GetFuncType() == asFUNC_DELEGATE && func->GetDelegateFunction() == other.func->GetDelegateFunction() && func->GetDelegateObject() == other.func->GetDelegateObject();
 	if (!obj && !other.obj) return true;
 	if (!obj || !other.obj) return false;
 	return *obj == *other.obj;
