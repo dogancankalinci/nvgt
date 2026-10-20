@@ -2113,7 +2113,7 @@ static void hold_rate(ma_node* node) {
 	}
 	s->rate.store(rate, std::memory_order_relaxed);
 }
-// MiniAudio's processing of a sound plays first from a cache of the source's frames it read and converted to float but hadn't played yet, up to a block of them. A seek, made there from seekTarget, moved the source but kept the cache, so a sound not read in whole blocks, at a pitch other than 1 or a source rate other than the engine's, played up to that many frames from where it had been, at a pitch of 0.3 for 18 ms; the seek is taken over here, the cache emptied with it, and the target cleared only after it, as MiniAudio does, as the sound's position reads the target until then. A sound at its end is stopped in the block first, and a seek kept for when it plays again, as MiniAudio keeps it. On the thread reading the engine.
+// MiniAudio's processing of a sound plays first from a cache of the source's frames it read and converted to float but hadn't played yet, up to a block of them. A seek, made there from seekTarget, moved the source but kept the cache, so a sound not read in whole blocks, at a pitch other than 1 or a source rate other than the engine's, played up to that many frames from where it had been, at a pitch of 0.3 for 18 ms; the seek is taken over here, the cache emptied with it, and the target cleared only after it, as MiniAudio does, as the sound's position reads the target until then. A sound at its end is stopped in the block first, and a seek kept for when it plays again, as MiniAudio keeps it. And when a read that refills the cache returns MA_BUSY with frames, as a stream does while its next page is being decoded or a seek is being made, MiniAudio ends the call before playing them, so the rest of the block was silent while they waited a block; it is called again then, for the rest of the block, playing the cache first. On the thread reading the engine.
 static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32* frame_count_in, float** frames_out, ma_uint32* frame_count_out) {
 	hold_rate(node);
 	ma_sound* s = (ma_sound*)node;
@@ -2131,7 +2131,17 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 		s->processingCacheFramesRemaining = 0;
 		seek_target.compare_exchange_strong(target, ~(ma_uint64)0); // A seek made meanwhile stays for the next block.
 	}
-	g_ma_sound_process(node, frames_in, frame_count_in, frames_out, frame_count_out);
+	ma_uint32 wanted = *frame_count_out, done = 0, channels = ma_node_get_output_channels(node, 0);
+	for (;;) {
+		ma_uint32 cached = s->processingCacheFramesRemaining;
+		float* out = frames_out[0] + (size_t)done * channels;
+		ma_uint32 count = wanted - done;
+		g_ma_sound_process(node, frames_in, frame_count_in, &out, &count);
+		done += count;
+		// Again only while MiniAudio left frames it cached unplayed, not at the sound's end, and made progress.
+		if (done >= wanted || ma_sound_at_end(s) || !s->processingCacheFramesRemaining || !count && s->processingCacheFramesRemaining == cached) break;
+	}
+	*frame_count_out = done;
 }
 // MiniAudio converts a sound's source that isn't in float in steps, the last of which reads its end and marks the sound at it, ending the block, while that read's frames are still in its cache, so the sound stopped before playing them: sounds from 16-bit files, PCM, tones and speech lost up to a block at their end, a sound shorter than a block played nothing, and the lost part played first when the sound played again. A source in float is read whole, with no such step. So a sound reads a source in another format through this, which reads it and gives its frames in float, everything else passing through: MiniAudio's end then comes with nothing left unplayed. The sound's own source stays what scripts see, by sound.datasource and in the format sound.get_data_format() gives.
 struct float_view {
