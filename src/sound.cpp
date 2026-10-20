@@ -28,6 +28,7 @@
 #include <Poco/FileStream.h>
 #include <Poco/Format.h>
 #include <Poco/MemoryStream.h>
+#include <Poco/UnicodeConverter.h>
 #include <reactphysics3d/collision/shapes/AABB.h>
 #include <angelscript.h>
 #include <scriptarray.h>
@@ -1839,7 +1840,16 @@ protected:
 			output.base = start == std::streampos(-1)? 0 : std::streamoff(start);
 			g_soundsystem_last_error = ma_encoder_init(stream_write, stream_seek, &output, &cfg, &*encoder);
 		}
-		else if (!filename.empty()) g_soundsystem_last_error = ma_encoder_init_file(filename.c_str(), &cfg, &*encoder);
+		else if (!filename.empty()) {
+#ifdef _WIN32
+			// MiniAudio opens a narrow path in the ANSI code page, which named a file other than the UTF-8 one the script gave, and the overwrite check looked at.
+			std::wstring wide_filename;
+			Poco::UnicodeConverter::toUTF16(filename, wide_filename);
+			g_soundsystem_last_error = ma_encoder_init_file_w(wide_filename.c_str(), &cfg, &*encoder);
+#else
+			g_soundsystem_last_error = ma_encoder_init_file(filename.c_str(), &cfg, &*encoder);
+#endif
+		}
 		else throw runtime_error("no encoding output source provided");
 		if (g_soundsystem_last_error != MA_SUCCESS) {
 			encoder.reset();
