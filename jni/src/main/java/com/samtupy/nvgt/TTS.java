@@ -899,13 +899,16 @@ public class TTS {
 		if (!isActive()) return;
 		int generation = getVoicesGeneration();
 		List<Voice> listed = new ArrayList<>();
+		java.util.Map<String, Voice> engineVoices = null; // Every voice the engine has, by name; null when it couldn't say.
 		try {
 			Set<Voice> voices = tts.getVoices();
 			if (voices == null) listingMissed = true; // Listed again once the engine answers.
 			else listedAt = generation;
 			if (voices == null && availableVoices != null) return;
 			if (voices != null) {
+				engineVoices = new java.util.HashMap<>();
 				for (Voice voice : voices) {
+					engineVoices.put(voice.getName(), voice);
 					if (!voice.isNetworkConnectionRequired() && !voice.getFeatures().contains("notInstalled"))
 						listed.add(voice);
 				}
@@ -915,14 +918,17 @@ public class TTS {
 			if (availableVoices != null) return;
 		}
 		availableVoices = listed;
-		// The voice the user's settings selected, and one the script chose, are listed even when the filter above would drop them (a network voice, for instance), so that the current voice can always be reported and a chosen one isn't taken as removed.
+		// The voice the user's settings selected, and one the script chose, are listed even when the filter above would drop them (a network voice, for instance), so that the current voice can always be reported and a chosen one isn't taken as removed. A chosen one only while the engine still has it installed, though: one deleted in the engine's settings can't be spoken with, and counts as removed.
 		Voice settingsVoice = defaultVoice, chosen = chosenVoice;
 		if (settingsVoice != null) listVoice(settingsVoice);
-		if (chosen != null) listVoice(chosen);
+		if (chosen != null && engineVoices != null) {
+			Voice current = engineVoices.get(chosen.getName());
+			if (current != null && !current.getFeatures().contains("notInstalled")) listVoice(chosen);
+		}
 	}
 	// Lists the voices again, as voices can be installed or removed while the app runs; their indices can change.
 	public void refreshVoices() { initializeVoices(); }
-	// Adds a voice the user's settings selected to the list when it isn't there, at its end, so that indices stay as they were.
+	// Adds a voice the user's settings selected, or the script chose, to the list when it isn't there, at its end, so that indices stay as they were.
 	private synchronized void listVoice(Voice voice) {
 		List<Voice> voices = availableVoices;
 		if (voices == null) return;
