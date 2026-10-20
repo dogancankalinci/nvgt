@@ -391,6 +391,19 @@ static bool get_call_number(CScriptDictionary::CIterator& k, void* dest, int typ
 static bool call_can_hold(asITypeInfo* type) {
 	return type && (type->GetFlags() & asOBJ_REF) && !(type->GetFlags() & (asOBJ_NOCOUNT | asOBJ_SCOPED));
 }
+// A delegate (an object's method made into a function) has its method's parameters but not their default values, and the method of a script class it is made of is a virtual one, which has none either: they were missing for a call of a delegate. They are those of the method's implementation in its class, as the compiler takes them for a direct call, evaluated where that was declared.
+asIScriptFunction* get_default_args_function(asIScriptFunction* func) {
+	if (func && func->GetFuncType() == asFUNC_DELEGATE && func->GetDelegateFunction()) func = func->GetDelegateFunction();
+	if (func && func->GetFuncType() == asFUNC_VIRTUAL && func->GetObjectType()) {
+		asITypeInfo* type = func->GetObjectType();
+		for (asUINT i = 0; i < type->GetMethodCount(); i++) {
+			if (type->GetMethodByIndex(i, true) != func) continue;
+			if (asIScriptFunction* real = type->GetMethodByIndex(i, false)) return real;
+			break;
+		}
+	}
+	return func;
+}
 void script_function_line_callback(asIScriptContext* ctx, script_function_call_data* data);
 CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictionary* args, CScriptArray* errors = NULL, int max_statement_count = 0) {
 	std::string failure_reason = "";
@@ -419,11 +432,13 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 	}
 	asUINT param_count;
 	param_count = func->GetParamCount();
+	asIScriptFunction* decl_func;
+	decl_func = get_default_args_function(func);
 	for (asUINT p = 0; p < param_count; p++) {
 		int arg_type_id;
 		asDWORD arg_tmods;
 		const char* arg_default = nullptr;
-		if (func->GetParam(p, &arg_type_id, &arg_tmods, nullptr, &arg_default) < 0) {
+		if (decl_func->GetParam(p, &arg_type_id, &arg_tmods, nullptr, &arg_default) < 0) {
 			failure_reason = "ERROR: Can't read parameter ";
 			failure_reason += std::to_string(p + 1);
 			goto failure;
@@ -544,7 +559,7 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 				call_data.ctx = defCtx; // A call made in the default puts this callback back on defCtx when it returns, as below for ctx.
 				script_function_call_scope scope(call_data);
 				// In the function's namespace, where the compiler evaluates it: a default naming something of that namespace failed to compile.
-				dr = defCtx? ExecuteString(g_ScriptEngine, (std::string("return ") + arg_default + ";").c_str(), target, arg_type_id, func->GetModule(), defCtx, func->GetNamespace()) : asERROR;
+				dr = defCtx? ExecuteString(g_ScriptEngine, (std::string("return ") + arg_default + ";").c_str(), target, arg_type_id, decl_func->GetModule(), defCtx, decl_func->GetNamespace()) : asERROR;
 			}
 			if (dr != asEXECUTION_FINISHED) {
 				failure_reason = "ERROR: Can't evaluate the default value of parameter ";

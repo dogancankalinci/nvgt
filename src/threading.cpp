@@ -33,6 +33,7 @@
 #include <obfuscate.h>
 #include "nvgt.h"
 #include "pocostuff.h"
+#include "scriptstuff.h"
 #include "threading.h"
 using namespace Poco;
 
@@ -98,6 +99,7 @@ public:
 			return false;
 		}
 		ref_values.assign(func->GetParamCount(), 0);
+		asIScriptFunction* decl_func = get_default_args_function(func); // A delegate's default arguments are its method's, see there.
 		asIScriptContext* defCtx = nullptr; // We may need an extra context if we are required to evaluate expressions for default arguments.
 		for (unsigned int i = 0; i < func->GetParamCount(); i++) {
 			// In this context, param will be the argument as being received by the calling function and arg will be the argument as being passed to this async::call function.
@@ -105,7 +107,7 @@ public:
 			asITypeInfo* param_type, * arg_type;
 			asDWORD param_flags, arg_flags;
 			const char* param_default;
-			int success = func->GetParam(i, &param_typeid, &param_flags, nullptr, &param_default);
+			int success = decl_func->GetParam(i, &param_typeid, &param_flags, nullptr, &param_default);
 			if (success < 0) {
 				aCtx->SetException(format("Angelscript error %d while setting art %u of async call to %s", success, i, std::string(func->GetDeclaration())).c_str());
 				engine->ReturnContext(ctx);
@@ -151,7 +153,7 @@ public:
 				} else default_ref = ctx->GetAddressOfArg(i);
 				// An &out parameter declared = void gets the room made above for its result (null was passed, which the function wrote through, and SetArgObject() refused a primitive one).
 				if (std::string_view(param_default) == "void") success = asEXECUTION_FINISHED;
-				else success = ExecuteString(engine, format("return %s;", std::string(param_default)).c_str(), default_ref, param_typeid, func->GetModule(), defCtx, func->GetNamespace()); // In the function's namespace, as the compiler evaluates it.
+				else success = ExecuteString(engine, format("return %s;", std::string(param_default)).c_str(), default_ref, param_typeid, decl_func->GetModule(), defCtx, decl_func->GetNamespace()); // In the function's namespace, as the compiler evaluates it.
 				// Not only a negative error: ExecuteString returns the result of the execution, and one ending in an exception (or an abort) gave no value, so the call went ahead with the argument left unset.
 				if (success != asEXECUTION_FINISHED) {
 					std::string why = success == asEXECUTION_EXCEPTION? ": " + std::string(defCtx->GetExceptionString()) : "";
