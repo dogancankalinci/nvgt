@@ -551,13 +551,7 @@ template <class t> asINT64 diff_months(t &first, t &second) {
 		high = &second;
 		low = &first;
 	}
-	asINT64 months = 0;
-	if (high->year() != low->year())
-		months = (asINT64)diff_years(*high, *low) * 12;
-	if (low->month() > high->month() && low->year() < high->year())
-		months += (12 - abs(low->month() - high->month()));
-	else
-		months += abs(high->month() - low->month());
+	asINT64 months = (asINT64)(high->year() - low->year()) * 12 + high->month() - low->month();
 	if (is_further_into_month(*high, *low))
 		months--;
 	return months;
