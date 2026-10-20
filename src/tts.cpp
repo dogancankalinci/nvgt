@@ -748,6 +748,8 @@ tts_engine *tts_voice::active_engine(bool force_sync, bool *voice_applied) {
 }
 int tts_voice::platform_voice_index() {
 	for (int attempt = 0; attempt < 2; attempt++) {
+		// Making the list again can choose a voice the script chose that left it and is back, which is then the object's voice, not the one the engine speaks with this moment.
+		if (voice_set) return current_voice_index;
 		tts_engine *engine = active_engine();
 		voice_info *voice = get_voice_info(current_voice_index);
 		if (!engine || !voice) return -1;
