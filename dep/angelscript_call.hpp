@@ -5,21 +5,19 @@
 #include <type_traits>
 
 // Template specializations for setting different argument types
+// Integers and enums are passed by their size, not by the name of their type: uint64_t and int64_t are unsigned long and long on 64-bit Linux and Android, and long is 4 bytes on Windows, and those matched none of the names listed, so nothing was passed and the function got 0 (the device of a touch event).
 template<typename T> void set_argument(asIScriptContext* ctx, int index, T&& value) {
 	if constexpr (std::is_same_v<std::decay_t<T>, double>) {
 		ctx->SetArgDouble(index, value);
 	} else if constexpr (std::is_same_v<std::decay_t<T>, float>) {
 		ctx->SetArgFloat(index, value);
-	} else if constexpr (std::is_same_v<std::decay_t<T>, int> || std::is_same_v<std::decay_t<T>, unsigned int>) {
-		ctx->SetArgDWord(index, static_cast<asDWORD>(value));
 	} else if constexpr (std::is_same_v<std::decay_t<T>, bool>) {
 		ctx->SetArgByte(index, value ? 1 : 0);
-	} else if constexpr (std::is_same_v<std::decay_t<T>, char>) {
-		ctx->SetArgByte(index, static_cast<asBYTE>(value));
-	} else if constexpr (std::is_same_v<std::decay_t<T>, short>) {
-		ctx->SetArgWord(index, static_cast<asWORD>(value));
-	} else if constexpr (std::is_same_v<std::decay_t<T>, long long> || std::is_same_v<std::decay_t<T>, unsigned long long>) {
-		ctx->SetArgQWord(index, static_cast<asQWORD>(value));
+	} else if constexpr (std::is_integral_v<std::decay_t<T>> || std::is_enum_v<std::decay_t<T>>) {
+		if constexpr (sizeof(std::decay_t<T>) == 8) ctx->SetArgQWord(index, static_cast<asQWORD>(value));
+		else if constexpr (sizeof(std::decay_t<T>) == 4) ctx->SetArgDWord(index, static_cast<asDWORD>(value));
+		else if constexpr (sizeof(std::decay_t<T>) == 2) ctx->SetArgWord(index, static_cast<asWORD>(value));
+		else ctx->SetArgByte(index, static_cast<asBYTE>(value));
 	} else if constexpr (std::is_pointer_v<std::decay_t<T>>) {
 		ctx->SetArgAddress(index, const_cast<void*>(static_cast<const void*>(value)));
 	} else if constexpr (std::is_class_v<std::decay_t<T>>) {
@@ -38,18 +36,14 @@ template<typename R> R get_return_value(asIScriptContext* ctx) {
 		return ctx->GetReturnDouble();
 	} else if constexpr (std::is_same_v<R, float>) {
 		return ctx->GetReturnFloat();
-	} else if constexpr (std::is_same_v<R, int>) {
-		return static_cast<int>(ctx->GetReturnDWord());
-	} else if constexpr (std::is_same_v<R, unsigned int>) {
-		return ctx->GetReturnDWord();
 	} else if constexpr (std::is_same_v<R, bool>) {
 		return ctx->GetReturnByte() != 0;
-	} else if constexpr (std::is_same_v<R, char>) {
-		return static_cast<char>(ctx->GetReturnByte());
-	} else if constexpr (std::is_same_v<R, short>) {
-		return static_cast<short>(ctx->GetReturnWord());
-	} else if constexpr (std::is_same_v<R, long long>) {
-		return static_cast<long long>(ctx->GetReturnQWord());
+	} else if constexpr (std::is_integral_v<R> || std::is_enum_v<R>) {
+		// By size, as the arguments are (see set_argument)
+		if constexpr (sizeof(R) == 8) return static_cast<R>(ctx->GetReturnQWord());
+		else if constexpr (sizeof(R) == 4) return static_cast<R>(ctx->GetReturnDWord());
+		else if constexpr (sizeof(R) == 2) return static_cast<R>(ctx->GetReturnWord());
+		else return static_cast<R>(ctx->GetReturnByte());
 	} else if constexpr (std::is_pointer_v<R>) {
 		return static_cast<R>(ctx->GetReturnAddress());
 	} else if constexpr (std::is_same_v<R, std::string>) {
