@@ -2819,12 +2819,13 @@ public:
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
-		// A buffer is decoded at the resource manager's rate, the engine's unless an engine without a device was made without one, when buffers keep their own. So one whose own rate was far below it, as a header could claim 1 Hz, came out that many times larger: a 4 KB file took 192 MB and seconds to decode, and one of 400 KB more memory than there was. A buffer whose rate is below that by more than the widest ratio the sample rates refused elsewhere leave, 384000 to 8000, is refused. The resource manager gives a source's own rate no way out, so the file's header is read first by a decoder of its own, unless the resource manager holds the buffer already, as for a sound played again by its name, which that cost many times over; a source of unknown length isn't, as opening it twice would read it from its start again.
+		// A buffer is decoded at the resource manager's rate, the engine's unless an engine without a device was made without one, when buffers keep their own. So one whose own rate was far below it, as a header could claim 1 Hz, came out that many times larger: a 4 KB file took 192 MB and seconds to decode, and one of 400 KB more memory than there was. A buffer whose rate is below that by more than the widest ratio the sample rates refused elsewhere leave, 384000 to 8000, is refused. The resource manager gives a source's own rate no way out, so the file's header is read first by a decoder of its own, unless the resource manager holds the buffer already, as for a sound played again by its name, which that cost many times over; a source of unknown length isn't, as opening it twice would read it from its start again. Where the resource manager keeps a source's own rate instead, it decodes buffers and streams alike in pages of 1000 * (rate / 1000) frames of it, none below 1000 Hz, so those played silence while their load succeeded: there they are refused below 1000 Hz.
 		ma_resource_manager* manager = ma_engine_get_resource_manager(engine->get_ma_engine());
 		ma_uint32 decoded_rate = manager->config.decodedSampleRate;
-		if (decoded_rate && (ma_flags & MA_SOUND_FLAG_DECODE) && !(ma_flags & (MA_SOUND_FLAG_STREAM | MA_SOUND_FLAG_UNKNOWN_LENGTH)) && !resource_cached(manager, triplet)) {
+		bool buffered = (ma_flags & MA_SOUND_FLAG_DECODE) && !(ma_flags & MA_SOUND_FLAG_STREAM), streamed = (ma_flags & MA_SOUND_FLAG_STREAM) != 0;
+		if (!(ma_flags & MA_SOUND_FLAG_UNKNOWN_LENGTH) && (buffered? !resource_cached(manager, triplet) : streamed && !decoded_rate)) {
 			ma_uint32 own_rate = native_sample_rate(triplet);
-			if (own_rate && (ma_uint64)own_rate * (ma_standard_sample_rate_max / ma_standard_sample_rate_min) < decoded_rate) {
+			if (own_rate && (decoded_rate? (ma_uint64)own_rate * (ma_standard_sample_rate_max / ma_standard_sample_rate_min) < decoded_rate : own_rate < 1000)) {
 				g_sound_service->cleanup_triplet(triplet);
 				g_soundsystem_last_error = MA_FORMAT_NOT_SUPPORTED;
 				return false;
