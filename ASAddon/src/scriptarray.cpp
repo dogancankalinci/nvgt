@@ -1691,9 +1691,12 @@ void CScriptArray::Sort(asUINT startAt, asUINT count, bool asc)
 		// objects that the sort was still reading and writing. The sorted order is written back only if the array still
 		// has its size and the elements that were sorted, in the same places; otherwise it is left as the comparisons left
 		// it and the script gets an exception. The buffer keeps all its references throughout, for the garbage collector.
+		// ALTERED: only a type whose references are counted is held. A scoped type (asOBJ_SCOPED) has a release behaviour that
+		// destroys the object and no addref, so every element was destroyed when it was let go here, and again with the
+		// array. Its opCmp is the application's, which can't change the array.
 		asIScriptEngine *engine = objType->GetEngine();
 		asITypeInfo *subType = objType->GetSubType();
-		bool hold = subType && (subType->GetFlags() & asOBJ_REF) && !(subType->GetFlags() & asOBJ_NOCOUNT);
+		bool hold = subType && (subType->GetFlags() & asOBJ_REF) && !(subType->GetFlags() & (asOBJ_NOCOUNT | asOBJ_SCOPED));
 		asUINT size = buffer->numElements;
 		std::vector<void*> before((void**)GetArrayItemPointer(start), (void**)GetArrayItemPointer(end));
 		std::vector<void*> items(before);
