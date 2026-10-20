@@ -395,6 +395,11 @@ bool CDebugger::CheckBreakPoint(asIScriptContext *ctx)
 
 void CDebugger::TakeCommands(asIScriptContext *ctx)
 {
+	// ALTERED: put back as it was on return rather than cleared. An expression the e command evaluates can reach a breakpoint
+	// (or a ctrl+c break), and the commands taken there returned with the flag cleared while the outer call still took
+	// commands: NVGT's line callback then counted the rest of that evaluation, and of every later one at that stop, towards a
+	// script_function.call()'s statement limit, which ended the call the script was stopped in.
+	bool wasTakingCommands = m_takingCommands;
 	m_takingCommands = true;
 	bool output_header = true;
 	for(;;)
@@ -413,7 +418,7 @@ if (!cin.good())
 		if( InterpretCommand(string(buf), ctx) )
 			break;
 	}
-	m_takingCommands = false;
+	m_takingCommands = wasTakingCommands;
 }
 
 bool CDebugger::InterpretCommand(const string &cmd, asIScriptContext *ctx)
