@@ -1022,7 +1022,7 @@ bool tts_voice::get_speaking() {
 }
 bool tts_voice::refresh() { return list_voices_again(true, true); }
 // The object's list made again. Only refresh() as the script calls it has the engines list their voices again, which costs a call to the platform's speech service each, as a change an engine reports it takes up by itself. Engines that couldn't be bound for this object, which can each take as long as binding waits to fail again, are tried again by refresh(), set_language() and the first full list, as they always were, but not when the list is made again to follow the user's settings or installed voices, unless no engine of an object that only spoke can speak any more, as at its first use.
-bool tts_voice::list_voices_again(bool relist_engines, bool retry_unbound) {
+bool tts_voice::list_voices_again(bool relist_engines, bool retry_unbound, bool keep_filter) {
 	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
 	// An engine this object couldn't bind is tried again, unless it never bound anywhere: one that has worked can fail for a while, while it restarts for instance, and the object would otherwise go without it for good.
 	if (retry_unbound) {
@@ -1042,23 +1042,29 @@ bool tts_voice::list_voices_again(bool relist_engines, bool retry_unbound) {
 		old_voice = voices[current_voice_index];
 		had_voice = true;
 	}
-	voices.clear();
 	// Track each engine's own current/default voice index so we can preserve the platform default voice when picking an initial selection.
 	unordered_map<string, int> engine_default_voice;
-	for (const string &name : engine_names) {
-		// An engine that refuses to bind is remembered as unusable and simply contributes no voices instead of taking down the whole list.
-		engine_entry &entry = get_engine_entry(name);
-		tts_engine *engine = entry.engine.get();
-		if (!engine || !engine->is_available()) continue;
-		entry.voices_generation = engine->voices_generation();
-		if (relist_engines) engine->refresh_voices();
-		engine_default_voice[name] = tts_engine_default_voice(entry);
-		int voice_count = engine->get_voice_count();
-		for (int i = 0; i < voice_count; i++) {
-			std::string lang = engine->get_voice_language(i);
-			if (tts_language_matches(lang, current_language)) voices.emplace_back(voice_info{name, i, engine->get_voice_name(i), lang});
+	// Lists the voices of the language filter, asking the engines for their changes the first time only.
+	auto list_engine_voices = [&](bool first) {
+		voices.clear();
+		for (const string &name : engine_names) {
+			// An engine that refuses to bind is remembered as unusable and simply contributes no voices instead of taking down the whole list.
+			engine_entry &entry = get_engine_entry(name);
+			tts_engine *engine = entry.engine.get();
+			if (!engine || !engine->is_available()) continue;
+			if (first) {
+				entry.voices_generation = engine->voices_generation();
+				if (relist_engines) engine->refresh_voices();
+				engine_default_voice[name] = tts_engine_default_voice(entry);
+			}
+			int voice_count = engine->get_voice_count();
+			for (int i = 0; i < voice_count; i++) {
+				std::string lang = engine->get_voice_language(i);
+				if (tts_language_matches(lang, current_language)) voices.emplace_back(voice_info{name, i, engine->get_voice_name(i), lang});
+			}
 		}
-	}
+	};
+	list_engine_voices(true);
 	current_voice_index = -1;
 	// Only a voice the script chose is carried over. Without a choice the selection must keep following the platform default, which the block below picks.
 	if (had_voice && voice_set) {
@@ -1067,6 +1073,13 @@ bool tts_voice::list_voices_again(bool relist_engines, bool retry_unbound) {
 		if (current_voice_index < 0) {
 			remembered_voice = old_voice;
 			voice_remembered = true;
+			// When the language filter holds no voice but the builtin one once the chosen voice left, the filter is lifted, as set_language("") would, so that the object speaks with the platform's voice rather than not at all or with the builtin voice. Not as set_language() lists, as a voice its filter leaves out hasn't left.
+			bool only_builtin = true;
+			for (const voice_info &voice : voices) if (voice.engine_name != "fallback") { only_builtin = false; break; }
+			if (!keep_filter && only_builtin && !current_language.empty() && tts_language_matches(old_voice.language, current_language)) {
+				current_language.clear();
+				list_engine_voices(false);
+			}
 		}
 	} else if (voice_remembered) {
 		current_voice_index = find_listed_voice(voices, remembered_voice.engine_name, remembered_voice.engine_voice_index, remembered_voice.name, remembered_voice.language);
@@ -1167,7 +1180,7 @@ bool tts_voice::set_language(const string& language) {
 		return false;
 	};
 	current_language = language;
-	list_voices_again(false, true);
+	list_voices_again(false, true, true);
 	if (!language.empty()) voice_remembered = false; // A language chosen now replaces a voice that left the list, and the filter leaving out the chosen voice is no voice leaving. An empty one only lifts the filter.
 	if (voices.empty()) return restore();
 	// Asking for a language is asking for one of its voices, so the voice refresh() picked from the filtered list is pushed onto the engine like a set_voice() call, and when the engine refuses it, the other voices of the language are tried in turn. An empty language only lifts the filter and changes nothing about the selection.

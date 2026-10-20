@@ -6,7 +6,7 @@
 	## Returns:
 		bool: true if a voice of the language was found, false otherwise.
 	## Remarks:
-		Afterwards voice_count, get_voice_name and set_voice see only the voices of that language, and one of them is selected unless the chosen voice is among them. Codes are compared without regard to letter case and with either "-" or "_" before the region, and a code without a region, such as "en", matches every region of the language. When no voice matches, the object is left as it was.
+		Afterwards voice_count, get_voice_name and set_voice see only the voices of that language, and one of them is selected unless the chosen voice is among them. Codes are compared without regard to letter case and with either "-" or "_" before the region, and a code without a region, such as "en", matches every region of the language. When no voice matches, the object is left as it was. The filter is lifted by itself when the voice the script chose leaves the list and no voice of the language but the builtin one is left (see voice_set).
 */
 
 // Example:
