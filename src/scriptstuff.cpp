@@ -326,6 +326,9 @@ struct script_function_call_data {
 	int max_statement_count;
 	int current_statement_count;
 	bool exceeded; // The limit ended the call: aborted rather than suspended, as a nested call can't be left suspended (see execute_nested), and not passed on to the caller.
+	asIScriptContext* ctx; // The call's own context, once it has one.
+	// The limit aborted the call's own context (or a nested call made on it, which passes the abort on to it), so that the call's execution ending as aborted is the limit's doing. Exceeded on another context (an argument's copy, a script random generator, a destructor the garbage collector runs on a pooled context as the function's execution ends), the limit aborts only that one, and an abort the call's own execution ends with came from elsewhere: exit()'s was dropped as the limit's, the script went on after exit(), and no later exit() ended it, as the context manager had already let go of its context.
+	bool aborted_ctx;
 	script_function_call_data* outer; // The call on this thread that this one was made in, whose statements this one's are too.
 };
 // The innermost script_function.call() running on this thread, whose statements are counted by every context's line callback (see script_function_call_count_statement).
@@ -424,7 +427,7 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 	std::string callstack1 = "";
 	std::string callstack2 = "";
 	g_ScriptEngine->SetMessageCallback(asFUNCTION(script_message_callback), errors, asCALL_CDECL);
-	script_function_call_data call_data {max_statement_count, 0, false, g_script_function_call};
+	script_function_call_data call_data {max_statement_count, 0, false, nullptr, false, g_script_function_call};
 	// Every statement run on this thread from here until the results are gathered is the call's, whatever context runs it: the copy constructor or opAssign copying an argument or the result (run on a context of their own, as the call's is already prepared), a default value, a callback run on a context of its own, a script random generator. Only the call's own context and its defaults counted, so a copy that never ended hung the script whatever the limit.
 	script_function_call_scope scope(call_data);
 	// The values passed to reference parameters, which the arguments point to, so they last until the call returns (8 bytes hold any primitive or a handle).
@@ -438,6 +441,7 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 	asIScriptContext* ACtx = asGetActiveContext();
 	bool new_context = ACtx == NULL || ACtx->PushState() < 0;
 	asIScriptContext* ctx = (new_context ? g_ScriptEngine->RequestContext() : ACtx);
+	call_data.ctx = ctx;
 	if (!ctx) {
 		failure_reason = "ERROR: Failed to acquire context.";
 		goto failure;
@@ -671,7 +675,7 @@ failure:
 		if (new_context) {
 			ctx->Unprepare();
 			g_ScriptEngine->ReturnContext(ctx);
-		} else if (call_data.exceeded) ctx->PopState(); // Our own abort, which ends the called function only
+		} else if (call_data.aborted_ctx && !script_callbacks_stopped(ACtx)) ctx->PopState(); // Our own abort, which ends the called function only, unless exit() was called too (see script_function_call_data::aborted_ctx)
 		else pop_nested_state(ctx);
 	}
 	if (defCtx) g_ScriptEngine->ReturnContext(defCtx);
@@ -748,6 +752,7 @@ void script_function_call_count_statement(asIScriptContext* ctx) {
 		d->current_statement_count += 1;
 		if (d->current_statement_count > d->max_statement_count) {
 			d->exceeded = true;
+			if (ctx == d->ctx) d->aborted_ctx = true;
 			ctx->Abort();
 			return;
 		}
