@@ -716,6 +716,8 @@ system_tray_menu* system_tray::get_menu() {
 }
 static system_tray* system_tray_factory(const std::string& tooltip, graphic* icon) { return new system_tray(tooltip, icon); }
 
+// The script reads the native window as a uint64; a pointer is 4 bytes on 32-bit targets.
+asQWORD game_window_get_native_window(const game_window& window) { return asQWORD(reinterpret_cast<uintptr_t>(window.get_native_window())); }
 void RegisterUI(asIScriptEngine* engine) {
 	engine->SetDefaultAccessMask(NVGT_SUBSYSTEM_UI);
 	engine->RegisterEnum(_O("message_box_flags"));
@@ -835,7 +837,7 @@ void RegisterUI(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("game_window", "void draw_line(float x1, float y1, float x2, float y2, uint r, uint g, uint b)", asMETHOD(game_window, draw_line), asCALL_THISCALL);
 	engine->RegisterObjectMethod("game_window", "bool render_graphic(graphic@+ gfx, float x, float y)", asMETHOD(game_window, render_graphic), asCALL_THISCALL);
 	engine->RegisterObjectMethod("game_window", "void draw_menu(string[]@+ items, float x, float y)", asMETHOD(game_window, draw_menu), asCALL_THISCALL);
-	engine->RegisterObjectMethod("game_window", "uint64 get_native_window() const property", asMETHOD(game_window, get_native_window), asCALL_THISCALL);
+	engine->RegisterObjectMethod("game_window", "uint64 get_native_window() const property", asFUNCTION(game_window_get_native_window), asCALL_CDECL_OBJFIRST);
 	engine->RegisterGlobalFunction("game_window@ show_window(const string& in title, uint flags = 0)", asFUNCTION(ShowNVGTWindow), asCALL_CDECL);
 	engine->RegisterGlobalFunction("bool destroy_window()", asFUNCTION(DestroyNVGTWindow), asCALL_CDECL);
 	engine->RegisterGlobalFunction("bool hide_window()", asFUNCTION(HideNVGTWindow), asCALL_CDECL);

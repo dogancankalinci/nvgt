@@ -196,6 +196,8 @@ string websocket_receive_frame(WebSocket& sock, int& flags) {
 }
 
 
+// size() is a uint64 in the script; size_t is 4 bytes on 32-bit targets.
+template <class T> asQWORD name_value_collection_size(const T& collection) { return collection.size(); }
 template <class T> void RegisterNameValueCollection(asIScriptEngine* engine, const string& type) {
 	angelscript_refcounted_register<T>(engine, type.c_str());
 	engine->RegisterObjectBehaviour(type.c_str(), asBEHAVE_FACTORY, format("%s@ f()", type).c_str(), asFUNCTION(angelscript_refcounted_factory<T>), asCALL_CDECL);
@@ -209,7 +211,7 @@ template <class T> void RegisterNameValueCollection(asIScriptEngine* engine, con
 	engine->RegisterObjectMethod(type.c_str(), "const string& get(const string&in name, const string&in default_value = \"\") const", asMETHODPR(T, get, (const string&, const string&) const, const string&), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "bool exists(const string&in name) const", asMETHOD(T, has), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "bool empty() const", asMETHOD(T, empty), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "uint64 size() const", asMETHOD(T, size), asCALL_THISCALL);
+	engine->RegisterObjectMethod(type.c_str(), "uint64 size() const", asFUNCTION(name_value_collection_size<T>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "void erase(const string&in name)", asMETHODPR(T, erase, (const std::string&), void), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "void secure_erase(const string&in name)", asMETHODPR(T, secureErase, (const std::string&), void), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "void clear()", asMETHOD(T, clear), asCALL_THISCALL);

@@ -526,16 +526,26 @@ static RegularExpression regexp_compile(const std::string& pattern, int options,
 static void regexp_construct(RegularExpression* mem, const std::string& pattern, int options) {
 	new (mem) RegularExpression(regexp_compile(pattern, options));
 }
-std::string poco_regular_expression_extract(RegularExpression* exp, const std::string& subject, std::string::size_type offset, int options) {
+// The script's offsets are uint64; std::string::size_type is 4 bytes on 32-bit targets. An offset no string there can reach becomes npos.
+static std::string::size_type regexp_offset(asQWORD offset) {
+	return offset > std::string::npos ? std::string::npos : std::string::size_type(offset);
+}
+bool poco_regular_expression_match_at(RegularExpression* exp, const std::string& subject, asQWORD offset) {
+	return exp->match(subject, regexp_offset(offset));
+}
+bool poco_regular_expression_match_at(RegularExpression* exp, const std::string& subject, asQWORD offset, int options) {
+	return exp->match(subject, regexp_offset(offset), options);
+}
+std::string poco_regular_expression_extract(RegularExpression* exp, const std::string& subject, asQWORD offset, int options) {
 	std::string str;
 	try {
-		if (!exp->extract(subject, offset, str, options)) return "";
+		if (!exp->extract(subject, regexp_offset(offset), str, options)) return "";
 	} catch (RegularExpressionException& e) {
 		return "";
 	}
 	return str;
 }
-std::string poco_regular_expression_extract(RegularExpression* exp, const std::string& subject, std::string::size_type offset) {
+std::string poco_regular_expression_extract(RegularExpression* exp, const std::string& subject, asQWORD offset) {
 	return poco_regular_expression_extract(exp, subject, offset, 0);
 }
 // Finds the next match from offset together with its groups. Poco 1.14's MatchVec overload of match() hands its options to PCRE2 untranslated, so a match option such as RE_NOT_EMPTY fails as a bad option or selects an unrelated PCRE2 flag. With such an option the match is found by the single-match overload, which does translate them, and its groups are read by matching again at that position without options.
@@ -588,9 +598,9 @@ static int regexp_substitute(const RegularExpression& exp, std::string& subject,
 	if (count > 0) subject = std::move(text);
 	return count;
 }
-int poco_regular_expression_subst(RegularExpression* exp, std::string& subject, std::string::size_type offset, const std::string& replacement, int options) {
+int poco_regular_expression_subst(RegularExpression* exp, std::string& subject, asQWORD offset, const std::string& replacement, int options) {
 	try {
-		return regexp_substitute(*exp, subject, offset, replacement, options);
+		return regexp_substitute(*exp, subject, regexp_offset(offset), replacement, options);
 	} catch (RegularExpressionException& e) {
 		return -1;
 	}
@@ -598,12 +608,12 @@ int poco_regular_expression_subst(RegularExpression* exp, std::string& subject, 
 int poco_regular_expression_subst(RegularExpression* exp, std::string& subject, const std::string& replacement, int options) {
 	return poco_regular_expression_subst(exp, subject, 0, replacement, options);
 }
-CScriptArray* poco_regular_expression_split(RegularExpression* exp, const std::string& subject, std::string::size_type offset, int options) {
+CScriptArray* poco_regular_expression_split(RegularExpression* exp, const std::string& subject, asQWORD offset, int options) {
 	if (!StringArrayType) StringArrayType = g_ScriptEngine->GetTypeInfoByDecl("array<string>");
 	CScriptArray* array = CScriptArray::Create(StringArrayType);
 	RegularExpression::MatchVec groups;
 	try {
-		if (regexp_match_groups(*exp, subject, offset, groups, options) < 1) return array;
+		if (regexp_match_groups(*exp, subject, regexp_offset(offset), groups, options) < 1) return array;
 	} catch (RegularExpressionException& e) {
 		return array;
 	}
@@ -613,7 +623,7 @@ CScriptArray* poco_regular_expression_split(RegularExpression* exp, const std::s
 	}
 	return array;
 }
-CScriptArray* poco_regular_expression_split(RegularExpression* exp, const std::string& subject, std::string::size_type offset) {
+CScriptArray* poco_regular_expression_split(RegularExpression* exp, const std::string& subject, asQWORD offset) {
 	return poco_regular_expression_split(exp, subject, offset, 0);
 }
 bool poco_regular_expression_match(const std::string& subject, const std::string& pattern, int options) {
@@ -964,15 +974,15 @@ void RegisterPocostuff(asIScriptEngine* engine) {
 	engine->RegisterObjectType("regexp", sizeof(RegularExpression), asOBJ_VALUE | asGetTypeTraits<RegularExpression>());
 	engine->RegisterObjectBehaviour("regexp", asBEHAVE_CONSTRUCT, _O("void f(const string&in pattern, regexp_options options = RE_UTF8)"), asFUNCTION(regexp_construct), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectBehaviour("regexp", asBEHAVE_DESTRUCT, _O("void f()"), asFUNCTION(poco_value_destruct<RegularExpression>), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("regexp", _O("bool match(const string&in text, uint64 offset = 0) const"), asMETHODPR(RegularExpression, match, (const std::string&, std::string::size_type) const, bool), asCALL_THISCALL);
-	engine->RegisterObjectMethod("regexp", _O("bool match(const string&in text, uint64 offset, int options) const"), asMETHODPR(RegularExpression, match, (const std::string&, std::string::size_type, int) const, bool), asCALL_THISCALL);
+	engine->RegisterObjectMethod("regexp", _O("bool match(const string&in text, uint64 offset = 0) const"), asFUNCTIONPR(poco_regular_expression_match_at, (RegularExpression*, const std::string&, asQWORD), bool), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("regexp", _O("bool match(const string&in text, uint64 offset, int options) const"), asFUNCTIONPR(poco_regular_expression_match_at, (RegularExpression*, const std::string&, asQWORD, int), bool), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("regexp", _O("bool opEquals(const string&in text) const"), asMETHOD(RegularExpression, operator==), asCALL_THISCALL);
-	engine->RegisterObjectMethod("regexp", _O("string extract(const string&in text, uint64 offset = 0) const"), asFUNCTIONPR(poco_regular_expression_extract, (RegularExpression*, const std::string&, std::string::size_type), std::string), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("regexp", _O("string extract(const string&in text, uint64 offset, int options) const"), asFUNCTIONPR(poco_regular_expression_extract, (RegularExpression*, const std::string&, std::string::size_type, int), std::string), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("regexp", _O("int subst(string& text, uint64 offset, const string&in replacement, int options = RE_UTF8) const"), asFUNCTIONPR(poco_regular_expression_subst, (RegularExpression*, std::string&, std::string::size_type, const std::string&, int), int), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("regexp", _O("string extract(const string&in text, uint64 offset = 0) const"), asFUNCTIONPR(poco_regular_expression_extract, (RegularExpression*, const std::string&, asQWORD), std::string), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("regexp", _O("string extract(const string&in text, uint64 offset, int options) const"), asFUNCTIONPR(poco_regular_expression_extract, (RegularExpression*, const std::string&, asQWORD, int), std::string), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("regexp", _O("int subst(string& text, uint64 offset, const string&in replacement, int options = RE_UTF8) const"), asFUNCTIONPR(poco_regular_expression_subst, (RegularExpression*, std::string&, asQWORD, const std::string&, int), int), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("regexp", _O("int subst(string& text, const string&in replacement, int options = RE_UTF8) const"), asFUNCTIONPR(poco_regular_expression_subst, (RegularExpression*, std::string&, const std::string&, int), int), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("regexp", _O("string[]@ split(const string&in text, uint64 offset = 0) const"), asFUNCTIONPR(poco_regular_expression_split, (RegularExpression*, const std::string&, std::string::size_type), CScriptArray*), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("regexp", _O("string[]@ split(const string&in text, uint64 offset, int options) const"), asFUNCTIONPR(poco_regular_expression_split, (RegularExpression*, const std::string&, std::string::size_type, int), CScriptArray*), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("regexp", _O("string[]@ split(const string&in text, uint64 offset = 0) const"), asFUNCTIONPR(poco_regular_expression_split, (RegularExpression*, const std::string&, asQWORD), CScriptArray*), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("regexp", _O("string[]@ split(const string&in text, uint64 offset, int options) const"), asFUNCTIONPR(poco_regular_expression_split, (RegularExpression*, const std::string&, asQWORD, int), CScriptArray*), asCALL_CDECL_OBJFIRST);
 	engine->RegisterGlobalFunction(_O("bool regexp_match(const string&in text, const string&in pattern, int options = RE_UTF8)"), asFUNCTION(poco_regular_expression_match), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("bool regexp_search(const string&in text, const string&in pattern, int options = RE_UTF8)"), asFUNCTION(poco_regular_expression_search), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("string regexp_replace(const string&in text, const string&in pattern, const string&in replacement, int options = RE_UTF8)"), asFUNCTION(poco_regular_expression_replace), asCALL_CDECL);

@@ -13,7 +13,9 @@
  * 3. This notice may not be removed or altered from any source distribution.
  */
 
+#include <cstdint>
 #include <exception>
+#include <stdexcept>
 #include <Poco/Base32Decoder.h>
 #include <Poco/Base32Encoder.h>
 #include <Poco/Base64Decoder.h>
@@ -617,6 +619,21 @@ datastream* generic_stream_factory(Args... args, f_streamargs) {
 	generic_stream_open<T, Args...>(ds, args..., p_streamargs);
 	return ds;
 }
+// memory_reader and memory_writer get the address and size as the script's uint64 (as memory_buffer and memory_allocate give them);
+// a pointer and size_t are 4 bytes on 32-bit targets, so they are converted here.
+static void memory_stream_check(asQWORD address, asQWORD size) {
+	if (address > UINTPTR_MAX || size > SIZE_MAX) throw std::out_of_range("memory stream address or size out of range");
+}
+template <class T, class P>
+bool memory_stream_open(datastream* ds, asQWORD address, asQWORD size, f_streamargs) {
+	memory_stream_check(address, size);
+	return generic_stream_open<T, P, size_t>(ds, reinterpret_cast<P>(uintptr_t(address)), size_t(size), p_streamargs);
+}
+template <class T, class P>
+datastream* memory_stream_factory(asQWORD address, asQWORD size, f_streamargs) {
+	memory_stream_check(address, size);
+	return generic_stream_factory<T, P, size_t>(reinterpret_cast<P>(uintptr_t(address)), size_t(size), p_streamargs);
+}
 
 // The below template functions can handle the basic registration of any generic stream that connects to another one, including those that take arguments. The angelscript registration functions include factories and open functions for such streams, meaning that only custom functions on streams need to be registered. Sadly given my current experience we need to register them twice, once with and once without argument support. Even more sadly each version must have different names otherwise even when using asFUNCTIONPR with angelscript only some compilers complain about ambiguous calls, cross platform+lack of knowledge is exhausting sometimes!
 inline bool connect_stream_fail(datastream* ds_connect) {
@@ -821,19 +838,20 @@ void RegisterDuplicatingStream(asIScriptEngine* engine) {
 }
 
 // counting streams
-std::streamsize counting_stream_chars(datastream* ds) {
+// The values are int64 in the script; std::streamsize is 4 bytes on 32-bit targets, so these functions take and return asINT64.
+asINT64 counting_stream_chars(datastream* ds) {
 	CountingIOS* ios = dynamic_cast<CountingIOS*>(ds->stream());
 	return ios ? ios->chars() : -1;
 }
-std::streamsize counting_stream_lines(datastream* ds) {
+asINT64 counting_stream_lines(datastream* ds) {
 	CountingIOS* ios = dynamic_cast<CountingIOS*>(ds->stream());
 	return ios ? ios->lines() : -1;
 }
-std::streamsize counting_stream_pos(datastream* ds) {
+asINT64 counting_stream_pos(datastream* ds) {
 	CountingIOS* ios = dynamic_cast<CountingIOS*>(ds->stream());
 	return ios ? ios->pos() : -1;
 }
-std::streamsize counting_stream_get_current_line(datastream* ds) {
+asINT64 counting_stream_get_current_line(datastream* ds) {
 	CountingIOS* ios = dynamic_cast<CountingIOS*>(ds->stream());
 	return ios ? ios->getCurrentLineNumber() : -1;
 }
@@ -842,25 +860,25 @@ void counting_stream_reset(datastream* ds) {
 	if (ios)
 		ios->reset();
 }
-void counting_stream_set_current_line(datastream* ds, std::streamsize value) {
+void counting_stream_set_current_line(datastream* ds, asINT64 value) {
 	CountingIOS* ios = dynamic_cast<CountingIOS*>(ds->stream());
 	if (ios)
-		ios->setCurrentLineNumber(value);
+		ios->setCurrentLineNumber(std::streamsize(value));
 }
-void counting_stream_add_chars(datastream* ds, std::streamsize value) {
+void counting_stream_add_chars(datastream* ds, asINT64 value) {
 	CountingIOS* ios = dynamic_cast<CountingIOS*>(ds->stream());
 	if (ios)
-		ios->addChars(value);
+		ios->addChars(std::streamsize(value));
 }
-void counting_stream_add_lines(datastream* ds, std::streamsize value) {
+void counting_stream_add_lines(datastream* ds, asINT64 value) {
 	CountingIOS* ios = dynamic_cast<CountingIOS*>(ds->stream());
 	if (ios)
-		ios->addLines(value);
+		ios->addLines(std::streamsize(value));
 }
-void counting_stream_add_pos(datastream* ds, std::streamsize value) {
+void counting_stream_add_pos(datastream* ds, asINT64 value) {
 	CountingIOS* ios = dynamic_cast<CountingIOS*>(ds->stream());
 	if (ios)
-		ios->addPos(value);
+		ios->addPos(std::streamsize(value));
 }
 template <class T, class S>
 void RegisterCountingStream(asIScriptEngine* engine, const std::string& type) {
@@ -954,10 +972,10 @@ void RegisterScriptDatastreams(asIScriptEngine* engine) {
 	RegisterInputDatastreamType<chacha_istream, const std::string&>(engine, "asset_decryptor", "const string& in key");
 	engine->SetDefaultAccessMask(NVGT_SUBSYSTEM_RAW_MEMORY);
 	RegisterDatastreamType<MemoryInputStream, datastream_factory_closed>(engine, "memory_reader");
-	engine->RegisterObjectBehaviour("memory_reader", asBEHAVE_FACTORY, "memory_reader@ d(uint64 address, uint64 size, const string&in encoding = \"\", int byteorder = 1)", asFUNCTION((generic_stream_factory<MemoryInputStream, const char*, size_t>)), asCALL_CDECL);
-	engine->RegisterObjectMethod("memory_reader", "bool open(uint64 address, uint64 size, const string&in encoding = \"\", int byteorder = 1)", asFUNCTION((generic_stream_open<MemoryInputStream, const char*, size_t>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectBehaviour("memory_reader", asBEHAVE_FACTORY, "memory_reader@ d(uint64 address, uint64 size, const string&in encoding = \"\", int byteorder = 1)", asFUNCTION((memory_stream_factory<MemoryInputStream, const char*>)), asCALL_CDECL);
+	engine->RegisterObjectMethod("memory_reader", "bool open(uint64 address, uint64 size, const string&in encoding = \"\", int byteorder = 1)", asFUNCTION((memory_stream_open<MemoryInputStream, const char*>)), asCALL_CDECL_OBJFIRST);
 	RegisterDatastreamType<MemoryOutputStream, datastream_factory_closed>(engine, "memory_writer");
-	engine->RegisterObjectBehaviour("memory_writer", asBEHAVE_FACTORY, "memory_writer@ d(uint64 address, uint64 size, const string&in encoding = \"\", int byteorder = 1)", asFUNCTION((generic_stream_factory<MemoryOutputStream, char*, size_t>)), asCALL_CDECL);
-	engine->RegisterObjectMethod("memory_writer", "bool open(uint64 address, uint64 size, const string&in encoding = \"\", int byteorder = 1)", asFUNCTION((generic_stream_open<MemoryOutputStream, char*, size_t>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectBehaviour("memory_writer", asBEHAVE_FACTORY, "memory_writer@ d(uint64 address, uint64 size, const string&in encoding = \"\", int byteorder = 1)", asFUNCTION((memory_stream_factory<MemoryOutputStream, char*>)), asCALL_CDECL);
+	engine->RegisterObjectMethod("memory_writer", "bool open(uint64 address, uint64 size, const string&in encoding = \"\", int byteorder = 1)", asFUNCTION((memory_stream_open<MemoryOutputStream, char*>)), asCALL_CDECL_OBJFIRST);
 	engine->SetDefaultAccessMask(NVGT_SUBSYSTEM_GENERAL);
 }
