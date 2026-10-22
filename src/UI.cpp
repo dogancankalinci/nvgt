@@ -462,8 +462,10 @@ int get_window_height() {
 std::string get_window_text() {
 	return g_window ? g_window->get_title() : "";
 }
-void* get_window_os_handle() {
-	return g_window ? reinterpret_cast<void*>(g_window->get_native_window()) : nullptr;
+// Returned as the script's uint64: as a void*, a 32-bit target returned 4 bytes and the script read the other 4 from whatever the
+// function left in the register next to them.
+asQWORD get_window_os_handle() {
+	return g_window ? asQWORD(uintptr_t(reinterpret_cast<void*>(g_window->get_native_window()))) : 0;
 }
 game_window* get_window() { return g_window.get(); }
 void handle_sdl_event(SDL_Event* evt) {
