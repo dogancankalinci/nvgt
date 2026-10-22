@@ -530,14 +530,22 @@ static void regexp_construct(RegularExpression* mem, const std::string& pattern,
 static std::string::size_type regexp_offset(asQWORD offset) {
 	return offset > std::string::npos ? std::string::npos : std::string::size_type(offset);
 }
+// An offset past the end of the subject finds no match, as subst() already did (Poco asserts that the offset is within the subject,
+// so match(), extract() and split() threw its assertion violation).
+static bool regexp_offset_past_end(const std::string& subject, asQWORD offset) {
+	return offset > subject.length();
+}
 bool poco_regular_expression_match_at(RegularExpression* exp, const std::string& subject, asQWORD offset) {
+	if (regexp_offset_past_end(subject, offset)) return false;
 	return exp->match(subject, regexp_offset(offset));
 }
 bool poco_regular_expression_match_at(RegularExpression* exp, const std::string& subject, asQWORD offset, int options) {
+	if (regexp_offset_past_end(subject, offset)) return false;
 	return exp->match(subject, regexp_offset(offset), options);
 }
 std::string poco_regular_expression_extract(RegularExpression* exp, const std::string& subject, asQWORD offset, int options) {
 	std::string str;
+	if (regexp_offset_past_end(subject, offset)) return str;
 	try {
 		if (!exp->extract(subject, regexp_offset(offset), str, options)) return "";
 	} catch (RegularExpressionException& e) {
@@ -611,6 +619,7 @@ int poco_regular_expression_subst(RegularExpression* exp, std::string& subject, 
 CScriptArray* poco_regular_expression_split(RegularExpression* exp, const std::string& subject, asQWORD offset, int options) {
 	if (!StringArrayType) StringArrayType = g_ScriptEngine->GetTypeInfoByDecl("array<string>");
 	CScriptArray* array = CScriptArray::Create(StringArrayType);
+	if (regexp_offset_past_end(subject, offset)) return array;
 	RegularExpression::MatchVec groups;
 	try {
 		if (regexp_match_groups(*exp, subject, regexp_offset(offset), groups, options) < 1) return array;
