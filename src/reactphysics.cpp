@@ -296,10 +296,14 @@ void world_destroy_joint(PhysicsWorld* world, Joint* joint) {
 	world->destroyJoint(joint);
 }
 
+void body_cleanup_user_data(Body* body);
 void world_destroy(PhysicsWorld* world) {
 	if (!world) return;
 	check_not_in_physics_callback("a world");
 	world_destroy_listener(world);
+	// Destroying the world destroys its bodies, and the user data of each (an any the body holds a reference to) was never let go of.
+	for (uint32 b = 0; b < world->getNbRigidBodies(); b++)
+		body_cleanup_user_data(world->getRigidBody(b));
 	g_physics_worlds.erase(world);
 	g_physics.destroyPhysicsWorld(world);
 }
@@ -740,12 +744,10 @@ void body_cleanup_user_data(Body* body) {
 }
 
 void body_set_user_data(Body* body, CScriptAny* userData) {
-	body_cleanup_user_data(body);
-	if (userData) {
-		userData->AddRef();
-		body->setUserData(userData);
-	} else
-		body->setUserData(nullptr);
+	// The handle given (a parameter declared any@, not any@+) is a reference the body takes over: a reference was added to it here as well, so every any given as user data, and whatever it held, was never freed. The previous user data is let go of once the body holds the new one.
+	CScriptAny* previous = static_cast<CScriptAny*>(body->getUserData());
+	body->setUserData(userData);
+	if (previous) previous->Release();
 }
 
 CScriptAny* body_get_user_data(Body* body) {
