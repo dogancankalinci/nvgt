@@ -441,6 +441,11 @@ template <class T> T scalbn_int64(T x, int64_t exp) {
 	return std::scalbln(x, long(std::clamp<int64_t>(exp, LONG_MIN, LONG_MAX)));
 }
 
+// nexttoward() takes its direction as a long double, which the script passes as a double: bound to std::nexttoward(x, long double)
+// directly, the direction was read from where a long double goes (the stack on x86-64 Linux and macOS, a 128-bit register on 64-bit
+// ARM Linux and Android), not where the double was put, and the result went the wrong way at random.
+static float script_nexttoward_f(float from, double to) { return std::nexttoward(from, (long double)to); }
+static double script_nexttoward_d(double from, double to) { return std::nexttoward(from, (long double)to); }
 void RegisterScriptMath(asIScriptEngine *engine) {
 	compute_fp_characteristics();
 	using int8 = std::int8_t;
@@ -513,7 +518,7 @@ void RegisterScriptMath(asIScriptEngine *engine) {
 	engine->RegisterGlobalFunction("int ilogb(float x)", asFUNCTIONPR(std::ilogb, (float), int), asCALL_CDECL);
 	engine->RegisterGlobalFunction("float logb(float x)", asFUNCTIONPR(std::logb, (float), float), asCALL_CDECL);
 	engine->RegisterGlobalFunction("float nextafter(float from, float to)", asFUNCTIONPR(std::nextafter, (float, float), float), asCALL_CDECL);
-	engine->RegisterGlobalFunction("float nexttoward(float from, double to)", asFUNCTIONPR(std::nexttoward, (float, long double), float), asCALL_CDECL);
+	engine->RegisterGlobalFunction("float nexttoward(float from, double to)", asFUNCTION(script_nexttoward_f), asCALL_CDECL);
 	engine->RegisterGlobalFunction("float copysign(float mag, float sgn)", asFUNCTIONPR(std::copysign, (float, float), float), asCALL_CDECL);
 	engine->RegisterGlobalFunction("int fpclassify(float x)", asFUNCTIONPR(std::fpclassify, (float), int), asCALL_CDECL);
 	engine->RegisterGlobalFunction("bool is_finite(float x)", asFUNCTIONPR(std::isfinite, (float), bool), asCALL_CDECL);
@@ -578,7 +583,7 @@ void RegisterScriptMath(asIScriptEngine *engine) {
 	engine->RegisterGlobalFunction("int ilogb(double x)", asFUNCTIONPR(std::ilogb, (double), int), asCALL_CDECL);
 	engine->RegisterGlobalFunction("double logb(double x)", asFUNCTIONPR(std::logb, (double), double), asCALL_CDECL);
 	engine->RegisterGlobalFunction("double nextafter(double from, double to)", asFUNCTIONPR(std::nextafter, (double, double), double), asCALL_CDECL);
-	engine->RegisterGlobalFunction("double nexttoward(double from, double to)", asFUNCTIONPR(std::nexttoward, (double, long double), double), asCALL_CDECL);
+	engine->RegisterGlobalFunction("double nexttoward(double from, double to)", asFUNCTION(script_nexttoward_d), asCALL_CDECL);
 	engine->RegisterGlobalFunction("double copysign(double mag, double sgn)", asFUNCTIONPR(std::copysign, (double, double), double), asCALL_CDECL);
 	engine->RegisterGlobalFunction("int fpclassify(double x)", asFUNCTIONPR(std::fpclassify, (double), int), asCALL_CDECL);
 	engine->RegisterGlobalFunction("bool is_finite(double x)", asFUNCTIONPR(std::isfinite, (double), bool), asCALL_CDECL);
