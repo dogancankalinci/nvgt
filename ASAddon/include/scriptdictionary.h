@@ -209,17 +209,18 @@ public:
 
 		CIterator iter;
 		mutable int refCount;
-		asUINT iterGuard;
+		asQWORD iterGuard;
+		const CScriptDictionary* owner; // Held until the iterator is freed
 
 		CScriptDictIter(const CScriptDictionary* dict);
 		~CScriptDictIter();
 	};
 
 	CScriptDictIter* opForBegin() const;
-	bool opForEnd(const CScriptDictIter &iter) const;
-	CScriptDictIter* opForNext(CScriptDictIter& iter) const;
-	const CScriptDictValue& opForValue0(const CScriptDictIter& iter) const;
-	const dictKey_t& opForValue1(const CScriptDictIter& iter) const;
+	bool opForEnd(const CScriptDictIter *iter) const;
+	CScriptDictIter* opForNext(CScriptDictIter *iter) const;
+	const CScriptDictValue& opForValue0(const CScriptDictIter *iter) const;
+	const dictKey_t& opForValue1(const CScriptDictIter *iter) const;
 
 	// Garbage collections behaviours
 	int GetRefCount();
@@ -241,12 +242,15 @@ protected:
 	// Cache the object types needed
 	void Init(asIScriptEngine *engine);
 
+	// Whether the iterator may be read (sets a script exception if not)
+	bool CheckIter(const CScriptDictIter *iter) const;
+
 	// Our properties
 	asIScriptEngine *engine;
 	mutable int      refCount;
 	mutable bool     gcFlag;
 	dictMap_t        dict;
-	asUINT           iterGuard;
+	asQWORD          iterGuard;
 };
 
 // This function will determine the configuration of the engine

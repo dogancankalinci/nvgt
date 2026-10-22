@@ -1187,7 +1187,10 @@ static void CScriptDictValue_ReleaseReferences_Generic(asIScriptGeneric *gen)
 
 //----------------------------------------------------------------------------
 // Foreach support
-CScriptDictionary::CScriptDictIter::CScriptDictIter(const CScriptDictionary* dict) : iter(dict->begin()), refCount(1), iterGuard(dict->iterGuard) {}
+// ALTERED: an iterator holds its dictionary (released after the iterator is freed), so that the dictionary it is checked against
+// can't be freed and another made in its place while the script still holds the iterator; the guard is 64-bit, so that it doesn't
+// come round to an earlier value.
+CScriptDictionary::CScriptDictIter::CScriptDictIter(const CScriptDictionary* dict) : iter(dict->begin()), refCount(1), iterGuard(dict->iterGuard), owner(dict) { dict->AddRef(); }
 CScriptDictionary::CScriptDictIter::~CScriptDictIter() {}
 
 void CScriptDictionary::CScriptDictIter::AddRef() const
@@ -1199,8 +1202,10 @@ void CScriptDictionary::CScriptDictIter::Release() const
 {
 	if (asAtomicDec(refCount) == 0)
 	{
+		const CScriptDictionary* dict = owner;
 		this->~CScriptDictIter();
 		asFreeMem(const_cast<CScriptDictIter*>(this));
+		dict->Release();
 	}
 }
 
@@ -1212,34 +1217,88 @@ CScriptDictionary::CScriptDictIter* CScriptDictionary::opForBegin() const
 	return iter;
 }
 
-bool CScriptDictionary::opForEnd(const CScriptDictionary::CScriptDictIter& iter) const
+// ALTERED: the iterator is taken by handle (as the script declares it) and checked before it is used. A script can call these methods
+// itself, with null, an iterator at its end, one of another dictionary or one whose dictionary changed since; and in foreach, script
+// code run by the copy of the value (a copy constructor) can change the dictionary before the key is read. A null iterator was a
+// null reference, and reading or advancing an iterator in any of the other cases used a freed node or a map's end.
+static void SetDictIterException(const char *message)
 {
-	if (iter.iterGuard != iterGuard)
+	asIScriptContext *ctx = asGetActiveContext();
+	if( ctx )
+		ctx->SetException(message);
+}
+
+bool CScriptDictionary::CheckIter(const CScriptDictionary::CScriptDictIter *iter) const
+{
+	if( iter == 0 )
+	{
+		SetDictIterException("Null pointer access");
+		return false;
+	}
+	if( iter->owner != this )
+	{
+		SetDictIterException("The iterator is another dictionary's");
+		return false;
+	}
+	if( iter->iterGuard != iterGuard )
+	{
+		SetDictIterException("The dictionary was changed during its iteration");
+		return false;
+	}
+	if( iter->iter == end() )
+	{
+		SetDictIterException("The dictionary iterator is past its end");
+		return false;
+	}
+	return true;
+}
+
+bool CScriptDictionary::opForEnd(const CScriptDictionary::CScriptDictIter *iter) const
+{
+	if( iter == 0 )
+	{
+		SetDictIterException("Null pointer access");
+		return true;
+	}
+
+	if (iter->owner != this || iter->iterGuard != iterGuard)
 		return true;
 
-	if (iter.iter == end())
+	if (iter->iter == end())
 		return true;
 
 	return false;
 }
 
-CScriptDictionary::CScriptDictIter* CScriptDictionary::opForNext(CScriptDictionary::CScriptDictIter& iter) const
+CScriptDictionary::CScriptDictIter* CScriptDictionary::opForNext(CScriptDictionary::CScriptDictIter *iter) const
 {
-	if (iter.iterGuard != iterGuard)
-		iter.iter = end();
-	else
-		++iter.iter;
-	return &iter;
+	if( iter == 0 )
+	{
+		SetDictIterException("Null pointer access");
+		return 0;
+	}
+
+	// An iterator of another dictionary, or of a dictionary that changed (its guard never matches again), stays as it is; it was set
+	// to the end by an assignment CIterator doesn't do (its operator= is empty), and advanced past the end
+	if (iter->owner == this && iter->iterGuard == iterGuard && iter->iter != end())
+		++iter->iter;
+	return iter;
 }
 
-const CScriptDictValue& CScriptDictionary::opForValue0(const CScriptDictionary::CScriptDictIter& iter) const
+const CScriptDictValue& CScriptDictionary::opForValue0(const CScriptDictionary::CScriptDictIter *iter) const
 {
-	return iter.iter.m_it->second;
+	static const CScriptDictValue empty;
+	if( !CheckIter(iter) )
+		return empty;
+	return iter->iter.m_it->second;
 }
 
-const dictKey_t& CScriptDictionary::opForValue1(const CScriptDictionary::CScriptDictIter& iter) const
+const dictKey_t& CScriptDictionary::opForValue1(const CScriptDictionary::CScriptDictIter *iter) const
 {
-	return iter.iter.m_it->first;
+	static const dictKey_t empty;
+	if( !CheckIter(iter) )
+		return empty;
+	return iter->iter.m_it->first;
 }
 
 void ScriptDictIterAddRef_Generic(asIScriptGeneric* gen)
@@ -1264,28 +1323,28 @@ void ScriptDictionary_opForEnd_Generic(asIScriptGeneric* gen)
 {
 	CScriptDictionary* dict = (CScriptDictionary*)gen->GetObject();
 	CScriptDictionary::CScriptDictIter* iter = *(CScriptDictionary::CScriptDictIter**)gen->GetAddressOfArg(0);
-	*(bool*)gen->GetAddressOfReturnLocation() = dict->opForEnd(*iter);
+	*(bool*)gen->GetAddressOfReturnLocation() = dict->opForEnd(iter);
 }
 
 void ScriptDictionary_opForNext_Generic(asIScriptGeneric* gen)
 {
 	CScriptDictionary* dict = (CScriptDictionary*)gen->GetObject();
 	CScriptDictionary::CScriptDictIter* iter = *(CScriptDictionary::CScriptDictIter**)gen->GetAddressOfArg(0);
-	*(CScriptDictionary::CScriptDictIter**)gen->GetAddressOfReturnLocation() = dict->opForNext(*iter);
+	*(CScriptDictionary::CScriptDictIter**)gen->GetAddressOfReturnLocation() = dict->opForNext(iter);
 }
 
 void ScriptDictionary_opForValue0_Generic(asIScriptGeneric* gen)
 {
 	CScriptDictionary* dict = (CScriptDictionary*)gen->GetObject();
 	CScriptDictionary::CScriptDictIter* iter = *(CScriptDictionary::CScriptDictIter**)gen->GetAddressOfArg(0);
-	*reinterpret_cast<const CScriptDictValue**>(gen->GetAddressOfReturnLocation()) = &dict->opForValue0(*iter);
+	*reinterpret_cast<const CScriptDictValue**>(gen->GetAddressOfReturnLocation()) = &dict->opForValue0(iter);
 }
 
 void ScriptDictionary_opForValue1_Generic(asIScriptGeneric* gen)
 {
 	CScriptDictionary* dict = (CScriptDictionary*)gen->GetObject();
 	CScriptDictionary::CScriptDictIter* iter = *(CScriptDictionary::CScriptDictIter**)gen->GetAddressOfArg(0);
-	*reinterpret_cast<const dictKey_t**>(gen->GetAddressOfReturnLocation()) = &dict->opForValue1(*iter);
+	*reinterpret_cast<const dictKey_t**>(gen->GetAddressOfReturnLocation()) = &dict->opForValue1(iter);
 }
 
 //------------------------------------------------------------------
@@ -1452,10 +1511,10 @@ void RegisterScriptDictionary_Native(asIScriptEngine *engine)
 	r = engine->RegisterObjectBehaviour("dictionaryIter", asBEHAVE_RELEASE, "void f()", asMETHOD(CScriptDictionary::CScriptDictIter, Release), asCALL_THISCALL); assert(r >= 0);
 
 	r = engine->RegisterObjectMethod("dictionary", "dictionaryIter @opForBegin() const", asMETHODPR(CScriptDictionary, opForBegin, () const, CScriptDictionary::CScriptDictIter *), asCALL_THISCALL); assert(r >= 0);
-	r = engine->RegisterObjectMethod("dictionary", "bool opForEnd(dictionaryIter @+ iter) const", asMETHODPR(CScriptDictionary, opForEnd, (const CScriptDictionary::CScriptDictIter&) const, bool), asCALL_THISCALL); assert(r >= 0);
-	r = engine->RegisterObjectMethod("dictionary", "dictionaryIter @+ opForNext(dictionaryIter @+ iter) const", asMETHODPR(CScriptDictionary, opForNext, (CScriptDictionary::CScriptDictIter&) const, CScriptDictionary::CScriptDictIter*), asCALL_THISCALL); assert(r >= 0);
-	r = engine->RegisterObjectMethod("dictionary", "const dictionaryValue &opForValue0(dictionaryIter @+ iter) const", asMETHODPR(CScriptDictionary, opForValue0, (const CScriptDictionary::CScriptDictIter&) const, const CScriptDictValue &), asCALL_THISCALL); assert(r >= 0);
-	r = engine->RegisterObjectMethod("dictionary", "const string &opForValue1(dictionaryIter @+ iter) const", asMETHODPR(CScriptDictionary, opForValue1, (const CScriptDictionary::CScriptDictIter&) const, const dictKey_t&), asCALL_THISCALL); assert(r >= 0);
+	r = engine->RegisterObjectMethod("dictionary", "bool opForEnd(dictionaryIter @+ iter) const", asMETHODPR(CScriptDictionary, opForEnd, (const CScriptDictionary::CScriptDictIter*) const, bool), asCALL_THISCALL); assert(r >= 0);
+	r = engine->RegisterObjectMethod("dictionary", "dictionaryIter @+ opForNext(dictionaryIter @+ iter) const", asMETHODPR(CScriptDictionary, opForNext, (CScriptDictionary::CScriptDictIter*) const, CScriptDictionary::CScriptDictIter*), asCALL_THISCALL); assert(r >= 0);
+	r = engine->RegisterObjectMethod("dictionary", "const dictionaryValue &opForValue0(dictionaryIter @+ iter) const", asMETHODPR(CScriptDictionary, opForValue0, (const CScriptDictionary::CScriptDictIter*) const, const CScriptDictValue &), asCALL_THISCALL); assert(r >= 0);
+	r = engine->RegisterObjectMethod("dictionary", "const string &opForValue1(dictionaryIter @+ iter) const", asMETHODPR(CScriptDictionary, opForValue1, (const CScriptDictionary::CScriptDictIter*) const, const dictKey_t&), asCALL_THISCALL); assert(r >= 0);
 
 
 
