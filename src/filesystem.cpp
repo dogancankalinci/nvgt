@@ -24,6 +24,7 @@
 #include <Poco/UnicodeConverter.h>
 #include <SDL3/SDL.h>
 #include "nvgt_angelscript.h" // nvgt's Angelscript implementation needed for get_array_type
+#include "filesystem.h"
 #ifdef __ANDROID__
 	#include "android.h" // android_asset_file_exists / android_asset_directory_exists
 #endif
@@ -405,7 +406,8 @@ bool FileCopy(const string& source, const string& target, bool overwrite) {
 	} catch(Exception& e) { return false; }
 }
 
-bool FileMove(const string& source, const string& target, bool overwrite) {
+// As declared in filesystem.h and to the script: the two paths only (a moved file never replaces an existing one).
+bool FileMove(const string& source, const string& target) {
 	try {
 		File(source).renameTo(target, File::OPT_FAIL_ON_OVERWRITE);
 		return true;
