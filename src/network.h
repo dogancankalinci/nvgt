@@ -94,30 +94,32 @@ public:
 	bool get_packet_compression() {
 		return host && host->compressor.context;
 	}
-	// Of the script's types (uint64 here, uint for set_duplicate_peers): a size_t is 4 bytes on 32-bit targets, where the script read
+	// Of the script's types (uint64 here, uint for duplicate_peers): a size_t is 4 bytes on 32-bit targets, where the script read
 	// the other 4 bytes of the count from whatever the function left in the register next to it, and on 64-bit ARM the upper half of
-	// a 32-bit argument isn't set, so a size_t parameter took garbage there.
+	// a 32-bit argument isn't set, so a size_t parameter took garbage there. The byte and packet totals are 64-bit so that they
+	// don't wrap at 4 GB (a size_t return cut them to 32 bits on 32-bit targets, and the script's uint did everywhere).
 	asQWORD get_connected_peers() {
 		return host ? asQWORD(host->connectedPeers) : asQWORD(-1);
 	}
-	size_t get_bytes_received() {
+	asQWORD get_bytes_received() {
 		update_totals();
-		return host ? total_received_data : -1;
+		return host ? total_received_data : asQWORD(-1);
 	}
-	size_t get_bytes_sent() {
+	asQWORD get_bytes_sent() {
 		update_totals();
-		return host ? total_sent_data : -1;
+		return host ? total_sent_data : asQWORD(-1);
 	}
-	size_t get_packets_received() {
+	asQWORD get_packets_received() {
 		update_totals();
-		return host ? total_received_packets : -1;
+		return host ? total_received_packets : asQWORD(-1);
 	}
-	size_t get_packets_sent() {
+	asQWORD get_packets_sent() {
 		update_totals();
-		return host ? total_sent_packets : -1;
+		return host ? total_sent_packets : asQWORD(-1);
 	}
-	size_t get_duplicate_peers() {
-		return host ? host->duplicatePeers : -1;
+	// Set only through set_duplicate_peers' uint (or ENet's default, ENET_PROTOCOL_MAXIMUM_PEER_ID), so it fits the script's uint.
+	unsigned int get_duplicate_peers() {
+		return host ? (unsigned int)host->duplicatePeers : (unsigned int)-1;
 	}
 	void set_duplicate_peers(unsigned int peers) {
 		if (host) host->duplicatePeers = peers;

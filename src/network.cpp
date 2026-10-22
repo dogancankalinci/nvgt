@@ -353,10 +353,10 @@ void RegisterScriptNetwork(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod(_O("network"), _O("void set_packet_compression(bool compressed) property"), asMETHOD(network, set_packet_compression), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("network"), _O("uint get_duplicate_peers() const property"), asMETHOD(network, get_duplicate_peers), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("network"), _O("void set_duplicate_peers(uint max_duplicates) property"), asMETHOD(network, set_duplicate_peers), asCALL_THISCALL);
-	engine->RegisterObjectMethod(_O("network"), _O("uint get_bytes_received() const property"), asMETHOD(network, get_bytes_received), asCALL_THISCALL);
-	engine->RegisterObjectMethod(_O("network"), _O("uint get_bytes_sent() const property"), asMETHOD(network, get_bytes_sent), asCALL_THISCALL);
-	engine->RegisterObjectMethod(_O("network"), _O("uint get_packets_received() const property"), asMETHOD(network, get_packets_received), asCALL_THISCALL);
-	engine->RegisterObjectMethod(_O("network"), _O("uint get_packets_sent() const property"), asMETHOD(network, get_packets_sent), asCALL_THISCALL);
+	engine->RegisterObjectMethod(_O("network"), _O("uint64 get_bytes_received() const property"), asMETHOD(network, get_bytes_received), asCALL_THISCALL);
+	engine->RegisterObjectMethod(_O("network"), _O("uint64 get_bytes_sent() const property"), asMETHOD(network, get_bytes_sent), asCALL_THISCALL);
+	engine->RegisterObjectMethod(_O("network"), _O("uint64 get_packets_received() const property"), asMETHOD(network, get_packets_received), asCALL_THISCALL);
+	engine->RegisterObjectMethod(_O("network"), _O("uint64 get_packets_sent() const property"), asMETHOD(network, get_packets_sent), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("network"), _O("void set_bandwidth_limits(uint max_incoming_bytes_per_second, uint max_outgoing_bytes_per_second)"), asMETHOD(network, set_bandwidth_limits), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("network"), _O("bool get_active() const property"), asMETHOD(network, active), asCALL_THISCALL);
 	engine->RegisterObjectProperty(_O("network"), _O("bool IPV6enabled"), asOFFSET(network, IPv6enabled));
