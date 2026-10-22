@@ -521,6 +521,10 @@ static asQWORD script_memory_allocate_units(asQWORD unit_size, asQWORD unit_coun
 static asQWORD script_memory_reallocate(asQWORD ptr, asQWORD size) { void* p = (void*)memory_buffer_size_t(ptr, "address"); return size > asQWORD(SIZE_MAX) ? 0 : asQWORD(uintptr_t(realloc(p, size_t(size)))); }
 static void script_memory_free(asQWORD ptr) { free((void*)memory_buffer_size_t(ptr, "address")); }
 
+// The script reads a bool (one byte); dbgtools returns an int, on Windows IsDebuggerPresent()'s BOOL, documented only as nonzero.
+bool is_debugger_present() {
+	return debugger_present() != 0;
+}
 void RegisterMiscFunctions(asIScriptEngine* engine) {
 	engine->SetDefaultAccessMask(NVGT_SUBSYSTEM_OS);
 	engine->RegisterGlobalFunction(_O("bool chdir(const string& in directory)"), asFUNCTION(ChDir), asCALL_CDECL);
@@ -556,7 +560,7 @@ void RegisterMiscFunctions(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod(_O("process"), _O("datastream@+ get_stderr() property"), asMETHOD(process, get_stderr), asCALL_THISCALL);
 	engine->RegisterGlobalFunction(_O("process@ run(const string[]& in args, int flags = 0, const string& in workdir = \"\")"), asFUNCTION(run_script), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("bool run(const string& in filename, const string& in arguments, bool wait_for_completion, bool background)"), asFUNCTIONPR(run, (const std::string&, const std::string&, bool, bool), bool), asCALL_CDECL);
-	engine->RegisterGlobalFunction(_O("bool is_debugger_present()"), asFUNCTION(debugger_present), asCALL_CDECL);
+	engine->RegisterGlobalFunction(_O("bool is_debugger_present()"), asFUNCTION(is_debugger_present), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("int get_last_error()"), asFUNCTION(get_last_error), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("uint64 get_process_id()"), asFUNCTION(get_process_id), asCALL_CDECL);
 	engine->SetDefaultAccessMask(NVGT_SUBSYSTEM_GENERAL);
