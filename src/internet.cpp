@@ -241,11 +241,11 @@ template <class T, class P> void RegisterHTTPMessage(asIScriptEngine* engine, co
 	engine->RegisterObjectMethod(type.c_str(), "int64 get_content_length() const property", asMETHOD(T, getContentLength64), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "bool get_has_content_length() const property", asMETHOD(T, hasContentLength), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "void set_transfer_encoding(const string&in encoding) property", asMETHOD(T, setTransferEncoding), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "string get_transfer_encoding() const property", asMETHOD(T, getTransferEncoding), asCALL_THISCALL);
+	engine->RegisterObjectMethod(type.c_str(), "const string& get_transfer_encoding() const property", asMETHOD(T, getTransferEncoding), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "void set_chunked_transfer_encoding(bool enabled) property", asMETHOD(T, setChunkedTransferEncoding), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "bool get_chunked_transfer_encoding() const property", asMETHOD(T, getChunkedTransferEncoding), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "void set_content_type(const string&in media_type) property", asMETHODPR(T, setContentType, (const string&), void), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "string get_content_type() const property", asMETHOD(T, getContentType), asCALL_THISCALL);
+	engine->RegisterObjectMethod(type.c_str(), "const string& get_content_type() const property", asMETHOD(T, getContentType), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "void set_keep_alive(bool enabled) property", asMETHOD(T, setKeepAlive), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "bool get_keep_alive() const property", asMETHOD(T, getKeepAlive), asCALL_THISCALL);
 }
@@ -293,7 +293,7 @@ template <class T> void RegisterHTTPSession(asIScriptEngine* engine, const strin
 	engine->RegisterObjectMethod(type.c_str(), "bool get_connected() const property", asMETHOD(T, connected), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "void abort()", asMETHOD(T, abort), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "void set_keep_alive_timeout(const timespan&in timeout) property", asMETHOD(T, setKeepAliveTimeout), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "timespan get_keep_alive_timeout() const property", asMETHOD(T, getKeepAliveTimeout), asCALL_THISCALL);
+	engine->RegisterObjectMethod(type.c_str(), "const timespan& get_keep_alive_timeout() const property", asMETHOD(T, getKeepAliveTimeout), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "void set_send_timeout(const timespan&in timeout) property", asMETHOD(T, setSendTimeout), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "timespan get_send_timeout() const property", asMETHOD(T, getSendTimeout), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "void set_receive_timeout(const timespan&in timeout) property", asMETHOD(T, setReceiveTimeout), asCALL_THISCALL);
@@ -356,11 +356,11 @@ void RegisterHTTPCredentials(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("http_credentials", "void from_uri(const spec::uri&in uri)", asMETHOD(HTTPCredentials, fromURI), asCALL_THISCALL);
 	engine->RegisterObjectMethod("http_credentials", "void clear()", asMETHOD(HTTPCredentials, clear), asCALL_THISCALL);
 	engine->RegisterObjectMethod("http_credentials", "void set_username(const string&in username) property", asMETHOD(HTTPCredentials, setUsername), asCALL_THISCALL);
-	engine->RegisterObjectMethod("http_credentials", "string get_username() const property", asMETHOD(HTTPCredentials, getUsername), asCALL_THISCALL);
+	engine->RegisterObjectMethod("http_credentials", "const string& get_username() const property", asMETHOD(HTTPCredentials, getUsername), asCALL_THISCALL);
 	engine->RegisterObjectMethod("http_credentials", "void set_password(const string&in password) property", asMETHOD(HTTPCredentials, setPassword), asCALL_THISCALL);
-	engine->RegisterObjectMethod("http_credentials", "string get_password() const property", asMETHOD(HTTPCredentials, getPassword), asCALL_THISCALL);
+	engine->RegisterObjectMethod("http_credentials", "const string& get_password() const property", asMETHOD(HTTPCredentials, getPassword), asCALL_THISCALL);
 	engine->RegisterObjectMethod("http_credentials", "void set_host(const string&in host) property", asMETHOD(HTTPCredentials, setHost), asCALL_THISCALL);
-	engine->RegisterObjectMethod("http_credentials", "string get_host() const property", asMETHOD(HTTPCredentials, getHost), asCALL_THISCALL);
+	engine->RegisterObjectMethod("http_credentials", "const string& get_host() const property", asMETHOD(HTTPCredentials, getHost), asCALL_THISCALL);
 	engine->RegisterObjectMethod("http_credentials", "bool get_empty() const property", asMETHOD(HTTPCredentials, empty), asCALL_THISCALL);
 	engine->RegisterObjectMethod("http_credentials", "void authenticate(http_request& request, const http_response&in response)", asMETHOD(HTTPCredentials, authenticate), asCALL_THISCALL);
 	engine->RegisterObjectMethod("http_credentials", "void update_auth_info(http_request& request)", asMETHOD(HTTPCredentials, updateAuthInfo), asCALL_THISCALL);
@@ -852,7 +852,7 @@ void RegisterInternet(asIScriptEngine* engine) {
 	});
 	engine->RegisterEnum("http_status");
 	for (const auto& k : http_statuses) engine->RegisterEnumValue("http_status", k.first.c_str(), k.second);
-	engine->RegisterGlobalFunction("string http_status_reason(http_status status)", asFUNCTION(HTTPResponse::getReasonForStatus), asCALL_CDECL);
+	engine->RegisterGlobalFunction("const string& http_status_reason(http_status status)", asFUNCTION(HTTPResponse::getReasonForStatus), asCALL_CDECL);
 	engine->RegisterGlobalProperty("const string HTTP_1_0", (void*)&HTTPMessage::HTTP_1_0);
 	engine->RegisterGlobalProperty("const string HTTP_1_1", (void*)&HTTPMessage::HTTP_1_1);
 	engine->RegisterGlobalProperty("const string HTTP_IDENTITY_TRANSFER_ENCODING", (void*)&HTTPMessage::IDENTITY_TRANSFER_ENCODING);
