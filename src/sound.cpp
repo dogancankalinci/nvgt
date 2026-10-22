@@ -2081,6 +2081,7 @@ struct held_sound : ma_sound {
 	float given = 1; // The pitch MiniAudio was last given; only the thread reading the engine uses it.
 	std::atomic<float> rate{1}; // The rate MiniAudio last applied, by which a group multiplies those of the nodes it reads (see downstream_rate()).
 	ma_resource_manager_data_stream* stream = nullptr; // The resource manager's stream the sound plays, if it plays one, set before the sound is attached (see held_sound_process()).
+	std::atomic<ma_uint64> seek_target{~(ma_uint64)0}; // The frame a seek asked for, ~0 for none, made by held_sound_process() in place of MiniAudio's seekTarget.
 };
 struct held_sound_delete {
 	void operator()(ma_sound* s) const { delete static_cast<held_sound*>(s); }
@@ -2124,19 +2125,19 @@ static void hold_rate(ma_node* node) {
 	}
 	s->rate.store(rate, std::memory_order_relaxed);
 }
-// MiniAudio's processing of a sound plays first from a cache of the source's frames it read and converted to float but hadn't played yet, up to a block of them. A seek, made there from seekTarget, moved the source but kept the cache, so a sound not read in whole blocks, at a pitch other than 1 or a source rate other than the engine's, played up to that many frames from where it had been, at a pitch of 0.3 for 18 ms; the seek is taken over here, the cache emptied with it, and the target cleared only after it, as MiniAudio does, as the sound's position reads the target until then. A sound at its end is stopped in the block first, and a seek kept for when it plays again, as MiniAudio keeps it. And when a read that refills the cache returns MA_BUSY with frames, as a stream does while its next page is being decoded or a seek is being made, MiniAudio ends the call before playing them, so the rest of the block was silent while they waited a block; it is called again then, for the rest of the block, playing the cache first. On the thread reading the engine.
+// MiniAudio's processing of a sound plays first from a cache of the source's frames it read and converted to float but hadn't played yet, up to a block of them. A seek, made there from seekTarget, moved the source but kept the cache, so a sound not read in whole blocks, at a pitch other than 1 or a source rate other than the engine's, played up to that many frames from where it had been, at a pitch of 0.3 for 18 ms; the seek is made here, from the sound's own target, the cache emptied with it, and the target cleared only after it, as MiniAudio does, as the sound's position reads the target until then. MiniAudio's seekTarget is left unset: taken over from there, a seek stored just after the takeover looked was still made by MiniAudio's own code in the call that followed. A sound at its end is stopped in the block first, and a seek kept for when it plays again, as MiniAudio keeps it. And when a read that refills the cache returns MA_BUSY with frames, as a stream does while its next page is being decoded or a seek is being made, MiniAudio ends the call before playing them, so the rest of the block was silent while they waited a block; it is called again then, for the rest of the block, playing the cache first. On the thread reading the engine.
 static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32* frame_count_in, float** frames_out, ma_uint32* frame_count_out) {
 	hold_rate(node);
 	ma_sound* s = (ma_sound*)node;
-	std::atomic<ma_uint64>& seek_target = *reinterpret_cast<std::atomic<ma_uint64>*>(&s->seekTarget);
-	// A stream seeks on the resource manager's job thread, taking a place in its job queue and in the stream's order of execution before it posts the job; when the queue was full, MiniAudio kept both, and the stream returned MA_BUSY for good and couldn't be closed. A sound seeked every block, read faster than it plays, filled it. While a stream's seek is still being made, so that it would only return MA_BUSY and play nothing, the block is left silent without MiniAudio's processing, which would post the next seek; that one waits for the stream.
+	std::atomic<ma_uint64>& seek_target = held(s)->seek_target;
+	// A stream seeks on the resource manager's job thread, taking a place in its job queue and in the stream's order of execution before it posts the job; when the queue was full, MiniAudio kept both, and the stream returned MA_BUSY for good and couldn't be closed. A sound seeked every block, read faster than it plays, filled it. While a stream's seek is still being made, so that it would only return MA_BUSY and play nothing, the block is left silent without making the next seek, which waits for the stream.
 	ma_resource_manager_data_stream* stream = held(s)->stream;
 	if (stream && seek_target.load() != ~(ma_uint64)0 && reinterpret_cast<std::atomic<ma_bool32>*>(&stream->seekCounter)->load() > 0) {
 		*frame_count_out = 0;
 		return;
 	}
 	ma_uint64 target = seek_target.load();
-	if (target != ~(ma_uint64)0 && !ma_sound_at_end(s)) { // ~0 is MiniAudio's "no seek".
+	if (target != ~(ma_uint64)0 && !ma_sound_at_end(s)) { // ~0 is "no seek", as for MiniAudio.
 		ma_data_source_seek_to_pcm_frame(s->pDataSource, target);
 		ma_node_set_time(s, target);
 		s->processingCacheFramesRemaining = 0;
@@ -2144,10 +2145,7 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 	}
 	ma_uint32 wanted = *frame_count_out, done = 0, channels = ma_node_get_output_channels(node, 0);
 	for (bool first = true;; first = false) {
-		if (!first) {
-			if (seek_target.load() != ~(ma_uint64)0) break; // A seek made during the block waits for the next one's takeover, which empties the cache and keeps a stream to one seek, rather than being made by MiniAudio's own code.
-			hold_rate(node); // The doppler ratio MiniAudio's spatializer worked out in the call before, which it applies in this one, held as for the first.
-		}
+		if (!first) hold_rate(node); // The doppler ratio MiniAudio's spatializer worked out in the call before, which it applies in this one, held as for the first. A seek made during the block is made at the start of the next.
 		ma_uint32 cached = s->processingCacheFramesRemaining;
 		float* out = frames_out[0] + (size_t)done * channels;
 		ma_uint32 count = wanted - done;
@@ -3411,7 +3409,13 @@ public:
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
-		return (g_soundsystem_last_error = ma_sound_seek_to_pcm_frame(&*snd, position)) == MA_SUCCESS;
+		if (!snd->pDataSource) { // As ma_sound_seek_to_pcm_frame() refuses it.
+			g_soundsystem_last_error = MA_INVALID_OPERATION;
+			return false;
+		}
+		held(&*snd)->seek_target.store(position); // Made on the thread reading the engine, at the start of a block (see held_sound_process()).
+		g_soundsystem_last_error = MA_SUCCESS;
+		return true;
 	}
 	bool seek_in_milliseconds(unsigned long long offset) override {
 		ma_uint32 sample_rate = 0; // The sound's own, which its frames count in; the engine's differs for a file at another rate, and is 0 for an engine without a device.
@@ -3425,19 +3429,28 @@ public:
 		else
 			return get_position_in_milliseconds();
 	}
+	// The frame a seek not yet made asked for, as MiniAudio reports its own, or the source's cursor.
+	ma_result get_cursor(ma_uint64& pos) {
+		ma_uint64 target = held(&*snd)->seek_target.load();
+		if (target == ~(ma_uint64)0) return ma_sound_get_cursor_in_pcm_frames(&*snd, &pos);
+		pos = target;
+		return MA_SUCCESS;
+	}
 	unsigned long long get_position_in_frames() override {
 		if (snd) {
 			ma_uint64 pos = 0;
-			g_soundsystem_last_error = ma_sound_get_cursor_in_pcm_frames(&*snd, &pos);
+			g_soundsystem_last_error = get_cursor(pos);
 			return g_soundsystem_last_error == MA_SUCCESS ? pos : 0;
 		}
 		return 0;
 	}
 	unsigned long long get_position_in_milliseconds() override {
 		if (snd) {
-			float pos = 0.0f;
-			g_soundsystem_last_error = ma_sound_get_cursor_in_seconds(&*snd, &pos);
-			return g_soundsystem_last_error == MA_SUCCESS ? pos * 1000.0f : 0;
+			ma_uint64 frames = 0;
+			ma_uint32 sample_rate = 0;
+			if ((g_soundsystem_last_error = get_cursor(frames)) != MA_SUCCESS || (g_soundsystem_last_error = ma_sound_get_data_format(&*snd, nullptr, nullptr, &sample_rate, nullptr, 0)) != MA_SUCCESS) return 0;
+			float pos = (ma_int64)frames / (float)sample_rate; // As ma_sound_get_cursor_in_seconds() works it out.
+			return pos * 1000.0f;
 		}
 		return 0;
 	}
