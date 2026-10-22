@@ -250,6 +250,16 @@ bool info_box(const std::string& title, const std::string& text, const std::stri
 	#endif
 }
 
+// The script's input_box() and info_box() take a uint64 flags parameter (message_box_flags), which none of the platform dialogs
+// can show yet (the Windows input box, NSAlert/UIAlertController and the Android dialog take no icon or button order); the C++
+// takes it so that the function matches its script declaration, and ignores it.
+std::string script_input_box(const std::string& title, const std::string& text, const std::string& default_value, asQWORD flags) {
+	return input_box(title, text, default_value);
+}
+bool script_info_box(const std::string& title, const std::string& text, const std::string& value, asQWORD flags) {
+	return info_box(title, text, value);
+}
+
 game_window::game_window(const std::string& title, unsigned int w, unsigned int h, unsigned int flags) : _window(nullptr), _owns_window(true), _native_window(nullptr), _refcount(1) {
 	if (Poco::Environment::os() == POCO_OS_LINUX) flags |= SDL_WINDOW_FULLSCREEN;
 	_window = SDL_CreateWindow(title.c_str(), (int)w, (int)h, flags);
@@ -752,8 +762,8 @@ void RegisterUI(asIScriptEngine* engine) {
 	engine->RegisterGlobalFunction(_O("string select_folder_dialog(const string&in default_location = \"\")"), asFUNCTION(simple_folder_select_dialog), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("bool urlopen(const string &in url)"), asFUNCTION(urlopen), asCALL_CDECL);
 	engine->SetDefaultAccessMask(NVGT_SUBSYSTEM_UI);
-	engine->RegisterGlobalFunction(_O("string input_box(const string& in title, const string& in caption, const string& in default_value = '', uint64 flags = 0)"), asFUNCTION(input_box), asCALL_CDECL);
-	engine->RegisterGlobalFunction(_O("bool info_box(const string& in title, const string& in caption, const string& in text, uint64 flags = 0)"), asFUNCTION(info_box), asCALL_CDECL);
+	engine->RegisterGlobalFunction(_O("string input_box(const string& in title, const string& in caption, const string& in default_value = '', uint64 flags = 0)"), asFUNCTION(script_input_box), asCALL_CDECL);
+	engine->RegisterGlobalFunction(_O("bool info_box(const string& in title, const string& in caption, const string& in text, uint64 flags = 0)"), asFUNCTION(script_info_box), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("void next_keyboard_layout()"), asFUNCTION(next_keyboard_layout), asCALL_CDECL);
 	engine->RegisterGlobalFunction("bool set_application_name(const string& in name)", asFUNCTION(set_application_name), asCALL_CDECL);
 	engine->RegisterEnum("window_flash_operation");
