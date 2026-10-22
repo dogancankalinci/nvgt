@@ -3014,6 +3014,14 @@ public:
 				ma_resource_manager_unregister_file(ma_engine_get_resource_manager(get_engine()->get_ma_engine()), triplet.c_str());
 		}
 
+		// A stream fills two pages, of about a second each, before it is made, its decoder not yet looping, and MiniAudio's page fill ends after meeting a looping decoder's end twice with nothing read between; a stream wholly read into its pages so went silent where it looped, at its first loop and, under half a page, every second one. Such a source, its decoder at its end once the pages are filled, is loaded as a buffer instead, which loops seamlessly in no more memory; one of unknown length isn't, as loading it again would read it from its start again.
+		if (g_soundsystem_last_error == MA_SUCCESS && (made_source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM) && !(ma_flags & MA_SOUND_FLAG_UNKNOWN_LENGTH) && reinterpret_cast<std::atomic<ma_bool32>*>(&made_source->backend.stream.isDecoderAtEnd)->load()) {
+			ma_sound_uninit(&*made);
+			made_view.reset();
+			discard_source(made_source, tree_held);
+			g_sound_service->cleanup_triplet(triplet);
+			return load_special(filename, protocol_slot, protocol_directive, filter_slot, filter_directive, (ma_flags & ~MA_SOUND_FLAG_STREAM) | MA_SOUND_FLAG_DECODE);
+		}
 		if (g_soundsystem_last_error == MA_SUCCESS) {
 			if (made_source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM) held(&*made)->stream = &made_source->backend.stream;
 			source = std::move(made_source);
