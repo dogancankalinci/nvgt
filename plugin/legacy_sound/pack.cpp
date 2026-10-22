@@ -438,7 +438,7 @@ unsigned int legacy_pack::read_file(const string& pack_filename, unsigned int of
 	if (offset >= item_size)
 		return 0;
 	unsigned int bytes_to_read = size;
-	if (offset + size > item_size)
+	if (size > item_size - offset) // not offset + size > item_size, which wrapped for a size near 4 GB and read past the item
 		bytes_to_read = item_size - offset;
 	if (!buffer)
 		return bytes_to_read;
@@ -465,10 +465,10 @@ unsigned int legacy_pack::read_file_locked(const string& pack_filename, unsigned
 	return read_file(pack_filename, offset, buffer, size, NULL);
 }
 std::string legacy_pack::read_file_string(const string& pack_filename, unsigned int offset, unsigned int size) {
-	std::string result(size, '\0');
-	int actual_size = read_file_locked(pack_filename, offset, (unsigned char*)&result.front(), size);
-	if (actual_size > -1)
-		result.resize(actual_size);
+	// Only as much room as can be read (a count of 0xffffffff, "the rest", allocated 4 GB first).
+	std::string result(read_file_locked(pack_filename, offset, nullptr, size), '\0');
+	if (result.empty()) return result;
+	result.resize(read_file_locked(pack_filename, offset, (unsigned char*)&result[0], (unsigned int)result.size()));
 	return result;
 }
 
@@ -569,7 +569,7 @@ unsigned int legacy_pack::stream_read_fast(pack_stream* stream, unsigned char* b
 	if (offset >= stream->filesize)
 		return 0;
 	unsigned int bytes_to_read = size;
-	if (offset + size > stream->filesize)
+	if (size > stream->filesize - offset) // not offset + size > filesize, which wrapped for a size near 4 GB and read past the item
 		bytes_to_read = stream->filesize - offset;
 	if (!buffer)
 		return bytes_to_read;
@@ -600,9 +600,14 @@ unsigned int legacy_pack::stream_read_script(unsigned int idx, unsigned char* bu
 	return stream_read(pack_streams[idx], buffer, size);
 }
 std::string legacy_pack::stream_read_string(unsigned int idx, unsigned int size) {
-	std::string result(size, '\0');
-	unsigned int actual_size = stream_read_script(idx, (unsigned char*)result.data(), size);
-	result.resize(actual_size == 0xffffffff ? 0 : actual_size); // only what was read; nothing for a stream that isn't open
+	if (pack_streams.find(idx) == pack_streams.end())
+		return ""; // nothing for a stream that isn't open
+	// Only as much room as is left in the stream (a count of 0xffffffff, "the rest", allocated 4 GB first).
+	pack_stream* stream = pack_streams[idx];
+	unsigned int left = stream->offset < stream->filesize ? stream->filesize - stream->offset : 0;
+	std::string result(size < left ? size : left, '\0');
+	unsigned int actual_size = stream_read(stream, (unsigned char*)result.data(), (unsigned int)result.size());
+	result.resize(actual_size == 0xffffffff ? 0 : actual_size); // only what was read
 	return result;
 }
 
