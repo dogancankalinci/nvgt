@@ -459,7 +459,9 @@ public:
 	int left_range, right_range, backward_range, forward_range, lower_range, upper_range;
 	sound_aabb_shape(int left_range, int right_range, int backward_range, int forward_range, int lower_range, int upper_range) : sound_shape(), left_range(left_range), right_range(right_range), backward_range(backward_range), forward_range(forward_range), lower_range(lower_range), upper_range(upper_range) {}
 	bool contains(const reactphysics3d::Vector3& listener_position, reactphysics3d::Vector3& sound_position) override {
-		reactphysics3d::AABB bounds(reactphysics3d::Vector3(sound_position - reactphysics3d::Vector3(left_range, backward_range, lower_range)), reactphysics3d::Vector3(sound_position + reactphysics3d::Vector3(right_range, forward_range, upper_range)));
+		// The box between the two corners the ranges make, whichever way round: ranges whose sum is negative on an axis crossed its corners over, which std::clamp() below is undefined for, and the sound played from the box's far edge.
+		reactphysics3d::Vector3 low_corner = sound_position - reactphysics3d::Vector3(left_range, backward_range, lower_range), high_corner = sound_position + reactphysics3d::Vector3(right_range, forward_range, upper_range);
+		reactphysics3d::AABB bounds(reactphysics3d::Vector3::min(low_corner, high_corner), reactphysics3d::Vector3::max(low_corner, high_corner));
 		if (bounds.contains(listener_position)) return true;
 		sound_position.x = clamp(listener_position.x, bounds.getMin().x, bounds.getMax().x);
 		sound_position.y = clamp(listener_position.y, bounds.getMin().y, bounds.getMax().y);
