@@ -243,7 +243,7 @@ public:
 		filters[slot]->set_directive(new_directive);
 		return true;
 	}
-	std::string prepare_triplet(const std::string &name, const size_t protocol_slot, const directive_t protocol_directive, const size_t filter_slot, directive_t filter_directive, bool own_entry) {
+	std::string prepare_triplet(const std::string &name, const size_t protocol_slot, const directive_t protocol_directive, const size_t filter_slot, directive_t filter_directive, bool own_entry, unsigned salt) {
 		if (protocol_slot >= protocols.size())
 			return "";
 		if (!is_valid_utf8(name))
@@ -269,6 +269,7 @@ public:
 		        << "\x1e"
 		        << preg->get()->get_suffix(args.protocol_directive);
 		if (own_entry) triplet << "\x1e" << ++own_entries;
+		if (salt) triplet << "\x1e~" << salt;
 		set_temp_args(triplet.str(), args);
 
 		return triplet.str();

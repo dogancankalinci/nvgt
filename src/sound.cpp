@@ -47,6 +47,7 @@
 #include "datastreams.h"
 #include <miniaudio_wdl_resampler.h>
 #include <atomic>
+#include <map>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -2723,6 +2724,13 @@ public:
 };
 // MiniAudio's resource manager takes a buffer whose synchronous load failed out of its cache without the cache's own lock, which its asynchronous loads take for that. Every buffer is therefore loaded asynchronously, except by load_special()'s retry without flags, which loads synchronously as only that leaves the cached file it unregisters reliably. That retry and its unregister hold this exclusively; every other making and freeing of a source in the cache holds it shared, so those wait only for such a retry and not for one another's loading. Streams don't use the cache.
 static std::shared_mutex g_resource_tree_mutex;
+// The names claimed in each resource manager by their hash: see sound_impl::claim_buffer_name().
+struct buffer_name_claim {
+	std::string name;
+	unsigned users; // Loads and sounds holding the claim.
+};
+static std::mutex g_buffer_names_mutex;
+static std::map<std::pair<ma_resource_manager*, ma_uint32>, buffer_name_claim> g_buffer_names;
 static void place_shaped_mixers(audio_engine* engine) {
 	std::lock_guard<std::mutex> lock(g_shaped_mixers_mutex);
 	for (mixer_impl* m : g_shaped_mixers) {
@@ -2815,6 +2823,8 @@ class sound_impl final : public mixer_impl, public virtual sound {
 		src.reset();
 	}
 	std::string pcm_buffer;      // When loading from raw PCM (like TTS) we store the intermediate wav data here so we can take advantage of async loading to return quickly. Makes a substantial difference in the responsiveness of TTS calls.
+	std::string claimed_name; // The name the sound's source was loaded under, claimed in claimed_manager until the source is freed, else empty.
+	ma_resource_manager* claimed_manager = nullptr;
 	std::string loaded_filename; // Contains the loaded filename as passed in the load/stream method, used just for convenience.
 	mutable std::atomic_flag load_completed;
 	unique_ptr<pcm_queue> pcm_stream;
@@ -2903,6 +2913,25 @@ public:
 		ma_mutex_unlock(&manager->dataBufferBSTLock);
 		return node != nullptr;
 	}
+	// MiniAudio's resource manager knows a cached buffer only by its name's 32-bit hash, so a load whose name hashed as a live buffer of another name's played that buffer instead, and each load of a name of its own, as every speech utterance gets, did so by about one in 4 million per buffer cached. Each load claims its name's hash in the resource manager until its source is freed; a hash claimed under another name, or cached with no claim, makes the load try its name with the next salt, which a name always gets in the same order, so loads of one name still share their buffer.
+	static bool claim_buffer_name(ma_resource_manager* manager, const std::string& name) {
+		std::pair<ma_resource_manager*, ma_uint32> key(manager, resource_name_hash(name.c_str()));
+		std::lock_guard<std::mutex> lock(g_buffer_names_mutex);
+		auto claim = g_buffer_names.find(key);
+		if (claim != g_buffer_names.end()) {
+			if (claim->second.name != name) return false;
+			claim->second.users++;
+			return true;
+		}
+		if (resource_cached(manager, name)) return false; // Kept with no claim, as by a source something else still holds, whose name isn't known.
+		g_buffer_names.emplace(key, buffer_name_claim{name, 1});
+		return true;
+	}
+	static void let_go_of_buffer_name(ma_resource_manager* manager, const std::string& name) {
+		std::lock_guard<std::mutex> lock(g_buffer_names_mutex);
+		auto claim = g_buffer_names.find({manager, resource_name_hash(name.c_str())});
+		if (claim != g_buffer_names.end() && claim->second.name == name && !--claim->second.users) g_buffer_names.erase(claim);
+	}
 	// A source's own sample rate, from its header read by a decoder of its own through the sound service, or 0 when none could read it.
 	static ma_uint32 native_sample_rate(const std::string& triplet) {
 		ma_decoder_config cfg = ma_decoder_config_init(ma_format_unknown, 0, 0); // No conversion, so the decoder's output is the source's own format.
@@ -2927,18 +2956,24 @@ public:
 		// Made here and handed to snd only once it loaded, under the lock the audio thread reads snd under, so the audio thread never reads a sound half made or freed after a failed load.
 		held_sound_ptr made(new held_sound());
 		// The sound service converts our file name into a "tripplet" which includes information about the origin an asset is expected to come from. This guarantees that we don't mistake assets from different origins as the same just because they have the same name.
-		std::string triplet = g_sound_service->prepare_triplet(filename, protocol_slot, protocol_directive, filter_slot, filter_directive, whole_in_pages);
-		if (triplet.empty()) { // A name the sound service can't make one of, such as one that isn't valid UTF-8.
-			g_soundsystem_last_error = MA_INVALID_ARGS;
-			return false;
+		ma_resource_manager* manager = ma_engine_get_resource_manager(engine->get_ma_engine());
+		std::string triplet;
+		for (unsigned salt = 0;; salt++) { // See claim_buffer_name().
+			triplet = g_sound_service->prepare_triplet(filename, protocol_slot, protocol_directive, filter_slot, filter_directive, whole_in_pages, salt);
+			if (triplet.empty()) { // A name the sound service can't make one of, such as one that isn't valid UTF-8.
+				g_soundsystem_last_error = MA_INVALID_ARGS;
+				return false;
+			}
+			if (claim_buffer_name(manager, triplet)) break;
+			g_sound_service->cleanup_triplet(triplet);
 		}
 		// A buffer is decoded at the resource manager's rate, the engine's unless an engine without a device was made without one, when buffers keep their own. So one whose own rate was far below it, as a header could claim 1 Hz, came out that many times larger: a 4 KB file took 192 MB and seconds to decode, and one of 400 KB more memory than there was. A buffer whose rate is below that by more than the widest ratio the sample rates refused elsewhere leave, 384000 to 8000, is refused. The resource manager gives a source's own rate no way out, so the file's header is read first by a decoder of its own, unless the resource manager holds the buffer already, as for a sound played again by its name, which that cost many times over; a source of unknown length isn't, as opening it twice would read it from its start again. Where the resource manager keeps a source's own rate instead, it decodes buffers and streams alike in pages of 1000 * (rate / 1000) frames of it, none below 1000 Hz, so those played silence while their load succeeded: there they are refused below 1000 Hz.
-		ma_resource_manager* manager = ma_engine_get_resource_manager(engine->get_ma_engine());
 		ma_uint32 decoded_rate = manager->config.decodedSampleRate;
 		bool buffered = (ma_flags & MA_SOUND_FLAG_DECODE) && !(ma_flags & MA_SOUND_FLAG_STREAM), streamed = (ma_flags & MA_SOUND_FLAG_STREAM) != 0;
 		if (!whole_in_pages && !(ma_flags & MA_SOUND_FLAG_UNKNOWN_LENGTH) && (buffered? !resource_cached(manager, triplet) : streamed && !decoded_rate)) {
 			ma_uint32 own_rate = native_sample_rate(triplet);
 			if (own_rate && (decoded_rate? (ma_uint64)own_rate * (ma_standard_sample_rate_max / ma_standard_sample_rate_min) < decoded_rate : own_rate < 1000)) {
+				let_go_of_buffer_name(manager, triplet);
 				g_sound_service->cleanup_triplet(triplet);
 				g_soundsystem_last_error = MA_FORMAT_NOT_SUPPORTED;
 				return false;
@@ -3029,6 +3064,7 @@ public:
 			ma_sound_uninit(&*made);
 			made_view.reset();
 			discard_source(made_source, tree_held);
+			let_go_of_buffer_name(manager, triplet);
 			g_sound_service->cleanup_triplet(triplet);
 			return load_source(filename, protocol_slot, protocol_directive, filter_slot, filter_directive, (ma_flags & ~MA_SOUND_FLAG_STREAM) | MA_SOUND_FLAG_DECODE, true);
 		}
@@ -3036,9 +3072,12 @@ public:
 			if (made_source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM) held(&*made)->stream = &made_source->backend.stream;
 			source = std::move(made_source);
 			view = std::move(made_view);
+			claimed_name = triplet;
+			claimed_manager = manager;
 			adopt_sound(std::move(made));
 			postload(filename, (flags & MA_SOUND_FLAG_ASYNC) && !wait_for_load);
 		}
+		else let_go_of_buffer_name(manager, triplet);
 		// Sound service has to store data pertaining to our triplet, and this is the earliest point at which it's safe to clean that up.
 		g_sound_service->cleanup_triplet(triplet);
 		return g_soundsystem_last_error == MA_SUCCESS;
@@ -3250,6 +3289,11 @@ public:
 				ma_resource_manager_data_source_uninit(&*source);
 			}
 			source.reset();
+		}
+		if (claimed_manager) {
+			let_go_of_buffer_name(claimed_manager, claimed_name);
+			claimed_manager = nullptr;
+			claimed_name.clear();
 		}
 		closing.reset();
 		if (datasource) {
