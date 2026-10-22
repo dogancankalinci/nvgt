@@ -82,11 +82,12 @@ bool aabb_test_ray_intersect(const AABB& aabb, const Vector3& start, const Vecto
 }
 
 // ContactPair::getContactPoint returns a CollisionCallback::ContactPoint by value: a small wrapper around a reference into the
-// world's contact data. Scripts get it as a handle, so they get a reference-counted copy of that wrapper.
+// contact data of the collision test or world update that runs the callback, which is gone (and its memory reused) once the callback
+// returns. Scripts get the point as a handle they can keep, so they get a reference-counted copy of the point's values.
 struct script_contact_point {
 	int ref_count;
-	CollisionCallback::ContactPoint point;
-	script_contact_point(const CollisionCallback::ContactPoint& point) : ref_count(1), point(point) {}
+	Vector3 world_normal, local_point_on_collider1, local_point_on_collider2;
+	script_contact_point(const CollisionCallback::ContactPoint& point) : ref_count(1), world_normal(point.getWorldNormal()), local_point_on_collider1(point.getLocalPointOnCollider1()), local_point_on_collider2(point.getLocalPointOnCollider2()) {}
 	void add_ref() { asAtomicInc(ref_count); }
 	void release() {
 		if (asAtomicDec(ref_count) < 1) delete this;
@@ -96,9 +97,9 @@ script_contact_point* contact_pair_get_contact_point(const CollisionCallback::Co
 	if (index >= pair.getNbContactPoints()) throw out_of_range("contact point index out of range");
 	return new script_contact_point(pair.getContactPoint(index));
 }
-const Vector3& contact_point_get_world_normal(const script_contact_point& point) { return point.point.getWorldNormal(); }
-const Vector3& contact_point_get_local_point_on_collider1(const script_contact_point& point) { return point.point.getLocalPointOnCollider1(); }
-const Vector3& contact_point_get_local_point_on_collider2(const script_contact_point& point) { return point.point.getLocalPointOnCollider2(); }
+const Vector3& contact_point_get_world_normal(const script_contact_point& point) { return point.world_normal; }
+const Vector3& contact_point_get_local_point_on_collider1(const script_contact_point& point) { return point.local_point_on_collider1; }
+const Vector3& contact_point_get_local_point_on_collider2(const script_contact_point& point) { return point.local_point_on_collider2; }
 
 // ConcaveShape::getScale returns a reference; the script gets the vector by value.
 template <class T> Vector3 concave_shape_get_scale(const T& shape) { return shape.getScale(); }
