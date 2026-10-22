@@ -1065,7 +1065,7 @@ void RegisterScripting(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod(_O("script_module"), _O("int reset_globals(string[]@ errors=null)"), asMETHOD(script_module, reset_globals), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("script_module"), _O("int bind_all_imported_functions()"), asMETHOD(script_module, bind_all_imported_functions), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("script_module"), _O("int bind_imported_function(uint index, script_function@+ func)"), asMETHOD(script_module, bind_imported_function), asCALL_THISCALL);
-	engine->RegisterObjectMethod(_O("script_module"), _O("int compile_global(const string&in section_name, const string&in code, uint line_offset=0)"), asMETHOD(script_module, compile_global), asCALL_THISCALL);
+	engine->RegisterObjectMethod(_O("script_module"), _O("int compile_global(const string&in section_name, const string&in code, string[]@ errors=null, uint line_offset=0)"), asMETHOD(script_module, compile_global), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("script_module"), _O("script_function@ compile_function(const string&in section_name, const string&in code, string[]@ errors=null, bool add_to_module=false, uint line_offset=0)"), asMETHOD(script_module, compile_function), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("script_module"), _O("void discard()"), asMETHOD(script_module, discard), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("script_module"), _O("script_function@+ get_function_by_decl(const string&in decl)"), asMETHOD(script_module, get_function_by_decl), asCALL_THISCALL);
