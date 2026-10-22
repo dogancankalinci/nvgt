@@ -54,6 +54,7 @@ vcpkg_from_github(
         fix-return-object-reference.patch
         fix-callptr-suspend.patch
         fix-release-after-store.patch
+        fix-format-va-copy.patch
 )
 
 vcpkg_cmake_configure(

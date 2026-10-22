@@ -1,0 +1,40 @@
+--- a/sdk/angelscript/source/as_string.cpp
++++ b/sdk/angelscript/source/as_string.cpp
+@@ -283,11 +283,20 @@
+ 	va_list args;
+ 	va_start(args, format);
+ 
++	// ALTERED: every vsnprintf gets a fresh copy of the arguments. The first one consumed args, and the retries with a larger
++	// buffer (a result of 1023 characters or more) read on from where it stopped where va_list is an array (x86-64 System V:
++	// Linux and macOS on x86-64), past the arguments (a crash for a %s, as in GetDeclaration of a function with a long default value).
++	va_list argsCopy;
++	va_copy(argsCopy, args);
++
+ 	const size_t startSize = 1024;
+ 	char tmp[startSize];
+-	int r = asVSNPRINTF(tmp, startSize-1, format, args);
++	int r = asVSNPRINTF(tmp, startSize-1, format, argsCopy);
++	va_end(argsCopy);
+ 
+-	if( r > 0 && r < int(startSize) )
++	// ALTERED: tmp holds at most startSize-2 characters (vsnprintf was given startSize-1 bytes), so a result of exactly
++	// startSize-1 characters was cut by one and its terminating null taken as its last character
++	if( r > 0 && r < int(startSize) - 1 )
+ 	{
+ 		Assign(tmp, r);
+ 	}
+@@ -300,8 +309,13 @@
+ 		asCString str; // Use temporary string in case the current buffer is a parameter
+ 		str.Allocate(n, false);
+ 
+-		while( (r = asVSNPRINTF(str.AddressOf(), n, format, args)) < 0 || r >= int(n) )
++		for(;;)
+ 		{
++			va_copy(argsCopy, args);
++			r = asVSNPRINTF(str.AddressOf(), n, format, argsCopy);
++			va_end(argsCopy);
++			if( r >= 0 && r < int(n) )
++				break;
+ 			n *= 2;
+ 			str.Allocate(n, false);
+ 		}
