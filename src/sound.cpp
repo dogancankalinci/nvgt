@@ -2284,7 +2284,8 @@ public:
 	audio_spatializer* get_spatializer() const {
 		if (!spatializer) {
 			spatializer = audio_spatializer::create(const_cast<mixer_impl*>(this), get_engine());
-			node_chain->add_node(spatializer);
+			// After the effects chain, which runs first wherever it is made, so that a mixer's effects are positioned with it rather than applied to it once positioned, whichever was made first; a chain the script took out of internal_node_chain leaves the spatializer first.
+			if (!effects_chain || !node_chain->add_node(spatializer, effects_chain)) node_chain->add_node(spatializer);
 		}
 		return spatializer;
 	}
@@ -2380,7 +2381,7 @@ public:
 	audio_node_chain* get_effects_chain() override {
 		if (!effects_chain) {
 			effects_chain = audio_node_chain::create(nullptr, nullptr, get_engine());
-			node_chain->add_node(effects_chain);
+			node_chain->add_node(effects_chain); // First, before the spatializer: see get_spatializer().
 		}
 		return effects_chain;
 	}
