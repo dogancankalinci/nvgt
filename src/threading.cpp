@@ -36,6 +36,9 @@
 #include "pocostuff.h"
 #include "scriptstuff.h"
 #include "threading.h"
+#ifdef __ANDROID__
+	#include <unistd.h> // gettid
+#endif
 using namespace Poco;
 
 // A number, bool or enum given to async for a parameter of another of those types, converted by its value. It was passed by its size: an int for a float parameter arrived as the bits of the int (5 as 7e-45), an int64 for a double and a float for an int likewise, and a value of another size was refused. A number converts as a direct call converts it, a bool to 1 or 0, and to a bool any value but 0 is true; an enum is read and written as its underlying type (enum E : int8 is one byte). Returns false for a type that isn't one of these.
@@ -640,6 +643,16 @@ bool thread_sleep(unsigned int ms) {
 	}
 	return Thread::trySleep(ms);
 }
+// The script's uint fits the OS thread id on every target (a Windows DWORD, a Linux pid_t, an Apple mach port), but Poco returns it
+// as a long, which is 8 bytes on 64-bit Linux and Apple targets. Poco has no implementation for Android (it returns 0 for every
+// thread there), so the id comes from gettid() on Android.
+unsigned int thread_current_id() {
+	#ifdef __ANDROID__
+	return (unsigned int)gettid();
+	#else
+	return (unsigned int)Thread::currentOsTid();
+	#endif
+}
 bool thread_try_join(Thread* thread, unsigned int ms) {
 	return thread->tryJoin(ms);
 }
@@ -685,7 +698,7 @@ void RegisterThreading(asIScriptEngine* engine) {
 	engine->RegisterEnumValue("thread_priority", "THREAD_PRIORITY_HIGHEST", Thread::Priority::PRIO_HIGHEST);
 	angelscript_refcounted_register<Thread>(engine, "thread");
 	engine->RegisterGlobalFunction("bool get_thread_is_main() property", asFUNCTION(thread_is_main), asCALL_CDECL);
-	engine->RegisterGlobalFunction(_O("uint thread_current_id()"), asFUNCTION(Thread::currentOsTid), asCALL_CDECL);
+	engine->RegisterGlobalFunction(_O("uint thread_current_id()"), asFUNCTION(thread_current_id), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("void thread_yield()"), asFUNCTION(Thread::yield), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("bool thread_sleep(uint ms)"), asFUNCTION(thread_sleep), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("thread@+ get_thread_current() property"), asFUNCTION(Thread::current), asCALL_CDECL);
