@@ -3018,6 +3018,8 @@ public:
 
 		// A stream fills two pages, of about a second each, before it is made, its decoder not yet looping, and MiniAudio's page fill ends after meeting a looping decoder's end twice with nothing read between; a stream wholly read into its pages so went silent where it looped, at its first loop and, under half a page, every second one. Such a source, its decoder at its end once the pages are filled, is loaded as a buffer instead, which loops seamlessly in no more memory; one of unknown length isn't, as loading it again would read it from its start again.
 		if (g_soundsystem_last_error == MA_SUCCESS && (made_source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM) && !(ma_flags & MA_SOUND_FLAG_UNKNOWN_LENGTH) && reinterpret_cast<std::atomic<ma_bool32>*>(&made_source->backend.stream.isDecoderAtEnd)->load()) {
+			let_go_of_load_state(); // An asynchronous stream's, which the buffer's load replaces with its own; its notification marked the load completed.
+			load_completed.clear();
 			ma_sound_uninit(&*made);
 			made_view.reset();
 			discard_source(made_source, tree_held);
@@ -3190,16 +3192,18 @@ public:
 	bool is_load_completed() const override {
 		return load_completed.test();
 	}
-	bool close() override {
-		// It's possible that this sound could still be loading in a job thread when we try to destroy it. Unfortunately there isn't a way to cancel this, so we have to just wait.
-		if (load_state) {
-			{
-				std::unique_lock<std::mutex> lock(load_state->mtx);
-				load_state->cv.wait(lock, [this]() { return load_state->done; });
-			}
-			load_state->abandon();
-			load_state = nullptr;
+	// It's possible that this sound could still be loading in a job thread when we let go of its load. Unfortunately there isn't a way to cancel this, so we have to just wait.
+	void let_go_of_load_state() {
+		if (!load_state) return;
+		{
+			std::unique_lock<std::mutex> lock(load_state->mtx);
+			load_state->cv.wait(lock, [this]() { return load_state->done; });
 		}
+		load_state->abandon();
+		load_state = nullptr;
+	}
+	bool close() override {
+		let_go_of_load_state();
 		if (!snd) return false;
 		if (spatializer) {
 			// Not under this sound's lock, which no chain's lock is taken inside: forgetting the mixer takes the spatializer's, and taking it out of the chain rewires the chains around it, and each of these, like letting go of the spatializer itself, can let go of the last reference to a mixer, such as one a reverb3d made or one the script pointed a chain at. A mixer's destructor takes g_shaped_mixers_mutex, which a listener's move holds while it waits for this sound's lock.
