@@ -1694,7 +1694,7 @@ protected:
 		}
 		return true;
 	}
-	ma_data_converter* get_dc() const { return &*dc; }
+	ma_data_converter* get_dc() const { return dc.get(); } // Null while no conversion is needed or the encoder isn't open, which *dc would be undefined for.
 public:
 	audio_encoder_impl(audio_engine* e, bool streamable_pulling = true) : effect_node_impl(e, 0, 0, 1, 1, MA_NODE_FLAG_PASSTHROUGH), output_stream(nullptr), pull_stream(nullptr), streamable_pulling(streamable_pulling), sample_rate(0), channels(0), frames_written(0) {}
 	~audio_encoder_impl() {
