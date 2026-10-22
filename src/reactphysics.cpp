@@ -10,6 +10,7 @@
  * 3. This notice may not be removed or altered from any source distribution.
  */
 
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -70,7 +71,9 @@ bool aabb_test_collision_triangle(const AABB& aabb, CScriptArray* points) {
 	return aabb.testCollisionTriangleAABB(tri);
 }
 
-bool aabb_test_ray_intersect(const AABB& aabb, Vector3 start, Vector3 dir, float dist) {
+// The script passes the vectors by reference (const vector&in); taking them by value here would read them from registers on
+// targets that pass small float structs in registers (x86-64 System V, arm64) and get garbage.
+bool aabb_test_ray_intersect(const AABB& aabb, const Vector3& start, const Vector3& dir, float dist) {
 	Vector3 invdir(999999, 999999, 999999);
 	if (dir.x != 0) invdir.x = 1.0 / dir.x;
 	if (dir.y != 0) invdir.y = 1.0 / dir.y;
@@ -78,9 +81,30 @@ bool aabb_test_ray_intersect(const AABB& aabb, Vector3 start, Vector3 dir, float
 	return aabb.testRayIntersect(start, invdir, dist);
 }
 
-CollisionCallback::ContactPoint contact_pair_get_contact_point(const CollisionCallback::ContactPair& pair, uint32 index) {
-	return pair.getContactPoint(index);
+// ContactPair::getContactPoint returns a CollisionCallback::ContactPoint by value: a small wrapper around a reference into the
+// world's contact data. Scripts get it as a handle, so they get a reference-counted copy of that wrapper.
+struct script_contact_point {
+	int ref_count;
+	CollisionCallback::ContactPoint point;
+	script_contact_point(const CollisionCallback::ContactPoint& point) : ref_count(1), point(point) {}
+	void add_ref() { asAtomicInc(ref_count); }
+	void release() {
+		if (asAtomicDec(ref_count) < 1) delete this;
+	}
+};
+script_contact_point* contact_pair_get_contact_point(const CollisionCallback::ContactPair& pair, uint32 index) {
+	if (index >= pair.getNbContactPoints()) throw out_of_range("contact point index out of range");
+	return new script_contact_point(pair.getContactPoint(index));
 }
+const Vector3& contact_point_get_world_normal(const script_contact_point& point) { return point.point.getWorldNormal(); }
+const Vector3& contact_point_get_local_point_on_collider1(const script_contact_point& point) { return point.point.getLocalPointOnCollider1(); }
+const Vector3& contact_point_get_local_point_on_collider2(const script_contact_point& point) { return point.point.getLocalPointOnCollider2(); }
+
+// ConcaveShape::getScale returns a reference; the script gets the vector by value.
+template <class T> Vector3 concave_shape_get_scale(const T& shape) { return shape.getScale(); }
+
+// PhysicsWorld::setNbIterationsPositionSolver takes a uint32 while the script property (and its getter) is a uint16.
+void world_set_nb_iterations_position_solver(PhysicsWorld& world, uint16 iterations) { world.setNbIterationsPositionSolver(iterations); }
 
 AABB aabb_from_triangle(CScriptArray* points) {
 	if (!points) throw runtime_error("triangle points cannot be null");
@@ -936,7 +960,7 @@ void RegisterConcaveShape(asIScriptEngine* engine, const string& type) {
 	RegisterCollisionShape<T>(engine, type);
 	engine->RegisterObjectMethod(type.c_str(), "physics_triangle_raycast_side get_raycast_test_type() const property", asMETHOD(ConcaveShape, getRaycastTestType), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "void set_raycast_test_type(physics_triangle_raycast_side side) property", asMETHOD(ConcaveShape, setRaycastTestType), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "vector get_scale() const property", asMETHOD(ConcaveShape, getScale), asCALL_THISCALL);
+	engine->RegisterObjectMethod(type.c_str(), "vector get_scale() const property", asFUNCTION(concave_shape_get_scale<T>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "void set_scale(const vector &in scale) property", asMETHOD(ConcaveShape, setScale), asCALL_THISCALL);
 }
 
@@ -1118,7 +1142,7 @@ void RegisterMathTypes(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("physics_transform", "vector opMul(const vector&in) const", asMETHODPR(Transform, operator*, (const Vector3&) const, Vector3), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_transform", "string opImplConv()", asMETHOD(Transform, to_string), asCALL_THISCALL);
 	engine->RegisterGlobalFunction("physics_transform get_IDENTITY_TRANSFORM() property", asFUNCTION(Transform::identity), asCALL_CDECL);
-	engine->RegisterGlobalFunction("physics_transform transforms_interpolate()", asFUNCTION(Transform::interpolateTransforms), asCALL_CDECL);
+	engine->RegisterGlobalFunction("physics_transform transforms_interpolate(const physics_transform&in old_transform, const physics_transform&in new_transform, float interpolation_factor)", asFUNCTION(Transform::interpolateTransforms), asCALL_CDECL);
 }
 
 void RegisterCorePhysicsTypes(asIScriptEngine* engine) {
@@ -1407,16 +1431,16 @@ void RegisterTriangleMeshAndConcaveShape(asIScriptEngine* engine) {
 
 void RegisterPhysicsWorldAndCallbacks(asIScriptEngine* engine) {
 	engine->RegisterObjectType("physics_contact_point", 0, asOBJ_REF);
-	engine->RegisterObjectBehaviour("physics_contact_point", asBEHAVE_ADDREF, "void f()", asFUNCTION(no_refcount), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectBehaviour("physics_contact_point", asBEHAVE_RELEASE, "void f()", asFUNCTION(no_refcount), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_contact_point", "const vector& get_world_normal() const property", asMETHOD(CollisionCallback::ContactPoint, getWorldNormal), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_contact_point", "const vector& get_local_point_on_collider1() const property", asMETHOD(CollisionCallback::ContactPoint, getLocalPointOnCollider1), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_contact_point", "const vector& get_local_point_on_collider2() const property", asMETHOD(CollisionCallback::ContactPoint, getLocalPointOnCollider2), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour("physics_contact_point", asBEHAVE_ADDREF, "void f()", asMETHOD(script_contact_point, add_ref), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour("physics_contact_point", asBEHAVE_RELEASE, "void f()", asMETHOD(script_contact_point, release), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_contact_point", "const vector& get_world_normal() const property", asFUNCTION(contact_point_get_world_normal), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_contact_point", "const vector& get_local_point_on_collider1() const property", asFUNCTION(contact_point_get_local_point_on_collider1), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_contact_point", "const vector& get_local_point_on_collider2() const property", asFUNCTION(contact_point_get_local_point_on_collider2), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectType("physics_contact_pair", sizeof(CollisionCallback::ContactPair), asOBJ_VALUE | asGetTypeTraits<CollisionCallback::ContactPair>());
 	engine->RegisterObjectBehaviour("physics_contact_pair", asBEHAVE_CONSTRUCT, "void f(const physics_contact_pair&in pair)", asFUNCTION((rp_construct<CollisionCallback::ContactPair, const CollisionCallback::ContactPair&>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectBehaviour("physics_contact_pair", asBEHAVE_DESTRUCT, "void f()", asFUNCTION(rp_destruct<CollisionCallback::ContactPair>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_contact_pair", "uint get_nb_contact_points() const property", asMETHOD(CollisionCallback::ContactPair, getNbContactPoints), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_contact_pair", "physics_contact_point@ get_contact_point(uint index) const", asMETHOD(CollisionCallback::ContactPair, getContactPoint), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_contact_pair", "physics_contact_point@ get_contact_point(uint index) const", asFUNCTION(contact_pair_get_contact_point), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_contact_pair", "physics_body@ get_body1() const property", asMETHOD(CollisionCallback::ContactPair, getBody1), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_contact_pair", "physics_body@ get_body2() const property", asMETHOD(CollisionCallback::ContactPair, getBody2), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_contact_pair", "physics_collider@ get_collider1() const property", asMETHOD(CollisionCallback::ContactPair, getCollider1), asCALL_THISCALL);
@@ -1475,7 +1499,7 @@ void RegisterPhysicsWorldAndCallbacks(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("physics_world", "uint16 get_nb_iterations_velocity_solver() const property", asMETHOD(PhysicsWorld, getNbIterationsVelocitySolver), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_world", "void set_nb_iterations_velocity_solver(uint16 iterations) property", asMETHOD(PhysicsWorld, setNbIterationsVelocitySolver), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_world", "uint16 get_nb_iterations_position_solver() const property", asMETHOD(PhysicsWorld, getNbIterationsPositionSolver), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_world", "void set_nb_iterations_position_solver(uint16 iterations) property", asMETHOD(PhysicsWorld, setNbIterationsPositionSolver), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_world", "void set_nb_iterations_position_solver(uint16 iterations) property", asFUNCTION(world_set_nb_iterations_position_solver), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_world", "void set_contacts_position_correction_technique(physics_contact_position_correction_technique technique) property", asMETHOD(PhysicsWorld, setContactsPositionCorrectionTechnique), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_world", "physics_rigid_body@ create_rigid_body(const physics_transform&in transform)", asMETHOD(PhysicsWorld, createRigidBody), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_world", "void destroy_rigid_body(physics_rigid_body& body)", asFUNCTION(world_destroy_rigid_body), asCALL_CDECL_OBJFIRST);
