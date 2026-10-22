@@ -677,30 +677,37 @@ ManagedPolygonData* create_polygon_data(CScriptArray* verticesArray, CScriptArra
 }
 
 void triangle_vertex_array_get_triangle_vertices_indices(const TriangleVertexArray& array, uint32 triangleIndex, uint32& outV1Index, uint32& outV2Index, uint32& outV3Index) {
+	if (triangleIndex >= array.getNbTriangles()) throw out_of_range("triangle index out of range");
 	array.getTriangleVerticesIndices(triangleIndex, outV1Index, outV2Index, outV3Index);
 }
 
 void triangle_mesh_get_triangle_vertices_indices(const TriangleMesh& mesh, uint32 triangleIndex, uint32& outV1Index, uint32& outV2Index, uint32& outV3Index) {
+	if (triangleIndex >= mesh.getNbTriangles()) throw out_of_range("triangle index out of range");
 	mesh.getTriangleVerticesIndices(triangleIndex, outV1Index, outV2Index, outV3Index);
 }
 
 void triangle_mesh_get_triangle_vertices(const TriangleMesh& mesh, uint32 triangleIndex, Vector3& outV1, Vector3& outV2, Vector3& outV3) {
+	if (triangleIndex >= mesh.getNbTriangles()) throw out_of_range("triangle index out of range");
 	mesh.getTriangleVertices(triangleIndex, outV1, outV2, outV3);
 }
 
 void triangle_mesh_get_triangle_vertices_normals(const TriangleMesh& mesh, uint32 triangleIndex, Vector3& outN1, Vector3& outN2, Vector3& outN3) {
+	if (triangleIndex >= mesh.getNbTriangles()) throw out_of_range("triangle index out of range");
 	mesh.getTriangleVerticesNormals(triangleIndex, outN1, outN2, outN3);
 }
 
 void concave_mesh_shape_get_triangle_vertices_indices(const ConcaveMeshShape& shape, uint32 triangleIndex, uint32& outV1Index, uint32& outV2Index, uint32& outV3Index) {
+	if (triangleIndex >= shape.getNbTriangles()) throw out_of_range("triangle index out of range");
 	shape.getTriangleVerticesIndices(triangleIndex, outV1Index, outV2Index, outV3Index);
 }
 
 void concave_mesh_shape_get_triangle_vertices(const ConcaveMeshShape& shape, uint32 triangleIndex, Vector3& outV1, Vector3& outV2, Vector3& outV3) {
+	if (triangleIndex >= shape.getNbTriangles()) throw out_of_range("triangle index out of range");
 	shape.getTriangleVertices(triangleIndex, outV1, outV2, outV3);
 }
 
 void concave_mesh_shape_get_triangle_vertices_normals(const ConcaveMeshShape& shape, uint32 triangleIndex, Vector3& outN1, Vector3& outN2, Vector3& outN3) {
+	if (triangleIndex >= shape.getNbTriangles()) throw out_of_range("triangle index out of range");
 	shape.getTriangleVerticesNormals(triangleIndex, outN1, outN2, outN3);
 }
 
@@ -735,7 +742,61 @@ ConvexMesh* create_convex_mesh_from_polygon_data(ManagedPolygonData* managedArra
 }
 
 uint32 polygon_vertex_array_get_vertex_index_in_face(const PolygonVertexArray& array, uint32 faceIndex, uint32 vertexInFace) {
+	if (faceIndex >= array.getNbFaces()) throw out_of_range("face index out of range");
+	if (vertexInFace >= array.getPolygonFace(faceIndex)->nbVertices) throw out_of_range("vertex index in the face out of range");
 	return array.getVertexIndexInFace(faceIndex, vertexInFace);
+}
+
+// reactphysics3d only asserts these indices (no check in a release build): an index out of range read past the shape's, structure's
+// or array's data. The triangle and face wrappers above check theirs for the same reason.
+template <class T> const HalfEdgeStructure::Face& polyhedron_get_face(const T* shape, uint32 index) {
+	if (index >= shape->getNbFaces()) throw out_of_range("face index out of range");
+	return shape->getFace(index);
+}
+template <class T> const HalfEdgeStructure::Vertex& polyhedron_get_vertex(const T* shape, uint32 index) {
+	if (index >= shape->getNbVertices()) throw out_of_range("vertex index out of range");
+	return shape->getVertex(index);
+}
+template <class T> Vector3 polyhedron_get_vertex_position(const T* shape, uint32 index) {
+	if (index >= shape->getNbVertices()) throw out_of_range("vertex index out of range");
+	return shape->getVertexPosition(index);
+}
+template <class T> Vector3 polyhedron_get_face_normal(const T* shape, uint32 index) {
+	if (index >= shape->getNbFaces()) throw out_of_range("face index out of range");
+	return shape->getFaceNormal(index);
+}
+template <class T> const HalfEdgeStructure::Edge& polyhedron_get_half_edge(const T* shape, uint32 index) {
+	if (index >= shape->getNbHalfEdges()) throw out_of_range("half edge index out of range");
+	return shape->getHalfEdge(index);
+}
+Vector3 height_field_shape_get_vertex_at(const HeightFieldShape* shape, uint32 x, uint32 y) {
+	const HeightField* field = shape->getHeightField();
+	if (!field || x >= field->getNbColumns() || y >= field->getNbRows()) throw out_of_range("height field position out of range");
+	return shape->getVertexAt(x, y);
+}
+const HalfEdgeStructure::Face& half_edge_structure_get_face(const HalfEdgeStructure* structure, uint32 index) {
+	if (index >= structure->getNbFaces()) throw out_of_range("face index out of range");
+	return structure->getFace(index);
+}
+Vector3 triangle_vertex_array_get_vertex(const TriangleVertexArray* array, uint32 index) {
+	if (index >= array->getNbVertices()) throw out_of_range("vertex index out of range");
+	return array->getVertex(index);
+}
+Vector3 triangle_vertex_array_get_vertex_normal(const TriangleVertexArray* array, uint32 index) {
+	if (index >= array->getNbVertices()) throw out_of_range("vertex index out of range");
+	return array->getVertexNormal(index);
+}
+Vector3 vertex_array_get_vertex(const VertexArray* array, uint32 index) {
+	if (index >= array->getNbVertices()) throw out_of_range("vertex index out of range");
+	return array->getVertex(index);
+}
+Vector3 polygon_vertex_array_get_vertex(const PolygonVertexArray* array, uint32 index) {
+	if (index >= array->getNbVertices()) throw out_of_range("vertex index out of range");
+	return array->getVertex(index);
+}
+PolygonVertexArray::PolygonFace* polygon_vertex_array_get_polygon_face(const PolygonVertexArray* array, uint32 index) {
+	if (index >= array->getNbFaces()) throw out_of_range("face index out of range");
+	return array->getPolygonFace(index);
 }
 
 // Shape conversion functions
@@ -992,13 +1053,13 @@ template <class T>
 void RegisterConvexPolyhedronShape(asIScriptEngine* engine, const string& type) {
 	RegisterConvexShape<T>(engine, type);
 	engine->RegisterObjectMethod(type.c_str(), "uint get_nb_faces() const property", asMETHOD(T, getNbFaces), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "const physics_half_edge_structure_face& get_face(uint face_index)", asMETHOD(T, getFace), asCALL_THISCALL);
+	engine->RegisterObjectMethod(type.c_str(), "const physics_half_edge_structure_face& get_face(uint face_index)", asFUNCTION(polyhedron_get_face<T>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "uint get_nb_vertices() const property", asMETHOD(T, getNbVertices), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "const physics_half_edge_structure_vertex& get_vertex(uint vertex_index)", asMETHOD(T, getVertex), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "const vector get_vertex_position(uint vertex_index)", asMETHOD(T, getVertexPosition), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "const vector get_face_normal(uint vertex_index)", asMETHOD(T, getFaceNormal), asCALL_THISCALL);
+	engine->RegisterObjectMethod(type.c_str(), "const physics_half_edge_structure_vertex& get_vertex(uint vertex_index)", asFUNCTION(polyhedron_get_vertex<T>), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "const vector get_vertex_position(uint vertex_index)", asFUNCTION(polyhedron_get_vertex_position<T>), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "const vector get_face_normal(uint vertex_index)", asFUNCTION(polyhedron_get_face_normal<T>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "uint get_nb_half_edges() const property", asMETHOD(T, getNbHalfEdges), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "const physics_half_edge_structure_edge& get_half_edge(uint edge_index) const", asMETHOD(T, getHalfEdge), asCALL_THISCALL);
+	engine->RegisterObjectMethod(type.c_str(), "const physics_half_edge_structure_edge& get_half_edge(uint edge_index) const", asFUNCTION(polyhedron_get_half_edge<T>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "vector get_centroid() const property", asMETHOD(T, getCentroid), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "uint find_most_anti_parallel_face(const vector&in direction) const", asMETHOD(T, findMostAntiParallelFace), asCALL_THISCALL);
 }
@@ -1357,7 +1418,7 @@ void RegisterCollisionShapes(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("physics_convex_mesh_shape", "void set_scale(vector& scale) const property", asMETHOD(ConvexMeshShape, setScale), asCALL_THISCALL);
 	RegisterConcaveShape<HeightFieldShape>(engine, "physics_height_field_shape");
 	engine->RegisterObjectMethod("physics_height_field_shape", "physics_height_field@ get_height_field() const property", asMETHOD(HeightFieldShape, getHeightField), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_height_field_shape", "vector get_vertex_at(uint x, uint y) const", asMETHOD(HeightFieldShape, getVertexAt), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_height_field_shape", "vector get_vertex_at(uint x, uint y) const", asFUNCTION(height_field_shape_get_vertex_at), asCALL_CDECL_OBJFIRST);
 }
 
 void RegisterHalfEdgeStructure(asIScriptEngine* engine) {
@@ -1381,7 +1442,7 @@ void RegisterHalfEdgeStructure(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("physics_half_edge_structure", "uint get_nb_faces() const property", asMETHOD(HalfEdgeStructure, getNbFaces), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_half_edge_structure", "uint get_nb_half_edges() const property", asMETHOD(HalfEdgeStructure, getNbHalfEdges), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_half_edge_structure", "uint get_nb_vertices() const property", asMETHOD(HalfEdgeStructure, getNbVertices), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_half_edge_structure", "const physics_half_edge_structure_face& get_face(uint index) const property", asMETHOD(HalfEdgeStructure, getFace), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_half_edge_structure", "const physics_half_edge_structure_face& get_face(uint index) const property", asFUNCTION(half_edge_structure_get_face), asCALL_CDECL_OBJFIRST);
 }
 
 void RegisterVertexArrays(asIScriptEngine* engine) {
@@ -1418,14 +1479,14 @@ void RegisterVertexArrays(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("physics_triangle_vertex_array", "uint get_vertices_normals_stride() const property", asMETHOD(TriangleVertexArray, getVerticesNormalsStride), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_triangle_vertex_array", "uint get_indices_stride() const property", asMETHOD(TriangleVertexArray, getIndicesStride), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_triangle_vertex_array", "void get_triangle_vertices_indices(uint triangle_index, uint&out v1_index, uint&out v2_index, uint&out v3_index) const", asFUNCTION(triangle_vertex_array_get_triangle_vertices_indices), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_triangle_vertex_array", "vector get_vertex(uint vertex_index) const", asMETHOD(TriangleVertexArray, getVertex), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_triangle_vertex_array", "vector get_vertex_normal(uint vertex_index) const", asMETHOD(TriangleVertexArray, getVertexNormal), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_triangle_vertex_array", "vector get_vertex(uint vertex_index) const", asFUNCTION(triangle_vertex_array_get_vertex), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_triangle_vertex_array", "vector get_vertex_normal(uint vertex_index) const", asFUNCTION(triangle_vertex_array_get_vertex_normal), asCALL_CDECL_OBJFIRST);
 	// Register the actual VertexArray (read-only, created by managed wrapper)
 	engine->RegisterObjectType("physics_vertex_array", 0, asOBJ_REF | asOBJ_NOHANDLE);
 	engine->RegisterObjectMethod("physics_vertex_array", "physics_vertex_data_type get_data_type() const property", asMETHOD(VertexArray, getDataType), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_vertex_array", "uint get_nb_vertices() const property", asMETHOD(VertexArray, getNbVertices), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_vertex_array", "uint get_stride() const property", asMETHOD(VertexArray, getStride), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_vertex_array", "vector get_vertex(uint index) const", asMETHOD(VertexArray, getVertex), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_vertex_array", "vector get_vertex(uint index) const", asFUNCTION(vertex_array_get_vertex), asCALL_CDECL_OBJFIRST);
 	engine->RegisterEnum("physics_polygon_vertex_data_type");
 	engine->RegisterEnumValue("physics_polygon_vertex_data_type", "POLYGON_VERTEX_FLOAT_TYPE", int(PolygonVertexArray::VertexDataType::VERTEX_FLOAT_TYPE));
 	engine->RegisterEnumValue("physics_polygon_vertex_data_type", "POLYGON_VERTEX_DOUBLE_TYPE", int(PolygonVertexArray::VertexDataType::VERTEX_DOUBLE_TYPE));
@@ -1451,8 +1512,8 @@ void RegisterVertexArrays(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("physics_polygon_vertex_array", "uint get_vertices_stride() const property", asMETHOD(PolygonVertexArray, getVerticesStride), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_polygon_vertex_array", "uint get_indices_stride() const property", asMETHOD(PolygonVertexArray, getIndicesStride), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_polygon_vertex_array", "uint get_vertex_index_in_face(uint face_index, uint vertex_in_face) const", asFUNCTION(polygon_vertex_array_get_vertex_index_in_face), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_polygon_vertex_array", "vector get_vertex(uint vertex_index) const", asMETHOD(PolygonVertexArray, getVertex), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_polygon_vertex_array", "physics_polygon_face@ get_polygon_face(uint face_index) const", asMETHOD(PolygonVertexArray, getPolygonFace), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_polygon_vertex_array", "vector get_vertex(uint vertex_index) const", asFUNCTION(polygon_vertex_array_get_vertex), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_polygon_vertex_array", "physics_polygon_face@ get_polygon_face(uint face_index) const", asFUNCTION(polygon_vertex_array_get_polygon_face), asCALL_CDECL_OBJFIRST);
 }
 
 void RegisterTriangleMeshAndConcaveShape(asIScriptEngine* engine) {
