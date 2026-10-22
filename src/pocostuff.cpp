@@ -478,6 +478,12 @@ void poco_json_array::set(unsigned int index, poco_shared<Dynamic::Var>* v) {
 void poco_json_array::add(poco_shared<Dynamic::Var>* v) {
 	ptr->add(*v->ptr);
 }
+// Poco's Array::remove() erases at begin() + index unchecked: an index past the end erased outside the array (undefined behaviour:
+// libstdc++ dropped the last element instead, MSVC's element move ran past the end).
+void poco_json_array_remove(poco_json_array* a, unsigned int index) {
+	if (index >= a->ptr->size()) throw InvalidArgumentException("json_array index out of range");
+	a->ptr->remove(index);
+}
 bool poco_json_array::is_array(unsigned int index) const {
 	return ptr->isArray(index);
 }
@@ -854,7 +860,7 @@ void RegisterPocostuff(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("json_array", "void set_escape_unicode(bool value) property", asMETHOD(JSON::Array, setEscapeUnicode), asCALL_THISCALL, 0, asOFFSET(poco_json_array, ptr), true);
 	engine->RegisterObjectMethod("json_array", "bool get_empty() property", asMETHOD(JSON::Array, empty), asCALL_THISCALL, 0, asOFFSET(poco_json_array, ptr), true);
 	engine->RegisterObjectMethod("json_array", "void clear()", asMETHOD(JSON::Array, clear), asCALL_THISCALL, 0, asOFFSET(poco_json_array, ptr), true);
-	engine->RegisterObjectMethod("json_array", "void remove(uint index)", asMETHOD(JSON::Array, remove), asCALL_THISCALL, 0, asOFFSET(poco_json_array, ptr), true);
+	engine->RegisterObjectMethod("json_array", "void remove(uint index)", asFUNCTION(poco_json_array_remove), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("json_array", "bool is_array(uint index)", asMETHOD(poco_json_array, is_array), asCALL_THISCALL);
 	engine->RegisterObjectMethod("json_array", "bool is_null(uint index)", asMETHOD(poco_json_array, is_null), asCALL_THISCALL);
 	engine->RegisterObjectMethod("json_array", "bool is_object(uint index)", asMETHOD(poco_json_array, is_object), asCALL_THISCALL);
