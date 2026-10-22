@@ -16,6 +16,7 @@
 #include <Poco/Exception.h>
 #include <Poco/UnicodeConverter.h>
 #include <SDL3/SDL.h>
+#include <cstdint>
 #include <sstream>
 #include "library.h"
 #include "nvgt.h" // g_ScriptEngine, NVGT_SUBSYSTEM_DLLCALL
@@ -260,10 +261,14 @@ static void library_call_wrapper(asIScriptGeneric* gen) {
 	l->call(gen);
 }
 
-std::string string_create_from_pointer(const char* str, size_t length) {
+// Takes the script's uint64 address and length as such: declared const char* and size_t, which are 4 bytes on 32-bit targets, the
+// length was taken from the upper half of the address there (0, so the string ended at the first null byte on armeabi-v7a).
+std::string string_create_from_pointer(asQWORD ptr, asQWORD length) {
+	if (ptr > asQWORD(UINTPTR_MAX) || length > asQWORD(SIZE_MAX)) throw Poco::InvalidArgumentException("address or length out of range on this platform");
+	const char* str = reinterpret_cast<const char*>(uintptr_t(ptr));
 	if (!str) return "";
 	if (length == 0) length = strlen(str);
-	return std::string(str, length);
+	return std::string(str, size_t(length));
 }
 
 void RegisterScriptLibrary(asIScriptEngine* engine) {
