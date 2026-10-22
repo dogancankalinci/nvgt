@@ -1019,6 +1019,16 @@ public:
 		return true;
 	}
 	// Reads 32-bit float samples into buffer, as read_script() makes them.
+	// Reads frame_count frames of frame_size bytes into buffer, adding to frames_read. MiniAudio ends a read of a looping source after it met the source's end twice with nothing read between, as a source shorter than half the read does, though the source would go on: a looping decoder of 1000 frames gave 2000 of 4096, then 1000 a read. So a looping source is read again for the rest while each read gives frames.
+	void read_whole(void* buffer, ma_uint64 frame_count, ma_uint32 frame_size, ma_uint64& frames_read) {
+		bool looping = ma_data_source_is_looping(src->pDataSource);
+		do {
+			ma_uint64 got = 0;
+			g_soundsystem_last_error = ma_data_source_read_pcm_frames(src->pDataSource, (char*)buffer + frames_read * frame_size, frame_count - frames_read, &got);
+			frames_read += got;
+			if (!got) break;
+		} while (looping && g_soundsystem_last_error == MA_SUCCESS && frames_read < frame_count);
+	}
 	unsigned long long read(void* buffer, unsigned long long frame_count) override {
 		std::lock_guard<std::recursive_mutex> guard(source_mutex);
 		if (!ready_to_read()) return 0;
@@ -1030,12 +1040,12 @@ public:
 		// The frames read are returned even with an error, which g_soundsystem_last_error keeps: MiniAudio reports one with the frames it read before it, as when a chain's next source refuses to be sought to its start.
 		ma_uint64 frames_read = 0;
 		if (format == ma_format_f32) {
-			g_soundsystem_last_error = ma_data_source_read_pcm_frames(src->pDataSource, buffer, frame_count, &frames_read);
+			read_whole(buffer, frame_count, ma_get_bytes_per_frame(format, channels), frames_read);
 			return frames_read;
 		}
 		// Another format, such as a 16-bit file the resource manager keeps as it is, is read as it is and converted.
 		std::vector<char> raw(frame_count * ma_get_bytes_per_frame(format, channels));
-		g_soundsystem_last_error = ma_data_source_read_pcm_frames(src->pDataSource, raw.data(), frame_count, &frames_read);
+		read_whole(raw.data(), frame_count, ma_get_bytes_per_frame(format, channels), frames_read);
 		ma_pcm_convert(buffer, ma_format_f32, raw.data(), format, frames_read * channels, ma_dither_mode_none);
 		return frames_read;
 	}
@@ -1065,11 +1075,12 @@ public:
 		const ma_uint64 chunk_frames = 4096;
 		std::vector<char> scratch(chunk_frames * frame_size);
 		unsigned long long skipped = 0;
+		bool looping = ma_data_source_is_looping(src->pDataSource);
 		while (skipped < frame_count) {
 			ma_uint64 chunk = std::min<unsigned long long>(frame_count - skipped, chunk_frames), got = 0;
 			g_soundsystem_last_error = ma_data_source_read_pcm_frames(src->pDataSource, scratch.data(), chunk, &got);
 			skipped += got;
-			if (g_soundsystem_last_error != MA_SUCCESS || got < chunk) break; // At the end, MA_AT_END tells it.
+			if (g_soundsystem_last_error != MA_SUCCESS || got < chunk && !(looping && got)) break; // At the end, MA_AT_END tells it; a looping source cut short is read on, as by read_whole().
 		}
 		return skipped;
 	}
