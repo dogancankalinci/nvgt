@@ -2130,6 +2130,12 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 	hold_rate(node);
 	ma_sound* s = (ma_sound*)node;
 	std::atomic<ma_uint64>& seek_target = held(s)->seek_target;
+	// A seek given to MiniAudio itself, as by C++ code holding the ma_sound, is moved to the sound's target, to be made as the script's are; MiniAudio's own processing would keep the cache and seek a stream every block.
+	std::atomic<ma_uint64>& given_target = *reinterpret_cast<std::atomic<ma_uint64>*>(&s->seekTarget);
+	if (given_target.load() != ~(ma_uint64)0) {
+		ma_uint64 given = given_target.exchange(~(ma_uint64)0);
+		if (given != ~(ma_uint64)0) seek_target.store(given);
+	}
 	// A stream seeks on the resource manager's job thread, taking a place in its job queue and in the stream's order of execution before it posts the job; when the queue was full, MiniAudio kept both, and the stream returned MA_BUSY for good and couldn't be closed. A sound seeked every block, read faster than it plays, filled it. While a stream's seek is still being made, so that it would only return MA_BUSY and play nothing, the block is left silent without making the next seek, which waits for the stream.
 	ma_resource_manager_data_stream* stream = held(s)->stream;
 	if (stream && seek_target.load() != ~(ma_uint64)0 && reinterpret_cast<std::atomic<ma_bool32>*>(&stream->seekCounter)->load() > 0) {
