@@ -914,6 +914,42 @@ void RegisterCollisionShape(asIScriptEngine* engine, const string& type) {
 	engine->RegisterObjectMethod(type.c_str(), "string opImplConv() const", asMETHOD(T, to_string), asCALL_THISCALL);
 }
 
+// reactphysics3d checks none of these indices in a release build (Vector3::operator[] not at all, the others only assert): an index
+// out of range read or wrote outside the vector or matrix (vector v; v[3] = 1; and m[3].x = 1; wrote past them) or read past the body's
+// colliders.
+float& vector_index(Vector3* v, int index) {
+	if (index < 0 || index > 2) throw out_of_range("vector index out of range");
+	return (*v)[index];
+}
+const float& vector_index_const(const Vector3* v, int index) {
+	if (index < 0 || index > 2) throw out_of_range("vector index out of range");
+	return (*v)[index];
+}
+Vector3& matrix_index(Matrix3x3* m, int row) {
+	if (row < 0 || row > 2) throw out_of_range("matrix row index out of range");
+	return (*m)[row];
+}
+const Vector3& matrix_index_const(const Matrix3x3* m, int row) {
+	if (row < 0 || row > 2) throw out_of_range("matrix row index out of range");
+	return (*m)[row];
+}
+Vector3 matrix_get_column(const Matrix3x3* m, int i) {
+	if (i < 0 || i > 2) throw out_of_range("matrix column index out of range");
+	return m->getColumn(i);
+}
+Vector3 matrix_get_row(const Matrix3x3* m, int i) {
+	if (i < 0 || i > 2) throw out_of_range("matrix row index out of range");
+	return m->getRow(i);
+}
+template <class T> const Collider* body_get_collider_const(const T* body, uint32 index) {
+	if (index >= body->getNbColliders()) throw out_of_range("collider index out of range");
+	return body->getCollider(index);
+}
+template <class T> Collider* body_get_collider(T* body, uint32 index) {
+	if (index >= body->getNbColliders()) throw out_of_range("collider index out of range");
+	return body->getCollider(index);
+}
+
 template <class T>
 void RegisterPhysicsBody(asIScriptEngine* engine, const string& type) {
 	engine->RegisterObjectBehaviour(type.c_str(), asBEHAVE_ADDREF, "void f()", asFUNCTION(no_refcount), asCALL_CDECL_OBJFIRST);
@@ -933,8 +969,8 @@ void RegisterPhysicsBody(asIScriptEngine* engine, const string& type) {
 	engine->RegisterObjectMethod(type.c_str(), "bool raycast(const ray& point, raycast_info& raycast_info) const", asMETHOD(T, raycast), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "bool test_aabb_overlap(const aabb&in world_aabb) const", asMETHOD(T, testAABBOverlap), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "aabb get_aabb() const property", asMETHOD(T, getAABB), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "const physics_collider& get_collider(uint index) const", asMETHODPR(T, getCollider, (uint32) const, const Collider*), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "physics_collider& get_collider(uint index)", asMETHODPR(T, getCollider, (uint32), Collider*), asCALL_THISCALL);
+	engine->RegisterObjectMethod(type.c_str(), "const physics_collider& get_collider(uint index) const", asFUNCTION(body_get_collider_const<T>), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "physics_collider& get_collider(uint index)", asFUNCTION(body_get_collider<T>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "uint get_nb_colliders() const property", asMETHOD(T, getNbColliders), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "vector get_world_point(const vector&in local_point) const", asMETHOD(T, getWorldPoint), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "vector get_world_vector(const vector&in local_vector) const", asMETHOD(T, getWorldVector), asCALL_THISCALL);
@@ -1064,8 +1100,8 @@ void RegisterMathTypes(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("vector", "int get_max_axis() const property", asMETHOD(Vector3, getMaxAxis), asCALL_THISCALL);
 	engine->RegisterObjectMethod("vector", "float get_min_value() const property", asMETHOD(Vector3, getMinValue), asCALL_THISCALL);
 	engine->RegisterObjectMethod("vector", "float get_max_value() const property", asMETHOD(Vector3, getMaxValue), asCALL_THISCALL);
-	engine->RegisterObjectMethod("vector", "float& opIndex(int index)", asMETHODPR(Vector3, operator[], (int), float&), asCALL_THISCALL);
-	engine->RegisterObjectMethod("vector", "const float& opIndex(int index) const", asMETHODPR(Vector3, operator[], (int) const, const float&), asCALL_THISCALL);
+	engine->RegisterObjectMethod("vector", "float& opIndex(int index)", asFUNCTION(vector_index), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("vector", "const float& opIndex(int index) const", asFUNCTION(vector_index_const), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("vector", "string opImplConv() const", asMETHOD(Vector3, to_string), asCALL_THISCALL);
 	engine->RegisterObjectType("matrix3x3", sizeof(Matrix3x3), asOBJ_VALUE | asOBJ_POD | asGetTypeTraits<Matrix3x3>() | asOBJ_APP_CLASS_ALLFLOATS);
 	engine->RegisterObjectBehaviour("matrix3x3", asBEHAVE_CONSTRUCT, "void f()", asFUNCTION(rp_construct<Matrix3x3>), asCALL_CDECL_OBJFIRST);
@@ -1075,8 +1111,8 @@ void RegisterMathTypes(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("matrix3x3", "void set(float a1, float a2, float a3, float b1, float b2, float b3, float c1, float c2, float c3)", asMETHOD(Matrix3x3, setAllValues), asCALL_THISCALL);
 	engine->RegisterObjectMethod("matrix3x3", "void set_to_zero()", asMETHOD(Matrix3x3, setToZero), asCALL_THISCALL);
 	engine->RegisterObjectMethod("matrix3x3", "void set_to_identity()", asMETHOD(Matrix3x3, setToIdentity), asCALL_THISCALL);
-	engine->RegisterObjectMethod("matrix3x3", "vector get_column(int i) const", asMETHOD(Matrix3x3, getColumn), asCALL_THISCALL);
-	engine->RegisterObjectMethod("matrix3x3", "vector get_row(int i) const", asMETHOD(Matrix3x3, getRow), asCALL_THISCALL);
+	engine->RegisterObjectMethod("matrix3x3", "vector get_column(int i) const", asFUNCTION(matrix_get_column), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("matrix3x3", "vector get_row(int i) const", asFUNCTION(matrix_get_row), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("matrix3x3", "matrix3x3 get_transpose() const property", asMETHOD(Matrix3x3, getTranspose), asCALL_THISCALL);
 	engine->RegisterObjectMethod("matrix3x3", "float get_determinant() const property", asMETHOD(Matrix3x3, getDeterminant), asCALL_THISCALL);
 	engine->RegisterObjectMethod("matrix3x3", "float get_trace() const property", asMETHOD(Matrix3x3, getTrace), asCALL_THISCALL);
@@ -1094,8 +1130,8 @@ void RegisterMathTypes(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("matrix3x3", "matrix3x3& opMulAssign(float value)", asMETHOD(Matrix3x3, operator*=), asCALL_THISCALL);
 	engine->RegisterObjectMethod("matrix3x3", "vector opMul(const vector&in value) const", asFUNCTIONPR(operator*, (const Matrix3x3&, const Vector3&), Vector3), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("matrix3x3", "bool opEquals(const matrix3x3&in)", asMETHOD(Matrix3x3, operator==), asCALL_THISCALL);
-	engine->RegisterObjectMethod("matrix3x3", "vector& opIndex(int row)", asMETHODPR(Matrix3x3, operator[], (int), Vector3&), asCALL_THISCALL);
-	engine->RegisterObjectMethod("matrix3x3", "const vector& opIndex(int row) const", asMETHODPR(Matrix3x3, operator[], (int) const, const Vector3&), asCALL_THISCALL);
+	engine->RegisterObjectMethod("matrix3x3", "vector& opIndex(int row)", asFUNCTION(matrix_index), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("matrix3x3", "const vector& opIndex(int row) const", asFUNCTION(matrix_index_const), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("matrix3x3", "string opImplConv()", asMETHOD(Matrix3x3, to_string), asCALL_THISCALL);
 	engine->RegisterGlobalFunction("matrix3x3 get_IDENTITY_MATRIX() property", asFUNCTION(Matrix3x3::identity), asCALL_CDECL);
 	engine->RegisterObjectType("quaternion", sizeof(Quaternion), asOBJ_VALUE | asOBJ_POD | asGetTypeTraits<Quaternion>() | asOBJ_APP_CLASS_ALLFLOATS);
