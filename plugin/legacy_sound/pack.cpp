@@ -607,20 +607,27 @@ std::string legacy_pack::stream_read_string(unsigned int idx, unsigned int size)
 }
 
 // Seeks within a stream. We're using the exact same argument convention actually as fseek here, origin means the same thing. In this case though, we return true on success, not 0.
-bool legacy_pack::stream_seek(pack_stream* stream, unsigned int offset, int origin) {
-	if (origin == SEEK_SET && offset < stream->filesize)
-		stream->offset = offset;
-	else if (origin == SEEK_CUR && stream->offset + offset >= 0 && stream->offset + offset < stream->filesize)
-		stream->offset += offset;
-	else if (origin == SEEK_END && offset < 0 && offset >= -stream->filesize)
-		stream->offset = stream->filesize + offset;
+// The offset is relative to the origin and can be negative, as fseek's is. It was unsigned: SEEK_END, which needs a negative offset,
+// never succeeded, and SEEK_CUR couldn't go back. The position reached must be within the item, as before.
+bool legacy_pack::stream_seek(pack_stream* stream, long long offset, int origin) {
+	long long base;
+	if (origin == SEEK_SET)
+		base = 0;
+	else if (origin == SEEK_CUR)
+		base = stream->offset;
+	else if (origin == SEEK_END)
+		base = stream->filesize;
 	else
 		return false;
+	long long target = base + offset;
+	if (target < 0 || target >= (long long)stream->filesize)
+		return false;
+	stream->offset = (unsigned int)target;
 	if (!mptr && stream->reader)
 		stream->read_pos = -1; // The next read repositions itself (the old fseek here missed item_offset anyway).
 	return true;
 }
-bool legacy_pack::stream_seek_script(unsigned int idx, unsigned int offset, int origin) {
+bool legacy_pack::stream_seek_script(unsigned int idx, int offset, int origin) {
 	if (pack_streams.find(idx) == pack_streams.end())
 		return false;
 	return stream_seek(pack_streams[idx], offset, origin);
@@ -638,7 +645,7 @@ legacy_pack* ScriptPack_Factory() {
 
 int packmode1 = PACK_OPEN_MODE_NONE, packmode2 = PACK_OPEN_MODE_APPEND, packmode3 = PACK_OPEN_MODE_CREATE, packmode4 = PACK_OPEN_MODE_READ;
 // stream_seek is a uint in the script; the C++ returns a bool, of whose register the script would read 4 bytes.
-static unsigned int pack_stream_seek(legacy_pack* pack, unsigned int idx, unsigned int offset, int origin) {
+static unsigned int pack_stream_seek(legacy_pack* pack, unsigned int idx, int offset, int origin) {
 	return pack->stream_seek_script(idx, offset, origin) ? 1 : 0;
 }
 void RegisterScriptLegacyPack(asIScriptEngine* engine) {
@@ -670,7 +677,7 @@ void RegisterScriptLegacyPack(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod(_O("pack"), _O("uint stream_open(const string &in pack_filename, uint offset_in_file) const"), asMETHOD(legacy_pack, stream_open_script), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("pack"), _O("string stream_read(uint index, uint read_byte_count) const"), asMETHOD(legacy_pack, stream_read_string), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("pack"), _O("uint stream_pos(uint index) const"), asMETHOD(legacy_pack, stream_pos_script), asCALL_THISCALL);
-	engine->RegisterObjectMethod(_O("pack"), _O("uint stream_seek(uint index, uint offset, int origin) const"), asFUNCTION(pack_stream_seek), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(_O("pack"), _O("uint stream_seek(uint index, int offset, int origin) const"), asFUNCTION(pack_stream_seek), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(_O("pack"), _O("uint stream_size(uint index) const"), asMETHOD(legacy_pack, stream_size_script), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("pack"), _O("bool get_active() const property"), asMETHOD(legacy_pack, is_active), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("pack"), _O("uint get_size() const property"), asMETHOD(legacy_pack, size), asCALL_THISCALL);

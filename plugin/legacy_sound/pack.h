@@ -95,7 +95,7 @@ public:
 	}
 	unsigned int stream_read(pack_stream* stream, unsigned char* buffer, unsigned int size);
 	unsigned int stream_read_fast(pack_stream* stream, unsigned char* buffer, unsigned int size);
-	bool stream_seek(pack_stream* stream, unsigned int offset, int origen = SEEK_SET);
+	bool stream_seek(pack_stream* stream, long long offset, int origen = SEEK_SET);
 	unsigned int stream_size(pack_stream* stream) {
 		return stream->filesize;
 	}
@@ -106,7 +106,7 @@ public:
 	}
 	unsigned int stream_read_script(unsigned int idx, unsigned char* buffer, unsigned int size);
 	std::string stream_read_string(unsigned int idx, unsigned int size);
-	bool stream_seek_script(unsigned int idx, unsigned int offset, int origen = SEEK_SET);
+	bool stream_seek_script(unsigned int idx, int offset, int origen = SEEK_SET);
 	unsigned int stream_size_script(unsigned int idx) {
 		return pack_streams.find(idx) != pack_streams.end() ? pack_streams[idx]->filesize : 0;
 	}
