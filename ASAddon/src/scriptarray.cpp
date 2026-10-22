@@ -1138,7 +1138,7 @@ void CScriptArray::RemoveLast()
 // Return a pointer to the array element. Returns 0 if the index is out of bounds
 const void *CScriptArray::At(asINT64 index) const
 {
-	if( index < 0) index = buffer->numElements + index;
+	if( buffer && index < 0) index = buffer->numElements + index; // after the null check (no buffer after an allocation failure)
 	if( buffer == 0 || index < 0 || index >= buffer->numElements )
 	{
 		// If this is called from a script we raise a script exception
