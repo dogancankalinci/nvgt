@@ -15,6 +15,7 @@
 #include <memory>
 #include <unordered_set>
 #include <mutex>
+#include <atomic>
 #include <Poco/NotificationQueue.h>
 #include <Poco/Thread.h>
 #include <ma_reverb_node.h>
@@ -959,7 +960,9 @@ private:
 	splitter_node* reverb_attachment;
 	audio_spatializer_reverb3d_placement reverb_placement;
 	mixer* attached_mixer;
-	audio_spatialization_parameters spatialization_params;
+	audio_spatialization_parameters spatialization_params; // Written by the audio thread, in process(), once made.
+	// What the script set, copied into spatialization_params by process(): written there by the script too, a rolloff set while the audio thread wrote the parameters back, as the mixer filling them in does, was overwritten with the one before, for good.
+	std::atomic<float> rolloff_set{1.0f}, directional_attenuation_factor_set{1.0f};
 	bool parameters_valid;
 	int preferred_panner_id, preferred_attenuator_id;
 	int current_panner_id, current_attenuator_id;
@@ -1160,10 +1163,10 @@ public:
 	int get_current_attenuator_id() const override { return current_attenuator_id; }
 	int get_preferred_panner_id() const override { return preferred_panner_id; }
 	int get_preferred_attenuator_id() const override { return preferred_attenuator_id; }
-	void set_rolloff(float rolloff) override { if (!std::isnan(rolloff)) spatialization_params.rolloff = clamp(rolloff, 0.0f, 100.0f); } // clamp() passes NaN through, which made every sample NaN.
-	float get_rolloff() const override { return spatialization_params.rolloff; }
-	void set_directional_attenuation_factor(float factor) override { if (!std::isnan(factor)) spatialization_params.directional_attenuation_factor = clamp(factor, 0.0f, 100.0f); } // As set_rolloff().
-	float get_directional_attenuation_factor() const override { return spatialization_params.directional_attenuation_factor; }
+	void set_rolloff(float rolloff) override { if (!std::isnan(rolloff)) rolloff_set.store(clamp(rolloff, 0.0f, 100.0f)); } // clamp() passes NaN through, which made every sample NaN.
+	float get_rolloff() const override { return rolloff_set.load(); }
+	void set_directional_attenuation_factor(float factor) override { if (!std::isnan(factor)) directional_attenuation_factor_set.store(clamp(factor, 0.0f, 100.0f)); } // As set_rolloff().
+	float get_directional_attenuation_factor() const override { return directional_attenuation_factor_set.load(); }
 	bool get_parameters(audio_spatialization_parameters& params) override {
 		if (!parameters_valid) return false;
 		params = spatialization_params;
@@ -1175,6 +1178,8 @@ public:
 		if (!chain_lock.owns_lock()) return;
 		if (attached_mixer && (panner || attenuator || reverb)) {
 			parameters_valid = attached_mixer->get_spatialization_parameters(spatialization_params);
+			spatialization_params.rolloff = rolloff_set.load(std::memory_order_relaxed);
+			spatialization_params.directional_attenuation_factor = directional_attenuation_factor_set.load(std::memory_order_relaxed);
 			if (parameters_valid && reverb) reverb_attachment->set_output_bus_volume(1, reverb->get_volume_at(spatialization_params.listener_distance));
 		} else parameters_valid = false;
 	}
