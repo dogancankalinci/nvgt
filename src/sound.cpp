@@ -2913,7 +2913,7 @@ public:
 	bool load_special(const std::string &filename, const size_t protocol_slot = 0, directive_t protocol_directive = nullptr, const size_t filter_slot = 0, directive_t filter_directive = nullptr, ma_uint32 ma_flags = MA_SOUND_FLAG_DECODE) override {
 		return load_source(filename, protocol_slot, protocol_directive, filter_slot, filter_directive, ma_flags, false);
 	}
-	// whole_in_pages is set for a stream loaded again as a buffer because it fitted in its two pages (see below), whose rate isn't checked again: the buffer takes no more than the pages it filled, and the stream itself wasn't refused.
+	// whole_in_pages is set for a stream loaded again as a buffer because it fitted in its two pages (see below), whose rate isn't checked again: the buffer takes no more than the pages it filled, and the stream itself wasn't refused. Its buffer is shared with no other sound, so the file is read as it is now, as a stream reads it, rather than taken as another sound loaded it before it changed.
 	bool load_source(const std::string &filename, const size_t protocol_slot, directive_t protocol_directive, const size_t filter_slot, directive_t filter_directive, ma_uint32 ma_flags, bool whole_in_pages) {
 		garbage_collect_inline_sounds();
 		if (snd)
@@ -2921,7 +2921,7 @@ public:
 		// Made here and handed to snd only once it loaded, under the lock the audio thread reads snd under, so the audio thread never reads a sound half made or freed after a failed load.
 		held_sound_ptr made(new held_sound());
 		// The sound service converts our file name into a "tripplet" which includes information about the origin an asset is expected to come from. This guarantees that we don't mistake assets from different origins as the same just because they have the same name.
-		std::string triplet = g_sound_service->prepare_triplet(filename, protocol_slot, protocol_directive, filter_slot, filter_directive);
+		std::string triplet = g_sound_service->prepare_triplet(filename, protocol_slot, protocol_directive, filter_slot, filter_directive, whole_in_pages);
 		if (triplet.empty()) { // A name the sound service can't make one of, such as one that isn't valid UTF-8.
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;

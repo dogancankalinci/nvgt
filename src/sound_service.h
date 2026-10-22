@@ -96,8 +96,9 @@ public:
 	 * The protocol identifier is just its slot number, as this is guaranteed to be unique for the lifetime of an application instance.
 	 * The suffix is up to the protocol, but should be derived from the provided directive. For example, the suffix provided by the pack protocol is just the absolute path to the pack file on disk.
 	 * This guarantees that assets are always loaded even if they have the same name as a previously loaded asset from a different origin.
+	 * own_entry adds a number no other triplet has, so that MiniAudio's resource manager, which shares a decoded asset between the loads of one triplet, shares this one with no other load, and the asset is read as it is now.
 	 */
-	virtual std::string prepare_triplet(const std::string &name, const size_t protocol_slot = 0, const directive_t protocol_directive = nullptr, const size_t filter_slot = 0, const directive_t filter_directive = nullptr) = 0;
+	virtual std::string prepare_triplet(const std::string &name, const size_t protocol_slot = 0, const directive_t protocol_directive = nullptr, const size_t filter_slot = 0, const directive_t filter_directive = nullptr, bool own_entry = false) = 0;
 	/**
 	 * Opens a triplet
 	 * Pass the same arguments to this that you passed to name_to_triplet earlier.

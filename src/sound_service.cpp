@@ -28,6 +28,7 @@
 #include <iostream>
 #include <unordered_map>
 #include <mutex>
+#include <atomic>
 
 /**
  * The VFS is the glue between the sound service and MiniAudio.
@@ -133,6 +134,7 @@ class sound_service_impl : public sound_service {
 	typedef std::unordered_map<std::string, temp_args_entry> temp_args_t;
 	temp_args_t temp_args;
 	std::mutex temp_args_mtx;
+	std::atomic<unsigned long long> own_entries{0}; // Numbers the triplets prepared with own_entry.
 	bool set_temp_args(const std::string &triplet, const vfs_args &args) {
 		std::unique_lock<std::mutex> lock(temp_args_mtx);
 		auto added = temp_args.try_emplace(triplet, temp_args_entry{args, 0});
@@ -241,7 +243,7 @@ public:
 		filters[slot]->set_directive(new_directive);
 		return true;
 	}
-	std::string prepare_triplet(const std::string &name, const size_t protocol_slot, const directive_t protocol_directive, const size_t filter_slot, directive_t filter_directive) {
+	std::string prepare_triplet(const std::string &name, const size_t protocol_slot, const directive_t protocol_directive, const size_t filter_slot, directive_t filter_directive, bool own_entry) {
 		if (protocol_slot >= protocols.size())
 			return "";
 		if (!is_valid_utf8(name))
@@ -266,6 +268,7 @@ public:
 		        << args.protocol_slot
 		        << "\x1e"
 		        << preg->get()->get_suffix(args.protocol_directive);
+		if (own_entry) triplet << "\x1e" << ++own_entries;
 		set_temp_args(triplet.str(), args);
 
 		return triplet.str();
