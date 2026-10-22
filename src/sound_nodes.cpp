@@ -24,6 +24,9 @@
 
 using namespace std;
 
+// A volume clamped to the range a script set, as MiniAudio's ma_clamp() clamps a sound's gain, the floor winning over a ceiling set below it: std::clamp() with such a range is undefined.
+static float clamp_volume(float volume, float floor, float ceiling) { return volume > ceiling? (ceiling < floor? floor : ceiling) : volume < floor? floor : volume; }
+
 // This node allows easy creation of miniaudio nodes in C++.
 static void ma_effect_node_process_pcm_frames(ma_node* pNode, const float** ppFramesIn, ma_uint32* pFrameCountIn, float** ppFramesOut, ma_uint32* pFrameCountOut) {
 	ma_effect_node* node = (ma_effect_node*)pNode;
@@ -763,7 +766,7 @@ public:
 			v = (1.0 - volume_curve) * ((v <= volume_curve? v : volume_curve) / volume_curve) + volume_curve * ((v > volume_curve? v - volume_curve : 0) / (1 - volume_curve));
 			v = range_convert(v, 0, 1, -60, max_volume);
 		}
-		return ma_volume_db_to_linear(clamp(v, -70.0f, max_volume));
+		return ma_volume_db_to_linear(clamp_volume(v, max_volume < -70.0f? max_volume : -70.0f, max_volume)); // Not below -70 dB, unless the script set the loudest lower.
 	}
 	splitter_node* create_attachment(audio_node* dry_input, audio_node* dry_output) override {
 		if (dry_input && dry_input->get_engine() != get_engine() || dry_output && dry_output->get_engine() != get_engine()) { // Both engines' audio threads would read the splitter.
@@ -1343,7 +1346,7 @@ public:
 		if (!spatializer->get_parameters(params)) goto fail;
 		distance = params.listener_distance - params.min_distance; // Within min_distance a sound is at full volume, as at min_distance itself, rather than attenuated by its whole distance.
 		if (distance < 0) distance = 0;
-		volume = clamp(distance <= params.max_distance - params.min_distance? ma_volume_db_to_linear(-distance * params.rolloff * 1.75) : 0, params.min_volume, params.max_volume);
+		volume = clamp_volume(distance <= params.max_distance - params.min_distance? ma_volume_db_to_linear(-distance * params.rolloff * 1.75) : 0, params.min_volume, params.max_volume);
 		ma_gainer_set_master_volume(&gainer, volume);
 		if (frameCount > *frame_count_in) frameCount = *frame_count_in;
 		ma_gainer_process_pcm_frames(&gainer, frames_out[0], frames_in[0], frameCount);
@@ -1404,7 +1407,7 @@ public:
 		params.rolloff *= 0.7; // Attenuators apply internal factors sometimes to try making it so that rolloff at a constant value will cause a similar volume reduction regardless of the attenuator in use.
 		sourcePos = {params.sound_x * params.rolloff, params.sound_y * params.rolloff, params.sound_z * params.rolloff};
 		listenerPos = {params.listener_x * params.rolloff, params.listener_y * params.rolloff, params.listener_z * params.rolloff};
-		iplEffectParams.distanceAttenuation = params.listener_distance <= params.max_distance? clamp(iplDistanceAttenuationCalculate(g_phonon_context, sourcePos, listenerPos, &distanceModel), params.min_volume, params.max_volume) : params.min_volume;
+		iplEffectParams.distanceAttenuation = params.listener_distance <= params.max_distance? clamp_volume(iplDistanceAttenuationCalculate(g_phonon_context, sourcePos, listenerPos, &distanceModel), params.min_volume, params.max_volume) : params.min_volume;
 		iplAirAbsorptionCalculate(g_phonon_context, sourcePos, listenerPos, &airAbsorptionModel, iplEffectParams.airAbsorption);
 		while (totalFramesProcessed < totalFramesToProcess) {
 			ma_uint32 framesToProcessThisIteration = totalFramesToProcess - totalFramesProcessed;
