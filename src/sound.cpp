@@ -2913,6 +2913,10 @@ public:
 		return rate;
 	}
 	bool load_special(const std::string &filename, const size_t protocol_slot = 0, directive_t protocol_directive = nullptr, const size_t filter_slot = 0, directive_t filter_directive = nullptr, ma_uint32 ma_flags = MA_SOUND_FLAG_DECODE) override {
+		return load_source(filename, protocol_slot, protocol_directive, filter_slot, filter_directive, ma_flags, false);
+	}
+	// whole_in_pages is set for a stream loaded again as a buffer because it fitted in its two pages (see below), whose rate isn't checked again: the buffer takes no more than the pages it filled, and the stream itself wasn't refused.
+	bool load_source(const std::string &filename, const size_t protocol_slot, directive_t protocol_directive, const size_t filter_slot, directive_t filter_directive, ma_uint32 ma_flags, bool whole_in_pages) {
 		garbage_collect_inline_sounds();
 		if (snd)
 			close();
@@ -2928,7 +2932,7 @@ public:
 		ma_resource_manager* manager = ma_engine_get_resource_manager(engine->get_ma_engine());
 		ma_uint32 decoded_rate = manager->config.decodedSampleRate;
 		bool buffered = (ma_flags & MA_SOUND_FLAG_DECODE) && !(ma_flags & MA_SOUND_FLAG_STREAM), streamed = (ma_flags & MA_SOUND_FLAG_STREAM) != 0;
-		if (!(ma_flags & MA_SOUND_FLAG_UNKNOWN_LENGTH) && (buffered? !resource_cached(manager, triplet) : streamed && !decoded_rate)) {
+		if (!whole_in_pages && !(ma_flags & MA_SOUND_FLAG_UNKNOWN_LENGTH) && (buffered? !resource_cached(manager, triplet) : streamed && !decoded_rate)) {
 			ma_uint32 own_rate = native_sample_rate(triplet);
 			if (own_rate && (decoded_rate? (ma_uint64)own_rate * (ma_standard_sample_rate_max / ma_standard_sample_rate_min) < decoded_rate : own_rate < 1000)) {
 				g_sound_service->cleanup_triplet(triplet);
@@ -3020,7 +3024,7 @@ public:
 			made_view.reset();
 			discard_source(made_source, tree_held);
 			g_sound_service->cleanup_triplet(triplet);
-			return load_special(filename, protocol_slot, protocol_directive, filter_slot, filter_directive, (ma_flags & ~MA_SOUND_FLAG_STREAM) | MA_SOUND_FLAG_DECODE);
+			return load_source(filename, protocol_slot, protocol_directive, filter_slot, filter_directive, (ma_flags & ~MA_SOUND_FLAG_STREAM) | MA_SOUND_FLAG_DECODE, true);
 		}
 		if (g_soundsystem_last_error == MA_SUCCESS) {
 			if (made_source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM) held(&*made)->stream = &made_source->backend.stream;
