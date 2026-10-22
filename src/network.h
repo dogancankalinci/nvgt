@@ -94,8 +94,11 @@ public:
 	bool get_packet_compression() {
 		return host && host->compressor.context;
 	}
-	size_t get_connected_peers() {
-		return host ? host->connectedPeers : -1;
+	// Of the script's types (uint64 here, uint for set_duplicate_peers): a size_t is 4 bytes on 32-bit targets, where the script read
+	// the other 4 bytes of the count from whatever the function left in the register next to it, and on 64-bit ARM the upper half of
+	// a 32-bit argument isn't set, so a size_t parameter took garbage there.
+	asQWORD get_connected_peers() {
+		return host ? asQWORD(host->connectedPeers) : asQWORD(-1);
 	}
 	size_t get_bytes_received() {
 		update_totals();
@@ -116,7 +119,7 @@ public:
 	size_t get_duplicate_peers() {
 		return host ? host->duplicatePeers : -1;
 	}
-	void set_duplicate_peers(size_t peers) {
+	void set_duplicate_peers(unsigned int peers) {
 		if (host) host->duplicatePeers = peers;
 	}
 	bool active() {
