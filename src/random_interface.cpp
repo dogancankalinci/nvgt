@@ -162,42 +162,47 @@ static void ensure_default_random() {
 	}
 }
 
+// The generators below are let go of only once the globals no longer point to them. Letting go of a script generator releases its object, and a script class's destructor run by that release which called random() or set_default_random() reached the generator being deleted: random() ran it again (deleting it a second time once that call returned), and set_default_random() released it a second time.
+
 // Cleanup function to be called before engine shutdown
 void cleanup_default_random() {
-	// Be careful not to double-release
-	if (g_default_random && g_default_random != g_default_script_wrapper)
-		g_default_random->release();
-	if (g_default_script_wrapper) {
-		g_default_script_wrapper->release();
-		g_default_script_wrapper = nullptr;
-	}
-	if (g_random_xorshift) {
-		g_random_xorshift->release();
-		g_random_xorshift = nullptr;
-	}
+	random_interface* old_default = g_default_random;
+	script_random_wrapper* old_wrapper = g_default_script_wrapper;
+	random_xorshift* old_xorshift = g_random_xorshift;
 	g_default_random = nullptr;
+	g_default_script_wrapper = nullptr;
+	g_random_xorshift = nullptr;
+	// Be careful not to double-release
+	if (old_default && old_default != old_wrapper)
+		old_default->release();
+	if (old_wrapper)
+		old_wrapper->release();
+	if (old_xorshift)
+		old_xorshift->release();
 }
 
 void set_default_random(random_interface* rng) {
-	if (g_default_random && g_default_random != g_default_script_wrapper)
-		g_default_random->release();
-	if (g_default_script_wrapper && g_default_random == g_default_script_wrapper) {
-		g_default_script_wrapper->release();
+	random_interface* old_default = g_default_random;
+	if (g_default_script_wrapper && old_default == g_default_script_wrapper)
 		g_default_script_wrapper = nullptr;
-	}
 	g_default_random = rng;
+	// The previous default, a generator of its own or the wrapper of a script generator, holds one reference either way.
+	if (old_default)
+		old_default->release();
 }
 
 void set_default_random_script(asIScriptObject* scriptObj) {
 	if (!scriptObj) return;
-	// Clean up previous default
-	if (g_default_random && g_default_random != g_default_script_wrapper)
-		g_default_random->release();
-	if (g_default_script_wrapper)
-		g_default_script_wrapper->release();
+	random_interface* old_default = g_default_random;
+	script_random_wrapper* old_wrapper = g_default_script_wrapper;
 	// Create wrapper and set as default
 	g_default_script_wrapper = new script_random_wrapper(scriptObj);
 	g_default_random = g_default_script_wrapper;
+	// Clean up previous default
+	if (old_default && old_default != old_wrapper)
+		old_default->release();
+	if (old_wrapper)
+		old_wrapper->release();
 }
 
 random_interface* get_default_random() {
