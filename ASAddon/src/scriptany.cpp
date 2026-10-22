@@ -210,6 +210,35 @@ static void ReleaseAnyValue(asIScriptEngine *engine, void *obj, int typeId)
 	}
 }
 
+// ALTERED: holds an any and the object it stores while that object is copied out of it (a script class's copy constructor or
+// opAssign), which can store another value into the any or empty it: the object was released and freed in the middle of its
+// own copy, which went on reading it. Only an object whose type counts references is held (not a value type, nor a scoped or
+// NOCOUNT one). The any itself is held as the copy can let go of it too.
+struct SAnyValueHold
+{
+	const CScriptAny *any;
+	asIScriptEngine *engine;
+	asITypeInfo *type;
+	void *obj;
+	SAnyValueHold(const CScriptAny *any, asIScriptEngine *engine, void *obj, int typeId) : any(any), engine(engine), type(0), obj(0)
+	{
+		any->AddRef();
+		asITypeInfo *ti = obj && (typeId & asTYPEID_MASK_OBJECT) ? engine->GetTypeInfoById(typeId) : 0;
+		if( ti && (ti->GetFlags() & asOBJ_REF) && !(ti->GetFlags() & (asOBJ_NOCOUNT | asOBJ_SCOPED)) )
+		{
+			this->type = ti;
+			this->obj = obj;
+			engine->AddRefScriptObject(obj, ti);
+		}
+	}
+	~SAnyValueHold()
+	{
+		if( obj )
+			engine->ReleaseScriptObject(obj, type);
+		any->Release();
+	}
+};
+
 CScriptAny &CScriptAny::operator=(const CScriptAny &other)
 {
 	// ALTERED: assigning an any to itself (a = a) released its value before copying it from itself, which left it empty and
@@ -241,6 +270,7 @@ CScriptAny &CScriptAny::operator=(const CScriptAny &other)
 	else if( nv.typeId & asTYPEID_MASK_OBJECT )
 	{
 		// Create a copy of the object
+		SAnyValueHold holdThis(this, engine, 0, 0), hold(&other, engine, other.value.valueObj, nv.typeId); // ALTERED: see SAnyValueHold
 		nv.valueObj = engine->CreateScriptObjectCopy(other.value.valueObj, engine->GetTypeInfoById(nv.typeId));
 	}
 	else
@@ -382,7 +412,8 @@ bool CScriptAny::Retrieve(void *ref, int refTypeId) const
 		// Copy the object into the given reference
 		if( value.typeId == refTypeId )
 		{
-			engine->AssignScriptObject(ref, value.valueObj, engine->GetTypeInfoById(value.typeId));
+			SAnyValueHold hold(this, engine, value.valueObj, value.typeId); // ALTERED: see SAnyValueHold
+			engine->AssignScriptObject(ref, hold.obj ? hold.obj : value.valueObj, engine->GetTypeInfoById(refTypeId));
 			return true;
 		}
 	}
