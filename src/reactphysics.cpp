@@ -199,6 +199,17 @@ public:
 	void onOverlap(OverlapCallback::CallbackData& data) override { simple_void_callback(callback, &data); }
 };
 
+// reactphysics3d only asserts the index of a contact or overlap pair (no check in a release build): an index past the last pair read
+// past its pair index arrays (an access violation for get_contact_pair(nb_contact_pairs)).
+CollisionCallback::ContactPair collision_data_get_contact_pair(const CollisionCallback::CallbackData& data, asQWORD index) {
+	if (index >= data.getNbContactPairs()) throw out_of_range("contact pair index out of range");
+	return data.getContactPair(index);
+}
+OverlapCallback::OverlapPair overlap_data_get_overlapping_pair(const OverlapCallback::CallbackData& data, asUINT index) {
+	if (index >= data.getNbOverlappingPairs()) throw out_of_range("overlapping pair index out of range");
+	return data.getOverlappingPair(index);
+}
+
 class event_listener : public EventListener {
 public:
 	asIScriptFunction* on_contact_callback;
@@ -1450,7 +1461,7 @@ void RegisterPhysicsWorldAndCallbacks(asIScriptEngine* engine) {
 	engine->RegisterObjectType("physics_collision_callback_data", 0, asOBJ_REF | asOBJ_NOHANDLE);
 	engine->RegisterFuncdef("void physics_collision_callback(const physics_collision_callback_data& data)");
 	engine->RegisterObjectMethod("physics_collision_callback_data", "uint get_nb_contact_pairs() const property", asMETHOD(CollisionCallback::CallbackData, getNbContactPairs), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_collision_callback_data", "physics_contact_pair get_contact_pair(uint64 index) const", asMETHOD(CollisionCallback::CallbackData, getContactPair), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_collision_callback_data", "physics_contact_pair get_contact_pair(uint64 index) const", asFUNCTION(collision_data_get_contact_pair), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectType("physics_overlap_pair", sizeof(OverlapCallback::OverlapPair), asOBJ_VALUE | asGetTypeTraits<OverlapCallback::OverlapPair>());
 	engine->RegisterObjectBehaviour("physics_overlap_pair", asBEHAVE_CONSTRUCT, "void f(const physics_overlap_pair&in pair)", asFUNCTION((rp_construct<OverlapCallback::OverlapPair, const OverlapCallback::OverlapPair&>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectBehaviour("physics_overlap_pair", asBEHAVE_DESTRUCT, "void f()", asFUNCTION(rp_destruct<OverlapCallback::OverlapPair>), asCALL_CDECL_OBJFIRST);
@@ -1462,7 +1473,7 @@ void RegisterPhysicsWorldAndCallbacks(asIScriptEngine* engine) {
 	engine->RegisterObjectType("physics_overlap_callback_data", 0, asOBJ_REF | asOBJ_NOHANDLE);
 	engine->RegisterFuncdef("void physics_overlap_callback(const physics_overlap_callback_data& data)");
 	engine->RegisterObjectMethod("physics_overlap_callback_data", "uint get_nb_overlap_pairs() const property", asMETHOD(OverlapCallback::CallbackData, getNbOverlappingPairs), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_overlap_callback_data", "physics_overlap_pair get_overlapping_pair(uint index) const", asMETHOD(OverlapCallback::CallbackData, getOverlappingPair), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_overlap_callback_data", "physics_overlap_pair get_overlapping_pair(uint index) const", asFUNCTION(overlap_data_get_overlapping_pair), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectType("physics_world_settings", sizeof(PhysicsWorld::WorldSettings), asOBJ_VALUE | asGetTypeTraits<PhysicsWorld::WorldSettings>());
 	engine->RegisterObjectBehaviour("physics_world_settings", asBEHAVE_CONSTRUCT, "void f()", asFUNCTION(rp_construct<PhysicsWorld::WorldSettings>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectBehaviour("physics_world_settings", asBEHAVE_DESTRUCT, "void f()", asFUNCTION(rp_destruct<PhysicsWorld::WorldSettings>), asCALL_CDECL_OBJFIRST);
