@@ -2132,7 +2132,11 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 		seek_target.compare_exchange_strong(target, ~(ma_uint64)0); // A seek made meanwhile stays for the next block.
 	}
 	ma_uint32 wanted = *frame_count_out, done = 0, channels = ma_node_get_output_channels(node, 0);
-	for (;;) {
+	for (bool first = true;; first = false) {
+		if (!first) {
+			if (seek_target.load() != ~(ma_uint64)0) break; // A seek made during the block waits for the next one's takeover, which empties the cache and keeps a stream to one seek, rather than being made by MiniAudio's own code.
+			hold_rate(node); // The doppler ratio MiniAudio's spatializer worked out in the call before, which it applies in this one, held as for the first.
+		}
 		ma_uint32 cached = s->processingCacheFramesRemaining;
 		float* out = frames_out[0] + (size_t)done * channels;
 		ma_uint32 count = wanted - done;
