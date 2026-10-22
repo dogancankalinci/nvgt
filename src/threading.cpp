@@ -604,32 +604,28 @@ void RegisterAtomics(asIScriptEngine* engine) {
 	engine->RegisterGlobalFunction("void atomic_thread_fence(memory_order order)", asFUNCTION(std::atomic_thread_fence), asCALL_CDECL);
 }
 
-template <class T> void scoped_lock_construct(void* mem, T* mutex) {
-	new (mem) ScopedLockWithUnlock<T>(*mutex);
+// A scoped lock (mutex_lock, rw_write_lock...) holds the reference to its mutex that its constructor is given until it is destroyed, and lets go of it after unlocking. The constructor's parameter is declared T@, not T@+, so the reference is the constructor's to keep or let go of: it was never let go of, so every lock leaked a reference to its mutex (a 32-bit count, which after 2^31 locks of one mutex wrapped and freed the mutex while still in use), and a lock of a null rw_lock dereferenced null.
+template <class L, class T> struct script_scoped_lock {
+	T* target;
+	L lock;
+	template <typename... A> script_scoped_lock(T* target, A... args) : target(target), lock(*target, args...) {}
+};
+template <class L, class T, typename... A> void script_scoped_lock_construct(void* mem, T* target, A... args) {
+	if (!target) throw NullPointerException("cannot lock a null handle");
+	try {
+		new (mem) script_scoped_lock<L, T>(target, args...);
+	} catch (...) {
+		angelscript_refcounted_release<T>(target); // Not locked (a timeout), so nothing holds it.
+		throw;
+	}
 }
-template <class T> void scoped_lock_construct_ms(void* mem, T* mutex, unsigned int ms) {
-	new (mem) ScopedLockWithUnlock<T>(*mutex, ms);
+template <class L, class T> void script_scoped_lock_destruct(script_scoped_lock<L, T>* mem) {
+	T* target = mem->target;
+	mem->~script_scoped_lock<L, T>(); // Unlocks first.
+	angelscript_refcounted_release<T>(target);
 }
-void scoped_rw_lock_construct(void* mem, RWLock* lock, bool write) {
-	new (mem) ScopedRWLock(*lock, write);
-}
-void scoped_read_rw_lock_construct(void* mem, RWLock* lock) {
-	new (mem) ScopedReadRWLock(*lock);
-}
-void scoped_write_rw_lock_construct(void* mem, RWLock* lock) {
-	new (mem) ScopedWriteRWLock(*lock);
-}
-template <class T> void scoped_lock_destruct(ScopedLockWithUnlock<T>* mem) {
-	mem->~ScopedLockWithUnlock<T>();
-}
-void scoped_rw_lock_destruct(ScopedRWLock* mem) {
-	mem->~ScopedRWLock();
-}
-void scoped_read_rw_lock_destruct(ScopedReadRWLock* mem) {
-	mem->~ScopedReadRWLock();
-}
-void scoped_write_rw_lock_destruct(ScopedWriteRWLock* mem) {
-	mem->~ScopedWriteRWLock();
+template <class T> void script_scoped_lock_unlock(script_scoped_lock<ScopedLockWithUnlock<T>, T>* mem) {
+	mem->lock.unlock();
 }
 template <class T> void mutex_lock_ms(T* mutex, unsigned int ms) {
 	mutex->lock(ms);
@@ -668,11 +664,12 @@ template <class T> void RegisterMutexType(asIScriptEngine* engine, const std::st
 	engine->RegisterObjectMethod(type.c_str(), _O("void lock()"), asMETHODPR(T, lock, (), void), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), _O("bool try_lock()"), asMETHODPR(T, tryLock, (), bool), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), _O("void unlock()"), asMETHOD(T, unlock), asCALL_THISCALL);
-	engine->RegisterObjectType(format("%s_lock", type).c_str(), sizeof(ScopedLockWithUnlock<T>), asOBJ_VALUE | asGetTypeTraits<ScopedLock<T>>());
-	engine->RegisterObjectBehaviour(format("%s_lock", type).c_str(), asBEHAVE_CONSTRUCT, format("void f(%s@ target)", type).c_str(), asFUNCTION(scoped_lock_construct<T>), asCALL_CDECL_OBJFIRST);
-	if constexpr(!std::is_same<T, NamedMutex>::value) engine->RegisterObjectBehaviour(format("%s_lock", type).c_str(), asBEHAVE_CONSTRUCT, format("void f(%s@ target, uint milliseconds)", type).c_str(), asFUNCTION(scoped_lock_construct_ms<T>), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectBehaviour(format("%s_lock", type).c_str(), asBEHAVE_DESTRUCT, "void f()", asFUNCTION(scoped_lock_destruct<T>), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(format("%s_lock", type).c_str(), _O("void unlock()"), asMETHOD(ScopedLockWithUnlock<T>, unlock), asCALL_THISCALL);
+	typedef script_scoped_lock<ScopedLockWithUnlock<T>, T> lock_type;
+	engine->RegisterObjectType(format("%s_lock", type).c_str(), sizeof(lock_type), asOBJ_VALUE | asGetTypeTraits<lock_type>());
+	engine->RegisterObjectBehaviour(format("%s_lock", type).c_str(), asBEHAVE_CONSTRUCT, format("void f(%s@ target)", type).c_str(), asFUNCTION((script_scoped_lock_construct<ScopedLockWithUnlock<T>, T>)), asCALL_CDECL_OBJFIRST);
+	if constexpr(!std::is_same<T, NamedMutex>::value) engine->RegisterObjectBehaviour(format("%s_lock", type).c_str(), asBEHAVE_CONSTRUCT, format("void f(%s@ target, uint milliseconds)", type).c_str(), asFUNCTION((script_scoped_lock_construct<ScopedLockWithUnlock<T>, T, unsigned int>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectBehaviour(format("%s_lock", type).c_str(), asBEHAVE_DESTRUCT, "void f()", asFUNCTION((script_scoped_lock_destruct<ScopedLockWithUnlock<T>, T>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(format("%s_lock", type).c_str(), _O("void unlock()"), asFUNCTION(script_scoped_lock_unlock<T>), asCALL_CDECL_OBJFIRST);
 }
 
 static std::thread::id g_main_thread_id;
@@ -716,15 +713,15 @@ void RegisterThreading(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod(_O("rw_lock"), _O("void write_lock()"), asMETHOD(RWLock, writeLock), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("rw_lock"), _O("bool try_write_lock()"), asMETHOD(RWLock, tryWriteLock), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("rw_lock"), _O("void unlock()"), asMETHOD(RWLock, unlock), asCALL_THISCALL);
-	engine->RegisterObjectType("rw_scoped_lock", sizeof(ScopedRWLock), asOBJ_VALUE | asGetTypeTraits<ScopedRWLock>());
-	engine->RegisterObjectBehaviour("rw_scoped_lock", asBEHAVE_CONSTRUCT, "void f(rw_lock@ lock, bool write)", asFUNCTION(scoped_rw_lock_construct), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectBehaviour("rw_scoped_lock", asBEHAVE_DESTRUCT, "void f()", asFUNCTION(scoped_rw_lock_destruct), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectType("rw_read_lock", sizeof(ScopedReadRWLock), asOBJ_VALUE | asGetTypeTraits<ScopedReadRWLock>());
-	engine->RegisterObjectBehaviour("rw_read_lock", asBEHAVE_CONSTRUCT, "void f(rw_lock@ target)", asFUNCTION(scoped_read_rw_lock_construct), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectBehaviour("rw_read_lock", asBEHAVE_DESTRUCT, "void f()", asFUNCTION(scoped_read_rw_lock_destruct), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectType("rw_write_lock", sizeof(ScopedWriteRWLock), asOBJ_VALUE | asGetTypeTraits<ScopedWriteRWLock>());
-	engine->RegisterObjectBehaviour("rw_write_lock", asBEHAVE_CONSTRUCT, "void f(rw_lock@ target)", asFUNCTION(scoped_write_rw_lock_construct), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectBehaviour("rw_write_lock", asBEHAVE_DESTRUCT, "void f()", asFUNCTION(scoped_write_rw_lock_destruct), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectType("rw_scoped_lock", sizeof(script_scoped_lock<ScopedRWLock, RWLock>), asOBJ_VALUE | asGetTypeTraits<script_scoped_lock<ScopedRWLock, RWLock>>());
+	engine->RegisterObjectBehaviour("rw_scoped_lock", asBEHAVE_CONSTRUCT, "void f(rw_lock@ lock, bool write)", asFUNCTION((script_scoped_lock_construct<ScopedRWLock, RWLock, bool>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectBehaviour("rw_scoped_lock", asBEHAVE_DESTRUCT, "void f()", asFUNCTION((script_scoped_lock_destruct<ScopedRWLock, RWLock>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectType("rw_read_lock", sizeof(script_scoped_lock<ScopedReadRWLock, RWLock>), asOBJ_VALUE | asGetTypeTraits<script_scoped_lock<ScopedReadRWLock, RWLock>>());
+	engine->RegisterObjectBehaviour("rw_read_lock", asBEHAVE_CONSTRUCT, "void f(rw_lock@ target)", asFUNCTION((script_scoped_lock_construct<ScopedReadRWLock, RWLock>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectBehaviour("rw_read_lock", asBEHAVE_DESTRUCT, "void f()", asFUNCTION((script_scoped_lock_destruct<ScopedReadRWLock, RWLock>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectType("rw_write_lock", sizeof(script_scoped_lock<ScopedWriteRWLock, RWLock>), asOBJ_VALUE | asGetTypeTraits<script_scoped_lock<ScopedWriteRWLock, RWLock>>());
+	engine->RegisterObjectBehaviour("rw_write_lock", asBEHAVE_CONSTRUCT, "void f(rw_lock@ target)", asFUNCTION((script_scoped_lock_construct<ScopedWriteRWLock, RWLock>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectBehaviour("rw_write_lock", asBEHAVE_DESTRUCT, "void f()", asFUNCTION((script_scoped_lock_destruct<ScopedWriteRWLock, RWLock>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterEnum("thread_event_type");
 	engine->RegisterEnumValue("thread_event_type", "THREAD_EVENT_MANUAL_RESET", Event::EVENT_MANUALRESET);
 	engine->RegisterEnumValue("thread_event_type", "THREAD_EVENT_AUTO_RESET", Event::EVENT_AUTORESET);
