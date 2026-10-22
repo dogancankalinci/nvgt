@@ -601,9 +601,8 @@ unsigned int legacy_pack::stream_read_script(unsigned int idx, unsigned char* bu
 }
 std::string legacy_pack::stream_read_string(unsigned int idx, unsigned int size) {
 	std::string result(size, '\0');
-	int actual_size = stream_read_script(idx, (unsigned char*)&result.front(), size);
-	if (actual_size > -1)
-		result.resize(size);
+	unsigned int actual_size = stream_read_script(idx, (unsigned char*)result.data(), size);
+	result.resize(actual_size == 0xffffffff ? 0 : actual_size); // only what was read; nothing for a stream that isn't open
 	return result;
 }
 
@@ -638,6 +637,10 @@ legacy_pack* ScriptPack_Factory() {
 }
 
 int packmode1 = PACK_OPEN_MODE_NONE, packmode2 = PACK_OPEN_MODE_APPEND, packmode3 = PACK_OPEN_MODE_CREATE, packmode4 = PACK_OPEN_MODE_READ;
+// stream_seek is a uint in the script; the C++ returns a bool, of whose register the script would read 4 bytes.
+static unsigned int pack_stream_seek(legacy_pack* pack, unsigned int idx, unsigned int offset, int origin) {
+	return pack->stream_seek_script(idx, offset, origin) ? 1 : 0;
+}
 void RegisterScriptLegacyPack(asIScriptEngine* engine) {
 	// engine->SetDefaultNamespace("legacy");
 	engine->RegisterGlobalProperty(_O("const int PACK_OPEN_MODE_NONE"), &packmode1);
@@ -665,9 +668,9 @@ void RegisterScriptLegacyPack(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod(_O("pack"), _O("bool raw_seek(int offset)"), asMETHOD(legacy_pack, raw_seek), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("pack"), _O("bool stream_close(uint index)"), asMETHOD(legacy_pack, stream_close_script), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("pack"), _O("uint stream_open(const string &in pack_filename, uint offset_in_file) const"), asMETHOD(legacy_pack, stream_open_script), asCALL_THISCALL);
-	engine->RegisterObjectMethod(_O("pack"), _O("string stream_read(uint index, uint read_byte_count) const"), asMETHOD(legacy_pack, stream_read), asCALL_THISCALL);
+	engine->RegisterObjectMethod(_O("pack"), _O("string stream_read(uint index, uint read_byte_count) const"), asMETHOD(legacy_pack, stream_read_string), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("pack"), _O("uint stream_pos(uint index) const"), asMETHOD(legacy_pack, stream_pos_script), asCALL_THISCALL);
-	engine->RegisterObjectMethod(_O("pack"), _O("uint stream_seek(uint index, uint offset, int origin) const"), asMETHOD(legacy_pack, stream_seek_script), asCALL_THISCALL);
+	engine->RegisterObjectMethod(_O("pack"), _O("uint stream_seek(uint index, uint offset, int origin) const"), asFUNCTION(pack_stream_seek), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(_O("pack"), _O("uint stream_size(uint index) const"), asMETHOD(legacy_pack, stream_size_script), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("pack"), _O("bool get_active() const property"), asMETHOD(legacy_pack, is_active), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("pack"), _O("uint get_size() const property"), asMETHOD(legacy_pack, size), asCALL_THISCALL);
