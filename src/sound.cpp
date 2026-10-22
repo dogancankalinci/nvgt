@@ -1018,7 +1018,6 @@ public:
 		drop_pending_frames();
 		return true;
 	}
-	// Reads 32-bit float samples into buffer, as read_script() makes them.
 	// Reads frame_count frames of frame_size bytes into buffer, adding to frames_read. MiniAudio ends a read of a looping source after it met the source's end twice with nothing read between, as a source shorter than half the read does, though the source would go on: a looping decoder of 1000 frames gave 2000 of 4096, then 1000 a read. So a looping source is read again for the rest while each read gives frames.
 	void read_whole(void* buffer, ma_uint64 frame_count, ma_uint32 frame_size, ma_uint64& frames_read) {
 		bool looping = ma_data_source_is_looping(src->pDataSource);
@@ -1029,6 +1028,7 @@ public:
 			if (!got) break;
 		} while (looping && g_soundsystem_last_error == MA_SUCCESS && frames_read < frame_count);
 	}
+	// Reads 32-bit float samples into buffer, as read_script() makes them.
 	unsigned long long read(void* buffer, unsigned long long frame_count) override {
 		std::lock_guard<std::recursive_mutex> guard(source_mutex);
 		if (!ready_to_read()) return 0;
