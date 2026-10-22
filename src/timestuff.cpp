@@ -744,7 +744,9 @@ void RegisterScriptTimestuffCore(asIScriptEngine *engine) {
 	engine->RegisterGlobalFunction("timestamp timestamp_from_UTC_time(int64 UTC)", asFUNCTION(Timestamp::fromUtcTime), asCALL_CDECL);
 	engine->RegisterObjectBehaviour("timespan", asBEHAVE_CONSTRUCT, "void f()", asFUNCTION(timestuff_construct<Timespan>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectBehaviour("timespan", asBEHAVE_CONSTRUCT, "void f(int64 microseconds)", asFUNCTION((timestuff_construct<Timespan, Int64>)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectBehaviour("timespan", asBEHAVE_CONSTRUCT, "void f(int seconds, int microseconds)", asFUNCTION((timestuff_construct<Timespan, long, long>)), asCALL_CDECL_OBJFIRST);
+	// Taken as the script's int: as long, 8 bytes on 64-bit Linux, macOS, Android and iOS, a negative value arrived zero-extended
+	// (timespan(-5, 0) was 4294967291 seconds) on x86-64, and with garbage in its upper half on 64-bit ARM.
+	engine->RegisterObjectBehaviour("timespan", asBEHAVE_CONSTRUCT, "void f(int seconds, int microseconds)", asFUNCTION((timestuff_construct<Timespan, int, int>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectBehaviour("timespan", asBEHAVE_CONSTRUCT, "void f(int days, int hours, int minutes, int seconds, int microseconds)", asFUNCTION((timestuff_construct<Timespan, int, int, int, int, int>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectBehaviour("timespan", asBEHAVE_CONSTRUCT, "void f(const timespan&in other)", asFUNCTION(timestuff_copy_construct<Timespan>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectBehaviour("timespan", asBEHAVE_DESTRUCT, "void f()", asFUNCTION(timestuff_destruct<Timespan>), asCALL_CDECL_OBJFIRST);
