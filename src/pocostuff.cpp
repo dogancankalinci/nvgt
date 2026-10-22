@@ -737,6 +737,10 @@ poco_json_array* poco_json_array_list_factory(asBYTE* buffer) {
 	}
 	return r;
 }
+// The script reads these sizes as uint (as it indexes a json_array with uint); Poco's size() returns a size_t, which is 8 bytes on
+// 64-bit targets.
+asUINT poco_json_object_size(poco_json_object* o) { return asUINT(o->ptr->size()); }
+asUINT poco_json_array_size(poco_json_array* a) { return asUINT(a->ptr->size()); }
 // value constructors and destructors
 template <class T, typename... A> void poco_value_construct(T* mem, A... args) { new (mem) T(args...); }
 template <class T> void poco_value_copy_construct(T* mem, const T& other) { new (mem) T(other); }
@@ -819,7 +823,7 @@ void RegisterPocostuff(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("json_object", "json_object@ get_object(const string&in key) const", asMETHOD(poco_json_object, get_object), asCALL_THISCALL);
 	engine->RegisterObjectMethod("json_object", "string stringify(uint indent = 0, int step = -1) const", asMETHODPR(poco_json_object, stringify, (unsigned int, int) const, std::string), asCALL_THISCALL);
 	engine->RegisterObjectMethod("json_object", "void stringify(datastream@+ stream, uint indent = 0, int step = -1) const", asMETHODPR(poco_json_object, stringify, (datastream*, unsigned int, int) const, void), asCALL_THISCALL);
-	engine->RegisterObjectMethod("json_object", "uint size() const", asMETHOD(JSON::Object, size), asCALL_THISCALL, 0, asOFFSET(poco_json_object, ptr), true);
+	engine->RegisterObjectMethod("json_object", "uint size() const", asFUNCTION(poco_json_object_size), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("json_object", "bool get_escape_unicode() const property", asMETHOD(JSON::Object, getEscapeUnicode), asCALL_THISCALL, 0, asOFFSET(poco_json_object, ptr), true);
 	engine->RegisterObjectMethod("json_object", "void set_escape_unicode(bool value) property", asMETHOD(JSON::Object, setEscapeUnicode), asCALL_THISCALL, 0, asOFFSET(poco_json_object, ptr), true);
 	engine->RegisterObjectMethod("json_object", "void clear()", asMETHOD(JSON::Object, clear), asCALL_THISCALL, 0, asOFFSET(poco_json_object, ptr), true);
@@ -844,8 +848,8 @@ void RegisterPocostuff(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("json_array", "json_object@ get_object(uint index) const", asMETHOD(poco_json_array, get_object), asCALL_THISCALL);
 	engine->RegisterObjectMethod("json_array", "string stringify(uint indent = 0, int step = -1)", asMETHODPR(poco_json_array, stringify, (unsigned int, int) const, std::string), asCALL_THISCALL);
 	engine->RegisterObjectMethod("json_array", "void stringify(datastream@+ stream, uint indent = 0, int step = -1)", asMETHODPR(poco_json_array, stringify, (datastream*, unsigned int, int) const, void), asCALL_THISCALL);
-	engine->RegisterObjectMethod("json_array", "uint length()", asMETHOD(JSON::Array, size), asCALL_THISCALL, 0, asOFFSET(poco_json_array, ptr), true);
-	engine->RegisterObjectMethod("json_array", "uint size()", asMETHOD(JSON::Array, size), asCALL_THISCALL, 0, asOFFSET(poco_json_array, ptr), true);
+	engine->RegisterObjectMethod("json_array", "uint length()", asFUNCTION(poco_json_array_size), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("json_array", "uint size()", asFUNCTION(poco_json_array_size), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("json_array", "bool get_escape_unicode() property", asMETHOD(JSON::Array, getEscapeUnicode), asCALL_THISCALL, 0, asOFFSET(poco_json_array, ptr), true);
 	engine->RegisterObjectMethod("json_array", "void set_escape_unicode(bool value) property", asMETHOD(JSON::Array, setEscapeUnicode), asCALL_THISCALL, 0, asOFFSET(poco_json_array, ptr), true);
 	engine->RegisterObjectMethod("json_array", "bool get_empty() property", asMETHOD(JSON::Array, empty), asCALL_THISCALL, 0, asOFFSET(poco_json_array, ptr), true);
