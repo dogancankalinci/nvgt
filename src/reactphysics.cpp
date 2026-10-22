@@ -1240,7 +1240,7 @@ void RegisterPhysicsEntities(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("physics_collider", "void set_collide_with_mask(uint16 bits) property", asMETHOD(Collider, setCollideWithMaskBits), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_collider", "uint16 get_collision_category() const property", asMETHOD(Collider, getCollisionCategoryBits), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_collider", "void set_collision_category(uint16 bits) property", asMETHOD(Collider, setCollisionCategoryBits), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_collider", "uint16 get_broad_phase_id() const property", asMETHOD(Collider, getBroadPhaseId), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_collider", "int get_broad_phase_id() const property", asMETHOD(Collider, getBroadPhaseId), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_collider", "physics_material& get_material() property", asMETHOD(Collider, getMaterial), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_collider", "void set_material(const physics_material&in material) property", asMETHOD(Collider, setMaterial), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_collider", "bool get_is_trigger() const property", asMETHOD(Collider, getIsTrigger), asCALL_THISCALL);
