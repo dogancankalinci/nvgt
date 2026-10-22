@@ -13,6 +13,7 @@
 #define NOMINMAX
 #include <string>
 #include <algorithm>
+#include <cstdint>
 #include <vector>
 #include <regex>
 #include <math.h>
@@ -467,7 +468,21 @@ script_memory_buffer& script_memory_buffer::from_array(CScriptArray* array) {
 	return *this;
 }
 int script_memory_buffer::get_element_size() const {return g_ScriptEngine->GetSizeOfPrimitiveType(subtypeid); }
-void script_memory_buffer::make(script_memory_buffer* mem, asITypeInfo* subtype, void* ptr, int size) { new(mem) script_memory_buffer(subtype, ptr, size); }
+// The script's address, size and index are uint64 while ptr and size are a pointer and a size_t, 4 bytes on 32-bit targets: the
+// properties were registered at the members' offsets and read and wrote 8 bytes over 4 (size came back with the next member in its
+// upper half), opIndex(uint64) passed its index where at(size_t) didn't look for it (armeabi-v7a puts a 64-bit argument in an even
+// register pair, so at() got the register skipped before it, 0 or garbage), and the constructor took its size from the upper half of
+// the address (0, which turned the bounds check off). They are converted here instead, and a value that doesn't fit is refused.
+static size_t memory_buffer_size_t(asQWORD value, const char* what) {
+	if (value > asQWORD(SIZE_MAX)) throw std::out_of_range(std::string(what) + " out of range on this platform");
+	return size_t(value);
+}
+void script_memory_buffer::make(script_memory_buffer* mem, asITypeInfo* subtype, asQWORD ptr, asQWORD size) { new(mem) script_memory_buffer(subtype, (void*)memory_buffer_size_t(ptr, "address"), memory_buffer_size_t(size, "size")); }
+void* script_memory_buffer::at_script(script_memory_buffer* mem, asQWORD index) { return mem->at(memory_buffer_size_t(index, "index")); }
+asQWORD script_memory_buffer::get_address(const script_memory_buffer* mem) { return asQWORD(uintptr_t(mem->ptr)); }
+void script_memory_buffer::set_address(script_memory_buffer* mem, asQWORD address) { mem->ptr = (void*)memory_buffer_size_t(address, "address"); }
+asQWORD script_memory_buffer::get_size(const script_memory_buffer* mem) { return asQWORD(mem->size); }
+void script_memory_buffer::set_size(script_memory_buffer* mem, asQWORD size) { mem->size = memory_buffer_size_t(size, "size"); }
 void script_memory_buffer::copy(script_memory_buffer* mem, asITypeInfo* subtype, const script_memory_buffer& other) { new(mem) script_memory_buffer(other); }
 void script_memory_buffer::destroy(script_memory_buffer* mem) { mem->~script_memory_buffer(); }
 bool script_memory_buffer::verify(asITypeInfo *subtype, bool& no_gc) {
@@ -480,18 +495,31 @@ void script_memory_buffer::angelscript_register(asIScriptEngine* engine) {
 	engine->RegisterObjectBehaviour("memory_buffer<T>", asBEHAVE_CONSTRUCT, "void f(int&in subtype, const memory_buffer<T>&in other)", asFUNCTION(copy), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectBehaviour("memory_buffer<T>", asBEHAVE_TEMPLATE_CALLBACK, "bool f(int&in subtype, bool&out no_gc)", asFUNCTION(verify), asCALL_CDECL);
 	engine->RegisterObjectBehaviour("memory_buffer<T>", asBEHAVE_DESTRUCT, "void f()", asFUNCTION(destroy), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectProperty("memory_buffer<T>", "uint64 address", asOFFSET(script_memory_buffer, ptr));
-	engine->RegisterObjectProperty("memory_buffer<T>", "uint64 size", asOFFSET(script_memory_buffer, size));
-	engine->RegisterObjectMethod("memory_buffer<T>", "T& opIndex(uint64 index)", asMETHODPR(script_memory_buffer, at, (size_t), void*), asCALL_THISCALL);
-	engine->RegisterObjectMethod("memory_buffer<T>", "const T& opIndex(uint64 index) const", asMETHODPR(script_memory_buffer, at, (size_t) const, const void*), asCALL_THISCALL);
+	engine->RegisterObjectMethod("memory_buffer<T>", "uint64 get_address() const property", asFUNCTION(get_address), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("memory_buffer<T>", "void set_address(uint64 address) property", asFUNCTION(set_address), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("memory_buffer<T>", "uint64 get_size() const property", asFUNCTION(get_size), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("memory_buffer<T>", "void set_size(uint64 size) property", asFUNCTION(set_size), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("memory_buffer<T>", "T& opIndex(uint64 index)", asFUNCTION(at_script), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("memory_buffer<T>", "const T& opIndex(uint64 index) const", asFUNCTION(at_script), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("memory_buffer<T>", "array<T>@ opImplConv() const", asMETHOD(script_memory_buffer, to_array), asCALL_THISCALL);
 	engine->RegisterObjectMethod("memory_buffer<T>", "memory_buffer<T>& opAssign(array<T>@+ array)", asMETHOD(script_memory_buffer, from_array), asCALL_THISCALL);
 	engine->RegisterObjectMethod("memory_buffer<T>", "int get_element_size() const property", asMETHOD(script_memory_buffer, get_element_size), asCALL_THISCALL);
 }
-void* string_get_address(std::string& str) {
-	if (str.size() < 1) return nullptr;
-	return &str[0];
+// Returned as the script's uint64 (see memory_buffer above): as a void*, a 32-bit target returned 4 bytes and the script read the
+// other 4 from whatever the function left in the register next to them.
+asQWORD string_get_address(std::string& str) {
+	if (str.size() < 1) return 0;
+	return asQWORD(uintptr_t(&str[0]));
 }
+
+// malloc() and the rest take and return size_t and void*, 4 bytes on 32-bit targets, where they were bound to the script's uint64
+// directly: calloc() took its count from the upper half of the unit size (0), realloc() its size from the upper half of the address
+// (0, which freed the block), and each returned address came with whatever was in the register next to it as its upper half. A size
+// that doesn't fit a size_t can't be allocated (0, as malloc() fails); an address that doesn't fit a pointer is refused.
+static asQWORD script_memory_allocate(asQWORD size) { return size > asQWORD(SIZE_MAX) ? 0 : asQWORD(uintptr_t(malloc(size_t(size)))); }
+static asQWORD script_memory_allocate_units(asQWORD unit_size, asQWORD unit_count) { return unit_size > asQWORD(SIZE_MAX) || unit_count > asQWORD(SIZE_MAX) ? 0 : asQWORD(uintptr_t(calloc(size_t(unit_size), size_t(unit_count)))); }
+static asQWORD script_memory_reallocate(asQWORD ptr, asQWORD size) { void* p = (void*)memory_buffer_size_t(ptr, "address"); return size > asQWORD(SIZE_MAX) ? 0 : asQWORD(uintptr_t(realloc(p, size_t(size)))); }
+static void script_memory_free(asQWORD ptr) { free((void*)memory_buffer_size_t(ptr, "address")); }
 
 void RegisterMiscFunctions(asIScriptEngine* engine) {
 	engine->SetDefaultAccessMask(NVGT_SUBSYSTEM_OS);
@@ -552,10 +580,10 @@ void RegisterMiscFunctions(asIScriptEngine* engine) {
 	engine->RegisterObjectBehaviour(_O("refstring"), asBEHAVE_ADDREF, _O("void f()"), asMETHOD(refstring, AddRef), asCALL_THISCALL);
 	engine->RegisterObjectBehaviour(_O("refstring"), asBEHAVE_RELEASE, _O("void f()"), asMETHOD(refstring, Release), asCALL_THISCALL);
 	engine->RegisterObjectProperty(_O("refstring"), _O("string str"), asOFFSET(refstring, str));
-	engine->RegisterGlobalFunction(_O("uint64 memory_allocate(uint64 size)"), asFUNCTION(malloc), asCALL_CDECL);
-	engine->RegisterGlobalFunction(_O("uint64 memory_allocate_units(uint64 unit_size, uint64 unit_count)"), asFUNCTION(calloc), asCALL_CDECL);
-	engine->RegisterGlobalFunction(_O("uint64 memory_reallocate(uint64 ptr, uint64 size)"), asFUNCTION(realloc), asCALL_CDECL);
-	engine->RegisterGlobalFunction(_O("void memory_free(uint64 ptr)"), asFUNCTION(free), asCALL_CDECL);
+	engine->RegisterGlobalFunction(_O("uint64 memory_allocate(uint64 size)"), asFUNCTION(script_memory_allocate), asCALL_CDECL);
+	engine->RegisterGlobalFunction(_O("uint64 memory_allocate_units(uint64 unit_size, uint64 unit_count)"), asFUNCTION(script_memory_allocate_units), asCALL_CDECL);
+	engine->RegisterGlobalFunction(_O("uint64 memory_reallocate(uint64 ptr, uint64 size)"), asFUNCTION(script_memory_reallocate), asCALL_CDECL);
+	engine->RegisterGlobalFunction(_O("void memory_free(uint64 ptr)"), asFUNCTION(script_memory_free), asCALL_CDECL);
 	engine->RegisterGlobalFunction("float parse_float(const string &in number)", asFUNCTION(parse_float), asCALL_CDECL);
 	engine->RegisterGlobalFunction("double parse_double(const string &in number)", asFUNCTION(parse_double), asCALL_CDECL);
 	engine->RegisterEnum("system_power_state");

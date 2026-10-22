@@ -51,7 +51,12 @@ struct script_memory_buffer {
 	CScriptArray* to_array() const;
 	script_memory_buffer& from_array(CScriptArray* array);
 	int get_element_size() const;
-	static void make(script_memory_buffer* mem, asITypeInfo* subtype, void* ptr, int size);
+	static void make(script_memory_buffer* mem, asITypeInfo* subtype, asQWORD ptr, asQWORD size);
+	static void* at_script(script_memory_buffer* mem, asQWORD index);
+	static asQWORD get_address(const script_memory_buffer* mem);
+	static void set_address(script_memory_buffer* mem, asQWORD address);
+	static asQWORD get_size(const script_memory_buffer* mem);
+	static void set_size(script_memory_buffer* mem, asQWORD size);
 	static void copy(script_memory_buffer* mem, asITypeInfo* subtype, const script_memory_buffer& other);
 	static void destroy(script_memory_buffer* mem);
 	static bool verify(asITypeInfo *subtype, bool& no_gc);
