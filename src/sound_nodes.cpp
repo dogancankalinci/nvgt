@@ -319,6 +319,9 @@ bool set_global_hrtf(bool enabled) {
 		if (!phonon_init()) return false;
 		if (!sound_set_spatialization(g_audio_phonon_hrtf_panner, g_audio_phonon_attenuator)) return false;
 	} else {
+		// Basic panning and attenuation first, which the docs say false uses: a script that made HRTF exclusive with sound_set_spatialization() had disabled them, and disabling the phonon components below then left every positioned sound with neither, playing centred at full volume.
+		if (!get_audio_panner_enabled(g_audio_basic_panner)) set_audio_panner_enabled(g_audio_basic_panner, true);
+		if (!get_audio_attenuator_enabled(g_audio_basic_attenuator)) set_audio_attenuator_enabled(g_audio_basic_attenuator, true);
 		if (sound_get_default_3d_panner() == g_audio_phonon_hrtf_panner) sound_set_default_3d_panner(g_audio_basic_panner);
 		if (sound_get_default_3d_attenuator() == g_audio_phonon_attenuator) sound_set_default_3d_attenuator(g_audio_basic_attenuator);
 		set_audio_panner_enabled(g_audio_phonon_hrtf_panner, false);
