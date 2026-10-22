@@ -2987,7 +2987,8 @@ public:
 		bool tree_held = false; // The retry below holds g_resource_tree_mutex around its attempt.
 		// Each attempt gets its own load state, so one a failed attempt left with MiniAudio can't be mistaken for the next. It makes the source and then the sound from it, as ma_sound_init_ex() would from the file's name, but keeps the source: see source.
 		auto attempt_init = [&]() {
-			async_load_state *state = (flags & MA_SOUND_FLAG_ASYNC)? new async_load_state(this) : nullptr;
+			// Not for a stream, whose done notification MiniAudio signals only when its load fails early: made with WAIT_INIT, a stream has its decoder open and its pages filled once it is made.
+			async_load_state *state = (flags & MA_SOUND_FLAG_ASYNC) && !(flags & MA_SOUND_FLAG_STREAM)? new async_load_state(this) : nullptr;
 			ma_resource_manager_pipeline_notifications notifications = ma_resource_manager_pipeline_notifications_init();
 			if (state) notifications.done.pNotification = &state->notification;
 			ma_resource_manager_data_source_config source_cfg = ma_resource_manager_data_source_config_init();
@@ -3059,8 +3060,6 @@ public:
 
 		// A stream fills two pages, of about a second each, before it is made, its decoder not yet looping, and MiniAudio's page fill ends after meeting a looping decoder's end twice with nothing read between; a stream wholly read into its pages so went silent where it looped, at its first loop and, under half a page, every second one. Such a source, its decoder at its end once the pages are filled, is loaded as a buffer instead, which loops seamlessly in no more memory; one of unknown length isn't, as loading it again would read it from its start again.
 		if (g_soundsystem_last_error == MA_SUCCESS && (made_source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM) && !(ma_flags & MA_SOUND_FLAG_UNKNOWN_LENGTH) && reinterpret_cast<std::atomic<ma_bool32>*>(&made_source->backend.stream.isDecoderAtEnd)->load()) {
-			let_go_of_load_state(); // An asynchronous stream's, which the buffer's load replaces with its own; its notification marked the load completed.
-			load_completed.clear();
 			ma_sound_uninit(&*made);
 			made_view.reset();
 			discard_source(made_source, tree_held);
@@ -3075,7 +3074,7 @@ public:
 			claimed_name = triplet;
 			claimed_manager = manager;
 			adopt_sound(std::move(made));
-			postload(filename, (flags & MA_SOUND_FLAG_ASYNC) && !wait_for_load);
+			postload(filename, (flags & MA_SOUND_FLAG_ASYNC) && !(flags & MA_SOUND_FLAG_STREAM) && !wait_for_load);
 		}
 		else let_go_of_buffer_name(manager, triplet);
 		// Sound service has to store data pertaining to our triplet, and this is the earliest point at which it's safe to clean that up.
