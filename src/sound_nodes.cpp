@@ -1178,7 +1178,8 @@ public:
 	void on_panner_enabled_changed(int panner_id, bool enabled) override {
 		rewire_scope scope(*this);
 		if (enabled) {
-			if (preferred_panner_id == panner_id && preferred_panner_id != current_panner_id) {
+			// The preferred panner replaces a fallback; and one asked for while none was enabled takes this one, as set_fallback_panner() would have given it, rather than staying without one.
+			if (preferred_panner_id == panner_id && preferred_panner_id != current_panner_id || current_panner_id == -1 && preferred_panner_id >= 0) {
 				spatializer_component_node* new_panner = create_audio_panner(panner_id, this, get_engine());
 				if (new_panner) {
 					current_panner_id = panner_id;
@@ -1195,7 +1196,8 @@ public:
 	void on_attenuator_enabled_changed(int attenuator_id, bool enabled) override {
 		rewire_scope scope(*this);
 		if (enabled) {
-			if (preferred_attenuator_id == attenuator_id && preferred_attenuator_id != current_attenuator_id) {
+			// As for panners.
+			if (preferred_attenuator_id == attenuator_id && preferred_attenuator_id != current_attenuator_id || current_attenuator_id == -1 && preferred_attenuator_id >= 0) {
 				spatializer_component_node* new_attenuator = create_audio_attenuator(attenuator_id, this, get_engine());
 				if (new_attenuator) {
 					current_attenuator_id = attenuator_id;
