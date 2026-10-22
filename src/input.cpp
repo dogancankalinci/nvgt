@@ -902,6 +902,9 @@ void joystick_power_info_destruct(void* mem) {
 	((joystick_power_info*)mem)->~joystick_power_info();
 }
 
+// key_modifier is a script enum (4 bytes); SDL_Keymod is a Uint16.
+int get_keyboard_modifiers() { return SDL_GetModState(); }
+void set_keyboard_modifiers(int modifiers) { SDL_SetModState(SDL_Keymod(modifiers)); }
 void RegisterInput(asIScriptEngine* engine) {
 	engine->RegisterObjectType("touch_finger", sizeof(SDL_Finger), asOBJ_VALUE | asOBJ_POD | asGetTypeTraits<SDL_Finger>());
 	engine->RegisterObjectProperty("touch_finger", "const uint64 id", asOFFSET(SDL_Finger, id));
@@ -934,8 +937,8 @@ void RegisterInput(asIScriptEngine* engine) {
 	engine->RegisterGlobalFunction(_O("int[]@ keys_down()"), asFUNCTION(keys_down), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("int total_keys_down()"), asFUNCTION(total_keys_down), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("int[]@ keys_released()"), asFUNCTION(keys_released), asCALL_CDECL);
-	engine->RegisterGlobalFunction(_O("key_modifier get_keyboard_modifiers() property"), asFUNCTION(SDL_GetModState), asCALL_CDECL);
-	engine->RegisterGlobalFunction(_O("void set_keyboard_modifiers(key_modifier modifier) property"), asFUNCTION(SDL_SetModState), asCALL_CDECL);
+	engine->RegisterGlobalFunction(_O("key_modifier get_keyboard_modifiers() property"), asFUNCTION(get_keyboard_modifiers), asCALL_CDECL);
+	engine->RegisterGlobalFunction(_O("void set_keyboard_modifiers(key_modifier modifier) property"), asFUNCTION(set_keyboard_modifiers), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("void reset_keyboard()"), asFUNCTION(SDL_ResetKeyboard), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("bool mouse_pressed(uint8 button)"), asFUNCTION(MousePressed), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("bool mouse_down(uint8 button)"), asFUNCTION(mouse_down), asCALL_CDECL);
