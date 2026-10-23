@@ -62,6 +62,7 @@ vcpkg_from_github(
         fix-exception-frame-stale.patch
         fix-cleanup-block-tail.patch
         fix-exception-line.patch
+        fix-nested-marker-frame.patch
 )
 
 vcpkg_cmake_configure(

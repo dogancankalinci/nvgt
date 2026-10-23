@@ -1,0 +1,57 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -2058,6 +2058,20 @@
+ 	return func;
+ }
+ 
++// ALTERED: whether the call stack entry s (a frame of a script function, below the current one) is directly followed by the
++// marker of a nested call (PushState). A script function's frame is pushed by the call of a script function, with the program
++// pointer past that call (the return address), so the debugger APIs step one back into the call. But the frame of the
++// function a nested call interrupted was pushed by PushState, with the program pointer AT the instruction making the nested
++// call (a registered function, or a behaviour of a FREE, REFCPY or ALLOC, whose script destructor, factory or callback runs
++// nested): one back was in the instruction before, whose effects were taken as not done yet. A value object it had just
++// destroyed (the destructor of the last local before the handle whose script destructor runs nested) was alive for
++// GetAddressOfVar, which gave the destroyed object to the debugger, and GetLineNumber could give the line before.
++bool asCContext::IsBelowNestedMarker(const asPWORD *s) const
++{
++	const asPWORD *next = s + CALLSTACK_FRAME_SIZE;
++	return next < m_callStack.AddressOf() + m_callStack.GetLength() && next[0] == 0;
++}
++
+ // interface
+ int asCContext::GetLineNumber(asUINT stackLevel, int *column, const char **sectionName)
+ {
+@@ -2093,7 +2107,9 @@
+ 
+ 		// Subract 1 from the bytePos, because we want the line where
+ 		// the call was made, and not the instruction after the call
+-		bytePos -= 1;
++		// ALTERED: not for a frame the marker of a nested call follows, see IsBelowNestedMarker: it is at the call
++		if( !IsBelowNestedMarker(s) )
++			bytePos -= 1;
+ 	}
+ 
+ 	// For nested calls it is possible that func is null
+@@ -5635,7 +5651,9 @@
+ 		// Don't consider the last instruction as executed, as the function that was called by it
+ 		// is still being executed. If we consider it as executed already, then a value object
+ 		// returned by value would be considered alive, which it is not.
+-		pos--;
++		// ALTERED: not for a frame the marker of a nested call follows, see IsBelowNestedMarker: it stopped at that instruction
++		if( !IsBelowNestedMarker(s) )
++			pos--;
+ 	}
+ 
+ 	// Determine which object variables that are really live ones
+diff --git a/sdk/angelscript/source/as_context.h b/sdk/angelscript/source/as_context.h
+--- a/sdk/angelscript/source/as_context.h
++++ b/sdk/angelscript/source/as_context.h
+@@ -169,6 +169,7 @@
+ 	void CleanReturnObject();
+ 	void DetermineLiveObjects(asCArray<int> &liveObjects, asUINT stackLevel, const asUINT *framePos = 0); // ALTERED: framePos, see CleanStackFrame
+ 	bool IsExceptionFrame() const; // ALTERED: see SetInternalException
++	bool IsBelowNestedMarker(const asPWORD *s) const; // ALTERED: see GetLineNumber
+ 
+ 	int  PushCallState();
+ 	void PopCallState();
