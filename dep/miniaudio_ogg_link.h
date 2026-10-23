@@ -30,6 +30,12 @@ typedef struct
 
 #include <string.h> /* For memset(). */
 
+/* Ogg Vorbis and Opus allow 255 channels, one more than MiniAudio's channel maps and converters hold. */
+static ma_bool32 ma_ogg_link_channels_usable(int channels)
+{
+    return channels >= 1 && channels <= MA_MAX_CHANNELS;
+}
+
 static const ma_allocation_callbacks* ma_ogg_link_frames_allocation_callbacks(const ma_ogg_link_frames* pLink)
 {
     return pLink->hasAllocationCallbacks ? &pLink->allocationCallbacks : NULL;

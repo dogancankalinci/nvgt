@@ -146,15 +146,15 @@ static void ma_libvorbis_opened(ma_libvorbis* pVorbis)
         ov_pcm_seek(vf, 0);
     }
 
-    /* The first logical stream's format, which MiniAudio reads every frame in. Without a stream that can seek, libvorbisfile knows only the current one, the first as it opens. */
+    /* The first logical stream's format, which MiniAudio reads every frame in. Without a stream that can seek, libvorbisfile knows only the current one, the first as it opens. One of more channels than MiniAudio holds leaves none, which fails the decoder's opening. */
     pInfo = ov_info(vf, 0);
-    if (pInfo != NULL && pInfo->channels > 0 && pInfo->rate > 0) {
+    if (pInfo != NULL && ma_ogg_link_channels_usable(pInfo->channels) && pInfo->rate > 0) {
         pVorbis->channels = (ma_uint32)pInfo->channels;
         pVorbis->sampleRate = (ma_uint32)pInfo->rate;
     }
 }
 
-/* The library's frame index of one the decoder reads: libvorbisfile counts each logical stream at its own sample rate, while the decoder reads every one at the first's. */
+/* The library's frame index of one the decoder reads: libvorbisfile counts each logical stream at its own sample rate, while the decoder reads every one at the first's, and none of one with more channels than MiniAudio holds, which reading passes over. */
 static ogg_int64_t ma_libvorbis_library_frame(ma_libvorbis* pVorbis, ma_uint64 frameIndex)
 {
     OggVorbis_File* vf = (OggVorbis_File*)pVorbis->vf;
@@ -176,7 +176,7 @@ static ogg_int64_t ma_libvorbis_library_frame(ma_libvorbis* pVorbis, ma_uint64 f
             break;
         }
 
-        frames = ((ma_uint32)pInfo->rate == pVorbis->sampleRate) ? (ma_uint64)libraryFrames : (ma_uint64)libraryFrames * pVorbis->sampleRate / (ma_uint64)pInfo->rate;
+        frames = !ma_ogg_link_channels_usable(pInfo->channels) ? 0 : ((ma_uint32)pInfo->rate == pVorbis->sampleRate) ? (ma_uint64)libraryFrames : (ma_uint64)libraryFrames * pVorbis->sampleRate / (ma_uint64)pInfo->rate;
         if (frameIndex < start + frames || link == links - 1) {
             ma_uint64 within = frameIndex - start;
             return libraryStart + (ogg_int64_t)(((ma_uint32)pInfo->rate == pVorbis->sampleRate) ? within : within * (ma_uint64)pInfo->rate / pVorbis->sampleRate);
@@ -427,7 +427,7 @@ MA_API ma_result ma_libvorbis_read_pcm_frames(ma_libvorbis* pVorbis, void* pFram
                 if ((ma_uint32)pInfo->channels == channels && (ma_uint32)pInfo->rate == pVorbis->sampleRate) {
                     ma_interleave_pcm_frames(format, channels, libvorbisResult, (const void**)ppFramesF32, pFramesOutHere);
                     totalFramesRead += libvorbisResult;
-                } else {
+                } else if (ma_ogg_link_channels_usable(pInfo->channels) && pInfo->rate > 0) {
                     void* pHeld = ma_ogg_link_frames_reserve(&pVorbis->link, (size_t)libvorbisResult * pInfo->channels * sizeof(float));
                     if (pHeld == NULL) {
                         result = MA_OUT_OF_MEMORY;
@@ -436,6 +436,8 @@ MA_API ma_result ma_libvorbis_read_pcm_frames(ma_libvorbis* pVorbis, void* pFram
 
                     ma_interleave_pcm_frames(format, pInfo->channels, libvorbisResult, (const void**)ppFramesF32, pHeld);
                     ma_ogg_link_frames_hold(&pVorbis->link, libvorbisResult, ma_format_f32, pInfo->channels, pInfo->rate);
+                } else {
+                    /* A logical stream of more channels than MiniAudio holds can't be converted: passed over. */
                 }
             } else {
                 /*
@@ -481,8 +483,10 @@ MA_API ma_result ma_libvorbis_read_pcm_frames(ma_libvorbis* pVorbis, void* pFram
                 holes = 0;
                 if ((ma_uint32)pInfo->channels == channels && (ma_uint32)pInfo->rate == pVorbis->sampleRate) {
                     ma_ogg_link_frames_hold(&pVorbis->link, libvorbisResult / (sizeof(ma_int16) * pInfo->channels), format, pInfo->channels, pInfo->rate);
-                } else {
+                } else if (ma_ogg_link_channels_usable(pInfo->channels) && pInfo->rate > 0) {
                     ma_ogg_link_frames_hold_s16_as_f32(&pVorbis->link, libvorbisResult / (sizeof(ma_int16) * pInfo->channels), pInfo->channels, pInfo->rate);
+                } else {
+                    /* A logical stream of more channels than MiniAudio holds can't be converted: passed over. */
                 }
             }
         }

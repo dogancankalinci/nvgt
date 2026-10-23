@@ -129,9 +129,9 @@ row without a frame end the stream, as a guard against data with nothing to deco
 
 static void ma_libopus_opened(ma_libopus* pOpus)
 {
-    /* The first logical stream's channels, which MiniAudio reads every frame in. Without a stream that can seek, opusfile knows only the current one, the first as it opens. */
+    /* The first logical stream's channels, which MiniAudio reads every frame in. Without a stream that can seek, opusfile knows only the current one, the first as it opens. One of more channels than MiniAudio holds leaves none, which fails the decoder's opening. */
     int channels = op_channel_count((OggOpusFile*)pOpus->of, 0);
-    if (channels > 0) {
+    if (ma_ogg_link_channels_usable(channels)) {
         pOpus->channels = (ma_uint32)channels;
     }
 }
@@ -370,10 +370,13 @@ MA_API ma_result ma_libopus_read_pcm_frames(ma_libopus* pOpus, void* pFramesOut,
 
             holes = 0;
             if ((ma_uint32)linkChannels == channels || format == ma_format_f32) {
-                ma_ogg_link_frames_hold(&pOpus->link, libopusResult, format, (ma_uint32)linkChannels, 48000);
-            } else {
+                if (ma_ogg_link_channels_usable(linkChannels)) {
+                    ma_ogg_link_frames_hold(&pOpus->link, libopusResult, format, (ma_uint32)linkChannels, 48000);
+                }
+            } else if (ma_ogg_link_channels_usable(linkChannels)) {
                 ma_ogg_link_frames_hold_s16_as_f32(&pOpus->link, libopusResult, (ma_uint32)linkChannels, 48000);
             }
+            /* A logical stream of more channels than MiniAudio holds can't be converted: passed over. */
         }
 
         pOpus->cursor += totalFramesRead;
