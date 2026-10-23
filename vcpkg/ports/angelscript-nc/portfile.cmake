@@ -70,6 +70,7 @@ vcpkg_from_github(
         fix-unstarted-function-position.patch
         fix-raised-handle-return.patch
         fix-derived-copy-constructor.patch
+        fix-member-copy-temporary.patch
 )
 
 vcpkg_cmake_configure(

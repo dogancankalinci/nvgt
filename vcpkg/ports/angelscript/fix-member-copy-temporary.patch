@@ -1,0 +1,17 @@
+diff --git a/sdk/angelscript/source/as_compiler.cpp b/sdk/angelscript/source/as_compiler.cpp
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -655,6 +655,13 @@
+ 			CompileInitAsCopy(dt, prop->byteOffset, &tmp, &ctx, declNode, isPodType, asVGM_MEMBER);
+ 			MergeExprBytecode(&ctx, &tmp);
+ 
++			// ALTERED: the temporary handle the copy of the other object's member was taken through (PrepareForAssignment
++			// holds a member that is a script object in a temporary variable while its copy is made) is released, as
++			// PrepareTemporaryVariable does after CompileInitAsCopy. It was never released: every copy made by this copy
++			// constructor kept a reference to the other object's member, which was then never destroyed.
++			if( ctx.type.isTemporary && tempVariables.Exists(ctx.type.stackOffset) )
++				ReleaseTemporaryVariable(ctx.type.stackOffset, &ctx.bc);
++
+ 			ctx.bc.OptimizeLocally(tempVariableOffsets);
+ 			bc->AddCode(&ctx.bc);
+ 		}
