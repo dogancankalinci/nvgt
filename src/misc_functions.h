@@ -41,11 +41,14 @@ public:
 	}
 };
 struct script_memory_buffer {
-	void* ptr;
-	size_t size;
+	// The script's address and size are uint64 properties at address_bits and size_bits. On a 32-bit target ptr and size are their low
+	// half (every target NVGT builds for is little-endian); fits() tells whether the high half a script may have written is 0.
+	union { void* ptr; asQWORD address_bits; };
+	union { size_t size; asQWORD size_bits; };
 	asITypeInfo* subtype;
 	int subtypeid;
-	script_memory_buffer(asITypeInfo* subtype, void* ptr, size_t size) : ptr(ptr), size(size), subtype(subtype), subtypeid(subtype->GetSubTypeId()) {}
+	script_memory_buffer(asITypeInfo* subtype, void* ptr, size_t size) : address_bits(asQWORD(uintptr_t(ptr))), size_bits(asQWORD(size)), subtype(subtype), subtypeid(subtype->GetSubTypeId()) {}
+	bool fits() const { return address_bits == asQWORD(uintptr_t(ptr)) && size_bits == asQWORD(size); }
 	const void* at(size_t index) const;
 	void* at(size_t index);
 	CScriptArray* to_array() const;
@@ -53,10 +56,6 @@ struct script_memory_buffer {
 	int get_element_size() const;
 	static void make(script_memory_buffer* mem, asITypeInfo* subtype, asQWORD ptr, asQWORD size);
 	static void* at_script(script_memory_buffer* mem, asQWORD index);
-	static asQWORD get_address(const script_memory_buffer* mem);
-	static void set_address(script_memory_buffer* mem, asQWORD address);
-	static asQWORD get_size(const script_memory_buffer* mem);
-	static void set_size(script_memory_buffer* mem, asQWORD size);
 	static void copy(script_memory_buffer* mem, asITypeInfo* subtype, const script_memory_buffer& other);
 	static void destroy(script_memory_buffer* mem);
 	static bool verify(asITypeInfo *subtype, bool& no_gc);

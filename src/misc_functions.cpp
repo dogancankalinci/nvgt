@@ -13,6 +13,7 @@
 #define NOMINMAX
 #include <string>
 #include <algorithm>
+#include <bit>
 #include <cstdint>
 #include <vector>
 #include <regex>
@@ -450,6 +451,7 @@ double parse_double(const std::string& val) {
 // Small wrapper which allows statically typed read-write access to an arbitrary memory buffer from scripts.
 // It should be implicitly understood by the scripter that this interface is low level, contains minimal handholding and is not subject to sandboxing!
 const void* script_memory_buffer::at(size_t index) const {
+	if (!fits()) throw std::out_of_range("memory buffer address or size out of range on this platform");
 	if (!ptr) throw std::invalid_argument("memory buffer null pointer access");
 	int typesize = g_ScriptEngine->GetSizeOfPrimitiveType(subtypeid);
 	if (size && index >= size) throw std::out_of_range("index out of bounds");
@@ -457,32 +459,33 @@ const void* script_memory_buffer::at(size_t index) const {
 }
 void* script_memory_buffer::at(size_t index) { return const_cast<void*>(const_cast<const script_memory_buffer*>(this)->at(index)); }
 CScriptArray* script_memory_buffer::to_array() const {
+	if (!fits()) throw std::out_of_range("memory buffer address or size out of range on this platform");
 	CScriptArray* array = CScriptArray::Create(g_ScriptEngine->GetTypeInfoByDecl(Poco::format("array<%s>", std::string(g_ScriptEngine->GetTypeDeclaration(subtypeid, false))).c_str()), size);
 	if (!array) return nullptr;
 	std::memcpy(array->GetBuffer(), ptr, size * g_ScriptEngine->GetSizeOfPrimitiveType(subtypeid));
 	return array;
 }
 script_memory_buffer& script_memory_buffer::from_array(CScriptArray* array) {
+	if (!fits()) throw std::out_of_range("memory buffer address or size out of range on this platform");
 	if (!array) std::memset(ptr, 0, size * g_ScriptEngine->GetSizeOfPrimitiveType(subtypeid));
 	else std::memcpy(ptr, array->GetBuffer(), (array->GetSize() < size? array->GetSize() : size) * g_ScriptEngine->GetSizeOfPrimitiveType(subtypeid));
 	return *this;
 }
 int script_memory_buffer::get_element_size() const {return g_ScriptEngine->GetSizeOfPrimitiveType(subtypeid); }
 // The script's address, size and index are uint64 while ptr and size are a pointer and a size_t, 4 bytes on 32-bit targets: the
-// properties were registered at the members' offsets and read and wrote 8 bytes over 4 (size came back with the next member in its
-// upper half), opIndex(uint64) passed its index where at(size_t) didn't look for it (armeabi-v7a puts a 64-bit argument in an even
-// register pair, so at() got the register skipped before it, 0 or garbage), and the constructor took its size from the upper half of
-// the address (0, which turned the bounds check off). They are converted here instead, and a value that doesn't fit is refused.
+// properties read and wrote 8 bytes over a 4-byte member (size came back with the next member in its upper half), opIndex(uint64)
+// passed its index where at(size_t) didn't look for it (armeabi-v7a puts a 64-bit argument in an even register pair, so at() got the
+// register skipped before it, 0 or garbage), and the constructor took its size from the upper half of the address (0, which turned
+// the bounds check off). The properties now sit on 64-bit members that hold ptr and size in their low half (see the struct), so
+// scripts can still use them as variables (b.address += 4); the index and the constructor's values are converted here, and a value
+// that doesn't fit is refused.
+static_assert(std::endian::native == std::endian::little, "script_memory_buffer keeps ptr and size in the low half of a uint64");
 static size_t memory_buffer_size_t(asQWORD value, const char* what) {
 	if (value > asQWORD(SIZE_MAX)) throw std::out_of_range(std::string(what) + " out of range on this platform");
 	return size_t(value);
 }
 void script_memory_buffer::make(script_memory_buffer* mem, asITypeInfo* subtype, asQWORD ptr, asQWORD size) { new(mem) script_memory_buffer(subtype, (void*)memory_buffer_size_t(ptr, "address"), memory_buffer_size_t(size, "size")); }
 void* script_memory_buffer::at_script(script_memory_buffer* mem, asQWORD index) { return mem->at(memory_buffer_size_t(index, "index")); }
-asQWORD script_memory_buffer::get_address(const script_memory_buffer* mem) { return asQWORD(uintptr_t(mem->ptr)); }
-void script_memory_buffer::set_address(script_memory_buffer* mem, asQWORD address) { mem->ptr = (void*)memory_buffer_size_t(address, "address"); }
-asQWORD script_memory_buffer::get_size(const script_memory_buffer* mem) { return asQWORD(mem->size); }
-void script_memory_buffer::set_size(script_memory_buffer* mem, asQWORD size) { mem->size = memory_buffer_size_t(size, "size"); }
 void script_memory_buffer::copy(script_memory_buffer* mem, asITypeInfo* subtype, const script_memory_buffer& other) { new(mem) script_memory_buffer(other); }
 void script_memory_buffer::destroy(script_memory_buffer* mem) { mem->~script_memory_buffer(); }
 bool script_memory_buffer::verify(asITypeInfo *subtype, bool& no_gc) {
@@ -495,10 +498,8 @@ void script_memory_buffer::angelscript_register(asIScriptEngine* engine) {
 	engine->RegisterObjectBehaviour("memory_buffer<T>", asBEHAVE_CONSTRUCT, "void f(int&in subtype, const memory_buffer<T>&in other)", asFUNCTION(copy), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectBehaviour("memory_buffer<T>", asBEHAVE_TEMPLATE_CALLBACK, "bool f(int&in subtype, bool&out no_gc)", asFUNCTION(verify), asCALL_CDECL);
 	engine->RegisterObjectBehaviour("memory_buffer<T>", asBEHAVE_DESTRUCT, "void f()", asFUNCTION(destroy), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("memory_buffer<T>", "uint64 get_address() const property", asFUNCTION(get_address), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("memory_buffer<T>", "void set_address(uint64 address) property", asFUNCTION(set_address), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("memory_buffer<T>", "uint64 get_size() const property", asFUNCTION(get_size), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("memory_buffer<T>", "void set_size(uint64 size) property", asFUNCTION(set_size), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectProperty("memory_buffer<T>", "uint64 address", asOFFSET(script_memory_buffer, address_bits));
+	engine->RegisterObjectProperty("memory_buffer<T>", "uint64 size", asOFFSET(script_memory_buffer, size_bits));
 	engine->RegisterObjectMethod("memory_buffer<T>", "T& opIndex(uint64 index)", asFUNCTION(at_script), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("memory_buffer<T>", "const T& opIndex(uint64 index) const", asFUNCTION(at_script), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("memory_buffer<T>", "array<T>@ opImplConv() const", asMETHOD(script_memory_buffer, to_array), asCALL_THISCALL);
