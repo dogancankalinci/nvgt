@@ -750,17 +750,28 @@ public:
 		if (output_mixer) output_mixer->release();
 	}
 	void set_reverb(audio_node* verb) override {
-		if (verb && verb != reverb && !reverb_fits(verb, output_mixer? static_cast<audio_node*>(output_mixer) : get_engine()->get_endpoint(), ma_node_get_output_channels(get_ma_node(), 0))) { // Refused, the old reverb kept, rather than kept going nowhere.
+		if (verb == reverb) return;
+		if (verb && verb->get_engine() != get_engine()) { // As for its mixer: another engine's audio thread reads that node.
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return;
+		}
+		if (verb && !reverb_fits(verb, output_mixer? static_cast<audio_node*>(output_mixer) : get_engine()->get_endpoint(), ma_node_get_output_channels(get_ma_node(), 0))) { // Refused, the old reverb kept, rather than kept going nowhere.
 			g_soundsystem_last_error = MA_INVALID_OPERATION;
 			return;
 		}
+		std::lock_guard<std::recursive_mutex> topology(g_audio_topology_mutex);
+		// This node goes into the new reverb first, which replaces the link to the old one: refused, as for this node itself, the old reverb is left as it was, rather than let go of before the new one was refused.
+		if (verb? !attach_output_bus(0, verb, 0) : !detach_output_bus(0)) return;
+		audio_node* old = reverb;
+		reverb = verb;
 		if (reverb) {
-			reverb->detach_output_bus(0); // From the mixer or, without one, the engine's endpoint, which the reverb was attached to alike.
-			detach_output_bus(0);
-			reverb->release();
+			reverb->duplicate();
+			reverb->attach_output_bus(0, output_mixer? static_cast<audio_node*>(output_mixer) : get_engine()->get_endpoint(), 0);
 		}
-		reverb = nullptr;
-		if (verb) wire_reverb(verb);
+		if (old) {
+			old->detach_output_bus(0); // From the mixer or, without one, the engine's endpoint, which the reverb was attached to alike.
+			old->release();
+		}
 	}
 	audio_node* get_reverb() const override { return reverb; }
 	void set_mixer(mixer* mix) override {
@@ -858,6 +869,7 @@ bool mixer_reaches(mixer* from, const std::function<bool(mixer*)>& is_target) {
 reverb3d* reverb3d::create(audio_node* reverb, mixer* destination, audio_engine* e) {
 	if (!e) throw std::runtime_error("no audio engine available");
 	if (destination && destination->get_engine() != e) throw std::runtime_error("the destination mixer belongs to another audio engine");
+	if (reverb && reverb->get_engine() != e) throw std::runtime_error("the reverb belongs to another audio engine");
 	audio_node* target = destination? static_cast<audio_node*>(destination) : e->get_endpoint();
 	if (reverb? !reverb_fits(reverb, target, e->get_channels()) : ma_node_get_input_bus_count(target->get_ma_node()) == 0) throw std::runtime_error("the destination takes no input from the reverb"); // A sound given as a mixer, or a reverb of another channel count: the reverb would go nowhere, as reverb3d.mixer and reverb3d.reverb refuse them.
 	if (destination) return new reverb3d_impl(e, reverb, destination);
