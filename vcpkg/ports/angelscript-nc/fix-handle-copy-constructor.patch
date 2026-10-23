@@ -1,0 +1,29 @@
+diff --git a/sdk/angelscript/source/as_compiler.cpp b/sdk/angelscript/source/as_compiler.cpp
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -1017,6 +1017,25 @@
+ 
+ 		if( func > 0 )
+ 		{
++			// ALTERED: a script class's copy constructor may take the other object by handle, C(C@ other). The function owns
++			// a handle parameter and releases it at its return, but the argument here is a reference to the object being
++			// copied, which holds no reference of its own: every such copy released a reference the object never got, and
++			// the object was freed while still in use. Give the call a reference of its own, as for any handle argument: copy
++			// the pointer into a temporary handle (adding a reference), then move it from there onto the stack.
++			asCScriptFunction *copyFunc = engine->scriptFunctions[func];
++			if( copyFunc && copyFunc->parameterTypes.GetLength() == 1 &&
++				copyFunc->parameterTypes[0].IsObjectHandle() && !copyFunc->parameterTypes[0].IsReference() )
++			{
++				int tempHandle = AllocateVariable(copyFunc->parameterTypes[0], true);
++				ctx->bc.InstrSHORT(asBC_PSF, (short)tempHandle);
++				ctx->bc.InstrPTR(asBC_REFCPY, type.GetTypeInfo());
++				ctx->bc.Instr(asBC_PopPtr);
++				ctx->bc.InstrSHORT(asBC_VAR, (short)tempHandle);
++				ctx->bc.InstrWORD(asBC_GETOBJ, 0);
++				// GETOBJ cleared the variable: nothing is left to release
++				ReleaseTemporaryVariable(tempHandle, 0);
++			}
++
+ 			if( isVarGlobOrMem == asVGM_VARIABLE )
+ 			{
+ 				// Call factory and store the handle in the given variable
