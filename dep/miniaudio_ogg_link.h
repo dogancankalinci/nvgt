@@ -17,6 +17,7 @@ typedef struct
     ma_uint32 sampleRate;
     ma_data_converter converter;    /* From the logical stream's channels and sample rate to the decoder's, float to float, while hasConverter. */
     ma_bool32 hasConverter;
+    ma_bool32 owes;                 /* The converter may still give frames for those held, all taken, as a resampler can after its last input. */
     void* pScratch;                 /* The converter's float output, for a decoder whose format isn't float. */
     size_t scratchCapacityInBytes;
     ma_allocation_callbacks allocationCallbacks;
@@ -95,6 +96,7 @@ static void ma_ogg_link_frames_hold(ma_ogg_link_frames* pLink, ma_uint64 frameCo
         pLink->hasConverter = MA_FALSE;
     }
 
+    pLink->owes = MA_FALSE;
     pLink->frameCount = frameCount;
     pLink->frameOffset = 0;
     pLink->format = format;
@@ -146,13 +148,14 @@ static void ma_ogg_link_frames_clear(ma_ogg_link_frames* pLink)
 {
     pLink->frameCount = 0;
     pLink->frameOffset = 0;
+    pLink->owes = MA_FALSE;
 
     if (pLink->hasConverter) {
         ma_data_converter_reset(&pLink->converter);
     }
 }
 
-/* Gives up to frameCount of the frames held in the decoder's format, channels and sample rate. */
+/* Gives up to frameCount of the frames held in the decoder's format, channels and sample rate, and with none held what the converter still owes for those it took (see owes). */
 static ma_result ma_ogg_link_frames_take(ma_ogg_link_frames* pLink, ma_format format, ma_uint32 channels, ma_uint32 sampleRate, void* pFramesOut, ma_uint64 frameCount, ma_uint64* pFramesTaken)
 {
     const void* pFramesIn = ma_offset_pcm_frames_const_ptr(pLink->pFrames, pLink->frameOffset, pLink->format, pLink->channels);
@@ -161,6 +164,11 @@ static ma_result ma_ogg_link_frames_take(ma_ogg_link_frames* pLink, ma_format fo
 
     *pFramesTaken = 0;
 
+    if (framesIn == 0 && !(pLink->owes && pLink->hasConverter)) {
+        pLink->owes = MA_FALSE;
+        return MA_SUCCESS;
+    }
+
     if (pLink->channels == channels && pLink->sampleRate == sampleRate && pLink->format == format) {
         if (framesIn > framesOut) {
             framesIn = framesOut;
@@ -168,6 +176,7 @@ static ma_result ma_ogg_link_frames_take(ma_ogg_link_frames* pLink, ma_format fo
 
         framesOut = framesIn;
         ma_copy_pcm_frames(pFramesOut, pFramesIn, framesOut, format, channels);
+        pLink->owes = MA_FALSE;
     } else {
         ma_result result;
         void* pConverted = pFramesOut;
@@ -224,6 +233,9 @@ static ma_result ma_ogg_link_frames_take(ma_ogg_link_frames* pLink, ma_format fo
         if (framesIn == 0 && framesOut == 0) {
             framesIn = pLink->frameCount;   /* Nothing more comes of them: dropped rather than offered again forever. */
         }
+
+        /* All taken and the room given filled: the converter's resampler may owe a frame or two more, which needs no further input and would be lost to the end of the stream or to a converter for another stream, by how the caller split its reads. */
+        pLink->owes = (pLink->frameCount == framesIn && framesOut > 0 && framesOut == (format != ma_format_f32 && frameCount > 1024 ? 1024 : frameCount));
     }
 
     pLink->frameOffset += framesIn;

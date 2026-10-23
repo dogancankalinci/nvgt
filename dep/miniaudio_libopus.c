@@ -308,7 +308,7 @@ MA_API ma_result ma_libopus_read_pcm_frames(ma_libopus* pOpus, void* pFramesOut,
 
             framesRemaining = (frameCount - totalFramesRead);
 
-            if (pOpus->link.frameCount > 0) {
+            if (pOpus->link.frameCount > 0 || pOpus->link.owes) {
                 ma_uint64 framesTaken;
 
                 result = ma_ogg_link_frames_take(&pOpus->link, format, channels, 48000, ma_offset_pcm_frames_ptr(pFramesOut, totalFramesRead, format, channels), framesRemaining, &framesTaken);

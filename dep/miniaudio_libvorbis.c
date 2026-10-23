@@ -381,7 +381,7 @@ MA_API ma_result ma_libvorbis_read_pcm_frames(ma_libvorbis* pVorbis, void* pFram
             framesRemaining = (frameCount - totalFramesRead);
             pFramesOutHere = ma_offset_pcm_frames_ptr(pFramesOut, totalFramesRead, format, channels);
 
-            if (pVorbis->link.frameCount > 0) {
+            if (pVorbis->link.frameCount > 0 || pVorbis->link.owes) {
                 ma_uint64 framesTaken;
 
                 result = ma_ogg_link_frames_take(&pVorbis->link, format, channels, pVorbis->sampleRate, pFramesOutHere, framesRemaining, &framesTaken);
