@@ -369,14 +369,16 @@ MA_API ma_result ma_libopus_read_pcm_frames(ma_libopus* pOpus, void* pFramesOut,
             }
 
             holes = 0;
-            if ((ma_uint32)linkChannels == channels || format == ma_format_f32) {
-                if (ma_ogg_link_channels_usable(linkChannels)) {
-                    ma_ogg_link_frames_hold(&pOpus->link, libopusResult, format, (ma_uint32)linkChannels, 48000);
+            if (!ma_ogg_link_channels_usable(linkChannels)) {
+                result = ma_ogg_link_frames_hold_silence(&pOpus->link, libopusResult, channels, 48000);
+                if (result != MA_SUCCESS) {
+                    break;
                 }
-            } else if (ma_ogg_link_channels_usable(linkChannels)) {
+            } else if ((ma_uint32)linkChannels == channels || format == ma_format_f32) {
+                ma_ogg_link_frames_hold(&pOpus->link, libopusResult, format, (ma_uint32)linkChannels, 48000);
+            } else {
                 ma_ogg_link_frames_hold_s16_as_f32(&pOpus->link, libopusResult, (ma_uint32)linkChannels, 48000);
             }
-            /* A logical stream of more channels than MiniAudio holds can't be converted: passed over. */
         }
 
         pOpus->cursor += totalFramesRead;

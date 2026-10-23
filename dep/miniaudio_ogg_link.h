@@ -124,6 +124,23 @@ static void ma_ogg_link_frames_hold_s16_as_f32(ma_ogg_link_frames* pLink, ma_uin
     ma_ogg_link_frames_hold(pLink, frameCount, ma_format_f32, channels, sampleRate);
 }
 
+/*
+Holds silence in the given channels for frames of a logical stream of more channels than MiniAudio holds, which can't be converted: played as
+silence for its length rather than passed over, which decoded the whole stream in one read and stalled whatever read the decoder, as the
+audio thread, for its length.
+*/
+static ma_result ma_ogg_link_frames_hold_silence(ma_ogg_link_frames* pLink, ma_uint64 frameCount, ma_uint32 channels, ma_uint32 sampleRate)
+{
+    void* pFrames = ma_ogg_link_frames_reserve(pLink, (size_t)frameCount * channels * sizeof(float));
+    if (pFrames == NULL) {
+        return MA_OUT_OF_MEMORY;
+    }
+
+    memset(pFrames, 0, (size_t)frameCount * channels * sizeof(float));
+    ma_ogg_link_frames_hold(pLink, frameCount, ma_format_f32, channels, sampleRate);
+    return MA_SUCCESS;
+}
+
 /* Forgets the frames held, and what the converter kept of earlier ones, as a seek does. */
 static void ma_ogg_link_frames_clear(ma_ogg_link_frames* pLink)
 {
