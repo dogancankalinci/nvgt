@@ -346,7 +346,7 @@ public:
 	 * directive_t protocol_directive = nullptr: an arbitrary piece of data for your protocol to use while fetching the asset (such as which packed archive to fetch from).
 	 * size_t filter_slot = 0: a slot number previously returned from sound_service::register_filter.
 	 * directive_t filter_directive = nullptr: an arbitrary piece of data for your filter to use (such as a decryption key).
-	 * ma_uint32 flags = 0: MiniAudio specific flags that govern how MiniAudio will load the data.
+	 * ma_uint32 flags = MA_SOUND_FLAG_DECODE: MiniAudio specific flags that govern how MiniAudio will load the data.
 	 * Remarks:
 	 * Directive_t is simply short for std::shared_ptr <void>
 	 * The sound service does not retain your directives after this method returns, so it's okay to allocate them on the stack.
