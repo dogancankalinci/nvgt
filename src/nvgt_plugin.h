@@ -24,7 +24,7 @@ class plugin_node;
 class audio_plugin_node_interface;
 class audio_engine;
 
-#define NVGT_PLUGIN_API_VERSION 6
+#define NVGT_PLUGIN_API_VERSION 5
 
 // Subsystem flags, used for controling access to certain functions during development.
 enum NVGT_SUBSYSTEM {
@@ -239,10 +239,12 @@ class pack_interface {
 		return casted;
 	}
 };
+// Given in nvgt_audio_plugin_node_create()'s flags, along with MiniAudio's node flags, by a plugin whose implementation wants release() called. Without it release() is never called, so plugins built before it existed, whose implementations have no such function, keep working, and a plugin giving it still works with an NVGT that never calls it.
+#define NVGT_AUDIO_PLUGIN_NODE_RELEASE 0x80000000u
 // This class must be derived from for any custom audio node that is being implemented via plugins.
 class audio_plugin_node_interface {
 public:
 	virtual void process(audio_plugin_node_interface* node, const float** frames_in, unsigned int* frame_count_in, float** frames_out, unsigned int* frame_count_out) = 0;
-	// Called once, when the node made with this implementation is destroyed and the audio thread no longer calls process(): from then on the plugin may free this object.
+	// Called once, if the node made with this implementation was made with NVGT_AUDIO_PLUGIN_NODE_RELEASE, when the node is destroyed and the audio thread no longer calls process(): from then on the plugin may free this object.
 	virtual void release() {}
 };

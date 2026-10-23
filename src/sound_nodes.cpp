@@ -838,10 +838,11 @@ static void ma_plugin_node_process_pcm_frames(ma_node* pNode, const float** ppFr
 class plugin_node_impl : public audio_node_impl, public virtual plugin_node {
 	unique_ptr<ma_plugin_node> pn;
 	audio_plugin_node_interface* impl;
+	bool release_impl; // The plugin asked for release() (see NVGT_AUDIO_PLUGIN_NODE_RELEASE): an implementation built before it existed has no such function to call.
 	ma_node_vtable vtable; // The user should be able to configure custom settings.
 	public:
-	plugin_node_impl(audio_plugin_node_interface* impl, unsigned char input_bus_count, unsigned char output_bus_count, unsigned int flags, audio_engine* engine) : pn(make_unique<ma_plugin_node>()), audio_node_impl(nullptr, engine), impl(impl) {
-		vtable = { ma_plugin_node_process_pcm_frames, nullptr, input_bus_count, output_bus_count, flags };
+	plugin_node_impl(audio_plugin_node_interface* impl, unsigned char input_bus_count, unsigned char output_bus_count, unsigned int flags, audio_engine* engine) : pn(make_unique<ma_plugin_node>()), audio_node_impl(nullptr, engine), impl(impl), release_impl((flags & NVGT_AUDIO_PLUGIN_NODE_RELEASE) != 0) {
+		vtable = { ma_plugin_node_process_pcm_frames, nullptr, input_bus_count, output_bus_count, flags & ~NVGT_AUDIO_PLUGIN_NODE_RELEASE };
 		ma_node_config cfg = ma_node_config_init();
 		// MiniAudio reads a channel count for each bus, as effect_node_impl gives it.
 		vector<ma_uint32> channels_in(input_bus_count, get_engine()->get_channels()), channels_out(output_bus_count, get_engine()->get_channels());
@@ -857,7 +858,7 @@ class plugin_node_impl : public audio_node_impl, public virtual plugin_node {
 			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex);
 			if (pn) ma_node_uninit(&*pn, nullptr);
 		}
-		if (impl) impl->release(); // Uninitialized, the node is read no more, so the plugin may free its implementation, which it otherwise had no way to know.
+		if (impl && release_impl) impl->release(); // Uninitialized, the node is read no more, so the plugin may free its implementation, which it otherwise had no way to know.
 	}
 	audio_plugin_node_interface* get_plugin_interface() const override { return impl; }
 	virtual void process(const float** frames_in, unsigned int* frame_count_in, float** frames_out, unsigned int* frame_count_out) override {
