@@ -24,7 +24,7 @@ class plugin_node;
 class audio_plugin_node_interface;
 class audio_engine;
 
-#define NVGT_PLUGIN_API_VERSION 5
+#define NVGT_PLUGIN_API_VERSION 6
 
 // Subsystem flags, used for controling access to certain functions during development.
 enum NVGT_SUBSYSTEM {
@@ -243,4 +243,6 @@ class pack_interface {
 class audio_plugin_node_interface {
 public:
 	virtual void process(audio_plugin_node_interface* node, const float** frames_in, unsigned int* frame_count_in, float** frames_out, unsigned int* frame_count_out) = 0;
+	// Called once, when the node made with this implementation is destroyed and the audio thread no longer calls process(): from then on the plugin may free this object.
+	virtual void release() {}
 };

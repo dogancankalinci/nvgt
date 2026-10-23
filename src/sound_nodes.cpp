@@ -844,8 +844,11 @@ class plugin_node_impl : public audio_node_impl, public virtual plugin_node {
 		pn->impl = this;
 	}
 	~plugin_node_impl() {
-		std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex);
-		if (pn) ma_node_uninit(&*pn, nullptr);
+		{
+			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex);
+			if (pn) ma_node_uninit(&*pn, nullptr);
+		}
+		if (impl) impl->release(); // Uninitialized, the node is read no more, so the plugin may free its implementation, which it otherwise had no way to know.
 	}
 	audio_plugin_node_interface* get_plugin_interface() const override { return impl; }
 	virtual void process(const float** frames_in, unsigned int* frame_count_in, float** frames_out, unsigned int* frame_count_out) override {
