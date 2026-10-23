@@ -404,18 +404,21 @@ void CDebugger::TakeCommands(asIScriptContext *ctx)
 	bool output_header = true;
 	for(;;)
 	{
-		char buf[512];
+		// ALTERED: a line of any length. It was read into 512 bytes: a longer line failed (failbit), which is cleared below as
+		// for ctrl+c, so its first 511 characters were dropped and the rest was taken as a command of its own (an "a" there
+		// aborted the script).
+		string line;
 
 		if (output_header) Output("[dbg]> ");
 		output_header = true;
-		cin.getline(buf, 512);
+		getline(cin, line);
 if (!cin.good())
 {
 	cin.clear();
 	output_header = false;
 	continue; // Allow the user to handle ctrl+c or loss of stdin on their own.
 }
-		if( InterpretCommand(string(buf), ctx) )
+		if( InterpretCommand(line, ctx) )
 			break;
 	}
 	m_takingCommands = wasTakingCommands;
@@ -976,6 +979,12 @@ void CDebugger::AddFuncBreakPoint(const string &func)
 	// Trim the function name
 	size_t b = func.find_first_not_of(" \t");
 	size_t e = func.find_last_not_of(" \t");
+	// ALTERED: a name of blanks only has nothing to trim to, see AddFileBreakPoint
+	if( b == string::npos )
+	{
+		Output("Incorrect format for setting break point, expected a function name\n");
+		return;
+	}
 	string actual = func.substr(b, e != string::npos ? e-b+1 : string::npos);
 
 	stringstream s;
@@ -999,6 +1008,13 @@ void CDebugger::AddFileBreakPoint(const string &file, int lineNbr)
 		// Trim the file name
 		size_t b = actual.find_first_not_of(" \t");
 		size_t e = actual.find_last_not_of(" \t");
+		// ALTERED: a name of blanks only (b  :5), or nothing after the path's last slash (b dir/:5), has nothing to trim to:
+		// substr(npos) threw std::out_of_range, which went out through the line callback and ended the script being debugged.
+		if( b == string::npos )
+		{
+			Output("Incorrect format for setting break point, expected a file name before the ':'\n");
+			return;
+		}
 		actual = actual.substr(b, e != string::npos ? e-b+1 : string::npos);
 	}
 
