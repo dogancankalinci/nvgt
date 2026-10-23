@@ -152,6 +152,16 @@ jobs:
       # match so that when a dependency does change only the ports it affects are rebuilt; everything else is unpacked.
       VCPKG_BINARY_SOURCES: clear;files,${{ github.workspace }}/vcpkg-binaries,readwrite
     steps:
+    - name: get apt packages from the Ubuntu archive
+      # The runner's apt sources point at azure.archive.ubuntu.com, whose name some runners resolve to a server that sends
+      # about 40 kB/s: from 2026-10-22 about one Linux build in four spent 10 to 35 minutes downloading the ~80 MB of packages
+      # this job installs. On those runners archive.ubuntu.com sent the same package in about 2 seconds.
+      shell: bash
+      run: |
+        for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources /etc/apt/apt-mirrors.txt; do
+          if [ -f "$f" ]; then sudo sed -i 's#http://azure\.archive\.ubuntu\.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' "$f"; fi
+        done
+        grep -rh "archive.ubuntu.com" /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null | head -3 || true
     - uses: actions/checkout@v5
       with:
         submodules: true
