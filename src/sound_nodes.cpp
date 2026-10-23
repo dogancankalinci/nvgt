@@ -743,7 +743,16 @@ public:
 		if (!attach_output_bus(0, verb, 0)) return;
 		reverb = verb;
 		reverb->duplicate();
-		reverb->attach_output_bus(0, output_mixer? static_cast<audio_node*>(output_mixer) : get_engine()->get_endpoint(), 0);
+		send_onward(reverb, output_mixer);
+	}
+	// The reverb into the destination, the engine's output without one. A mixer given as the reverb goes there as a mixer, through its chain, effects and spatializer, and with the link a parent the loop check follows, rather than having its group's output taken from its chain, which skipped them and, once the reverb was replaced, left the mixer silent for good.
+	bool send_onward(audio_node* verb, mixer* destination) {
+		if (mixer* mix = dynamic_cast<mixer*>(verb)) return mix->set_mixer(destination);
+		return verb->attach_output_bus(0, destination? static_cast<audio_node*>(destination) : get_engine()->get_endpoint(), 0);
+	}
+	// A reverb replaced: one that isn't a mixer is taken from the destination; a mixer keeps its parent, as a mixer of the script's.
+	void stop_onward(audio_node* verb) {
+		if (!dynamic_cast<mixer*>(verb)) verb->detach_output_bus(0);
 	}
 	~reverb3d_impl() {
 		if (reverb) reverb->release();
@@ -760,16 +769,17 @@ public:
 			return;
 		}
 		std::lock_guard<std::recursive_mutex> topology(g_audio_topology_mutex);
-		// This node goes into the new reverb first, which replaces the link to the old one: refused, as for this node itself, the old reverb is left as it was, rather than let go of before the new one was refused.
+		// A mixer goes into the destination first, which refuses a loop, and then this node into the new reverb, which replaces the link to the old one: either refused leaves the old reverb as it was, rather than let go of before the new one was refused.
+		if (verb && dynamic_cast<mixer*>(verb) && !send_onward(verb, output_mixer)) return;
 		if (verb? !attach_output_bus(0, verb, 0) : !detach_output_bus(0)) return;
 		audio_node* old = reverb;
 		reverb = verb;
 		if (reverb) {
 			reverb->duplicate();
-			reverb->attach_output_bus(0, output_mixer? static_cast<audio_node*>(output_mixer) : get_engine()->get_endpoint(), 0);
+			if (!dynamic_cast<mixer*>(reverb)) send_onward(reverb, output_mixer);
 		}
 		if (old) {
-			old->detach_output_bus(0); // From the mixer or, without one, the engine's endpoint, which the reverb was attached to alike.
+			stop_onward(old);
 			old->release();
 		}
 	}
@@ -792,7 +802,7 @@ public:
 				g_soundsystem_last_error = MA_INVALID_OPERATION;
 				return;
 			}
-			if (reverb && !reverb->attach_output_bus(0, target, 0)) return;
+			if (reverb && !send_onward(reverb, mix)) return;
 			old = output_mixer;
 			output_mixer = mix;
 			if (output_mixer) output_mixer->duplicate();
