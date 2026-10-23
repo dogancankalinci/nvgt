@@ -120,9 +120,18 @@ static opus_int64 ma_libopus_of_callback__tell(void* pUserData)
 
     return cursor;
 }
+
+static void ma_libopus_opened(ma_libopus* pOpus)
+{
+    /* The first logical stream's channels, which MiniAudio reads every frame in. Without a stream that can seek, opusfile knows only the current one, the first as it opens. */
+    int channels = op_channel_count((OggOpusFile*)pOpus->of, 0);
+    if (channels > 0) {
+        pOpus->channels = (ma_uint32)channels;
+    }
+}
 #endif
 
-static ma_result ma_libopus_init_internal(const ma_decoding_backend_config* pConfig, ma_libopus* pOpus)
+static ma_result ma_libopus_init_internal(const ma_decoding_backend_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_libopus* pOpus)
 {
     ma_result result;
     ma_data_source_config dataSourceConfig;
@@ -133,6 +142,7 @@ static ma_result ma_libopus_init_internal(const ma_decoding_backend_config* pCon
 
     memset(pOpus, 0, sizeof(*pOpus));
     pOpus->format = ma_format_f32;    /* f32 by default. */
+    ma_ogg_link_frames_init(&pOpus->link, pAllocationCallbacks);
 
     if (pConfig != NULL && (pConfig->preferredFormat == ma_format_f32 || pConfig->preferredFormat == ma_format_s16)) {
         pOpus->format = pConfig->preferredFormat;
@@ -157,7 +167,7 @@ MA_API ma_result ma_libopus_init(ma_read_proc onRead, ma_seek_proc onSeek, ma_te
 
     (void)pAllocationCallbacks; /* Can't seem to find a way to configure memory allocations in libopus. */
     
-    result = ma_libopus_init_internal(pConfig, pOpus);
+    result = ma_libopus_init_internal(pConfig, pAllocationCallbacks, pOpus);
     if (result != MA_SUCCESS) {
         return result;
     }
@@ -186,6 +196,7 @@ MA_API ma_result ma_libopus_init(ma_read_proc onRead, ma_seek_proc onSeek, ma_te
         if (pOpus->of == NULL) {
             return MA_INVALID_FILE;
         }
+        ma_libopus_opened(pOpus);
 
         return MA_SUCCESS;
     }
@@ -203,7 +214,7 @@ MA_API ma_result ma_libopus_init_file(const char* pFilePath, const ma_decoding_b
 
     (void)pAllocationCallbacks; /* Can't seem to find a way to configure memory allocations in libopus. */
 
-    result = ma_libopus_init_internal(pConfig, pOpus);
+    result = ma_libopus_init_internal(pConfig, pAllocationCallbacks, pOpus);
     if (result != MA_SUCCESS) {
         return result;
     }
@@ -216,6 +227,7 @@ MA_API ma_result ma_libopus_init_file(const char* pFilePath, const ma_decoding_b
         if (pOpus->of == NULL) {
             return MA_INVALID_FILE;
         }
+        ma_libopus_opened(pOpus);
 
         return MA_SUCCESS;
     }
@@ -247,6 +259,7 @@ MA_API void ma_libopus_uninit(ma_libopus* pOpus, const ma_allocation_callbacks* 
     }
     #endif
 
+    ma_ogg_link_frames_uninit(&pOpus->link);
     ma_data_source_uninit(&pOpus->ds);
 }
 
@@ -266,44 +279,88 @@ MA_API ma_result ma_libopus_read_pcm_frames(ma_libopus* pOpus, void* pFramesOut,
 
     #if !defined(MA_NO_LIBOPUS)
     {
-        /* We always use floating point format. */
         ma_result result = MA_SUCCESS;  /* Must be initialized to MA_SUCCESS. */
+        OggOpusFile* of = (OggOpusFile*)pOpus->of;
         ma_uint64 totalFramesRead;
-        ma_format format;
-        ma_uint32 channels;
+        ma_format format = pOpus->format;
+        ma_uint32 channels = pOpus->channels;
 
-        ma_libopus_get_data_format(pOpus, &format, &channels, NULL, NULL, 0);
+        if (channels == 0) {
+            return MA_INVALID_OPERATION;
+        }
 
         totalFramesRead = 0;
         while (totalFramesRead < frameCount) {
             long libopusResult;
             ma_uint64 framesToRead;
             ma_uint64 framesRemaining;
+            size_t samplesToRead;
+            void* pHeld;
+            int link;
+            int linkChannels;
 
             framesRemaining = (frameCount - totalFramesRead);
+
+            if (pOpus->link.frameCount > 0) {
+                ma_uint64 framesTaken;
+
+                result = ma_ogg_link_frames_take(&pOpus->link, format, channels, 48000, ma_offset_pcm_frames_ptr(pFramesOut, totalFramesRead, format, channels), framesRemaining, &framesTaken);
+                if (result != MA_SUCCESS) {
+                    break;
+                }
+
+                totalFramesRead += framesTaken;
+                continue;
+            }
+
             framesToRead = 1024;
             if (framesToRead > framesRemaining) {
                 framesToRead = framesRemaining;
             }
 
+            /*
+            opusfile writes as many whole frames of the logical stream it reads as fit, in that stream's channels, which aren't known
+            before it returns, so it writes to frames held, given as they are or converted. At least a frame of any stream fits.
+            */
+            linkChannels = op_channel_count(of, -1);
+            samplesToRead = (size_t)framesToRead * (((ma_uint32)linkChannels > channels) ? (ma_uint32)linkChannels : channels);
+            if (samplesToRead < 255) {
+                samplesToRead = 255;
+            }
+
+            pHeld = ma_ogg_link_frames_reserve(&pOpus->link, samplesToRead * ma_get_bytes_per_sample(format));
+            if (pHeld == NULL) {
+                result = MA_OUT_OF_MEMORY;
+                break;
+            }
+
+            link = -1;
             if (format == ma_format_f32) {
-                libopusResult = op_read_float((OggOpusFile*)pOpus->of, (float*     )ma_offset_pcm_frames_ptr(pFramesOut, totalFramesRead, format, channels), (int)(framesToRead * channels), NULL);
+                libopusResult = op_read_float(of, (float*     )pHeld, (int)samplesToRead, &link);
             } else {
-                libopusResult = op_read      ((OggOpusFile*)pOpus->of, (opus_int16*)ma_offset_pcm_frames_ptr(pFramesOut, totalFramesRead, format, channels), (int)(framesToRead * channels), NULL);
+                libopusResult = op_read      (of, (opus_int16*)pHeld, (int)samplesToRead, &link);
             }
 
             if (libopusResult < 0) {
                 result = MA_ERROR;  /* Error while decoding. */
                 break;
-            } else {
-                totalFramesRead += libopusResult;
-
-                if (libopusResult == 0) {
-                    result = MA_AT_END;
-                    break;
-                }
             }
+
+            if (libopusResult == 0) {
+                result = MA_AT_END;
+                break;
+            }
+
+            linkChannels = op_channel_count(of, link);
+            if (linkChannels <= 0) {
+                result = MA_ERROR;
+                break;
+            }
+
+            ma_ogg_link_frames_hold(&pOpus->link, libopusResult, (ma_uint32)linkChannels, 48000);
         }
+
+        pOpus->cursor += totalFramesRead;
 
         if (pFramesRead != NULL) {
             *pFramesRead = totalFramesRead;
@@ -348,6 +405,9 @@ MA_API ma_result ma_libopus_seek_to_pcm_frame(ma_libopus* pOpus, ma_uint64 frame
             }
         }
 
+        ma_ogg_link_frames_clear(&pOpus->link);
+        pOpus->cursor = frameIndex;
+
         return MA_SUCCESS;
     }
     #else
@@ -388,7 +448,11 @@ MA_API ma_result ma_libopus_get_data_format(ma_libopus* pOpus, ma_format* pForma
 
     #if !defined(MA_NO_LIBOPUS)
     {
-        ma_uint32 channels = op_channel_count((OggOpusFile*)pOpus->of, -1);
+        /* The first logical stream's, whichever is read: MiniAudio reads every frame in the format reported as the decoder opened. */
+        ma_uint32 channels = pOpus->channels;
+        if (channels == 0) {
+            return MA_INVALID_OPERATION;
+        }
 
         if (pChannels != NULL) {
             *pChannels = channels;
@@ -427,12 +491,7 @@ MA_API ma_result ma_libopus_get_cursor_in_pcm_frames(ma_libopus* pOpus, ma_uint6
 
     #if !defined(MA_NO_LIBOPUS)
     {
-        ogg_int64_t offset = op_pcm_tell((OggOpusFile*)pOpus->of);
-        if (offset < 0) {
-            return MA_INVALID_FILE;
-        }
-
-        *pCursor = (ma_uint64)offset;
+        *pCursor = pOpus->cursor;
 
         return MA_SUCCESS;
     }

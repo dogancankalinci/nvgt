@@ -129,13 +129,57 @@ static long ma_libvorbis_vf_callback__tell(void* pUserData)
 #endif
 
 #if !defined(MA_NO_LIBVORBIS)
-/* libvorbisfile leaves a seekable file of several logical streams one after another (a chained Ogg file) at the start of its second link once it is opened, so the first link was never played until something sought to the start. Back to the start, where an opened source begins; a file of one link is there already. */
-static void ma_libvorbis_rewind_after_open(ma_libvorbis* pVorbis)
+static void ma_libvorbis_opened(ma_libvorbis* pVorbis)
 {
     OggVorbis_File* vf = (OggVorbis_File*)pVorbis->vf;
+    vorbis_info* pInfo;
+
+    /* libvorbisfile leaves a seekable file of several logical streams one after another (a chained Ogg file) at the start of its second link once it is opened, so the first link was never played until something sought to the start. Back to the start, where an opened source begins; a file of one link is there already. */
     if (ov_seekable(vf) && ov_pcm_tell(vf) != 0) {
         ov_pcm_seek(vf, 0);
     }
+
+    /* The first logical stream's format, which MiniAudio reads every frame in. Without a stream that can seek, libvorbisfile knows only the current one, the first as it opens. */
+    pInfo = ov_info(vf, 0);
+    if (pInfo != NULL && pInfo->channels > 0 && pInfo->rate > 0) {
+        pVorbis->channels = (ma_uint32)pInfo->channels;
+        pVorbis->sampleRate = (ma_uint32)pInfo->rate;
+    }
+}
+
+/* The library's frame index of one the decoder reads: libvorbisfile counts each logical stream at its own sample rate, while the decoder reads every one at the first's. */
+static ogg_int64_t ma_libvorbis_library_frame(ma_libvorbis* pVorbis, ma_uint64 frameIndex)
+{
+    OggVorbis_File* vf = (OggVorbis_File*)pVorbis->vf;
+    long links = ov_streams(vf);
+    ogg_int64_t libraryStart = 0;
+    ma_uint64 start = 0;
+    long link;
+
+    if (!ov_seekable(vf)) {
+        return (ogg_int64_t)frameIndex;
+    }
+
+    for (link = 0; link < links; link += 1) {
+        vorbis_info* pInfo = ov_info(vf, link);
+        ogg_int64_t libraryFrames = ov_pcm_total(vf, link);
+        ma_uint64 frames;
+
+        if (pInfo == NULL || pInfo->rate <= 0 || libraryFrames < 0) {
+            break;
+        }
+
+        frames = ((ma_uint32)pInfo->rate == pVorbis->sampleRate) ? (ma_uint64)libraryFrames : (ma_uint64)libraryFrames * pVorbis->sampleRate / (ma_uint64)pInfo->rate;
+        if (frameIndex < start + frames || link == links - 1) {
+            ma_uint64 within = frameIndex - start;
+            return libraryStart + (ogg_int64_t)(((ma_uint32)pInfo->rate == pVorbis->sampleRate) ? within : within * (ma_uint64)pInfo->rate / pVorbis->sampleRate);
+        }
+
+        start += frames;
+        libraryStart += libraryFrames;
+    }
+
+    return (ogg_int64_t)frameIndex;
 }
 #endif
 
@@ -147,6 +191,7 @@ static ma_result ma_libvorbis_init_internal(const ma_decoding_backend_config* pC
 
     memset(pVorbis, 0, sizeof(*pVorbis));
     pVorbis->format = ma_format_f32;    /* f32 by default. */
+    ma_ogg_link_frames_init(&pVorbis->link, pAllocationCallbacks);
 
     if (pConfig != NULL && (pConfig->preferredFormat == ma_format_f32 || pConfig->preferredFormat == ma_format_s16)) {
         pVorbis->format = pConfig->preferredFormat;
@@ -221,7 +266,7 @@ MA_API ma_result ma_libvorbis_init(ma_read_proc onRead, ma_seek_proc onSeek, ma_
             ma_free(pVorbis->vf, pAllocationCallbacks);
             return MA_INVALID_FILE;
         }
-        ma_libvorbis_rewind_after_open(pVorbis);
+        ma_libvorbis_opened(pVorbis);
 
         return MA_SUCCESS;
     }
@@ -254,7 +299,7 @@ MA_API ma_result ma_libvorbis_init_file(const char* pFilePath, const ma_decoding
             ma_free(pVorbis->vf, pAllocationCallbacks);
             return MA_INVALID_FILE;
         }
-        ma_libvorbis_rewind_after_open(pVorbis);
+        ma_libvorbis_opened(pVorbis);
 
         return MA_SUCCESS;
     }
@@ -286,6 +331,7 @@ MA_API void ma_libvorbis_uninit(ma_libvorbis* pVorbis, const ma_allocation_callb
     }
     #endif
 
+    ma_ogg_link_frames_uninit(&pVorbis->link);
     ma_data_source_uninit(&pVorbis->ds);
     ma_free(pVorbis->vf, pAllocationCallbacks);
 }
@@ -306,21 +352,39 @@ MA_API ma_result ma_libvorbis_read_pcm_frames(ma_libvorbis* pVorbis, void* pFram
 
     #if !defined(MA_NO_LIBVORBIS)
     {
-        /* We always use floating point format. */
         ma_result result = MA_SUCCESS;  /* Must be initialized to MA_SUCCESS. */
+        OggVorbis_File* vf = (OggVorbis_File*)pVorbis->vf;
         ma_uint64 totalFramesRead;
-        ma_format format;
-        ma_uint32 channels;
+        ma_format format = pVorbis->format;
+        ma_uint32 channels = pVorbis->channels;
 
-        ma_libvorbis_get_data_format(pVorbis, &format, &channels, NULL, NULL, 0);
+        if (channels == 0) {
+            return MA_INVALID_OPERATION;
+        }
 
         totalFramesRead = 0;
         while (totalFramesRead < frameCount) {
             long libvorbisResult;
             ma_uint64 framesToRead;
             ma_uint64 framesRemaining;
+            void* pFramesOutHere;
+            vorbis_info* pInfo;
 
             framesRemaining = (frameCount - totalFramesRead);
+            pFramesOutHere = ma_offset_pcm_frames_ptr(pFramesOut, totalFramesRead, format, channels);
+
+            if (pVorbis->link.frameCount > 0) {
+                ma_uint64 framesTaken;
+
+                result = ma_ogg_link_frames_take(&pVorbis->link, format, channels, pVorbis->sampleRate, pFramesOutHere, framesRemaining, &framesTaken);
+                if (result != MA_SUCCESS) {
+                    break;
+                }
+
+                totalFramesRead += framesTaken;
+                continue;
+            }
+
             framesToRead = 1024;
             if (framesToRead > framesRemaining) {
                 framesToRead = framesRemaining;
@@ -329,36 +393,79 @@ MA_API ma_result ma_libvorbis_read_pcm_frames(ma_libvorbis* pVorbis, void* pFram
             if (format == ma_format_f32) {
                 float** ppFramesF32;
 
-                libvorbisResult = ov_read_float((OggVorbis_File*)pVorbis->vf, &ppFramesF32, (int)framesToRead, NULL);
+                libvorbisResult = ov_read_float(vf, &ppFramesF32, (int)framesToRead, NULL);
                 if (libvorbisResult < 0) {
                     result = MA_ERROR;  /* Error while decoding. */
                     break;
-                } else {
-                    /* Frames need to be interleaved. */
-                    ma_interleave_pcm_frames(format, channels, libvorbisResult, (const void**)ppFramesF32, ma_offset_pcm_frames_ptr(pFramesOut, totalFramesRead, format, channels));
-                    totalFramesRead += libvorbisResult;
+                }
 
-                    if (libvorbisResult == 0) {
-                        result = MA_AT_END;
+                if (libvorbisResult == 0) {
+                    result = MA_AT_END;
+                    break;
+                }
+
+                /* Frames need to be interleaved, with the channels of the logical stream they are of. */
+                pInfo = ov_info(vf, -1);
+                if (pInfo == NULL) {
+                    result = MA_ERROR;
+                    break;
+                }
+
+                if ((ma_uint32)pInfo->channels == channels && (ma_uint32)pInfo->rate == pVorbis->sampleRate) {
+                    ma_interleave_pcm_frames(format, channels, libvorbisResult, (const void**)ppFramesF32, pFramesOutHere);
+                    totalFramesRead += libvorbisResult;
+                } else {
+                    void* pHeld = ma_ogg_link_frames_reserve(&pVorbis->link, (size_t)libvorbisResult * pInfo->channels * sizeof(float));
+                    if (pHeld == NULL) {
+                        result = MA_OUT_OF_MEMORY;
                         break;
                     }
+
+                    ma_interleave_pcm_frames(format, pInfo->channels, libvorbisResult, (const void**)ppFramesF32, pHeld);
+                    ma_ogg_link_frames_hold(&pVorbis->link, libvorbisResult, pInfo->channels, pInfo->rate);
                 }
             } else {
-                libvorbisResult = ov_read((OggVorbis_File*)pVorbis->vf, (char*)ma_offset_pcm_frames_ptr(pFramesOut, totalFramesRead, format, channels), (int)(framesToRead * ma_get_bytes_per_frame(format, channels)), 0, 2, 1, NULL);
+                /*
+                ov_read() writes as many whole frames of the logical stream it reads as fit, in that stream's channels, which aren't known
+                before it returns, so it writes to frames held, given as they are or converted. At least a frame of any stream fits.
+                */
+                size_t sizeInBytes;
+                void* pHeld;
+
+                pInfo = ov_info(vf, -1);
+                sizeInBytes = (size_t)framesToRead * sizeof(ma_int16) * ((pInfo != NULL && (ma_uint32)pInfo->channels > channels) ? (ma_uint32)pInfo->channels : channels);
+                if (sizeInBytes < sizeof(ma_int16) * 255) {
+                    sizeInBytes = sizeof(ma_int16) * 255;
+                }
+
+                pHeld = ma_ogg_link_frames_reserve(&pVorbis->link, sizeInBytes);
+                if (pHeld == NULL) {
+                    result = MA_OUT_OF_MEMORY;
+                    break;
+                }
+
+                libvorbisResult = ov_read(vf, (char*)pHeld, (int)sizeInBytes, 0, 2, 1, NULL);
                 if (libvorbisResult < 0) {
                     result = MA_ERROR;  /* Error while decoding. */
                     break;
-                } else {
-                    /* Conveniently, there's no need to interleaving when using ov_read(). I'm not sure why ov_read_float() is different in that regard... */
-                    totalFramesRead += libvorbisResult / ma_get_bytes_per_frame(format, channels);
-
-                    if (libvorbisResult == 0) {
-                        result = MA_AT_END;
-                        break;
-                    }
                 }
+
+                if (libvorbisResult == 0) {
+                    result = MA_AT_END;
+                    break;
+                }
+
+                pInfo = ov_info(vf, -1);
+                if (pInfo == NULL || pInfo->channels <= 0) {
+                    result = MA_ERROR;
+                    break;
+                }
+
+                ma_ogg_link_frames_hold(&pVorbis->link, libvorbisResult / (sizeof(ma_int16) * pInfo->channels), pInfo->channels, pInfo->rate);
             }
         }
+
+        pVorbis->cursor += totalFramesRead;
 
         if (pFramesRead != NULL) {
             *pFramesRead = totalFramesRead;
@@ -392,7 +499,7 @@ MA_API ma_result ma_libvorbis_seek_to_pcm_frame(ma_libvorbis* pVorbis, ma_uint64
 
     #if !defined(MA_NO_LIBVORBIS)
     {
-        int libvorbisResult = ov_pcm_seek((OggVorbis_File*)pVorbis->vf, (ogg_int64_t)frameIndex);
+        int libvorbisResult = ov_pcm_seek((OggVorbis_File*)pVorbis->vf, ma_libvorbis_library_frame(pVorbis, frameIndex));
         if (libvorbisResult != 0) {
             if (libvorbisResult == OV_ENOSEEK) {
                 return MA_INVALID_OPERATION;    /* Not seekable. */
@@ -402,6 +509,9 @@ MA_API ma_result ma_libvorbis_seek_to_pcm_frame(ma_libvorbis* pVorbis, ma_uint64
                 return MA_ERROR;
             }
         }
+
+        ma_ogg_link_frames_clear(&pVorbis->link);
+        pVorbis->cursor = frameIndex;
 
         return MA_SUCCESS;
     }
@@ -443,21 +553,21 @@ MA_API ma_result ma_libvorbis_get_data_format(ma_libvorbis* pVorbis, ma_format* 
 
     #if !defined(MA_NO_LIBVORBIS)
     {
-        vorbis_info* pInfo = ov_info((OggVorbis_File*)pVorbis->vf, 0);
-        if (pInfo == NULL) {
+        /* The first logical stream's, whichever is read: MiniAudio reads every frame in the format reported as the decoder opened. */
+        if (pVorbis->channels == 0) {
             return MA_INVALID_OPERATION;
         }
 
         if (pChannels != NULL) {
-            *pChannels = pInfo->channels;
+            *pChannels = pVorbis->channels;
         }
 
         if (pSampleRate != NULL) {
-            *pSampleRate = pInfo->rate;
+            *pSampleRate = pVorbis->sampleRate;
         }
 
         if (pChannelMap != NULL) {
-            ma_channel_map_init_standard(ma_standard_channel_map_vorbis, pChannelMap, channelMapCap, pInfo->channels);
+            ma_channel_map_init_standard(ma_standard_channel_map_vorbis, pChannelMap, channelMapCap, pVorbis->channels);
         }
 
         return MA_SUCCESS;
@@ -485,12 +595,7 @@ MA_API ma_result ma_libvorbis_get_cursor_in_pcm_frames(ma_libvorbis* pVorbis, ma
 
     #if !defined(MA_NO_LIBVORBIS)
     {
-        ogg_int64_t offset = ov_pcm_tell((OggVorbis_File*)pVorbis->vf);
-        if (offset < 0) {
-            return MA_INVALID_FILE;
-        }
-
-        *pCursor = (ma_uint64)offset;
+        *pCursor = pVorbis->cursor;
 
         return MA_SUCCESS;
     }

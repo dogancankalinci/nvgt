@@ -12,6 +12,7 @@ extern "C" {
 #endif
 
 #include "miniaudio.h"
+#include "miniaudio_ogg_link.h"
 
 typedef struct
 {
@@ -22,6 +23,9 @@ typedef struct
     void* pReadSeekTellUserData;
     ma_format format;           /* Will be either f32 or s16. */
     /*OggOpusFile**/ void* of;  /* Typed as void* so we can avoid a dependency on opusfile in the header section. */
+    ma_uint32 channels;         /* The first logical stream's, which MiniAudio reads every frame in (see miniaudio_ogg_link.h). */
+    ma_uint64 cursor;           /* In frames given: the library's count runs ahead by the frames held. */
+    ma_ogg_link_frames link;    /* Frames of a later logical stream of other channels. */
 } ma_libopus;
 
 MA_API ma_result ma_libopus_init(ma_read_proc onRead, ma_seek_proc onSeek, ma_tell_proc onTell, void* pReadSeekTellUserData, const ma_decoding_backend_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_libopus* pOpus);
