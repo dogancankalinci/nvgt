@@ -2290,7 +2290,17 @@ static ma_data_source* float_source(ma_data_source* source, unique_ptr<float_vie
 struct chain_view {
 	ma_data_source_base base;
 	ma_data_source* head;
-	std::vector<std::pair<ma_data_source*, ma_uint64>> links; // Each source in order, with its length, 0 when unknown.
+	std::vector<std::pair<ma_data_source*, ma_uint64>> links; // Each source in order, with its length, 0 until known (see learn_lengths()).
+	// A link's length, which the audio thread learns as it plays while a script thread reads it.
+	std::atomic<ma_uint64>& length_of(size_t index) { return *reinterpret_cast<std::atomic<ma_uint64>*>(&links[index].second); }
+	// A source of unknown length that was played through is as long as its cursor reached at its end, which the cursor and length count from then on, rather than as nothing, so the position went back once the chain passed it, and seeks past it were refused for good.
+	void learn_lengths() {
+		ma_data_source* current = ma_data_source_get_current(head);
+		for (size_t index = 0; index < links.size() && links[index].first != current; index++) {
+			ma_uint64 cursor = 0;
+			if (!length_of(index).load(std::memory_order_relaxed) && ma_data_source_get_cursor_in_pcm_frames(links[index].first, &cursor) == MA_SUCCESS && cursor) length_of(index).store(cursor, std::memory_order_relaxed);
+		}
+	}
 	bool endless = false; // The last source links back into the chain, as one set as its own next does, so the chain never ends.
 	std::vector<ma_data_source*> looping_set_aside; // Sources whose own looping is off while the sound plays the chain (see chain_source()), given back after.
 	~chain_view() { // Only views made in full are kept.
@@ -2298,12 +2308,17 @@ struct chain_view {
 		ma_data_source_uninit(&base);
 	}
 };
-static ma_result chain_view_read(ma_data_source* source, void* frames_out, ma_uint64 frame_count, ma_uint64* frames_read) { return ma_data_source_read_pcm_frames(((chain_view*)source)->head, frames_out, frame_count, frames_read); }
+static ma_result chain_view_read(ma_data_source* source, void* frames_out, ma_uint64 frame_count, ma_uint64* frames_read) {
+	chain_view* view = (chain_view*)source;
+	ma_result result = ma_data_source_read_pcm_frames(view->head, frames_out, frame_count, frames_read);
+	view->learn_lengths();
+	return result;
+}
 static ma_result chain_view_seek(ma_data_source* source, ma_uint64 frame) {
 	chain_view* view = (chain_view*)source;
 	size_t index = 0;
 	ma_uint64 offset = 0;
-	while (index + 1 < view->links.size() && view->links[index].second && frame >= offset + view->links[index].second) offset += view->links[index++].second; // The source the frame falls in, or the last.
+	for (ma_uint64 length; index + 1 < view->links.size() && (length = view->length_of(index).load(std::memory_order_relaxed)) && frame >= offset + length; index++) offset += length; // The source the frame falls in, or the last.
 	ma_result result = ma_data_source_seek_to_pcm_frame(view->links[index].first, frame - offset);
 	if (result == MA_SUCCESS) ma_data_source_set_current(view->head, view->links[index].first);
 	return result;
@@ -2313,14 +2328,14 @@ static ma_result chain_view_get_cursor(ma_data_source* source, ma_uint64* cursor
 	chain_view* view = (chain_view*)source;
 	ma_data_source* current = ma_data_source_get_current(view->head);
 	ma_uint64 offset = 0;
-	for (const auto& link : view->links) {
-		if (link.first == current) {
+	for (size_t index = 0; index < view->links.size(); index++) {
+		if (view->links[index].first == current) {
 			ma_uint64 within = 0;
 			ma_result result = ma_data_source_get_cursor_in_pcm_frames(current, &within);
 			*cursor = offset + within;
 			return result;
 		}
-		offset += link.second;
+		offset += view->length_of(index).load(std::memory_order_relaxed);
 	}
 	*cursor = offset; // Off the chain, as once it ended.
 	return MA_SUCCESS;
@@ -2329,12 +2344,13 @@ static ma_result chain_view_get_length(ma_data_source* source, ma_uint64* length
 	chain_view* view = (chain_view*)source;
 	*length = 0;
 	if (view->endless && view->links.size() > 1) return MA_NOT_IMPLEMENTED; // A single source linked to itself has its own length.
-	for (const auto& link : view->links) {
-		if (!link.second) {
+	for (size_t index = 0; index < view->links.size(); index++) {
+		ma_uint64 link_length = view->length_of(index).load(std::memory_order_relaxed);
+		if (!link_length) {
 			*length = 0;
 			return MA_NOT_IMPLEMENTED;
 		}
-		*length += link.second;
+		*length += link_length;
 	}
 	return MA_SUCCESS;
 }
@@ -3576,7 +3592,7 @@ public:
 		if (fade_paused && snd) clear_stop_for_restart(true); // Stopped now, so the pause_fade() stop still to come would stop the sound once it plays again.
 		paused = fade_paused = false;
 		if (!mixer_impl::stop()) return false;
-		return get_length_in_frames() == 0 || seek(0); // A stream without a length, such as PCM or a URL, has no start to go back to.
+		return !chain && get_length_in_frames() == 0 || seek(0); // A stream without a length, such as PCM or a URL, has no start to go back to; a chain always has (see seek_in_frames()).
 	}
 	bool pause() override {
 		if (snd && !pcm_stream) {
@@ -3683,11 +3699,11 @@ public:
 	bool seek(unsigned long long position) override { return get_engine()->get_flags() & audio_engine::DURATIONS_IN_FRAMES? seek_in_frames(position) : seek_in_milliseconds(position); }
 	bool seek_in_frames(unsigned long long position) override {
 		unsigned long long length = get_length_in_frames();
-		if (!length) {
+		if (!length && !(chain && !position)) { // A chain of unknown length can still be sought to its start, which its view always finds.
 			g_soundsystem_last_error = MA_INVALID_OPERATION; // A stream without a length, which left no error.
 			return false;
 		}
-		if (position > length) { // MiniAudio takes such a seek and then ignores it on the audio thread, while the position reads as the target.
+		if (length && position > length) { // MiniAudio takes such a seek and then ignores it on the audio thread, while the position reads as the target.
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
