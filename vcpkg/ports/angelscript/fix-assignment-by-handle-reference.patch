@@ -1,0 +1,73 @@
+diff --git a/sdk/angelscript/source/as_compiler.cpp b/sdk/angelscript/source/as_compiler.cpp
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -228,11 +228,31 @@
+ 				ctx.bc.Instr(asBC_RDSPtr);
+ 				ctx.bc.Call(asBC_CALL, outFunc->objectType->derivedFrom->beh.construct, AS_PTR_SIZE, 0);
+ 
++				// ALTERED: a base opAssign taking the other object by a reference to a handle (B &opAssign(const B@ &in o), which
++				// the builder makes the copy behaviour) is given the address of a handle variable holding it, released after
++				// the call; it was given the object's address, which it took for the address of a handle
++				asCScriptFunction *copyfunc = engine->scriptFunctions[outFunc->objectType->derivedFrom->beh.copy];
++				bool byHandleRef = copyfunc && copyfunc->parameterTypes.GetLength() == 1 &&
++				                   copyfunc->parameterTypes[0].IsObjectHandle() && copyfunc->parameterTypes[0].IsReference();
++				int handleVar = 0;
++				asCDataType handleType;
+ 				CompileVariableAccess("other", "", &ctx, 0);
+ 				ctx.bc.Instr(asBC_RDSPtr);
++				if (byHandleRef)
++				{
++					handleType = copyfunc->parameterTypes[0];
++					handleType.MakeReference(false);
++					handleVar = AllocateVariable(handleType, true);
++					ctx.bc.InstrSHORT(asBC_PSF, (short)handleVar);
++					ctx.bc.InstrPTR(asBC_REFCPY, handleType.GetTypeInfo());
++					ctx.bc.Instr(asBC_PopPtr);
++					ctx.bc.InstrSHORT(asBC_PSF, (short)handleVar);
++				}
+ 				CompileVariableAccess("this", "", &ctx, 0);
+ 				ctx.bc.Instr(asBC_RDSPtr);
+ 				ctx.bc.Call(asBC_CALL, outFunc->objectType->derivedFrom->beh.copy, 2 * AS_PTR_SIZE, 0);
++				if (byHandleRef)
++					CallDestructor(handleType, handleVar, true, &ctx.bc);
+ 
+ 				ctx.bc.OptimizeLocally(tempVariableOffsets);
+ 				byteCode.AddCode(&ctx.bc);
+@@ -7044,11 +7064,37 @@
+ 		asSTypeBehaviour *beh = lvalue->dataType.GetBehaviour();
+ 		if( beh && beh->copy && beh->copy != engine->scriptTypeBehaviours.beh.copy )
+ 		{
++			// ALTERED: a copy behaviour taking the other object by a reference to a handle (C &opAssign(const C@ &in o) or
++			// C@ &inout, which the builder makes the copy behaviour) is given the address of a temporary handle holding the
++			// object, released after the call. It was given the object's address (the value assignment of objects, the
++			// copy into an &out argument's variable), which it took for the address of a handle: a crash. The object is
++			// below the object pointer on the stack, so the two are swapped around the change.
++			asCScriptFunction *copyFunc = engine->scriptFunctions[beh->copy];
++			bool byHandleRef = copyFunc && copyFunc->parameterTypes.GetLength() == 1 &&
++			                   copyFunc->parameterTypes[0].IsObjectHandle() && copyFunc->parameterTypes[0].IsReference();
++			int handleVar = 0;
++			asCDataType handleType;
++			if( byHandleRef )
++			{
++				handleType = copyFunc->parameterTypes[0];
++				handleType.MakeReference(false);
++				handleVar = AllocateVariable(handleType, true);
++				bc->Instr(asBC_SwapPtr);
++				bc->InstrSHORT(asBC_PSF, (short)handleVar);
++				bc->InstrPTR(asBC_REFCPY, handleType.GetTypeInfo());
++				bc->Instr(asBC_PopPtr);
++				bc->InstrSHORT(asBC_PSF, (short)handleVar);
++				bc->Instr(asBC_SwapPtr);
++			}
++
+ 			asCExprContext res(engine);
+ 			PerformFunctionCall(beh->copy, &res, false, 0, CastToObjectType(lvalue->dataType.GetTypeInfo()));
+ 
+ 			bc->AddCode(&res.bc);
+ 			*lvalue = res.type;
++
++			if( byHandleRef )
++				ReleaseTemporaryVariable(handleVar, bc);
+ 		}
+ 		else if( beh && beh->copy == engine->scriptTypeBehaviours.beh.copy )
+ 		{
