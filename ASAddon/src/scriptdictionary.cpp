@@ -846,8 +846,10 @@ void CScriptDictValue::Set(void *value, int typeId)
 		made.m_valueObj = m_engine->CreateScriptObjectCopy(value, m_engine->GetTypeInfoById(typeId));
 		if( made.m_valueObj == 0 )
 		{
+			// ALTERED: not over an exception the copy raised itself (a script class's copy constructor), whose text and line
+			// the engine forwards; that one says why
 			asIScriptContext *ctx = asGetActiveContext();
-			if( ctx )
+			if( ctx && ctx->GetState() != asEXECUTION_EXCEPTION )
 				ctx->SetException("Cannot create copy of object");
 		}
 	}
