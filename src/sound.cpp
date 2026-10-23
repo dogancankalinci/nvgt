@@ -1197,12 +1197,12 @@ public:
 	}
 	unsigned long long get_length_frames() const override {
 		if (!src) return 0;
-		unsigned long long length = ma_length();
+		ma_length(); // For its error, a source with no length at all reading none.
 		if (g_soundsystem_last_error != MA_SUCCESS) return 0;
 		ma_data_source_base* base = (ma_data_source_base*)src->pDataSource;
 		ma_uint64 whole = 0;
 		if (!base->vtable->onGetLength || base->vtable->onGetLength(src->pDataSource, &whole) != MA_SUCCESS) whole = 0;
-		return within_range(whole? whole : length);
+		return within_range(whole); // Unknown whole, as a ring buffer's: the range's own, as MiniAudio counts it, rather than the range's length taken for the whole and cut by its start again.
 	}
 	float get_length_milliseconds() const override {
 		ma_uint32 sample_rate = 0;
