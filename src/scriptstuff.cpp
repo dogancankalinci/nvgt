@@ -933,6 +933,9 @@ public:
 		if (errors) errors->Release();
 		return result;
 	}
+	// compile_global() was declared without its errors parameter until the errors array was added before line_offset; this keeps
+	// calls written for the old declaration that pass a line offset compiling.
+	int compile_global_at(const std::string& section_name, const std::string& code, asDWORD line_offset) { return compile_global(section_name, code, nullptr, line_offset); }
 	void discard() {
 		if (!get_mod()) return;
 		get_mod()->Discard();
@@ -1075,6 +1078,7 @@ void RegisterScripting(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod(_O("script_module"), _O("int bind_all_imported_functions()"), asMETHOD(script_module, bind_all_imported_functions), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("script_module"), _O("int bind_imported_function(uint index, script_function@+ func)"), asMETHOD(script_module, bind_imported_function), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("script_module"), _O("int compile_global(const string&in section_name, const string&in code, string[]@ errors=null, uint line_offset=0)"), asMETHOD(script_module, compile_global), asCALL_THISCALL);
+	engine->RegisterObjectMethod(_O("script_module"), _O("int compile_global(const string&in section_name, const string&in code, uint line_offset)"), asMETHOD(script_module, compile_global_at), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("script_module"), _O("script_function@ compile_function(const string&in section_name, const string&in code, string[]@ errors=null, bool add_to_module=false, uint line_offset=0)"), asMETHOD(script_module, compile_function), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("script_module"), _O("void discard()"), asMETHOD(script_module, discard), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("script_module"), _O("script_function@+ get_function_by_decl(const string&in decl)"), asMETHOD(script_module, get_function_by_decl), asCALL_THISCALL);
