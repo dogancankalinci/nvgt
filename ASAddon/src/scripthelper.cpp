@@ -948,7 +948,12 @@ string GetExceptionInfo(asIScriptContext *ctx, bool showStack)
 	const char* desc = ctx->GetExceptionString();
 	text << "description: " << (desc ? desc : "{no description}") << "\n";
 
-	if( showStack && ctx->GetCallstackSize()>1)
+	// ALTERED: the call stack is listed from the current function (level 0) when the exception was raised in another one: an
+	// exception of script code that the engine ran as a nested call for a registered function (a script class's constructor
+	// making an array's elements, its copy constructor copying a value into a dictionary) is reported where it was raised,
+	// which is no longer on the call stack, and the function that was running, with the line it was at, wasn't named at all.
+	const asUINT first = ctx->GetFunction(0) == function ? 1 : 0;
+	if( showStack && ctx->GetCallstackSize() > first )
 	{
 		text << "--- call stack ---\n";
 		// A deep call stack lists only its innermost and its outermost calls, 50 each, with the number of the calls between
@@ -956,11 +961,11 @@ string GetExceptionInfo(asIScriptContext *ctx, bool showStack)
 		// line for every call, thousands to millions of them, and every call listed costs time.
 		const asUINT listedEnds = 50;
 		const asUINT size = ctx->GetCallstackSize();
-		for( asUINT n = 1; n < size; n++ )
+		for( asUINT n = first; n < size; n++ )
 		{
-			if( size - 1 > 2 * listedEnds && n == 1 + listedEnds )
+			if( size - first > 2 * listedEnds && n == first + listedEnds )
 			{
-				text << "... (" << (size - 1 - 2 * listedEnds) << " calls not listed) ...\n";
+				text << "... (" << (size - first - 2 * listedEnds) << " calls not listed) ...\n";
 				n = size - listedEnds - 1;
 				continue;
 			}
