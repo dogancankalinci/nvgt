@@ -316,7 +316,11 @@ void CScriptDictionary::EnumReferences(asIScriptEngine *inEngine)
 	dictMap_t::iterator it;
 	for( it = dict.begin(); it != dict.end(); it++ )
 	{
-		if (it->second.m_typeId & asTYPEID_MASK_OBJECT)
+		// ALTERED: only entries that hold an object, as CScriptAny::EnumReferences does. An entry without one (a null handle,
+		// or a value whose copy failed) holds no reference, and nothing keeps its type alive: when the type was a class of a
+		// script module that has been discarded since (a script_module's discard(), or the main module at exit while the
+		// dictionary lives on), GetTypeInfoById returned null and reading its flags crashed the collector.
+		if (it->second.m_valueObj && (it->second.m_typeId & asTYPEID_MASK_OBJECT))
 		{
 			asITypeInfo *subType = engine->GetTypeInfoById(it->second.m_typeId);
 			if ((subType->GetFlags() & asOBJ_VALUE) && (subType->GetFlags() & asOBJ_GC))
