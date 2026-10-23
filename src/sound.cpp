@@ -2295,10 +2295,19 @@ struct chain_view {
 	// A link's length, which the audio thread learns as it plays while a script thread reads it.
 	std::atomic<ma_uint64>& length_of(size_t index) { return *reinterpret_cast<std::atomic<ma_uint64>*>(&links[index].second); }
 	// A source of unknown length that was played through is as long as its cursor reached at its end, which the cursor and length count from then on, rather than as nothing, so the position went back once the chain passed it, and seeks past it were refused for good.
+	std::atomic<size_t> last_on{~(size_t)0}; // The link the head was last seen on, none before it was on one.
 	void learn_lengths(bool chain_ended) {
 		ma_data_source* current = ma_data_source_get_current(head);
-		for (size_t index = 0; index < links.size(); index++) {
-			if (links[index].first == current && !chain_ended) break; // The source it is on, unless the chain ended there, as MiniAudio leaves a chain's last source current: past the last, it was never learned.
+		size_t on = 0, passed;
+		while (on < links.size() && links[on].first != current) on++;
+		if (on < links.size()) {
+			passed = chain_ended? on + 1 : on; // The links before the one it is on, and that one once the chain ended on it, as MiniAudio leaves a chain's last source current: past the last, it was never learned.
+			last_on.store(on, std::memory_order_relaxed);
+		} else {
+			size_t last = last_on.load(std::memory_order_relaxed);
+			passed = last == ~(size_t)0? 0 : last + 1; // On no source: the chain ended after the one it was last on, or, for a head opened on no source, has read none, whose cursors at 0 were learned as empty sources.
+		}
+		for (size_t index = 0; index < passed; index++) {
 			ma_uint64 cursor = 0;
 			if (length_of(index).load(std::memory_order_relaxed) == unknown && ma_data_source_get_cursor_in_pcm_frames(links[index].first, &cursor) == MA_SUCCESS) length_of(index).store(cursor, std::memory_order_relaxed); // Passed, so as long as it reached, nothing for an empty one.
 		}
@@ -2322,7 +2331,10 @@ static ma_result chain_view_seek(ma_data_source* source, ma_uint64 frame) {
 	ma_uint64 offset = 0;
 	for (ma_uint64 length; index + 1 < view->links.size() && (length = view->length_of(index).load(std::memory_order_relaxed)) != chain_view::unknown && frame >= offset + length; index++) offset += length; // The source the frame falls in, past empty ones, or the last.
 	ma_result result = ma_data_source_seek_to_pcm_frame(view->links[index].first, frame - offset);
-	if (result == MA_SUCCESS) ma_data_source_set_current(view->head, view->links[index].first);
+	if (result == MA_SUCCESS) {
+		ma_data_source_set_current(view->head, view->links[index].first);
+		view->last_on.store(index, std::memory_order_relaxed);
+	}
 	return result;
 }
 static ma_result chain_view_get_data_format(ma_data_source* source, ma_format* format, ma_uint32* channels, ma_uint32* sample_rate, ma_channel* channel_map, size_t channel_map_capacity) { return ma_data_source_get_data_format(((chain_view*)source)->head, format, channels, sample_rate, channel_map, channel_map_capacity); } // A chain's sources all have the head's (see audio_data_source_impl::can_chain()).
