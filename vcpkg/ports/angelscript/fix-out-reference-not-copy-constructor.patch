@@ -1,0 +1,35 @@
+diff --git a/sdk/angelscript/source/as_builder.cpp b/sdk/angelscript/source/as_builder.cpp
+--- a/sdk/angelscript/source/as_builder.cpp
++++ b/sdk/angelscript/source/as_builder.cpp
+@@ -5658,9 +5658,14 @@
+ 			else
+ 			{
+ 				// The copy constructor needs to be marked for easy finding
++				// ALTERED: not a constructor taking the object by an &out reference (C(C &out o), C(C@ &out o)), which can't
++				// copy from it: made the copy constructor, the compiler's copies passed it the object being copied with no
++				// expression to write the result back to, and the compiler dereferenced that null expression (a crash while
++				// building the script), and the engine's copies would have written the result over the object itself.
+ 				if( parameterTypes.GetLength() == 1 && 
+ 					parameterTypes[0].GetTypeInfo() == objType && 
+-					(parameterTypes[0].IsReference() || parameterTypes[0].IsObjectHandle()) )
++					(parameterTypes[0].IsReference() || parameterTypes[0].IsObjectHandle()) &&
++					!(parameterTypes[0].IsReference() && !(inOutFlags[0] & asTM_INREF)) )
+ 				{
+ 					// Verify that there are not multiple options matching the copy constructor
+ 					// TODO: Need a better message, since the parameters can be slightly different, e.g. & vs @
+diff --git a/sdk/angelscript/source/as_restore.cpp b/sdk/angelscript/source/as_restore.cpp
+--- a/sdk/angelscript/source/as_restore.cpp
++++ b/sdk/angelscript/source/as_restore.cpp
+@@ -1589,9 +1589,11 @@
+ // which makes it the copy constructor (or copy factory) in asCBuilder::RegisterScriptFunction
+ static bool IsCopyConstructorSignature(asCScriptFunction *func, asCObjectType *ot)
+ {
++	// ALTERED: not an &out reference, as asCBuilder::RegisterScriptFunction
+ 	return func->parameterTypes.GetLength() == 1 &&
+ 	       func->parameterTypes[0].GetTypeInfo() == ot &&
+-	       (func->parameterTypes[0].IsReference() || func->parameterTypes[0].IsObjectHandle());
++	       (func->parameterTypes[0].IsReference() || func->parameterTypes[0].IsObjectHandle()) &&
++	       !(func->parameterTypes[0].IsReference() && !(func->inOutFlags[0] & asTM_INREF));
+ }
+ 
+ void asCReader::ReadTypeDeclaration(asCTypeInfo *type, int phase, bool *isExternal)

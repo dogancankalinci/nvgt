@@ -79,6 +79,7 @@ vcpkg_from_github(
         fix-copy-without-base-copy.patch
         fix-copy-by-handle-reference.patch
         fix-copy-constructor-by-handle-reference.patch
+        fix-out-reference-not-copy-constructor.patch
 )
 
 vcpkg_cmake_configure(
