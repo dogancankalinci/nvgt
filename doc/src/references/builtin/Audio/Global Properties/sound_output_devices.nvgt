@@ -3,7 +3,7 @@
 	const string[]@ sound_output_devices;
 	## Remarks:
 		The index of a device in this array is the value you assign to `sound_output_device` to switch to that device. Assigning -1 instead selects the system's default output device.
-		Each read asks the system for its devices anew, so a device plugged in or removed while the program runs shows up the next time you read this property. Each read returns a new array, and an array you already hold doesn't change, so its indexes stay those of the list as it was when you read it. Asking the system takes a moment, so keep the array rather than reading the property again for every element. The array can't be modified; make a copy first if you want to change it, for example to build a menu.
+		Each read asks the system for its devices anew, so a device plugged in or removed while the program runs shows up the next time you read this property. An array you already hold doesn't change, so its indexes stay those of the list as it was when you read it; when the system can't list its devices, a read gives the last list it gave. Asking the system takes a moment, so keep the array rather than reading the property again for every element. The array can't be modified; make a copy first if you want to change it, for example to build a menu.
 		Reading this property starts the sound system if it hasn't been started yet.
 */
 
