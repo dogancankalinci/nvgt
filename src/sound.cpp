@@ -75,7 +75,24 @@ static ma_context g_sound_context;
 audio_engine *g_audio_engine = nullptr;
 // The lowest sample rate taken for an engine, a decoder's or an encoder's output or a script's PCM. MiniAudio's resource manager decodes in pages of 1000 * (rate / 1000) frames, none below it, and rates of a few hertz made a source decode thousands of frames for each it gave, or a second of PCM take gigabytes, while rates between it and 8000, the lowest MiniAudio names, are found in old recordings and in sounds scripts make, and worked.
 static constexpr ma_uint32 min_sample_rate = 1000;
-mixer* g_audio_mixer = nullptr;
+mixer* g_audio_mixer = nullptr; // sound_default_mixer, under g_audio_mixer_mutex.
+static std::mutex g_audio_mixer_mutex;
+// sound_default_mixer with a reference of the caller's own, as sound_default_engine is handed out: read without one while another thread's assignment let go of the old mixer's last reference, a new sound was put on a mixer being destroyed.
+static mixer* acquire_default_mixer() {
+	std::lock_guard<std::mutex> lock(g_audio_mixer_mutex);
+	if (g_audio_mixer) g_audio_mixer->duplicate();
+	return g_audio_mixer;
+}
+mixer* get_sound_default_mixer() { return acquire_default_mixer(); } // The reference goes to the script.
+void set_sound_default_mixer(mixer* mix) { // Takes the script's reference.
+	mixer* old;
+	{
+		std::lock_guard<std::mutex> lock(g_audio_mixer_mutex);
+		old = g_audio_mixer;
+		g_audio_mixer = mix;
+	}
+	if (old) old->release(); // After the lock: it can be the last reference.
+}
 static std::atomic_flag g_soundsystem_initialized; // The context, the sound service and the device lists are set up, see init_sound_context().
 static std::atomic_flag g_soundsystem_ready; // The engine exists. Set last so that no other thread can be told "initialized" while g_audio_engine is still null.
 static std::recursive_mutex g_soundsystem_init_mutex; // Recursive because setting up re-enters init_sound() and init_sound_context() on this same thread.
@@ -889,7 +906,12 @@ public:
 	mixer *new_mixer() override { return ::new_mixer(this); }
 	sound *new_sound() override {
 		sound *s = ::new_sound(this);
-		if (s && g_audio_mixer && this == g_audio_engine) s->set_mixer(g_audio_mixer); // The default engine's sounds go on sound_default_mixer, as those of sound() do; play() moves them to a mixer it is given.
+		if (s && this == g_audio_engine) { // The default engine's sounds go on sound_default_mixer, as those of sound() do; play() moves them to a mixer it is given.
+			if (mixer* mix = acquire_default_mixer()) {
+				s->set_mixer(mix);
+				mix->release();
+			}
+		}
 		return s;
 	}
 };
@@ -4033,7 +4055,10 @@ sound *new_global_sound_unmixed() {
 }
 sound *new_global_sound() {
 	sound* s = new_global_sound_unmixed();
-	if (s && g_audio_mixer) s->set_mixer(g_audio_mixer); // Refused for a sound_default_mixer of an engine other than the default one, which leaves the sound on the default engine's endpoint.
+	if (mixer* mix = s? acquire_default_mixer() : nullptr) { // Refused for a sound_default_mixer of an engine other than the default one, which leaves the sound on the default engine's endpoint.
+		s->set_mixer(mix);
+		mix->release();
+	}
 	return s;
 }
 int get_sound_output_device() {
@@ -4047,7 +4072,10 @@ void set_sound_output_device(int device) {
 sound* sound_play(const string& path, const reactphysics3d::Vector3& position, float volume, float pan, float pitch, mixer* mix, const pack_interface* pack_file, bool autoplay) {
 	default_engine_ref engine;
 	if (!engine) return nullptr;
-	return engine->play(path, position, volume, pan, pitch, mix? mix : g_audio_mixer, pack_file, autoplay); // Without a mixer of its own, on sound_default_mixer as other new sounds are, unless that mixer is of another engine.
+	mixer* default_mix = mix? nullptr : acquire_default_mixer();
+	sound* s = engine->play(path, position, volume, pan, pitch, mix? mix : default_mix, pack_file, autoplay); // Without a mixer of its own, on sound_default_mixer as other new sounds are, unless that mixer is of another engine.
+	if (default_mix) default_mix->release();
+	return s;
 }
 reactphysics3d::Vector3 sound_get_listener_position(unsigned int listener_index = 0) {
 	default_engine_ref engine;
@@ -4774,7 +4802,8 @@ void RegisterSoundsystem(asIScriptEngine *engine) {
 	engine->RegisterGlobalFunction("const string[]@ get_sound_input_devices() property", asFUNCTION(get_sound_input_devices), asCALL_CDECL);
 	engine->RegisterGlobalFunction("const string[]@ get_sound_output_devices() property", asFUNCTION(get_sound_output_devices), asCALL_CDECL);
 	engine->RegisterGlobalFunction("int get_sound_output_device() property", asFUNCTION(get_sound_output_device), asCALL_CDECL);
-	engine->RegisterGlobalProperty("mixer@ sound_default_mixer", (void*)&g_audio_mixer);
+	engine->RegisterGlobalFunction("mixer@ get_sound_default_mixer() property", asFUNCTION(get_sound_default_mixer), asCALL_CDECL);
+	engine->RegisterGlobalFunction("void set_sound_default_mixer(mixer@ mix) property", asFUNCTION(set_sound_default_mixer), asCALL_CDECL);
 	engine->RegisterGlobalFunction("void set_sound_output_device(int device) property", asFUNCTION(set_sound_output_device), asCALL_CDECL);
 	engine->RegisterGlobalFunction("sound@ sound_play(const string&in path, const vector&in position = vector(FLOAT_MAX, FLOAT_MAX, FLOAT_MAX), float volume = FLOAT_MAX, float pan = FLOAT_MAX, float pitch = FLOAT_MAX, mixer@+ mix = null, const pack_interface@+ pack_file = sound_default_pack, bool autoplay = true)", asFUNCTION(sound_play), asCALL_CDECL);
 	engine->RegisterGlobalFunction("vector sound_get_listener_position(uint listener_index = 0)", asFUNCTION(sound_get_listener_position), asCALL_CDECL);
