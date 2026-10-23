@@ -2290,7 +2290,8 @@ static ma_data_source* float_source(ma_data_source* source, unique_ptr<float_vie
 struct chain_view {
 	ma_data_source_base base;
 	ma_data_source* head;
-	std::vector<std::pair<ma_data_source*, ma_uint64>> links; // Each source in order, with its length, 0 until known (see learn_lengths()).
+	static constexpr ma_uint64 unknown = ~(ma_uint64)0; // A link's length until known: 0 told an empty source from one not yet known no more, so a chain with an empty source never had a length.
+	std::vector<std::pair<ma_data_source*, ma_uint64>> links; // Each source in order, with its length, unknown until known (see learn_lengths()).
 	// A link's length, which the audio thread learns as it plays while a script thread reads it.
 	std::atomic<ma_uint64>& length_of(size_t index) { return *reinterpret_cast<std::atomic<ma_uint64>*>(&links[index].second); }
 	// A source of unknown length that was played through is as long as its cursor reached at its end, which the cursor and length count from then on, rather than as nothing, so the position went back once the chain passed it, and seeks past it were refused for good.
@@ -2299,7 +2300,7 @@ struct chain_view {
 		for (size_t index = 0; index < links.size(); index++) {
 			if (links[index].first == current && !chain_ended) break; // The source it is on, unless the chain ended there, as MiniAudio leaves a chain's last source current: past the last, it was never learned.
 			ma_uint64 cursor = 0;
-			if (!length_of(index).load(std::memory_order_relaxed) && ma_data_source_get_cursor_in_pcm_frames(links[index].first, &cursor) == MA_SUCCESS && cursor) length_of(index).store(cursor, std::memory_order_relaxed);
+			if (length_of(index).load(std::memory_order_relaxed) == unknown && ma_data_source_get_cursor_in_pcm_frames(links[index].first, &cursor) == MA_SUCCESS) length_of(index).store(cursor, std::memory_order_relaxed); // Passed, so as long as it reached, nothing for an empty one.
 		}
 	}
 	bool endless = false; // The last source links back into the chain, as one set as its own next does, so the chain never ends.
@@ -2319,7 +2320,7 @@ static ma_result chain_view_seek(ma_data_source* source, ma_uint64 frame) {
 	chain_view* view = (chain_view*)source;
 	size_t index = 0;
 	ma_uint64 offset = 0;
-	for (ma_uint64 length; index + 1 < view->links.size() && (length = view->length_of(index).load(std::memory_order_relaxed)) && frame >= offset + length; index++) offset += length; // The source the frame falls in, or the last.
+	for (ma_uint64 length; index + 1 < view->links.size() && (length = view->length_of(index).load(std::memory_order_relaxed)) != chain_view::unknown && frame >= offset + length; index++) offset += length; // The source the frame falls in, past empty ones, or the last.
 	ma_result result = ma_data_source_seek_to_pcm_frame(view->links[index].first, frame - offset);
 	if (result == MA_SUCCESS) ma_data_source_set_current(view->head, view->links[index].first);
 	return result;
@@ -2336,7 +2337,8 @@ static ma_result chain_view_get_cursor(ma_data_source* source, ma_uint64* cursor
 			*cursor = offset + within;
 			return result;
 		}
-		offset += view->length_of(index).load(std::memory_order_relaxed);
+		ma_uint64 length = view->length_of(index).load(std::memory_order_relaxed);
+		if (length != chain_view::unknown) offset += length; // One not yet known is ahead of the current source, which passing it learns.
 	}
 	*cursor = offset; // Off the chain, as once it ended.
 	return MA_SUCCESS;
@@ -2347,7 +2349,7 @@ static ma_result chain_view_get_length(ma_data_source* source, ma_uint64* length
 	if (view->endless && view->links.size() > 1) return MA_NOT_IMPLEMENTED; // A single source linked to itself has its own length.
 	for (size_t index = 0; index < view->links.size(); index++) {
 		ma_uint64 link_length = view->length_of(index).load(std::memory_order_relaxed);
-		if (!link_length) {
+		if (link_length == chain_view::unknown) {
 			*length = 0;
 			return MA_NOT_IMPLEMENTED;
 		}
@@ -2373,7 +2375,7 @@ static ma_data_source* chain_source(ma_data_source* head, audio_engine* engine, 
 			length = wrapper->get_length_frames();
 			wrapper->release();
 		} else if (ma_data_source_get_length_in_pcm_frames(link, &length) != MA_SUCCESS) length = 0;
-		links.emplace_back(link, length);
+		links.emplace_back(link, length? length : chain_view::unknown); // 0 is also unknown, which an empty source is learned as once passed.
 	}
 	if (start == head && links.size() < 2 && !endless) return head; // No chain: read as it is. A source linked to itself is read through a view, whose seek puts it back on itself once an empty pass ended it (see next_of_self_linked()).
 	view = make_unique<chain_view>();
