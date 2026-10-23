@@ -750,6 +750,10 @@ public:
 		if (output_mixer) output_mixer->release();
 	}
 	void set_reverb(audio_node* verb) override {
+		if (verb && verb != reverb && !reverb_fits(verb, output_mixer? static_cast<audio_node*>(output_mixer) : get_engine()->get_endpoint(), ma_node_get_output_channels(get_ma_node(), 0))) { // Refused, the old reverb kept, rather than kept going nowhere.
+			g_soundsystem_last_error = MA_INVALID_OPERATION;
+			return;
+		}
 		if (reverb) {
 			reverb->detach_output_bus(0); // From the mixer or, without one, the engine's endpoint, which the reverb was attached to alike.
 			detach_output_bus(0);
@@ -771,8 +775,13 @@ public:
 				g_soundsystem_last_error = MA_INVALID_ARGS;
 				return;
 			}
-			// Attached to the new destination before the old one goes, which attaching replaces: one without an input, as a sound, is refused, the reverb staying where it was, rather than left going nowhere while mixer read the sound.
-			if (reverb && !reverb->attach_output_bus(0, mix? static_cast<audio_node*>(mix) : get_engine()->get_endpoint(), 0)) return;
+			// Attached to the new destination before the old one goes, which attaching replaces: one the reverb can't go into, or without an input, as a sound, for a reverb3d that has no reverb yet, is refused, staying where it was, rather than left going nowhere while mixer read the sound.
+			audio_node* target = mix? static_cast<audio_node*>(mix) : get_engine()->get_endpoint();
+			if (reverb? !reverb_fits(reverb, target, ma_node_get_output_channels(get_ma_node(), 0)) : ma_node_get_input_bus_count(target->get_ma_node()) == 0) {
+				g_soundsystem_last_error = MA_INVALID_OPERATION;
+				return;
+			}
+			if (reverb && !reverb->attach_output_bus(0, target, 0)) return;
 			old = output_mixer;
 			output_mixer = mix;
 			if (output_mixer) output_mixer->duplicate();
@@ -827,6 +836,12 @@ public:
 };
 // Without a destination, a new mixer of the reverb3d's own engine, as a reverb3d of the default engine always got one; a mixer of another engine is refused, as both engines' audio threads would read the reverb3d then.
 std::recursive_mutex g_audio_topology_mutex;
+// Whether a reverb can sit between a reverb3d giving the given channels and a destination: MiniAudio attaches a node's output only to an input of the same channel count, so a reverb of other channels, or a destination without an input, as a sound given as a mixer, left the reverb going nowhere.
+bool reverb_fits(audio_node* verb, audio_node* destination, ma_uint32 channels_in) {
+	ma_node* v = verb->get_ma_node();
+	ma_node* d = destination->get_ma_node();
+	return v && d && ma_node_get_input_bus_count(v) > 0 && ma_node_get_output_bus_count(v) > 0 && ma_node_get_input_bus_count(d) > 0 && ma_node_get_input_channels(v, 0) == channels_in && ma_node_get_output_channels(v, 0) == ma_node_get_input_channels(d, 0);
+}
 bool mixer_reaches(mixer* from, const std::function<bool(mixer*)>& is_target) {
 	std::vector<mixer*> pending{from};
 	std::unordered_set<mixer*> seen;
@@ -843,7 +858,8 @@ bool mixer_reaches(mixer* from, const std::function<bool(mixer*)>& is_target) {
 reverb3d* reverb3d::create(audio_node* reverb, mixer* destination, audio_engine* e) {
 	if (!e) throw std::runtime_error("no audio engine available");
 	if (destination && destination->get_engine() != e) throw std::runtime_error("the destination mixer belongs to another audio engine");
-	if (destination && ma_node_get_input_bus_count(destination->get_ma_node()) == 0) throw std::runtime_error("the destination takes no input"); // A sound given as a mixer: the reverb would go nowhere, as reverb3d.mixer refuses it.
+	audio_node* target = destination? static_cast<audio_node*>(destination) : e->get_endpoint();
+	if (reverb? !reverb_fits(reverb, target, e->get_channels()) : ma_node_get_input_bus_count(target->get_ma_node()) == 0) throw std::runtime_error("the destination takes no input from the reverb"); // A sound given as a mixer, or a reverb of another channel count: the reverb would go nowhere, as reverb3d.mixer and reverb3d.reverb refuse them.
 	if (destination) return new reverb3d_impl(e, reverb, destination);
 	mixer *own = new_mixer(e);
 	try {

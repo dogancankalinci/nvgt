@@ -419,6 +419,7 @@ bool sound_set_spatialization(int panner, int attenuator, bool disable_previous 
 bool mixer_reaches(mixer* from, const std::function<bool(mixer*)>& is_target);
 // Held by whatever changes the links mixer_reaches() follows (a mixer's parent, its spatializer and the reverb3d that sends to, a reverb3d's mixer) and by the checks that follow them, and taken before any chain, spatialization or graph lock: each link holds a reference to what it points to, so under this nothing a check reaches can be freed, as it was when another thread let go of a mixer the check had just stepped to.
 extern std::recursive_mutex g_audio_topology_mutex;
+bool reverb_fits(audio_node* verb, audio_node* destination, ma_uint32 channels_in);
 
 
 extern int g_audio_basic_panner;
