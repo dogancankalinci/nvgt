@@ -11,9 +11,10 @@ on:
       - "web/**"
 # A push does not cancel the run in progress: it waits as the one pending run, and a later push replaces it. A cancelled
 # run never saves the dependencies it built, and after a runner image update every port has to be rebuilt (vcpkg's ABI
-# hashes include the compiler), which takes longer than the time between pushes, so cancelling kept repeating it.
+# hashes include the compiler), which takes longer than the time between pushes, so cancelling kept repeating it. A manual run
+# has a group of its own, so that a push doesn't replace it while it waits.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'auto' }}
   cancel-in-progress: false
 jobs:
   generate_config:
@@ -295,6 +296,20 @@ jobs:
       run: |
         curl -u "${{secrets.CIFTP}}" -s -T droidev.zip ftp://nvgt.dev
         curl -H "X-Auth: ${{secrets.CIPHP}}" -s "https://nvgt.dev/ci/devlibs_update.php"
+    - name: zip dependencies for this fork
+      # The publish step above is upstream's. A fork keeps the dependencies its own ports built as an artifact, so that local builds
+      # can use them: whenever they were rebuilt, and on a manual run (the cached copy then).
+      if: ${{ github.event.repository.fork && github.ref == 'refs/heads/main' && (steps.cache.outputs.cache-hit != 'true' || github.event_name == 'workflow_dispatch') }}
+      shell: bash
+      run: test -f droidev.zip || python3 -c "import shutil; shutil.make_archive('droidev', 'zip', root_dir = 'droidev')"
+    - name: upload dependencies for this fork
+      if: ${{ github.event.repository.fork && github.ref == 'refs/heads/main' && (steps.cache.outputs.cache-hit != 'true' || github.event_name == 'workflow_dispatch') }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: droidev
+        path: droidev.zip
+        compression-level: 0
+        retention-days: 30
     - name: keystore_official
       if: github.event.repository.fork == false
       run: |
@@ -387,6 +402,20 @@ jobs:
       run: |
         curl -u "${{secrets.CIFTP}}" -s -T windev.zip ftp://nvgt.dev
         curl -H "X-Auth: ${{secrets.CIPHP}}" -s "https://nvgt.dev/ci/devlibs_update.php"
+    - name: zip dependencies for this fork
+      # The publish step above is upstream's. A fork keeps the dependencies its own ports built as an artifact, so that local builds
+      # can use them: whenever they were rebuilt, and on a manual run (the cached copy then).
+      if: ${{ github.event.repository.fork && github.ref == 'refs/heads/main' && (steps.cache.outputs.cache-hit != 'true' || github.event_name == 'workflow_dispatch') }}
+      shell: pwsh
+      run: if (-not (Test-Path windev.zip)) { python3 -c "import shutil; shutil.make_archive('windev', 'zip', root_dir = 'windev')" }
+    - name: upload dependencies for this fork
+      if: ${{ github.event.repository.fork && github.ref == 'refs/heads/main' && (steps.cache.outputs.cache-hit != 'true' || github.event_name == 'workflow_dispatch') }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: windev
+        path: windev.zip
+        compression-level: 0
+        retention-days: 30
     - name: build
       # UPX packs the Windows stubs that every package job ships. It comes from UPX's own GitHub release (Chocolatey's
       # community feed timed out on it for whole runs), and this step fails if the packed stubs are missing: SCons
