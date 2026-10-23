@@ -1,0 +1,35 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -797,6 +797,15 @@
+ 		bool     hadStack           = m_stackBlocks.GetLength() > 0;
+ 		asDWORD *stackPointerBefore = m_regs.stackPointer;
+ 		asUINT   stackIndexBefore   = m_stackIndex;
++
++		// ALTERED: the program pointer is cleared before the stack is reserved, as it is below once the function is prepared,
++		// so that the exception the reservation raises when it fails (and the exception callback it calls) finds it null: for
++		// a nested call it was still that of the interrupted function, and was taken as a position in this function, which
++		// hasn't started. The exception's line (and GetLineNumber in the callback) came out as this function's first or last
++		// by where its bytecode was in memory, and a callback reading this function's variables (IsVarInScope,
++		// GetAddressOfVar) found them in scope and read them outside the stack. The interrupted function's program pointer is
++		// kept in the call stack by PushState.
++		m_regs.programPointer = 0;
+ 		if( !ReserveStackSpace(stackSize) )
+ 		{
+ 			// ALTERED: nothing was put on the stack for the function, but the context was left with the stack overflow
+@@ -5350,7 +5359,14 @@
+ 		// ALTERED: the line of the call that raised it also for a call that moved the program pointer past itself first
+ 		// (afterCall, see below), where the line of the statement after it was given: a method call on a null script class
+ 		// handle or a call through a null function handle was reported at the next line
+-		m_exceptionLine    = m_currentFunction->GetLineNumber(int(m_regs.programPointer - m_currentFunction->scriptData->byteCode.AddressOf()) - (afterCall ? 1 : 0), &m_exceptionSectionIdx);
++		// ALTERED: an exception raised before the function's first instruction (asEP_MAX_NESTED_CALLS refusing the execution,
++		// a Prepare that couldn't reserve the stack) is at the function's start, as GetLineNumber takes it: its position was
++		// taken from the null program pointer, so the line was the function's first or its last by where the bytecode was in
++		// memory
++		int exceptionPos = 0;
++		if( m_regs.programPointer )
++			exceptionPos = int(m_regs.programPointer - m_currentFunction->scriptData->byteCode.AddressOf()) - (afterCall ? 1 : 0);
++		m_exceptionLine    = m_currentFunction->GetLineNumber(exceptionPos, &m_exceptionSectionIdx);
+ 		m_exceptionColumn  = m_exceptionLine >> 20;
+ 		m_exceptionLine   &= 0xFFFFF;
+ 	}
