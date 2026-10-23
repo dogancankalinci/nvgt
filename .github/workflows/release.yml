@@ -440,7 +440,9 @@ jobs:
   cleanup_config:
     runs-on: ubuntu-latest
     needs: [generate_config, mac_build, linux_build, android_build, windows_build]
-    if: always() && needs.generate_config.outputs.artifact-id != ''
+    # Kept when a build failed or was cancelled: "Re-run failed jobs" reuses this run's config, and a build re-run after the
+    # artifact was deleted failed at once ("Artifact not found for name: nvgt_config_enc"). It expires after a day anyway.
+    if: always() && needs.generate_config.outputs.artifact-id != '' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
     permissions:
       actions: write
     steps:
