@@ -1013,6 +1013,21 @@ public:
 	}
 	// Lets go of the MiniAudio data source wrapped, for a wrapper of a sound's own source when the sound frees it; the wrapper stays, empty.
 	void forget_source() { set_ma_data_source(nullptr); }
+protected:
+	// MiniAudio's length of the source: its range's when the range has an end, else the whole source's, the range's start included; 0 when unknown.
+	unsigned long long ma_length() const {
+		ma_uint64 length;
+		return (g_soundsystem_last_error = ma_data_source_get_length_in_pcm_frames(get_ma_data_source(), &length)) == MA_SUCCESS? length : 0;
+	}
+	// The part of a source whole frames long, 0 when unknown, within its range. MiniAudio counts a range without an end as the whole source, its start included, and one ending past the source's end as reaching past it, so the length, and the seeks and chains it bounds, went past what plays.
+	unsigned long long within_range(unsigned long long whole) const {
+		ma_uint64 begin = 0, end = 0;
+		ma_data_source_get_range_in_pcm_frames(get_ma_data_source(), &begin, &end);
+		if (!whole) return end != ~(ma_uint64)0 && end > begin? end - begin : 0; // Unknown: the range's own, as MiniAudio counts it.
+		if (end > whole) end = whole;
+		return end > begin? end - begin : 0;
+	}
+public:
 	void mark_sound_owned() { sound_owned = true; }
 	// A reference, unless the last one is already gone and this wrapper is being destroyed on another thread, before its destructor took it out of g_data_sources_map; a plain duplicate() would bring it back for a second destruction.
 	bool duplicate_if_alive() {
@@ -1174,14 +1189,18 @@ public:
 		return (g_soundsystem_last_error = ma_data_source_get_cursor_in_seconds(src->pDataSource, &cursor)) == MA_SUCCESS? cursor * 1000 : 0;
 	}
 	unsigned long long get_length_frames() const override {
-		ma_uint64 length;
 		if (!src) return 0;
-		return (g_soundsystem_last_error = ma_data_source_get_length_in_pcm_frames(src->pDataSource, &length)) == MA_SUCCESS? length : 0;
+		unsigned long long length = ma_length();
+		if (g_soundsystem_last_error != MA_SUCCESS) return 0;
+		ma_data_source_base* base = (ma_data_source_base*)src->pDataSource;
+		ma_uint64 whole = 0;
+		if (!base->vtable->onGetLength || base->vtable->onGetLength(src->pDataSource, &whole) != MA_SUCCESS) whole = 0;
+		return within_range(whole? whole : length);
 	}
 	float get_length_milliseconds() const override {
-		float length;
-		if (!src) return 0;
-		return (g_soundsystem_last_error = ma_data_source_get_length_in_seconds(src->pDataSource, &length)) == MA_SUCCESS? length * 1000 : 0;
+		ma_uint32 sample_rate = 0;
+		if (!src || (g_soundsystem_last_error = ma_data_source_get_data_format(src->pDataSource, nullptr, nullptr, &sample_rate, nullptr, 0)) != MA_SUCCESS || !sample_rate) return 0;
+		return get_length_frames() * 1000.0f / sample_rate; // As counted within the range.
 	}
 	bool set_looping(bool looping) override { return src && !in_use()? (g_soundsystem_last_error = ma_data_source_set_looping(src->pDataSource, looping)) == MA_SUCCESS : false; }
 	bool get_looping() const override { return src? ma_data_source_is_looping(src->pDataSource) : false; }
@@ -1659,15 +1678,15 @@ public:
 		if (!decoder || !source) return 0;
 		ma_uint64 range_begin = 0, range_end = 0;
 		ma_data_source_get_range_in_pcm_frames(source, &range_begin, &range_end);
-		if (range_end != ~(ma_uint64)0) return audio_data_source_impl::get_length_frames(); // MiniAudio counts a range itself, without asking the decoder.
-		long long known = length_frames;
-		if (known >= 0) return known;
+		long long known = length_frames; // The whole decoder's, whatever its range.
+		if (known >= 0) return within_range(known);
+		if (range_end != ~(ma_uint64)0) return within_range(0); // MiniAudio counts a range with an end itself, without asking the decoder.
 		if (known == -2 || users || node_attached()) return 0; // Read elsewhere, and not worked out before: unknown rather than counted under that reader.
 		if (cursor && !seekable) {
 			cursor->length_query = true;
 			cursor->length_query_refused = false;
 		}
-		unsigned long long length = audio_data_source_impl::get_length_frames();
+		unsigned long long length = ma_length(); // The whole decoder's, the range having no end.
 		bool refused = cursor && cursor->length_query_refused;
 		if (cursor) cursor->length_query = false;
 		if (refused) {
@@ -1675,7 +1694,7 @@ public:
 			return 0;
 		}
 		if (g_soundsystem_last_error == MA_SUCCESS) length_frames = length;
-		return length;
+		return within_range(length);
 	}
 	float get_length_milliseconds() const override {
 		unsigned int sample_rate = get_sample_rate();
