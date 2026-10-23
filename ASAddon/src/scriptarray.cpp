@@ -1388,6 +1388,40 @@ static int ExecuteResumed(asIScriptContext *ctx)
 	return r;
 }
 
+// ALTERED: sets the other element as the argument of an opEquals or opCmp, which can take it as a handle by &out reference
+// (T@ &out), whose argument is the address of a handle: it is given that of a handle holding the element, and whatever the
+// method left there is let go when this goes. The element itself was passed as that address, so the method's write to its
+// parameter went over the element's first bytes and a read of it took them for a handle. It must live until the call ends.
+struct SCompareArg
+{
+	asIScriptEngine *engine;
+	asITypeInfo     *type;
+	void            *handle;
+	SCompareArg(asIScriptContext *ctx, asIScriptFunction *func, void *obj) : engine(ctx->GetEngine()), type(0), handle(0)
+	{
+		int typeId = 0;
+		asDWORD flags = 0;
+		func->GetParam(0, &typeId, &flags);
+		if( (typeId & asTYPEID_OBJHANDLE) && (flags & asTM_OUTREF) )
+		{
+			type = engine->GetTypeInfoById(typeId);
+			handle = obj;
+			if( handle )
+				engine->AddRefScriptObject(handle, type);
+			ctx->SetArgAddress(0, &handle);
+		}
+		else
+			ctx->SetArgObject(0, obj);
+	}
+	~SCompareArg()
+	{
+		if( handle )
+			engine->ReleaseScriptObject(handle, type);
+	}
+	SCompareArg(const SCompareArg &) = delete;
+	SCompareArg &operator=(const SCompareArg &) = delete;
+};
+
 // internal
 bool CScriptArray::Equals(const void *a, const void *b, asIScriptContext *ctx, SArrayCache *cache) const
 {
@@ -1435,13 +1469,12 @@ bool CScriptArray::Equals(const void *a, const void *b, asIScriptContext *ctx, S
 			if( subTypeId & asTYPEID_OBJHANDLE )
 			{
 				r = ctx->SetObject(*((void**)a)); assert(r >= 0);
-				r = ctx->SetArgObject(0, *((void**)b)); assert(r >= 0);
 			}
 			else
 			{
 				r = ctx->SetObject((void*)a); assert(r >= 0);
-				r = ctx->SetArgObject(0, (void*)b); assert(r >= 0);
 			}
+			SCompareArg arg(ctx, cache->eqFunc, (subTypeId & asTYPEID_OBJHANDLE) ? *((void**)b) : (void*)b); // ALTERED: see SCompareArg
 
 			r = ExecuteResumed(ctx);
 
@@ -1460,13 +1493,12 @@ bool CScriptArray::Equals(const void *a, const void *b, asIScriptContext *ctx, S
 			if( subTypeId & asTYPEID_OBJHANDLE )
 			{
 				r = ctx->SetObject(*((void**)a)); assert(r >= 0);
-				r = ctx->SetArgObject(0, *((void**)b)); assert(r >= 0);
 			}
 			else
 			{
 				r = ctx->SetObject((void*)a); assert(r >= 0);
-				r = ctx->SetArgObject(0, (void*)b); assert(r >= 0);
 			}
+			SCompareArg arg(ctx, cache->cmpFunc, (subTypeId & asTYPEID_OBJHANDLE) ? *((void**)b) : (void*)b); // ALTERED: see SCompareArg
 
 			r = ExecuteResumed(ctx);
 
@@ -1802,7 +1834,7 @@ void CScriptArray::Sort(asUINT startAt, asUINT count, bool asc)
 					// TODO: Add proper error handling
 					r = cmpContext->Prepare(cmpFunc); assert(r >= 0);
 					r = cmpContext->SetObject(a); assert(r >= 0);
-					r = cmpContext->SetArgObject(0, b); assert(r >= 0);
+					SCompareArg arg(cmpContext, cmpFunc, b); // ALTERED: see SCompareArg
 					r = ExecuteResumed(cmpContext);
 
 					if( r == asEXECUTION_FINISHED )
