@@ -71,6 +71,7 @@ vcpkg_from_github(
         fix-derived-copy-constructor.patch
         fix-member-copy-temporary.patch
         fix-handle-copy-constructor.patch
+        fix-foreach-item-clean-up.patch
 )
 
 vcpkg_cmake_configure(

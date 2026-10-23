@@ -1,0 +1,72 @@
+diff --git a/sdk/angelscript/source/as_compiler.cpp b/sdk/angelscript/source/as_compiler.cpp
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -5704,6 +5704,13 @@
+ 	bool hasReturn;
+ 	asCByteCode foreachBC(engine);
+ 
++	// ALTERED: the items get a variable scope of their own inside the loop's break/continue scope, so that a break or a
++	// continue in the body destroys them, as it destroys the body's own variables. They were declared in the loop's scope,
++	// which break and continue don't clean up, while their destructors sit at the end of the body, which both jump past:
++	// a continue left the items alive to be initialized over by the next iteration and a break left them alive after the
++	// loop (a string leaked its buffer, a handle or dictionaryValue kept its object for good).
++	AddVariableScope(false, false);
++
+ 	asCArray<int> itemOffsets;
+ 	for (asUINT i = 0; i < itemCount; ++i)
+ 	{
+@@ -5765,10 +5772,19 @@
+ 		int itemOffset = itemOffsets[i - 1];
+ 		asCDataType& itemDt = itemDataTypes[i - 1];
+ 		CallDestructor(itemDt, itemOffset, IsVariableOnHeap(itemOffset), &foreachBC);
++	}
+ 
+-		// No need to deallocate here,
+-		// we'll deallocate them after the loop is done
++	// ALTERED: the items' scope ends here. The items were destroyed above (anything else declared in this scope is
++	// destroyed with them) and nothing else is allocated by the loop after this point, so the variables are deallocated
++	// with their scope.
++	for (int n = (int)variables->variables.GetLength() - 1; n >= 0; n--)
++	{
++		sVariable* v = variables->variables[n];
++		if (!itemOffsets.Exists(v->stackOffset))
++			CallDestructor(v->type, v->stackOffset, v->onHeap, &foreachBC);
++		DeallocateVariable(v->stackOffset);
+ 	}
++	RemoveVariableScope();
+ 
+ 	//-------------------------------
+ 	// Join the code pieces
+@@ -5786,10 +5802,32 @@
+ 	LineInstr(bc, node->lastChild->tokenPos);
+ 	bc->AddCode(&foreachBC);
+ 
++	// ALTERED: the items that are values on the stack are marked as destroyed at the continue label and at the condition
++	// label. Every way to the continue label (the end of the body, a continue) has destroyed them, and the condition is
++	// reached from there or, before the first iteration, from the initialization. The exception handler and the debugger
++	// decide which variables are alive by the marks before a position, skipping each block that ended before it: the mark of
++	// a break's or continue's clean up lies inside the body's statement block, and the one at the end of the body is removed
++	// with the code there when the body always ends in a break, continue or return. Without these marks an item counted as
++	// alive in opForNext, opForEnd and the clean up after the loop, and was destroyed again (or, before the first iteration,
++	// destroyed without ever having been made).
+ 	bc->Label((short)continueLabel);
++	for (asUINT i = 0; i < itemOffsets.GetLength(); ++i)
++	{
++		asCDataType& itemDt = itemDataTypes[i];
++		if ((itemDt.IsObject() || itemDt.IsFuncdef()) && !itemDt.IsObjectHandle() && !itemDt.IsReference() &&
++			!IsVariableOnHeap(itemOffsets[i]))
++			bc->ObjInfo(itemOffsets[i], asOBJ_UNINIT);
++	}
+ 	bc->AddCode(&next.bc);
+ 
+ 	bc->Label((short)conditionLabel);
++	for (asUINT i = 0; i < itemOffsets.GetLength(); ++i)
++	{
++		asCDataType& itemDt = itemDataTypes[i];
++		if ((itemDt.IsObject() || itemDt.IsFuncdef()) && !itemDt.IsObjectHandle() && !itemDt.IsReference() &&
++			!IsVariableOnHeap(itemOffsets[i]))
++			bc->ObjInfo(itemOffsets[i], asOBJ_UNINIT);
++	}
+ 	bc->AddCode(&opForEndExpr.bc);
+ 
+ 	bc->Label((short)afterLabel);
