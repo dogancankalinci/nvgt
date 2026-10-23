@@ -141,6 +141,11 @@ void main() {
 }
 ```
 
+### Limiting how long a call may run
+`call()` (and the `func(...)` shorthand) takes a third argument, max_statement_count. When it is above 0, the call is stopped once the subscript has run more statements than that, counting the statements of everything it calls, and the call fails with "maximum statement count of N exceeded" in the errors array. This keeps a subscript stuck in an endless loop from freezing the game: `func.call(args, err, 10000);`
+
+What counts as a statement depends on how the game was compiled. Running from source, and in a debug build, every statement counts. A release build is compiled without the per-statement line information this count relies on, so there it only goes up when a function starts and each time a loop goes around: a function of 20 statements without a loop counts as 1 instead of about 20, and a loop that runs 3 statements 100 times counts about 100 instead of about 600. A limit chosen while running from source therefore lets a release build run several times more code. Think of the limit as a number of loop iterations and function calls, or try it in a release build.
+
 ### Useful wrapper functions
 Finally, I'll leave you with some useful functions that show how it's very easy to wrap the calling of common functions. As I said above later I plan to make it possible to call functions with funcdefs if I am able, but we're not yet there. For now, you can use a version of these. They will not run out of the box as they are copied from stw, but they should be all the example needed.
 
