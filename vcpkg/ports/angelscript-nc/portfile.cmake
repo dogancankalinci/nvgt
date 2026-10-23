@@ -68,6 +68,7 @@ vcpkg_from_github(
         fix-jitentry-stop-position.patch
         fix-call-stack-growth.patch
         fix-unstarted-function-position.patch
+        fix-raised-handle-return.patch
 )
 
 vcpkg_cmake_configure(

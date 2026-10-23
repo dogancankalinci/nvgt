@@ -1,0 +1,75 @@
+diff --git a/sdk/angelscript/source/as_callfunc.cpp b/sdk/angelscript/source/as_callfunc.cpp
+--- a/sdk/angelscript/source/as_callfunc.cpp
++++ b/sdk/angelscript/source/as_callfunc.cpp
+@@ -927,7 +927,25 @@
+ 
+ 			context->m_regs.objectRegister = (void*)(asPWORD)retQW[0];
+ 
+-			if (sysFunc->returnAutoHandle && context->m_regs.objectRegister)
++			// ALTERED: a function that raised a script exception and still returned a handle (an array factory whose element's
++			// script constructor raised, through the nested call's TXT_EXCEPTION_IN_NESTED_CALL) gave its reference to the
++			// object register, which nothing let go of when the script caught the exception: the next call returning a handle
++			// overwrote it, and the clean up at the end of the execution went by the type of the last call. The object leaked
++			// (an array with the elements made before, whose script objects then kept the module from being discarded). It is
++			// let go here, as the value of a function returning one on the stack is destroyed below, to pretend it was never
++			// returned. With an auto handle (@+) the function gave no reference, and none is added.
++			if (context->m_status == asEXECUTION_EXCEPTION && !cppException)
++			{
++				if (context->m_regs.objectRegister && !sysFunc->returnAutoHandle)
++				{
++					if (descr->returnType.IsFuncdef())
++						reinterpret_cast<asCScriptFunction*>(context->m_regs.objectRegister)->Release();
++					else if (CastToObjectType(descr->returnType.GetTypeInfo())->beh.release)
++						engine->CallObjectMethod(context->m_regs.objectRegister, CastToObjectType(descr->returnType.GetTypeInfo())->beh.release);
++				}
++				context->m_regs.objectRegister = 0;
++			}
++			else if (sysFunc->returnAutoHandle && context->m_regs.objectRegister)
+ 			{
+ 				asASSERT(!(descr->returnType.GetTypeInfo()->flags & asOBJ_NOCOUNT));
+ 				// ALTERED: a funcdef type has no object type behaviours (CastToObjectType returns null for it), so a
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -6470,6 +6470,7 @@
+ 	asCGeneric& gen = descr->IsVariadic() ? genVar : genOrdinary;
+ 
+ 	m_callingSystemFunction = descr;
++	bool cppException = false; // ALTERED: see below
+ #ifdef AS_NO_EXCEPTIONS
+ 	func(&gen);
+ #else
+@@ -6481,6 +6482,8 @@
+ 	}
+ 	catch (...)
+ 	{
++		cppException = true;
++
+ 		// Convert the exception to a script exception so the VM can
+ 		// properly report the error to the application and then clean up
+ 		HandleAppException();
+@@ -6492,9 +6495,23 @@
+ 	m_regs.objectRegister = gen.objectRegister;
+ 	m_regs.objectType = descr->returnType.GetTypeInfo();
+ 
++	// ALTERED: a handle returned by a function that raised a script exception is let go, as CallSystemFunction does for
++	// the native calling conventions: nothing released it when the script caught the exception. With an auto handle in the
++	// generic call mode 1 the function gave no reference, and none is added.
++	if (m_status == asEXECUTION_EXCEPTION && !cppException && descr->returnType.IsObjectHandle())
++	{
++		if (m_regs.objectRegister && !(sysFunc->returnAutoHandle && m_engine->ep.genericCallMode == 1))
++		{
++			if (descr->returnType.IsFuncdef())
++				reinterpret_cast<asCScriptFunction*>(m_regs.objectRegister)->Release();
++			else if (CastToObjectType(descr->returnType.GetTypeInfo())->beh.release)
++				m_engine->CallObjectMethod(m_regs.objectRegister, CastToObjectType(descr->returnType.GetTypeInfo())->beh.release);
++		}
++		m_regs.objectRegister = 0;
++	}
+ 	// Increase the returned handle if the function has been declared with autohandles
+ 	// and the engine is not set to use the old mode for the generic calling convention
+-	if (sysFunc->returnAutoHandle && m_engine->ep.genericCallMode == 1 && m_regs.objectRegister)
++	else if (sysFunc->returnAutoHandle && m_engine->ep.genericCallMode == 1 && m_regs.objectRegister)
+ 	{
+ 		asASSERT(!(descr->returnType.GetTypeInfo()->flags & asOBJ_NOCOUNT));
+ 		// ALTERED: a funcdef handle has no addref behaviour to call, see CallSystemFunction
