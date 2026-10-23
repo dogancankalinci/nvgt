@@ -331,7 +331,7 @@ struct audio_spatialization_parameters {
 	float max_volume;
 	float rolloff;
 	float directional_attenuation_factor;
-	float cone_volume; // The gain MiniAudio's spatializer gives the sound for its cone and its listener's, before it clamps it to min_volume and max_volume (see mixer_impl::get_cone_volume()).
+	float cone_volume; // The volume the sound's cone and its listener's give it, which the attenuators clamp to min_volume and max_volume with the distance's (see mixer_impl::get_cone_volume()).
 	audio_spatializer_distance_model distance_model;
 };
 

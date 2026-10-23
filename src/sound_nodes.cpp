@@ -27,11 +27,8 @@ using namespace std;
 
 // A volume clamped to the range a script set, as MiniAudio's ma_clamp() clamps a sound's gain, the floor winning over a ceiling set below it: std::clamp() with such a range is undefined.
 static float clamp_volume(float volume, float floor, float ceiling) { return volume > ceiling? (ceiling < floor? floor : ceiling) : volume < floor? floor : volume; }
-// What an attenuator applies for its distance's volume. MiniAudio's spatializer has applied the cones' volume clamped to min_volume and max_volume, and MiniAudio clamps the distance's and the cones' volumes together; the attenuator clamping the distance's again applied max_volume twice, so a max_gain of 0.5 played a sound at the listener 12 dB down, and one already below it at half its volume. This takes the cones' clamped volume to the distance's and the cones' clamped once.
-static float volume_after_cones(float distance_volume, const audio_spatialization_parameters& params) {
-	float applied = clamp_volume(params.cone_volume, params.min_volume, params.max_volume);
-	return applied > 0? clamp_volume(distance_volume * params.cone_volume, params.min_volume, params.max_volume) / applied : 0; // Nothing passed MiniAudio's spatializer at no volume.
-}
+// What an attenuator applies for its distance's volume: that and the cones' volume clamped together to min_volume and max_volume, once, as MiniAudio's spatializer clamps them when it attenuates.
+static float volume_with_cones(float distance_volume, const audio_spatialization_parameters& params) { return clamp_volume(distance_volume * params.cone_volume, params.min_volume, params.max_volume); }
 
 // This node allows easy creation of miniaudio nodes in C++.
 static void ma_effect_node_process_pcm_frames(ma_node* pNode, const float** ppFramesIn, ma_uint32* pFrameCountIn, float** ppFramesOut, ma_uint32* pFrameCountOut) {
@@ -1333,17 +1330,15 @@ spatializer_component_node* phonon_hrtf_panner::create(audio_spatializer* spatia
 }
 
 class basic_attenuator_impl : public spatializer_component_node_impl, public virtual basic_attenuator {
-	ma_gainer gainer;
+	// The volume applied, ramped to each new one over the frames MiniAudio's spatializer smooths its gain over, as MiniAudio did the cones' when it applied them, rather than stepping at each block. Not with ma_gainer, whose stereo path in MiniAudio 0.11.25 advances its ramp once every two frames while counting each, so a block covered half its ramp and the next began with a step. Only the audio thread uses these.
+	ma_uint32 channels, ramp_frames, ramp_position = 0;
+	float ramp_from = 0, ramp_to = 0;
+	bool ramp_started = false;
+	float ramped_volume() const { return ramp_position >= ramp_frames? ramp_to : ramp_from + (ramp_to - ramp_from) * ((float)ramp_position / ramp_frames); }
 public:
-	basic_attenuator_impl(audio_spatializer* spatializer, audio_engine* e) : spatializer_component_node_impl(spatializer, e) {
-		ma_gainer_config gainer_config = ma_gainer_config_init(e->get_channels(), 1.0f);
-		if (ma_gainer_init(&gainer_config, nullptr, &gainer) != MA_SUCCESS) {
-			throw std::runtime_error("Failed to initialize gainer");
-		}
-	}
+	basic_attenuator_impl(audio_spatializer* spatializer, audio_engine* e) : spatializer_component_node_impl(spatializer, e), channels(e->get_channels()), ramp_frames(e->get_ma_engine()->gainSmoothTimeInFrames) {}
 	~basic_attenuator_impl() {
 		destroy_node();
-		ma_gainer_uninit(&gainer, nullptr);
 	}
 	void process(const float** frames_in, unsigned int* frame_count_in, float** frames_out, unsigned int* frame_count_out) override {
 		float distance = 0, volume = 0;
@@ -1355,10 +1350,22 @@ public:
 		distance = params.listener_distance - params.min_distance; // Within min_distance a sound is at full volume, as at min_distance itself, rather than attenuated by its whole distance.
 		if (distance < 0) distance = 0;
 		// A max_distance below min_distance counts as min_distance, the floor winning as for volumes: otherwise no distance was within the range, and a sound at the listener played nothing.
-		volume = volume_after_cones(distance <= (params.max_distance > params.min_distance? params.max_distance - params.min_distance : 0)? ma_volume_db_to_linear(-distance * params.rolloff * 1.75) : 0, params);
-		ma_gainer_set_master_volume(&gainer, volume);
+		volume = volume_with_cones(distance <= (params.max_distance > params.min_distance? params.max_distance - params.min_distance : 0)? ma_volume_db_to_linear(-distance * params.rolloff * 1.75) : 0, params);
+		if (!ramp_started) { // The first volume at once, as for a sound starting.
+			ramp_from = ramp_to = volume;
+			ramp_position = ramp_frames;
+			ramp_started = true;
+		} else if (volume != ramp_to) {
+			ramp_from = ramped_volume();
+			ramp_to = volume;
+			ramp_position = 0;
+		}
 		if (frameCount > *frame_count_in) frameCount = *frame_count_in;
-		ma_gainer_process_pcm_frames(&gainer, frames_out[0], frames_in[0], frameCount);
+		for (ma_uint32 frame = 0; frame < frameCount; frame++) {
+			float gain = ramped_volume();
+			if (ramp_position < ramp_frames) ramp_position++;
+			for (ma_uint32 channel = 0; channel < channels; channel++) frames_out[0][frame * channels + channel] = frames_in[0][frame * channels + channel] * gain;
+		}
 		return;
 		fail:
 			ma_copy_pcm_frames(frames_out[0], frames_in[0], *frame_count_in, ma_format_f32, get_engine()->get_channels());
@@ -1423,7 +1430,7 @@ public:
 		else if (std::isinf(distance)) distance = std::numeric_limits<float>::max(); // Positions too far apart for a float: as far as one goes.
 		sourcePos = {distance, 0, 0};
 		listenerPos = {0, 0, 0};
-		iplEffectParams.distanceAttenuation = params.listener_distance <= (params.max_distance > params.min_distance? params.max_distance : params.min_distance)? volume_after_cones(iplDistanceAttenuationCalculate(g_phonon_context, sourcePos, listenerPos, &distanceModel), params) : volume_after_cones(0, params);
+		iplEffectParams.distanceAttenuation = params.listener_distance <= (params.max_distance > params.min_distance? params.max_distance : params.min_distance)? volume_with_cones(iplDistanceAttenuationCalculate(g_phonon_context, sourcePos, listenerPos, &distanceModel), params) : volume_with_cones(0, params);
 		iplAirAbsorptionCalculate(g_phonon_context, sourcePos, listenerPos, &airAbsorptionModel, iplEffectParams.airAbsorption);
 		while (totalFramesProcessed < totalFramesToProcess) {
 			ma_uint32 framesToProcessThisIteration = totalFramesToProcess - totalFramesProcessed;

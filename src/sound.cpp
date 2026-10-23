@@ -806,13 +806,23 @@ public:
 			ma_engine_listener_set_velocity(&*engine, index, velocity.x, velocity.y, velocity.z);
 	}
 	reactphysics3d::Vector3 get_listener_velocity(unsigned int index) const override { return engine ? ma_vec3_to_rp_vec3(ma_engine_listener_get_velocity(&*engine, index)) : reactphysics3d::Vector3(); }
+	// A listener's cone, which NVGT's attenuators apply (see mixer_impl::get_cone_volume()), MiniAudio's own left at its default, which applies nothing.
+	struct listener_cone {
+		std::atomic<float> inner{6.283185f}, outer{6.283185f}, outer_gain{0};
+	} listener_cones[MA_ENGINE_MAX_LISTENERS];
 	void set_listener_cone(unsigned int index, float inner_radians, float outer_radians, float outer_gain) override {
-		if (engine && finite_values({inner_radians, outer_radians, outer_gain}))
-			ma_engine_listener_set_cone(&*engine, index, inner_radians, outer_radians, outer_gain);
+		if (engine && index < ma_engine_get_listener_count(&*engine) && finite_values({inner_radians, outer_radians, outer_gain})) {
+			listener_cones[index].inner = inner_radians;
+			listener_cones[index].outer = outer_radians;
+			listener_cones[index].outer_gain = outer_gain;
+		}
 	}
 	void get_listener_cone(unsigned int index, float *inner_radians, float *outer_radians, float *outer_gain) const override {
-		if (engine)
-			ma_engine_listener_get_cone(&*engine, index, inner_radians, outer_radians, outer_gain);
+		if (!engine) return;
+		bool listening = index < ma_engine_get_listener_count(&*engine); // MiniAudio gave 0 for a listener it doesn't have.
+		if (inner_radians) *inner_radians = listening? listener_cones[index].inner.load() : 0;
+		if (outer_radians) *outer_radians = listening? listener_cones[index].outer.load() : 0;
+		if (outer_gain) *outer_gain = listening? listener_cones[index].outer_gain.load() : 0;
 	}
 	void set_listener_world_up(unsigned int index, float x, float y, float z) override {
 		if (engine && finite_values({x, y, z}))
@@ -2390,6 +2400,9 @@ public:
 		return effects_chain;
 	}
 	audio_node_chain* get_internal_node_chain() override { return node_chain; }
+	// The cone and the gain range the script set, which NVGT's attenuators apply with the distance's volume, clamping the two together once (see get_cone_volume()). MiniAudio's own are left at their defaults, which apply nothing: it applied the cone's volume clamped to the gain range, smoothed, and the attenuators clamping again applied max_gain twice, while dividing MiniAudio's part back out couldn't follow its smoothing.
+	std::atomic<float> cone_inner{6.283185f}, cone_outer{6.283185f}, cone_outer_gain{0}, min_gain{0}, max_gain{1};
+	void reset_cone_and_gain_range() { cone_inner = 6.283185f; cone_outer = 6.283185f; cone_outer_gain = 0; min_gain = 0; max_gain = 1; } // MiniAudio's defaults, which a newly made sound had.
 	bool last_parameters_valid = false; // What get_spatialization_parameters() last answered; only the audio thread reads and writes it.
 	bool get_spatialization_parameters(audio_spatialization_parameters& params) override {
 		// The audio thread mustn't wait for the lock, which a script thread holds briefly, as set_position_3d() does at each call. While it is busy the spatializer keeps the parameters it was last given, which params still holds, rather than playing that block unattenuated and unpanned, as answering that there were none did.
@@ -2426,6 +2439,8 @@ public:
 		ma_engine* e = get_engine()->get_ma_engine();
 		ma_uint32 listener = ma_sound_get_listener_index(&*snd);
 		if (listener >= ma_engine_get_listener_count(e)) return 1;
+		float listener_inner, listener_outer, listener_outer_gain;
+		get_engine()->get_listener_cone(listener, &listener_inner, &listener_outer, &listener_outer_gain);
 		const ma_spatializer* spatializer_of_sound = &snd->engineNode.spatializer;
 		const ma_spatializer_listener* l = &e->listeners[listener];
 		ma_vec3f position, direction;
@@ -2433,10 +2448,8 @@ public:
 		float distance = (float)sqrt((double)(position.x * position.x + position.y * position.y + position.z * position.z)); // As MiniAudio's ma_vec3f_len().
 		if (!(distance > 0.001f)) return 1; // As MiniAudio, which has no direction to the listener then, nor for a distance that isn't a number, as positions near the float's limit give.
 		ma_vec3f to_sound{position.x / distance, position.y / distance, position.z / distance}, from_sound{-to_sound.x, -to_sound.y, -to_sound.z};
-		float inner, outer, outer_gain;
-		ma_spatializer_get_cone(spatializer_of_sound, &inner, &outer, &outer_gain);
-		float gain = angular_gain(direction, from_sound, inner, outer, outer_gain);
-		if (l->config.coneInnerAngleInRadians < 6.283185f) gain *= angular_gain(l->config.handedness == ma_handedness_right? ma_vec3f{0, 0, -1} : ma_vec3f{0, 0, 1}, to_sound, l->config.coneInnerAngleInRadians, l->config.coneOuterAngleInRadians, l->config.coneOuterGain);
+		float gain = angular_gain(direction, from_sound, cone_inner.load(std::memory_order_relaxed), cone_outer.load(std::memory_order_relaxed), cone_outer_gain.load(std::memory_order_relaxed));
+		if (listener_inner < 6.283185f) gain *= angular_gain(l->config.handedness == ma_handedness_right? ma_vec3f{0, 0, -1} : ma_vec3f{0, 0, 1}, to_sound, listener_inner, listener_outer, listener_outer_gain);
 		return gain;
 	}
 	// MiniAudio's ma_calculate_angular_gain(), which it keeps to itself.
@@ -2624,17 +2637,17 @@ public:
 	float get_rolloff() const override { return get_spatializer()->get_rolloff(); }
 	void set_min_gain(float gain) override {
 		if (snd && finite_values({gain}))
-			ma_sound_set_min_gain(&*snd, gain);
+			min_gain = gain;
 	}
 	float get_min_gain() const override {
-		return snd ? ma_sound_get_min_gain(&*snd) : NAN;
+		return snd ? min_gain.load() : NAN;
 	}
 	void set_max_gain(float gain) override {
 		if (snd && finite_values({gain}))
-			ma_sound_set_max_gain(&*snd, gain);
+			max_gain = gain;
 	}
 	float get_max_gain() const override {
-		return snd ? ma_sound_get_max_gain(&*snd) : NAN;
+		return snd ? max_gain.load() : NAN;
 	}
 	void set_min_distance(float distance) override {
 		if (snd && finite_values({distance}))
@@ -2651,13 +2664,18 @@ public:
 		return snd ? ma_sound_get_max_distance(&*snd) : NAN;
 	}
 	void set_cone(float inner_radians, float outer_radians, float outer_gain) override {
-		if (snd && finite_values({inner_radians, outer_radians, outer_gain}))
-			ma_sound_set_cone(&*snd, inner_radians, outer_radians, outer_gain);
+		if (snd && finite_values({inner_radians, outer_radians, outer_gain})) {
+			cone_inner = inner_radians;
+			cone_outer = outer_radians;
+			cone_outer_gain = outer_gain;
+		}
 	}
 	void get_cone(float *inner_radians, float *outer_radians, float *outer_gain) const override {
-		if (snd)
-			ma_sound_get_cone(&*snd, inner_radians, outer_radians, outer_gain);
-		else {
+		if (snd) {
+			if (inner_radians) *inner_radians = cone_inner;
+			if (outer_radians) *outer_radians = cone_outer;
+			if (outer_gain) *outer_gain = cone_outer_gain;
+		} else {
 			if (inner_radians)
 				*inner_radians = NAN;
 			if (outer_radians)
@@ -2874,6 +2892,7 @@ class sound_impl final : public mixer_impl, public virtual sound {
 		hold_rate_of(&*made); // Before it is attached, by postload().
 		unique_lock<mutex> lock(spatialization_params_mutex);
 		snd = std::move(made);
+		reset_cone_and_gain_range(); // As a sound loaded anew had MiniAudio's defaults.
 	}
 	inline void postload(const string& filename, bool async_load = false) {
 		loaded_filename = filename;
