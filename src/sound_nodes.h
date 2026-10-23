@@ -306,6 +306,9 @@ class plugin_node : public virtual audio_node {
 public:
 	virtual audio_plugin_node_interface* get_plugin_interface() const = 0;
 	virtual void process(const float** frames_in, unsigned int* frame_count_in, float** frames_out, unsigned int* frame_count_out) = 0;
+	// The script type of the plugin's node type this node was made as, 0 when unknown: every plugin's node types are this one class, which a cast tells apart only by this.
+	virtual int get_script_type_id() const = 0;
+	virtual void set_script_type_id(int type_id) = 0;
 	static plugin_node* create(audio_plugin_node_interface* impl, unsigned char input_bus_count, unsigned char output_bus_count, unsigned int flags, audio_engine* engine);
 };
 

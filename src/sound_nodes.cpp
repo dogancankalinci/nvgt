@@ -847,6 +847,7 @@ class plugin_node_impl : public audio_node_impl, public virtual plugin_node {
 	unique_ptr<ma_plugin_node> pn;
 	audio_plugin_node_interface* impl;
 	bool release_impl; // The plugin asked for release() (see NVGT_AUDIO_PLUGIN_NODE_RELEASE): an implementation built before it existed has no such function to call.
+	std::atomic<int> script_type_id{0};
 	ma_node_vtable vtable; // The user should be able to configure custom settings.
 	public:
 	plugin_node_impl(audio_plugin_node_interface* impl, unsigned char input_bus_count, unsigned char output_bus_count, unsigned int flags, audio_engine* engine) : pn(make_unique<ma_plugin_node>()), audio_node_impl(nullptr, engine), impl(impl), release_impl((flags & NVGT_AUDIO_PLUGIN_NODE_RELEASE) != 0) {
@@ -869,6 +870,8 @@ class plugin_node_impl : public audio_node_impl, public virtual plugin_node {
 		if (impl && release_impl) impl->release(); // Uninitialized, the node is read no more, so the plugin may free its implementation, which it otherwise had no way to know.
 	}
 	audio_plugin_node_interface* get_plugin_interface() const override { return impl; }
+	int get_script_type_id() const override { return script_type_id; }
+	void set_script_type_id(int type_id) override { script_type_id = type_id; }
 	virtual void process(const float** frames_in, unsigned int* frame_count_in, float** frames_out, unsigned int* frame_count_out) override {
 		if (impl) impl->process(impl, frames_in, frame_count_in, frames_out, frame_count_out);
 	}

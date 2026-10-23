@@ -4228,7 +4228,7 @@ template < class T > inline void RegisterSoundsystemAudioNode(asIScriptEngine *e
 	engine->RegisterObjectMethod(type.c_str(), "bool set_time(uint64 local_time)", asFUNCTION((virtual_call < T, &T::set_time, bool, unsigned long long >)), asCALL_CDECL_OBJFIRST);
 	if constexpr (!std::is_same < T, audio_node >::value) {
 		engine->RegisterObjectMethod(type.c_str(), "audio_node@ opImplCast()", asFUNCTION((op_cast < T, audio_node >)), asCALL_CDECL_OBJFIRST);
-		engine->RegisterObjectMethod("audio_node", Poco::format("%s@ opCast()", type).c_str(), asFUNCTION((op_cast < audio_node, T >)), asCALL_CDECL_OBJFIRST);
+		if constexpr (!std::is_same < T, plugin_node >::value) engine->RegisterObjectMethod("audio_node", Poco::format("%s@ opCast()", type).c_str(), asFUNCTION((op_cast < audio_node, T >)), asCALL_CDECL_OBJFIRST); // A plugin's node types are cast by plugin_node_cast().
 	}
 }
 template <class T> inline void RegisterSoundsystemDataSource(asIScriptEngine *engine, const std::string &type) {
@@ -4798,6 +4798,38 @@ void RegisterSoundsystem(asIScriptEngine *engine) {
 	engine->RegisterGlobalFunction("bool get_sound_3d_attenuator_enabled(int attenuator_id)", asFUNCTION(get_audio_attenuator_enabled), asCALL_CDECL);
 	engine->RegisterGlobalFunction("bool sound_set_spatialization(int panner, int attenuator, bool disable_previous = false, bool set_default = true)", asFUNCTION(sound_set_spatialization), asCALL_CDECL);
 }
-void nvgt_audio_plugin_node_register(const string& nodename) { RegisterSoundsystemAudioNode<plugin_node>(g_ScriptEngine, nodename); }
-plugin_node* nvgt_audio_plugin_node_create(audio_plugin_node_interface* impl, unsigned char input_bus_count, unsigned char output_bus_count, unsigned int flags, audio_engine* engine) { return plugin_node::create(impl, input_bus_count, output_bus_count, flags, engine); }
+// The script types plugins registered as audio node types. Every plugin node is one C++ class, plugin_node_impl, so a dynamic_cast took a node of any of them for any other, and a cast to one plugin's type handed a node of another plugin's to that plugin's methods, which then took its implementation for their own.
+static std::mutex g_plugin_node_types_mutex;
+static std::unordered_set<int> g_plugin_node_types;
+// The cast from audio_node to a plugin's node type: null for a node made as another of those types, as known from the call that made it (see nvgt_audio_plugin_node_create()); a node whose type isn't known is cast as before.
+static void plugin_node_cast(asIScriptGeneric* gen) {
+	audio_node* node = (audio_node*)gen->GetObject();
+	plugin_node* result = node? dynamic_cast<plugin_node*>(node) : nullptr;
+	if (result) {
+		int made_as = result->get_script_type_id();
+		asITypeInfo* target = gen->GetEngine()->GetTypeInfoById(gen->GetFunction()->GetReturnTypeId());
+		if (made_as && target && target->GetTypeId() != made_as) result = nullptr;
+	}
+	gen->SetReturnObject(result);
+}
+void nvgt_audio_plugin_node_register(const string& nodename) {
+	RegisterSoundsystemAudioNode<plugin_node>(g_ScriptEngine, nodename);
+	g_ScriptEngine->RegisterObjectMethod("audio_node", Poco::format("%s@ opCast()", nodename).c_str(), asFUNCTION(plugin_node_cast), asCALL_GENERIC);
+	if (asITypeInfo* type = g_ScriptEngine->GetTypeInfoByName(nodename.c_str())) {
+		std::lock_guard<std::mutex> lock(g_plugin_node_types_mutex);
+		g_plugin_node_types.insert(type->GetTypeId());
+	}
+}
+// The node is made as the plugin's node type the script function calling the plugin returns, as its factory does; a node made otherwise, as outside a call from a script, has no type known.
+plugin_node* nvgt_audio_plugin_node_create(audio_plugin_node_interface* impl, unsigned char input_bus_count, unsigned char output_bus_count, unsigned int flags, audio_engine* engine) {
+	plugin_node* node = plugin_node::create(impl, input_bus_count, output_bus_count, flags, engine);
+	asIScriptContext* ctx = asGetActiveContext();
+	asIScriptFunction* calling = ctx? ctx->GetSystemFunction() : nullptr;
+	asITypeInfo* type = calling? g_ScriptEngine->GetTypeInfoById(calling->GetReturnTypeId()) : nullptr;
+	if (node && type) {
+		std::lock_guard<std::mutex> lock(g_plugin_node_types_mutex);
+		if (g_plugin_node_types.count(type->GetTypeId())) node->set_script_type_id(type->GetTypeId());
+	}
+	return node;
+}
 audio_plugin_node_interface* nvgt_audio_plugin_node_get(plugin_node* node) { return node->get_plugin_interface(); }
