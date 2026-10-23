@@ -10,6 +10,7 @@
  * 3. This notice may not be removed or altered from any source distribution.
 */
 
+#include <functional>
 #include <cmath>
 #include <exception>
 #include <angelscript.h> // asAtomic
@@ -414,6 +415,8 @@ void set_audio_attenuator_enabled(int id, bool enabled);
 bool get_audio_panner_enabled(int id);
 bool get_audio_attenuator_enabled(int id);
 bool sound_set_spatialization(int panner, int attenuator, bool disable_previous = false, bool set_default = true);
+// Whether audio from the given mixer reaches a mixer the test is true for, through mixers' parents and the reverb3d each sends to, which goes into its own mixer: a link that would close such a loop is refused, as the loop never reaches the engine, its reverb hears only silence, and the references around it keep it all alive, running on the audio thread for good.
+bool mixer_reaches(mixer* from, const std::function<bool(mixer*)>& is_target);
 
 
 extern int g_audio_basic_panner;

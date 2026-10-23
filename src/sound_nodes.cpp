@@ -764,6 +764,10 @@ public:
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return;
 		}
+		if (mix && mixer_reaches(mix, [this](mixer* m) { return m->get_reverb3d_sent_to() == static_cast<reverb3d*>(this); })) { // Not into a mixer that sends to this reverb3d, nor one that goes into such a mixer (see mixer_reaches()).
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return;
+		}
 		if (output_mixer) {
 			if (reverb) reverb->detach_output_bus(0);
 			output_mixer->release();
@@ -820,6 +824,19 @@ public:
 	}
 };
 // Without a destination, a new mixer of the reverb3d's own engine, as a reverb3d of the default engine always got one; a mixer of another engine is refused, as both engines' audio threads would read the reverb3d then.
+bool mixer_reaches(mixer* from, const std::function<bool(mixer*)>& is_target) {
+	std::vector<mixer*> pending{from};
+	std::unordered_set<mixer*> seen;
+	while (!pending.empty() && seen.size() < 100000) {
+		mixer* m = pending.back();
+		pending.pop_back();
+		if (!m || !seen.insert(m).second) continue;
+		if (is_target(m)) return true;
+		pending.push_back(m->get_mixer());
+		if (reverb3d* verb = m->get_reverb3d_sent_to()) pending.push_back(verb->get_mixer());
+	}
+	return false;
+}
 reverb3d* reverb3d::create(audio_node* reverb, mixer* destination, audio_engine* e) {
 	if (!e) throw std::runtime_error("no audio engine available");
 	if (destination && destination->get_engine() != e) throw std::runtime_error("the destination mixer belongs to another audio engine");
@@ -1126,6 +1143,10 @@ public:
 	void set_reverb3d(reverb3d* new_reverb, audio_spatializer_reverb3d_placement placement = postpan) override {
 		rewire_scope scope(*this);
 		if (new_reverb && new_reverb->get_engine() != get_engine()) { // Another engine's audio thread reads that reverb3d, which two threads can't read at once.
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return;
+		}
+		if (new_reverb && new_reverb != reverb && attached_mixer && new_reverb->get_mixer() && mixer_reaches(new_reverb->get_mixer(), [this](mixer* m) { return m == attached_mixer; })) { // Not a reverb3d whose mixer is this one, or goes into it (see mixer_reaches()).
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return;
 		}

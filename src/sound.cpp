@@ -2558,12 +2558,10 @@ public:
 		if (mix == parent_mixer)
 			return true; // Already where it was asked to go.
 		if (mix && mix->get_engine() != get_engine()) return false; // Another engine's mixer is in that engine's graph, which would play this one's sound.
-		// Not into itself, nor into a mixer that already goes into this one: that loop never reaches the engine, and its references to each other keep both alive.
-		for (mixer *above = mix; above; above = above->get_mixer()) {
-			if (above == static_cast<mixer*>(this)) {
-				g_soundsystem_last_error = MA_INVALID_ARGS;
-				return false;
-			}
+		// Not into itself, nor into a mixer that already goes into this one, through parents or a reverb3d's send: that loop never reaches the engine, and its references to each other keep it all alive.
+		if (mix && mixer_reaches(mix, [this](mixer* m) { return m == static_cast<mixer*>(this); })) {
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return false;
 		}
 		audio_node *target = mix? mix : get_engine()->get_endpoint();
 		node_chain->set_endpoint(target);
@@ -2643,6 +2641,7 @@ public:
 	void set_reverb3d(reverb3d* verb) override { get_spatializer()->set_reverb3d(verb); }
 	void set_reverb3d_at(reverb3d* verb, audio_spatializer_reverb3d_placement placement) override { get_spatializer()->set_reverb3d(verb, placement); }
 	reverb3d* get_reverb3d() const override { return get_spatializer()->get_reverb3d(); }
+	reverb3d* get_reverb3d_sent_to() const override { return spatializer? spatializer->get_reverb3d() : nullptr; }
 	splitter_node* get_reverb3d_attachment() const override { return get_spatializer()->get_reverb3d_attachment(); }
 	audio_spatializer_reverb3d_placement get_reverb3d_placement() const override { return get_spatializer()->get_reverb3d_placement(); }
 	audio_node_chain* get_effects_chain() override {
