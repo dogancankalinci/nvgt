@@ -60,6 +60,7 @@ vcpkg_from_github(
         fix-exception-position.patch
         fix-exception-frame-stale.patch
         fix-cleanup-block-tail.patch
+        fix-exception-line.patch
 )
 
 vcpkg_cmake_configure(

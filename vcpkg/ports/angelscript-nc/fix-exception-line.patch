@@ -1,0 +1,42 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -2075,6 +2075,14 @@
+ 		func = m_currentFunction;
+ 		if( func && func->scriptData == 0 ) return 0;
+ 		bytePos = m_regs.programPointer;
++
++		// ALTERED: while the context has the exception, in the frame it was raised in, the position inside the instruction
++		// that raised it (see SetInternalException), as GetExceptionLineNumber gives: a call that raised it with the program
++		// pointer past itself (a null script class handle or function handle), or a registered function's call once it
++		// returned, was given the line of the statement after it (the exception callback's call stack, the call stack read
++		// after Execute returned asEXECUTION_EXCEPTION)
++		if( func && bytePos && (m_status == asEXECUTION_EXCEPTION || (m_status == asEXECUTION_ABORTED && m_abortedAfterException)) && IsExceptionFrame() )
++			bytePos = func->scriptData->byteCode.AddressOf() + m_exceptionFramePos;
+ 	}
+ 	else
+ 	{
+@@ -5301,7 +5309,10 @@
+ 
+ 	if( m_currentFunction->scriptData )
+ 	{
+-		m_exceptionLine    = m_currentFunction->GetLineNumber(int(m_regs.programPointer - m_currentFunction->scriptData->byteCode.AddressOf()), &m_exceptionSectionIdx);
++		// ALTERED: the line of the call that raised it also for a call that moved the program pointer past itself first
++		// (afterCall, see below), where the line of the statement after it was given: a method call on a null script class
++		// handle or a call through a null function handle was reported at the next line
++		m_exceptionLine    = m_currentFunction->GetLineNumber(int(m_regs.programPointer - m_currentFunction->scriptData->byteCode.AddressOf()) - (afterCall ? 1 : 0), &m_exceptionSectionIdx);
+ 		m_exceptionColumn  = m_exceptionLine >> 20;
+ 		m_exceptionLine   &= 0xFFFFF;
+ 	}
+diff --git a/sdk/tests/test_feature/source/test_compiler.cpp b/sdk/tests/test_feature/source/test_compiler.cpp
+--- a/sdk/tests/test_feature/source/test_compiler.cpp
++++ b/sdk/tests/test_feature/source/test_compiler.cpp
+@@ -3096,7 +3096,7 @@
+ 			TEST_FAILED;
+ 
+ 		if( bout.buffer != "test (12, 3) : Error   : Failed to initialize global variable 'Dummy'\n"
+-		                   "test (10, 0) : Info    : Exception 'Unbound function called' in 'T::T()'\n" )
++		                   "test (9, 0) : Info    : Exception 'Unbound function called' in 'T::T()'\n" ) // ALTERED: the line of the call to the unbound import, not the line after it
+ 		{
+ 			PRINTF("%s", bout.buffer.c_str());
+ 			TEST_FAILED;
