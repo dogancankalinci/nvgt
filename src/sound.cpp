@@ -2431,7 +2431,7 @@ public:
 		ma_vec3f position, direction;
 		ma_spatializer_get_relative_position_and_direction(spatializer_of_sound, l, &position, &direction);
 		float distance = (float)sqrt((double)(position.x * position.x + position.y * position.y + position.z * position.z)); // As MiniAudio's ma_vec3f_len().
-		if (distance <= 0.001f) return 1; // As MiniAudio, which has no direction to the listener then.
+		if (!(distance > 0.001f)) return 1; // As MiniAudio, which has no direction to the listener then, nor for a distance that isn't a number, as positions near the float's limit give.
 		ma_vec3f to_sound{position.x / distance, position.y / distance, position.z / distance}, from_sound{-to_sound.x, -to_sound.y, -to_sound.z};
 		float inner, outer, outer_gain;
 		ma_spatializer_get_cone(spatializer_of_sound, &inner, &outer, &outer_gain);
