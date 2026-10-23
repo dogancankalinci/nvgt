@@ -11,4 +11,4 @@ Creates a new link and adds it to the audio form.
 int: the control index of the new link, or -1 if there was an error. To get error information, see `audio_form::get_last_error();`.
 
 ## Remarks:
-The link control is similar to buttons, but this opens the given link when pressed. This also speaks the error message if the link cannot be opened or the link isn't an actual URL. If you want the maximum possible customization, use `audio_form::create_button` method instead.
+The link control is similar to buttons, but this opens the given link when pressed. A web address without a scheme, such as nvgt.dev, is opened as https, and an address with a scheme, such as https://, mailto: or steam://, is opened as given. This also speaks the error message if the link cannot be opened or the link isn't an actual URL. If you want the maximum possible customization, use `audio_form::create_button` method instead.

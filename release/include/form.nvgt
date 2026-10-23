@@ -3107,13 +3107,13 @@ class control {
 				speak("Error, link url is empty!");
 				return;
 			}
-			// A heredoc string, as the escapes the pattern needs aren't valid in an ordinary one; there it matched nothing, and the inverted test let every text through. The scheme is matched in any case, and the host can be a name or an IPv4 address.
-			if (!regexp_match(link_url, """(?i)^(https?://)?(?:[a-z0-9_-]+(?::[a-z0-9._%+-]+)?@)?(?:[a-z0-9.-]+\.[a-z]{2,}|\d{1,3}(?:\.\d{1,3}){3})(:\d{1,5})?(/[^\s?#]*)?(\?[^\s#]*)?(#[^\s]*)?$""")) {
+			// A web address without a scheme, a host name or IPv4 address with an optional port, path, query and fragment, is opened as https, as without one it would be taken for the name of a file; any other address with a scheme, as mailto: or steam://, is opened as given, as every link was before its check worked. Heredoc strings, as the escapes the patterns need aren't valid in ordinary ones; regexp_match() matches the whole text.
+			string url = link_url;
+			if (regexp_match(url, """(?i)(?:[a-z0-9.-]+\.[a-z]{2,}|\d{1,3}(?:\.\d{1,3}){3})(:\d{1,5})?(/[^\s?#]*)?(\?[^\s#]*)?(#[^\s]*)?""")) url = "https://" + url;
+			else if (!regexp_match(url, """(?i)[a-z][a-z0-9+.-]*:\S+""")) {
 				speak("Invalid url (%0)".format(link_url));
 				return;
 			}
-			string url = link_url;
-			if (!regexp_match(url, """(?i)https?://.*""")) url = "https://" + url; // An address without a scheme would be taken for the name of a file. regexp_match() matches the whole text.
 			bool open_response = urlopen(url);
 			speak(open_response ? "Opening %0".format(link_url) : "Couldn't open the url. Unexpected error occured!");
 		}
