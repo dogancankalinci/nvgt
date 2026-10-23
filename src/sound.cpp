@@ -2305,16 +2305,19 @@ struct chain_view {
 	std::atomic<ma_uint64>& length_of(size_t index) { return *reinterpret_cast<std::atomic<ma_uint64>*>(&links[index].second); }
 	// A source of unknown length that was played through is as long as its cursor reached at its end, which the cursor and length count from then on, rather than as nothing, so the position went back once the chain passed it, and seeks past it were refused for good.
 	std::atomic<size_t> last_on{~(size_t)0}; // The link the head was last seen on, none before it was on one.
-	void learn_lengths(bool chain_ended) {
+	void learn_lengths(bool chain_ended, bool was_on_one) {
 		ma_data_source* current = ma_data_source_get_current(head);
 		size_t on = 0, passed;
 		while (on < links.size() && links[on].first != current) on++;
 		if (on < links.size()) {
 			passed = chain_ended? on + 1 : on; // The links before the one it is on, and that one once the chain ended on it, as MiniAudio leaves a chain's last source current: past the last, it was never learned.
 			last_on.store(on, std::memory_order_relaxed);
+		} else if (!current && was_on_one && !links.empty()) { // Put on no source by this read, which only an empty pass of the last source, linked to itself, does, once every source from the one it was on played through: all were passed, the last included, rather than only up to the one it was on as the read began. MiniAudio ends such a read with success for the frames it gave.
+			passed = links.size();
+			last_on.store(links.size() - 1, std::memory_order_relaxed);
 		} else {
 			size_t last = last_on.load(std::memory_order_relaxed);
-			passed = last == ~(size_t)0? 0 : last + 1; // On no source: the chain ended after the one it was last on, or, for a head opened on no source, has read none, whose cursors at 0 were learned as empty sources.
+			passed = last == ~(size_t)0? 0 : last + 1; // Put on no source or another from outside: passed up to the one it was last on, and none before it was on one, whose cursors at 0 would be learned as empty sources.
 		}
 		for (size_t index = 0; index < passed; index++) {
 			ma_uint64 cursor = 0;
@@ -2330,8 +2333,9 @@ struct chain_view {
 };
 static ma_result chain_view_read(ma_data_source* source, void* frames_out, ma_uint64 frame_count, ma_uint64* frames_read) {
 	chain_view* view = (chain_view*)source;
+	bool was_on_one = ma_data_source_get_current(view->head) != nullptr;
 	ma_result result = ma_data_source_read_pcm_frames(view->head, frames_out, frame_count, frames_read);
-	view->learn_lengths(result == MA_AT_END);
+	view->learn_lengths(result == MA_AT_END, was_on_one);
 	return result;
 }
 static ma_result chain_view_seek(ma_data_source* source, ma_uint64 frame) {
@@ -2361,7 +2365,7 @@ static ma_result chain_view_get_cursor(ma_data_source* source, ma_uint64* cursor
 		ma_uint64 length = view->length_of(index).load(std::memory_order_relaxed);
 		if (length != chain_view::unknown) offset += length; // One not yet known is ahead of the current source, which passing it learns.
 	}
-	// On no source: past the one it was last on, as once an empty pass ended it, or at the start for a head opened on none, rather than past every source.
+	// On no source: past the one it was last on, the last once an empty pass ended the chain, or at the start before it was on one, rather than past every source.
 	offset = 0;
 	size_t last = view->last_on.load(std::memory_order_relaxed);
 	for (size_t index = 0; last != ~(size_t)0 && index <= last && index < view->links.size(); index++) {
