@@ -2261,6 +2261,8 @@ public:
 		node = (ma_node_base *)&*snd;
 		set_max_distance(70);
 		ma_sound_group_set_rolloff(&*snd, 0); // Our own spatializer controls attenuation.
+		// With MiniAudio's attenuation linear, which a rolloff of 0 leaves at 1: its default inverse model divided 0 by 0 for a min_distance of 0, and the NaN, clamped to the maximum gain, turned the cones off and raised the sound by a maximum gain above 1.
+		ma_sound_group_set_attenuation_model(&*snd, ma_attenuation_model_linear);
 		ma_sound_group_set_directional_attenuation_factor(&*snd, 0); // Our spatializer also controls panning.
 		attach_output_bus(0, node_chain, 0);
 		play();
@@ -2849,6 +2851,7 @@ class sound_impl final : public mixer_impl, public virtual sound {
 		set_spatialization_enabled(false);                  // The user must call set_position_3d or manually enable spatialization or else their ambience and UI sounds will be spatialized.
 		set_max_distance(70);
 		ma_sound_set_rolloff(&*snd, 0);
+		ma_sound_set_attenuation_model(&*snd, ma_attenuation_model_linear); // As for a mixer.
 		ma_sound_set_directional_attenuation_factor(&*snd, 0);
 		attach_output_bus(0, node_chain, 0);
 		// If we didn't load our sound asynchronously or if we streamed it, then we simply mark it as load_completed or we'll end up with a deadlock at destruction time.
