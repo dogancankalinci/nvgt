@@ -1,0 +1,137 @@
+diff --git a/sdk/angelscript/source/as_compiler.cpp b/sdk/angelscript/source/as_compiler.cpp
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -181,7 +181,13 @@
+ 			asCScriptFunction* copyfunc = engine->scriptFunctions[outFunc->objectType->derivedFrom->beh.copyconstruct];
+ 			if (copyfunc->parameterTypes[0].IsObjectHandle())
+ 			{
+-				int varOffset = AllocateVariable(copyfunc->parameterTypes[0], true);
++				// ALTERED: a base copy constructor taking a reference to a handle, B(B@ &in other), is given the address of the
++				// handle variable (GETREF), which is released after the call; it was given the handle itself (GETOBJ, as for a
++				// handle passed by value), which it took for the address of a handle. The variable is a handle, not a reference.
++				bool byRef = copyfunc->parameterTypes[0].IsReference();
++				asCDataType handleType = copyfunc->parameterTypes[0];
++				handleType.MakeReference(false);
++				int varOffset = AllocateVariable(handleType, true);
+ 				CompileVariableAccess("other", "", &ctx, 0);
+ 				ctx.bc.Instr(asBC_RDSPtr);
+ 				ctx.bc.InstrWORD(asBC_PSF, (short)varOffset);
+@@ -190,8 +196,10 @@
+ 				ctx.bc.InstrWORD(asBC_VAR, (short)varOffset);
+ 				CompileVariableAccess("this", "", &ctx, 0);
+ 				ctx.bc.Instr(asBC_RDSPtr);
+-				ctx.bc.InstrWORD(asBC_GETOBJ, AS_PTR_SIZE);
++				ctx.bc.InstrWORD(byRef ? asBC_GETREF : asBC_GETOBJ, AS_PTR_SIZE);
+ 				ctx.bc.Call(asBC_CALL, outFunc->objectType->derivedFrom->beh.copyconstruct, 2 * AS_PTR_SIZE, 0);
++				if (byRef)
++					CallDestructor(handleType, varOffset, true, &ctx.bc);
+ 				ctx.bc.OptimizeLocally(tempVariableOffsets);
+ 			}
+ 			else
+@@ -1025,17 +1033,30 @@
+ 			// the object was freed while still in use. Give the call a reference of its own, as for any handle argument: copy
+ 			// the pointer into a temporary handle (adding a reference), then move it from there onto the stack.
+ 			asCScriptFunction *copyFunc = engine->scriptFunctions[func];
+-			if( copyFunc && copyFunc->parameterTypes.GetLength() == 1 &&
+-				copyFunc->parameterTypes[0].IsObjectHandle() && !copyFunc->parameterTypes[0].IsReference() )
+-			{
+-				int tempHandle = AllocateVariable(copyFunc->parameterTypes[0], true);
++			// ALTERED: the same for a copy constructor taking a reference to a handle, C(C@ &in other), which the builder
++			// accepts as the copy constructor too: it is given the address of the temporary handle, which is released after
++			// the call. It was given the object's address, which it took for the address of a handle (it read the object's
++			// first bytes as the other object: a crash on the first copy).
++			bool argByHandle = copyFunc && copyFunc->parameterTypes.GetLength() == 1 && copyFunc->parameterTypes[0].IsObjectHandle();
++			bool argByHandleRef = argByHandle && copyFunc->parameterTypes[0].IsReference();
++			int tempHandle = 0;
++			if( argByHandle )
++			{
++				asCDataType handleType = copyFunc->parameterTypes[0];
++				handleType.MakeReference(false);
++				tempHandle = AllocateVariable(handleType, true);
+ 				ctx->bc.InstrSHORT(asBC_PSF, (short)tempHandle);
+ 				ctx->bc.InstrPTR(asBC_REFCPY, type.GetTypeInfo());
+ 				ctx->bc.Instr(asBC_PopPtr);
+-				ctx->bc.InstrSHORT(asBC_VAR, (short)tempHandle);
+-				ctx->bc.InstrWORD(asBC_GETOBJ, 0);
+-				// GETOBJ cleared the variable: nothing is left to release
+-				ReleaseTemporaryVariable(tempHandle, 0);
++				if( argByHandleRef )
++					ctx->bc.InstrSHORT(asBC_PSF, (short)tempHandle);
++				else
++				{
++					ctx->bc.InstrSHORT(asBC_VAR, (short)tempHandle);
++					ctx->bc.InstrWORD(asBC_GETOBJ, 0);
++					// GETOBJ cleared the variable: nothing is left to release
++					ReleaseTemporaryVariable(tempHandle, 0);
++				}
+ 			}
+ 
+ 			if( isVarGlobOrMem == asVGM_VARIABLE )
+@@ -1045,6 +1066,10 @@
+ 
+ 				// Pop the reference left by the function call
+ 				ctx->bc.Instr(asBC_PopPtr);
++
++				// ALTERED: see argByHandleRef above
++				if( argByHandleRef )
++					ReleaseTemporaryVariable(tempHandle, &ctx->bc);
+ 			}
+ 			else
+ 			{
+@@ -1068,6 +1093,10 @@
+ 				ctx->bc.InstrPTR(asBC_REFCPY, type.GetTypeInfo());
+ 				ctx->bc.Instr(asBC_PopPtr);
+ 				ReleaseTemporaryVariable(ctx->type.stackOffset, &ctx->bc);
++
++				// ALTERED: see argByHandleRef above
++				if( argByHandleRef )
++					ReleaseTemporaryVariable(tempHandle, &ctx->bc);
+ 			}
+ 
+ 			return 0;
+diff --git a/sdk/angelscript/source/as_scriptobject.cpp b/sdk/angelscript/source/as_scriptobject.cpp
+--- a/sdk/angelscript/source/as_scriptobject.cpp
++++ b/sdk/angelscript/source/as_scriptobject.cpp
+@@ -156,7 +156,20 @@
+ 	}
+ 
+ 	// Let the context handle the case for argument by ref (&) or by handle (@)
+-	ctx->SetArgObject(0, origObj);
++	// ALTERED: except for a copy constructor taking a reference to a handle (C(C@ &in other), which the builder accepts as
++	// the copy constructor), which is given the address of a handle holding a reference to the object, released after the
++	// call; SetArgObject gave it the object's address, which it took for the address of a handle (a crash on every copy the
++	// application made: dictionary.set, any.store, array.insert_last).
++	asCScriptObject *origHandle = 0;
++	asCScriptFunction *copyFunc = engine->scriptFunctions[objType->beh.copyfactory];
++	if( copyFunc->parameterTypes.GetLength() == 1 && copyFunc->parameterTypes[0].IsObjectHandle() && copyFunc->parameterTypes[0].IsReference() )
++	{
++		origHandle = reinterpret_cast<asCScriptObject*>(origObj);
++		origHandle->AddRef();
++		ctx->SetArgAddress(0, &origHandle);
++	}
++	else
++		ctx->SetArgObject(0, origObj);
+ 
+ 	for (;;)
+ 	{
+@@ -178,6 +191,9 @@
+ 		}
+ 		else
+ 			engine->ReturnContext(ctx);
++		// ALTERED: see origHandle above
++		if( origHandle )
++			origHandle->Release();
+ 		return 0;
+ 	}
+ 
+@@ -191,6 +207,10 @@
+ 	else
+ 		engine->ReturnContext(ctx);
+ 
++	// ALTERED: see origHandle above
++	if( origHandle )
++		origHandle->Release();
++
+ 	return ptr;
+ }
+ 
