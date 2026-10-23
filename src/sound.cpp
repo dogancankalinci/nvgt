@@ -249,9 +249,10 @@ bool init_sound() {
 void uninit_sound() {
 	if (!g_soundsystem_initialized.test())
 		return;
+	// Before the garbage collection, which can let go of a script's own engine for the last time, as a finished sound played from it does: once shut down, that engine is left to the process's exit (see audio_engine_impl::release()) rather than destroyed after SDL took down what its device needs.
+	g_soundsystem_shut_down.test_and_set();
 	garbage_collect_inline_sounds();
 	std::lock_guard<std::recursive_mutex> lock(g_soundsystem_init_mutex);
-	g_soundsystem_shut_down.test_and_set();
 	g_soundsystem_ready.clear(); // So that init_sound() refuses later calls instead of reporting a ready system whose engine is gone.
 	if (g_audio_engine != nullptr) {
 		g_audio_engine->release();
