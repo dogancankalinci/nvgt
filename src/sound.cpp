@@ -2390,7 +2390,10 @@ static ma_data_source_vtable g_chain_view_vtable = {chain_view_read, chain_view_
 static ma_data_source* chain_source(ma_data_source* head, audio_engine* engine, unique_ptr<chain_view>& view) {
 	view.reset();
 	ma_data_source* start = ma_data_source_get_current(head);
-	if (!start) start = head;
+	if (!start) { // On no source, as after set_current(null) or an empty pass that ended it, which reads as the chain's end: put back on itself, as a rewind does, so the first play plays the chain from the head rather than ending at once.
+		ma_data_source_set_current(head, head);
+		start = head;
+	}
 	std::vector<std::pair<ma_data_source*, ma_uint64>> links;
 	bool endless = false;
 	for (ma_data_source* link = start; link; link = next_in_chain(link)) {
