@@ -172,7 +172,7 @@ For more information on these properties, the [Angelscript custom options docume
 * init_stack_size =  integer default 4096: the initial stack size in bytes for each script context
 * max_nested_calls = integer default 100: the number of script executions that may be nested in one another (a function of the engine or of a plugin that runs script code, such as an array sort calling opCmp or the destructor of a script class, nests one) before the next one fails with a "Too many nested calls" exception; each level takes native stack, so a value much higher lets a runaway nested recursion crash the program with a stack overflow instead
 * max_stack_size = integer default 0 (unlimited): the maximum stack size in bytes for each script context
-* max_call_stack_size = integer default 0: similar to max_nested_calls but can possibly include calls to system functions (angelscript docs is unclear)
+* max_call_stack_size = integer default 1000000: the number of script function calls that may be in progress on one script context, nested calls included (how deep a recursion may go) before the next call fails with a "Stack overflow" exception; 0 means no limit, which lets a runaway recursion take memory until none is left
 * private_prop_as_protected: private properties of a parent class can be accessed from that class's children
 * property_accessor_mode = integer default 3: control the support of virtual property accessors (0 disabled, 1 only for c++ registrations, 2 no property keyword required, 3 property keyword required)
 * require_enum_scope: access to enum values requires prepending the enum name as in enumname::enumval instead of just enumval
