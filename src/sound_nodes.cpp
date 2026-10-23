@@ -27,6 +27,11 @@ using namespace std;
 
 // A volume clamped to the range a script set, as MiniAudio's ma_clamp() clamps a sound's gain, the floor winning over a ceiling set below it: std::clamp() with such a range is undefined.
 static float clamp_volume(float volume, float floor, float ceiling) { return volume > ceiling? (ceiling < floor? floor : ceiling) : volume < floor? floor : volume; }
+// What an attenuator applies for its distance's volume. MiniAudio's spatializer has applied the cones' volume clamped to min_volume and max_volume, and MiniAudio clamps the distance's and the cones' volumes together; the attenuator clamping the distance's again applied max_volume twice, so a max_gain of 0.5 played a sound at the listener 12 dB down, and one already below it at half its volume. This takes the cones' clamped volume to the distance's and the cones' clamped once.
+static float volume_after_cones(float distance_volume, const audio_spatialization_parameters& params) {
+	float applied = clamp_volume(params.cone_volume, params.min_volume, params.max_volume);
+	return applied > 0? clamp_volume(distance_volume * params.cone_volume, params.min_volume, params.max_volume) / applied : 0; // Nothing passed MiniAudio's spatializer at no volume.
+}
 
 // This node allows easy creation of miniaudio nodes in C++.
 static void ma_effect_node_process_pcm_frames(ma_node* pNode, const float** ppFramesIn, ma_uint32* pFrameCountIn, float** ppFramesOut, ma_uint32* pFrameCountOut) {
@@ -1035,6 +1040,7 @@ public:
 		if (!mixer) throw std::invalid_argument("mixer cannot be null");
 		spatialization_params.rolloff = 1.0f;
 		spatialization_params.directional_attenuation_factor = 1.0f;
+		spatialization_params.cone_volume = 1.0f;
 		{ std::lock_guard<std::mutex> lock(g_tracked_spatializers_mutex); g_tracked_spatializers.insert(this); }
 	}
 	~audio_spatializer_impl() {
@@ -1349,7 +1355,7 @@ public:
 		distance = params.listener_distance - params.min_distance; // Within min_distance a sound is at full volume, as at min_distance itself, rather than attenuated by its whole distance.
 		if (distance < 0) distance = 0;
 		// A max_distance below min_distance counts as min_distance, the floor winning as for volumes: otherwise no distance was within the range, and a sound at the listener played nothing.
-		volume = clamp_volume(distance <= (params.max_distance > params.min_distance? params.max_distance - params.min_distance : 0)? ma_volume_db_to_linear(-distance * params.rolloff * 1.75) : 0, params.min_volume, params.max_volume);
+		volume = volume_after_cones(distance <= (params.max_distance > params.min_distance? params.max_distance - params.min_distance : 0)? ma_volume_db_to_linear(-distance * params.rolloff * 1.75) : 0, params);
 		ma_gainer_set_master_volume(&gainer, volume);
 		if (frameCount > *frame_count_in) frameCount = *frame_count_in;
 		ma_gainer_process_pcm_frames(&gainer, frames_out[0], frames_in[0], frameCount);
@@ -1417,7 +1423,7 @@ public:
 		else if (std::isinf(distance)) distance = std::numeric_limits<float>::max(); // Positions too far apart for a float: as far as one goes.
 		sourcePos = {distance, 0, 0};
 		listenerPos = {0, 0, 0};
-		iplEffectParams.distanceAttenuation = params.listener_distance <= (params.max_distance > params.min_distance? params.max_distance : params.min_distance)? clamp_volume(iplDistanceAttenuationCalculate(g_phonon_context, sourcePos, listenerPos, &distanceModel), params.min_volume, params.max_volume) : params.min_volume;
+		iplEffectParams.distanceAttenuation = params.listener_distance <= (params.max_distance > params.min_distance? params.max_distance : params.min_distance)? volume_after_cones(iplDistanceAttenuationCalculate(g_phonon_context, sourcePos, listenerPos, &distanceModel), params) : volume_after_cones(0, params);
 		iplAirAbsorptionCalculate(g_phonon_context, sourcePos, listenerPos, &airAbsorptionModel, iplEffectParams.airAbsorption);
 		while (totalFramesProcessed < totalFramesToProcess) {
 			ma_uint32 framesToProcessThisIteration = totalFramesToProcess - totalFramesProcessed;

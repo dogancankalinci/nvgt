@@ -2416,9 +2416,39 @@ public:
 		params.min_volume = get_min_gain();
 		params.max_volume = get_max_gain();
 		params.rolloff = spatializer->get_rolloff();
+		params.cone_volume = get_cone_volume();
 		params.distance_model = linear;
 		spatialization_params_mutex.unlock();
 		return last_parameters_valid = true;
+	}
+	// The gain MiniAudio's spatializer gives the sound for its cone and its listener's, worked out as ma_spatializer_process_pcm_frames() does with the listener it uses, before it clamps that to the minimum and maximum gain.
+	float get_cone_volume() const {
+		ma_engine* e = get_engine()->get_ma_engine();
+		ma_uint32 listener = ma_sound_get_listener_index(&*snd);
+		if (listener >= ma_engine_get_listener_count(e)) return 1;
+		const ma_spatializer* spatializer_of_sound = &snd->engineNode.spatializer;
+		const ma_spatializer_listener* l = &e->listeners[listener];
+		ma_vec3f position, direction;
+		ma_spatializer_get_relative_position_and_direction(spatializer_of_sound, l, &position, &direction);
+		float distance = (float)sqrt((double)(position.x * position.x + position.y * position.y + position.z * position.z)); // As MiniAudio's ma_vec3f_len().
+		if (distance <= 0.001f) return 1; // As MiniAudio, which has no direction to the listener then.
+		ma_vec3f to_sound{position.x / distance, position.y / distance, position.z / distance}, from_sound{-to_sound.x, -to_sound.y, -to_sound.z};
+		float inner, outer, outer_gain;
+		ma_spatializer_get_cone(spatializer_of_sound, &inner, &outer, &outer_gain);
+		float gain = angular_gain(direction, from_sound, inner, outer, outer_gain);
+		if (l->config.coneInnerAngleInRadians < 6.283185f) gain *= angular_gain(l->config.handedness == ma_handedness_right? ma_vec3f{0, 0, -1} : ma_vec3f{0, 0, 1}, to_sound, l->config.coneInnerAngleInRadians, l->config.coneOuterAngleInRadians, l->config.coneOuterGain);
+		return gain;
+	}
+	// MiniAudio's ma_calculate_angular_gain(), which it keeps to itself.
+	static float angular_gain(ma_vec3f a, ma_vec3f b, float inner_radians, float outer_radians, float outer_gain) {
+		if (inner_radians >= 6.283185f) return 1;
+		float cutoff_inner = (float)cos(inner_radians * 0.5f), cutoff_outer = (float)cos(outer_radians * 0.5f), d = a.x * b.x + a.y * b.y + a.z * b.z;
+		if (d > cutoff_inner) return 1;
+		if (d > cutoff_outer) {
+			float t = (d - cutoff_outer) / (cutoff_inner - cutoff_outer);
+			return outer_gain * (1 - t) + t;
+		}
+		return outer_gain;
 	}
 	bool fade_from_stop = false; // The fade is one a stop with a fade set, as pause_fade() does, rather than one the script set since.
 	// Decibels to the linear volumes MiniAudio fades between, on an engine with PERCENTAGE_ATTRIBUTES; FLT_MAX starts from the current volume.
