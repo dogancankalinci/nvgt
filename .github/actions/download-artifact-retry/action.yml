@@ -1,0 +1,48 @@
+name: download-artifact-retry
+description: actions/download-artifact, tried twice more after a pause when it fails
+# A dropped connection to the artifact service (Failed to GetSignedArtifactURL: ECONNRESET) failed a whole release run after
+# every build had succeeded. Each later attempt downloads the artifacts again over whatever the failed one left; only the last
+# one's failure fails the job.
+inputs:
+  name:
+    description: The artifact to download (as download-artifact's name)
+    required: false
+    default: ''
+  pattern:
+    description: The artifacts to download (as download-artifact's pattern)
+    required: false
+    default: ''
+  path:
+    description: Where to download them (as download-artifact's path)
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+  - id: attempt1
+    continue-on-error: true
+    uses: actions/download-artifact@v8
+    with:
+      name: ${{ inputs.name }}
+      pattern: ${{ inputs.pattern }}
+      path: ${{ inputs.path }}
+  - if: steps.attempt1.outcome == 'failure'
+    shell: bash
+    run: sleep 20
+  - id: attempt2
+    if: steps.attempt1.outcome == 'failure'
+    continue-on-error: true
+    uses: actions/download-artifact@v8
+    with:
+      name: ${{ inputs.name }}
+      pattern: ${{ inputs.pattern }}
+      path: ${{ inputs.path }}
+  - if: steps.attempt2.outcome == 'failure'
+    shell: bash
+    run: sleep 60
+  - if: steps.attempt2.outcome == 'failure'
+    uses: actions/download-artifact@v8
+    with:
+      name: ${{ inputs.name }}
+      pattern: ${{ inputs.pattern }}
+      path: ${{ inputs.path }}
