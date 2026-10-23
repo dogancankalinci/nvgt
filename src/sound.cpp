@@ -2391,6 +2391,10 @@ public:
 		if (!new_shape.GetRef()) { // A null shape clears it, which is done, back at the position the script set.
 			track_shape(false);
 			if (snd && get_spatialization_enabled()) set_position_3d(position.x, position.y, position.z);
+			else if (snd) { // Back at the script's position without spatializing it, rather than left at the shape's point, which the position read and the sound played from once spatialized.
+				unique_lock<mutex> lock(spatialization_params_mutex);
+				ma_sound_set_position(&*snd, position.x, position.y, position.z);
+			}
 			return true;
 		}
 		sound_shape* new_shape_obj = g_sound_shape_setup_callbacks[ot](this, &new_shape);
@@ -2561,8 +2565,9 @@ public:
 		return get_engine()->get_flags() & audio_engine::PERCENTAGE_ATTRIBUTES ? pitch * 100 : pitch;
 	}
 	void set_spatialization_enabled(bool enabled) override {
-		if (snd)
-			ma_sound_set_spatialization_enabled(&*snd, enabled);
+		if (!snd) return;
+		ma_sound_set_spatialization_enabled(&*snd, enabled);
+		if (enabled) place_in_shape(); // A shaped sound isn't placed while not spatialized, as a listener moves or the sound loads anew: placed in its shape once it is, rather than played from where it was last placed or from the origin.
 	}
 	bool get_spatialization_enabled() const override {
 		if (snd)
