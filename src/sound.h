@@ -145,7 +145,7 @@ public:
 	virtual CScriptArray* read_script(unsigned long long frame_count) = 0;
 	virtual unsigned long long skip_frames(unsigned long long frame_count) = 0;
 	virtual float skip_milliseconds(float ms) = 0;
-	// Seeking, the cursor, the length and looping are this source's own, as in MiniAudio, also for the head of a chain read through it: once reading moved on along the chain, seeking the head moves only the head's own source, and set_current() with the head itself rewinds the chain. A sound playing a chain takes it as a whole instead (see sound::open()).
+	// Seeking, the cursor, the length and looping are this source's own, as in MiniAudio, also for the head of a chain read through it: once reading moved on along the chain, seeking the head moves only the head's own source, and set_current() with the head itself puts the head back on its own source, reading on from its own cursor, so that a seek of the head after it rewinds the chain. A sound playing a chain takes it as a whole instead (see sound::open()).
 	virtual bool seek_frames(unsigned long long frame_index) = 0;
 	virtual bool seek_milliseconds(float ms) = 0;
 	virtual unsigned long long get_cursor_frames() const = 0;
