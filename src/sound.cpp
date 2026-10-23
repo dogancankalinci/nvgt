@@ -2601,9 +2601,9 @@ public:
 			place_in_shape_locked();
 		} else ma_sound_set_position(&*snd, x, y, z);
 	}
-	// Under spatialization_params_mutex, with snd and shape set: plays the sound from the shape's point nearest the listener, or from the listener within the shape.
+	// Under spatialization_params_mutex, with snd and shape set: plays the sound from the shape's point nearest the listener, or from the listener within the shape. A sound positioned relative to the listener has its shape in the listener's space, where the listener is at the origin: tested against the listener's place in the world, and played from it as an offset from the listener, a shape attached to the listener moved with it through the world.
 	void place_in_shape_locked() {
-		reactphysics3d::Vector3 pos = shape_anchor, listener = get_engine()->get_listener_position(get_listener());
+		reactphysics3d::Vector3 pos = shape_anchor, listener = ma_sound_get_positioning(&*snd) == ma_positioning_relative? reactphysics3d::Vector3(0, 0, 0) : get_engine()->get_listener_position(get_listener());
 		if (shape->contains(listener, pos)) pos = listener;
 		ma_sound_set_position(&*snd, pos.x, pos.y, pos.z);
 	}
@@ -2657,8 +2657,9 @@ public:
 		return res;
 	}
 	void set_positioning(ma_positioning positioning) override {
-		if (snd)
-			ma_sound_set_positioning(&*snd, positioning);
+		if (!snd) return;
+		ma_sound_set_positioning(&*snd, positioning);
+		place_in_shape(); // A shape's point is found in the space the positioning gives.
 	}
 	ma_positioning get_positioning() const override {
 		return snd ? ma_sound_get_positioning(&*snd) : ma_positioning_absolute;
