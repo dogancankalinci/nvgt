@@ -1,0 +1,55 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -5467,6 +5467,22 @@
+ 	m_inExceptionHandler = false;
+ }
+ 
++// ALTERED: the position of the first instruction at or after pos that isn't an asBC_JitEntry. Without the bytecode optimizer
++// (asEP_OPTIMIZE_BYTECODE off, which NVGT's scripting.do_not_optimize_bytecode sets) or with asEP_INCLUDE_JIT_INSTRUCTIONS, a
++// JitEntry follows every call, and the info the compiler records for the call's object (asOBJ_INIT after a constructor or a
++// function returning the object, asOBJ_UNINIT after a destructor) comes after it. A frame that stopped right after a registered
++// function (an abort or a suspend acted on after its call) has its program pointer on the JitEntry, before that info, so the
++// object a destructor had just destroyed counted as alive and was destroyed a second time, and one just made counted as not
++// made and leaked. A JitEntry does nothing: a frame stopped on it is stopped after it.
++static asUINT SkipJitEntries(asCScriptFunction *func, asUINT pos)
++{
++	asDWORD *bc = func->scriptData->byteCode.AddressOf();
++	asUINT length = func->scriptData->byteCode.GetLength();
++	while( pos < length && *(asBYTE*)&bc[pos] == asBC_JitEntry )
++		pos += asBCTypeSize[asBCInfo[asBC_JitEntry].type];
++	return pos;
++}
++
+ // Interface
+ bool asCContext::IsVarInScope(asUINT varIndex, asUINT stackLevel)
+ {
+@@ -5484,6 +5500,8 @@
+ 		func = m_currentFunction;
+ 		if( func == 0 || func->scriptData == 0 ) return false;
+ 		pos = asUINT(m_regs.programPointer - func->scriptData->byteCode.AddressOf());
++		// ALTERED: stopped on a JitEntry is stopped after it, see SkipJitEntries
++		pos = SkipJitEntries(func, pos);
+ 	}
+ 	else
+ 	{
+@@ -5650,6 +5668,9 @@
+ 			// before the current position is enough to disconsider it.
+ 			pos--;
+ 		}
++		// ALTERED: stopped on a JitEntry is stopped after it, see SkipJitEntries
++		else
++			pos = SkipJitEntries(func, pos);
+ 	}
+ 	else
+ 	{
+@@ -5979,6 +6000,9 @@
+ 			else if( framePos > 0 )
+ 				framePos--;
+ 		}
++		// ALTERED: stopped on a JitEntry is stopped after it, see SkipJitEntries
++		else
++			framePos = SkipJitEntries(m_currentFunction, framePos);
+ 	}
+ 
+ 	// Clean object variables on the stack
