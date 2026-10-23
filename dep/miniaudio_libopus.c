@@ -121,6 +121,12 @@ static opus_int64 ma_libopus_of_callback__tell(void* pUserData)
     return cursor;
 }
 
+/*
+opusfile reports a hole where the stream is interrupted, as at a damaged page: reading goes on past it rather than ending there. Only so many in a
+row without a frame end the stream, as a guard against data with nothing to decode in it.
+*/
+#define MA_LIBOPUS_MAX_HOLES 16
+
 static void ma_libopus_opened(ma_libopus* pOpus)
 {
     /* The first logical stream's channels, which MiniAudio reads every frame in. Without a stream that can seek, opusfile knows only the current one, the first as it opens. */
@@ -284,6 +290,7 @@ MA_API ma_result ma_libopus_read_pcm_frames(ma_libopus* pOpus, void* pFramesOut,
         ma_uint64 totalFramesRead;
         ma_format format = pOpus->format;
         ma_uint32 channels = pOpus->channels;
+        int holes = 0;
 
         if (channels == 0) {
             return MA_INVALID_OPERATION;
@@ -341,6 +348,10 @@ MA_API ma_result ma_libopus_read_pcm_frames(ma_libopus* pOpus, void* pFramesOut,
                 libopusResult = op_read      (of, (opus_int16*)pHeld, (int)samplesToRead, &link);
             }
 
+            if (libopusResult == OP_HOLE && ++holes <= MA_LIBOPUS_MAX_HOLES) {
+                continue;
+            }
+
             if (libopusResult < 0) {
                 result = MA_ERROR;  /* Error while decoding. */
                 break;
@@ -357,6 +368,7 @@ MA_API ma_result ma_libopus_read_pcm_frames(ma_libopus* pOpus, void* pFramesOut,
                 break;
             }
 
+            holes = 0;
             ma_ogg_link_frames_hold(&pOpus->link, libopusResult, (ma_uint32)linkChannels, 48000);
         }
 

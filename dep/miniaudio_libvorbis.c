@@ -129,6 +129,13 @@ static long ma_libvorbis_vf_callback__tell(void* pUserData)
 #endif
 
 #if !defined(MA_NO_LIBVORBIS)
+/*
+libvorbisfile reports a hole, which it calls recoverable, where the stream is interrupted, at a damaged page, and in a stream that can't seek at
+the start of each logical stream after the first: reading goes on past it, as the library means, rather than ending there. Only so many in a row
+without a frame end the stream, as a guard against data with nothing to decode in it.
+*/
+#define MA_LIBVORBIS_MAX_HOLES 16
+
 static void ma_libvorbis_opened(ma_libvorbis* pVorbis)
 {
     OggVorbis_File* vf = (OggVorbis_File*)pVorbis->vf;
@@ -357,6 +364,7 @@ MA_API ma_result ma_libvorbis_read_pcm_frames(ma_libvorbis* pVorbis, void* pFram
         ma_uint64 totalFramesRead;
         ma_format format = pVorbis->format;
         ma_uint32 channels = pVorbis->channels;
+        int holes = 0;
 
         if (channels == 0) {
             return MA_INVALID_OPERATION;
@@ -394,6 +402,10 @@ MA_API ma_result ma_libvorbis_read_pcm_frames(ma_libvorbis* pVorbis, void* pFram
                 float** ppFramesF32;
 
                 libvorbisResult = ov_read_float(vf, &ppFramesF32, (int)framesToRead, NULL);
+                if (libvorbisResult == OV_HOLE && ++holes <= MA_LIBVORBIS_MAX_HOLES) {
+                    continue;
+                }
+
                 if (libvorbisResult < 0) {
                     result = MA_ERROR;  /* Error while decoding. */
                     break;
@@ -411,6 +423,7 @@ MA_API ma_result ma_libvorbis_read_pcm_frames(ma_libvorbis* pVorbis, void* pFram
                     break;
                 }
 
+                holes = 0;
                 if ((ma_uint32)pInfo->channels == channels && (ma_uint32)pInfo->rate == pVorbis->sampleRate) {
                     ma_interleave_pcm_frames(format, channels, libvorbisResult, (const void**)ppFramesF32, pFramesOutHere);
                     totalFramesRead += libvorbisResult;
@@ -445,6 +458,10 @@ MA_API ma_result ma_libvorbis_read_pcm_frames(ma_libvorbis* pVorbis, void* pFram
                 }
 
                 libvorbisResult = ov_read(vf, (char*)pHeld, (int)sizeInBytes, 0, 2, 1, NULL);
+                if (libvorbisResult == OV_HOLE && ++holes <= MA_LIBVORBIS_MAX_HOLES) {
+                    continue;
+                }
+
                 if (libvorbisResult < 0) {
                     result = MA_ERROR;  /* Error while decoding. */
                     break;
@@ -461,6 +478,7 @@ MA_API ma_result ma_libvorbis_read_pcm_frames(ma_libvorbis* pVorbis, void* pFram
                     break;
                 }
 
+                holes = 0;
                 ma_ogg_link_frames_hold(&pVorbis->link, libvorbisResult / (sizeof(ma_int16) * pInfo->channels), pInfo->channels, pInfo->rate);
             }
         }
