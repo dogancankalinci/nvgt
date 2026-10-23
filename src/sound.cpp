@@ -3658,7 +3658,10 @@ public:
 	bool seek(unsigned long long position) override { return get_engine()->get_flags() & audio_engine::DURATIONS_IN_FRAMES? seek_in_frames(position) : seek_in_milliseconds(position); }
 	bool seek_in_frames(unsigned long long position) override {
 		unsigned long long length = get_length_in_frames();
-		if (!length) return false;
+		if (!length) {
+			g_soundsystem_last_error = MA_INVALID_OPERATION; // A stream without a length, which left no error.
+			return false;
+		}
 		if (position > length) { // MiniAudio takes such a seek and then ignores it on the audio thread, while the position reads as the target.
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
