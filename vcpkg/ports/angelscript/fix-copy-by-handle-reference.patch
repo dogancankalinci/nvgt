@@ -1,0 +1,48 @@
+diff --git a/sdk/angelscript/source/as_scriptobject.cpp b/sdk/angelscript/source/as_scriptobject.cpp
+--- a/sdk/angelscript/source/as_scriptobject.cpp
++++ b/sdk/angelscript/source/as_scriptobject.cpp
+@@ -999,7 +999,22 @@
+ 				return r;
+ 			}
+ 
+-			r = ctx->SetArgAddress(0, const_cast<asCScriptObject*>(other));
++			// ALTERED: an opAssign taking the other object by a reference to a handle (B &opAssign(B@ &in other), which the
++			// builder makes the copy behaviour too: a parameter of the class with &in) is given the address of a handle to
++			// it, which holds a reference while the function runs and is released afterwards with whatever the function left
++			// there. It was given the object's address, which the function took for the address of a handle: it read the
++			// object's first bytes as the other object (a crash when an array, a holder class's default opAssign or the
++			// application assigned such an object).
++			asCScriptObject *otherHandle = 0;
++			bool byHandle = engine->scriptFunctions[in_objType->beh.copy]->parameterTypes[0].IsObjectHandle();
++			if( byHandle )
++			{
++				otherHandle = const_cast<asCScriptObject*>(other);
++				otherHandle->AddRef();
++				r = ctx->SetArgAddress(0, &otherHandle);
++			}
++			else
++				r = ctx->SetArgAddress(0, const_cast<asCScriptObject*>(other));
+ 			asASSERT( r >= 0 );
+ 			r = ctx->SetObject(this);
+ 			asASSERT( r >= 0 );
+@@ -1027,6 +1042,9 @@
+ 					// Return the context to the engine
+ 					engine->ReturnContext(ctx);
+ 				}
++				// ALTERED: see byHandle above
++				if( otherHandle )
++					otherHandle->Release();
+ 				return asERROR;
+ 			}
+ 
+@@ -1037,6 +1055,10 @@
+ 				// Return the context to the engine
+ 				engine->ReturnContext(ctx);
+ 			}
++
++			// ALTERED: see byHandle above
++			if( otherHandle )
++				otherHandle->Release();
+ 		}
+ 	}
+ 

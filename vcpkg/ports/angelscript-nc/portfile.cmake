@@ -77,6 +77,7 @@ vcpkg_from_github(
         fix-reference-return-in-try.patch
         fix-nested-call-exception.patch
         fix-copy-without-base-copy.patch
+        fix-copy-by-handle-reference.patch
 )
 
 vcpkg_cmake_configure(
