@@ -82,14 +82,15 @@ static bool finite_node_values(std::initializer_list<double> values) {
 	}
 	return true;
 }
-// Settings MiniAudio's filters and verblib take without a word but can't work with: a cutoff or center frequency at or past half the sample rate, a q of 0 or less or a gain beyond 100 dB either way made a filter's output NaN, which its state kept after a good value came back, and a delay's decay or a reverb's room size or damping past 1 made the output grow without bound. They are refused with MA_INVALID_ARGS, the node keeping what it had.
+// Settings MiniAudio's filters and verblib take without a word but can't work with: a cutoff or center frequency at or past half the sample rate, a q of 0 or less or a gain beyond 100 dB either way made a filter's output NaN, which its state kept after a good value came back, and a delay's decay or a reverb's room size or damping past 1 made the output grow without bound. A frequency, gain or such a value out of range is taken as the nearest usable one (see clamped_gain() and usable_frequency()); a q of 0 or less, a frequency of 0 or less and settings no frequency makes stable are refused with MA_INVALID_ARGS, the node keeping what it had.
 static bool node_value_in_range(bool in_range) {
 	if (!in_range) g_soundsystem_last_error = MA_INVALID_ARGS;
 	return in_range;
 }
 static bool q_in_range(double q) { return node_value_in_range(q > 0); }
-static bool gain_in_range(double gain_db) { return node_value_in_range(gain_db >= -100 && gain_db <= 100); }
-static bool unit_in_range(double value) { return node_value_in_range(value >= 0 && value <= 1); }
+// A finite gain beyond 100 dB either way, or a delay's decay or a reverb's room size or damping outside 0 to 1, is taken as the nearest value in range, as NVGT takes a volume or pitch out of range, rather than refused, which kept the old setting or made a constructor throw.
+static double clamped_gain(double gain_db) { return std::clamp(gain_db, -100.0, 100.0); }
+static float clamped_unit(float value) { return std::clamp(value, 0.0f, 1.0f); }
 // MiniAudio divides a biquad filter's coefficients by a0 and keeps them as floats, and one that wasn't finite there made the filter's output NaN for good, as above: a q so near 0 that sin(w) / 2q overflowed did that. At a frequency so low that w is tiny, the poles lie so close to 1 that rounding a1 and a2 to floats could put one outside the unit circle: below about 1.35 Hz at 48 kHz, about half the frequencies made the output grow from the first sample until it was infinite, then NaN for good. And a pole the rounding left just inside it, within a fraction of a hertz of 0 or of half the sample rate, no longer had its zeros cancel it, so the filter's own rounding was amplified to hundreds of times full scale. Settings are refused unless MiniAudio's coefficients, worked out as it does, all come out finite, and the float filter's poles, the roots of z^2 + a1 z + a2, both lie at least 1e-5 inside the unit circle.
 static constexpr double filter_pi = 3.14159265358979323846264; // MiniAudio's MA_PI_D.
 static bool biquad_in_range(double b0, double b1, double b2, double a0, double a1, double a2) {
@@ -539,7 +540,8 @@ class peak_filter_node_impl : public audio_node_impl, public virtual peak_filter
 	ma_peak_node_config cfg;
 	public:
 	peak_filter_node_impl(double gain_db, double q, double frequency, audio_engine* e) : fn(make_unique<ma_peak_node>()), audio_node_impl(nullptr, e) {
-		if (!finite_node_values({gain_db, q, frequency}) || !gain_in_range(gain_db) || !q_in_range(q) || !(frequency = usable_frequency(frequency, get_engine()->get_sample_rate(), [&](double f) { return peak_in_range(gain_db, q, f, get_engine()->get_sample_rate()); }))) throw std::invalid_argument("filter setting out of range");
+		if (std::isfinite(gain_db)) gain_db = clamped_gain(gain_db);
+		if (!finite_node_values({gain_db, q, frequency}) || !q_in_range(q) || !(frequency = usable_frequency(frequency, get_engine()->get_sample_rate(), [&](double f) { return peak_in_range(gain_db, q, f, get_engine()->get_sample_rate()); }))) throw std::invalid_argument("filter setting out of range");
 		cfg = ma_peak_node_config_init(get_engine()->get_channels(), get_engine()->get_sample_rate(), gain_db, q, frequency);
 		if ((g_soundsystem_last_error = ma_peak_node_init(ma_engine_get_node_graph(get_engine()->get_ma_engine()), &cfg, nullptr, &*fn)) != MA_SUCCESS) throw std::runtime_error("ma_peak_filter_node was not initialized");
 		node = (ma_node_base*)&*fn;
@@ -552,7 +554,8 @@ class peak_filter_node_impl : public audio_node_impl, public virtual peak_filter
 	}
 	void set_gain(double gain) override {
 		if (!finite_node_values({gain})) return;
-		if (!gain_in_range(gain) || !peak_in_range(gain, cfg.peak.q, cfg.peak.frequency, cfg.peak.sampleRate)) return;
+		gain = clamped_gain(gain);
+		if (!peak_in_range(gain, cfg.peak.q, cfg.peak.frequency, cfg.peak.sampleRate)) return;
 		auto previous = cfg.peak.gainDB;
 		cfg.peak.gainDB = gain;
 		if ((g_soundsystem_last_error = ma_peak_node_reinit(&cfg.peak, &*fn)) != MA_SUCCESS) cfg.peak.gainDB = previous;
@@ -582,7 +585,8 @@ class low_shelf_filter_node_impl : public audio_node_impl, public virtual low_sh
 	ma_loshelf_node_config cfg;
 	public:
 	low_shelf_filter_node_impl(double gain_db, double q, double frequency, audio_engine* e) : fn(make_unique<ma_loshelf_node>()), audio_node_impl(nullptr, e) {
-		if (!finite_node_values({gain_db, q, frequency}) || !gain_in_range(gain_db) || !q_in_range(q) || !(frequency = usable_frequency(frequency, get_engine()->get_sample_rate(), [&](double f) { return shelf_in_range(false, gain_db, q, f, get_engine()->get_sample_rate()); }))) throw std::invalid_argument("filter setting out of range");
+		if (std::isfinite(gain_db)) gain_db = clamped_gain(gain_db);
+		if (!finite_node_values({gain_db, q, frequency}) || !q_in_range(q) || !(frequency = usable_frequency(frequency, get_engine()->get_sample_rate(), [&](double f) { return shelf_in_range(false, gain_db, q, f, get_engine()->get_sample_rate()); }))) throw std::invalid_argument("filter setting out of range");
 		cfg = ma_loshelf_node_config_init(get_engine()->get_channels(), get_engine()->get_sample_rate(), gain_db, q, frequency);
 		if ((g_soundsystem_last_error = ma_loshelf_node_init(ma_engine_get_node_graph(get_engine()->get_ma_engine()), &cfg, nullptr, &*fn)) != MA_SUCCESS) throw std::runtime_error("ma_low_shelf_filter_node was not initialized");
 		node = (ma_node_base*)&*fn;
@@ -595,7 +599,8 @@ class low_shelf_filter_node_impl : public audio_node_impl, public virtual low_sh
 	}
 	void set_gain(double gain) override {
 		if (!finite_node_values({gain})) return;
-		if (!gain_in_range(gain) || !shelf_in_range(false, gain, cfg.loshelf.shelfSlope, cfg.loshelf.frequency, cfg.loshelf.sampleRate)) return;
+		gain = clamped_gain(gain);
+		if (!shelf_in_range(false, gain, cfg.loshelf.shelfSlope, cfg.loshelf.frequency, cfg.loshelf.sampleRate)) return;
 		auto previous = cfg.loshelf.gainDB;
 		cfg.loshelf.gainDB = gain;
 		if ((g_soundsystem_last_error = ma_loshelf_node_reinit(&cfg.loshelf, &*fn)) != MA_SUCCESS) cfg.loshelf.gainDB = previous;
@@ -625,7 +630,8 @@ class high_shelf_filter_node_impl : public audio_node_impl, public virtual high_
 	ma_hishelf_node_config cfg;
 	public:
 	high_shelf_filter_node_impl(double gain_db, double q, double frequency, audio_engine* e) : fn(make_unique<ma_hishelf_node>()), audio_node_impl(nullptr, e) {
-		if (!finite_node_values({gain_db, q, frequency}) || !gain_in_range(gain_db) || !q_in_range(q) || !(frequency = usable_frequency(frequency, get_engine()->get_sample_rate(), [&](double f) { return shelf_in_range(true, gain_db, q, f, get_engine()->get_sample_rate()); }))) throw std::invalid_argument("filter setting out of range");
+		if (std::isfinite(gain_db)) gain_db = clamped_gain(gain_db);
+		if (!finite_node_values({gain_db, q, frequency}) || !q_in_range(q) || !(frequency = usable_frequency(frequency, get_engine()->get_sample_rate(), [&](double f) { return shelf_in_range(true, gain_db, q, f, get_engine()->get_sample_rate()); }))) throw std::invalid_argument("filter setting out of range");
 		cfg = ma_hishelf_node_config_init(get_engine()->get_channels(), get_engine()->get_sample_rate(), gain_db, q, frequency);
 		if ((g_soundsystem_last_error = ma_hishelf_node_init(ma_engine_get_node_graph(get_engine()->get_ma_engine()), &cfg, nullptr, &*fn)) != MA_SUCCESS) throw std::runtime_error("ma_high_shelf_filter_node was not initialized");
 		node = (ma_node_base*)&*fn;
@@ -638,7 +644,8 @@ class high_shelf_filter_node_impl : public audio_node_impl, public virtual high_
 	}
 	void set_gain(double gain) override {
 		if (!finite_node_values({gain})) return;
-		if (!gain_in_range(gain) || !shelf_in_range(true, gain, cfg.hishelf.shelfSlope, cfg.hishelf.frequency, cfg.hishelf.sampleRate)) return;
+		gain = clamped_gain(gain);
+		if (!shelf_in_range(true, gain, cfg.hishelf.shelfSlope, cfg.hishelf.frequency, cfg.hishelf.sampleRate)) return;
 		auto previous = cfg.hishelf.gainDB;
 		cfg.hishelf.gainDB = gain;
 		if ((g_soundsystem_last_error = ma_hishelf_node_reinit(&cfg.hishelf, &*fn)) != MA_SUCCESS) cfg.hishelf.gainDB = previous;
@@ -669,7 +676,8 @@ class delay_node_impl : public audio_node_impl, public virtual delay_node {
 	delay_node_impl(unsigned int delay_in_frames, float decay, audio_engine* e) : dn(make_unique<ma_delay_node>()), audio_node_impl(nullptr, e) {
 		// MiniAudio takes neither a delay of 0, by which it divides while processing, nor one whose buffer size overflows 32 bits, which it then allocates too small and overruns.
 		if (delay_in_frames == 0 || uint64_t(delay_in_frames) * get_engine()->get_channels() * sizeof(float) > UINT32_MAX) throw std::invalid_argument("delay out of range");
-		if (!finite_node_values({decay}) || !unit_in_range(decay)) throw std::invalid_argument("decay out of range");
+		if (!finite_node_values({decay})) throw std::invalid_argument("decay out of range");
+		decay = clamped_unit(decay);
 		ma_delay_node_config cfg = ma_delay_node_config_init(get_engine()->get_channels(), get_engine()->get_sample_rate(), delay_in_frames, decay);
 		if ((g_soundsystem_last_error = ma_delay_node_init(ma_engine_get_node_graph(get_engine()->get_ma_engine()), &cfg, nullptr, &*dn)) != MA_SUCCESS) throw std::runtime_error("ma_delay_node was not initialized");
 		node = (ma_node_base*)&*dn;
@@ -684,7 +692,7 @@ class delay_node_impl : public audio_node_impl, public virtual delay_node {
 	float get_wet() const override { return ma_delay_node_get_wet(&*dn); }
 	void set_dry(float dry) override { if (finite_node_values({dry})) ma_delay_node_set_dry(&*dn, dry); }
 	float get_dry() const override { return ma_delay_node_get_dry(&*dn); }
-	void set_decay(float decay) override { if (finite_node_values({decay}) && unit_in_range(decay)) ma_delay_node_set_decay(&*dn, decay); }
+	void set_decay(float decay) override { if (finite_node_values({decay})) ma_delay_node_set_decay(&*dn, clamped_unit(decay)); }
 	float get_decay() const override { return ma_delay_node_get_decay(&*dn); }
 };
 delay_node* delay_node::create(unsigned int delay_in_frames, float decay, audio_engine* engine) { return new delay_node_impl(delay_in_frames, decay, engine); }
@@ -703,9 +711,9 @@ class freeverb_node_impl : public audio_node_impl, public virtual freeverb_node 
 			ma_reverb_node_uninit(&*rn, nullptr);
 		}
 	}
-	void set_room_size(float size) override { if (rn && finite_node_values({size}) && unit_in_range(size)) verblib_set_room_size(&rn->reverb, size); }
+	void set_room_size(float size) override { if (rn && finite_node_values({size})) verblib_set_room_size(&rn->reverb, clamped_unit(size)); }
 	float get_room_size() const override { return rn? verblib_get_room_size(&rn->reverb) : -1; }
-	void set_damping(float damping) override { if (rn && finite_node_values({damping}) && unit_in_range(damping)) verblib_set_damping(&rn->reverb, damping); }
+	void set_damping(float damping) override { if (rn && finite_node_values({damping})) verblib_set_damping(&rn->reverb, clamped_unit(damping)); }
 	float get_damping() const override { return rn? verblib_get_damping(&rn->reverb) : -1; }
 	void set_width(float width) override { if (rn && finite_node_values({width})) verblib_set_width(&rn->reverb, width); }
 	float get_width() const override { return rn? verblib_get_width(&rn->reverb) : -1; }
