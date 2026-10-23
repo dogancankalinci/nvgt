@@ -62,6 +62,7 @@ vcpkg_from_github(
         fix-cleanup-block-tail.patch
         fix-exception-line.patch
         fix-nested-marker-frame.patch
+        fix-bytecode-inherited-opassign.patch
 )
 
 vcpkg_cmake_configure(

@@ -1,0 +1,19 @@
+diff --git a/sdk/angelscript/source/as_restore.cpp b/sdk/angelscript/source/as_restore.cpp
+--- a/sdk/angelscript/source/as_restore.cpp
++++ b/sdk/angelscript/source/as_restore.cpp
+@@ -2001,7 +2001,15 @@
+ 					else
+ 					{
+ 						// If the method is the assignment operator we need to replace the default implementation
++						// ALTERED: only the class's own, as asCBuilder::RegisterScriptFunction does. The methods of a derived
++						// class include those it inherits, and the opAssign of a base class (which takes the base class)
++						// was made the derived class's copy behaviour, so the application's copies of an object of the
++						// derived class loaded from bytecode (AssignScriptObject, and CreateScriptObjectCopy without a copy
++						// constructor: an array's elements, dictionary and any values) copied only the base class's part,
++						// where the same script built from source copied it whole with the default copy (the base class's
++						// part with its opAssign, then the derived class's own members).
+ 						if( func->name == "opAssign" && func->parameterTypes.GetLength() == 1 &&
++							func->objectType == ot &&
+ 							func->parameterTypes[0].GetTypeInfo() == func->objectType &&
+ 							(func->inOutFlags[0] & asTM_INREF) )
+ 						{
