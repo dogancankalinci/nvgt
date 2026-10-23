@@ -10,4 +10,4 @@ Seeks to a particular point in the sound.
 bool: true if the seeking was successful, false otherwise, as for a stream without a length.
 
 ## Remarks:
-A sound playing a chain of data sources, opened with open(), seeks in the whole chain, from the source its head was on when it was opened, or the head itself if it was on none: the position counts from that source's start through each source after it. Such a sound can be sought back to its start even when the chain's length is unknown.
+A sound playing a chain of data sources, opened with open(), seeks in the whole chain, from the source its head was on when it was opened, or the head itself from its start if it was on none: the position counts from that source's start through each source after it. Such a sound can be sought back to its start even when the chain's length is unknown.
