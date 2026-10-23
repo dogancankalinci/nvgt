@@ -80,9 +80,9 @@ static std::atomic_flag g_soundsystem_initialized; // The context, the sound ser
 static std::atomic_flag g_soundsystem_ready; // The engine exists. Set last so that no other thread can be told "initialized" while g_audio_engine is still null.
 static std::recursive_mutex g_soundsystem_init_mutex; // Recursive because setting up re-enters init_sound() and init_sound_context() on this same thread.
 static std::atomic_flag g_soundsystem_shut_down; // uninit_sound() ran: script threads still running are refused rather than given the default engine it let go.
-static bool g_soundsystem_starting = false;
+static bool g_soundsystem_starting = false; // Under g_soundsystem_init_mutex: this thread is setting up, so a call re-entering from there is answered at once.
 static std::atomic<bool> g_script_callbacks_stopped{false}; // See sound_stop_script_callbacks().
-static std::atomic<int> g_script_callbacks_running{0}; // Processing callbacks calling the script right now. // Under g_soundsystem_init_mutex: this thread is setting up, so a call re-entering from there is answered at once.
+static std::atomic<int> g_script_callbacks_running{0}; // Processing callbacks calling the script right now.
 thread_local ma_result g_soundsystem_last_error = MA_SUCCESS;
 // Whether a time in milliseconds can be counted in frames at a rate, refusing with MA_INVALID_ARGS one whose frame count would overflow 64 bits and wrap, in NVGT's conversions and MiniAudio's alike, to a short time.
 static bool frames_fit(unsigned long long milliseconds, ma_uint32 sample_rate) {
