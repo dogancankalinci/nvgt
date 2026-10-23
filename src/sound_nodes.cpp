@@ -358,7 +358,14 @@ class phonon_binaural_node_impl : public audio_node_impl, public virtual phonon_
 				ma_phonon_binaural_node_uninit(&*bn, nullptr);
 			}
 		}
-		void set_direction(float x, float y, float z, float distance) override { if (finite_node_values({x, y, z, distance})) ma_phonon_binaural_node_set_direction(&*bn, x, y, z, distance); }
+		void set_direction(float x, float y, float z, float distance) override {
+			if (!finite_node_values({x, y, z, distance})) return;
+			if (distance < 0) { // Made a negative spatial blend, which Steam Audio amplified exponentially: 24 times at -2, then to infinity and NaN, which spoiled the engine's whole mix.
+				g_soundsystem_last_error = MA_INVALID_ARGS;
+				return;
+			}
+			ma_phonon_binaural_node_set_direction(&*bn, x, y, z, distance);
+		}
 		void set_direction_vector(const reactphysics3d::Vector3& direction, float distance) override { set_direction(direction.x, direction.y, direction.z, distance); }
 		void set_spatial_blend_max_distance(float max_distance) override { if (finite_node_values({max_distance})) ma_phonon_binaural_node_set_spatial_blend_max_distance(&*bn, max_distance); }
 };
