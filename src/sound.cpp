@@ -2292,7 +2292,11 @@ struct chain_view {
 	ma_data_source* head;
 	std::vector<std::pair<ma_data_source*, ma_uint64>> links; // Each source in order, with its length, 0 when unknown.
 	bool endless = false; // The last source links back into the chain, as one set as its own next does, so the chain never ends.
-	~chain_view() { ma_data_source_uninit(&base); } // Only views made in full are kept.
+	std::vector<ma_data_source*> looping_set_aside; // Sources whose own looping is off while the sound plays the chain (see chain_source()), given back after.
+	~chain_view() { // Only views made in full are kept.
+		for (ma_data_source* source : looping_set_aside) ma_data_source_set_looping(source, MA_TRUE);
+		ma_data_source_uninit(&base);
+	}
 };
 static ma_result chain_view_read(ma_data_source* source, void* frames_out, ma_uint64 frame_count, ma_uint64* frames_read) { return ma_data_source_read_pcm_frames(((chain_view*)source)->head, frames_out, frame_count, frames_read); }
 static ma_result chain_view_seek(ma_data_source* source, ma_uint64 frame) {
@@ -2365,6 +2369,14 @@ static ma_data_source* chain_source(ma_data_source* head, audio_engine* engine, 
 	view->head = head;
 	view->links = std::move(links);
 	view->endless = endless;
+	// The sound's looping alone decides, as play() and play_looped() set a single source's own: a head's own looping looped only the source it was on, so the chain never got past it while the sound read as not looping, and a source's own looping ended its part at its loop point. Set aside while the sound plays the chain and given back after; the sources can't be changed meanwhile.
+	auto set_aside = [&view](ma_data_source* source) {
+		if (!ma_data_source_is_looping(source) || std::find(view->looping_set_aside.begin(), view->looping_set_aside.end(), source) != view->looping_set_aside.end()) return;
+		view->looping_set_aside.push_back(source);
+		ma_data_source_set_looping(source, MA_FALSE);
+	};
+	set_aside(head);
+	for (const auto& link : view->links) set_aside(link.first);
 	return &view->base;
 }
 static void held_group_process(ma_node* node, const float** frames_in, ma_uint32* frame_count_in, float** frames_out, ma_uint32* frame_count_out) {
