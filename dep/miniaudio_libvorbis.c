@@ -655,20 +655,37 @@ MA_API ma_result ma_libvorbis_get_length_in_pcm_frames(ma_libvorbis* pVorbis, ma
 
     #if !defined(MA_NO_LIBVORBIS)
     {
-        /*
-        Will work in the supermajority of cases where a file has a single logical bitstream. Concatenated streams
-        are much harder to determine the length of since they can have sample rate changes, but they should be
-        extremely rare outside of unseekable livestreams anyway.
-        */
-        if (ov_streams((OggVorbis_File*)pVorbis->vf) == 1) {
-            ogg_int64_t length = ov_pcm_total((OggVorbis_File*)pVorbis->vf, 0);
+        OggVorbis_File* vf = (OggVorbis_File*)pVorbis->vf;
+        long links = ov_streams(vf);
+        long link;
+
+        if (links == 1) {
+            ogg_int64_t length = ov_pcm_total(vf, 0);
             if(length != OV_EINVAL) {
                 *pLength = (ma_uint64)length;
             } else {
                 /* Unseekable. */
             }
+        } else if (ov_seekable(vf)) {
+            /*
+            Concatenated streams, each counted at the first's sample rate as the decoder reads it, as seeks map them (see
+            ma_libvorbis_library_frame()): reported as 0, unknown, a stream read from a file could be neither sought nor
+            rewound. One converted to another rate may give a frame or two more or fewer than counted here.
+            */
+            ma_uint64 length = 0;
+            for (link = 0; link < links; link += 1) {
+                vorbis_info* pInfo = ov_info(vf, link);
+                ogg_int64_t libraryFrames = ov_pcm_total(vf, link);
+                if (pInfo == NULL || pInfo->rate <= 0 || libraryFrames < 0) {
+                    return MA_SUCCESS;  /* Unknown, as before. */
+                }
+
+                length += ((ma_uint32)pInfo->rate == pVorbis->sampleRate) ? (ma_uint64)libraryFrames : (ma_uint64)libraryFrames * pVorbis->sampleRate / (ma_uint64)pInfo->rate;
+            }
+
+            *pLength = length;
         } else {
-            /* Concatenated stream. */
+            /* Concatenated and unseekable: unknown. */
         }
 
         return MA_SUCCESS;
