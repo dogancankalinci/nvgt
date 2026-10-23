@@ -1346,7 +1346,8 @@ public:
 		if (!spatializer->get_parameters(params)) goto fail;
 		distance = params.listener_distance - params.min_distance; // Within min_distance a sound is at full volume, as at min_distance itself, rather than attenuated by its whole distance.
 		if (distance < 0) distance = 0;
-		volume = clamp_volume(distance <= params.max_distance - params.min_distance? ma_volume_db_to_linear(-distance * params.rolloff * 1.75) : 0, params.min_volume, params.max_volume);
+		// A max_distance below min_distance counts as min_distance, the floor winning as for volumes: otherwise no distance was within the range, and a sound at the listener played nothing.
+		volume = clamp_volume(distance <= (params.max_distance > params.min_distance? params.max_distance - params.min_distance : 0)? ma_volume_db_to_linear(-distance * params.rolloff * 1.75) : 0, params.min_volume, params.max_volume);
 		ma_gainer_set_master_volume(&gainer, volume);
 		if (frameCount > *frame_count_in) frameCount = *frame_count_in;
 		ma_gainer_process_pcm_frames(&gainer, frames_out[0], frames_in[0], frameCount);
@@ -1407,7 +1408,7 @@ public:
 		params.rolloff *= 0.7; // Attenuators apply internal factors sometimes to try making it so that rolloff at a constant value will cause a similar volume reduction regardless of the attenuator in use.
 		sourcePos = {params.sound_x * params.rolloff, params.sound_y * params.rolloff, params.sound_z * params.rolloff};
 		listenerPos = {params.listener_x * params.rolloff, params.listener_y * params.rolloff, params.listener_z * params.rolloff};
-		iplEffectParams.distanceAttenuation = params.listener_distance <= params.max_distance? clamp_volume(iplDistanceAttenuationCalculate(g_phonon_context, sourcePos, listenerPos, &distanceModel), params.min_volume, params.max_volume) : params.min_volume;
+		iplEffectParams.distanceAttenuation = params.listener_distance <= (params.max_distance > params.min_distance? params.max_distance : params.min_distance)? clamp_volume(iplDistanceAttenuationCalculate(g_phonon_context, sourcePos, listenerPos, &distanceModel), params.min_volume, params.max_volume) : params.min_volume;
 		iplAirAbsorptionCalculate(g_phonon_context, sourcePos, listenerPos, &airAbsorptionModel, iplEffectParams.airAbsorption);
 		while (totalFramesProcessed < totalFramesToProcess) {
 			ma_uint32 framesToProcessThisIteration = totalFramesToProcess - totalFramesProcessed;
