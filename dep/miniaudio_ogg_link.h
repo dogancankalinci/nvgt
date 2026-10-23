@@ -88,12 +88,22 @@ static void* ma_ogg_link_frames_reserve(ma_ogg_link_frames* pLink, size_t sizeIn
     return pLink->pFrames;
 }
 
+/* Lets go of the converter, so that the next logical stream to convert starts afresh rather than from where the last one left its resampler and filters: one of another format, or one after a stream in the decoder's own format, which isn't held. */
+static void ma_ogg_link_frames_forget_converter(ma_ogg_link_frames* pLink)
+{
+    if (pLink->hasConverter) {
+        ma_data_converter_uninit(&pLink->converter, ma_ogg_link_frames_allocation_callbacks(pLink));
+        pLink->hasConverter = MA_FALSE;
+    }
+
+    pLink->owes = MA_FALSE;
+}
+
 /* Holds the frames just decoded into the reserved room, in the given format, of a logical stream of the given channels and sample rate. */
 static void ma_ogg_link_frames_hold(ma_ogg_link_frames* pLink, ma_uint64 frameCount, ma_format format, ma_uint32 channels, ma_uint32 sampleRate)
 {
-    if (pLink->hasConverter && (pLink->channels != channels || pLink->sampleRate != sampleRate)) {
-        ma_data_converter_uninit(&pLink->converter, ma_ogg_link_frames_allocation_callbacks(pLink));
-        pLink->hasConverter = MA_FALSE;
+    if (pLink->channels != channels || pLink->sampleRate != sampleRate) {
+        ma_ogg_link_frames_forget_converter(pLink);
     }
 
     pLink->owes = MA_FALSE;

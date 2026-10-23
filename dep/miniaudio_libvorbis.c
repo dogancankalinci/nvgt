@@ -425,6 +425,7 @@ MA_API ma_result ma_libvorbis_read_pcm_frames(ma_libvorbis* pVorbis, void* pFram
 
                 holes = 0;
                 if ((ma_uint32)pInfo->channels == channels && (ma_uint32)pInfo->rate == pVorbis->sampleRate) {
+                    ma_ogg_link_frames_forget_converter(&pVorbis->link); /* Given straight, never held: a later stream to convert starts afresh, not with the tail of one before this. */
                     ma_interleave_pcm_frames(format, channels, libvorbisResult, (const void**)ppFramesF32, pFramesOutHere);
                     totalFramesRead += libvorbisResult;
                 } else if (ma_ogg_link_channels_usable(pInfo->channels) && pInfo->rate > 0) {
