@@ -2577,21 +2577,26 @@ public:
 	inline void duplicate() override { audio_node_impl::duplicate(); }
 	inline void release() override { audio_node_impl::release(); }
 	bool set_mixer(mixer *mix) override {
-		if (mix == parent_mixer)
-			return true; // Already where it was asked to go.
 		if (mix && mix->get_engine() != get_engine()) return false; // Another engine's mixer is in that engine's graph, which would play this one's sound.
-		// Not into itself, nor into a mixer that already goes into this one, through parents or a reverb3d's send: that loop never reaches the engine, and its references to each other keep it all alive.
-		if (mix && mixer_reaches(mix, [this](mixer* m) { return m == static_cast<mixer*>(this); })) {
-			g_soundsystem_last_error = MA_INVALID_ARGS;
-			return false;
+		mixer* old;
+		{
+			std::lock_guard<std::recursive_mutex> topology(g_audio_topology_mutex);
+			if (mix == parent_mixer)
+				return true; // Already where it was asked to go.
+			// Not into itself, nor into a mixer that already goes into this one, through parents or a reverb3d's send: that loop never reaches the engine, and its references to each other keep it all alive.
+			if (mix && mixer_reaches(mix, [this](mixer* m) { return m == static_cast<mixer*>(this); })) {
+				g_soundsystem_last_error = MA_INVALID_ARGS;
+				return false;
+			}
+			audio_node *target = mix? mix : get_engine()->get_endpoint();
+			node_chain->set_endpoint(target);
+			if (node_chain->get_endpoint() != target) return false; // It couldn't attach, as to a node without an input, which leaves this where it was.
+			// Held by this mixer too, not only through the chain, whose endpoint the rewiring above let go of and a script can change through internal_node_chain.
+			if (mix) mix->duplicate();
+			old = parent_mixer;
+			parent_mixer = mix;
 		}
-		audio_node *target = mix? mix : get_engine()->get_endpoint();
-		node_chain->set_endpoint(target);
-		if (node_chain->get_endpoint() != target) return false; // It couldn't attach, as to a node without an input, which leaves this where it was.
-		// Held by this mixer too, not only through the chain, whose endpoint the rewiring above let go of and a script can change through internal_node_chain.
-		if (mix) mix->duplicate();
-		if (parent_mixer) parent_mixer->release();
-		parent_mixer = mix;
+		if (old) old->release(); // After the topology lock: it can be the last reference.
 		return true;
 	}
 	mixer *get_mixer() const override { return parent_mixer; }
@@ -3598,6 +3603,7 @@ public:
 			audio_spatializer *forgotten = spatializer;
 			forgotten->forget_mixer();
 			{
+				std::lock_guard<std::recursive_mutex> topology(g_audio_topology_mutex); // A loop check walking mixers reads this spatializer (see mixer_reaches()).
 				unique_lock<mutex> lock(spatialization_params_mutex);
 				spatializer = nullptr;
 			}

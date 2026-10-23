@@ -764,18 +764,21 @@ public:
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return;
 		}
-		if (mix && mixer_reaches(mix, [this](mixer* m) { return m->get_reverb3d_sent_to() == static_cast<reverb3d*>(this); })) { // Not into a mixer that sends to this reverb3d, nor one that goes into such a mixer (see mixer_reaches()).
-			g_soundsystem_last_error = MA_INVALID_ARGS;
-			return;
+		mixer* old;
+		{
+			std::lock_guard<std::recursive_mutex> topology(g_audio_topology_mutex);
+			if (mix && mixer_reaches(mix, [this](mixer* m) { return m->get_reverb3d_sent_to() == static_cast<reverb3d*>(this); })) { // Not into a mixer that sends to this reverb3d, nor one that goes into such a mixer (see mixer_reaches()).
+				g_soundsystem_last_error = MA_INVALID_ARGS;
+				return;
+			}
+			old = output_mixer;
+			if (old && reverb) reverb->detach_output_bus(0);
+			output_mixer = mix;
+			if (output_mixer) output_mixer->duplicate();
+			if (mix && reverb) reverb->attach_output_bus(0, mix, 0);
+			else if (reverb) reverb->attach_output_bus(0, get_engine()->get_endpoint(), 0);
 		}
-		if (output_mixer) {
-			if (reverb) reverb->detach_output_bus(0);
-			output_mixer->release();
-		}
-		output_mixer = mix;
-		if (output_mixer) output_mixer->duplicate();
-		if (mix && reverb) reverb->attach_output_bus(0, mix, 0);
-		else if (reverb) reverb->attach_output_bus(0, get_engine()->get_endpoint(), 0);
+		if (old) old->release();
 	}
 	mixer* get_mixer() const override { return output_mixer; }
 	// Not a value that isn't finite, as for other nodes: the volume read NaN or infinite, and the send, which refuses such a volume, stopped following the distance.
@@ -824,6 +827,7 @@ public:
 	}
 };
 // Without a destination, a new mixer of the reverb3d's own engine, as a reverb3d of the default engine always got one; a mixer of another engine is refused, as both engines' audio threads would read the reverb3d then.
+std::recursive_mutex g_audio_topology_mutex;
 bool mixer_reaches(mixer* from, const std::function<bool(mixer*)>& is_target) {
 	std::vector<mixer*> pending{from};
 	std::unordered_set<mixer*> seen;
@@ -1145,7 +1149,8 @@ public:
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return;
 		}
-		// Not a reverb3d whose mixer is this one, or goes into it (see mixer_reaches()). Asked before this spatializer's chain lock is taken: mixer_reaches() takes other spatializers' chain locks, one at a time, so a thread holding this one while another, holding one of those, set a reverb3d sending back here deadlocked with it.
+		// Not a reverb3d whose mixer is this one, or goes into it (see mixer_reaches()). Asked before this spatializer's chain lock is taken: mixer_reaches() takes other spatializers' chain locks, one at a time, so a thread holding this one while another, holding one of those, set a reverb3d sending back here deadlocked with it. The topology lock is held through the change.
+		std::lock_guard<std::recursive_mutex> topology(g_audio_topology_mutex);
 		mixer* owner = get_mixer();
 		if (new_reverb && owner && new_reverb != get_reverb3d() && new_reverb->get_mixer() && mixer_reaches(new_reverb->get_mixer(), [owner](mixer* m) { return m == owner; })) {
 			g_soundsystem_last_error = MA_INVALID_ARGS;
