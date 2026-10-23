@@ -1728,6 +1728,8 @@ public:
 audio_decoder* audio_decoder::create(audio_engine* e) { return new audio_decoder_impl(e); }
 class audio_encoder_impl : public effect_node_impl, public virtual audio_encoder {
 	unique_ptr<ma_data_converter> dc;
+	// The format write_impl() takes, converted to from float once any change of channels or rate is done, in float: MiniAudio's converter mixes channels in its output format when that is s16, and its mixing down to one channel there divides a signed sum by an unsigned count, so every negative sample of 3, 5, 6 or 7 channels came out as a wrong, large value.
+	ma_format output_format = ma_format_f32;
 	unsigned int sample_rate, channels;
 	unsigned long long frames_written;
 	unsigned long long frames_converted = 0; // Frames the converter gave the encoder, at the encoder's rate.
@@ -1744,7 +1746,7 @@ class audio_encoder_impl : public effect_node_impl, public virtual audio_encoder
 			}
 			idle = 0;
 			frames_converted += frame_count_out;
-			write_impl(buffer.data(), frame_count_out);
+			write_converted(buffer.data(), frame_count_out);
 		}
 	}
 protected:
@@ -1754,15 +1756,23 @@ protected:
 	bool streamable_pulling; // If true read can be called any time in pull mode, otherwise only once after stream is closed.
 	virtual bool open_impl(const string& filename, datastream* ds, unsigned int sample_rate, unsigned int channels, unsigned int flags) { return false; } // Override in subclasses to initialize encoder state, one of either ds or filename will be set.
 	virtual unsigned int write_impl(const void* buffer, unsigned int size) { return 0; } // Override in subclasses, send given buffer to encoder.
+	// Frames in float, at the encoder's channels and rate, given to write_impl() in its format.
+	unsigned int write_converted(const void* frames, unsigned int frame_count) {
+		if (output_format == ma_format_f32) return write_impl(frames, frame_count);
+		vector<char> converted((size_t)frame_count * ma_get_bytes_per_frame(output_format, channels));
+		ma_pcm_convert(converted.data(), output_format, frames, ma_format_f32, (ma_uint64)frame_count * channels, ma_dither_mode_none);
+		return write_impl(converted.data(), frame_count);
+	}
 	virtual bool close_impl() { return true; } // override in subclasses, free any encoder state.
 	bool postsetup(unsigned int target_sample_rate, unsigned int target_channels, ma_format target_format = ma_format_f32) {
 		// Encoder subclasses should usually return from open overrides by calling this funcction.
 		if (get_active()) return false;
 		sample_rate = target_sample_rate;
 		channels = target_channels;
-		if (!dc && (target_format != ma_format_f32 || sample_rate != get_engine()->get_sample_rate() || channels != get_engine()->get_channels())) {
+		output_format = target_format;
+		if (!dc && (sample_rate != get_engine()->get_sample_rate() || channels != get_engine()->get_channels())) {
 			dc = make_unique<ma_data_converter>();
-			ma_data_converter_config cfg = ma_data_converter_config_init(ma_format_f32, target_format, get_engine()->get_channels(), target_channels, get_engine()->get_sample_rate(), target_sample_rate);
+			ma_data_converter_config cfg = ma_data_converter_config_init(ma_format_f32, ma_format_f32, get_engine()->get_channels(), target_channels, get_engine()->get_sample_rate(), target_sample_rate);
 			cfg.resampling.algorithm = ma_resample_algorithm_custom;
 			cfg.resampling.pBackendVTable = &wdl_resampler_backend_vtable;
 			if ((g_soundsystem_last_error = ma_data_converter_init(&cfg, nullptr, &*dc)) != MA_SUCCESS) {
@@ -1775,7 +1785,7 @@ protected:
 		}
 		return true;
 	}
-	ma_data_converter* get_dc() const { return dc.get(); } // Null while no conversion is needed or the encoder isn't open, which *dc would be undefined for.
+	ma_format get_output_format() const { return output_format; }
 public:
 	audio_encoder_impl(audio_engine* e, bool streamable_pulling = true) : effect_node_impl(e, 0, 0, 1, 1, MA_NODE_FLAG_PASSTHROUGH), output_stream(nullptr), pull_stream(nullptr), streamable_pulling(streamable_pulling), sample_rate(0), channels(0), frames_written(0) {}
 	~audio_encoder_impl() {
@@ -1884,7 +1894,7 @@ public:
 	unsigned int write_locked(const float* frames_in, unsigned int frame_count) {
 		if (!frames_in || !frame_count || !get_active()) return 0;
 		if (!dc) {
-			unsigned int frames = write_impl(frames_in, frame_count);
+			unsigned int frames = write_converted(frames_in, frame_count);
 			frames_written += frames;
 			return frames;
 		}
@@ -1895,7 +1905,7 @@ public:
 			ma_uint64 frame_count_in = frame_count - total_processed, frame_count_out = dc_bufsize;
 			if (ma_data_converter_process_pcm_frames(&*dc, ma_offset_pcm_frames_ptr_f32((float*)frames_in, total_processed, dc->channelsIn), &frame_count_in, &dc_buffer[0], &frame_count_out) != MA_SUCCESS) break;
 			if (!frame_count_in && !frame_count_out) break;
-			if (frame_count_out && write_impl(dc_buffer.data(), frame_count_out) < frame_count_out) break; // The encoder failed; these frames didn't make it.
+			if (frame_count_out && write_converted(dc_buffer.data(), frame_count_out) < frame_count_out) break; // The encoder failed; these frames didn't make it.
 			frames_converted += frame_count_out;
 			total_processed += frame_count_in;
 			frames_written += frame_count_in;
@@ -2023,7 +2033,7 @@ public:
 	unsigned int open_flag_choices() const override { return WAV_S16 | WAV_S24 | WAV_U8 | WAV_S32 | WAV_F32; }
 	bool flags_in_range(unsigned int flags) const override { return flags & open_flag_choices(); }
 	string get_format() const override { return "wav"; }
-	ma_format get_wav_format() const override { return !get_active()? ma_format_unknown : get_dc()? get_dc()->formatOut : ma_format_f32; } // Unknown while not open, rather than float, which a closed encoder wrote no more than any other format.
+	ma_format get_wav_format() const override { return !get_active()? ma_format_unknown : get_output_format(); } // Unknown while not open, rather than float, which a closed encoder wrote no more than any other format.
 };
 audio_wav_encoder* audio_wav_encoder::create(audio_engine* e) { return new audio_wav_encoder_impl(e); }
 class audio_opus_encoder_impl : public audio_encoder_impl, public virtual audio_opus_encoder {
