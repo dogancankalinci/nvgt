@@ -101,6 +101,18 @@ std::chrono::high_resolution_clock::time_point profiler_start = std::chrono::hig
 asIScriptFunction* profiler_last_func;
 int profiler_current_line = 0;
 const char* profiler_current_section = NULL;
+// The declarations of the functions in the profile, taken when each is first seen, as it runs. generate_profile() read them from the functions themselves, and one freed since (a compile_function() one let go, a discarded module's) was read after it was freed.
+static std::map<asIScriptFunction*, std::string> profiler_decls;
+// The entry of func in the profile, made with initial (and its declaration taken) if there is none.
+static std::chrono::high_resolution_clock::time_point& profiler_entry(asIScriptFunction* func, std::chrono::high_resolution_clock::time_point initial) {
+	auto it = profiler_cache.find(func);
+	if (it != profiler_cache.end()) return it->second;
+	if (func) {
+		const char* decl = func->GetDeclaration(true, true, true);
+		profiler_decls[func] = decl ? decl : "";
+	}
+	return profiler_cache.emplace(func, initial).first->second;
+}
 
 void profiler_callback(asIScriptContext* ctx, void* obj) {
 	if (!is_profiling) return;
@@ -122,20 +134,16 @@ void profiler_callback(asIScriptContext* ctx, void* obj) {
 	auto elapsed = t - profiler_ticks;
 	profiler_ticks = t;
 	if (func == profiler_last_func) {
-		profiler_cache[func] += elapsed;;
+		profiler_entry(func, profiler_start) += elapsed;
 		return;
 	}
-	if (profiler_last_func != NULL) {
-		std::map<asIScriptFunction*, std::chrono::high_resolution_clock::time_point>::iterator it = profiler_cache.find(func);
-		if (it == profiler_cache.end())
-			profiler_cache[func] = std::chrono::high_resolution_clock::time_point(profiler_start + elapsed);
-		else
-			profiler_cache[func] += elapsed;
-	}
+	if (profiler_last_func != NULL)
+		profiler_entry(func, profiler_start) += elapsed;
 	profiler_last_func = func;
 }
 void reset_profiler() {
 	profiler_cache.clear();
+	profiler_decls.clear();
 	profiler_ticks = std::chrono::high_resolution_clock::now();
 	profiler_start = std::chrono::high_resolution_clock::now();
 	profiler_last_func = NULL;
@@ -146,7 +154,7 @@ void prepare_profiler() {
 	asIScriptContext* ctx = asGetActiveContext();
 	if (!ctx) return;
 	profiler_last_func = ctx->GetFunction();
-	profiler_cache[profiler_last_func] = profiler_start;
+	profiler_entry(profiler_last_func, profiler_start) = profiler_start;
 }
 void start_profiling() {
 	if (is_profiling) return;
@@ -179,7 +187,7 @@ std::string generate_profile(bool reset = true) {
 	for (int i = 0; i < size; i++) {
 		char text[4096];
 		if (!results[i]) continue;
-		const char* decl = results[i]->GetDeclaration(true, true, true);
+		const char* decl = profiler_decls[results[i]].c_str(); // See profiler_decls.
 		float ms = std::chrono::duration_cast<std::chrono::milliseconds>(profiler_cache[results[i]] - profiler_start).count();
 		float p = (ms / total_ms) * 100.0;
 		snprintf(text, 4096, "%s: %.0fms (%.3f%%)\r\n", decl, ms, p);
