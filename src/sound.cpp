@@ -1199,10 +1199,14 @@ public:
 		if (!src) return 0;
 		ma_length(); // For its error, a source with no length at all reading none.
 		if (g_soundsystem_last_error != MA_SUCCESS) return 0;
+		return within_range(audio_data_source_impl::whole_length_frames()); // Unknown whole, as a ring buffer's: the range's own, as MiniAudio counts it, rather than the range's length taken for the whole and cut by its start again.
+	}
+	// The whole source's length, whatever its range, 0 when unknown or empty. A chain counts a source's length within its range only when the whole is known (see chain_source()).
+	virtual unsigned long long whole_length_frames() const {
+		if (!src) return 0;
 		ma_data_source_base* base = (ma_data_source_base*)src->pDataSource;
 		ma_uint64 whole = 0;
-		if (!base->vtable->onGetLength || base->vtable->onGetLength(src->pDataSource, &whole) != MA_SUCCESS) whole = 0;
-		return within_range(whole); // Unknown whole, as a ring buffer's: the range's own, as MiniAudio counts it, rather than the range's length taken for the whole and cut by its start again.
+		return base->vtable->onGetLength && base->vtable->onGetLength(src->pDataSource, &whole) == MA_SUCCESS? whole : 0;
 	}
 	float get_length_milliseconds() const override {
 		ma_uint32 sample_rate = 0;
@@ -1709,6 +1713,10 @@ public:
 		}
 		if (g_soundsystem_last_error == MA_SUCCESS) length_frames = length;
 		return within_range(length);
+	}
+	unsigned long long whole_length_frames() const override { // As worked out, without asking the decoder again.
+		long long known = length_frames;
+		return known > 0? known : 0;
 	}
 	float get_length_milliseconds() const override {
 		unsigned int sample_rate = get_sample_rate();
@@ -2385,7 +2393,8 @@ static ma_data_source* chain_source(ma_data_source* head, audio_engine* engine, 
 		}
 		ma_uint64 length = 0;
 		if (audio_data_source* wrapper = audio_data_source_get(link, engine)) { // Its length worked out, as a decoder's is only while nothing reads it.
-			length = wrapper->get_length_frames();
+			auto impl = dynamic_cast<audio_data_source_impl*>(wrapper);
+			length = !impl || impl->whole_length_frames()? wrapper->get_length_frames() : 0; // With its whole length unknown or 0, a range with an end counts as its own length, which may run past what the source holds: unknown instead, learned once passed.
 			wrapper->release();
 		} else if (ma_data_source_get_length_in_pcm_frames(link, &length) != MA_SUCCESS) length = 0;
 		links.emplace_back(link, length? length : chain_view::unknown); // 0 is also unknown, which an empty source is learned as once passed.
