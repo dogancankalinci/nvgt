@@ -1,0 +1,14 @@
+diff --git a/sdk/angelscript/source/as_compiler.cpp b/sdk/angelscript/source/as_compiler.cpp
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -212,6 +212,10 @@
+ 			{
+ 				asCExprContext ctx(engine);
+ 				CompileVariableAccess("this", "", &ctx, 0);
++				// ALTERED: the object, not the address of the variable holding it, as for the calls below. Without it the base
++				// class's default constructor ran on the stack slot holding the this pointer and built its members into the
++				// context stack (the copy constructor generated for a class whose base has an opAssign and no copy constructor)
++				ctx.bc.Instr(asBC_RDSPtr);
+ 				ctx.bc.Call(asBC_CALL, outFunc->objectType->derivedFrom->beh.construct, AS_PTR_SIZE, 0);
+ 
+ 				CompileVariableAccess("other", "", &ctx, 0);
