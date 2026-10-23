@@ -1339,7 +1339,8 @@ audio_data_source* audio_data_source_get(ma_data_source* ptr, audio_engine* engi
 struct pcm_queue {
 	ma_data_source_base base; // First: MiniAudio passes this struct as the data source.
 	ma_pcm_rb rb;
-	std::atomic<ma_uint32> skip{0};
+	// Frames written into the ring buffer and read out of it since it began, and the frame up to which the reader drops what it reads: a discard is a position rather than a count of what is queued, which, taken while the reader was copying frames out, as MiniAudio's ring buffer copies before it commits the read, still held those, so that the next read dropped as many frames written after the discard.
+	std::atomic<ma_uint64> written{0}, taken{0}, discard_to{0};
 	ma_result init(ma_format format, ma_uint32 channels, ma_uint32 frames) {
 		ma_result result = ma_pcm_rb_init(format, channels, frames, nullptr, nullptr, &rb);
 		if (result != MA_SUCCESS) return result;
@@ -1352,23 +1353,49 @@ struct pcm_queue {
 		ma_data_source_uninit(&base);
 		ma_pcm_rb_uninit(&rb);
 	}
-	void discard() { skip = ma_pcm_rb_available_read(&rb); }
+	// By the writer, or with it held off: what was written so far goes.
+	void discard() { discard_to.store(written.load()); }
+	// By the writer, once frames are committed.
+	void wrote(ma_uint32 frames) { written += frames; }
+	// With neither the writer nor the reader at it, once the ring buffer was reset: nothing queued, nothing to drop.
+	void emptied() { taken.store(written.load()); }
+	ma_uint64 pending_discard() {
+		ma_uint64 to = discard_to.load(), done = taken.load();
+		return to > done? to - done : 0;
+	}
 	// What a read can still get: what is queued, less what the next read drops.
 	ma_uint32 readable() {
-		ma_uint32 available = ma_pcm_rb_available_read(&rb), skipping = skip;
-		return available > skipping? available - skipping : 0;
+		ma_uint32 available = ma_pcm_rb_available_read(&rb);
+		ma_uint64 skipping = pending_discard();
+		return available > skipping? available - (ma_uint32)skipping : 0;
 	}
 	// By the reader only.
 	void drop_pending() {
-		if (ma_uint32 n = skip.exchange(0)) {
-			ma_uint32 available = ma_pcm_rb_available_read(&rb);
-			ma_pcm_rb_seek_read(&rb, n < available? n : available);
+		if (ma_uint64 n = pending_discard()) {
+			ma_uint32 available = ma_pcm_rb_available_read(&rb), dropped = n < available? (ma_uint32)n : available;
+			ma_pcm_rb_seek_read(&rb, dropped);
+			taken += dropped;
 		}
 	}
+	// As MiniAudio's ring buffer reads as a data source, padding with silence what isn't queued, as a reader in the graph needs so that a sound doesn't end at a buffer empty for a moment, but counting the frames it took.
 	static ma_result on_read(ma_data_source* ds, void* frames_out, ma_uint64 frame_count, ma_uint64* frames_read) {
 		pcm_queue* queue = (pcm_queue*)ds;
 		queue->drop_pending();
-		return ma_data_source_read_pcm_frames(&queue->rb, frames_out, frame_count, frames_read);
+		ma_format format = queue->rb.format;
+		ma_uint32 channels = queue->rb.channels;
+		ma_uint64 total = 0;
+		while (total < frame_count) {
+			ma_uint32 frames = (ma_uint32)std::min<ma_uint64>(frame_count - total, 0xFFFFFFFF);
+			void* mapped = nullptr;
+			if (ma_pcm_rb_acquire_read(&queue->rb, &frames, &mapped) != MA_SUCCESS || !frames) break;
+			if (frames_out) ma_copy_pcm_frames(ma_offset_pcm_frames_ptr(frames_out, total, format, channels), mapped, frames, format, channels);
+			if (ma_pcm_rb_commit_read(&queue->rb, frames) != MA_SUCCESS) break;
+			queue->taken += frames;
+			total += frames;
+		}
+		if (frames_out && total < frame_count) ma_silence_pcm_frames(ma_offset_pcm_frames_ptr(frames_out, total, format, channels), frame_count - total, format, channels);
+		if (frames_read) *frames_read = frame_count;
+		return MA_SUCCESS;
 	}
 	static ma_result on_get_data_format(ma_data_source* ds, ma_format* format, ma_uint32* channels, ma_uint32* sample_rate, ma_channel* channel_map, size_t channel_map_cap) {
 		return ma_data_source_get_data_format(&((pcm_queue*)ds)->rb, format, channels, sample_rate, channel_map, channel_map_cap);
@@ -1404,7 +1431,7 @@ public:
 			return;
 		}
 		ma_pcm_rb_reset(&*rb);
-		queue->skip = 0; // What was queued is gone already; skipping it later would drop frames written after this.
+		queue->emptied(); // What was queued is gone already; skipping it later would drop frames written after this.
 	}
 	unsigned int get_advised_read_frame_count() const override { return get_available_read(); }
 	unsigned int write(const float* frames_in, unsigned int frame_count) override {
@@ -1424,6 +1451,7 @@ public:
 			if (!chunk) break; // ring genuinely full
 			ma_copy_pcm_frames(pWriteBuffer, frames_in + (size_t)total * rb->channels, chunk, rb->format, rb->channels);
 			ma_pcm_rb_commit_write(&*rb, chunk);
+			queue->wrote(chunk);
 			total += chunk;
 		}
 		return total;
@@ -3475,6 +3503,7 @@ public:
 			waiting = false;
 			memcpy(buffer_ptr, input + (frames_written * frame_size), frames_requested * frame_size);
 			if ((g_soundsystem_last_error = ma_pcm_rb_commit_write(&pcm_stream->rb, frames_requested)) != MA_SUCCESS) return false;
+			pcm_stream->wrote(frames_requested);
 			frames_written += frames_requested;
 			size_in_frames -= frames_requested;
 		}
