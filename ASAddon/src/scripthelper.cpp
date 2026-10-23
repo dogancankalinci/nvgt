@@ -951,8 +951,19 @@ string GetExceptionInfo(asIScriptContext *ctx, bool showStack)
 	if( showStack && ctx->GetCallstackSize()>1)
 	{
 		text << "--- call stack ---\n";
-		for( asUINT n = 1; n < ctx->GetCallstackSize(); n++ )
+		// A deep call stack lists only its innermost and its outermost calls, 50 each, with the number of the calls between
+		// them: listed whole, the message of an exception deep in a recursion (a runaway recursion's "Stack overflow") had a
+		// line for every call, thousands to millions of them, and every call listed costs time.
+		const asUINT listedEnds = 50;
+		const asUINT size = ctx->GetCallstackSize();
+		for( asUINT n = 1; n < size; n++ )
 		{
+			if( size - 1 > 2 * listedEnds && n == 1 + listedEnds )
+			{
+				text << "... (" << (size - 1 - 2 * listedEnds) << " calls not listed) ...\n";
+				n = size - listedEnds - 1;
+				continue;
+			}
 			function = ctx->GetFunction(n);
 			if( function )
 			{

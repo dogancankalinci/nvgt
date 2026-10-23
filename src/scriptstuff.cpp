@@ -197,12 +197,20 @@ std::string generate_profile(bool reset = true) {
 	return output;
 }
 
+// A call stack deeper than twice this lists only its innermost and its outermost calls, this many each, with the number of the calls between them. Every call listed costs time and memory (about 1.7 microseconds and 135 bytes), and the exception callback lists the stack of every exception, caught ones too: an exception raised and caught in each call of a recursion 4000 calls deep took 7 seconds, in time growing with the square of the depth, and the listing of a stack a million calls deep (a runaway recursion's "Stack overflow") would take 135 MB.
+const asUINT CALL_STACK_LISTED_ENDS = 50;
 std::string get_call_stack_ctx(asIScriptContext* ctx) {
 	asUINT size = ctx->GetCallstackSize();
 	char tmp[4096];
-	snprintf(tmp, 4096, "Call stack size: %d\r\n\r\n", size);
+	snprintf(tmp, 4096, "Call stack size: %u\r\n\r\n", size);
 	std::string stack = tmp;
 	for (asUINT i = 0; i < size; i++) {
+		if (size > 2 * CALL_STACK_LISTED_ENDS && i == CALL_STACK_LISTED_ENDS) {
+			snprintf(tmp, 4096, "(%u calls not listed)\r\n\r\n", size - 2 * CALL_STACK_LISTED_ENDS);
+			stack += tmp;
+			i = size - CALL_STACK_LISTED_ENDS - 1;
+			continue;
+		}
 		const char* section = nullptr;
 		int line = 0, col = 0;
 		asIScriptFunction* func = ctx->GetFunction(i);
