@@ -66,6 +66,7 @@ vcpkg_from_github(
         fix-bytecode-inherited-opassign.patch
         fix-return-location-clean-up.patch
         fix-jitentry-stop-position.patch
+        fix-call-stack-growth.patch
 )
 
 vcpkg_cmake_configure(

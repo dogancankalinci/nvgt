@@ -1,0 +1,54 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -1859,6 +1859,11 @@
+ 
+ 		// Allocate space for 10 call states at a time to save time
+ 		m_callStack.AllocateNoConstruct(m_callStack.GetLength() + 10 * CALLSTACK_FRAME_SIZE, true);
++
++		// ALTERED: if the memory can't be had, the nested call is refused (see PushCallState), and no change to the context
++		// is done. Both states were written past the end of the array, over whatever the heap held there.
++		if( m_callStack.GetLength() + 2*CALLSTACK_FRAME_SIZE > m_callStack.GetCapacity() )
++			return asOUT_OF_MEMORY;
+ 	}
+ 
+ 	// Push the current script function that is calling the system function
+@@ -1970,9 +1975,8 @@
+ {
+ 	// PushCallState is called whenever we already have m_callStack n*CALLSTACK_FRAME_SIZE memory
+ 	// We only need to increment it if it is full (old_length >= m_callStack.maxLength)
+-	// Here we assume that AllocateNoConstruct will always execute and allocate us extra memory,
+-	// so we can use the faster m_callStack.SetLengthNoAllocate since it is already known the capacity 
+-	// is enough.
++	// ALTERED: once AllocateNoConstruct has made room, as checked below, the capacity is known to be enough,
++	// so we can use the faster m_callStack.SetLengthNoAllocate.
+ 
+ 	asUINT oldLength = m_callStack.GetLength();
+     if (oldLength >= m_callStack.GetCapacity())
+@@ -1984,7 +1988,25 @@
+             SetInternalException(TXT_STACK_OVERFLOW, true, true);
+             return asERROR;
+         }
+-        m_callStack.AllocateNoConstruct(oldLength + 10 * CALLSTACK_FRAME_SIZE, true);
++
++		// ALTERED: the call stack grows by half its size (at least 10 states), up to asEP_MAX_CALL_STACK_SIZE, and the call
++		// fails with a stack overflow when the memory can't be had. It grew by 10 states at a time, each time copied whole
++		// into the new array, so a recursion N calls deep cost time in the square of N (160000 calls took half a minute),
++		// and a runaway recursion slowed down more and more instead of reaching the limit. And when the array couldn't be
++		// reallocated it went on, writing the state past the array's end, over whatever the heap held there.
++		// The capacity stays a whole number of states, as the test above takes it to be.
++		asUINT states = oldLength / CALLSTACK_FRAME_SIZE / 2;
++		if( states < 10 ) states = 10;
++		asUINT newCapacity = oldLength + states * CALLSTACK_FRAME_SIZE;
++		if( m_engine->ep.maxCallStackSize > 0 && newCapacity > m_engine->ep.maxCallStackSize * CALLSTACK_FRAME_SIZE )
++			newCapacity = m_engine->ep.maxCallStackSize * CALLSTACK_FRAME_SIZE;
++		if( newCapacity > oldLength )
++			m_callStack.AllocateNoConstruct(newCapacity, true);
++		if( oldLength + CALLSTACK_FRAME_SIZE > m_callStack.GetCapacity() )
++		{
++			SetInternalException(TXT_STACK_OVERFLOW, true, true);
++			return asERROR;
++		}
+     }
+ 	m_callStack.SetLengthNoAllocate(oldLength + CALLSTACK_FRAME_SIZE);
+ 
