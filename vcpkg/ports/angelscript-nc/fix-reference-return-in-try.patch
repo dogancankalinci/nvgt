@@ -1,0 +1,76 @@
+diff --git a/sdk/angelscript/source/as_compiler.cpp b/sdk/angelscript/source/as_compiler.cpp
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -95,6 +95,7 @@
+ 	m_isConstructor            = false;
+ 	m_isConstructorCalled      = false;
+ 	m_hasReturned              = false;
++	m_tryBlockDepth            = 0;
+ 	m_classDecl                = 0;
+ 	m_globalVar                = 0;
+ 	isCompilingDefaultArg      = false;
+@@ -135,6 +136,7 @@
+ 	m_isConstructor       = false;
+ 	m_isConstructorCalled = false;
+ 	m_hasReturned         = false;
++	m_tryBlockDepth       = 0;
+ 	m_classDecl           = 0;
+ 	m_globalVar           = 0;
+ 
+@@ -4892,7 +4894,10 @@
+ 	// Compile the try block
+ 	bool hasReturnTry;
+ 	asCByteCode tryBC(engine);
++	// ALTERED: counted for the return of a reference, see CompileReturnStatement
++	m_tryBlockDepth++;
+ 	CompileStatement(node->firstChild, &hasReturnTry, &tryBC);
++	m_tryBlockDepth--;
+ 
+ 	// Add marker to unwind exception until here, then jump to catch block
+ 	bc->TryBlock((short)beforeCatchLabel);
+@@ -6280,6 +6285,26 @@
+ 			// is evaluated, otherwise there is a possibility that the cleanup will
+ 			// invalidate the reference.
+ 
++			// ALTERED: inside a try block of this function the expression is evaluated first, and the local variables
++			// are destroyed after it, keeping the reference on the stack meanwhile. Destroyed first, an exception raised
++			// by the expression (an index out of range in `return a[i];`) was caught by that try block's catch, and the
++			// function went on with its local variables destroyed but still in scope: the catch block and the code after
++			// it used destroyed objects, and the function's end destroyed them a second time. Outside a try block the
++			// exception leaves the function, whose clean up knows they are destroyed, so the order stays as it was.
++			if( m_tryBlockDepth > 0 )
++			{
++				// For primitives the reference is in the register, which the destructors would overwrite
++				if( expr.type.dataType.IsPrimitive() )
++					expr.bc.Instr(asBC_PshRPtr);
++				else if( !expr.type.dataType.IsObjectHandle() &&
++					expr.type.dataType.IsReference() )
++					expr.bc.Instr(asBC_RDSPtr);
++
++				DestroyVariables(&expr.bc);
++				expr.bc.Instr(asBC_PopRPtr);
++			}
++			else
++			{
+ 			// Destroy the local variables before loading
+ 			// the reference into the register. This will
+ 			// be done before the expression is evaluated.
+@@ -6296,6 +6321,7 @@
+ 
+ 				expr.bc.Instr(asBC_PopRPtr);
+ 			}
++			}
+ 
+ 			// There are no temporaries to release so we're done
+ 		}
+diff --git a/sdk/angelscript/source/as_compiler.h b/sdk/angelscript/source/as_compiler.h
+--- a/sdk/angelscript/source/as_compiler.h
++++ b/sdk/angelscript/source/as_compiler.h
+@@ -441,6 +441,7 @@
+ 	bool                         m_isConstructor;
+ 	bool                         m_isConstructorCalled;
+ 	bool                         m_hasReturned;
++	int                          m_tryBlockDepth; // ALTERED: how many try blocks of the function the code being compiled is in
+ 	asCArray<asCObjectProperty*> m_initializedProperties; // Doesn't hold reference
+ 	asCArray<asSNameSpace*>      m_namespaceVisibility;
+ 	asCMap<asCObjectProperty*, asUINT> m_propertyAccessCount; // Doesn't hold reference

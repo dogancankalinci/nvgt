@@ -74,6 +74,7 @@ vcpkg_from_github(
         fix-handle-copy-constructor.patch
         fix-foreach-item-clean-up.patch
         fix-init-before-argument-release.patch
+        fix-reference-return-in-try.patch
 )
 
 vcpkg_cmake_configure(
