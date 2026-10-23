@@ -631,7 +631,8 @@ void ConfigureEngineOptions(asIScriptEngine *engine) {
 		engine->SetEngineProperty(asEP_DISABLE_SCRIPT_CLASS_GC, true);
 	if (config.hasOption("scripting.disable_foreach"))
 		engine->SetEngineProperty(asEP_FOREACH_SUPPORT, false);
-	engine->SetEngineProperty(asEP_MAX_NESTED_CALLS, config.getInt("scripting.max_nested_calls", 10000));
+	// A nested call (a registered function running a script callback: an array sort calling opCmp, a script class destructor, a plugin's callback) takes native stack for each level, and scripts run on threads of 1 MB (the Windows main thread and script threads) or less (512 KB secondary threads on macOS and iOS). With 10000 the "Too many nested calls" exception was never reached: a runaway nested recursion overflowed the native stack first and the program died (nvgt.exe after 300 to 500 levels of nested sorts). 100 is AngelScript's own default, chosen for that reason.
+	engine->SetEngineProperty(asEP_MAX_NESTED_CALLS, config.getInt("scripting.max_nested_calls", 100));
 	engine->SetEngineProperty(asEP_MAX_STACK_SIZE, config.getInt("scripting.max_stack_size", 0));
 	engine->SetEngineProperty(asEP_MAX_CALL_STACK_SIZE, config.getInt("scripting.max_call_stack_size", 0));
 	engine->SetEngineProperty(asEP_INIT_STACK_SIZE, config.getInt("scripting.init_stack_size", 4096));

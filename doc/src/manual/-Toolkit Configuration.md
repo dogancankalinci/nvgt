@@ -170,7 +170,7 @@ For more information on these properties, the [Angelscript custom options docume
 * ignore_duplicate_shared_interface: allow shared interfaced with the same name to be declared multiple times
 * init_call_stack_size =  integer default 10: the size of the call stack in function calls to initially allocate for each script context
 * init_stack_size =  integer default 4096: the initial stack size in bytes for each script context
-* max_nested_calls = integer default 10000: specify the number of nested calls before a stack overflow exception is raised and execution is aborted
+* max_nested_calls = integer default 100: the number of script executions that may be nested in one another (a function of the engine or of a plugin that runs script code, such as an array sort calling opCmp or the destructor of a script class, nests one) before the next one fails with a "Too many nested calls" exception; each level takes native stack, so a value much higher lets a runaway nested recursion crash the program with a stack overflow instead
 * max_stack_size = integer default 0 (unlimited): the maximum stack size in bytes for each script context
 * max_call_stack_size = integer default 0: similar to max_nested_calls but can possibly include calls to system functions (angelscript docs is unclear)
 * private_prop_as_protected: private properties of a parent class can be accessed from that class's children
