@@ -3779,12 +3779,19 @@ public:
 		else
 			return get_position_in_milliseconds();
 	}
-	// The frame a seek not yet made asked for, as MiniAudio reports its own, or the source's cursor.
+	// The frame a seek not yet made asked for, as MiniAudio reports its own, or the source's cursor, which is the length once the sound played to its end: a resampling decoder gives a few frames more or fewer than the length it reports, and MiniAudio's stream counts its cursor modulo that length, so a stream that played to its end read a position near 0.
 	ma_result get_cursor(ma_uint64& pos) {
 		ma_uint64 target = held(&*snd)->seek_target.load();
-		if (target == ~(ma_uint64)0) return ma_sound_get_cursor_in_pcm_frames(&*snd, &pos);
-		pos = target;
-		return MA_SUCCESS;
+		if (target != ~(ma_uint64)0) {
+			pos = target;
+			return MA_SUCCESS;
+		}
+		ma_result result = ma_sound_get_cursor_in_pcm_frames(&*snd, &pos);
+		if (result == MA_SUCCESS && ma_sound_at_end(&*snd) && !ma_sound_is_looping(&*snd)) {
+			unsigned long long length = get_length_in_frames();
+			if (length) pos = length;
+		}
+		return result;
 	}
 	unsigned long long get_position_in_frames() override {
 		if (snd) {
