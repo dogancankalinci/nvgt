@@ -128,6 +128,17 @@ static long ma_libvorbis_vf_callback__tell(void* pUserData)
 }
 #endif
 
+#if !defined(MA_NO_LIBVORBIS)
+/* libvorbisfile leaves a seekable file of several logical streams one after another (a chained Ogg file) at the start of its second link once it is opened, so the first link was never played until something sought to the start. Back to the start, where an opened source begins; a file of one link is there already. */
+static void ma_libvorbis_rewind_after_open(ma_libvorbis* pVorbis)
+{
+    OggVorbis_File* vf = (OggVorbis_File*)pVorbis->vf;
+    if (ov_seekable(vf) && ov_pcm_tell(vf) != 0) {
+        ov_pcm_seek(vf, 0);
+    }
+}
+#endif
+
 static ma_result ma_libvorbis_init_internal(const ma_decoding_backend_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_libvorbis* pVorbis)
 {
     if (pVorbis == NULL) {
@@ -210,6 +221,7 @@ MA_API ma_result ma_libvorbis_init(ma_read_proc onRead, ma_seek_proc onSeek, ma_
             ma_free(pVorbis->vf, pAllocationCallbacks);
             return MA_INVALID_FILE;
         }
+        ma_libvorbis_rewind_after_open(pVorbis);
 
         return MA_SUCCESS;
     }
@@ -242,6 +254,7 @@ MA_API ma_result ma_libvorbis_init_file(const char* pFilePath, const ma_decoding
             ma_free(pVorbis->vf, pAllocationCallbacks);
             return MA_INVALID_FILE;
         }
+        ma_libvorbis_rewind_after_open(pVorbis);
 
         return MA_SUCCESS;
     }
