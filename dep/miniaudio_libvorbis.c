@@ -435,7 +435,7 @@ MA_API ma_result ma_libvorbis_read_pcm_frames(ma_libvorbis* pVorbis, void* pFram
                     }
 
                     ma_interleave_pcm_frames(format, pInfo->channels, libvorbisResult, (const void**)ppFramesF32, pHeld);
-                    ma_ogg_link_frames_hold(&pVorbis->link, libvorbisResult, pInfo->channels, pInfo->rate);
+                    ma_ogg_link_frames_hold(&pVorbis->link, libvorbisResult, ma_format_f32, pInfo->channels, pInfo->rate);
                 }
             } else {
                 /*
@@ -451,7 +451,7 @@ MA_API ma_result ma_libvorbis_read_pcm_frames(ma_libvorbis* pVorbis, void* pFram
                     sizeInBytes = sizeof(ma_int16) * 255;
                 }
 
-                pHeld = ma_ogg_link_frames_reserve(&pVorbis->link, sizeInBytes);
+                pHeld = ma_ogg_link_frames_reserve(&pVorbis->link, sizeInBytes * 2);   /* Room for them in float, if they are to be converted. */
                 if (pHeld == NULL) {
                     result = MA_OUT_OF_MEMORY;
                     break;
@@ -479,7 +479,11 @@ MA_API ma_result ma_libvorbis_read_pcm_frames(ma_libvorbis* pVorbis, void* pFram
                 }
 
                 holes = 0;
-                ma_ogg_link_frames_hold(&pVorbis->link, libvorbisResult / (sizeof(ma_int16) * pInfo->channels), pInfo->channels, pInfo->rate);
+                if ((ma_uint32)pInfo->channels == channels && (ma_uint32)pInfo->rate == pVorbis->sampleRate) {
+                    ma_ogg_link_frames_hold(&pVorbis->link, libvorbisResult / (sizeof(ma_int16) * pInfo->channels), format, pInfo->channels, pInfo->rate);
+                } else {
+                    ma_ogg_link_frames_hold_s16_as_f32(&pVorbis->link, libvorbisResult / (sizeof(ma_int16) * pInfo->channels), pInfo->channels, pInfo->rate);
+                }
             }
         }
 

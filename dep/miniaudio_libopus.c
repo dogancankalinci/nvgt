@@ -335,7 +335,7 @@ MA_API ma_result ma_libopus_read_pcm_frames(ma_libopus* pOpus, void* pFramesOut,
                 samplesToRead = 255;
             }
 
-            pHeld = ma_ogg_link_frames_reserve(&pOpus->link, samplesToRead * ma_get_bytes_per_sample(format));
+            pHeld = ma_ogg_link_frames_reserve(&pOpus->link, samplesToRead * sizeof(float));   /* Room for them in float, if they are to be converted. */
             if (pHeld == NULL) {
                 result = MA_OUT_OF_MEMORY;
                 break;
@@ -369,7 +369,11 @@ MA_API ma_result ma_libopus_read_pcm_frames(ma_libopus* pOpus, void* pFramesOut,
             }
 
             holes = 0;
-            ma_ogg_link_frames_hold(&pOpus->link, libopusResult, (ma_uint32)linkChannels, 48000);
+            if ((ma_uint32)linkChannels == channels || format == ma_format_f32) {
+                ma_ogg_link_frames_hold(&pOpus->link, libopusResult, format, (ma_uint32)linkChannels, 48000);
+            } else {
+                ma_ogg_link_frames_hold_s16_as_f32(&pOpus->link, libopusResult, (ma_uint32)linkChannels, 48000);
+            }
         }
 
         pOpus->cursor += totalFramesRead;
