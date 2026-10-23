@@ -2254,6 +2254,87 @@ static ma_data_source* float_source(ma_data_source* source, unique_ptr<float_vie
 	view->channels = channels;
 	return &view->base;
 }
+// A chain of sources a sound plays, from the one its head was on when the sound opened it, read as one source: its length is the chain's, its cursor the place in the whole chain, a seek moves the head onto the source the frame falls in, and its end is the chain's, so MiniAudio loops the whole chain and plays it again from its start once it ended. MiniAudio's own seek, restart and looping reached only the head's own source, while the head read on from wherever the chain had got to: a seek to 0 read 0 and played on in the second source, and a looped chain looped its first source. The links can't change while a sound plays the head, so they are taken once.
+struct chain_view {
+	ma_data_source_base base;
+	ma_data_source* head;
+	std::vector<std::pair<ma_data_source*, ma_uint64>> links; // Each source in order, with its length, 0 when unknown.
+	bool endless = false; // The last source links back into the chain, as one set as its own next does, so the chain never ends.
+	~chain_view() { ma_data_source_uninit(&base); } // Only views made in full are kept.
+};
+static ma_result chain_view_read(ma_data_source* source, void* frames_out, ma_uint64 frame_count, ma_uint64* frames_read) { return ma_data_source_read_pcm_frames(((chain_view*)source)->head, frames_out, frame_count, frames_read); }
+static ma_result chain_view_seek(ma_data_source* source, ma_uint64 frame) {
+	chain_view* view = (chain_view*)source;
+	size_t index = 0;
+	ma_uint64 offset = 0;
+	while (index + 1 < view->links.size() && view->links[index].second && frame >= offset + view->links[index].second) offset += view->links[index++].second; // The source the frame falls in, or the last.
+	ma_result result = ma_data_source_seek_to_pcm_frame(view->links[index].first, frame - offset);
+	if (result == MA_SUCCESS) ma_data_source_set_current(view->head, view->links[index].first);
+	return result;
+}
+static ma_result chain_view_get_data_format(ma_data_source* source, ma_format* format, ma_uint32* channels, ma_uint32* sample_rate, ma_channel* channel_map, size_t channel_map_capacity) { return ma_data_source_get_data_format(((chain_view*)source)->head, format, channels, sample_rate, channel_map, channel_map_capacity); } // A chain's sources all have the head's (see audio_data_source_impl::can_chain()).
+static ma_result chain_view_get_cursor(ma_data_source* source, ma_uint64* cursor) {
+	chain_view* view = (chain_view*)source;
+	ma_data_source* current = ma_data_source_get_current(view->head);
+	ma_uint64 offset = 0;
+	for (const auto& link : view->links) {
+		if (link.first == current) {
+			ma_uint64 within = 0;
+			ma_result result = ma_data_source_get_cursor_in_pcm_frames(current, &within);
+			*cursor = offset + within;
+			return result;
+		}
+		offset += link.second;
+	}
+	*cursor = offset; // Off the chain, as once it ended.
+	return MA_SUCCESS;
+}
+static ma_result chain_view_get_length(ma_data_source* source, ma_uint64* length) {
+	chain_view* view = (chain_view*)source;
+	*length = 0;
+	if (view->endless) return MA_NOT_IMPLEMENTED;
+	for (const auto& link : view->links) {
+		if (!link.second) {
+			*length = 0;
+			return MA_NOT_IMPLEMENTED;
+		}
+		*length += link.second;
+	}
+	return MA_SUCCESS;
+}
+static ma_data_source_vtable g_chain_view_vtable = {chain_view_read, chain_view_seek, chain_view_get_data_format, chain_view_get_cursor, chain_view_get_length, nullptr, 0}; // Looping is the view's own, which MiniAudio keeps, rather than the head's, which loops only the source it is on.
+// The source a sound opening head reads: a chain_view made in view when head is in a chain, or is on another source, else head itself.
+static ma_data_source* chain_source(ma_data_source* head, audio_engine* engine, unique_ptr<chain_view>& view) {
+	view.reset();
+	ma_data_source* start = ma_data_source_get_current(head);
+	if (!start) start = head;
+	std::vector<std::pair<ma_data_source*, ma_uint64>> links;
+	bool endless = false;
+	for (ma_data_source* link = start; link; link = ma_data_source_get_next(link)) {
+		if (std::any_of(links.begin(), links.end(), [link](const auto& known) { return known.first == link; })) {
+			endless = true;
+			break;
+		}
+		ma_uint64 length = 0;
+		if (audio_data_source* wrapper = audio_data_source_get(link, engine)) { // Its length worked out, as a decoder's is only while nothing reads it.
+			length = wrapper->get_length_frames();
+			wrapper->release();
+		} else if (ma_data_source_get_length_in_pcm_frames(link, &length) != MA_SUCCESS) length = 0;
+		links.emplace_back(link, length);
+	}
+	if (start == head && links.size() < 2) return head; // No chain, or a source looping on itself, read as it is.
+	view = make_unique<chain_view>();
+	ma_data_source_config cfg = ma_data_source_config_init();
+	cfg.vtable = &g_chain_view_vtable;
+	if (ma_data_source_init(&cfg, &view->base) != MA_SUCCESS) {
+		view.reset();
+		return head;
+	}
+	view->head = head;
+	view->links = std::move(links);
+	view->endless = endless;
+	return &view->base;
+}
 static void held_group_process(ma_node* node, const float** frames_in, ma_uint32* frame_count_in, float** frames_out, ma_uint32* frame_count_out) {
 	hold_rate(node);
 	g_ma_group_process(node, frames_in, frame_count_in, frames_out, frame_count_out);
@@ -2921,6 +3002,11 @@ class sound_impl final : public mixer_impl, public virtual sound {
 	mutable std::atomic_flag load_completed;
 	unique_ptr<pcm_queue> pcm_stream;
 	unique_ptr<float_view> view; // What the sound reads its source through when that isn't in float, freed after the sound.
+	unique_ptr<chain_view> chain; // What a sound playing a chain of sources reads it through, freed after the sound and view.
+	unsigned long long chain_length_frames() const { // The length of the chain chain reads, 0 when unknown.
+		ma_uint64 length = 0;
+		return chain_view_get_length((ma_data_source*)&chain->base, &length) == MA_SUCCESS? length : 0;
+	}
 	ma_data_source* own_source() const { return view? view->inner : snd->pDataSource; } // With snd set.
 	bool paused;
 	bool fade_paused = false; // Paused by pause_fade(), whose stop is still scheduled, unlike one the script scheduled itself.
@@ -3315,8 +3401,9 @@ public:
 		if (snd) close();
 		audio_data_source_impl::prepare_length_of(ds); // Before the sound reads it.
 		held_sound_ptr made(new held_sound()); // As load_special() makes a sound.
-		if ((g_soundsystem_last_error = ma_sound_init_from_data_source(get_engine()->get_ma_engine(), float_source(ds->get_ma_data_source(), view), MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT, nullptr, &*made)) != MA_SUCCESS) {
+		if ((g_soundsystem_last_error = ma_sound_init_from_data_source(get_engine()->get_ma_engine(), float_source(chain_source(ds->get_ma_data_source(), get_engine(), chain), view), MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT, nullptr, &*made)) != MA_SUCCESS) {
 			view.reset();
+			chain.reset();
 			ds->release();
 			return false;
 		}
@@ -3375,6 +3462,7 @@ public:
 		if (failed_buffer) free_failed_buffer(failed_buffer);
 		ma_sound_uninit(&*closing); // The sound doesn't own its source, which is freed after it.
 		view.reset();
+		chain.reset();
 		if (source) {
 			{
 				std::shared_lock<std::shared_mutex> tree_lock(g_resource_tree_mutex, std::defer_lock);
@@ -3610,6 +3698,7 @@ public:
 			return get_length_in_milliseconds();
 	}
 	unsigned long long get_length_in_frames() override {
+		if (snd && chain) return chain_length_frames(); // The whole chain's.
 		if (snd && datasource_opened && datasource) return datasource->get_length_frames(); // The source the script opened answers for itself, as a decoder's length is worked out only while nothing reads it.
 		if (snd) {
 			ma_uint64 len;
@@ -3619,6 +3708,10 @@ public:
 		return 0;
 	}
 	unsigned long long get_length_in_milliseconds() override {
+		if (snd && chain) {
+			ma_uint32 sample_rate = 0;
+			return ma_data_source_get_data_format(chain->head, nullptr, nullptr, &sample_rate, nullptr, 0) == MA_SUCCESS && sample_rate? chain_length_frames() * 1000 / sample_rate : 0;
+		}
 		if (snd && datasource_opened && datasource) return (unsigned long long)datasource->get_length_milliseconds(); // As get_length_in_frames().
 		if (snd) {
 			float len;
