@@ -1,0 +1,203 @@
+diff --git a/sdk/angelscript/source/as_compiler.cpp b/sdk/angelscript/source/as_compiler.cpp
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -1111,12 +1111,8 @@
+ 				ctx->bc.InstrSHORT_DW(asBC_ADDSi, (short)offset, engine->GetTypeIdFromDataType(asCDataType::CreateType(outFunc->objectType, false)));
+ 			}
+ 
+-			PerformFunctionCall(func, ctx, isObjectOnHeap, &args, CastToObjectType(type.GetTypeInfo()));
+-
+-			// TODO: value on stack: This probably needs to be done in PerformFunctionCall
+-			// Mark the object as initialized
+-			if( !isObjectOnHeap )
+-				ctx->bc.ObjInfo(offset, asOBJ_INIT);
++			// ALTERED: the object is marked as initialized right after the call, see PerformFunctionCall
++			PerformFunctionCall(func, ctx, isObjectOnHeap, &args, CastToObjectType(type.GetTypeInfo()), false, 0, 0, !isObjectOnHeap, offset);
+ 
+ 			return 0;
+ 		}
+@@ -1302,13 +1298,16 @@
+ 						if( derefDest )
+ 							ctx.bc.Instr(asBC_RDSPtr);
+ 
+-						PerformFunctionCall(func, &ctx, false, &args, CastToObjectType(type.GetTypeInfo()));
++						// ALTERED: the object is marked as initialized right after the call, see PerformFunctionCall
++						PerformFunctionCall(func, &ctx, false, &args, CastToObjectType(type.GetTypeInfo()), false, 0, 0, true, offset);
+ 						bc->AddCode(&ctx.bc);
+ 					}
+-
+-					// TODO: value on stack: This probably needs to be done in PerformFunctionCall
+-					// Mark the object as initialized
+-					bc->ObjInfo(offset, asOBJ_INIT);
++					else
++					{
++						// TODO: value on stack: This probably needs to be done in PerformFunctionCall
++						// Mark the object as initialized
++						bc->ObjInfo(offset, asOBJ_INIT);
++					}
+ 				}
+ 				else if( isVarGlobOrMem == asVGM_MEMBER )
+ 				{
+@@ -3437,13 +3436,8 @@
+ 								}
+ 							}
+ 
+-							PerformFunctionCall(funcs[0], &ctx, onHeap, &args, CastToObjectType(type.GetTypeInfo()));
+-
+-							if( isVarGlobOrMem == asVGM_VARIABLE )
+-							{
+-								// Mark the object in the local variable as initialized
+-								ctx.bc.ObjInfo(offset, asOBJ_INIT);
+-							}
++							// ALTERED: the object is marked as initialized right after the call, see PerformFunctionCall
++							PerformFunctionCall(funcs[0], &ctx, onHeap, &args, CastToObjectType(type.GetTypeInfo()), false, 0, 0, isVarGlobOrMem == asVGM_VARIABLE, offset);
+ 						}
+ 
+ 						ProcessDeferredParams(&ctx);
+@@ -3698,13 +3692,8 @@
+ 					}
+ 				}
+ 
+-				PerformFunctionCall(funcs[0], &ctx, onHeap, &args, CastToObjectType(type.GetTypeInfo()));
+-
+-				if (isVarGlobOrMem == asVGM_VARIABLE)
+-				{
+-					// Mark the object in the local variable as initialized
+-					ctx.bc.ObjInfo(offset, asOBJ_INIT);
+-				}
++				// ALTERED: the object is marked as initialized right after the call, see PerformFunctionCall
++				PerformFunctionCall(funcs[0], &ctx, onHeap, &args, CastToObjectType(type.GetTypeInfo()), false, 0, 0, isVarGlobOrMem == asVGM_VARIABLE, offset);
+ 			}
+ 			ProcessDeferredParams(&ctx);
+ 			bc->AddCode(&ctx.bc);
+@@ -3994,10 +3983,8 @@
+ 			if( !onHeap )
+ 				ctx.bc.InstrSHORT(asBC_PSF, (short)var->stackOffset);
+ 
+-			PerformFunctionCall(funcId, &ctx, onHeap, &args, CastToObjectType(var->dataType.GetTypeInfo()));
+-
+-			// Mark the object in the local variable as initialized
+-			ctx.bc.ObjInfo(var->stackOffset, asOBJ_INIT);
++			// ALTERED: the object is marked as initialized right after the call, see PerformFunctionCall
++			PerformFunctionCall(funcId, &ctx, onHeap, &args, CastToObjectType(var->dataType.GetTypeInfo()), false, 0, 0, true, var->stackOffset);
+ 		}
+ 	}
+ 	else
+@@ -8609,13 +8596,11 @@
+ 								e.bc.InstrSHORT(asBC_PSF, (short)tempObj.stackOffset);
+ 						}
+ 
+-						PerformFunctionCall(funcs[0], &e, onHeap, &args, CastToObjectType(tempObj.dataType.GetTypeInfo()));
++						// ALTERED: the object is marked as initialized right after the call, see PerformFunctionCall
++						PerformFunctionCall(funcs[0], &e, onHeap, &args, CastToObjectType(tempObj.dataType.GetTypeInfo()), false, 0, 0, (to.GetTypeInfo()->flags & asOBJ_VALUE) ? true : false, tempObj.stackOffset);
+ 
+ 						if (to.GetTypeInfo()->flags & asOBJ_VALUE)
+ 						{
+-							// Add tag that the object has been initialized
+-							e.bc.ObjInfo(tempObj.stackOffset, asOBJ_INIT);
+-
+ 							// The constructor doesn't return anything,
+ 							// so we have to manually inform the type of
+ 							// the return value
+@@ -8727,10 +8712,8 @@
+ 				else
+ 					e.bc.InstrSHORT(asBC_PSF, (short)tempObj.stackOffset);
+ 
+-				PerformFunctionCall(funcs[0], &e, onHeap, &args, CastToObjectType(tempObj.dataType.GetTypeInfo()));
+-
+-				// Add tag that the object has been initialized
+-				e.bc.ObjInfo(tempObj.stackOffset, asOBJ_INIT);
++				// ALTERED: the object is marked as initialized right after the call, see PerformFunctionCall
++				PerformFunctionCall(funcs[0], &e, onHeap, &args, CastToObjectType(tempObj.dataType.GetTypeInfo()), false, 0, 0, true, tempObj.stackOffset);
+ 
+ 				// The constructor doesn't return anything,
+ 				// so we have to manually inform the type of
+@@ -9258,10 +9241,8 @@
+ 		else
+ 			ctx->bc.InstrSHORT(asBC_PSF, (short)tempObj.stackOffset);
+ 
+-		PerformFunctionCall(funcs[0], ctx, onHeap, &args, CastToObjectType(tempObj.dataType.GetTypeInfo()));
+-
+-		// Add tag that the object has been initialized
+-		ctx->bc.ObjInfo(tempObj.stackOffset, asOBJ_INIT);
++		// ALTERED: the object is marked as initialized right after the call, see PerformFunctionCall
++		PerformFunctionCall(funcs[0], ctx, onHeap, &args, CastToObjectType(tempObj.dataType.GetTypeInfo()), false, 0, 0, true, tempObj.stackOffset);
+ 
+ 		// The constructor doesn't return anything,
+ 		// so we have to manually inform the type of
+@@ -15918,10 +15899,8 @@
+ 		else
+ 			ctx->bc.InstrSHORT(asBC_PSF, (short)stackOffset);
+ 
+-		PerformFunctionCall(funcId, ctx, onHeap, &args, CastToObjectType(descr->objectType));
+-
+-		// Add tag that the object has been initialized
+-		ctx->bc.ObjInfo(stackOffset, asOBJ_INIT);
++		// ALTERED: the object is marked as initialized right after the call, see PerformFunctionCall
++		PerformFunctionCall(funcId, ctx, onHeap, &args, CastToObjectType(descr->objectType), false, 0, 0, true, stackOffset);
+ 
+ 		// Push the address of the object on the stack again
+ 		ctx->bc.InstrSHORT(asBC_PSF, (short)stackOffset);
+@@ -17809,7 +17788,12 @@
+ }
+ 
+ 
+-void asCCompiler::PerformFunctionCall(int funcId, asCExprContext *ctx, bool isConstructor, asCArray<asCExprContext*> *args, asCObjectType *objType, bool useVariable, int varOffset, int funcPtrVar)
++// ALTERED: markInit puts the asOBJ_INIT of the variable at markInitOffset right after the call (a constructor of a value on
++// the stack, or the allocation of one on the heap), before the arguments' temporaries are released. The callers put it after
++// this function returned, i.e. after those releases: an abort acted on after the constructor's call (one requested by a
++// destructor that the call or the release of an argument ran) took the variable for not made, and the object it had been
++// constructed with was never destroyed.
++void asCCompiler::PerformFunctionCall(int funcId, asCExprContext *ctx, bool isConstructor, asCArray<asCExprContext*> *args, asCObjectType *objType, bool useVariable, int varOffset, int funcPtrVar, bool markInit, int markInitOffset)
+ {
+ 	asCScriptFunction *descr = builder->GetFunctionDescription(funcId);
+ 
+@@ -17959,6 +17943,10 @@
+ 		else
+ 			ctx->bc.Alloc(asBC_ALLOC, objType, descr ? descr->id : 0, argSize + AS_PTR_SIZE, asWORD(args->GetLength()));
+ 
++		// ALTERED: see markInit above
++		if (markInit)
++			ctx->bc.ObjInfo(markInitOffset, asOBJ_INIT);
++
+ 		// The instruction has already moved the returned object to the variable
+ 		ctx->type.Set(asCDataType::CreatePrimitive(ttVoid, false));
+ 		ctx->type.isLValue = false;
+@@ -18019,6 +18007,10 @@
+ 	else
+ 		asASSERT(false);
+ 
++	// ALTERED: see markInit above
++	if (markInit)
++		ctx->bc.ObjInfo(markInitOffset, asOBJ_INIT);
++
+ 	if (descr)
+ 	{
+ 		if ((descr->returnType.IsObject() || descr->returnType.IsFuncdef()) && !descr->returnType.IsReference())
+diff --git a/sdk/angelscript/source/as_compiler.h b/sdk/angelscript/source/as_compiler.h
+--- a/sdk/angelscript/source/as_compiler.h
++++ b/sdk/angelscript/source/as_compiler.h
+@@ -349,7 +349,7 @@
+ 	asUINT MatchFunctions(asCArray<int>& funcs, asCArray<asCExprContext*>& args, asCScriptNode* node, const char* name, asCArray<asSNamedArgument>* namedArgs = NULL, asCObjectType* objectType = NULL, bool isConstMethod = false, bool silent = false, bool allowObjectConstruct = true, const asCString& scope = "");
+ 	asUINT MatchArgument(asCArray<int> &funcs, asCArray<asSOverloadCandidate> &matches, const asCExprContext *argExpr, int paramNum, bool allowObjectConstruct = true);
+ 	int  MatchArgument(asCScriptFunction *desc, const asCExprContext *argExpr, int paramNum, bool allowObjectConstruct = true);
+-	void PerformFunctionCall(int funcId, asCExprContext *out, bool isConstructor = false, asCArray<asCExprContext*> *args = 0, asCObjectType *objTypeForConstruct = 0, bool useVariable = false, int varOffset = 0, int funcPtrVar = 0);
++	void PerformFunctionCall(int funcId, asCExprContext *out, bool isConstructor = false, asCArray<asCExprContext*> *args = 0, asCObjectType *objTypeForConstruct = 0, bool useVariable = false, int varOffset = 0, int funcPtrVar = 0, bool markInit = false, int markInitOffset = 0);
+ 	void MoveArgsToStack(int funcId, asCByteCode *bc, asCArray<asCExprContext *> &args, bool addOneToOffset);
+ 	int  MakeFunctionCall(asCExprContext *ctx, int funcId, asCObjectType *objectType, asCArray<asCExprContext*> &args, asCScriptNode *node, bool useVariable = false, int stackOffset = 0, int funcPtrVar = 0, bool onHeap = false);
+ 	int  PrepareFunctionCall(int funcId, asCByteCode *bc, asCArray<asCExprContext *> &args);
+diff --git a/sdk/tests/test_feature/source/test_saveload.cpp b/sdk/tests/test_feature/source/test_saveload.cpp
+--- a/sdk/tests/test_feature/source/test_saveload.cpp
++++ b/sdk/tests/test_feature/source/test_saveload.cpp
+@@ -2535,7 +2535,10 @@
+ 			// Mac OS X PPC has more zeroes, probably due to the bool type being 4 bytes
+ 		}
+ 		asDWORD crc32 = ComputeCRC32(&stream.buffer[0], asUINT(stream.buffer.size()));
+-		if( crc32 != 0x7E58AAF1)
++		// ALTERED: the bytecode keeps the same size and zeroes, but a value object constructed from arguments is marked as initialized
++		// right after its constructor's call, before the temporaries of the arguments are released (`string s = ARRAYTOHEX(...)`
++		// in main), which moves that mark in the saved object variable info (fix-init-before-argument-release)
++		if( crc32 != 0x5FD17A2C)
+ 		{
+ 			PRINTF("The saved byte code has different checksum than the expected. Got 0x%X\n", crc32);
+ 			TEST_FAILED;
