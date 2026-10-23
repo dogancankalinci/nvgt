@@ -1,0 +1,250 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -208,6 +208,9 @@ asCContext::asCContext(asCScriptEngine *engine, bool holdRef)
+ 	m_regs.doProcessSuspend     = false;
+ 	m_doSuspend                 = false;
+ 	m_exceptionWillBeCaught     = false;
++	m_exceptionFrameFunction    = 0; // ALTERED: see SetInternalException
++	m_exceptionFrameCallStack   = 0;
++	m_exceptionFramePos         = 0;
+ 	m_regs.ctx                  = this;
+ 	m_regs.objectRegister       = 0;
+ 	m_regs.objectType           = 0;
+@@ -1977,7 +1980,8 @@ int asCContext::PushCallState()
+         if (m_engine->ep.maxCallStackSize > 0 && oldLength >= m_engine->ep.maxCallStackSize * CALLSTACK_FRAME_SIZE)
+         {
+ 			// The call stack is too big to grow further
+-            SetInternalException(TXT_STACK_OVERFLOW);
++			// ALTERED: CallScriptFunction, the only caller that can get here, is called with the program pointer past the call
++            SetInternalException(TXT_STACK_OVERFLOW, true, true);
+             return asERROR;
+         }
+         m_callStack.AllocateNoConstruct(oldLength + 10 * CALLSTACK_FRAME_SIZE, true);
+@@ -2334,7 +2338,7 @@ void asCContext::CallInterfaceMethod(asCScriptFunction *func)
+ 	{
+ 		// Tell the exception handler to clean up the arguments to this method
+ 		m_needToCleanupArgs = true;
+-		SetInternalException(TXT_NULL_POINTER_ACCESS);
++		SetInternalException(TXT_NULL_POINTER_ACCESS, true, true); // ALTERED: past the call, see SetInternalException
+ 		return;
+ 	}
+ 
+@@ -2366,7 +2370,7 @@ void asCContext::CallInterfaceMethod(asCScriptFunction *func)
+ 		{
+ 			// Tell the exception handler to clean up the arguments to this method
+ 			m_needToCleanupArgs = true;
+-			SetInternalException(TXT_NULL_POINTER_ACCESS);
++			SetInternalException(TXT_NULL_POINTER_ACCESS, true, true); // ALTERED: past the call, see SetInternalException
+ 			return;
+ 		}
+ 
+@@ -3233,7 +3237,7 @@ static const void *const dispatch_table[256] = {
+ 
+ 				// Tell the exception handler to clean up the arguments to this function
+ 				m_needToCleanupArgs = true;
+-				SetInternalException(TXT_UNBOUND_FUNCTION);
++				SetInternalException(TXT_UNBOUND_FUNCTION, true, true); // ALTERED: past the call, see SetInternalException
+ 				return;
+ 			}
+ 			else
+@@ -4567,7 +4571,7 @@ static const void *const dispatch_table[256] = {
+ 				m_needToCleanupArgs = true;
+ 
+ 				// TODO: funcdef: Should we have a different exception string?
+-				SetInternalException(TXT_UNBOUND_FUNCTION);
++				SetInternalException(TXT_UNBOUND_FUNCTION, true, true); // ALTERED: past the call, see SetInternalException
+ 				return;
+ 			}
+ 			else
+@@ -4639,7 +4643,7 @@ static const void *const dispatch_table[256] = {
+ 						// Tell the exception handler to clean up the arguments to this method
+ 						m_needToCleanupArgs = true;
+ 
+-						SetInternalException(TXT_UNBOUND_FUNCTION);
++						SetInternalException(TXT_UNBOUND_FUNCTION, true, true); // ALTERED: past the call, see SetInternalException
+ 					}
+ 				}
+ 				else
+@@ -5281,7 +5285,7 @@ int asCContext::SetException(const char *descr, bool allowCatch)
+ 	return 0;
+ }
+ 
+-void asCContext::SetInternalException(const char *descr, bool allowCatch)
++void asCContext::SetInternalException(const char *descr, bool allowCatch, bool afterCall)
+ {
+ 	if( m_inExceptionHandler )
+ 	{
+@@ -5308,6 +5312,22 @@ void asCContext::SetInternalException(const char *descr, bool allowCatch)
+ 		m_exceptionColumn     = 0;
+ 	}
+ 
++	// ALTERED: the frame and the position inside the instruction that raised the exception, for FindExceptionTryCatch and
++	// the clean up of that frame (CleanStackFrame, DetermineLiveObjects). The program pointer is at that instruction, except
++	// where a call raised it after moving the program pointer past itself (afterCall), and a registered function's call is
++	// moved past once it returns, before the clean up. Positions past an instruction were taken as the instruction's: but
++	// the next statement starts there when nothing lies between them, as in a build without line cues (NVGT's release
++	// builds), so an exception of a call that a try statement followed was caught by that try block before it ran. And the
++	// clean up took the instruction before for the one that failed, so an object that instruction had just initialized
++	// (a value type: a string, a scoped lock) was taken for uninitialized and never destroyed.
++	m_exceptionFrameFunction = 0;
++	if( m_currentFunction->scriptData && m_regs.programPointer && !m_isStackMemoryNotAllocated )
++	{
++		m_exceptionFrameFunction  = m_currentFunction;
++		m_exceptionFrameCallStack = m_callStack.GetLength();
++		m_exceptionFramePos       = asUINT(m_regs.programPointer - m_currentFunction->scriptData->byteCode.AddressOf()) - (afterCall ? 1 : 0);
++	}
++
+ 	// Recursively search the callstack for try/catch blocks
+ 	m_exceptionWillBeCaught = allowCatch && FindExceptionTryCatch();
+ 
+@@ -5315,6 +5335,15 @@ void asCContext::SetInternalException(const char *descr, bool allowCatch)
+ 		CallExceptionCallback();
+ }
+ 
++// ALTERED: whether the current frame is the one the exception was raised in, see SetInternalException. The frames the clean
++// up returns to have a shorter call stack, and a nested call made meanwhile raises its exceptions in frames above its marker.
++bool asCContext::IsExceptionFrame() const
++{
++	return m_exceptionFrameFunction != 0 &&
++	       m_exceptionFrameFunction == m_currentFunction &&
++	       m_exceptionFrameCallStack == m_callStack.GetLength();
++}
++
+ // interface
+ bool asCContext::WillExceptionBeCaught()
+ {
+@@ -5482,7 +5511,7 @@ bool asCContext::IsVarInScope(asUINT varIndex, asUINT stackLevel)
+ }
+ 
+ // Internal
+-void asCContext::DetermineLiveObjects(asCArray<int> &liveObjects, asUINT stackLevel)
++void asCContext::DetermineLiveObjects(asCArray<int> &liveObjects, asUINT stackLevel, const asUINT *framePos)
+ {
+ 	asASSERT( stackLevel < GetCallstackSize() );
+ 
+@@ -5497,9 +5526,17 @@ void asCContext::DetermineLiveObjects(asCArray<int> &liveObjects, asUINT stackLe
+ 
+ 		pos = asUINT(m_regs.programPointer - func->scriptData->byteCode.AddressOf());
+ 
++		// ALTERED: the position CleanStackFrame took for the frame, see there
++		if( framePos )
++			pos = *framePos;
+ 		// ALTERED: also after an exception that Execute reported as an abort, see Execute
+-		if( m_status == asEXECUTION_EXCEPTION || (m_status == asEXECUTION_ABORTED && m_abortedAfterException) )
++		else if( m_status == asEXECUTION_EXCEPTION || (m_status == asEXECUTION_ABORTED && m_abortedAfterException) )
+ 		{
++			// ALTERED: in the frame the exception was raised in, the position inside the instruction that raised it, see
++			// SetInternalException. In a frame the clean up returned to, the program pointer is the return address, as below.
++			if( IsExceptionFrame() )
++				pos = m_exceptionFramePos;
++			else
+ 			// Don't consider the last instruction as executed, as it failed with an exception
+ 			// It's not actually necessary to decrease the exact size of the instruction. Just
+ 			// before the current position is enough to disconsider it.
+@@ -5732,6 +5769,9 @@ bool asCContext::FindExceptionTryCatch()
+ 	if (m_currentFunction && m_currentFunction->scriptData && !m_isStackMemoryNotAllocated && m_regs.programPointer)
+ 	{
+ 		asUINT currPos = asUINT(m_regs.programPointer - m_currentFunction->scriptData->byteCode.AddressOf());
++		// ALTERED: inside the instruction that raised the exception, see SetInternalException
++		if( IsExceptionFrame() )
++			currPos = m_exceptionFramePos;
+ 		for (asUINT n = 0; n < m_currentFunction->scriptData->tryCatchInfo.GetLength(); n++)
+ 		{
+ 			if (currPos >= m_currentFunction->scriptData->tryCatchInfo[n].tryPos &&
+@@ -5752,7 +5792,9 @@ bool asCContext::FindExceptionTryCatch()
+ 		asCScriptFunction *func = (asCScriptFunction*)s[1];
+ 		if (func && func->scriptData)
+ 		{
+-			asUINT currPos = asUINT((asDWORD*)s[2] - func->scriptData->byteCode.AddressOf());
++			// ALTERED: inside the call instruction before the return address, see SetInternalException: a try block that
++			// starts right after the call held the return address and caught the exception
++			asUINT currPos = asUINT((asDWORD*)s[2] - func->scriptData->byteCode.AddressOf()) - 1;
+ 			for (asUINT n = 0; n < func->scriptData->tryCatchInfo.GetLength(); n++)
+ 			{
+ 				if (currPos >= func->scriptData->tryCatchInfo[n].tryPos &&
+@@ -5794,6 +5836,23 @@ bool asCContext::CleanStackFrame(bool catchException)
+ 	                  (m_isStackMemoryNotAllocated && m_currentFunction->scriptData &&
+ 	                   m_regs.programPointer == m_currentFunction->scriptData->byteCode.AddressOf());
+ 
++	// ALTERED: the position the frame stopped at, for the try block, the declarations and the live objects: after an
++	// exception, inside the instruction that raised it in the frame it was raised in, and inside the call before the return
++	// address in a frame the clean up returned to, see SetInternalException and DetermineLiveObjects. It is taken before
++	// any destructor runs, as a nested call made by one can raise an exception of its own.
++	asUINT framePos = 0;
++	if( !m_isStackMemoryNotAllocated && m_regs.programPointer && m_currentFunction->scriptData )
++	{
++		framePos = asUINT(m_regs.programPointer - m_currentFunction->scriptData->byteCode.AddressOf());
++		if( m_status == asEXECUTION_EXCEPTION || (m_status == asEXECUTION_ABORTED && m_abortedAfterException) )
++		{
++			if( IsExceptionFrame() )
++				framePos = m_exceptionFramePos;
++			else if( framePos > 0 )
++				framePos--;
++		}
++	}
++
+ 	// Clean object variables on the stack
+ 	// If the stack memory is not allocated or the program pointer
+ 	// is not set, then there is nothing to clean up on the stack frame
+@@ -5807,7 +5866,7 @@ bool asCContext::CleanStackFrame(bool catchException)
+ 		// Try blocks can be nested, so use the innermost block
+ 		if (catchException && m_currentFunction->scriptData)
+ 		{
+-			asUINT currPos = asUINT(m_regs.programPointer - m_currentFunction->scriptData->byteCode.AddressOf());
++			asUINT currPos = framePos;
+ 
+ 			for (asUINT n = 0; n < m_currentFunction->scriptData->tryCatchInfo.GetLength(); n++)
+ 			{
+@@ -5828,7 +5887,7 @@ bool asCContext::CleanStackFrame(bool catchException)
+ 
+ 		// Determine which object variables that are really live ones
+ 		asCArray<int> liveObjects;
+-		DetermineLiveObjects(liveObjects, 0);
++		DetermineLiveObjects(liveObjects, 0, &framePos); // ALTERED: the position taken above
+ 
+ 		for (asUINT n = 0; n < m_currentFunction->scriptData->variables.GetLength(); n++)
+ 		{
+@@ -5852,7 +5911,7 @@ bool asCContext::CleanStackFrame(bool catchException)
+ 				// its own (no initial value), has the try block's position, and the catch released its object and cleared it. A
+ 				// temporary never shares a slot with a declared variable (AllocateVariable keeps them apart), which answers the
+ 				// TODO that was here.
+-				asUINT currPos = asUINT(m_regs.programPointer - m_currentFunction->scriptData->byteCode.AddressOf());
++				asUINT currPos = framePos; // ALTERED: see above
+ 				asCArray<asSObjectVariableInfo> &varInfo = m_currentFunction->scriptData->objVariableInfo;
+ 				int declIndex = -1;
+ 				// The info is in the order of the instructions, pseudo instructions included
+diff --git a/sdk/angelscript/source/as_context.h b/sdk/angelscript/source/as_context.h
+--- a/sdk/angelscript/source/as_context.h
++++ b/sdk/angelscript/source/as_context.h
+@@ -167,7 +167,8 @@ public:
+ 	bool CleanStackFrame(bool catchException = false);
+ 	void CleanArgsOnStack();
+ 	void CleanReturnObject();
+-	void DetermineLiveObjects(asCArray<int> &liveObjects, asUINT stackLevel);
++	void DetermineLiveObjects(asCArray<int> &liveObjects, asUINT stackLevel, const asUINT *framePos = 0); // ALTERED: framePos, see CleanStackFrame
++	bool IsExceptionFrame() const; // ALTERED: see SetInternalException
+ 
+ 	int  PushCallState();
+ 	void PopCallState();
+@@ -183,7 +184,7 @@ public:
+ 	asDWORD *DeserializeStackPointer(asDWORD);
+ 	asDWORD  SerializeStackPointer(asDWORD *) const;
+ 
+-	void SetInternalException(const char *descr, bool allowCatch = true);
++	void SetInternalException(const char *descr, bool allowCatch = true, bool afterCall = false);
+ 	bool FindExceptionTryCatch();
+ 	void ClearException();
+ 
+@@ -225,6 +226,11 @@ public:
+ 	int       m_exceptionLine;
+ 	int       m_exceptionColumn;
+ 	bool      m_exceptionWillBeCaught;
++	// ALTERED: the frame the last exception was raised in (its function and the call stack's length) and the position inside
++	// the instruction that raised it, see SetInternalException
++	asCScriptFunction *m_exceptionFrameFunction;
++	asUINT             m_exceptionFrameCallStack;
++	asUINT             m_exceptionFramePos;
+ 
+ 	// The last prepared function, and some cached values related to it
+ 	asCScriptFunction *m_initialFunction;
