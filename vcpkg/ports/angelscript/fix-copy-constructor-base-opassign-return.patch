@@ -1,0 +1,21 @@
+diff --git a/sdk/angelscript/source/as_compiler.cpp b/sdk/angelscript/source/as_compiler.cpp
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -250,7 +250,16 @@
+ 				}
+ 				CompileVariableAccess("this", "", &ctx, 0);
+ 				ctx.bc.Instr(asBC_RDSPtr);
+-				ctx.bc.Call(asBC_CALL, outFunc->objectType->derivedFrom->beh.copy, 2 * AS_PTR_SIZE, 0);
++				// ALTERED: called as any method call is, so what the opAssign returns is taken care of: a handle it returns
++				// (B@ opAssign(const B &in o)) is released, and a value it returns on the stack (string opAssign(const B &in o))
++				// gets its location and is destroyed. The call was made as for an opAssign returning a reference: the returned
++				// handle's reference was never released (the object being copied into leaked), and an opAssign returning a
++				// value on the stack took the object pointer for its return location and the other object for this (a crash).
++				asCExprContext res(engine);
++				PerformFunctionCall(outFunc->objectType->derivedFrom->beh.copy, &res);
++				ctx.bc.AddCode(&res.bc);
++				if (res.type.isTemporary)
++					ReleaseTemporaryVariable(res.type, &ctx.bc);
+ 				if (byHandleRef)
+ 					CallDestructor(handleType, handleVar, true, &ctx.bc);
+ 

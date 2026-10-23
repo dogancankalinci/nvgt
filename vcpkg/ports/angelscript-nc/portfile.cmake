@@ -81,6 +81,7 @@ vcpkg_from_github(
         fix-copy-constructor-by-handle-reference.patch
         fix-out-reference-not-copy-constructor.patch
         fix-assignment-by-handle-reference.patch
+        fix-copy-constructor-base-opassign-return.patch
 )
 
 vcpkg_cmake_configure(
