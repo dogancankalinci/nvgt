@@ -1008,6 +1008,12 @@ private:
 				break;
 		}
 	}
+	// The reverb's send for the current parameters. Placed before the attenuator, which applies the cones and the gain range, it takes those too, as when MiniAudio's spatializer applied them ahead of the whole chain, so a sound turned away or silenced by max_gain sends none; after it, it has them from the attenuator, and with no attenuator there are none.
+	float reverb_send_volume(reverb3d* verb) const {
+		float volume = verb->get_volume_at(spatialization_params.listener_distance);
+		if (attenuator && reverb_placement != postattenuate) volume *= clamp_volume(spatialization_params.cone_volume, spatialization_params.min_volume, spatialization_params.max_volume);
+		return volume;
+	}
 	bool set_fallback_panner() {
 		rewire_scope scope(*this);
 		for (const auto& pair : g_audio_panners) {
@@ -1108,8 +1114,8 @@ public:
 		if (new_reverb) {
 			reverb_attachment = new_reverb->create_attachment();
 			if (!reverb_attachment) return;
-			if (attached_mixer && parameters_valid) reverb_attachment->set_output_bus_volume(1, new_reverb->get_volume_at(spatialization_params.listener_distance));
 			reverb_placement = placement;
+			if (attached_mixer && parameters_valid) reverb_attachment->set_output_bus_volume(1, reverb_send_volume(new_reverb));
 			position_reverb();
 			new_reverb->duplicate();
 		}
@@ -1187,7 +1193,7 @@ public:
 			parameters_valid = attached_mixer->get_spatialization_parameters(spatialization_params);
 			spatialization_params.rolloff = rolloff_set.load(std::memory_order_relaxed);
 			spatialization_params.directional_attenuation_factor = directional_attenuation_factor_set.load(std::memory_order_relaxed);
-			if (parameters_valid && reverb) reverb_attachment->set_output_bus_volume(1, reverb->get_volume_at(spatialization_params.listener_distance));
+			if (parameters_valid && reverb) reverb_attachment->set_output_bus_volume(1, reverb_send_volume(reverb));
 		} else parameters_valid = false;
 	}
 	void on_panner_enabled_changed(int panner_id, bool enabled) override {
