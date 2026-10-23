@@ -1942,7 +1942,7 @@ public:
 	unsigned int open_flag_choices() const override { return WAV_S16 | WAV_S24 | WAV_U8 | WAV_S32 | WAV_F32; }
 	bool flags_in_range(unsigned int flags) const override { return flags & open_flag_choices(); }
 	string get_format() const override { return "wav"; }
-	ma_format get_wav_format() const override { return get_dc()? get_dc()->formatOut : ma_format_f32; }
+	ma_format get_wav_format() const override { return !get_active()? ma_format_unknown : get_dc()? get_dc()->formatOut : ma_format_f32; } // Unknown while not open, rather than float, which a closed encoder wrote no more than any other format.
 };
 audio_wav_encoder* audio_wav_encoder::create(audio_engine* e) { return new audio_wav_encoder_impl(e); }
 class audio_opus_encoder_impl : public audio_encoder_impl, public virtual audio_opus_encoder {
