@@ -1689,17 +1689,18 @@ public:
 		std::lock_guard<std::recursive_mutex> guard(source_mutex);
 		ma_data_source* source = get_ma_data_source();
 		if (!decoder || !source) return 0;
-		ma_uint64 range_begin = 0, range_end = 0;
-		ma_data_source_get_range_in_pcm_frames(source, &range_begin, &range_end);
 		long long known = length_frames; // The whole decoder's, whatever its range.
 		if (known >= 0) return within_range(known);
-		if (range_end != ~(ma_uint64)0) return within_range(0); // MiniAudio counts a range with an end itself, without asking the decoder.
-		if (known == -2 || users || node_attached()) return 0; // Read elsewhere, and not worked out before: unknown rather than counted under that reader.
+		if (known == -2 || users || node_attached()) return within_range(0); // Read elsewhere, and not worked out before: unknown rather than counted under that reader, but for a range with an end.
 		if (cursor && !seekable) {
 			cursor->length_query = true;
 			cursor->length_query_refused = false;
 		}
-		unsigned long long length = ma_length(); // The whole decoder's, the range having no end.
+		// The whole decoder's, worked out as when it has no range: MiniAudio counts a range with an end without asking the decoder, so a range set before the length was first asked for was taken whole, ending past the decoder's end, as it was once asked for no more.
+		ma_data_source_base* base = (ma_data_source_base*)source;
+		ma_uint64 whole = 0;
+		g_soundsystem_last_error = base->vtable->onGetLength? base->vtable->onGetLength(source, &whole) : MA_NOT_IMPLEMENTED;
+		unsigned long long length = g_soundsystem_last_error == MA_SUCCESS? whole : 0;
 		bool refused = cursor && cursor->length_query_refused;
 		if (cursor) cursor->length_query = false;
 		if (refused) {
