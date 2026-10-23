@@ -1141,15 +1141,17 @@ public:
 		}
 	}
 	void set_reverb3d(reverb3d* new_reverb, audio_spatializer_reverb3d_placement placement = postpan) override {
-		rewire_scope scope(*this);
 		if (new_reverb && new_reverb->get_engine() != get_engine()) { // Another engine's audio thread reads that reverb3d, which two threads can't read at once.
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return;
 		}
-		if (new_reverb && new_reverb != reverb && attached_mixer && new_reverb->get_mixer() && mixer_reaches(new_reverb->get_mixer(), [this](mixer* m) { return m == attached_mixer; })) { // Not a reverb3d whose mixer is this one, or goes into it (see mixer_reaches()).
+		// Not a reverb3d whose mixer is this one, or goes into it (see mixer_reaches()). Asked before this spatializer's chain lock is taken: mixer_reaches() takes other spatializers' chain locks, one at a time, so a thread holding this one while another, holding one of those, set a reverb3d sending back here deadlocked with it.
+		mixer* owner = get_mixer();
+		if (new_reverb && owner && new_reverb != get_reverb3d() && new_reverb->get_mixer() && mixer_reaches(new_reverb->get_mixer(), [owner](mixer* m) { return m == owner; })) {
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return;
 		}
+		rewire_scope scope(*this);
 		if (new_reverb == reverb) {
 			if (reverb && placement != reverb_placement) { // Only moved: the same attachment goes to its new place in the chain.
 				reverb_placement = placement;
