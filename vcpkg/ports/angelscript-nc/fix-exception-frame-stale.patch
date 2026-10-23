@@ -1,0 +1,17 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -5430,6 +5430,13 @@
+ 	if (caught)
+ 		m_status = asEXECUTION_ACTIVE;
+ 
++	// ALTERED: the frame of the exception is done with once its clean up is over, see IsExceptionFrame. It was kept until the
++	// next exception, while the clean up of an abort sets the status to asEXECUTION_EXCEPTION for every frame below the first
++	// one (see above): a frame with the function and call stack length of an earlier exception's (one caught there, or in an
++	// earlier call of the function at the same depth) took that exception's position for its own, and the value objects
++	// alive there were destroyed in place of those alive at the call (one destroyed a second time, one never destroyed).
++	m_exceptionFrameFunction = 0;
++
+ 	m_inExceptionHandler = false;
+ }
+ 
