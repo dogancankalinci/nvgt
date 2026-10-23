@@ -73,6 +73,8 @@ void wait(int ms);
 // Globals, currently NVGT does not support instanciating multiple miniaudio contexts and NVGT provides a global sound engine.
 static ma_context g_sound_context;
 audio_engine *g_audio_engine = nullptr;
+// The lowest sample rate taken for an engine, a decoder's or an encoder's output or a script's PCM. MiniAudio's resource manager decodes in pages of 1000 * (rate / 1000) frames, none below it, and rates of a few hertz made a source decode thousands of frames for each it gave, or a second of PCM take gigabytes, while rates between it and 8000, the lowest MiniAudio names, are found in old recordings and in sounds scripts make, and worked.
+static constexpr ma_uint32 min_sample_rate = 1000;
 mixer* g_audio_mixer = nullptr;
 static std::atomic_flag g_soundsystem_initialized; // The context, the sound service and the device lists are set up, see init_sound_context().
 static std::atomic_flag g_soundsystem_ready; // The engine exists. Set last so that no other thread can be told "initialized" while g_audio_engine is still null.
@@ -574,7 +576,7 @@ public:
 		if (channels > MA_MAX_CHANNELS) throw runtime_error(Poco::format("exceeded maximum channel count of %d", MA_MAX_CHANNELS));
 		if (sample_rate < 0) sample_rate = 0; // As 0, the device's own rate or the default without a device, rather than a rate of over four billion, which a negative one became in MiniAudio's unsigned fields.
 		if (sample_rate > ma_standard_sample_rate_max) throw runtime_error(Poco::format("exceeded maximum sample rate of %d", int(ma_standard_sample_rate_max))); // At a higher one, the highest MiniAudio has a name for, a device's every period needed many times the frames it plays resampled, more than the audio thread could keep up with.
-		if (sample_rate && sample_rate < ma_standard_sample_rate_min) throw runtime_error(Poco::format("below minimum sample rate of %d", int(ma_standard_sample_rate_min))); // Below the lowest MiniAudio names; under 1000, its resource manager's pages, 1000 * (rate / 1000) frames, held none, and every sound loaded or streamed on the engine played silence while its load succeeded.
+		if (sample_rate && sample_rate < int(min_sample_rate)) throw runtime_error(Poco::format("below minimum sample rate of %d", int(min_sample_rate))); // Below it, the resource manager's pages held no frames, and every sound loaded or streamed on the engine played silence while its load succeeded.
 		if (!init_sound_context()) throw runtime_error(Poco::format("failed to initialize sound context %d", int(g_soundsystem_last_error)));
 		engine = std::make_unique<ma_engine>();
 		// We need a self-managed device because at least on Windows, we can't meet low-latency requirements without specific configurations.
@@ -1608,9 +1610,9 @@ class audio_decoder_impl : public audio_data_source_impl, public virtual audio_d
 public:
 	audio_decoder_impl(audio_engine* e) : audio_data_source_impl(e, nullptr), decoder(nullptr), datastream_ref(nullptr) {}
 	~audio_decoder_impl() { close(); }
-	// A sample rate outside those MiniAudio names, 0 aside, which keeps the file's: below them the decoder resampled down to it, so a source read at the engine's rate decoded many thousands of frames for each it gave, slower than the audio played, and above them it resampled up to it, as slowly, as many frames for each. And a channel count past MA_MAX_CHANNELS, which MiniAudio refused only once the decoder open had been closed.
+	// A sample rate below min_sample_rate or above the highest MiniAudio names, 0 aside, which keeps the file's: at a few hertz the decoder resampled down to it, so a source read at the engine's rate decoded many thousands of frames for each it gave, slower than the audio played, and above the highest it resampled up to it, as slowly, as many frames for each. And a channel count past MA_MAX_CHANNELS, which MiniAudio refused only once the decoder open had been closed.
 	static bool output_format_in_range(unsigned int sample_rate, unsigned int channels) {
-		if ((!sample_rate || (sample_rate >= ma_standard_sample_rate_min && sample_rate <= ma_standard_sample_rate_max)) && channels <= MA_MAX_CHANNELS) return true;
+		if ((!sample_rate || (sample_rate >= min_sample_rate && sample_rate <= ma_standard_sample_rate_max)) && channels <= MA_MAX_CHANNELS) return true;
 		g_soundsystem_last_error = MA_INVALID_ARGS;
 		return false;
 	}
@@ -1784,7 +1786,7 @@ public:
 	unsigned int get_default_open_flags() const override { return ENCODER_OVERWRITE; }
 	// The most channels the encoder's format takes.
 	virtual unsigned int max_output_channels() const { return MA_MAX_CHANNELS; }
-	// Refused as an engine refuses them, before an open encoder is closed: past the highest sample rate MiniAudio names, encoding a block in the graph took longer than the block lasts, below the lowest the resampler reserved memory for the engine's rate over this one times its output, hundreds of megabytes at 1 Hz, and dr_wav keeps a channel count in 16 bits, cutting a higher one while the open succeeded. No channels, or more than the format takes, the encoders refused themselves only once the encoder open had been closed.
+	// Refused as an engine refuses them, before an open encoder is closed: past the highest sample rate MiniAudio names, encoding a block in the graph took longer than the block lasts, below min_sample_rate the resampler reserved memory for the engine's rate over this one times its output, hundreds of megabytes at 1 Hz, and dr_wav keeps a channel count in 16 bits, cutting a higher one while the open succeeded. No channels, or more than the format takes, the encoders refused themselves only once the encoder open had been closed.
 	// Whether the open flags, defaults filled in, give the encoder what it needs, as a PCM format for WAV.
 	virtual bool flags_in_range(unsigned int flags) const { return true; }
 	// Flags among which an open makes one choice, as a WAV encoder's PCM formats.
@@ -1798,7 +1800,7 @@ public:
 		return flags | defaults;
 	}
 	bool output_in_range(unsigned int sample_rate, unsigned int channels, unsigned int flags) const {
-		if (sample_rate >= ma_standard_sample_rate_min && sample_rate <= ma_standard_sample_rate_max && channels >= 1 && channels <= max_output_channels() && flags_in_range(flags)) return true;
+		if (sample_rate >= min_sample_rate && sample_rate <= ma_standard_sample_rate_max && channels >= 1 && channels <= max_output_channels() && flags_in_range(flags)) return true;
 		g_soundsystem_last_error = MA_INVALID_ARGS;
 		return false;
 	}
@@ -3392,9 +3394,9 @@ public:
 		// Also, our PCM buffer is a permanent class property so we can enjoy the speed of async loading.
 		return load_special(":pcm", g_memory_protocol_slot, memory_protocol::directive(&pcm_buffer[0], pcm_buffer.size()), sound_service::null_filter_slot, nullptr, MA_SOUND_FLAG_DECODE | MA_SOUND_FLAG_ASYNC);
 	}
-	// A script's PCM below the lowest sample rate MiniAudio names was resampled up to the engine's as it loaded, so that a second at 1 Hz took gigabytes. Above the highest, and with a channel count past MA_MAX_CHANNELS, it was refused only once the sound already loaded had been closed, and dr_wav keeps the count in 16 bits, so one past 65535 loaded other audio, or at a multiple of 65536 divided by zero.
+	// A script's PCM at a sample rate of a few hertz was resampled up to the engine's as it loaded, so that a second at 1 Hz took gigabytes: below min_sample_rate, it is refused. Above the highest, and with a channel count past MA_MAX_CHANNELS, it was refused only once the sound already loaded had been closed, and dr_wav keeps the count in 16 bits, so one past 65535 loaded other audio, or at a multiple of 65536 divided by zero.
 	static bool pcm_format_in_range(int samplerate, int channels) {
-		if (samplerate >= ma_standard_sample_rate_min && samplerate <= ma_standard_sample_rate_max && channels >= 1 && channels <= MA_MAX_CHANNELS) return true;
+		if (samplerate >= int(min_sample_rate) && samplerate <= ma_standard_sample_rate_max && channels >= 1 && channels <= MA_MAX_CHANNELS) return true;
 		g_soundsystem_last_error = MA_INVALID_ARGS;
 		return false;
 	}
