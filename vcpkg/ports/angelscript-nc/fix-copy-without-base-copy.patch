@@ -1,0 +1,33 @@
+diff --git a/sdk/angelscript/source/as_scriptobject.cpp b/sdk/angelscript/source/as_scriptobject.cpp
+--- a/sdk/angelscript/source/as_scriptobject.cpp
++++ b/sdk/angelscript/source/as_scriptobject.cpp
+@@ -904,12 +904,27 @@
+ 		// If the script class implements the opAssign method, it should be called
+ 		asCScriptEngine *engine = in_objType->engine;
+ 		asCScriptFunction *func = engine->scriptFunctions[in_objType->beh.copy];
++
++		// ALTERED: a class can be without a copy behaviour: the builder removes the default opAssign of a class that deletes
++		// it or declares another opAssign with one parameter (B &opAssign(int)). A class derived from it keeps its default
++		// opAssign, whose copy of the inherited part came here for the base class and called through the null function (a
++		// crash on `d1 = d2`, or when an array, dictionary or any assigned such an object). The assignment fails as the
++		// engine's AssignScriptObject fails for a type without a copy behaviour.
++		if( func == 0 )
++		{
++			asIScriptContext *ctx = asGetActiveContext();
++			if( ctx )
++				ctx->SetException("Cannot do value assignment");
++			return asNOT_SUPPORTED;
++		}
++
+ 		if( func->funcType == asFUNC_SYSTEM )
+ 		{
+ 			// If derived, use the base class' assignment operator to copy the inherited
+ 			// properties. Then only copy new properties for the derived class
+-			if( in_objType->derivedFrom )
+-				CopyFromAs(other, in_objType->derivedFrom);
++			// ALTERED: not when the base class' part couldn't be copied, see above
++			if( in_objType->derivedFrom && CopyFromAs(other, in_objType->derivedFrom) < 0 )
++				return asERROR;
+ 			
+ 			for( asUINT n = in_objType->derivedFrom ? in_objType->derivedFrom->properties.GetLength() : 0; 
+ 			     n < in_objType->properties.GetLength(); 
