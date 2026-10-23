@@ -1,0 +1,70 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -5840,23 +5840,42 @@ bool asCContext::CleanStackFrame(bool catchException)
+ 				// Find out where the variable was declared, and skip cleaning of those that were declared before the try catch
+ 				// Multiple variables in different scopes may occupy the same slot on the stack so it is necessary to search
+ 				// the entire list to determine which variable occupies the slot now.
+-				int skipClean = 0;
+-				for( asUINT p = 0; p < m_currentFunction->scriptData->objVariableInfo.GetLength(); p++ )
++				// ALTERED: which variable holds the slot now, and whether it is still in scope after the catch, is read from the
++				// object variable info alone, as saved bytecode keeps it without its debug info. The slot belongs to the variable
++				// declared there last before the position of the exception, not to the first one ever declared there: the
++				// compiler gives the slot of a variable whose block has ended to the next variable of the same type, so when an
++				// earlier block (an earlier try block, a loop body) declared one before this try block, the object of the try
++				// block's variable in that slot was taken for the earlier variable's and skipped: a script object was never
++				// released and a value type never destroyed (a string's memory, a scoped lock left locked). And that variable is
++				// skipped when its block is still open at the catch, i.e. it was declared outside the try block, not when its
++				// declaration's position is before the try block's: a handle declared just before the try, with no instruction of
++				// its own (no initial value), has the try block's position, and the catch released its object and cleared it. A
++				// temporary never shares a slot with a declared variable (AllocateVariable keeps them apart), which answers the
++				// TODO that was here.
++				asUINT currPos = asUINT(m_regs.programPointer - m_currentFunction->scriptData->byteCode.AddressOf());
++				asCArray<asSObjectVariableInfo> &varInfo = m_currentFunction->scriptData->objVariableInfo;
++				int declIndex = -1;
++				// The info is in the order of the instructions, pseudo instructions included
++				for( asUINT p = 0; p < varInfo.GetLength() && varInfo[p].programPos <= currPos; p++ )
+ 				{
+-					asSObjectVariableInfo &info = m_currentFunction->scriptData->objVariableInfo[p];
+-					if (info.variableOffset == pos &&
+-						info.option == asOBJ_VARDECL )
++					if( varInfo[p].variableOffset == pos &&
++						varInfo[p].option == asOBJ_VARDECL )
++						declIndex = int(p);
++				}
++				bool skipClean = false;
++				if( declIndex >= 0 )
++				{
++					// Walk the blocks from the declaration to the catch: the try block's end closes a block that holds
++					// the declaration only when the declaration is inside the try block
++					skipClean = true;
++					int level = 0;
++					for( asUINT p = asUINT(declIndex) + 1; p < varInfo.GetLength() && varInfo[p].programPos <= tryCatchInfo->catchPos; p++ )
+ 					{
+-						asUINT progPos = info.programPos;
+-						if (progPos < tryCatchInfo->tryPos )
+-						{
+-							if( skipClean >= 0 )
+-								skipClean = 1;
+-							break;
+-						}
+-						else if( progPos < tryCatchInfo->catchPos )
++						if( varInfo[p].option == asBLOCK_BEGIN )
++							level++;
++						else if( varInfo[p].option == asBLOCK_END && --level < 0 )
+ 						{
+-							skipClean = -1;
++							skipClean = false;
+ 							break;
+ 						}
+ 					}
+@@ -5865,8 +5884,7 @@ bool asCContext::CleanStackFrame(bool catchException)
+ 				// Skip only variables that have been declared before the try block. Variables declared
+ 				// within the try block and variables whose declaration was not identified (temporary objects)
+ 				// will not be skipped.
+-				// TODO: What if a temporary variable reuses a slot from a declared variable that is no longer in scope?
+-				if (skipClean > 0)
++				if (skipClean)
+ 					continue;
+ 			}
+ 
