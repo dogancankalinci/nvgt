@@ -893,6 +893,13 @@ public:
 };
 class audio_data_source_impl;
 audio_data_source* audio_data_source_get(ma_data_source* ptr, audio_engine* engine);
+// The next source for one linked to itself, which MiniAudio is given as its next callback rather than as a link to itself: the source again, unless its last pass read no frames, when the chain ends. MiniAudio moves on through a link and seeks the next source to its start without checking that a pass read anything, so a source linked to itself that gave no frames, empty or emptied by its range, held whatever read it in a loop for good: a device's audio thread, with every sound of that engine, and a sound's close() waiting on it.
+static ma_data_source* next_of_self_linked(ma_data_source* source) {
+	ma_uint64 cursor = 0;
+	return ma_data_source_get_cursor_in_pcm_frames(source, &cursor) == MA_SUCCESS && !cursor? nullptr : source;
+}
+// The source after source in its chain: itself for one linked to itself.
+static ma_data_source* next_in_chain(ma_data_source* source) { return ma_data_source_get_next_callback(source) == next_of_self_linked? source : ma_data_source_get_next(source); }
 class audio_data_source_impl : public audio_node_impl, public virtual audio_data_source {
 	unique_ptr<ma_data_source_node> src;
 	audio_data_source* src_cur;
@@ -1269,7 +1276,8 @@ public:
 			return false;
 		}
 		if (new_next && !self) prepare_length_of(new_next);
-		if ((g_soundsystem_last_error = ma_data_source_set_next(src->pDataSource, new_next? new_next->get_ma_data_source() : nullptr)) != MA_SUCCESS) return false;
+		if ((g_soundsystem_last_error = ma_data_source_set_next(src->pDataSource, new_next && !self? new_next->get_ma_data_source() : nullptr)) != MA_SUCCESS) return false;
+		ma_data_source_set_next_callback(src->pDataSource, self? next_of_self_linked : nullptr); // Linked to itself through the callback, which ends an empty loop.
 		if (src_next) let_go(src_next);
 		src_next = self? nullptr : new_next;
 		if (src_next) {
@@ -1282,6 +1290,11 @@ public:
 		if (src_next) {
 			src_next->duplicate();
 			return src_next;
+		}
+		if (src && ma_data_source_get_next_callback(src->pDataSource) == next_of_self_linked) { // Linked to itself (see set_next()).
+			audio_data_source_impl* self = const_cast<audio_data_source_impl*>(this);
+			self->duplicate();
+			return self;
 		}
 		return src? audio_data_source_get(ma_data_source_get_next(src->pDataSource), get_engine()) : nullptr;
 	}
@@ -2311,7 +2324,7 @@ static ma_result chain_view_get_cursor(ma_data_source* source, ma_uint64* cursor
 static ma_result chain_view_get_length(ma_data_source* source, ma_uint64* length) {
 	chain_view* view = (chain_view*)source;
 	*length = 0;
-	if (view->endless) return MA_NOT_IMPLEMENTED;
+	if (view->endless && view->links.size() > 1) return MA_NOT_IMPLEMENTED; // A single source linked to itself has its own length.
 	for (const auto& link : view->links) {
 		if (!link.second) {
 			*length = 0;
@@ -2329,7 +2342,7 @@ static ma_data_source* chain_source(ma_data_source* head, audio_engine* engine, 
 	if (!start) start = head;
 	std::vector<std::pair<ma_data_source*, ma_uint64>> links;
 	bool endless = false;
-	for (ma_data_source* link = start; link; link = ma_data_source_get_next(link)) {
+	for (ma_data_source* link = start; link; link = next_in_chain(link)) {
 		if (std::any_of(links.begin(), links.end(), [link](const auto& known) { return known.first == link; })) {
 			endless = true;
 			break;
@@ -2341,7 +2354,7 @@ static ma_data_source* chain_source(ma_data_source* head, audio_engine* engine, 
 		} else if (ma_data_source_get_length_in_pcm_frames(link, &length) != MA_SUCCESS) length = 0;
 		links.emplace_back(link, length);
 	}
-	if (start == head && links.size() < 2) return head; // No chain, or a source looping on itself, read as it is.
+	if (start == head && links.size() < 2 && !endless) return head; // No chain: read as it is. A source linked to itself is read through a view, whose seek puts it back on itself once an empty pass ended it (see next_of_self_linked()).
 	view = make_unique<chain_view>();
 	ma_data_source_config cfg = ma_data_source_config_init();
 	cfg.vtable = &g_chain_view_vtable;
