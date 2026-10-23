@@ -622,11 +622,12 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 	if (xr != asEXECUTION_FINISHED) {
 		if (xr == asEXECUTION_EXCEPTION) {
 			char msg[4096];
-			const char* section;
+			const char* section = nullptr;
 			int col;
 			const char* decl = ctx->GetExceptionFunction()->GetDeclaration();
 			const char* exc = ctx->GetExceptionString();
 			int line = ctx->GetExceptionLineNumber(&col, &section);
+			if (!section) section = "(unknown)"; // compiled games keep no section names
 			snprintf(msg, 4096, "Exception: %s in %s %s at line %d, %d", exc, section, decl, line, col);
 			failure_reason = msg;
 		} else if (call_data.exceeded) {
