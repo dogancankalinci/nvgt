@@ -1709,7 +1709,7 @@ public:
 		if (cursor) cursor->length_query = false;
 		if (refused) {
 			length_frames = -2;
-			return 0;
+			return within_range(0); // As every later ask, which the -2 above answers: the first read 0 for a range with an end.
 		}
 		if (g_soundsystem_last_error == MA_SUCCESS) length_frames = length;
 		return within_range(length);
