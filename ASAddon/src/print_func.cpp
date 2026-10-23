@@ -6,6 +6,7 @@
 #include <angelscript.h>
 #include <cinttypes>
 #include <cassert>
+#include <algorithm>
 #include <array>
 #include <vector>
 
@@ -31,6 +32,17 @@ class CScriptDictionary;
 #define OUTS_8 OUTS_4 ", " OUTS_4
 #define OUTS_15 OUTS_8 ", " OUTS_4 ", " OUTS_3
 #define OUTS_16 OUTS_8 ", " OUTS_8
+
+// ALTERED: the arrays and dictionaries being printed, outermost first. One met again further down (a dictionary holding a
+// handle to itself, say) is printed as [...] or {...}: it was printed again, down to the depth limit, once for every handle
+// to it at each level, so two of them doubled the work and the text with each of the 32 levels and print() never returned.
+static thread_local std::vector<void const*> g_printPath;
+struct PrintPathGuard
+{
+    PrintPathGuard(void const* obj) { g_printPath.push_back(obj); }
+    ~PrintPathGuard() { g_printPath.pop_back(); }
+};
+static bool BeingPrinted(void const* obj) { return std::find(g_printPath.begin(), g_printPath.end(), obj) != g_printPath.end(); }
 
 bool Print::PrintAddonTypes(std::ostream & dst, void const *objPtr, int typeId, int depth)
 {
@@ -62,6 +74,12 @@ bool Print::PrintAddonTypes(std::ostream & dst, void const *objPtr, int typeId, 
         // conversion can be script code (see PrintTemplate), which can let go of the array or change it. The closing bracket
         // is printed after the loop, as it was missed when the array shrank under the last element printed. It is printed up to
         // its size at the start at most, so that a conversion adding an element each time can't make it go on forever.
+        if(BeingPrinted(array))
+        {
+            dst << "[...]";
+            return true;
+        }
+        PrintPathGuard path(array);
         array->AddRef();
         const uint32_t startSize = array->GetSize();
         dst << "[";
@@ -84,6 +102,13 @@ bool Print::PrintAddonTypes(std::ostream & dst, void const *objPtr, int typeId, 
             dictionary = *reinterpret_cast<CScriptDictionary * const*>(objPtr);
         else
             dictionary = reinterpret_cast<CScriptDictionary const*>(objPtr);
+
+        if(BeingPrinted(dictionary))
+        {
+            dst << "{...}";
+            return true;
+        }
+        PrintPathGuard path(dictionary);
 
         std::string indent(depth+1, '\t');
 

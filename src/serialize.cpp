@@ -13,6 +13,7 @@
 // Protocol format: the first 4 bytes are a magic header. Dictionaries serialized by old versions of NVGT begin with \x0e\x16\x07\x14 and are still readable by deserialize() below (see deserialize_legacy). Anything written from now on begins with "\x0e\x16\x07\x04" followed by 4 reserved bytes (currently zero, reserved for a future format revision number) and is read/written using the tagged value_tag format implemented in this file.
 
 #include <cstdint>
+#include <algorithm>
 #include <cstring>
 #include <functional>
 #include <memory>
@@ -63,6 +64,14 @@ public:
 	serialize_depth_guard() : exceeded(++g_serialize_depth > 128) {}
 	~serialize_depth_guard() { g_serialize_depth--; }
 };
+// The dictionaries, arrays and script objects being written, outermost first. One met again further down (a dictionary holding a handle to itself, say) is dropped like a value nested too deeply: it was written again, down to the depth limit, once for every handle to it at each level, so two of them doubled the work with each of the 128 levels and serialize() never returned.
+static thread_local std::vector<const void*> g_serialize_path;
+class serialize_path_guard {
+public:
+	serialize_path_guard(const void* obj) { g_serialize_path.push_back(obj); }
+	~serialize_path_guard() { g_serialize_path.pop_back(); }
+};
+static bool being_serialized(const void* obj) { return std::find(g_serialize_path.begin(), g_serialize_path.end(), obj) != g_serialize_path.end(); }
 
 // Runs a registered/script function (which must return an object handle) through a pooled context. Only needed for the script_object contract below, everything else we can talk to directly in c++.
 static void* invoke(asIScriptFunction* func, void* obj, void* arg = nullptr) {
@@ -122,6 +131,7 @@ static bool try_write_value(const void* ref, int type_id, std::string& out) {
 // A script object's opCast (see write_script_object) can change the dictionary or let go of it while it is written, so it is held and its keys are listed first, each value looked up again when its turn comes; walking the dictionary itself went on through freed nodes.
 static void write_dictionary_body(Poco::BinaryWriter& w, CScriptDictionary* dict) {
 	std::unique_ptr<CScriptDictionary, void(*)(CScriptDictionary*)> hold((dict->AddRef(), dict), [](CScriptDictionary* d) { d->Release(); });
+	serialize_path_guard path(dict);
 	std::vector<std::string> keys;
 	for (CScriptDictionary::CIterator it = dict->begin(); it != dict->end(); it++) keys.push_back(it.GetKey());
 	std::vector<std::pair<std::string, std::string>> entries;
@@ -142,6 +152,7 @@ static void write_dictionary_body(Poco::BinaryWriter& w, CScriptDictionary* dict
 // As for a dictionary, a script object's opCast can resize the array or let go of it while it is written: it is held, and its size read again for each element (an element past a new end was read from outside it). It is written up to its size at the start at most, so that an opCast adding an element each time can't make it go on forever.
 static bool write_array_body(Poco::BinaryWriter& w, CScriptArray* arr) {
 	std::unique_ptr<CScriptArray, void(*)(CScriptArray*)> hold((arr->AddRef(), arr), [](CScriptArray* a) { a->Release(); });
+	serialize_path_guard path(arr);
 	int elem_type = arr->GetElementTypeId();
 	asUINT start_count = arr->GetSize();
 	std::vector<std::string> elems;
@@ -164,9 +175,11 @@ static bool write_script_object(Poco::BinaryWriter& w, void* obj, asITypeInfo* t
 	if (is_null) return true;
 	// The object is held while its opCast runs, as that can take it out of the dictionary or array holding it, which freed it in the middle of the call.
 	g_ScriptEngine->AddRefScriptObject(obj, ti);
+	serialize_path_guard path(obj);
 	CScriptDictionary* d = (CScriptDictionary*)invoke(opcast, obj);
 	g_ScriptEngine->ReleaseScriptObject(obj, ti);
 	if (!d) return false;
+	if (being_serialized(d)) { d->Release(); return false; } // opCast gave a dictionary being written further up.
 	write_dictionary_body(w, d);
 	d->Release();
 	return true;
@@ -206,6 +219,7 @@ static bool write_value(Poco::BinaryWriter& w, const void* ref, int type_id) {
 	bool is_handle = type_id & asTYPEID_OBJHANDLE;
 	void* obj = is_handle ? *(void**)ref : const_cast<void*>(ref);
 	bool is_null = is_handle && !obj;
+	if (!is_null && being_serialized(obj)) return false;
 	asITypeInfo* ti = g_ScriptEngine->GetTypeInfoById(type_id);
 	if (!ti) return false;
 	const char* name = ti->GetName();
