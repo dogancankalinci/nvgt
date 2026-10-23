@@ -1,0 +1,199 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -1979,6 +1979,34 @@
+ 	return asSUCCESS;
+ }
+ 
++// ALTERED: ends a nested call that the engine made on this context to run a script function for the application (a script
++// class's factory, copy factory, opAssign or method run through CallScriptObjectMethod) and that didn't finish: pops its
++// state and forwards an exception or an abort to the execution it returned to. A forwarded exception keeps the nested
++// call's own text and the function, line and section it was raised at; the engine raised "An exception occurred in a
++// nested call" in its place, so the exception of a script constructor run that way (the elements of array<C> a(5), a
++// dictionary's or any's copy of a value) lost its message and line. PopState clears the exception, so it is taken first.
++void asCContext::PopNestedCall(int r)
++{
++	asCString text;
++	int location[4] = {0, 0, 0, 0};
++	if( r == asEXECUTION_EXCEPTION )
++	{
++		text        = m_exceptionString;
++		location[0] = m_exceptionFunction;
++		location[1] = m_exceptionLine;
++		location[2] = m_exceptionColumn;
++		location[3] = m_exceptionSectionIdx;
++	}
++
++	PopState();
++
++	// As SetException: only while a registered function is being called
++	if( r == asEXECUTION_EXCEPTION && m_callingSystemFunction )
++		SetInternalException(text.AddressOf(), true, false, location);
++	else if( r == asEXECUTION_ABORTED )
++		Abort();
++}
++
+ // internal
+ int asCContext::PushCallState()
+ {
+@@ -5340,7 +5368,9 @@
+ 	return 0;
+ }
+ 
+-void asCContext::SetInternalException(const char *descr, bool allowCatch, bool afterCall)
++// ALTERED: location, when given, is the function id, line, column and section index the exception is reported at, see
++// PopNestedCall
++void asCContext::SetInternalException(const char *descr, bool allowCatch, bool afterCall, const int *location)
+ {
+ 	if( m_inExceptionHandler )
+ 	{
+@@ -5377,6 +5407,15 @@
+ 		m_exceptionColumn     = 0;
+ 	}
+ 
++	// ALTERED: an exception forwarded from a nested call keeps the place it was raised at
++	if( location )
++	{
++		m_exceptionFunction   = location[0];
++		m_exceptionLine       = location[1];
++		m_exceptionColumn     = location[2];
++		m_exceptionSectionIdx = location[3];
++	}
++
+ 	// ALTERED: the frame and the position inside the instruction that raised the exception, for FindExceptionTryCatch and
+ 	// the clean up of that frame (CleanStackFrame, DetermineLiveObjects). The program pointer is at that instruction, except
+ 	// where a call raised it after moving the program pointer past itself (afterCall), and a registered function's call is
+diff --git a/sdk/angelscript/source/as_context.h b/sdk/angelscript/source/as_context.h
+--- a/sdk/angelscript/source/as_context.h
++++ b/sdk/angelscript/source/as_context.h
+@@ -71,6 +71,7 @@
+ 	int             PushState();
+ 	int             PopState();
+ 	bool            IsNested(asUINT *nestCount = 0) const;
++	void            PopNestedCall(int r); // ALTERED: internal, see the definition
+ 
+ 	// Object pointer for calling class methods
+ 	int SetObject(void *obj);
+@@ -185,7 +186,7 @@
+ 	asDWORD *DeserializeStackPointer(asDWORD);
+ 	asDWORD  SerializeStackPointer(asDWORD *) const;
+ 
+-	void SetInternalException(const char *descr, bool allowCatch = true, bool afterCall = false);
++	void SetInternalException(const char *descr, bool allowCatch = true, bool afterCall = false, const int *location = 0);
+ 	bool FindExceptionTryCatch();
+ 	void ClearException();
+ 
+diff --git a/sdk/angelscript/source/as_scriptengine.cpp b/sdk/angelscript/source/as_scriptengine.cpp
+--- a/sdk/angelscript/source/as_scriptengine.cpp
++++ b/sdk/angelscript/source/as_scriptengine.cpp
+@@ -5914,17 +5914,9 @@
+ 	{
+ 		if (isNested)
+ 		{
+-			ctx->PopState();
+-
+-			// If the execution was aborted or an exception occurred,
+-			// then we should forward that to the outer execution.
+-			if (r == asEXECUTION_EXCEPTION)
+-			{
+-				// TODO: How to improve this exception
+-				ctx->SetException(TXT_EXCEPTION_IN_NESTED_CALL);
+-			}
+-			else if (r == asEXECUTION_ABORTED)
+-				ctx->Abort();
++			// ALTERED: an exception or an abort is forwarded to the outer execution by PopNestedCall, the exception with its own
++			// text and location (it was replaced by "An exception occurred in a nested call")
++			static_cast<asCContext*>(ctx)->PopNestedCall(r);
+ 		}
+ 		else
+ 			ReturnContext(ctx);
+@@ -6043,13 +6035,9 @@
+ 	{
+ 		if( isNested )
+ 		{
+-			ctx->PopState();
+-
+ 			// An exception or an abort in the nested call is forwarded to the outer execution
+-			if( r == asEXECUTION_EXCEPTION )
+-				ctx->SetException(TXT_EXCEPTION_IN_NESTED_CALL);
+-			else if( r == asEXECUTION_ABORTED )
+-				ctx->Abort();
++			// ALTERED: by PopNestedCall, the exception with its own text and location
++			static_cast<asCContext*>(ctx)->PopNestedCall(r);
+ 		}
+ 		else
+ 			ReturnContext(ctx);
+diff --git a/sdk/angelscript/source/as_scriptobject.cpp b/sdk/angelscript/source/as_scriptobject.cpp
+--- a/sdk/angelscript/source/as_scriptobject.cpp
++++ b/sdk/angelscript/source/as_scriptobject.cpp
+@@ -34,6 +34,7 @@
+ #include "as_scriptengine.h"
+ #include "as_scriptobject.h"
+ #include "as_texts.h"
++#include "as_context.h" // ALTERED: PopNestedCall
+ 
+ BEGIN_AS_NAMESPACE
+ 
+@@ -91,17 +92,9 @@
+ 	{
+ 		if( isNested )
+ 		{
+-			ctx->PopState();
+-
+-			// If the execution was aborted or an exception occurred,
+-			// then we should forward that to the outer execution.
+-			if( r == asEXECUTION_EXCEPTION )
+-			{
+-				// TODO: How to improve this exception
+-				ctx->SetException(TXT_EXCEPTION_IN_NESTED_CALL);
+-			}
+-			else if( r == asEXECUTION_ABORTED )
+-				ctx->Abort();
++			// ALTERED: an exception or an abort is forwarded to the outer execution by PopNestedCall, the exception with its own
++			// text and location (it was replaced by "An exception occurred in a nested call")
++			static_cast<asCContext*>(ctx)->PopNestedCall(r);
+ 		}
+ 		else
+ 			engine->ReturnContext(ctx);
+@@ -179,17 +172,9 @@
+ 	{
+ 		if (isNested)
+ 		{
+-			ctx->PopState();
+-
+-			// If the execution was aborted or an exception occurred,
+-			// then we should forward that to the outer execution.
+-			if (r == asEXECUTION_EXCEPTION)
+-			{
+-				// TODO: How to improve this exception
+-				ctx->SetException(TXT_EXCEPTION_IN_NESTED_CALL);
+-			}
+-			else if (r == asEXECUTION_ABORTED)
+-				ctx->Abort();
++			// ALTERED: an exception or an abort is forwarded to the outer execution by PopNestedCall, the exception with its own
++			// text and location (it was replaced by "An exception occurred in a nested call")
++			static_cast<asCContext*>(ctx)->PopNestedCall(r);
+ 		}
+ 		else
+ 			engine->ReturnContext(ctx);
+@@ -1018,17 +1003,9 @@
+ 			{
+ 				if( isNested )
+ 				{
+-					ctx->PopState();
+-
+-					// If the execution was aborted or an exception occurred,
+-					// then we should forward that to the outer execution.
+-					if( r == asEXECUTION_EXCEPTION )
+-					{
+-						// TODO: How to improve this exception
+-						ctx->SetException(TXT_EXCEPTION_IN_NESTED_CALL);
+-					}
+-					else if( r == asEXECUTION_ABORTED )
+-						ctx->Abort();
++					// ALTERED: an exception or an abort is forwarded to the outer execution by PopNestedCall, the exception with its own
++					// text and location (it was replaced by "An exception occurred in a nested call")
++					static_cast<asCContext*>(ctx)->PopNestedCall(r);
+ 				}
+ 				else
+ 				{
