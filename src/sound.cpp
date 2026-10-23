@@ -2568,9 +2568,11 @@ public:
 	}
 	audio_spatializer* get_spatializer() const {
 		if (!spatializer) {
-			spatializer = audio_spatializer::create(const_cast<mixer_impl*>(this), get_engine());
+			audio_spatializer* made = audio_spatializer::create(const_cast<mixer_impl*>(this), get_engine());
 			// After the effects chain, which runs first wherever it is made, so that a mixer's effects are positioned with it rather than applied to it once positioned, whichever was made first; a chain the script took out of internal_node_chain leaves the spatializer first.
-			if (!effects_chain || !node_chain->add_node(spatializer, effects_chain)) node_chain->add_node(spatializer);
+			if (!effects_chain || !node_chain->add_node(made, effects_chain)) node_chain->add_node(made);
+			// Published once made, as the loop check reads it from other threads (see get_reverb3d_sent_to()), which must not see the pointer before what it points to.
+			reinterpret_cast<std::atomic<audio_spatializer*>&>(spatializer).store(made, std::memory_order_release);
 		}
 		return spatializer;
 	}
@@ -2668,7 +2670,10 @@ public:
 	void set_reverb3d(reverb3d* verb) override { get_spatializer()->set_reverb3d(verb); }
 	void set_reverb3d_at(reverb3d* verb, audio_spatializer_reverb3d_placement placement) override { get_spatializer()->set_reverb3d(verb, placement); }
 	reverb3d* get_reverb3d() const override { return get_spatializer()->get_reverb3d(); }
-	reverb3d* get_reverb3d_sent_to() const override { return spatializer? spatializer->get_reverb3d() : nullptr; }
+	reverb3d* get_reverb3d_sent_to() const override { // Read by the loop check of another thread, under the topology lock, which close() clears this under (see get_spatializer()).
+		audio_spatializer* sending = reinterpret_cast<std::atomic<audio_spatializer*>&>(spatializer).load(std::memory_order_acquire);
+		return sending? sending->get_reverb3d() : nullptr;
+	}
 	splitter_node* get_reverb3d_attachment() const override { return get_spatializer()->get_reverb3d_attachment(); }
 	audio_spatializer_reverb3d_placement get_reverb3d_placement() const override { return get_spatializer()->get_reverb3d_placement(); }
 	audio_node_chain* get_effects_chain() override {
