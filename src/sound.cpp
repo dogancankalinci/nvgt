@@ -2361,7 +2361,14 @@ static ma_result chain_view_get_cursor(ma_data_source* source, ma_uint64* cursor
 		ma_uint64 length = view->length_of(index).load(std::memory_order_relaxed);
 		if (length != chain_view::unknown) offset += length; // One not yet known is ahead of the current source, which passing it learns.
 	}
-	*cursor = offset; // Off the chain, as once it ended.
+	// On no source: past the one it was last on, as once an empty pass ended it, or at the start for a head opened on none, rather than past every source.
+	offset = 0;
+	size_t last = view->last_on.load(std::memory_order_relaxed);
+	for (size_t index = 0; last != ~(size_t)0 && index <= last && index < view->links.size(); index++) {
+		ma_uint64 length = view->length_of(index).load(std::memory_order_relaxed);
+		if (length != chain_view::unknown) offset += length;
+	}
+	*cursor = offset;
 	return MA_SUCCESS;
 }
 static ma_result chain_view_get_length(ma_data_source* source, ma_uint64* length) {
