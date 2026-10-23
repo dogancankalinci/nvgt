@@ -26,6 +26,8 @@ using namespace std;
 
 // A volume clamped to the range a script set, as MiniAudio's ma_clamp() clamps a sound's gain, the floor winning over a ceiling set below it: std::clamp() with such a range is undefined.
 static float clamp_volume(float volume, float floor, float ceiling) { return volume > ceiling? (ceiling < floor? floor : ceiling) : volume < floor? floor : volume; }
+// A sound's coordinate taken toward the listener's, to the given fraction of the way between them from the listener; the sound's own at 1.
+static float toward_listener(float sound, float listener, float fraction) { return fraction == 1? sound : listener + (sound - listener) * fraction; }
 
 // This node allows easy creation of miniaudio nodes in C++.
 static void ma_effect_node_process_pcm_frames(ma_node* pNode, const float** ppFramesIn, ma_uint32* pFrameCountIn, float** ppFramesOut, ma_uint32* pFrameCountOut) {
@@ -1398,15 +1400,18 @@ public:
 	}
 	void process(const float** frames_in, unsigned int* frame_count_in, float** frames_out, unsigned int* frame_count_out) override {
 		IPLVector3 sourcePos, listenerPos;
+		float beyond_min; // The part of the sound's distance beyond min_distance, as a fraction of it.
 		ma_uint32 totalFramesToProcess = *frame_count_out;
 		ma_uint32 totalFramesProcessed = 0;
 		if (!spatializer || !iplEffect) goto fail;
 		audio_spatialization_parameters params;
 		if (!spatializer->get_parameters(params)) goto fail;
-		distanceModel.minDistance = params.min_distance;
+		// Attenuation starts at min_distance, as for the basic attenuator. Steam Audio's inverse distance model gives 1 / max(distance, minDistance), so a min_distance above 1 made a sound quieter, by 20 dB at the listener for 10, and changed nothing beyond it. The source is taken min_distance nearer the listener for the model and the air absorption, and the model's minimum is 1, the most the volume could be before.
+		distanceModel.minDistance = 1;
 		distanceModel.type = IPL_DISTANCEATTENUATIONTYPE_INVERSEDISTANCE;
+		beyond_min = params.min_distance > 0 && params.listener_distance > 0 && std::isfinite(params.listener_distance)? (params.listener_distance > params.min_distance? params.listener_distance - params.min_distance : 0) / params.listener_distance : 1;
 		params.rolloff *= 0.7; // Attenuators apply internal factors sometimes to try making it so that rolloff at a constant value will cause a similar volume reduction regardless of the attenuator in use.
-		sourcePos = {params.sound_x * params.rolloff, params.sound_y * params.rolloff, params.sound_z * params.rolloff};
+		sourcePos = {toward_listener(params.sound_x, params.listener_x, beyond_min) * params.rolloff, toward_listener(params.sound_y, params.listener_y, beyond_min) * params.rolloff, toward_listener(params.sound_z, params.listener_z, beyond_min) * params.rolloff};
 		listenerPos = {params.listener_x * params.rolloff, params.listener_y * params.rolloff, params.listener_z * params.rolloff};
 		iplEffectParams.distanceAttenuation = params.listener_distance <= (params.max_distance > params.min_distance? params.max_distance : params.min_distance)? clamp_volume(iplDistanceAttenuationCalculate(g_phonon_context, sourcePos, listenerPos, &distanceModel), params.min_volume, params.max_volume) : params.min_volume;
 		iplAirAbsorptionCalculate(g_phonon_context, sourcePos, listenerPos, &airAbsorptionModel, iplEffectParams.airAbsorption);
