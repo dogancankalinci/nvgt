@@ -69,16 +69,26 @@ static void* invoke(asIScriptFunction* func, void* obj, void* arg = nullptr) {
 	if (!func) return nullptr;
 	asIScriptContext* ctx = g_ScriptEngine->RequestContext();
 	if (!ctx) return nullptr;
+	// A factory can take the dictionary by reference (dictionary@ &in, &inout or &out), whose argument is the address of a handle: it is given that of a handle here, which holds the dictionary (nothing for &out), and whatever the factory left in it is let go afterwards. The dictionary itself was passed as that address, so the constructor read its first bytes as the handle, or wrote its handle over them.
+	int arg_type_id = 0;
+	asDWORD arg_flags = 0;
+	if (arg) func->GetParam(0, &arg_type_id, &arg_flags);
+	bool arg_by_ref = arg && (arg_flags & asTM_INOUTREF);
+	asITypeInfo* arg_type = arg_by_ref ? g_ScriptEngine->GetTypeInfoById(arg_type_id) : nullptr;
+	void* arg_handle = arg_by_ref && (arg_flags & asTM_INOUTREF) != asTM_OUTREF ? arg : nullptr;
+	if (arg_handle) g_ScriptEngine->AddRefScriptObject(arg_handle, arg_type);
 	void* result = nullptr;
 	if (ctx->Prepare(func) >= 0) {
 		if (obj) ctx->SetObject(obj);
-		if (arg) ctx->SetArgObject(0, arg);
+		if (arg_by_ref) ctx->SetArgAddress(0, &arg_handle);
+		else if (arg) ctx->SetArgObject(0, arg);
 		if (ctx->Execute() == asEXECUTION_FINISHED) {
 			result = ctx->GetReturnObject();
 			if (result) g_ScriptEngine->AddRefScriptObject(result, g_ScriptEngine->GetTypeInfoById(func->GetReturnTypeId()));
 		}
 	}
 	g_ScriptEngine->ReturnContext(ctx);
+	if (arg_handle) g_ScriptEngine->ReleaseScriptObject(arg_handle, arg_type);
 	return result;
 }
 // Locates a factory (constructor) taking exactly one dictionary@ argument, and a 0 argument method called opCast returning dictionary@; together these let a script class opt into serialization support.
