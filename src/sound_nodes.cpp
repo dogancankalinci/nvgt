@@ -1345,6 +1345,7 @@ public:
 		if (!spatializer) goto fail;
 		audio_spatialization_parameters params;
 		if (!spatializer->get_parameters(params)) goto fail;
+		if (params.min_distance < 0) params.min_distance = 0; // As the Steam Audio attenuator takes it, the floor winning: a negative one was added to every distance, playing a sound at the listener as if that far away.
 		distance = params.listener_distance - params.min_distance; // Within min_distance a sound is at full volume, as at min_distance itself, rather than attenuated by its whole distance.
 		if (distance < 0) distance = 0;
 		// A max_distance below min_distance counts as min_distance, the floor winning as for volumes: otherwise no distance was within the range, and a sound at the listener played nothing.
@@ -1408,6 +1409,7 @@ public:
 		// Attenuation starts at min_distance, as for the basic attenuator. Steam Audio's inverse distance model gives 1 / max(distance, minDistance), so a min_distance above 1 made a sound quieter, by 20 dB at the listener for 10, and changed nothing beyond it; the model's minimum is 1, the most the volume could be before.
 		distanceModel.minDistance = 1;
 		distanceModel.type = IPL_DISTANCEATTENUATIONTYPE_INVERSEDISTANCE;
+		if (params.min_distance < 0) params.min_distance = 0; // As for the basic attenuator, for max_distance's cut-off too.
 		params.rolloff *= 0.7; // Attenuators apply internal factors sometimes to try making it so that rolloff at a constant value will cause a similar volume reduction regardless of the attenuator in use.
 		// The model and the air absorption depend only on the distance between the positions they are given, so the listener is put at the origin and the source that far along one axis. The parameters' positions couldn't be subtracted for it: a sound positioned relative to the listener has its position relative to the listener, and was attenuated by its distance from the listener's position in the world; listener_distance, which MiniAudio works out, is right either way.
 		distance = (params.min_distance > 0? (params.listener_distance > params.min_distance? params.listener_distance - params.min_distance : 0) : params.listener_distance) * params.rolloff;
