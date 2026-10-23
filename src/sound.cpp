@@ -370,15 +370,42 @@ ma_format ma_format_from_angelscript_type(int type_id) {
 }
 
 // The following function based on ma_sound_get_direction_to_listener.
+// A sound's position relative to its listener, as MiniAudio's ma_spatializer_get_relative_position_and_direction() works it out, but in double: in float the listener's transform overflowed for positions about 1e19 or more apart, giving an infinite position with no direction to pan by, and a NaN one for positions near the float's limit. False without an engine.
+static bool sound_relative_position(const ma_sound* sound, double relative[3]) {
+	const ma_spatializer* spatializer = &sound->engineNode.spatializer;
+	ma_vec3f position = ma_spatializer_get_position(spatializer);
+	ma_engine* engine = ma_sound_get_engine(sound);
+	if (!engine) return false;
+	if (ma_spatializer_get_positioning(spatializer) == ma_positioning_relative) {
+		relative[0] = position.x;
+		relative[1] = position.y;
+		relative[2] = position.z;
+		return true;
+	}
+	const ma_spatializer_listener* listener = &engine->listeners[ma_sound_get_listener_index(sound)];
+	ma_vec3f listener_position = ma_spatializer_listener_get_position(listener), forward = ma_spatializer_listener_get_direction(listener), up = listener->config.worldUp;
+	auto normalize = [](double v[3]) {
+		double length = sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+		if (length > 0) for (int i = 0; i < 3; i++) v[i] /= length;
+	};
+	double axis_z[3] = {forward.x, forward.y, forward.z};
+	normalize(axis_z);
+	double axis_x[3] = {axis_z[1] * up.z - axis_z[2] * up.y, axis_z[2] * up.x - axis_z[0] * up.z, axis_z[0] * up.y - axis_z[1] * up.x};
+	normalize(axis_x);
+	if (axis_x[0] == 0 && axis_x[1] == 0 && axis_x[2] == 0) axis_x[0] = 1; // Looking along the world's up, as MiniAudio falls back.
+	double axis_y[3] = {axis_x[1] * axis_z[2] - axis_x[2] * axis_z[1], axis_x[2] * axis_z[0] - axis_x[0] * axis_z[2], axis_x[0] * axis_z[1] - axis_x[1] * axis_z[0]};
+	if (listener->config.handedness == ma_handedness_left) for (double& component : axis_x) component = -component;
+	double offset[3] = {(double)position.x - listener_position.x, (double)position.y - listener_position.y, (double)position.z - listener_position.z};
+	relative[0] = axis_x[0] * offset[0] + axis_x[1] * offset[1] + axis_x[2] * offset[2];
+	relative[1] = axis_y[0] * offset[0] + axis_y[1] * offset[1] + axis_y[2] * offset[2];
+	relative[2] = -(axis_z[0] * offset[0] + axis_z[1] * offset[1] + axis_z[2] * offset[2]);
+	return true;
+}
 MA_API float ma_sound_get_distance_to_listener(const ma_sound *pSound) {
-	ma_vec3f relativePos;
-	if (pSound == NULL)
+	double relative[3];
+	if (pSound == NULL || !sound_relative_position(pSound, relative))
 		return 0;
-	ma_engine *pEngine = ma_sound_get_engine(pSound);
-	if (pEngine == NULL)
-		return 0;
-	ma_spatializer_get_relative_position_and_direction(&pSound->engineNode.spatializer, &pEngine->listeners[ma_sound_get_listener_index(pSound)], &relativePos, NULL);
-	return sqrt(pow(relativePos.x, 2) + pow(relativePos.y, 2) + pow(relativePos.z, 2));
+	return (float)sqrt(relative[0] * relative[0] + relative[1] * relative[1] + relative[2] * relative[2]); // Infinite only past the float's range.
 }
 
 template <class A, class B>
@@ -2443,11 +2470,13 @@ public:
 		get_engine()->get_listener_cone(listener, &listener_inner, &listener_outer, &listener_outer_gain);
 		const ma_spatializer* spatializer_of_sound = &snd->engineNode.spatializer;
 		const ma_spatializer_listener* l = &e->listeners[listener];
-		ma_vec3f position, direction;
-		ma_spatializer_get_relative_position_and_direction(spatializer_of_sound, l, &position, &direction);
-		float distance = (float)sqrt((double)(position.x * position.x + position.y * position.y + position.z * position.z)); // As MiniAudio's ma_vec3f_len().
-		if (!(distance > 0.001f)) return 1; // As MiniAudio, which has no direction to the listener then, nor for a distance that isn't a number, as positions near the float's limit give.
-		ma_vec3f to_sound{position.x / distance, position.y / distance, position.z / distance}, from_sound{-to_sound.x, -to_sound.y, -to_sound.z};
+		ma_vec3f direction; // The sound's, relative to the listener.
+		ma_spatializer_get_relative_position_and_direction(spatializer_of_sound, l, nullptr, &direction);
+		double position[3];
+		if (!sound_relative_position(&*snd, position)) return 1;
+		double distance = sqrt(position[0] * position[0] + position[1] * position[1] + position[2] * position[2]);
+		if (!(distance > 0.001)) return 1; // As MiniAudio, which has no direction to the listener then.
+		ma_vec3f to_sound{(float)(position[0] / distance), (float)(position[1] / distance), (float)(position[2] / distance)}, from_sound{-to_sound.x, -to_sound.y, -to_sound.z};
 		float gain = angular_gain(direction, from_sound, cone_inner.load(std::memory_order_relaxed), cone_outer.load(std::memory_order_relaxed), cone_outer_gain.load(std::memory_order_relaxed));
 		if (listener_inner < 6.283185f) gain *= angular_gain(l->config.handedness == ma_handedness_right? ma_vec3f{0, 0, -1} : ma_vec3f{0, 0, 1}, to_sound, listener_inner, listener_outer, listener_outer_gain);
 		return gain;
@@ -2553,10 +2582,11 @@ public:
 	reactphysics3d::Vector3 get_direction_to_listener() const override {
 		if (!snd)
 			return reactphysics3d::Vector3();
-		const auto dir = ma_sound_get_direction_to_listener(&*snd);
-		reactphysics3d::Vector3 res;
-		res.setAllValues(dir.x, dir.y, dir.z);
-		return res;
+		double relative[3];
+		if (!sound_relative_position(&*snd, relative)) return reactphysics3d::Vector3(0, 0, -1); // As MiniAudio's ma_sound_get_direction_to_listener() without an engine.
+		double length = sqrt(relative[0] * relative[0] + relative[1] * relative[1] + relative[2] * relative[2]);
+		if (length == 0) return reactphysics3d::Vector3(0, 0, 0);
+		return reactphysics3d::Vector3(-relative[0] / length, -relative[1] / length, -relative[2] / length);
 	}
 	float get_distance_to_listener() const override { return snd && get_spatialization_enabled()? ma_sound_get_distance_to_listener(&*snd) : 0.0; }
 	void set_position_3d(float x, float y, float z) override {
