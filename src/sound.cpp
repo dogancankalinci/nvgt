@@ -2294,9 +2294,10 @@ struct chain_view {
 	// A link's length, which the audio thread learns as it plays while a script thread reads it.
 	std::atomic<ma_uint64>& length_of(size_t index) { return *reinterpret_cast<std::atomic<ma_uint64>*>(&links[index].second); }
 	// A source of unknown length that was played through is as long as its cursor reached at its end, which the cursor and length count from then on, rather than as nothing, so the position went back once the chain passed it, and seeks past it were refused for good.
-	void learn_lengths() {
+	void learn_lengths(bool chain_ended) {
 		ma_data_source* current = ma_data_source_get_current(head);
-		for (size_t index = 0; index < links.size() && links[index].first != current; index++) {
+		for (size_t index = 0; index < links.size(); index++) {
+			if (links[index].first == current && !chain_ended) break; // The source it is on, unless the chain ended there, as MiniAudio leaves a chain's last source current: past the last, it was never learned.
 			ma_uint64 cursor = 0;
 			if (!length_of(index).load(std::memory_order_relaxed) && ma_data_source_get_cursor_in_pcm_frames(links[index].first, &cursor) == MA_SUCCESS && cursor) length_of(index).store(cursor, std::memory_order_relaxed);
 		}
@@ -2311,7 +2312,7 @@ struct chain_view {
 static ma_result chain_view_read(ma_data_source* source, void* frames_out, ma_uint64 frame_count, ma_uint64* frames_read) {
 	chain_view* view = (chain_view*)source;
 	ma_result result = ma_data_source_read_pcm_frames(view->head, frames_out, frame_count, frames_read);
-	view->learn_lengths();
+	view->learn_lengths(result == MA_AT_END);
 	return result;
 }
 static ma_result chain_view_seek(ma_data_source* source, ma_uint64 frame) {
