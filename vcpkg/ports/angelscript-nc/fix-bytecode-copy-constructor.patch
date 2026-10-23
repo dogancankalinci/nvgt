@@ -1,0 +1,44 @@
+diff --git a/sdk/angelscript/source/as_restore.cpp b/sdk/angelscript/source/as_restore.cpp
+--- a/sdk/angelscript/source/as_restore.cpp
++++ b/sdk/angelscript/source/as_restore.cpp
+@@ -1585,6 +1585,15 @@ asCScriptFunction *asCReader::ReadFunction(bool &isNew, bool addToModule, bool a
+ 	return func;
+ }
+ 
++// ALTERED: whether a constructor or factory of the script class ot takes one object of the class by reference or handle,
++// which makes it the copy constructor (or copy factory) in asCBuilder::RegisterScriptFunction
++static bool IsCopyConstructorSignature(asCScriptFunction *func, asCObjectType *ot)
++{
++	return func->parameterTypes.GetLength() == 1 &&
++	       func->parameterTypes[0].GetTypeInfo() == ot &&
++	       (func->parameterTypes[0].IsReference() || func->parameterTypes[0].IsObjectHandle());
++}
++
+ void asCReader::ReadTypeDeclaration(asCTypeInfo *type, int phase, bool *isExternal)
+ {
+ 	if( phase == 1 )
+@@ -1876,6 +1885,14 @@ void asCReader::ReadTypeDeclaration(asCTypeInfo *type, int phase, bool *isExtern
+ 
+ 							if( func->parameterTypes.GetLength() == 0 )
+ 								ot->beh.construct = func->id;
++							// ALTERED: also mark the copy constructor, by the rule asCBuilder uses for a declared one (its
++							// generated one meets it too). It wasn't, so the application's copies of an object of a class
++							// loaded from bytecode (CreateScriptObjectCopy: dictionary.set, any.store) didn't run the class's
++							// copy constructor: they made the object with the default constructor and assigned it, and
++							// without a default constructor they failed ("Cannot create copy of object", any stored null),
++							// where the same script built from source ran its copy constructor.
++							else if( IsCopyConstructorSignature(func, ot) )
++								ot->beh.copyconstruct = func->id;
+ 						}
+ 					}
+ 					else
+@@ -1925,6 +1942,9 @@ void asCReader::ReadTypeDeclaration(asCTypeInfo *type, int phase, bool *isExtern
+ 
+ 							if( func->parameterTypes.GetLength() == 0 )
+ 								ot->beh.factory = func->id;
++							// ALTERED: and the copy factory, see the copy constructor above
++							else if( IsCopyConstructorSignature(func, ot) )
++								ot->beh.copyfactory = func->id;
+ 						}
+ 					}
+ 					else

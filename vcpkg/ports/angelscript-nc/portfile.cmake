@@ -57,6 +57,7 @@ vcpkg_from_github(
         fix-release-after-store.patch
         fix-format-va-copy.patch
         fix-try-catch-slot-reuse.patch
+        fix-bytecode-copy-constructor.patch
 )
 
 vcpkg_cmake_configure(
