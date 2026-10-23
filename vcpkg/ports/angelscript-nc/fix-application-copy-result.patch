@@ -1,0 +1,31 @@
+diff --git a/sdk/angelscript/source/as_scriptengine.cpp b/sdk/angelscript/source/as_scriptengine.cpp
+--- a/sdk/angelscript/source/as_scriptengine.cpp
++++ b/sdk/angelscript/source/as_scriptengine.cpp
+@@ -6213,7 +6213,10 @@
+ 		{
+ 			// Call the script class' opAssign method
+ 			asASSERT(objType->flags & asOBJ_SCRIPT_OBJECT);
+-			reinterpret_cast<asCScriptObject*>(dstObj)->CopyFrom(reinterpret_cast<asCScriptObject*>(srcObj));
++			// ALTERED: a failed copy is reported, as it is for a registered type's opAssign above (see CallCopyBehaviour)
++			int r = reinterpret_cast<asCScriptObject*>(dstObj)->CopyFrom(reinterpret_cast<asCScriptObject*>(srcObj));
++			if( r < 0 )
++				return r;
+ 		}
+ 	}
+ 	else if (objType->size && (objType->flags & asOBJ_POD))
+diff --git a/sdk/angelscript/source/as_scriptobject.cpp b/sdk/angelscript/source/as_scriptobject.cpp
+--- a/sdk/angelscript/source/as_scriptobject.cpp
++++ b/sdk/angelscript/source/as_scriptobject.cpp
+@@ -1092,7 +1092,11 @@
+ 	if( GetTypeId() != other->GetTypeId() )
+ 		return asINVALID_TYPE;
+ 
+-	*this = *(const asCScriptObject*)other;
++	// ALTERED: the result of the copy is returned. It was asSUCCESS whatever happened, also when the class's opAssign raised
++	// an exception or the copy couldn't be done (CopyFromAs), so the application took a failed copy for a done one.
++	int r = CopyFromAs(reinterpret_cast<const asCScriptObject*>(other), objType);
++	if( r < 0 )
++		return r;
+ 
+ 	return asSUCCESS;
+ }
