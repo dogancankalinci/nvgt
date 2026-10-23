@@ -59,6 +59,7 @@ vcpkg_from_github(
         fix-bytecode-copy-constructor.patch
         fix-exception-position.patch
         fix-exception-frame-stale.patch
+        fix-cleanup-block-tail.patch
 )
 
 vcpkg_cmake_configure(

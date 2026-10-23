@@ -1,0 +1,96 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -5517,6 +5517,68 @@
+ 	return true;
+ }
+ 
++// ALTERED: whether the block that ends at the variable info end is the clean up that a return, break or continue statement
++// makes before it leaves, and the position pos is in the code that runs on from the end of that block, i.e. the clean up has
++// run. Such a block only destroys variables declared outside it (asOBJ_UNINIT alone), while DetermineLiveObjects skipped every
++// block that ended at or before the position as a whole, as one whose objects are both made and destroyed in it. So where the
++// execution stopped right after the clean up (an abort or suspend acted on after its last destructor call) or in the code
++// after it (the expression of a returned reference, which is evaluated after the clean up and can raise an exception), the
++// value objects destroyed by the clean up were taken for alive, and destroyed again by the clean up of the stack (a double
++// free of a string, a scoped lock unlocked and released twice). The code after the block is followed forward from its end,
++// along the jumps it makes forward (a returned reference's expression can branch: c ? a[i] : b[i]): a return, break or
++// continue leaves by a jump, and the position is in its tail only when it is reached before that. A position the block's
++// code can't reach that way is on another path (an "if (c) return;" without braces, a later case of a switch), and the
++// block is skipped as before.
++static bool IsCleanUpBlockTail(asCScriptFunction *func, int end, asUINT pos)
++{
++	asCArray<asSObjectVariableInfo> &info = func->scriptData->objVariableInfo;
++	int n = end - 1;
++	for( ; n >= 0 && info[n].option != asBLOCK_BEGIN; n-- )
++		if( info[n].option != asOBJ_UNINIT )
++			return false;
++	// An empty block makes no difference either way
++	if( n < 0 || n == end - 1 )
++		return false;
++
++	asUINT from = info[end].programPos;
++	if( pos == from )
++		return true;
++	asDWORD *bc = func->scriptData->byteCode.AddressOf();
++	asUINT length = func->scriptData->byteCode.GetLength();
++	if( pos < from || pos >= length )
++		return false;
++
++	// Which instruction starts between from and pos are reached from from, moving forward only
++	asCArray<bool> reached;
++	reached.SetLength(pos - from + 1);
++	memset(reached.AddressOf(), 0, sizeof(bool) * reached.GetLength());
++	reached[0] = true;
++	for( asUINT p = from; p <= pos && p < length; )
++	{
++		asBYTE op = *(asBYTE*)&bc[p];
++		asUINT next = p + asBCTypeSize[asBCInfo[op].type];
++		if( reached[p - from] )
++		{
++			// The position is in this instruction (a frame below the one the clean up stopped in is inside its call)
++			if( pos < next )
++				return true;
++			if( op == asBC_JMP || op == asBC_JZ || op == asBC_JNZ || op == asBC_JS || op == asBC_JNS ||
++				op == asBC_JP || op == asBC_JNP || op == asBC_JLowZ || op == asBC_JLowNZ )
++			{
++				asUINT target = asUINT(int(next) + asBC_INTARG(&bc[p]));
++				if( target > p && target <= pos )
++					reached[target - from] = true;
++				if( op != asBC_JMP && next <= pos )
++					reached[next - from] = true;
++			}
++			else if( op != asBC_RET && op != asBC_JMPP && next <= pos )
++				reached[next - from] = true;
++		}
++		p = next;
++	}
++	return false;
++}
++
+ // Internal
+ void asCContext::DetermineLiveObjects(asCArray<int> &liveObjects, asUINT stackLevel, const asUINT *framePos)
+ {
+@@ -5594,7 +5656,10 @@
+ 								break;
+ 							}
+ 						asASSERT(var != asUINT(-1));
+-						liveObjects[var] -= 1;
++						// ALTERED: not when no variable in scope matches, which the clean up block of a return, break or
++						// continue walked below meets for no variable (see IsCleanUpBlockTail), as asOBJ_INIT does
++						if( var != asUINT(-1) )
++							liveObjects[var] -= 1;
+ 					}
+ 					break;
+ 				case asOBJ_INIT: // Object was created
+@@ -5617,6 +5682,11 @@
+ 					// program was within the block when the exception occurred
+ 					break;
+ 				case asBLOCK_END: // End block
++					// ALTERED: not the clean up block of a return, break or continue whose code the position is at or right
++					// after, see IsCleanUpBlockTail: the objects destroyed in it were declared outside it
++					if( IsCleanUpBlockTail(func, n, pos) )
++						break;
++
+ 					// We need to skip the entire block, as the objects created
+ 					// and destroyed inside this block are already out of scope
+ 					{
