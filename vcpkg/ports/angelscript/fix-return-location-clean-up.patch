@@ -1,0 +1,77 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -5556,6 +5556,18 @@
+ // continue leaves by a jump, and the position is in its tail only when it is reached before that. A position the block's
+ // code can't reach that way is on another path (an "if (c) return;" without braces, a later case of a switch), and the
+ // block is skipped as before.
++// ALTERED: whether a variable of the function is the hidden reference to the location a value returned on the stack is
++// constructed in (the caller's memory), which the compiler adds last, unnamed, at the first parameter's offset. A return
++// statement constructs the value there and marks it alive (asOBJ_INIT); after the statement's clean up, which destroys the
++// function's variables, it marks it no longer alive (asOBJ_UNINIT) for the code after the statement, as only the caller
++// owns it once the function has returned.
++static bool IsReturnLocation(asCScriptFunction *func, asUINT var)
++{
++	asSScriptVariable *v = func->scriptData->variables[var];
++	return func->DoesReturnOnStack() && v->name.GetLength() == 0 && v->type.IsReference() &&
++	       v->stackOffset == (func->objectType ? -AS_PTR_SIZE : 0);
++}
++
+ static bool IsCleanUpBlockTail(asCScriptFunction *func, int end, asUINT pos)
+ {
+ 	asCArray<asSObjectVariableInfo> &info = func->scriptData->objVariableInfo;
+@@ -5659,13 +5671,16 @@
+ 	// Determine which object variables that are really live ones
+ 	liveObjects.SetLength(func->scriptData->variables.GetLength());
+ 	memset(liveObjects.AddressOf(), 0, sizeof(int)*liveObjects.GetLength());
+-	for( int n = 0; n < (int)func->scriptData->objVariableInfo.GetLength(); n++ )
++	// ALTERED: also when no info lies after the position (n reaches the end): a frame stopped at its last info, the RET at the
++	// function's end (an abort acted on after the last destructor of a return statement's clean up), wasn't walked at all
++	// and none of its objects counted as alive, so the value it had constructed in its return location was never destroyed
++	for( int n = 0; n <= (int)func->scriptData->objVariableInfo.GetLength(); n++ )
+ 	{
+ 		// Find the first variable info with a larger position than the current
+ 		// As the variable info are always placed on the instruction right after the
+ 		// one that initialized or freed the object, the current position needs to be
+ 		// considered as valid.
+-		if( func->scriptData->objVariableInfo[n].programPos > pos )
++		if( n == (int)func->scriptData->objVariableInfo.GetLength() || func->scriptData->objVariableInfo[n].programPos > pos )
+ 		{
+ 			// We've determined how far the execution ran, now determine which variables are alive
+ 			for( --n; n >= 0; n-- )
+@@ -5687,8 +5702,15 @@
+ 						asASSERT(var != asUINT(-1));
+ 						// ALTERED: not when no variable in scope matches, which the clean up block of a return, break or
+ 						// continue walked below meets for no variable (see IsCleanUpBlockTail), as asOBJ_INIT does
+-						if( var != asUINT(-1) )
+-							liveObjects[var] -= 1;
++						if( var == asUINT(-1) )
++							break;
++						// ALTERED: a frame stopped right after the clean up of a return statement (an abort acted on after its
++						// last destructor) has not returned the value it constructed in the return location yet: the mark
++						// there is for the code after the statement (see IsReturnLocation). Taken as returned, the value was
++						// left to the caller, whose call never completed, and nothing destroyed it.
++						if( func->scriptData->objVariableInfo[n].programPos == pos && IsReturnLocation(func, var) )
++							break;
++						liveObjects[var] -= 1;
+ 					}
+ 					break;
+ 				case asOBJ_INIT: // Object was created
+@@ -6096,8 +6118,15 @@
+ 					asASSERT(m_currentFunction->scriptData->variables[n]->type.GetTypeInfo() && m_currentFunction->scriptData->variables[n]->type.GetTypeInfo()->GetFlags() & asOBJ_VALUE);
+ 
+ 					asSTypeBehaviour* beh = &CastToObjectType(m_currentFunction->scriptData->variables[n]->type.GetTypeInfo())->beh;
+-					if( beh->destruct )
+-						m_engine->CallObjectMethod((void*)(asPWORD*)&m_regs.stackFramePointer[-pos], beh->destruct);
++					// ALTERED: a value the function constructed in its return location (a frame stopped in or right after the
++					// clean up of a return statement, see IsReturnLocation) is where the hidden reference points to: the
++					// reference itself was destroyed as the object, which for a string freed what the slot's address pointed
++					// to. The caller's memory is its own; only the value is destroyed.
++					void *obj = (void*)(asPWORD*)&m_regs.stackFramePointer[-pos];
++					if( IsReturnLocation(m_currentFunction, n) )
++						obj = *(void**)obj;
++					if( beh->destruct && obj )
++						m_engine->CallObjectMethod(obj, beh->destruct);
+ 				}
+ 			}
+ 		}
