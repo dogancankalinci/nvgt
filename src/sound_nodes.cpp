@@ -771,12 +771,11 @@ public:
 				g_soundsystem_last_error = MA_INVALID_ARGS;
 				return;
 			}
+			// Attached to the new destination before the old one goes, which attaching replaces: one without an input, as a sound, is refused, the reverb staying where it was, rather than left going nowhere while mixer read the sound.
+			if (reverb && !reverb->attach_output_bus(0, mix? static_cast<audio_node*>(mix) : get_engine()->get_endpoint(), 0)) return;
 			old = output_mixer;
-			if (old && reverb) reverb->detach_output_bus(0);
 			output_mixer = mix;
 			if (output_mixer) output_mixer->duplicate();
-			if (mix && reverb) reverb->attach_output_bus(0, mix, 0);
-			else if (reverb) reverb->attach_output_bus(0, get_engine()->get_endpoint(), 0);
 		}
 		if (old) old->release();
 	}
@@ -844,6 +843,7 @@ bool mixer_reaches(mixer* from, const std::function<bool(mixer*)>& is_target) {
 reverb3d* reverb3d::create(audio_node* reverb, mixer* destination, audio_engine* e) {
 	if (!e) throw std::runtime_error("no audio engine available");
 	if (destination && destination->get_engine() != e) throw std::runtime_error("the destination mixer belongs to another audio engine");
+	if (destination && ma_node_get_input_bus_count(destination->get_ma_node()) == 0) throw std::runtime_error("the destination takes no input"); // A sound given as a mixer: the reverb would go nowhere, as reverb3d.mixer refuses it.
 	if (destination) return new reverb3d_impl(e, reverb, destination);
 	mixer *own = new_mixer(e);
 	try {
