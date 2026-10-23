@@ -1313,7 +1313,13 @@ public:
 		iplEffectParams.direction.x = params.listener_direction_x * params.directional_attenuation_factor;
 		iplEffectParams.direction.y = params.listener_direction_y * params.directional_attenuation_factor;
 		iplEffectParams.direction.z = params.listener_direction_z * params.directional_attenuation_factor;
-		iplEffectParams.spatialBlend = clamp(params.listener_distance * (params.directional_attenuation_factor / fully_spatialized_distance), 0.0f, 1.0f);
+		iplEffectParams.spatialBlend = params.listener_distance * (params.directional_attenuation_factor / fully_spatialized_distance);
+		// Steam Audio given a NaN made the engine's whole mix NaN, kept until the sound closed, or for good through a reverb after it: clamp() passed a NaN blend through, as a distance too great for a float times a factor of 0 makes, and positions near the float's limit gave a NaN distance and direction. A blend that isn't a number, or a direction that isn't finite, spatializes nothing.
+		iplEffectParams.spatialBlend = iplEffectParams.spatialBlend > 1? 1 : iplEffectParams.spatialBlend > 0? iplEffectParams.spatialBlend : 0;
+		if (!std::isfinite(iplEffectParams.direction.x) || !std::isfinite(iplEffectParams.direction.y) || !std::isfinite(iplEffectParams.direction.z)) {
+			iplEffectParams.direction = {0, 0, -1};
+			iplEffectParams.spatialBlend = 0;
+		}
 		while (totalFramesProcessed < totalFramesToProcess) {
 			ma_uint32 framesToProcessThisIteration = totalFramesToProcess - totalFramesProcessed;
 			if (framesToProcessThisIteration > (ma_uint32)g_phonon_audio_settings.frameSize) framesToProcessThisIteration = (ma_uint32)g_phonon_audio_settings.frameSize;
