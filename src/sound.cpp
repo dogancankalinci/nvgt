@@ -2567,7 +2567,11 @@ public:
 	void set_spatialization_enabled(bool enabled) override {
 		if (!snd) return;
 		ma_sound_set_spatialization_enabled(&*snd, enabled);
-		if (enabled) place_in_shape(); // A shaped sound isn't placed while not spatialized, as a listener moves or the sound loads anew: placed in its shape once it is, rather than played from where it was last placed or from the origin.
+		if (!enabled) return;
+		// With the default panner and attenuator unless the sound has its own, as set_position_3d() gives them: spatialization turned on by hand, as after a load, which lets go of them, left the sound placed but neither panned nor attenuated.
+		if (sound_get_default_3d_panner() >= 0 && get_preferred_3d_panner() < 0) set_3d_panner(sound_get_default_3d_panner());
+		if (sound_get_default_3d_attenuator() >= 0 && get_preferred_3d_attenuator() < 0) set_3d_attenuator(sound_get_default_3d_attenuator());
+		place_in_shape(); // A shaped sound isn't placed while not spatialized, as a listener moves or the sound loads anew: placed in its shape once it is, rather than played from where it was last placed or from the origin.
 	}
 	bool get_spatialization_enabled() const override {
 		if (snd)
@@ -2597,9 +2601,7 @@ public:
 	void set_position_3d(float x, float y, float z) override {
 		if (!snd || !finite_values({x, y, z})) // A NaN or infinite position or direction poisoned a Steam Audio panner's or attenuator's state for good.
 			return;
-		set_spatialization_enabled(true);
-		if (sound_get_default_3d_panner() >= 0 && get_preferred_3d_panner() < 0) set_3d_panner(sound_get_default_3d_panner());
-		if (sound_get_default_3d_attenuator() >= 0 && get_preferred_3d_attenuator() < 0) set_3d_attenuator(sound_get_default_3d_attenuator());
+		set_spatialization_enabled(true); // With the default panner and attenuator, the first time.
 		unique_lock<mutex> lock(spatialization_params_mutex); // Which a listener's move places a shaped sound under.
 		if (shape) {
 			shape_anchor = reactphysics3d::Vector3(x, y, z);

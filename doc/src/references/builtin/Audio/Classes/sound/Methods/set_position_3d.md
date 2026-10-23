@@ -13,6 +13,6 @@ Places the sound in 3d space.
 * const vector&in position: the position of the sound.
 
 ## Remarks:
-The position is in the same space as the listener's, set with sound_set_listener_position(). Setting it turns spatialization on for the sound, and the first time also applies sound_default_3d_panner and sound_default_3d_attenuator unless the sound has panners of its own. A sound without anything loaded is left alone.
+The position is in the same space as the listener's, set with sound_set_listener_position(). Setting it turns spatialization on for the sound, which, as turning it on with spatialization_enabled does, applies sound_default_3d_panner and sound_default_3d_attenuator unless the sound has a panner or attenuator of its own; loading the sound again lets go of them, so they are applied again then. A sound without anything loaded is left alone.
 
 The sound's effects_chain always runs before its positioning, whichever was made first, so effects such as a reverb or a delay are placed with the sound rather than applied to it after it was panned and attenuated.
