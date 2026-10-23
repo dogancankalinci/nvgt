@@ -249,6 +249,8 @@ CScriptAny &CScriptAny::operator=(const CScriptAny &other)
 	// ALTERED: the new value is made first and the previous one released last, once the any holds the new one. The previous
 	// value was released while the any still held it, so a destructor run by that release that stored into or cleared this
 	// same any released it a second time (freed during its own destructor) and its type with it.
+	// The any is held until it holds the new value, as the copy below can let go of it, see SAnyValueHold.
+	SAnyValueHold holdThis(this, engine, 0, 0);
 	valueStruct nv;
 	nv.valueInt = 0;
 	nv.typeId = other.value.typeId;
@@ -270,7 +272,7 @@ CScriptAny &CScriptAny::operator=(const CScriptAny &other)
 	else if( nv.typeId & asTYPEID_MASK_OBJECT )
 	{
 		// Create a copy of the object
-		SAnyValueHold holdThis(this, engine, 0, 0), hold(&other, engine, other.value.valueObj, nv.typeId); // ALTERED: see SAnyValueHold
+		SAnyValueHold hold(&other, engine, other.value.valueObj, nv.typeId); // ALTERED: see SAnyValueHold
 		nv.valueObj = engine->CreateScriptObjectCopy(other.value.valueObj, engine->GetTypeInfoById(nv.typeId));
 	}
 	else
@@ -334,6 +336,10 @@ void CScriptAny::Store(void *ref, int refTypeId)
 	assert( refTypeId > asTYPEID_DOUBLE || refTypeId == asTYPEID_VOID || refTypeId == asTYPEID_BOOL || refTypeId == asTYPEID_INT64 || refTypeId == asTYPEID_DOUBLE );
 
 	// ALTERED: the new value is made first and the previous one released last, as in operator=
+	// The any is held until it holds the new value, see SAnyValueHold: the copy of an object below (a script class's copy
+	// constructor) that let go of the any (gany.store(c) where the copy constructor runs @gany = null) freed it in the middle of
+	// the store, which then wrote the new value into the freed any.
+	SAnyValueHold holdThis(this, engine, 0, 0);
 	valueStruct nv;
 	nv.valueInt = 0;
 	nv.typeId = refTypeId;
@@ -355,6 +361,9 @@ void CScriptAny::Store(void *ref, int refTypeId)
 	else if( nv.typeId & asTYPEID_MASK_OBJECT )
 	{
 		// Create a copy of the object
+		// ALTERED: the object being copied is held for its copy too, as the copy can free it (an element of an array the copy
+		// constructor empties), see SAnyValueHold
+		SAnyValueHold hold(this, engine, ref, nv.typeId);
 		nv.valueObj = engine->CreateScriptObjectCopy(ref, engine->GetTypeInfoById(nv.typeId));
 	}
 	else
