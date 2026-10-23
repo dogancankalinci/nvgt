@@ -27,6 +27,8 @@ using namespace std;
 
 // A volume clamped to the range a script set, as MiniAudio's ma_clamp() clamps a sound's gain, the floor winning over a ceiling set below it: std::clamp() with such a range is undefined.
 static float clamp_volume(float volume, float floor, float ceiling) { return volume > ceiling? (ceiling < floor? floor : ceiling) : volume < floor? floor : volume; }
+// A panning amount, or none for one that isn't a number, as an infinite distance times a directional factor of 0 makes, which MiniAudio's clamp turned into hard right.
+static float pan_amount(float amount) { return amount == amount? amount : 0; }
 // What an attenuator applies for its distance's volume: that and the cones' volume clamped together to min_volume and max_volume, once, as MiniAudio's spatializer clamps them when it attenuates.
 static float volume_with_cones(float distance_volume, const audio_spatialization_parameters& params) { return clamp_volume(distance_volume * params.cone_volume, params.min_volume, params.max_volume); }
 
@@ -1267,7 +1269,7 @@ public:
 		if (!spatializer) goto fail;
 		audio_spatialization_parameters params;
 		if (!spatializer->get_parameters(params)) goto fail;
-		ma_panner_set_pan(&panner, pan_db_to_linear((params.listener_direction_x * params.listener_distance) * params.directional_attenuation_factor * 1.75));
+		ma_panner_set_pan(&panner, pan_db_to_linear(pan_amount((params.listener_direction_x * params.listener_distance) * params.directional_attenuation_factor * 1.75)));
 		if (frameCount > *frame_count_in) frameCount = *frame_count_in;
 		ma_panner_process_pcm_frames(&panner, frames_out[0], frames_in[0], frameCount);
 		return;
