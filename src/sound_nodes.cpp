@@ -758,9 +758,9 @@ public:
 	}
 	mixer* get_mixer() const override { return output_mixer; }
 	// Not a value that isn't finite, as for other nodes: the volume read NaN or infinite, and the send, which refuses such a volume, stopped following the distance.
-	void set_min_volume(float value) override { if (finite_node_values({value})) min_volume = value; }
+	void set_min_volume(float value) override { if (finite_node_values({value, ma_volume_db_to_linear(value)})) min_volume = value; } // Nor one whose linear volume isn't, from about 770 dB, as other decibel settings.
 	float get_min_volume() const override { return min_volume; }
-	void set_max_volume(float value) override { if (finite_node_values({value})) max_volume = value; }
+	void set_max_volume(float value) override { if (finite_node_values({value, ma_volume_db_to_linear(value)})) max_volume = value; }
 	float get_max_volume() const override { return max_volume; }
 	void set_max_volume_distance(float value) override { if (finite_node_values({value})) max_volume_distance = value; }
 	float get_max_volume_distance() const override { return max_volume_distance; }
