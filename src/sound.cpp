@@ -1531,18 +1531,20 @@ public:
 	unsigned int get_sample_rate() const override { return rb? ma_pcm_rb_get_sample_rate(&*rb) : 0; }
 };
 audio_ring_buffer* audio_ring_buffer::create(unsigned int channels, unsigned int size, audio_engine* e) { return new audio_ring_buffer_impl(channels, size, e); }
-// MiniAudio's decoder reads a file of another rate through a resampler, NVGT's WDL one, which gives what it holds at the input's end only on a second call without input, while MiniAudio's read makes one such call, returning no frames and its end if that gives none: a read starting where only those frames were left got none, ending a sound, a chain's link or a pass of a loop, or a script's reading, tens of frames early. In NVGT's decoders such a read is made once more (see hold_decoder()).
+// MiniAudio's decoder reads a file of another rate through a resampler, NVGT's WDL one, with two faults its read is wrapped for in NVGT's decoders (see hold_decoder()). The resampler gives what it holds at the input's end only on a second call without input, and MiniAudio's read makes one such call, returning no frames and its end if that gives none: a read starting where only those frames were left got none, ending a sound, a chain's link or a pass of a loop, or a script's reading, tens of frames early; such a read is made once more. Raising the channel count while resampling up, MiniAudio's converter resamples in chunks of its stack buffer, asking the resampler for the input each chunk needs, a count WDL's doesn't add up over chunks, and the decoder drops the input the converter didn't take, so that a read of more than a chunk lost frames of the file; reads are made in parts no larger than a chunk.
 static ma_data_source_vtable g_held_decoder_vtable;
 static ma_result (*g_ma_decoder_read)(ma_data_source*, void*, ma_uint64, ma_uint64*) = nullptr;
+static constexpr ma_uint64 converter_chunk_bytes = 4096; // MiniAudio's MA_DATA_CONVERTER_STACK_BUFFER_SIZE, which its header doesn't give.
 static ma_result held_decoder_read(ma_data_source* source, void* frames_out, ma_uint64 frame_count, ma_uint64* frames_read) {
 	ma_decoder* decoder = (ma_decoder*)source;
 	const ma_uint32 frame_size = ma_get_bytes_per_frame(decoder->outputFormat, decoder->outputChannels);
+	const ma_uint64 part = std::max<ma_uint64>(1, converter_chunk_bytes / (sizeof(float) * std::max(decoder->outputChannels, decoder->converter.channelsIn)));
 	ma_uint64 total = 0;
 	ma_result result = MA_SUCCESS;
 	bool again = false; // The read just made gave nothing at the end, and is being made once more.
 	while (total < frame_count) {
 		ma_uint64 got = 0;
-		result = g_ma_decoder_read(source, frames_out? (ma_uint8*)frames_out + total * frame_size : nullptr, frame_count - total, &got);
+		result = g_ma_decoder_read(source, frames_out? (ma_uint8*)frames_out + total * frame_size : nullptr, std::min(part, frame_count - total), &got);
 		total += got;
 		if (got) again = false;
 		else if (result == MA_AT_END && !again) again = true;
