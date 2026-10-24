@@ -1,0 +1,29 @@
+diff --git a/sdk/angelscript/source/as_compiler.cpp b/sdk/angelscript/source/as_compiler.cpp
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -2468,12 +2468,25 @@
+ #endif
+ 
+ 	// Move the objects that are sent by value to the stack just before the call
++	// ALTERED: in two passes, first the arguments for reference parameters (with the null check of a handle given for one,
++	// which raises an exception) and then the objects sent by value. In one pass, in the order of the parameters, an object
++	// sent by value was moved out of its variable onto the stack before the null check of a later parameter, and when that
++	// check raised the exception, the object was neither in a variable nor in a call any more: it was never destroyed (a
++	// value type leaked, a script class's destructor never ran). An object still in its variable is destroyed with it.
++	const int firstOffset = offset;
++	for( int pass = 0; pass < 2; pass++, offset = firstOffset )
+ 	for( asUINT n = 0; n < args.GetLength(); n++ )
+ 	{
+ 		asUINT realParamIdx = n;
+ 		if (descr->IsVariadic() && n >= descr->parameterTypes.GetLength() - 1)
+ 			realParamIdx = descr->parameterTypes.GetLength() - 1;
+ 		
++		if( descr->parameterTypes[realParamIdx].IsReference() != (pass == 0) )
++		{
++			offset += descr->parameterTypes[realParamIdx].GetSizeOnStackDWords();
++			continue;
++		}
++
+ 		if( descr->parameterTypes[realParamIdx].IsReference() )
+ 		{
+ 			if( (descr->parameterTypes[realParamIdx].IsObject() || descr->parameterTypes[realParamIdx].IsFuncdef()) && !descr->parameterTypes[realParamIdx].IsObjectHandle() )
