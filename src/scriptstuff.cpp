@@ -12,10 +12,12 @@
 
 #define NOMINMAX
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <map>
+#include <mutex>
 #include <string_view>
 #include <tuple>
 #include <utility>
@@ -103,6 +105,9 @@ int profiler_current_line = 0;
 const char* profiler_current_section = NULL;
 // The declarations of the functions in the profile, taken when each is first seen, as it runs. generate_profile() read them from the functions themselves, and one freed since (a compile_function() one let go, a discarded module's) was read after it was freed.
 static std::map<asIScriptFunction*, std::string> profiler_decls;
+// The profiler's state is written by the line callback of every context, on whichever thread runs it: with no lock, two threads running script while profiling inserted into the maps at once and corrupted them (and generate_profile() read them meanwhile). Held for every use of the state above; recursive, as generate_profile() resets it with the lock held. The line callback reads profiler_running first, without the lock, so that a script that isn't profiled doesn't take it for every line.
+static std::recursive_mutex profiler_mutex;
+static std::atomic<bool> profiler_running{false};
 // The entry of func in the profile, made with initial (and its declaration taken) if there is none.
 static std::chrono::high_resolution_clock::time_point& profiler_entry(asIScriptFunction* func, std::chrono::high_resolution_clock::time_point initial) {
 	auto it = profiler_cache.find(func);
@@ -115,9 +120,10 @@ static std::chrono::high_resolution_clock::time_point& profiler_entry(asIScriptF
 }
 
 void profiler_callback(asIScriptContext* ctx, void* obj) {
-	if (!is_profiling) return;
+	if (!profiler_running.load(std::memory_order_relaxed)) return;
 	int col;
-	profiler_current_line = ctx->GetLineNumber(0, &col, &profiler_current_section);
+	const char* section = NULL;
+	int line = ctx->GetLineNumber(0, &col, &section);
 	/*
 	const char* section;
 	int line, col;
@@ -131,6 +137,10 @@ void profiler_callback(asIScriptContext* ctx, void* obj) {
 	auto t = std::chrono::high_resolution_clock::now();
 	asIScriptFunction* sfunc = ctx->GetSystemFunction();
 	asIScriptFunction* func = (sfunc != NULL ? sfunc : ctx->GetFunction());
+	std::lock_guard<std::recursive_mutex> lock(profiler_mutex);
+	if (!is_profiling) return;
+	profiler_current_line = line;
+	profiler_current_section = section;
 	auto elapsed = t - profiler_ticks;
 	profiler_ticks = t;
 	if (func == profiler_last_func) {
@@ -142,6 +152,7 @@ void profiler_callback(asIScriptContext* ctx, void* obj) {
 	profiler_last_func = func;
 }
 void reset_profiler() {
+	std::lock_guard<std::recursive_mutex> lock(profiler_mutex);
 	profiler_cache.clear();
 	profiler_decls.clear();
 	profiler_ticks = std::chrono::high_resolution_clock::now();
@@ -150,6 +161,7 @@ void reset_profiler() {
 	prepare_profiler();
 }
 void prepare_profiler() {
+	std::lock_guard<std::recursive_mutex> lock(profiler_mutex);
 	if (!is_profiling) return;
 	asIScriptContext* ctx = asGetActiveContext();
 	if (!ctx) return;
@@ -157,22 +169,32 @@ void prepare_profiler() {
 	profiler_entry(profiler_last_func, profiler_start) = profiler_start;
 }
 void start_profiling() {
+	std::lock_guard<std::recursive_mutex> lock(profiler_mutex);
 	if (is_profiling) return;
 	asIScriptContext* ctx = asGetActiveContext();
 	if (!ctx) return;
 	is_profiling = true;
+	profiler_running = true;
 	reset_profiler();
 }
 void stop_profiling() {
+	std::lock_guard<std::recursive_mutex> lock(profiler_mutex);
 	asIScriptContext* ctx = asGetActiveContext();
 	if (!is_profiling || !ctx)
 		return;
 	is_profiling = false;
+	profiler_running = false;
+}
+// After a callback a map filter ran (see map_area::is_unfiltered), the next line isn't counted to the callback's function.
+void profiler_forget_last_function() {
+	std::lock_guard<std::recursive_mutex> lock(profiler_mutex);
+	profiler_last_func = NULL;
 }
 static bool profiler_results_sort(asIScriptFunction* f1, asIScriptFunction* f2) {
 	return profiler_cache[f1] > profiler_cache[f2];
 }
 std::string generate_profile(bool reset = true) {
+	std::lock_guard<std::recursive_mutex> lock(profiler_mutex);
 	if (profiler_cache.size() < 1) return "";
 	std::vector<asIScriptFunction*> results;
 	results.reserve(profiler_cache.size());

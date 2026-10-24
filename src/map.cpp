@@ -127,7 +127,7 @@ bool map_area::is_unfiltered(asIScriptFunction* filter_callback) {
 		if (!new_context && ctx) pop_nested_state(ctx);
 		return true;
 	}
-	profiler_last_func = NULL;
+	profiler_forget_last_function();
 	ret = ctx->GetReturnByte() != 0;
 	if (!new_context) pop_nested_state(ctx);
 	return ret;

@@ -22,6 +22,7 @@ void nvgt_line_callback(asIScriptContext* ctx, void* obj); // Every context's li
 void script_function_call_count_statement(asIScriptContext* ctx); // Counts a statement towards the limits of the script_function.call()s running on this thread.
 extern int g_GCMode;
 void prepare_profiler();
+void profiler_forget_last_function();
 void garbage_collect_action();
 extern asIScriptFunction* profiler_last_func;
 extern int profiler_current_line;
