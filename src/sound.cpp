@@ -2825,6 +2825,7 @@ struct chain_view {
 	}
 	bool endless = false; // The last source links back into the chain, as one set as its own next does, so the chain never ends.
 	bool read_through = false; // The last read gave the chain's end.
+	bool exhausted = false; // Ended by chain_view_seek(), its links unable to all play again, until a seek it makes.
 	std::vector<ma_data_source*> looping_set_aside; // Sources whose own looping is off while the sound plays the chain (see chain_source()), given back after.
 	~chain_view() { // Only views made in full are kept.
 		for (ma_data_source* source : looping_set_aside) ma_data_source_set_looping(source, MA_TRUE);
@@ -2833,6 +2834,10 @@ struct chain_view {
 };
 static ma_result chain_view_read(ma_data_source* source, void* frames_out, ma_uint64 frame_count, ma_uint64* frames_read) {
 	chain_view* view = (chain_view*)source;
+	if (view->exhausted) {
+		if (frames_read) *frames_read = 0;
+		return MA_AT_END;
+	}
 	bool was_on_one = ma_data_source_get_current(view->head) != nullptr;
 	ma_result result = ma_data_source_read_pcm_frames(view->head, frames_out, frame_count, frames_read);
 	if (result != MA_SUCCESS && result != MA_AT_END && result != MA_BUSY && decoder_finished(ma_data_source_get_current(view->head))) result = frames_read && *frames_read? MA_SUCCESS : MA_AT_END; // A ring of links that finished (see held_decoder_seek()): the chain's end.
@@ -2845,19 +2850,20 @@ static ma_result chain_view_seek(ma_data_source* source, ma_uint64 frame) {
 	size_t index = 0;
 	ma_uint64 offset = 0;
 	for (ma_uint64 length; index + 1 < view->links.size() && (length = view->length_of(index).load(std::memory_order_relaxed)) != chain_view::unknown && frame >= offset + length; index++) offset += length; // The source the frame falls in, past empty ones, or the last.
-	// A chain read to its end, as when its loop or play() starts it again, whose links from the one sought can't all play again, as one that played through a source that can't seek: put on no source, which ends it, rather than playing for good only the links that can; a script's call is told the error.
+	// A chain read to its end, as when its loop or play() starts it again, whose links from the one sought can't all play again, as one that played through a source that can't seek: exhausted, which ends it where it is, rather than playing for good only the links that can; a script's call is told the error. Not by putting the head on no source, which MiniAudio reads as the head itself when it has no next of its own, and which would undo a head's set_current().
 	if (view->read_through) {
 		for (size_t later = index; later < view->links.size(); later++) {
 			ma_result again = start_again(view->links[later].first);
 			if (again == MA_SUCCESS) continue;
 			if (t_script_seek) return again;
-			ma_data_source_set_current(view->head, nullptr);
+			view->exhausted = true;
 			return MA_SUCCESS;
 		}
 	}
 	ma_result result = ma_data_source_seek_to_pcm_frame(view->links[index].first, frame - offset);
 	if (result == MA_SUCCESS) {
 		view->read_through = false;
+		view->exhausted = false;
 		ma_data_source_set_current(view->head, view->links[index].first);
 		view->last_on.store(index, std::memory_order_relaxed);
 	}
