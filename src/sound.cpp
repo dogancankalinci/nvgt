@@ -4245,13 +4245,18 @@ public:
 		paused = fade_paused = false;
 		// A sound that isn't playing drops what was queued before it is started again, through its reader: see pcm_queue. One already playing keeps its queue.
 		if (pcm_stream && !(snd && ma_sound_is_playing(&*snd))) pcm_stream->discard();
-		return mixer_impl::play(reset_loop_state);
+		return started_or_seek_dropped(mixer_impl::play(reset_loop_state));
 	}
 	bool play_looped() override {
 		if (pcm_stream) return false;
 		if (fade_paused && snd) clear_stop_for_restart(true);
 		paused = fade_paused = false;
-		return mixer_impl::play_looped();
+		return started_or_seek_dropped(mixer_impl::play_looped());
+	}
+	// A sound at its end makes a seek once started again (see held_sound_process()); one that can't start again, its source unable to go back to its start, can't make it either, and its position read the seek's frame for good: the seek is dropped, the position reading its end again.
+	bool started_or_seek_dropped(bool started) {
+		if (!started && snd && ma_sound_at_end(&*snd)) held(&*snd)->seek_target.store(~(ma_uint64)0);
+		return started;
 	}
 	bool play_wait() override {
 		if (pcm_stream || !play())
