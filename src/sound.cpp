@@ -2479,7 +2479,9 @@ struct held_sound : ma_sound {
 	bool end_silence_taken = false;
 	ma_uint32 cache_cap = 0; // The capacity MiniAudio gave the sound's cache, which held_sound_process() lowers for each call (see bound_read()).
 	ma_uint64 restart_cursor = ~(ma_uint64)0; // The source's cursor when held_sound_process() last played the sound on from its loop's start at its end.
-	std::atomic<bool> restart{false}; // play() came at the sound's end before MiniAudio stopped it, which held_sound_process() starts it again from (see sound_impl::restart_if_ending()).
+	// play() came at the sound's end before MiniAudio stopped it, which held_sound_process() starts it again from (see sound_impl::restart_if_ending()): restart_asked, then restart_taking while the audio thread starts it, which stop() and pause() wait out, so that the sound isn't started after they stopped it.
+	static constexpr int restart_none = 0, restart_asked = 1, restart_taking = 2;
+	std::atomic<int> restart{restart_none};
 	std::atomic<ma_uint64> seek_target{~(ma_uint64)0}; // The frame a seek asked for, ~0 for none, made by held_sound_process() in place of MiniAudio's seekTarget.
 };
 struct held_sound_delete {
@@ -2640,7 +2642,11 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 		return;
 	}
 	held_sound* h = held(s);
-	if (h->restart.exchange(false) && ma_sound_at_end(s)) start_from_start(s);
+	int asked = held_sound::restart_asked;
+	if (h->restart.compare_exchange_strong(asked, held_sound::restart_taking)) {
+		if (ma_sound_at_end(s)) start_from_start(s);
+		h->restart.store(held_sound::restart_none);
+	}
 	// Looping turned on at the source's end, while what the resampler owed was being given or before MiniAudio stopped the sound for it: it plays on from the loop's start, as from a looping source's end, rather than stopping, as play_looped() says it plays. Before a seek made meanwhile, which then is made. Not when the source can't seek there, nor when its pass gave nothing since the last such start, as for a source with no frames, which MiniAudio stops at its end, rather than started over every block.
 	if (ma_sound_at_end(s) && ma_data_source_is_looping(s->pDataSource)) {
 		ma_uint64 loop_begin = 0, loop_end = 0, cursor = ~(ma_uint64)0;
@@ -2679,9 +2685,11 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 		if (done >= wanted || ma_sound_at_end(s) || !count && s->processingCacheFramesRemaining == cached) break;
 	}
 	if (ma_sound_at_end(s) && h->end_state != held_sound::end_flush::given && done < wanted) done += give_end(node, frames_in, frame_count_in, frames_out[0] + (size_t)done * channels, wanted - done);
-	if (!ma_sound_is_playing(s) && ma_sound_at_end(s) && h->restart.exchange(false)) { // Stopped by MiniAudio at its end in this block, after play() came.
+	asked = held_sound::restart_asked;
+	if (!ma_sound_is_playing(s) && ma_sound_at_end(s) && h->restart.compare_exchange_strong(asked, held_sound::restart_taking)) { // Stopped by MiniAudio at its end in this block, after play() came.
 		start_from_start(s);
 		ma_node_set_state(s, ma_node_state_started);
+		h->restart.store(held_sound::restart_none);
 	}
 	*frame_count_out = done;
 }
@@ -4297,9 +4305,18 @@ public:
 		held_sound* h = held(&*snd);
 		ma_uint64 none = ~(ma_uint64)0;
 		h->seek_target.compare_exchange_strong(none, 0); // Its position reads its start at once, as after ma_sound_start(); made once the audio thread clears its end.
-		h->restart.store(true);
+		h->restart.store(held_sound::restart_asked);
 		if (ma_sound_is_playing(&*snd)) return true;
-		return !h->restart.exchange(false); // Stopped meanwhile: unless the block that stopped it took the ask, started by MiniAudio.
+		int asked = held_sound::restart_asked;
+		return !h->restart.compare_exchange_strong(asked, held_sound::restart_none); // Stopped meanwhile: unless the block that stopped it took the ask, started by MiniAudio.
+	}
+	// Calls off a play() at the sound's end the audio thread hasn't started it for, and waits out one it is starting it for, before the sound is stopped.
+	void call_off_restart() {
+		if (!snd) return;
+		std::atomic<int>& restart = held(&*snd)->restart;
+		int asked = held_sound::restart_asked;
+		restart.compare_exchange_strong(asked, held_sound::restart_none);
+		while (restart.load() == held_sound::restart_taking) std::this_thread::yield(); // A few atomic operations on the audio thread, which never waits on this one.
 	}
 	// A sound at its end makes a seek once started again (see held_sound_process()); one that can't start again, its source unable to go back to its start, can't make it either, and its position read the seek's frame for good: the seek is dropped, the position reading its end again. Its looping is put back as it was, rather than left as the failed call set it.
 	bool started_or_undone(bool started, bool looping) {
@@ -4318,13 +4335,13 @@ public:
 	bool stop() override {
 		if (fade_paused && snd) clear_stop_for_restart(true); // Stopped now, so the pause_fade() stop still to come would stop the sound once it plays again.
 		paused = fade_paused = false;
-		if (snd) held(&*snd)->restart.store(false); // A play() just before, at the sound's end, isn't made after it.
+		call_off_restart(); // A play() just before, at the sound's end, isn't made after it.
 		if (!mixer_impl::stop()) return false;
 		return !chain && get_length_in_frames() == 0 || seek(0); // A stream without a length, such as PCM or a URL, has no start to go back to; a chain always has (see seek_in_frames()).
 	}
 	bool pause() override {
 		if (snd && !pcm_stream) {
-			held(&*snd)->restart.store(false); // As in stop().
+			call_off_restart(); // As in stop().
 			g_soundsystem_last_error = ma_sound_stop(&*snd);
 			if (g_soundsystem_last_error == MA_SUCCESS)
 				paused = true;
