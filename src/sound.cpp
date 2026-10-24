@@ -2351,13 +2351,19 @@ static ma_result decode_front_read(ma_data_source* source, void* frames_out, ma_
 	ma_resource_manager_data_buffer* buffer = &view->inner->backend.buffer;
 	ma_resource_manager_data_buffer_node* node = buffer->pNode;
 	bool held_back = false;
-	if (node && ma_resource_manager_data_source_result(view->inner) == MA_BUSY && reinterpret_cast<std::atomic<ma_resource_manager_data_supply_type>*>(&node->data.type)->load() == ma_resource_manager_data_supply_type_decoded) {
-		ma_uint32 job = reinterpret_cast<std::atomic<ma_uint32>*>(&node->executionPointer)->load(std::memory_order_acquire);
+	// The node's result, which its last page's job sets once its frames are written, rather than the buffer's, set only when the buffer's own job runs again after that.
+	if (node && reinterpret_cast<std::atomic<ma_result>*>(&node->result)->load() == MA_BUSY && reinterpret_cast<std::atomic<ma_resource_manager_data_supply_type>*>(&node->data.type)->load() == ma_resource_manager_data_supply_type_decoded) {
+		std::atomic<ma_uint32>& pointer = *reinterpret_cast<std::atomic<ma_uint32>*>(&node->executionPointer);
+		ma_uint32 job = pointer.load(std::memory_order_acquire);
 		if (!view->seen || job != view->seen_job) {
-			if (view->seen) view->ready_frames = view->seen_frames; // Written by a job done since.
-			view->seen = true;
-			view->seen_job = job;
-			view->seen_frames = reinterpret_cast<std::atomic<ma_uint64>*>(&node->data.backend.decoded.decodedFrameCount)->load(std::memory_order_relaxed);
+			ma_uint64 frames = reinterpret_cast<std::atomic<ma_uint64>*>(&node->data.backend.decoded.decodedFrameCount)->load(std::memory_order_acquire);
+			// Kept only when the pointer hasn't moved meanwhile, so that the count is from the job it was at or an earlier one: a count the next job stored, before it moved the pointer past itself, would otherwise be taken for one of a job done.
+			if (pointer.load(std::memory_order_acquire) == job) {
+				if (view->seen) view->ready_frames = view->seen_frames; // Written by a job done since.
+				view->seen = true;
+				view->seen_job = job;
+				view->seen_frames = frames;
+			}
 		}
 		ma_uint64 cursor = 0;
 		ma_resource_manager_data_buffer_get_cursor_in_pcm_frames(buffer, &cursor);
