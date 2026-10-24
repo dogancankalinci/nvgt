@@ -51,6 +51,13 @@ public:
 	}
 	audio_engine *get_engine() const { return engine; }
 	ma_node_base *get_ma_node() { return node; }
+	// What an output bus goes into, with a reference the caller lets go of, or null.
+	audio_node* acquire_output_destination(unsigned int bus) const {
+		std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); // Which output_connections change under.
+		audio_node* destination = bus < output_connections.size()? output_connections[bus] : nullptr;
+		if (destination) destination->duplicate();
+		return destination;
+	}
 	unsigned int get_input_bus_count() { return node ? ma_node_get_input_bus_count(node) : 0; }
 	unsigned int get_output_bus_count() { return node ? ma_node_get_output_bus_count(node) : 0; }
 	unsigned int get_input_channels(unsigned int bus) { return node ? ma_node_get_input_channels(node, bus) : 0; }

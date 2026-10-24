@@ -289,6 +289,12 @@ public:
 		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		return endpoint;
 	}
+	// The endpoint, with a reference the caller lets go of, or null.
+	audio_node* acquire_endpoint() const {
+		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		if (endpoint) endpoint->duplicate();
+		return endpoint;
+	}
 	audio_node* first() const override {
 		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		if (nodes.empty()) return nullptr;
@@ -744,14 +750,22 @@ static void reverb_used(audio_node* verb) {
 	std::lock_guard<std::mutex> lock(g_reverb_users_mutex);
 	g_reverb_users[verb]++;
 }
-// The reverb3ds still using it.
-static int reverb_let_go(audio_node* verb) {
-	std::lock_guard<std::mutex> lock(g_reverb_users_mutex);
-	auto it = g_reverb_users.find(verb);
-	if (it == g_reverb_users.end()) return 0;
-	int left = --it->second;
-	if (left <= 0) g_reverb_users.erase(it);
-	return left > 0? left : 0;
+// A reverb3d lets go of its reverb: the last of them takes a node that isn't a mixer from its destination, in the same step, so that another reverb3d taking the node up meanwhile, which counts itself before it sends the node on, isn't cut off. A mixer keeps its parent, as a mixer of the script's. Detaching takes only the graph lock, which nothing holding it takes this lock under.
+static void reverb_let_go(audio_node* verb) {
+	audio_node* destination = nullptr;
+	{
+		std::lock_guard<std::mutex> lock(g_reverb_users_mutex);
+		auto it = g_reverb_users.find(verb);
+		if (it != g_reverb_users.end() && --it->second > 0) return;
+		if (it != g_reverb_users.end()) g_reverb_users.erase(it);
+		if (!dynamic_cast<mixer*>(verb)) {
+			// Held past the lock: the detach can let go of the last reference to it, and its destructor, as a mixer's letting go of a reverb3d of its own, takes this lock again.
+			if (auto chain = dynamic_cast<audio_node_chain_impl*>(verb)) destination = chain->acquire_endpoint();
+			else if (auto impl = dynamic_cast<audio_node_impl*>(verb)) destination = impl->acquire_output_destination(0);
+			verb->detach_output_bus(0);
+		}
+	}
+	if (destination) destination->release();
 }
 class reverb3d_impl : public passthrough_node_impl, public virtual reverb3d {
 	audio_node* reverb;
@@ -776,13 +790,9 @@ public:
 		if (mixer* mix = dynamic_cast<mixer*>(verb)) return mix->set_mixer(destination);
 		return verb->attach_output_bus(0, destination? static_cast<audio_node*>(destination) : get_engine()->get_endpoint(), 0);
 	}
-	// A reverb replaced: one that isn't a mixer is taken from the destination; a mixer keeps its parent, as a mixer of the script's.
-	void stop_onward(audio_node* verb) {
-		if (!dynamic_cast<mixer*>(verb)) verb->detach_output_bus(0);
-	}
 	~reverb3d_impl() {
 		if (reverb) {
-			reverb_let_go(reverb);
+			reverb_let_go(reverb); // A node the script keeps no longer goes on into the destination, which kept a reverb3d's own mixer alive and processed with it.
 			reverb->release();
 		}
 		if (output_mixer) output_mixer->release();
@@ -815,7 +825,7 @@ public:
 			if (!verb_mixer) send_onward(reverb, output_mixer);
 		}
 		if (old) {
-			if (!reverb_let_go(old)) stop_onward(old); // Still sent on for the reverb3ds that use it too.
+			reverb_let_go(old); // Still sent on for the reverb3ds that use it too.
 			old->release();
 		}
 	}
