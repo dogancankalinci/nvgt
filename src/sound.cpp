@@ -2273,6 +2273,16 @@ static void hold_rate(ma_node* node) {
 		rate = base * s->given * doppler;
 	}
 	s->rate.store(rate, std::memory_order_relaxed);
+	// MiniAudio sets the resampler from these at the start of the block, on a change, to a ratio it keeps to a thousandth, cut down: a sound played up to a thousandth slow and flat, and a doppler ratio, changed each block, was always rounded down. Set here instead, which MiniAudio, finding them unchanged, keeps: exactly at a pitch and doppler ratio of 1, as the sound started, and otherwise to a ten-thousandth, rounded. A ten-thousandth, as the linear resampler moves its timing to a new rate multiplying the old rate by the new in 32 bits, which an engine rate of up to 429496 Hz keeps within; above it MiniAudio's own is left.
+	ma_engine_node& node_state = s->engineNode;
+	ma_uint32 engine_rate = ma_engine_get_sample_rate(node_state.pEngine);
+	float given = ma_sound_get_pitch(s); // As MiniAudio reads it.
+	if ((given != node_state.oldPitch || doppler != node_state.oldDopplerPitch) && engine_rate <= 429496) {
+		node_state.oldPitch = given;
+		node_state.oldDopplerPitch = doppler;
+		if (given == 1 && doppler == 1) ma_resampler_set_rate(&node_state.resampler, node_state.sampleRate, engine_rate);
+		else ma_resampler_set_rate(&node_state.resampler, std::max<ma_uint32>(1, (ma_uint32)std::llround((double)node_state.sampleRate / engine_rate * given * doppler * 10000)), 10000);
+	}
 }
 // MiniAudio's processing of a sound plays first from a cache of the source's frames it read and converted to float but hadn't played yet, up to a block of them. A seek, made there from seekTarget, moved the source but kept the cache, so a sound not read in whole blocks, at a pitch other than 1 or a source rate other than the engine's, played up to that many frames from where it had been, at a pitch of 0.3 for 18 ms; the seek is made here, from the sound's own target, the cache emptied with it, and the target cleared only after it, as MiniAudio does, as the sound's position reads the target until then. MiniAudio's seekTarget is left unset: taken over from there, a seek stored just after the takeover looked was still made by MiniAudio's own code in the call that followed. A sound at its end is stopped in the block first, and a seek kept for when it plays again, as MiniAudio keeps it. And when a read that refills the cache returns MA_BUSY with frames, as a stream does while its next page is being decoded or a seek is being made, MiniAudio ends the call before playing them, so the rest of the block was silent while they waited a block; it is called again then, for the rest of the block, playing the cache first. On the thread reading the engine.
 static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32* frame_count_in, float** frames_out, ma_uint32* frame_count_out) {
