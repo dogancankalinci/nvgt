@@ -897,6 +897,11 @@ reverb3d* reverb3d::create(audio_node* reverb, mixer* destination, audio_engine*
 	if (reverb && reverb->get_engine() != e) throw std::runtime_error("the reverb belongs to another audio engine");
 	audio_node* target = destination? static_cast<audio_node*>(destination) : e->get_endpoint();
 	if (reverb? !reverb_fits(reverb, target, e->get_channels()) : ma_node_get_input_bus_count(target->get_ma_node()) == 0) throw std::runtime_error("the destination takes no input from the reverb"); // A sound given as a mixer, or a reverb of another channel count: the reverb would go nowhere, as reverb3d.mixer and reverb3d.reverb refuse them.
+	std::lock_guard<std::recursive_mutex> topology(g_audio_topology_mutex);
+	// A mixer given as the reverb goes into the destination as a mixer, which a destination going into that mixer would loop: refused, as reverb3d.reverb refuses it, rather than made with the reverb going where the mixer went before.
+	if (mixer* verb_mixer = reverb? dynamic_cast<mixer*>(reverb) : nullptr) {
+		if (destination && mixer_reaches(destination, [verb_mixer](mixer* m) { return m == verb_mixer; })) throw std::runtime_error("the destination goes into the reverb mixer");
+	}
 	if (destination) return new reverb3d_impl(e, reverb, destination);
 	mixer *own = new_mixer(e);
 	try {
