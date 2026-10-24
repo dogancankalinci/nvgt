@@ -1547,7 +1547,7 @@ struct held_file {
 	bool can_seek;
 	std::atomic<ma_uint64> length{0}; // The decoder's, once known without reading it whole; 0 before.
 	std::atomic<int> refused{MA_SUCCESS}; // The error of the last seek a file that can seek refused, until it makes one.
-	std::atomic<bool> ended{false}; // The decoder's last read gave nothing at its end.
+	std::atomic<bool> ended{false}; // The decoder's last read of its file gave nothing at its end.
 	std::atomic<bool> finished{false}; // The decoder can't read on, nor its file seek back (see held_decoder_seek()), until a seek its file makes.
 };
 static thread_local bool t_script_seek = false; // A script's call is seeking, which is told when a file can't seek back rather than finishing its decoder (see held_decoder_seek()).
@@ -1586,13 +1586,23 @@ static void count_resampling_from_here(ma_decoder* decoder) {
 	ma_uint64 cursor = 0;
 	if (decoder->converter.hasResampler && decoder->converter.resampler.pBackendVTable == &wdl_resampler_backend_vtable && file_cursor(decoder->pBackend, &cursor)) wdl_resampler_set_counts(decoder->converter.resampler.pBackend, cursor, decoder->readPointerInPCMFrames);
 }
+// Whether a decoder can't read on from where it is: read to its end, or to its range's or, looping, its loop's.
+static bool at_its_end(ma_decoder* decoder, held_file* file) {
+	if (file->ended.load()) return true;
+	ma_data_source_base* base = &decoder->ds;
+	ma_uint64 end = base->rangeEndInFrames;
+	if (ma_data_source_is_looping(decoder) && base->loopEndInFrames != ~(ma_uint64)0) end = std::min(end, base->rangeBegInFrames + base->loopEndInFrames);
+	return end != ~(ma_uint64)0 && decoder->readPointerInPCMFrames >= end;
+}
 static ma_result held_decoder_read(ma_data_source* source, void* frames_out, ma_uint64 frame_count, ma_uint64* frames_read) {
 	ma_decoder* decoder = (ma_decoder*)source;
 	held_file* file = file_held(decoder->pBackend);
 	if (file && file->finished.load()) {
-		file->ended.store(true);
-		if (frames_read) *frames_read = 0;
-		return MA_AT_END;
+		if (at_its_end(decoder, file)) {
+			if (frames_read) *frames_read = 0;
+			return MA_AT_END;
+		}
+		file->finished.store(false); // Its loop or range changed since, as by a script that turned its looping off, so that it reads on.
 	}
 	const ma_uint32 frame_size = ma_get_bytes_per_frame(decoder->outputFormat, decoder->outputChannels);
 	ma_uint64 total = 0;
@@ -1622,14 +1632,6 @@ static ma_result held_decoder_read(ma_data_source* source, void* frames_out, ma_
 	if (file) file->ended.store(!total && result == MA_AT_END);
 	if (frames_read) *frames_read = total;
 	return result != MA_SUCCESS && result != MA_AT_END? result : total? MA_SUCCESS : result;
-}
-// Whether a decoder can't read on from where it is: read to its end, or to its range's or, looping, its loop's.
-static bool at_its_end(ma_decoder* decoder, held_file* file) {
-	if (file->ended.load()) return true;
-	ma_data_source_base* base = &decoder->ds;
-	ma_uint64 end = base->rangeEndInFrames;
-	if (ma_data_source_is_looping(decoder) && base->loopEndInFrames != ~(ma_uint64)0) end = std::min(end, base->rangeBegInFrames + base->loopEndInFrames);
-	return end != ~(ma_uint64)0 && decoder->readPointerInPCMFrames >= end;
 }
 // A seek MiniAudio skipped, as it still does for a decoder whose file can't seek (see held_file), resets the converter and places the read point itself.
 // One a file that can't seek refuses, of a decoder that can't read on, as to its loop's start, to a chain's link's start or to that of a source linked to itself, finishes the decoder: it gives nothing until a seek its file makes, and the seek reports success, so that MiniAudio's loop, which ends once a pass gives nothing twice, ends there, as a chain does, rather than taking the error for no end, playing silence for good, and so that no end is given from a seek, which MiniAudio asserts against once frames were read. A finished decoder not looping, sought again without having given anything, as in a ring of links that all finished, gives the error, which ends MiniAudio's move through them. A script's call is told the error (see script_seek).
