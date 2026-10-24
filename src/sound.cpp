@@ -2379,6 +2379,7 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 	// MiniAudio reads every sound through its linear resampler, at a rate of 1 too, which gives a frame out only once the frame after it comes in, so the source's last frame, which none follows, was never played: a sound of one frame was silent, and every sound lost its last. Once the source's end is read, one silent frame is fed in after it, asking for no more than it gives out, so that the source isn't read past its end, and the sound is marked at its end again, which MiniAudio stops it at in its next processing, calling its end callback then, as without this.
 	if (ma_sound_at_end(s) && !h->end_flushed && done < wanted) {
 		h->end_flushed = true;
+		hold_rate(node); // As before each later call in the block, so that MiniAudio doesn't set the resampler itself, from the doppler ratio its spatializer worked out unheld.
 		ma_uint32 source_channels = 0;
 		ma_uint64 given = 0;
 		std::atomic<ma_bool32>& at_end = *reinterpret_cast<std::atomic<ma_bool32>*>(&s->atEnd);
