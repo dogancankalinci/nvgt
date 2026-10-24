@@ -2272,6 +2272,7 @@ struct held_sound : ma_sound {
 	end_flush end_state = end_flush::none;
 	bool end_silence_taken = false;
 	ma_uint32 cache_cap = 0; // The capacity MiniAudio gave the sound's cache, which held_sound_process() lowers for each call (see bound_read()).
+	ma_uint64 restart_cursor = ~(ma_uint64)0; // The source's cursor when held_sound_process() last played the sound on from its loop's start at its end.
 	std::atomic<ma_uint64> seek_target{~(ma_uint64)0}; // The frame a seek asked for, ~0 for none, made by held_sound_process() in place of MiniAudio's seekTarget.
 };
 struct held_sound_delete {
@@ -2434,13 +2435,16 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 	}
 	ma_uint32 wanted = *frame_count_out, done = 0, channels = ma_node_get_output_channels(node, 0);
 	held_sound* h = held(s);
-	// Looping turned on at the source's end, while what the resampler owed was being given or before MiniAudio stopped the sound for it: it plays on from the loop's start, as from a looping source's end, rather than stopping, as play_looped() says it plays.
+	// Looping turned on at the source's end, while what the resampler owed was being given or before MiniAudio stopped the sound for it: it plays on from the loop's start, as from a looping source's end, rather than stopping, as play_looped() says it plays. Not when the source can't seek there, nor when its pass gave nothing since the last such start, as for a source with no frames, which MiniAudio stops at its end, rather than started over every block.
 	if (ma_sound_at_end(s) && ma_data_source_is_looping(s->pDataSource)) {
-		ma_uint64 loop_begin = 0, loop_end = 0;
+		ma_uint64 loop_begin = 0, loop_end = 0, cursor = ~(ma_uint64)0;
 		ma_data_source_get_loop_point_in_pcm_frames(s->pDataSource, &loop_begin, &loop_end);
-		ma_data_source_seek_to_pcm_frame(s->pDataSource, loop_begin);
-		s->processingCacheFramesRemaining = 0;
-		reinterpret_cast<std::atomic<ma_bool32>*>(&s->atEnd)->store(MA_FALSE);
+		ma_data_source_get_cursor_in_pcm_frames(s->pDataSource, &cursor);
+		if (cursor != h->restart_cursor && ma_data_source_seek_to_pcm_frame(s->pDataSource, loop_begin) == MA_SUCCESS) {
+			h->restart_cursor = loop_begin;
+			s->processingCacheFramesRemaining = 0;
+			reinterpret_cast<std::atomic<ma_bool32>*>(&s->atEnd)->store(MA_FALSE);
+		}
 	}
 	if (!ma_sound_at_end(s)) { // Playing since its last end, if any.
 		h->end_state = held_sound::end_flush::none;
