@@ -2271,6 +2271,7 @@ struct held_sound : ma_sound {
 	enum class end_flush : unsigned char { none, giving, given };
 	end_flush end_state = end_flush::none;
 	bool end_silence_taken = false;
+	ma_uint32 cache_cap = 0; // The capacity MiniAudio gave the sound's cache, which held_sound_process() lowers for each call (see bound_read()).
 	std::atomic<ma_uint64> seek_target{~(ma_uint64)0}; // The frame a seek asked for, ~0 for none, made by held_sound_process() in place of MiniAudio's seekTarget.
 };
 struct held_sound_delete {
@@ -2340,6 +2341,35 @@ static void hold_rate(ma_node* node) {
 		if (given == 1 && doppler == 1) set_pitch_rate(&node_state.resampler, node_state.sampleRate, engine_rate);
 		else set_pitch_rate(&node_state.resampler, (ma_uint32)std::clamp<double>(std::round((double)node_state.sampleRate / engine_rate * given * doppler * pitch_rate_scale), 1, 0xFFFFFFFF), pitch_rate_scale);
 	}
+}
+// MiniAudio reads a sound's source a whole cache at a time, past what its resampler takes, and a looping source wraps within such a read: looping turned off then, the sound played the next pass it had read, to its end, and below a rate of 1 many passes of a short loop. So each call is held to what the resampler takes: the output asked lowered to what one cache can feed, and the cache's load to what that output needs beyond the frames cached, an output of one frame needing more taken in as loads of equal size. The source is then read no further than the sound plays it, and a change of looping acts where the sound is. Returns the load, lowering count.
+static ma_uint32 bound_read(ma_sound* s, ma_uint32& count) {
+	held_sound* h = held(s);
+	if (!h->cache_cap) h->cache_cap = s->processingCacheCap;
+	const ma_uint64 cap = h->cache_cap, cached = s->processingCacheFramesRemaining;
+	if (!cap || !count) return (ma_uint32)cap;
+	ma_resampler* resampler = &s->engineNode.resampler;
+	auto needed = [resampler, cached](ma_uint64 out) -> ma_uint64 {
+		ma_uint64 in = 0;
+		if (ma_resampler_get_required_input_frame_count(resampler, out, &in) != MA_SUCCESS) return ~(ma_uint64)0;
+		return in > cached? in - cached : 0;
+	};
+	ma_uint64 need = needed(count);
+	if (need == ~(ma_uint64)0) return (ma_uint32)cap; // Not known: as MiniAudio reads.
+	if (need > cap) {
+		ma_uint64 fits = 0, past = count; // The most output one cache feeds, found between them.
+		while (past - fits > 1) {
+			ma_uint64 middle = fits + (past - fits) / 2;
+			if (needed(middle) <= cap) fits = middle;
+			else past = middle;
+		}
+		count = fits? (ma_uint32)fits : 1;
+		need = needed(count);
+	}
+	if (!need) return 1; // Fed from the frames cached.
+	if (need <= cap) return (ma_uint32)need;
+	ma_uint64 loads = (need + cap - 1) / cap;
+	return (ma_uint32)((need + loads - 1) / loads);
 }
 // MiniAudio reads every sound through its linear resampler, at a rate of 1 too, which gives a frame out only once the frame after it comes in, so what it owed at the source's end, which no frame follows, was never played: the last frame, and below a rate of 1 the frames on the way to it, so that a sound of one frame was silent and every sound lost its end, below a rate of 1 cut off at full level. Once the source's end is read, this feeds the resampler one silent frame after it and gives what it owes, as much as the block has room for, over as many blocks as that takes, before MiniAudio stops the sound in its processing after, calling its end callback then, as without this. Owed is as much as it gives out with no frame in but that silent one, and once it took that, with none, counted by MiniAudio's own count of the frames in it needs, so that the source isn't read past its end and the sound's end isn't drawn out with silence. Returns the frames given.
 static ma_uint32 give_end(ma_node* node, const float** frames_in, ma_uint32* frame_count_in, float* out, ma_uint32 room) {
@@ -2414,10 +2444,12 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 		ma_uint32 cached = s->processingCacheFramesRemaining;
 		float* out = frames_out[0] + (size_t)done * channels;
 		ma_uint32 count = wanted - done;
+		s->processingCacheCap = bound_read(s, count);
 		g_ma_sound_process(node, frames_in, frame_count_in, &out, &count);
+		s->processingCacheCap = h->cache_cap;
 		done += count;
-		// Again only while MiniAudio left frames it cached unplayed, not at the sound's end, and made progress.
-		if (done >= wanted || ma_sound_at_end(s) || !s->processingCacheFramesRemaining || !count && s->processingCacheFramesRemaining == cached) break;
+		// Again while the block has room, the sound isn't at its end and the call got somewhere, as it doesn't on a source not ready.
+		if (done >= wanted || ma_sound_at_end(s) || !count && s->processingCacheFramesRemaining == cached) break;
 	}
 	if (ma_sound_at_end(s) && h->end_state != held_sound::end_flush::given && done < wanted) done += give_end(node, frames_in, frame_count_in, frames_out[0] + (size_t)done * channels, wanted - done);
 	*frame_count_out = done;
