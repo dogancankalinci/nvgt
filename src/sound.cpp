@@ -2676,6 +2676,8 @@ struct decode_front_view {
 	ma_uint32 seen_job = 0;
 	ma_uint64 seen_frames = 0, ready_frames = 0;
 	bool seen = false;
+	// Where a stream played to, its cursor before its last read that gave frames and those frames, unwrapped: a looping stream wraps its cursor at its end, as one of unknown length, a URL's, does at the length it learns there, even when its source can't go back to its start, which then reads nothing more, so that the sound ended with its position at the loop's start rather than where it played to (see sound_impl::get_cursor()).
+	std::atomic<ma_uint64> played_to{~(ma_uint64)0};
 	~decode_front_view() { ma_data_source_uninit(&base); } // Only views made in full are kept.
 };
 static ma_result decode_front_read(ma_data_source* source, void* frames_out, ma_uint64 frame_count, ma_uint64* frames_read) {
@@ -2690,7 +2692,12 @@ static ma_result decode_front_read(ma_data_source* source, void* frames_out, ma_
 			}
 			frame_count = std::min(frame_count, length - cursor);
 		}
-		return ma_data_source_read_pcm_frames((ma_data_source*)view->inner, frames_out, frame_count, frames_read);
+		ma_uint64 before = 0, got = 0;
+		bool placed = ma_data_source_get_cursor_in_pcm_frames((ma_data_source*)view->inner, &before) == MA_SUCCESS;
+		ma_result result = ma_data_source_read_pcm_frames((ma_data_source*)view->inner, frames_out, frame_count, &got);
+		if (got && placed) view->played_to.store(before + got);
+		if (frames_read) *frames_read = got;
+		return result;
 	}
 	ma_resource_manager_data_buffer* buffer = &view->inner->backend.buffer;
 	ma_resource_manager_data_buffer_node* node = buffer->pNode;
@@ -4412,6 +4419,10 @@ public:
 			return MA_SUCCESS;
 		}
 		ma_result result = ma_sound_get_cursor_in_pcm_frames(&*snd, &pos);
+		if (result == MA_SUCCESS && ma_sound_at_end(&*snd) && front) { // A stream ended where it played to, rather than where a looping one that couldn't go back wrapped its cursor (see decode_front_view::played_to).
+			ma_uint64 to = front->played_to.load();
+			if (to != ~(ma_uint64)0) pos = to;
+		}
 		if (result == MA_SUCCESS && ma_sound_at_end(&*snd) && !ma_sound_is_looping(&*snd)) {
 			unsigned long long length = get_length_in_frames();
 			if (length) pos = length;
