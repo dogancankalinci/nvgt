@@ -23,8 +23,8 @@
 
 // miniaudio's node graph is lock-free for the audio thread that reads it, but its attach/detach mutations assume a single writer. Script threads create and destroy sounds and mixers concurrently, each of which attaches to and detaches from the engine endpoint, so the mutations are serialised here. Recursive because a chain's set_endpoint attaches through its last node.
 extern std::recursive_mutex g_node_graph_mutex;
-// A group of an engine through which a node of another sample rate goes into one of its nodes, resampled by its pitch, the ratio of the two rates (see audio_node_impl::attach_output_bus()). Made unattached, of the given channels in and out, under the graph lock, as it is let go of.
-ma_sound* rate_bridge_create(audio_engine* engine, unsigned int channels, float ratio);
+// A group of an engine through which a node of another sample rate goes into one of its nodes, resampled from that rate to the engine's (see audio_node_impl::attach_output_bus()). Made unattached, of the given channels in and out, under the graph lock, as it is let go of.
+ma_sound* rate_bridge_create(audio_engine* engine, unsigned int channels, unsigned int sample_rate);
 void rate_bridge_destroy(ma_sound* bridge);
 class audio_node_impl : public virtual audio_node {
 protected:
@@ -103,7 +103,7 @@ public:
 	// The node this one was attached to is let go of after the graph lock: letting go can destroy it, and a destructor, such as a spatializer's, takes locks that are taken before the graph lock elsewhere.
 	bool attach_output_bus(unsigned int output_bus, audio_node *destination, unsigned int destination_input_bus) {
 		if (!node || !destination) return false;
-		unsigned int from = output_sample_rate(), to = destination->get_engine()? (unsigned int)destination->get_engine()->get_sample_rate() : 0; // Before the graph lock: a data source's rate is read under its own lock, inside which the graph lock is taken.
+		unsigned int from = output_sample_rate(), to = destination->get_engine()? (unsigned int)destination->get_engine()->get_sample_rate() : 0; // Before the graph lock, so that no lock a subclass may read its rate under is taken inside it.
 		audio_node *previous = nullptr;
 		{
 			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); 
@@ -112,13 +112,13 @@ public:
 				g_soundsystem_last_error = MA_INVALID_ARGS;
 				return false;
 			}
-			// A node's output is read at the rate of the graph it goes into, which doesn't resample, so one of another rate, as a no-device engine of its own rate mixed into another or a decoder's node at its file's rate, played at the ratio of the two rates, too fast or slow and out of tune. It goes through a group of the destination's engine instead, whose pitch, that ratio, resamples it.
+			// A node's output is read at the rate of the graph it goes into, which doesn't resample, so one of another rate, as a no-device engine of its own rate mixed into another or a decoder's node at its file's rate, played at the ratio of the two rates, too fast or slow and out of tune. It goes through a group of the destination's engine instead, which resamples it from its rate.
 			ma_node* target = destination->get_ma_node();
 			unsigned int target_bus = destination_input_bus;
 			ma_sound* bridge = nullptr;
 			if (from && to && from != to) {
 				// Of the node's own channels in and out, so that one whose channels differ from the destination's is still refused, as straight into it.
-				if (!(bridge = rate_bridge_create(destination->get_engine(), ma_node_get_output_channels(node, output_bus), (float)from / to))) return false;
+				if (!(bridge = rate_bridge_create(destination->get_engine(), ma_node_get_output_channels(node, output_bus), from))) return false;
 				if ((g_soundsystem_last_error = ma_node_attach_output_bus(bridge, 0, target, target_bus)) != MA_SUCCESS) {
 					rate_bridge_destroy(bridge);
 					return false;

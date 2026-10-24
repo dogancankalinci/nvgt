@@ -2521,14 +2521,19 @@ static void hold_rate_of(ma_sound* s) {
 	}
 	node->vtable = &vtable;
 }
-ma_sound* rate_bridge_create(audio_engine* engine, unsigned int channels, float ratio) {
+ma_sound* rate_bridge_create(audio_engine* engine, unsigned int channels, unsigned int sample_rate) {
 	held_sound_ptr bridge(new held_sound());
 	ma_sound_group_config cfg = ma_sound_group_config_init_2(engine->get_ma_engine());
 	cfg.flags = MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT | MA_SOUND_FLAG_NO_SPATIALIZATION;
 	cfg.channelsIn = cfg.channelsOut = channels;
 	if ((g_soundsystem_last_error = ma_sound_group_init_ex(engine->get_ma_engine(), &cfg, &*bridge)) != MA_SUCCESS) return nullptr;
+	// Its input at the given rate, as a sound's source of another rate: resampled from it exactly, at a pitch of 1, rather than at a pitch of the ratio, which MiniAudio keeps to a thousandth, cut down.
+	bridge->engineNode.sampleRate = sample_rate;
+	if ((g_soundsystem_last_error = ma_resampler_set_rate(&bridge->engineNode.resampler, sample_rate, ma_engine_get_sample_rate(engine->get_ma_engine()))) != MA_SUCCESS) {
+		ma_sound_group_uninit(&*bridge);
+		return nullptr;
+	}
 	hold_rate_of(&*bridge); // As a mixer's group, so that what is read through it is held to max_pitch_ratio with its rate counted.
-	held(&*bridge)->pitch.store(std::clamp(ratio, min_pitch_ratio, max_pitch_ratio));
 	return bridge.release();
 }
 void rate_bridge_destroy(ma_sound* bridge) {
