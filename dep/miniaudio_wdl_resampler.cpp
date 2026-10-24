@@ -11,7 +11,22 @@ struct wdl_resampler_state
     ma_uint32 rate_out;
     ma_uint8 channels;
     bool should_flush; // More about this flag where it's used.
+    ma_uint64 frames_in, frames_out; // Taken and given since the last reset, see the flush in resampler_process().
 };
+// The frames MiniAudio counts for frame_count_in resampled, as its ma_calculate_frame_count_after_resampling() does, with which it reports a decoder's length but which its header doesn't declare.
+static ma_uint64 frames_after_resampling(ma_uint32 rate_out, ma_uint32 rate_in, ma_uint64 frame_count_in)
+{
+    if (rate_in == 0 || rate_out == 0 || frame_count_in == 0)
+        return 0;
+    if (rate_out == rate_in)
+        return frame_count_in;
+    ma_uint64 frame_count_out = (frame_count_in * rate_out) / rate_in;
+    ma_uint64 preliminary_from_frac = (frame_count_out * (rate_in / rate_out)) / rate_out;
+    ma_uint64 preliminary = (frame_count_out * (rate_in % rate_out)) + preliminary_from_frac;
+    if (preliminary <= frame_count_in)
+        frame_count_out += 1;
+    return frame_count_out;
+}
 // Miniaudio allocates heap space for our resampler and expects us to fill it in. So we must report how much we need.
 static ma_result resampler_get_heap_size(void *pUserData, const ma_resampler_config *pConfig, size_t *pHeapSizeInBytes)
 {
@@ -50,8 +65,14 @@ static ma_result resampler_process(void *pUserData, ma_resampling_backend *pBack
     {
         // MiniAudio didn't give us any input but it expects output. This is at least the second time it has done this back to back. In this situation we know that no more input will come, so we flush the resampler's internal buffers and produce the final few frames.
         prepare = state->resampler.ResamplePrepare(1, state->channels, &dest);
+        // No more than MiniAudio counts for the input taken, as it reports a decoder's length from that count: the flush gave a frame more, which a stream, its cursor wrapping at that length, played as one more each pass, so that a stream turned from looping ended further from its pass's end the longer it had looped.
+        ma_uint64 owed = frames_after_resampling(state->rate_out, state->rate_in, state->frames_in);
+        ma_uint64 left = owed > state->frames_out ? owed - state->frames_out : 0;
+        if (*pFrameCountOut > left)
+            *pFrameCountOut = left;
         // When you want to finalize the WDL resampler, you prepare and then report that you provided fewer samples than you prepared for.
-        *pFrameCountOut = state->resampler.ResampleOut((float *)pFramesOut, 0, *pFrameCountOut, state->channels);
+        *pFrameCountOut = *pFrameCountOut ? state->resampler.ResampleOut((float *)pFramesOut, 0, *pFrameCountOut, state->channels) : 0;
+        state->frames_out += *pFrameCountOut;
         return MA_SUCCESS;
     }
     state->should_flush = false; // We received more input, so keep going.
@@ -68,6 +89,8 @@ static ma_result resampler_process(void *pUserData, ma_resampling_backend *pBack
     memcpy(dest, pFramesIn, prepare * sizeof(float) * state->channels);
     *pFrameCountIn = prepare; // MiniAudio lets us leave input on the table, in which case it will provide it to us again next time.
     *pFrameCountOut = state->resampler.ResampleOut((float *)pFramesOut, prepare, *pFrameCountOut, state->channels);
+    state->frames_in += prepare;
+    state->frames_out += *pFrameCountOut;
     if (*pFrameCountOut == 0)
     {
         // We produced nothing. If this is the case again on the next iteration, we're dealing with an EOF situation and should finalize the resampler.
@@ -82,6 +105,7 @@ static ma_result resampler_set_rate(void *pUserData, ma_resampling_backend *pBac
     state->resampler.SetRates(sampleRateIn, sampleRateOut);
     state->rate_in = sampleRateIn;
     state->rate_out = sampleRateOut;
+    state->frames_in = state->frames_out = 0; // Counted at the new rates from here.
     return MA_SUCCESS;
 }
 static ma_uint64 resampler_get_input_latency(void *pUserData, const ma_resampling_backend *pBackend)
@@ -114,6 +138,7 @@ static ma_result resampler_reset(void *pUserData, ma_resampling_backend *pBacken
     wdl_resampler_state *state = (wdl_resampler_state *)pBackend;
     state->resampler.Reset();
     state->should_flush = false;
+    state->frames_in = state->frames_out = 0;
     return MA_SUCCESS;
 }
 ma_resampling_backend_vtable wdl_resampler_backend_vtable = {
