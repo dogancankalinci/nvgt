@@ -12,6 +12,7 @@ struct wdl_resampler_state
     ma_uint8 channels;
     bool should_flush; // More about this flag where it's used.
     ma_uint64 frames_in, frames_out; // Taken and given since the last reset, see the flush in resampler_process().
+    bool counts_reset; // Since wdl_resampler_take_reset() last asked.
 };
 // The frames MiniAudio counts for frame_count_in resampled, as its ma_calculate_frame_count_after_resampling() does, with which it reports a decoder's length but which its header doesn't declare.
 static ma_uint64 frames_after_resampling(ma_uint32 rate_out, ma_uint32 rate_in, ma_uint64 frame_count_in)
@@ -33,6 +34,13 @@ void wdl_resampler_set_counts(ma_resampling_backend *backend, ma_uint64 frames_i
     wdl_resampler_state *state = (wdl_resampler_state *)backend;
     state->frames_in = frames_in;
     state->frames_out = frames_out;
+}
+bool wdl_resampler_take_reset(ma_resampling_backend *backend)
+{
+    wdl_resampler_state *state = (wdl_resampler_state *)backend;
+    bool reset = state->counts_reset;
+    state->counts_reset = false;
+    return reset;
 }
 // Miniaudio allocates heap space for our resampler and expects us to fill it in. So we must report how much we need.
 static ma_result resampler_get_heap_size(void *pUserData, const ma_resampler_config *pConfig, size_t *pHeapSizeInBytes)
@@ -153,6 +161,7 @@ static ma_result resampler_reset(void *pUserData, ma_resampling_backend *pBacken
     state->resampler.Reset();
     state->should_flush = false;
     state->frames_in = state->frames_out = 0;
+    state->counts_reset = true;
     return MA_SUCCESS;
 }
 ma_resampling_backend_vtable wdl_resampler_backend_vtable = {

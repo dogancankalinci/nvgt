@@ -7,3 +7,5 @@
 extern ma_resampling_backend_vtable wdl_resampler_backend_vtable;
 // Sets a resampler's counts of input taken and output given (see resampler_process()) to a decoder's places in its file and in its output, as after a seek, which resets them.
 void wdl_resampler_set_counts(ma_resampling_backend *backend, ma_uint64 frames_in, ma_uint64 frames_out);
+// Whether the resampler was reset since this was last asked, its counts with it.
+bool wdl_resampler_take_reset(ma_resampling_backend *backend);
