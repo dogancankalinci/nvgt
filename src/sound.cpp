@@ -3772,7 +3772,11 @@ public:
 			return load_source(filename, protocol_slot, protocol_directive, filter_slot, filter_directive, (ma_flags & ~MA_SOUND_FLAG_STREAM) | MA_SOUND_FLAG_DECODE, true);
 		}
 		if (g_soundsystem_last_error == MA_SUCCESS) {
-			if (made_source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM) held(&*made)->stream = &made_source->backend.stream;
+			if (made_source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM) {
+				held(&*made)->stream = &made_source->backend.stream;
+				// The stream's job thread fills its pages through its decoder's data source functions, so that NVGT's (see hold_decoder()) make the read at its end that gave nothing once more: else a stream whose file ended where a page read did lost what the resampler held there. Given here, before the sound first reads the stream, which no job touches until then.
+				hold_decoder(&made_source->backend.stream.decoder);
+			}
 			source = std::move(made_source);
 			view = std::move(made_view);
 			front = std::move(made_front);
