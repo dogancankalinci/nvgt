@@ -97,6 +97,32 @@ static std::atomic_flag g_soundsystem_initialized; // The context, the sound ser
 static std::atomic_flag g_soundsystem_ready; // The engine exists. Set last so that no other thread can be told "initialized" while g_audio_engine is still null.
 static std::recursive_mutex g_soundsystem_init_mutex; // Recursive because setting up re-enters init_sound() and init_sound_context() on this same thread.
 static std::atomic_flag g_soundsystem_shut_down; // uninit_sound() ran: script threads still running are refused rather than given the default engine it let go.
+// Sources being freed off the script's thread, by resource manager (see sound_impl::reap()), so that an engine, before its resource manager goes, and uninit_sound() can wait for them.
+static std::mutex g_reaps_mutex;
+static std::condition_variable g_reaps_done;
+static std::unordered_map<ma_resource_manager*, int> g_reaps; // Under g_reaps_mutex.
+// At most this many of a resource manager's at once; close() waits for another itself, so that sounds loaded and let go of faster than they decode don't pile up decodes nobody plays, each holding its whole decoded file and the job threads.
+static constexpr int max_reaps = 2;
+// Takes a place among those of a resource manager, if there is one: none once uninit_sound() shut the sound system down, the process's exit following.
+static bool reserve_reap(ma_resource_manager* manager) {
+	std::lock_guard<std::mutex> lock(g_reaps_mutex);
+	if (g_soundsystem_shut_down.test()) return false;
+	auto it = g_reaps.find(manager);
+	if (it != g_reaps.end() && it->second >= max_reaps) return false;
+	g_reaps[manager]++;
+	return true;
+}
+// Gives it back, notified under the lock, so that nothing of a thread freeing a source runs once a waiter goes on, as to the process's exit.
+static void end_reap(ma_resource_manager* manager) {
+	std::lock_guard<std::mutex> lock(g_reaps_mutex);
+	if (--g_reaps[manager] == 0) g_reaps.erase(manager);
+	g_reaps_done.notify_all();
+}
+// Waits for those of a resource manager, or for all of them.
+static void wait_for_reaps(ma_resource_manager* manager = nullptr) {
+	std::unique_lock<std::mutex> lock(g_reaps_mutex);
+	g_reaps_done.wait(lock, [manager]() { return manager? !g_reaps.count(manager) : g_reaps.empty(); });
+}
 static bool g_soundsystem_starting = false; // Under g_soundsystem_init_mutex: this thread is setting up, so a call re-entering from there is answered at once.
 static std::atomic<bool> g_script_callbacks_stopped{false}; // See sound_stop_script_callbacks().
 static std::atomic<int> g_script_callbacks_running{0}; // Processing callbacks calling the script right now.
@@ -271,6 +297,7 @@ void uninit_sound() {
 	// Before the garbage collection, which can let go of a script's own engine for the last time, as a finished sound played from it does: once shut down, that engine is left to the process's exit (see audio_engine_impl::release()) rather than destroyed after SDL took down what its device needs.
 	g_soundsystem_shut_down.test_and_set();
 	garbage_collect_inline_sounds();
+	wait_for_reaps(); // Sources a closed sound left still decoding are freed before the process's exit, as closing them did; none are handed over once shut down.
 	std::lock_guard<std::recursive_mutex> lock(g_soundsystem_init_mutex);
 	g_soundsystem_ready.clear(); // So that init_sound() refuses later calls instead of reporting a ready system whose engine is gone.
 	if (g_audio_engine != nullptr) {
@@ -685,8 +712,10 @@ public:
 			ma_engine_uninit(&*engine);
 			engine = nullptr;
 		}
-		if (resource_manager)
+		if (resource_manager) {
+			wait_for_reaps(&*resource_manager); // Its sources a closed sound left decoding, freed through it.
 			ma_resource_manager_uninit(&*resource_manager);
+		}
 	}
 	// The last reference can go on the engine's own device thread, as the data callback holds one while it calls the script. Destroying the engine stops its device, which from that thread would wait for itself forever, so the engine is destroyed on a thread of its own then, or kept if none can be started.
 	void release() override {
@@ -3291,6 +3320,50 @@ class sound_impl final : public mixer_impl, public virtual sound {
 		}
 		src.reset();
 	}
+	// Whether MiniAudio's jobs still decode a source's buffer, which freeing it waits for (see finish_load_jobs()).
+	static bool decoding(ma_resource_manager_data_source *src) {
+		if (!src || (src->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM)) return false;
+		ma_resource_manager_data_buffer *buffer = &src->backend.buffer;
+		if ((ma_result)load_job_field((const ma_uint32 *)&buffer->result) == MA_BUSY) return true;
+		ma_resource_manager_data_buffer_node *node = buffer->pNode;
+		return node && (ma_result)load_job_field((const ma_uint32 *)&node->result) == MA_BUSY;
+	}
+	// A source close() let go of while its buffer was still being decoded, with what the decoding reads and the name it was claimed under.
+	struct source_reap {
+		unique_ptr<ma_resource_manager_data_source> source;
+		std::string pcm_buffer; // The memory a source loaded from memory decodes from.
+		ma_resource_manager *manager = nullptr; // The source's.
+		std::string claimed_name; // Claimed in manager, if not empty.
+	};
+	// Frees it once MiniAudio's jobs are done with it, as close() frees a source.
+	static void free_reaped(source_reap &r) {
+		ma_resource_manager_data_buffer *failed_buffer = finish_load_jobs(&*r.source);
+		if (failed_buffer) free_failed_buffer(failed_buffer);
+		{
+			std::shared_lock<std::shared_mutex> tree_lock(g_resource_tree_mutex);
+			ma_resource_manager_data_source_uninit(&*r.source);
+		}
+		r.source.reset();
+		if (!r.claimed_name.empty()) let_go_of_buffer_name(r.manager, r.claimed_name);
+	}
+	// Frees it on a thread of its own, in a place reserve_reap() gave: freed by close(), it held the script closing, reloading or letting go of a sound just loaded for as long as its file took to decode, 80 ms for 30 seconds of speech, as an interrupting speak let go of. Freed here when no thread can be made.
+	static void reap(unique_ptr<source_reap> r) {
+		ma_resource_manager *manager = r->manager;
+		source_reap *handed = r.release();
+		try {
+			std::thread([handed, manager]() {
+				unique_ptr<source_reap> owned(handed);
+				free_reaped(*owned);
+				owned.reset();
+				end_reap(manager);
+			}).detach();
+			return;
+		} catch (const std::exception &) {
+			r.reset(handed);
+		}
+		free_reaped(*r);
+		end_reap(manager);
+	}
 	std::string pcm_buffer;      // When loading from raw PCM (like TTS) we store the intermediate wav data here so we can take advantage of async loading to return quickly. Makes a substantial difference in the responsiveness of TTS calls.
 	std::string claimed_name; // The name the sound's source was loaded under, claimed in claimed_manager until the source is freed, else empty.
 	ma_resource_manager* claimed_manager = nullptr;
@@ -3729,7 +3802,24 @@ public:
 		load_state = nullptr;
 	}
 	bool close() override {
-		let_go_of_load_state();
+		// A source still being decoded is handed to reap() once the sound is off it, when reserve_reap() gives it a place, rather than waited for here, and its load state let go of without waiting for its end. The memory a source loaded from memory decodes from goes with it, at the same place: a string that kept it within itself, which no file's header is small enough for, would move it, and then the source is waited for here.
+		unique_ptr<source_reap> reaped;
+		ma_resource_manager *source_manager = source? (claimed_manager? claimed_manager : ma_engine_get_resource_manager(get_engine()->get_ma_engine())) : nullptr;
+		if (decoding(source.get()) && reserve_reap(source_manager)) {
+			reaped = make_unique<source_reap>();
+			reaped->manager = source_manager;
+			const char *decoded_from = pcm_buffer.data();
+			reaped->pcm_buffer = std::move(pcm_buffer);
+			if (!reaped->pcm_buffer.empty() && reaped->pcm_buffer.data() != decoded_from) {
+				pcm_buffer = std::move(reaped->pcm_buffer);
+				reaped.reset();
+				end_reap(source_manager);
+			}
+		}
+		if (reaped && load_state) {
+			load_state->abandon();
+			load_state = nullptr;
+		} else let_go_of_load_state();
 		if (!snd) return false;
 		if (spatializer) {
 			// Not under this sound's lock, which no chain's lock is taken inside: forgetting the mixer takes the spatializer's, and taking it out of the chain rewires the chains around it, and each of these, like letting go of the spatializer itself, can let go of the last reference to a mixer, such as one a reverb3d made or one the script pointed a chain at. A mixer's destructor takes g_shaped_mixers_mutex, which a listener's move holds while it waits for this sound's lock.
@@ -3750,7 +3840,7 @@ public:
 			unique_lock<mutex> lock(spatialization_params_mutex);
 			closing = std::move(snd);
 		}
-		ma_resource_manager_data_buffer *failed_buffer = finish_load_jobs(source.get());
+		ma_resource_manager_data_buffer *failed_buffer = reaped? nullptr : finish_load_jobs(source.get());
 		// Off the graph first, which waits for the audio thread to stop reading the sound, so nothing reads what is let go of below.
 		{
 			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex);
@@ -3766,7 +3856,15 @@ public:
 		view.reset();
 		front.reset();
 		chain.reset();
-		if (source) {
+		if (reaped) {
+			reaped->source = std::move(source);
+			if (claimed_manager) {
+				reaped->claimed_name = std::move(claimed_name);
+				claimed_manager = nullptr;
+				claimed_name.clear();
+			}
+			reap(std::move(reaped));
+		} else if (source) {
 			{
 				std::shared_lock<std::shared_mutex> tree_lock(g_resource_tree_mutex, std::defer_lock);
 				if (!(source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM)) tree_lock.lock();
