@@ -2383,7 +2383,11 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 		ma_uint32 source_channels = 0;
 		ma_uint64 given = 0;
 		std::atomic<ma_bool32>& at_end = *reinterpret_cast<std::atomic<ma_bool32>*>(&s->atEnd);
-		if (s->pProcessingCache && s->processingCacheCap && !reinterpret_cast<std::atomic<ma_bool32>*>(&s->engineNode.isPitchDisabled)->load() && ma_data_source_get_data_format(s->pDataSource, nullptr, &source_channels, nullptr, nullptr, 0) == MA_SUCCESS && source_channels && ma_resampler_get_expected_output_frame_count(&s->engineNode.resampler, 1, &given) == MA_SUCCESS && given) {
+		if (s->pProcessingCache && s->processingCacheCap && !reinterpret_cast<std::atomic<ma_bool32>*>(&s->engineNode.isPitchDisabled)->load() && ma_data_source_get_data_format(s->pDataSource, nullptr, &source_channels, nullptr, nullptr, 0) == MA_SUCCESS && source_channels && ma_resampler_get_expected_output_frame_count(&s->engineNode.resampler, 1, &given) == MA_SUCCESS) {
+			// No more than one frame in gives out: the count expected assumes the resampler short of its next step, which a rate lowered since that step can leave it past.
+			for (ma_uint64 needed = 0; given && ma_resampler_get_required_input_frame_count(&s->engineNode.resampler, given, &needed) == MA_SUCCESS && needed > 1;) given--;
+		}
+		if (given) {
 			std::fill_n(s->pProcessingCache, source_channels, 0.0f);
 			s->processingCacheFramesRemaining = 1;
 			at_end.store(MA_FALSE);
