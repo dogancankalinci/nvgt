@@ -1,0 +1,25 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -3557,7 +3557,10 @@
+ 		{
+ 			// Read variable index from location on stack
+ 			asPWORD *a = (asPWORD*)(l_sp + asBC_WORDARG0(l_bc));
+-			asPWORD offset = *a;
++			// ALTERED: the index is signed (asBC_VAR pushes it sign-extended; a parameter's is 0 or below), as asBC_GETREF takes
++			// it: subtracted as an unsigned number, a parameter's address was reached through pointer arithmetic that overflows,
++			// which is undefined behaviour (clang's UBSan reports it) although the wrap-around gave the right address
++			int offset = (int)*a;
+ 			// Move pointer from variable to the same location on the stack
+ 			asPWORD *v = (asPWORD*)(l_fp - offset);
+ 			*a = *v;
+@@ -3630,7 +3633,8 @@
+ 			asPWORD *a = (asPWORD*)(l_sp + asBC_WORDARG0(l_bc));
+ 
+ 			// Replace the variable index with the object handle held in the variable
+-			*(asPWORD**)a = *(asPWORD**)(l_fp - *a);
++			// ALTERED: the index is signed, see asBC_GETOBJ
++			*(asPWORD**)a = *(asPWORD**)(l_fp - (int)*a);
+ 		}
+ 		l_bc++;
+ 		NEXT_INSTRUCTION();

@@ -83,6 +83,7 @@ vcpkg_from_github(
         fix-copy-constructor-base-opassign-return.patch
         fix-application-copy-result.patch
         fix-copy-assignment-result.patch
+        fix-signed-variable-offset.patch
 )
 
 vcpkg_cmake_configure(
