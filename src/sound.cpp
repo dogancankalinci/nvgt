@@ -1531,9 +1531,10 @@ public:
 	unsigned int get_sample_rate() const override { return rb? ma_pcm_rb_get_sample_rate(&*rb) : 0; }
 };
 audio_ring_buffer* audio_ring_buffer::create(unsigned int channels, unsigned int size, audio_engine* e) { return new audio_ring_buffer_impl(channels, size, e); }
-// MiniAudio's decoder reads a file of another rate through a resampler, NVGT's WDL one, with two faults its read is wrapped for in NVGT's decoders (see hold_decoder()). The resampler gives what it holds at the input's end only on a second call without input, and MiniAudio's read makes one such call, returning no frames and its end if that gives none: a read starting where only those frames were left got none, ending a sound, a chain's link or a pass of a loop, or a script's reading, tens of frames early; such a read is made once more. Raising the channel count while resampling up, MiniAudio's converter resamples in chunks of its stack buffer, asking the resampler for the input each chunk needs, a count WDL's doesn't add up over chunks, and the decoder drops the input the converter didn't take, so that a read of more than a chunk lost frames of the file; reads are made in parts no larger than a chunk.
+// MiniAudio's decoder reads a file of another rate through a resampler, NVGT's WDL one, with three faults its data source functions are wrapped for in NVGT's decoders (see hold_decoder()). The resampler gives what it holds at the input's end only on a second call without input, and MiniAudio's read makes one such call, returning no frames and its end if that gives none: a read starting where only those frames were left got none, ending a sound, a chain's link or a pass of a loop, or a script's reading, tens of frames early; such a read is made once more. Raising the channel count while resampling up, MiniAudio's converter resamples in chunks of its stack buffer, asking the resampler for the input each chunk needs, a count WDL's doesn't add up over chunks, and the decoder drops the input the converter didn't take, so that a read of more than a chunk lost frames of the file; reads are made in parts no larger than a chunk. A seek is skipped, the converter's reset with it, when the file's cursor is already where the frame maps to, which a resampler reading ahead leaves it at for one frame some tens of frames on, so that the read went on from where it was; such a seek resets the converter and sets the read point itself.
 static ma_data_source_vtable g_held_decoder_vtable;
 static ma_result (*g_ma_decoder_read)(ma_data_source*, void*, ma_uint64, ma_uint64*) = nullptr;
+static ma_result (*g_ma_decoder_seek)(ma_data_source*, ma_uint64) = nullptr;
 static constexpr ma_uint64 converter_chunk_bytes = 4096; // MiniAudio's MA_DATA_CONVERTER_STACK_BUFFER_SIZE, which its header doesn't give.
 static ma_result held_decoder_read(ma_data_source* source, void* frames_out, ma_uint64 frame_count, ma_uint64* frames_read) {
 	ma_decoder* decoder = (ma_decoder*)source;
@@ -1553,13 +1554,24 @@ static ma_result held_decoder_read(ma_data_source* source, void* frames_out, ma_
 	if (frames_read) *frames_read = total;
 	return total? MA_SUCCESS : result;
 }
-// Gives a decoder made the function above, before anything reads it.
+static ma_result held_decoder_seek(ma_data_source* source, ma_uint64 frame) {
+	ma_decoder* decoder = (ma_decoder*)source;
+	ma_result result = g_ma_decoder_seek(source, frame);
+	if (result == MA_SUCCESS && decoder->readPointerInPCMFrames != frame) { // Skipped.
+		ma_data_converter_reset(&decoder->converter);
+		decoder->readPointerInPCMFrames = frame;
+	}
+	return result;
+}
+// Gives a decoder made the functions above, before anything reads it.
 static void hold_decoder(ma_decoder* decoder) {
 	static std::once_flag made;
 	std::call_once(made, [decoder]() {
 		g_held_decoder_vtable = *decoder->ds.vtable;
 		g_ma_decoder_read = g_held_decoder_vtable.onRead;
+		g_ma_decoder_seek = g_held_decoder_vtable.onSeek;
 		g_held_decoder_vtable.onRead = held_decoder_read;
+		g_held_decoder_vtable.onSeek = held_decoder_seek;
 	});
 	decoder->ds.vtable = &g_held_decoder_vtable;
 }
