@@ -14,8 +14,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: windows-latest, prefix: windev-, path: windev }
-          - { os: windows-latest, prefix: vcpkg-binaries-windows-, path: vcpkg-binaries }
+          - { os: windows-2022, prefix: windev-vs2022-, path: windev }
+          - { os: windows-2022, prefix: vcpkg-binaries-windows-vs2022-, path: vcpkg-binaries }
           - { os: macos-26, prefix: macosdev-, path: macosdev }
           - { os: macos-26, prefix: iosdev-, path: iosdev }
           - { os: macos-26, prefix: vcpkg-binaries-mac-, path: vcpkg-binaries }

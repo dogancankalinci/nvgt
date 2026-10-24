@@ -349,7 +349,10 @@ jobs:
         path: 'release'
 
   windows_build:
-    runs-on: windows-latest
+    # Visual Studio 2022, not windows-latest (Visual Studio 2026 since June 2026): local builds link the windev this job builds,
+    # and MSVC only links a library with a toolset at least as new as the one that compiled it. A windev built with MSVC 14.5x
+    # failed to link with Visual Studio 2022's 14.44 (PocoNet.lib calls an STL function 14.44's library doesn't have).
+    runs-on: windows-2022
     needs: generate_config
     env:
       # vcpkg keeps a per-port binary cache here (each port keyed by its own ABI hash), restored below with a prefix
@@ -377,6 +380,11 @@ jobs:
       name: compute dependency cache key
       shell: bash
       run: |
+        # The Visual Studio version leads the cache keys, so that a windev or vcpkg binary cache built by another toolset is
+        # never restored, not even by the binary cache's prefix match.
+        vs=$("/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe" -latest -property catalog_productLineVersion | tr -d '\r')
+        [ -n "$vs" ] || { echo "no Visual Studio found"; exit 1; }
+        echo "vs=vs$vs" >> "$GITHUB_OUTPUT"
         echo "key=$(python3 vcpkg/deps_cache_key.py x64-windows)" >> "$GITHUB_OUTPUT"
         mkdir -p vcpkg-binaries
     - id: vcpkg_binaries
@@ -384,12 +392,12 @@ jobs:
       uses: actions/cache/restore@v4
       with:
         path: vcpkg-binaries
-        key: vcpkg-binaries-windows-${{ steps.depkey.outputs.key }}
-        restore-keys: vcpkg-binaries-windows-
+        key: vcpkg-binaries-windows-${{ steps.depkey.outputs.vs }}-${{ steps.depkey.outputs.key }}
+        restore-keys: vcpkg-binaries-windows-${{ steps.depkey.outputs.vs }}-
     - uses: actions/cache/restore@v4
       with:
         path: windev
-        key: windev-${{ steps.depkey.outputs.key }}
+        key: windev-${{ steps.depkey.outputs.vs }}-${{ steps.depkey.outputs.key }}
       id: cache
     - name: build dependencies
       if: ${{ steps.cache.outputs.cache-hit != 'true' }}
@@ -399,14 +407,14 @@ jobs:
       uses: actions/cache/save@v4
       with:
         path: windev
-        key: windev-${{ steps.depkey.outputs.key }}
+        key: windev-${{ steps.depkey.outputs.vs }}-${{ steps.depkey.outputs.key }}
     - name: save vcpkg binary cache
       # Saved even when the dependency build failed (but not when cancelled): the ports that did build are kept.
       if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' && steps.vcpkg_binaries.outputs.cache-hit != 'true' }}
       uses: actions/cache/save@v4
       with:
         path: vcpkg-binaries
-        key: vcpkg-binaries-windows-${{ steps.depkey.outputs.key }}
+        key: vcpkg-binaries-windows-${{ steps.depkey.outputs.vs }}-${{ steps.depkey.outputs.key }}
     - name: publish dependencies
       if: ${{ steps.cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' && github.event.repository.fork == false }}
       run: |
