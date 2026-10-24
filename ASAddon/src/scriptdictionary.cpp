@@ -446,6 +446,10 @@ void CScriptDictionary::Set(const dictKey_t &key, void *value, int typeId)
 		iterGuard++;
 	}
 
+	// The value and its type are swapped under the dictionary's lock: the collector, which can run on another thread (see
+	// StructureLock), reads both under it, and between the two writes it found the new value under the old type or the
+	// old value under the new one (an integer taken for an object, or an object enumerated as another type).
+	std::lock_guard<std::mutex> guard(StructureLock(this));
 	asINT64 v = it->second.m_valueInt;
 	int t = it->second.m_typeId;
 	it->second.m_valueInt = made.m_valueInt;
