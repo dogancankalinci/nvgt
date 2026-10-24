@@ -2230,6 +2230,7 @@ struct held_sound : ma_sound {
 	float given = 1; // The pitch MiniAudio was last given; only the thread reading the engine uses it.
 	std::atomic<float> rate{1}; // The rate MiniAudio last applied, by which a group multiplies those of the nodes it reads (see downstream_rate()).
 	ma_resource_manager_data_stream* stream = nullptr; // The resource manager's stream the sound plays, if it plays one, set before the sound is attached (see held_sound_process()).
+	float rate_pitch = 1, rate_doppler = 1; // The pitch and doppler ratio hold_rate() last set the resampler for, as MiniAudio made it; only the thread reading the engine uses them.
 	std::atomic<ma_uint64> seek_target{~(ma_uint64)0}; // The frame a seek asked for, ~0 for none, made by held_sound_process() in place of MiniAudio's seekTarget.
 };
 struct held_sound_delete {
@@ -2289,11 +2290,12 @@ static void hold_rate(ma_node* node) {
 	}
 	s->rate.store(rate, std::memory_order_relaxed);
 	// MiniAudio sets the resampler from these at the start of the block, on a change, to a ratio it keeps to a thousandth, cut down: a sound played up to a thousandth slow and flat, and a doppler ratio, changed each block, was always rounded down. Set here instead, which MiniAudio, finding them unchanged, keeps: exactly at a pitch and doppler ratio of 1, as the sound started, and otherwise over pitch_rate_scale, rounded. Only for MiniAudio's linear resampler, the engine's for pitch, whose timing set_pitch_rate() moves; another is left to MiniAudio.
+	// Compared with those it was last set for here rather than with MiniAudio's, which C++ code setting the pitch through MiniAudio between this and MiniAudio's processing has MiniAudio change to its own.
 	ma_engine_node& node_state = s->engineNode;
 	float given = ma_sound_get_pitch(s); // As MiniAudio reads it.
-	if ((given != node_state.oldPitch || doppler != node_state.oldDopplerPitch) && node_state.resampler.pBackend == &node_state.resampler.state.linear) {
-		node_state.oldPitch = given;
-		node_state.oldDopplerPitch = doppler;
+	if ((given != s->rate_pitch || doppler != s->rate_doppler || node_state.oldPitch != s->rate_pitch || node_state.oldDopplerPitch != s->rate_doppler) && node_state.resampler.pBackend == &node_state.resampler.state.linear) {
+		node_state.oldPitch = s->rate_pitch = given;
+		node_state.oldDopplerPitch = s->rate_doppler = doppler;
 		ma_uint32 engine_rate = ma_engine_get_sample_rate(node_state.pEngine);
 		if (given == 1 && doppler == 1) set_pitch_rate(&node_state.resampler, node_state.sampleRate, engine_rate);
 		else set_pitch_rate(&node_state.resampler, (ma_uint32)std::clamp<double>(std::round((double)node_state.sampleRate / engine_rate * given * doppler * pitch_rate_scale), 1, 0xFFFFFFFF), pitch_rate_scale);
