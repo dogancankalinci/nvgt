@@ -2321,6 +2321,64 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 	}
 	*frame_count_out = done;
 }
+// MiniAudio's buffer of a sound it decodes asynchronously gives, while its job threads decode it, as many frames as the buffer holds rather than as were decoded, the rest the silence it was filled with before the decode or a page half written, and moves its cursor past them: a sound read ahead of the decode, as by an engine without a device read at once, or by any engine after a seek made just after loading or while the job threads were busy, skipped what wasn't decoded yet. Read through this, a buffer still decoding gives no frame past those decoded, returning MA_BUSY, as MiniAudio's buffer of unknown length does, so that a sound at that point waits for them; once decoded, reads go straight through. A count of decoded frames, which MiniAudio stores without ordering the frames before it, is trusted only once the job that may have been writing it is done, so that the frames are seen with it: up to a page behind the decode.
+struct decode_front_view {
+	ma_data_source_base base;
+	ma_resource_manager_data_source* inner;
+	// The decode as last seen, on the thread reading the sound: the buffer's execution pointer, the count of decoded frames read then, and the count trusted.
+	ma_uint32 seen_job = 0;
+	ma_uint64 seen_frames = 0, ready_frames = 0;
+	bool seen = false;
+	~decode_front_view() { ma_data_source_uninit(&base); } // Only views made in full are kept.
+};
+static ma_result decode_front_read(ma_data_source* source, void* frames_out, ma_uint64 frame_count, ma_uint64* frames_read) {
+	decode_front_view* view = (decode_front_view*)source;
+	ma_resource_manager_data_buffer* buffer = &view->inner->backend.buffer;
+	ma_resource_manager_data_buffer_node* node = buffer->pNode;
+	bool held_back = false;
+	if (node && ma_resource_manager_data_source_result(view->inner) == MA_BUSY && reinterpret_cast<std::atomic<ma_resource_manager_data_supply_type>*>(&node->data.type)->load() == ma_resource_manager_data_supply_type_decoded) {
+		ma_uint32 job = reinterpret_cast<std::atomic<ma_uint32>*>(&node->executionPointer)->load(std::memory_order_acquire);
+		if (!view->seen || job != view->seen_job) {
+			if (view->seen) view->ready_frames = view->seen_frames; // Written by a job done since.
+			view->seen = true;
+			view->seen_job = job;
+			view->seen_frames = reinterpret_cast<std::atomic<ma_uint64>*>(&node->data.backend.decoded.decodedFrameCount)->load(std::memory_order_relaxed);
+		}
+		ma_uint64 cursor = 0;
+		ma_resource_manager_data_buffer_get_cursor_in_pcm_frames(buffer, &cursor);
+		ma_uint64 ready = view->ready_frames > cursor? view->ready_frames - cursor : 0;
+		if (frame_count > ready) {
+			frame_count = ready;
+			held_back = true;
+		}
+		if (!frame_count) {
+			if (frames_read) *frames_read = 0;
+			return MA_BUSY;
+		}
+	}
+	ma_result result = ma_data_source_read_pcm_frames((ma_data_source*)view->inner, frames_out, frame_count, frames_read);
+	return held_back && result == MA_SUCCESS? MA_BUSY : result;
+}
+static ma_result decode_front_seek(ma_data_source* source, ma_uint64 frame) { return ma_data_source_seek_to_pcm_frame((ma_data_source*)((decode_front_view*)source)->inner, frame); }
+static ma_result decode_front_get_data_format(ma_data_source* source, ma_format* format, ma_uint32* channels, ma_uint32* sample_rate, ma_channel* channel_map, size_t channel_map_capacity) { return ma_data_source_get_data_format((ma_data_source*)((decode_front_view*)source)->inner, format, channels, sample_rate, channel_map, channel_map_capacity); }
+static ma_result decode_front_get_cursor(ma_data_source* source, ma_uint64* cursor) { return ma_data_source_get_cursor_in_pcm_frames((ma_data_source*)((decode_front_view*)source)->inner, cursor); }
+static ma_result decode_front_get_length(ma_data_source* source, ma_uint64* length) { return ma_data_source_get_length_in_pcm_frames((ma_data_source*)((decode_front_view*)source)->inner, length); }
+static ma_result decode_front_set_looping(ma_data_source* source, ma_bool32 looping) { return ma_data_source_set_looping((ma_data_source*)((decode_front_view*)source)->inner, looping); }
+static ma_data_source_vtable g_decode_front_vtable = {decode_front_read, decode_front_seek, decode_front_get_data_format, decode_front_get_cursor, decode_front_get_length, decode_front_set_looping, 0};
+// The source a sound reads a resource manager's source through: a decode_front_view of it made in view for a buffer, the source itself for a stream, which MiniAudio already holds to what it decoded.
+static ma_data_source* decode_front(ma_resource_manager_data_source* source, unique_ptr<decode_front_view>& view) {
+	view.reset();
+	if (source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM) return (ma_data_source*)source;
+	view = make_unique<decode_front_view>();
+	ma_data_source_config cfg = ma_data_source_config_init();
+	cfg.vtable = &g_decode_front_vtable;
+	if (ma_data_source_init(&cfg, &view->base) != MA_SUCCESS) {
+		view.reset();
+		return (ma_data_source*)source;
+	}
+	view->inner = source;
+	return &view->base;
+}
 // MiniAudio converts a sound's source that isn't in float in steps, the last of which reads its end and marks the sound at it, ending the block, while that read's frames are still in its cache, so the sound stopped before playing them: sounds from 16-bit files, PCM, tones and speech lost up to a block at their end, a sound shorter than a block played nothing, and the lost part played first when the sound played again. A source in float is read whole, with no such step. So a sound reads a source in another format through this, which reads it and gives its frames in float, everything else passing through: MiniAudio's end then comes with nothing left unplayed. The sound's own source stays what scripts see, by sound.datasource and in the format sound.get_data_format() gives.
 struct float_view {
 	ma_data_source_base base;
@@ -3207,12 +3265,13 @@ class sound_impl final : public mixer_impl, public virtual sound {
 	mutable std::atomic_flag load_completed;
 	unique_ptr<pcm_queue> pcm_stream;
 	unique_ptr<float_view> view; // What the sound reads its source through when that isn't in float, freed after the sound.
+	unique_ptr<decode_front_view> front; // What the sound reads a buffer it loaded through, under view, freed after the sound and view.
 	unique_ptr<chain_view> chain; // What a sound playing a chain of sources reads it through, freed after the sound and view.
 	unsigned long long chain_length_frames() const { // The length of the chain chain reads, 0 when unknown.
 		ma_uint64 length = 0;
 		return chain_view_get_length((ma_data_source*)&chain->base, &length) == MA_SUCCESS? length : 0;
 	}
-	ma_data_source* own_source() const { return view? view->inner : snd->pDataSource; } // With snd set.
+	ma_data_source* own_source() const { return front? (ma_data_source*)front->inner : view? view->inner : snd->pDataSource; } // With snd set.
 	bool paused;
 	bool fade_paused = false; // Paused by pause_fade(), whose stop is still scheduled, unlike one the script scheduled itself.
 	bool should_autoclose; // If this is true, the release method defers sound destruction until playback has complete.
@@ -3368,6 +3427,7 @@ public:
 		bool wait_for_load = !(ma_flags & (MA_SOUND_FLAG_ASYNC | MA_SOUND_FLAG_STREAM));
 		ma_uint32 flags = ma_flags | (wait_for_load? MA_SOUND_FLAG_ASYNC : 0);
 		unique_ptr<ma_resource_manager_data_source> made_source;
+		unique_ptr<decode_front_view> made_front;
 		unique_ptr<float_view> made_view;
 		bool tree_held = false; // The retry below holds g_resource_tree_mutex around its attempt.
 		// Each attempt gets its own load state, so one a failed attempt left with MiniAudio can't be mistaken for the next. It makes the source and then the sound from it, as ma_sound_init_ex() would from the file's name, but keeps the source: see source.
@@ -3395,7 +3455,7 @@ public:
 				ma_sound_config cfg = ma_sound_config_init();
 				// Not attached to the endpoint by MiniAudio, as postload() attaches it to its chain; so making it changes no node's lists and needs no graph lock.
 				cfg.flags = flags | MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT;
-				cfg.pDataSource = float_source((ma_data_source*)&*made_source, made_view);
+				cfg.pDataSource = float_source(decode_front(&*made_source, made_front), made_view);
 				if ((g_soundsystem_last_error = ma_sound_init_ex(engine->get_ma_engine(), &cfg, &*made)) != MA_SUCCESS) discard_source(made_source, tree_held);
 				else if (wait_for_load) {
 					{
@@ -3447,6 +3507,7 @@ public:
 		if (g_soundsystem_last_error == MA_SUCCESS && (made_source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM) && !(ma_flags & MA_SOUND_FLAG_UNKNOWN_LENGTH) && reinterpret_cast<std::atomic<ma_bool32>*>(&made_source->backend.stream.isDecoderAtEnd)->load()) {
 			ma_sound_uninit(&*made);
 			made_view.reset();
+			made_front.reset();
 			discard_source(made_source, tree_held);
 			let_go_of_buffer_name(manager, triplet);
 			g_sound_service->cleanup_triplet(triplet);
@@ -3456,6 +3517,7 @@ public:
 			if (made_source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM) held(&*made)->stream = &made_source->backend.stream;
 			source = std::move(made_source);
 			view = std::move(made_view);
+			front = std::move(made_front);
 			claimed_name = triplet;
 			claimed_manager = manager;
 			adopt_sound(std::move(made));
@@ -3669,6 +3731,7 @@ public:
 		if (failed_buffer) free_failed_buffer(failed_buffer);
 		ma_sound_uninit(&*closing); // The sound doesn't own its source, which is freed after it.
 		view.reset();
+		front.reset();
 		chain.reset();
 		if (source) {
 			{
