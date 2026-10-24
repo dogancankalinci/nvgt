@@ -1013,7 +1013,11 @@ protected:
 				auto it = g_data_sources_map.find(src->pDataSource);
 				if (it != g_data_sources_map.end() && it->second == this) g_data_sources_map.erase(it);
 			}
-			if (node) { std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); ma_data_source_node_uninit(&*src, nullptr); }
+			if (node) {
+				std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex);
+				ma_data_source_node_uninit(&*src, nullptr);
+				drop_rate_bridges();
+			}
 			node = nullptr;
 			// Uninitializing the node took it off the graph, so what it was attached to is no longer held either; a node made for a source opened later starts unattached.
 			for (audio_node *&n : output_connections) {
@@ -1082,6 +1086,7 @@ public:
 		auto impl = dynamic_cast<audio_data_source_impl*>(ds);
 		return impl && (impl->users > 0 || impl->node_attached());
 	}
+	unsigned int output_sample_rate() const override { return get_sample_rate(); } // The source's frames as they are, which a graph of another rate takes through a group that resamples them (see audio_node_impl::attach_output_bus()).
 	// The graph's audio thread reads the source once its node is attached, so not while a sound, chain or head reads it, nor a sound's own source.
 	bool attach_output_bus(unsigned int output_bus, audio_node *destination, unsigned int destination_input_bus) override {
 		if (in_use(false)) return false;
@@ -2515,6 +2520,20 @@ static void hold_rate_of(ma_sound* s) {
 		vtable.onProcess = group? held_group_process : held_sound_process;
 	}
 	node->vtable = &vtable;
+}
+ma_sound* rate_bridge_create(audio_engine* engine, unsigned int channels, float ratio) {
+	held_sound_ptr bridge(new held_sound());
+	ma_sound_group_config cfg = ma_sound_group_config_init_2(engine->get_ma_engine());
+	cfg.flags = MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT | MA_SOUND_FLAG_NO_SPATIALIZATION;
+	cfg.channelsIn = cfg.channelsOut = channels;
+	if ((g_soundsystem_last_error = ma_sound_group_init_ex(engine->get_ma_engine(), &cfg, &*bridge)) != MA_SUCCESS) return nullptr;
+	hold_rate_of(&*bridge); // As a mixer's group, so that what is read through it is held to max_pitch_ratio with its rate counted.
+	held(&*bridge)->pitch.store(std::clamp(ratio, min_pitch_ratio, max_pitch_ratio));
+	return bridge.release();
+}
+void rate_bridge_destroy(ma_sound* bridge) {
+	ma_sound_group_uninit(bridge);
+	held_sound_delete()(bridge);
 }
 class mixer_impl : public audio_node_impl, public virtual mixer {
 	friend class audio_node_impl;

@@ -23,12 +23,29 @@
 
 // miniaudio's node graph is lock-free for the audio thread that reads it, but its attach/detach mutations assume a single writer. Script threads create and destroy sounds and mixers concurrently, each of which attaches to and detaches from the engine endpoint, so the mutations are serialised here. Recursive because a chain's set_endpoint attaches through its last node.
 extern std::recursive_mutex g_node_graph_mutex;
+// A group of an engine through which a node of another sample rate goes into one of its nodes, resampled by its pitch, the ratio of the two rates (see audio_node_impl::attach_output_bus()). Made unattached, of the given channels in and out, under the graph lock, as it is let go of.
+ma_sound* rate_bridge_create(audio_engine* engine, unsigned int channels, float ratio);
+void rate_bridge_destroy(ma_sound* bridge);
 class audio_node_impl : public virtual audio_node {
 protected:
 	ma_node_base* node; // Must be set by subclasses
 	audio_engine *engine;
 	int refcount;
 	std::vector<audio_node*> output_connections; // Owns a reference to whatever each output bus is currently attached to, so an attached node can't be freed out from under the graph.
+	// For each output bus going into a node of another sample rate, the group of the destination's engine it goes through (see attach_output_bus()), under the graph lock.
+	std::vector<ma_sound*> rate_bridges;
+	// The sample rate this node's output runs at, 0 for its engine's: an engine's own, mixed into another, and a data source's, whose node gives the source's frames as they are.
+	virtual unsigned int output_sample_rate() const { return is_engine()? (unsigned int)engine->get_sample_rate() : 0; }
+	// Lets go of the group an output bus went through, under the graph lock.
+	void drop_rate_bridge(unsigned int bus) {
+		if (bus >= rate_bridges.size() || !rate_bridges[bus]) return;
+		rate_bridge_destroy(rate_bridges[bus]);
+		rate_bridges[bus] = nullptr;
+	}
+	// Each of a destination's engine, which may go once that destination is let go of, so before.
+	void drop_rate_bridges() {
+		for (unsigned int bus = 0; bus < rate_bridges.size(); bus++) drop_rate_bridge(bus);
+	}
 public:
 	audio_node_impl(ma_node_base *node, audio_engine *engine) : audio_node(), node(node), engine(engine), refcount(1) {
 		// A node of a given engine, such as one of the script's engines without a device, needs only what every engine needs; one without an engine goes on the default engine, which init_sound() builds.
@@ -39,6 +56,10 @@ public:
 		if (engine && !is_engine()) this->engine->duplicate();
 	}
 	~audio_node_impl() {
+		{
+			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex);
+			drop_rate_bridges();
+		}
 		for (audio_node *n : output_connections) if (n) n->release();
 		if (engine && !is_engine()) engine->release();
 	}
@@ -82,6 +103,7 @@ public:
 	// The node this one was attached to is let go of after the graph lock: letting go can destroy it, and a destructor, such as a spatializer's, takes locks that are taken before the graph lock elsewhere.
 	bool attach_output_bus(unsigned int output_bus, audio_node *destination, unsigned int destination_input_bus) {
 		if (!node || !destination) return false;
+		unsigned int from = output_sample_rate(), to = destination->get_engine()? (unsigned int)destination->get_engine()->get_sample_rate() : 0; // Before the graph lock: a data source's rate is read under its own lock, inside which the graph lock is taken.
 		audio_node *previous = nullptr;
 		{
 			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); 
@@ -90,8 +112,28 @@ public:
 				g_soundsystem_last_error = MA_INVALID_ARGS;
 				return false;
 			}
-			if ((g_soundsystem_last_error = ma_node_attach_output_bus(node, output_bus, destination->get_ma_node(), destination_input_bus)) != MA_SUCCESS) return false;
+			// A node's output is read at the rate of the graph it goes into, which doesn't resample, so one of another rate, as a no-device engine of its own rate mixed into another or a decoder's node at its file's rate, played at the ratio of the two rates, too fast or slow and out of tune. It goes through a group of the destination's engine instead, whose pitch, that ratio, resamples it.
+			ma_node* target = destination->get_ma_node();
+			unsigned int target_bus = destination_input_bus;
+			ma_sound* bridge = nullptr;
+			if (from && to && from != to) {
+				// Of the node's own channels in and out, so that one whose channels differ from the destination's is still refused, as straight into it.
+				if (!(bridge = rate_bridge_create(destination->get_engine(), ma_node_get_output_channels(node, output_bus), (float)from / to))) return false;
+				if ((g_soundsystem_last_error = ma_node_attach_output_bus(bridge, 0, target, target_bus)) != MA_SUCCESS) {
+					rate_bridge_destroy(bridge);
+					return false;
+				}
+				target = bridge;
+				target_bus = 0;
+			}
+			if ((g_soundsystem_last_error = ma_node_attach_output_bus(node, output_bus, target, target_bus)) != MA_SUCCESS) {
+				if (bridge) rate_bridge_destroy(bridge);
+				return false;
+			}
 			if (output_bus >= output_connections.size()) output_connections.resize(output_bus + 1, nullptr);
+			if (output_bus >= rate_bridges.size()) rate_bridges.resize(output_bus + 1, nullptr);
+			drop_rate_bridge(output_bus); // The one this bus went through before, left without input by the attach.
+			rate_bridges[output_bus] = bridge;
 			previous = output_connections[output_bus];
 			output_connections[output_bus] = destination;
 			destination->duplicate();
@@ -105,6 +147,7 @@ public:
 		{
 			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); 
 			if ((g_soundsystem_last_error = ma_node_detach_output_bus(node, bus)) != MA_SUCCESS) return false;
+			drop_rate_bridge(bus);
 			if (bus < output_connections.size()) {
 				previous = output_connections[bus];
 				output_connections[bus] = nullptr;
@@ -119,6 +162,7 @@ public:
 		{
 			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); 
 			if ((g_soundsystem_last_error = ma_node_detach_all_output_buses(node)) != MA_SUCCESS) return false;
+			drop_rate_bridges();
 			for (audio_node *&n : output_connections) {
 				if (n) previous.push_back(n);
 				n = nullptr;
