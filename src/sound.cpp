@@ -1531,15 +1531,52 @@ public:
 	unsigned int get_sample_rate() const override { return rb? ma_pcm_rb_get_sample_rate(&*rb) : 0; }
 };
 audio_ring_buffer* audio_ring_buffer::create(unsigned int channels, unsigned int size, audio_engine* e) { return new audio_ring_buffer_impl(channels, size, e); }
-// MiniAudio's decoder reads a file of another rate through a resampler, NVGT's WDL one, with faults its data source functions are wrapped for in NVGT's decoders (see hold_decoder()). The resampler gives what it holds at the input's end only on a second call without input, and MiniAudio's read makes one such call, returning no frames and its end if that gives none: a read starting where only those frames were left got none, ending a sound, a chain's link or a pass of a loop, or a script's reading, tens of frames early; such a read is made once more. Raising the channel count while resampling up, MiniAudio's converter resamples in chunks of its stack buffer, asking the resampler for the input each chunk needs, a count WDL's doesn't add up over chunks, and the decoder drops the input the converter didn't take, so that a read of more than a chunk lost frames of the file; reads are made in parts no larger than a chunk. A seek is skipped, the converter's reset with it, when the file's cursor is already where the frame maps to, which a resampler reading ahead leaves it at for one frame some tens of frames on, so that the read went on from where it was; such a seek resets the converter and sets the read point itself. A seek resets the resampler, and with it the counts its flush at the input's end is capped by (see wdl_resampler_set_counts()), so that they counted from the seek's frame and allowed a frame or two more than the decoder's length; the first read after a reset sets them to where the decoder is, on the thread that reads it, a stream's job thread too.
+// MiniAudio's decoder reads a file of another rate through a resampler, NVGT's WDL one, with faults its data source functions are wrapped for in NVGT's decoders and streams (see hold_decoder()). The resampler gives what it holds at the input's end only on a second call without input, and MiniAudio's read makes one such call, returning no frames and its end if that gives none: a read starting where only those frames were left got none, ending a sound, a chain's link or a pass of a loop, or a script's reading, tens of frames early; such a read is made once more. Raising the channel count while resampling up, MiniAudio's converter resamples in chunks of its stack buffer, asking the resampler for the input each chunk needs, a count WDL's doesn't add up over chunks, and the decoder drops the input the converter didn't take, so that a read of more than a chunk lost frames of the file; reads are made in parts no larger than a chunk. A seek resets the resampler, and with it the counts its flush at the input's end is capped by (see wdl_resampler_set_counts()), so that they counted from the seek's frame and allowed a frame or two more than the decoder's length; the first read after a reset sets them to where the decoder is, on the thread that reads it, a stream's job thread too.
 static ma_data_source_vtable g_held_decoder_vtable;
 static ma_result (*g_ma_decoder_read)(ma_data_source*, void*, ma_uint64, ma_uint64*) = nullptr;
-static ma_result (*g_ma_decoder_seek)(ma_data_source*, ma_uint64) = nullptr;
 static constexpr ma_uint64 converter_chunk_bytes = 4096; // MiniAudio's MA_DATA_CONVERTER_STACK_BUFFER_SIZE, which its header doesn't give.
+// MiniAudio skips a decoder's seek, the converter's reset with it, when the file's cursor is already where the frame maps to, which a resampler reading ahead leaves it at for one frame some tens of frames on, so that the read went on from where it was; a stream, which seeks its decoder with MiniAudio's own function on its job thread, then played on from earlier in its file and stopped short of its end. That cursor is read for nothing else, so the decoder's file is given data source functions whose cursor no frame maps to, and the decoder always seeks; its own cursor is kept for counting the resampling (see file_cursor()).
+struct held_backend {
+	ma_data_source_vtable vtable; // First, as a source's base points to it.
+	const ma_data_source_vtable* original;
+};
+static std::mutex g_held_backends_mutex;
+static std::vector<std::unique_ptr<held_backend>> g_held_backends; // One for each kind of file, under g_held_backends_mutex.
+static ma_result cursor_no_frame_maps_to(ma_data_source* source, ma_uint64* cursor) {
+	*cursor = ~(ma_uint64)0;
+	return MA_SUCCESS;
+}
+// The functions a held file had, which its vtable, first in a held_backend, leads back to.
+static const ma_data_source_vtable* original_functions(ma_data_source* backend) {
+	const ma_data_source_vtable* vtable = ((ma_data_source_base*)backend)->vtable;
+	return vtable->onGetCursor == cursor_no_frame_maps_to? reinterpret_cast<const held_backend*>(vtable)->original : vtable;
+}
+static void hold_backend(ma_data_source* backend) {
+	ma_data_source_base* base = (ma_data_source_base*)backend;
+	std::lock_guard<std::mutex> lock(g_held_backends_mutex);
+	held_backend* held = nullptr;
+	for (const auto& b : g_held_backends) {
+		if (base->vtable == &b->vtable) return;
+		if (base->vtable == b->original) held = b.get();
+	}
+	if (!held) {
+		g_held_backends.push_back(std::make_unique<held_backend>());
+		held = g_held_backends.back().get();
+		held->original = base->vtable;
+		held->vtable = *base->vtable;
+		held->vtable.onGetCursor = cursor_no_frame_maps_to;
+	}
+	base->vtable = &held->vtable;
+}
+// A decoder's file's own cursor.
+static bool file_cursor(ma_data_source* backend, ma_uint64* cursor) {
+	const ma_data_source_vtable* vtable = original_functions(backend);
+	return vtable->onGetCursor && vtable->onGetCursor(backend, cursor) == MA_SUCCESS;
+}
 // Sets the counts of a decoder's WDL resampler to where the decoder is, its file's cursor and its read point.
 static void count_resampling_from_here(ma_decoder* decoder) {
-	ma_uint64 file_cursor = 0;
-	if (decoder->converter.hasResampler && decoder->converter.resampler.pBackendVTable == &wdl_resampler_backend_vtable && ma_data_source_get_cursor_in_pcm_frames(decoder->pBackend, &file_cursor) == MA_SUCCESS) wdl_resampler_set_counts(decoder->converter.resampler.pBackend, file_cursor, decoder->readPointerInPCMFrames);
+	ma_uint64 cursor = 0;
+	if (decoder->converter.hasResampler && decoder->converter.resampler.pBackendVTable == &wdl_resampler_backend_vtable && file_cursor(decoder->pBackend, &cursor)) wdl_resampler_set_counts(decoder->converter.resampler.pBackend, cursor, decoder->readPointerInPCMFrames);
 }
 static ma_result held_decoder_read(ma_data_source* source, void* frames_out, ma_uint64 frame_count, ma_uint64* frames_read) {
 	ma_decoder* decoder = (ma_decoder*)source;
@@ -1561,27 +1598,16 @@ static ma_result held_decoder_read(ma_data_source* source, void* frames_out, ma_
 	if (frames_read) *frames_read = total;
 	return result != MA_SUCCESS && result != MA_AT_END? result : total? MA_SUCCESS : result;
 }
-static ma_result held_decoder_seek(ma_data_source* source, ma_uint64 frame) {
-	ma_decoder* decoder = (ma_decoder*)source;
-	ma_result result = g_ma_decoder_seek(source, frame);
-	if (result != MA_SUCCESS) return result;
-	if (decoder->readPointerInPCMFrames != frame) { // Skipped.
-		ma_data_converter_reset(&decoder->converter);
-		decoder->readPointerInPCMFrames = frame;
-	}
-	return result;
-}
-// Gives a decoder made the functions above, before anything reads it.
+// Gives a decoder made the functions above, and its file those of hold_backend(), before anything reads or seeks it.
 static void hold_decoder(ma_decoder* decoder) {
 	static std::once_flag made;
 	std::call_once(made, [decoder]() {
 		g_held_decoder_vtable = *decoder->ds.vtable;
 		g_ma_decoder_read = g_held_decoder_vtable.onRead;
-		g_ma_decoder_seek = g_held_decoder_vtable.onSeek;
 		g_held_decoder_vtable.onRead = held_decoder_read;
-		g_held_decoder_vtable.onSeek = held_decoder_seek;
 	});
 	decoder->ds.vtable = &g_held_decoder_vtable;
+	if (decoder->pBackend) hold_backend(decoder->pBackend);
 }
 class audio_decoder_impl : public audio_data_source_impl, public virtual audio_decoder {
 	unique_ptr<ma_decoder> decoder;
@@ -2329,7 +2355,6 @@ struct held_sound : ma_sound {
 	bool end_silence_taken = false;
 	ma_uint32 cache_cap = 0; // The capacity MiniAudio gave the sound's cache, which held_sound_process() lowers for each call (see bound_read()).
 	ma_uint64 restart_cursor = ~(ma_uint64)0; // The source's cursor when held_sound_process() last played the sound on from its loop's start at its end.
-	ma_uint64 stream_seek = ~(ma_uint64)0; // The frame of the stream's seek held_sound_process() last made, until checked once its job is done.
 	std::atomic<ma_uint64> seek_target{~(ma_uint64)0}; // The frame a seek asked for, ~0 for none, made by held_sound_process() in place of MiniAudio's seekTarget.
 };
 struct held_sound_delete {
@@ -2484,18 +2509,6 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 		return;
 	}
 	held_sound* h = held(s);
-	// A stream seeks on its job thread with MiniAudio's decoder function itself, rather than through the decoder's data source functions, so that it skips a seek NVGT's decoders don't (see held_decoder_seek()): the stream then played on from earlier in its file, its position reading the frame sought, and stopped short of its end. Once the job is done, which leaves the decoder two pages on, as far as the stream has, until this sound reads them, a decoder found elsewhere is sought again, which it then can't skip. Sought again by way of a frame beside the one sought, as MiniAudio makes nothing of a stream's seek to the frame its cursor reads while it isn't seeking. Not where a looping stream's pages wrapped past its end, its decoder then sought to its start.
-	if (stream && h->stream_seek != ~(ma_uint64)0 && reinterpret_cast<std::atomic<ma_bool32>*>(&stream->seekCounter)->load() == 0) {
-		ma_uint64 made = h->stream_seek, filled = (ma_uint64)reinterpret_cast<std::atomic<ma_uint32>*>(&stream->pageFrameCount[0])->load() + reinterpret_cast<std::atomic<ma_uint32>*>(&stream->pageFrameCount[1])->load();
-		h->stream_seek = ~(ma_uint64)0;
-		if (stream->totalLengthInPCMFrames && made + filled <= stream->totalLengthInPCMFrames) {
-			if (stream->decoder.readPointerInPCMFrames != made + filled && ma_data_source_seek_to_pcm_frame(s->pDataSource, made + 1 < stream->totalLengthInPCMFrames? made + 1 : made - 1) == MA_SUCCESS && ma_data_source_seek_to_pcm_frame(s->pDataSource, made) == MA_SUCCESS) {
-				h->stream_seek = made;
-				*frame_count_out = 0;
-				return;
-			}
-		}
-	}
 	// Looping turned on at the source's end, while what the resampler owed was being given or before MiniAudio stopped the sound for it: it plays on from the loop's start, as from a looping source's end, rather than stopping, as play_looped() says it plays. Before a seek made meanwhile, which then is made. Not when the source can't seek there, nor when its pass gave nothing since the last such start, as for a source with no frames, which MiniAudio stops at its end, rather than started over every block.
 	if (ma_sound_at_end(s) && ma_data_source_is_looping(s->pDataSource)) {
 		ma_uint64 loop_begin = 0, loop_end = 0, cursor = ~(ma_uint64)0;
@@ -2503,14 +2516,13 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 		ma_data_source_get_cursor_in_pcm_frames(s->pDataSource, &cursor);
 		if (cursor != h->restart_cursor && ma_data_source_seek_to_pcm_frame(s->pDataSource, loop_begin) == MA_SUCCESS) {
 			h->restart_cursor = loop_begin;
-			if (stream) h->stream_seek = loop_begin;
 			s->processingCacheFramesRemaining = 0;
 			reinterpret_cast<std::atomic<ma_bool32>*>(&s->atEnd)->store(MA_FALSE);
 		}
 	}
 	ma_uint64 target = seek_target.load();
 	if (target != ~(ma_uint64)0 && !ma_sound_at_end(s)) { // ~0 is "no seek", as for MiniAudio.
-		if (ma_data_source_seek_to_pcm_frame(s->pDataSource, target) == MA_SUCCESS && stream) h->stream_seek = target;
+		ma_data_source_seek_to_pcm_frame(s->pDataSource, target);
 		ma_node_set_time(s, target);
 		s->processingCacheFramesRemaining = 0;
 		seek_target.compare_exchange_strong(target, ~(ma_uint64)0); // A seek made meanwhile stays for the next block.
@@ -3795,7 +3807,7 @@ public:
 		if (g_soundsystem_last_error == MA_SUCCESS) {
 			if (made_source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM) {
 				held(&*made)->stream = &made_source->backend.stream;
-				// The stream's job thread fills its pages through its decoder's data source functions, so that NVGT's (see hold_decoder()) make the read at its end that gave nothing once more: else a stream whose file ended where a page read did lost what the resampler held there. Given here, before the sound first reads the stream, which no job touches until then.
+				// The stream's job thread fills its pages through its decoder's data source functions, and seeks the decoder, so that NVGT's (see hold_decoder()) make the read at its end that gave nothing once more, count the resampling from where a seek left it and keep the seek from being skipped. Given here, before the sound first reads the stream, which no job touches until then.
 				hold_decoder(&made_source->backend.stream.decoder);
 			}
 			source = std::move(made_source);
