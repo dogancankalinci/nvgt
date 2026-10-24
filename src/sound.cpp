@@ -2267,7 +2267,10 @@ struct held_sound : ma_sound {
 	std::atomic<float> rate{1}; // The rate MiniAudio last applied, by which a group multiplies those of the nodes it reads (see downstream_rate()).
 	ma_resource_manager_data_stream* stream = nullptr; // The resource manager's stream the sound plays, if it plays one, set before the sound is attached (see held_sound_process()).
 	float rate_pitch = 1, rate_doppler = 1; // The pitch and doppler ratio hold_rate() last set the resampler for, as MiniAudio made it; only the thread reading the engine uses them.
-	bool end_flushed = false; // The frame the resampler held at the source's end was given (see held_sound_process()); only the thread reading the engine uses it.
+	// Giving what the resampler still owed at the source's end (see give_end()): none yet, under way or given, and whether it took the silent frame fed it; only the thread reading the engine uses these.
+	enum class end_flush : unsigned char { none, giving, given };
+	end_flush end_state = end_flush::none;
+	bool end_silence_taken = false;
 	std::atomic<ma_uint64> seek_target{~(ma_uint64)0}; // The frame a seek asked for, ~0 for none, made by held_sound_process() in place of MiniAudio's seekTarget.
 };
 struct held_sound_delete {
@@ -2338,6 +2341,43 @@ static void hold_rate(ma_node* node) {
 		else set_pitch_rate(&node_state.resampler, (ma_uint32)std::clamp<double>(std::round((double)node_state.sampleRate / engine_rate * given * doppler * pitch_rate_scale), 1, 0xFFFFFFFF), pitch_rate_scale);
 	}
 }
+// MiniAudio reads every sound through its linear resampler, at a rate of 1 too, which gives a frame out only once the frame after it comes in, so what it owed at the source's end, which no frame follows, was never played: the last frame, and below a rate of 1 the frames on the way to it, so that a sound of one frame was silent and every sound lost its end, below a rate of 1 cut off at full level. Once the source's end is read, this feeds the resampler one silent frame after it and gives what it owes, as much as the block has room for, over as many blocks as that takes, before MiniAudio stops the sound in its processing after, calling its end callback then, as without this. Owed is as much as it gives out with no frame in but that silent one, and once it took that, with none, counted by MiniAudio's own count of the frames in it needs, so that the source isn't read past its end and the sound's end isn't drawn out with silence. Returns the frames given.
+static ma_uint32 give_end(ma_node* node, const float** frames_in, ma_uint32* frame_count_in, float* out, ma_uint32 room) {
+	ma_sound* s = (ma_sound*)node;
+	held_sound* h = held(s);
+	h->end_state = held_sound::end_flush::given;
+	hold_rate(node); // As before each later call in a block, so that MiniAudio doesn't set the resampler itself, from the doppler ratio its spatializer worked out unheld.
+	ma_resampler* resampler = &s->engineNode.resampler;
+	ma_uint32 source_channels = 0;
+	if (!s->pProcessingCache || !s->processingCacheCap || reinterpret_cast<std::atomic<ma_bool32>*>(&s->engineNode.isPitchDisabled)->load() || ma_data_source_get_data_format(s->pDataSource, nullptr, &source_channels, nullptr, nullptr, 0) != MA_SUCCESS || !source_channels) return 0;
+	const ma_uint64 frames_in_left = h->end_silence_taken? 0 : 1;
+	auto fits = [resampler, frames_in_left](ma_uint64 count) {
+		ma_uint64 needed = 0;
+		return ma_resampler_get_required_input_frame_count(resampler, count, &needed) == MA_SUCCESS && needed <= frames_in_left;
+	};
+	ma_uint64 owed = 0, past = 1; // The most that fit, found between them.
+	while (past < 0x100000000ull && fits(past)) {
+		owed = past;
+		past *= 2;
+	}
+	while (past - owed > 1) {
+		ma_uint64 middle = owed + (past - owed) / 2;
+		if (fits(middle)) owed = middle;
+		else past = middle;
+	}
+	if (!owed) return 0;
+	std::fill_n(s->pProcessingCache, source_channels, 0.0f); // Fed again once taken, so that MiniAudio's processing runs the resampler, which then takes none.
+	s->processingCacheFramesRemaining = 1;
+	std::atomic<ma_bool32>& at_end = *reinterpret_cast<std::atomic<ma_bool32>*>(&s->atEnd);
+	at_end.store(MA_FALSE);
+	ma_uint32 count = (ma_uint32)std::min<ma_uint64>(room, owed);
+	g_ma_sound_process(node, frames_in, frame_count_in, &out, &count);
+	if (!h->end_silence_taken && !s->processingCacheFramesRemaining) h->end_silence_taken = true;
+	s->processingCacheFramesRemaining = 0;
+	at_end.store(MA_TRUE);
+	if (count < owed) h->end_state = held_sound::end_flush::giving; // The rest in the next block.
+	return count;
+}
 // MiniAudio's processing of a sound plays first from a cache of the source's frames it read and converted to float but hadn't played yet, up to a block of them. A seek, made there from seekTarget, moved the source but kept the cache, so a sound not read in whole blocks, at a pitch other than 1 or a source rate other than the engine's, played up to that many frames from where it had been, at a pitch of 0.3 for 18 ms; the seek is made here, from the sound's own target, the cache emptied with it, and the target cleared only after it, as MiniAudio does, as the sound's position reads the target until then. MiniAudio's seekTarget is left unset: taken over from there, a seek stored just after the takeover looked was still made by MiniAudio's own code in the call that followed. A sound at its end is stopped in the block first, and a seek kept for when it plays again, as MiniAudio keeps it. And when a read that refills the cache returns MA_BUSY with frames, as a stream does while its next page is being decoded or a seek is being made, MiniAudio ends the call before playing them, so the rest of the block was silent while they waited a block; it is called again then, for the rest of the block, playing the cache first. On the thread reading the engine.
 static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32* frame_count_in, float** frames_out, ma_uint32* frame_count_out) {
 	hold_rate(node);
@@ -2364,9 +2404,12 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 	}
 	ma_uint32 wanted = *frame_count_out, done = 0, channels = ma_node_get_output_channels(node, 0);
 	held_sound* h = held(s);
-	bool end_unflushed = ma_sound_at_end(s) && !h->end_flushed; // The source's end read in an earlier block, which had no room left for the frame the resampler held.
-	if (!ma_sound_at_end(s)) h->end_flushed = false; // Playing since its last end, if any.
-	for (bool first = true; !end_unflushed; first = false) {
+	if (!ma_sound_at_end(s)) { // Playing since its last end, if any.
+		h->end_state = held_sound::end_flush::none;
+		h->end_silence_taken = false;
+	}
+	bool ending = ma_sound_at_end(s) && h->end_state != held_sound::end_flush::given; // The source's end read in an earlier block, what the resampler owed then not all given yet.
+	for (bool first = true; !ending; first = false) {
 		if (!first) hold_rate(node); // The doppler ratio MiniAudio's spatializer worked out in the call before, which it applies in this one, held as for the first. A seek made during the block is made at the start of the next.
 		ma_uint32 cached = s->processingCacheFramesRemaining;
 		float* out = frames_out[0] + (size_t)done * channels;
@@ -2376,29 +2419,7 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 		// Again only while MiniAudio left frames it cached unplayed, not at the sound's end, and made progress.
 		if (done >= wanted || ma_sound_at_end(s) || !s->processingCacheFramesRemaining || !count && s->processingCacheFramesRemaining == cached) break;
 	}
-	// MiniAudio reads every sound through its linear resampler, at a rate of 1 too, which gives a frame out only once the frame after it comes in, so the source's last frame, which none follows, was never played: a sound of one frame was silent, and every sound lost its last. Once the source's end is read, one silent frame is fed in after it, asking for no more than it gives out, so that the source isn't read past its end, and the sound is marked at its end again, which MiniAudio stops it at in its next processing, calling its end callback then, as without this.
-	if (ma_sound_at_end(s) && !h->end_flushed && done < wanted) {
-		h->end_flushed = true;
-		hold_rate(node); // As before each later call in the block, so that MiniAudio doesn't set the resampler itself, from the doppler ratio its spatializer worked out unheld.
-		ma_uint32 source_channels = 0;
-		ma_uint64 given = 0;
-		std::atomic<ma_bool32>& at_end = *reinterpret_cast<std::atomic<ma_bool32>*>(&s->atEnd);
-		if (s->pProcessingCache && s->processingCacheCap && !reinterpret_cast<std::atomic<ma_bool32>*>(&s->engineNode.isPitchDisabled)->load() && ma_data_source_get_data_format(s->pDataSource, nullptr, &source_channels, nullptr, nullptr, 0) == MA_SUCCESS && source_channels && ma_resampler_get_expected_output_frame_count(&s->engineNode.resampler, 1, &given) == MA_SUCCESS) {
-			// No more than one frame in gives out: the count expected assumes the resampler short of its next step, which a rate lowered since that step can leave it past.
-			for (ma_uint64 needed = 0; given && ma_resampler_get_required_input_frame_count(&s->engineNode.resampler, given, &needed) == MA_SUCCESS && needed > 1;) given--;
-		}
-		if (given) {
-			std::fill_n(s->pProcessingCache, source_channels, 0.0f);
-			s->processingCacheFramesRemaining = 1;
-			at_end.store(MA_FALSE);
-			float* out = frames_out[0] + (size_t)done * channels;
-			ma_uint32 count = (ma_uint32)std::min<ma_uint64>(wanted - done, given);
-			g_ma_sound_process(node, frames_in, frame_count_in, &out, &count);
-			done += count;
-			s->processingCacheFramesRemaining = 0;
-			at_end.store(MA_TRUE);
-		}
-	}
+	if (ma_sound_at_end(s) && h->end_state != held_sound::end_flush::given && done < wanted) done += give_end(node, frames_in, frame_count_in, frames_out[0] + (size_t)done * channels, wanted - done);
 	*frame_count_out = done;
 }
 // MiniAudio's buffer of a sound it decodes asynchronously gives, while its job threads decode it, as many frames as the buffer holds rather than as were decoded, the rest the silence it was filled with before the decode or a page half written, and moves its cursor past them: a sound read ahead of the decode, as by an engine without a device read at once, or by any engine after a seek made just after loading or while the job threads were busy, skipped what wasn't decoded yet. Read through this, a buffer still decoding gives no frame past those decoded, returning MA_BUSY, as MiniAudio's buffer of unknown length does, so that a sound at that point waits for them; once decoded, reads go straight through. A count of decoded frames, which MiniAudio stores without ordering the frames before it, is trusted only once the job that may have been writing it is done, so that the frames are seen with it: up to a page behind the decode.
