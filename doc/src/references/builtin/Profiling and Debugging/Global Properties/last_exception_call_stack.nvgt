@@ -3,6 +3,8 @@
 	string last_exception_call_stack;
 	## Remarks:
 		In the context of a catch block, it's better to use this property over `get_call_stack()`. In a catch block, `get_call_stack()` will return the callstack where you are in the try statement, as opposed to the call stack that actually caused the exception being caught.
+
+		Each thread keeps its own: the property holds the call stack of the last exception raised on the thread reading it, so an exception raised at the same time on another thread, such as in an async function, doesn't replace the one being caught.
 */
 
 // Example:

@@ -115,7 +115,9 @@ Mutex g_ctxMgrMutex; // exit() on a script thread uses the manager while the mai
 	CDebugger* g_dbg = nullptr;
 #endif
 int g_bcCompressionLevel = 9;
-string g_last_exception_callstack;
+// The call stack of the last exception raised on this thread, which a catch block reads as last_exception_call_stack. One string for every thread was written by two script threads at once when both raised an exception (heap corruption), and read by one while another wrote it.
+thread_local string g_last_exception_callstack;
+string get_last_exception_callstack() { return g_last_exception_callstack; }
 vector<asIScriptContext*> g_ctxPool;
 Mutex g_ctxPoolMutex;
 vector<string> g_IncludeDirs;
@@ -472,7 +474,7 @@ int ConfigureEngine(asIScriptEngine *engine) {
 	Print::asRegister(engine);
 	engine->SetDefaultAccessMask(NVGT_SUBSYSTEM_GENERAL);
 	RegisterExceptionRoutines(engine);
-	engine->RegisterGlobalProperty("const string last_exception_call_stack", &g_last_exception_callstack);
+	engine->RegisterGlobalFunction("string get_last_exception_call_stack() property", asFUNCTION(get_last_exception_callstack), asCALL_CDECL);
 	engine->EndConfigGroup();
 	engine->SetDefaultAccessMask(NVGT_SUBSYSTEM_GENERAL);
 	engine->BeginConfigGroup("physics");
