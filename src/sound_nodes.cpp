@@ -171,12 +171,21 @@ public:
 		for (audio_node* node: nodes) node->release();
 		if (endpoint) endpoint->release();
 	}
+	// A chain has one output bus, 0, its endpoint: another is refused, with MiniAudio's errors for other nodes, rather than taken for it.
 	bool attach_output_bus(unsigned int bus_index, audio_node* node, unsigned int input_bus_index) override {
+		if (bus_index != 0) {
+			g_soundsystem_last_error = MA_INVALID_OPERATION;
+			return false;
+		}
 		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		set_endpoint(node, input_bus_index);
 		return endpoint == node;
 	}
 	bool detach_output_bus(unsigned int bus_index) override {
+		if (bus_index != 0) {
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return false;
+		}
 		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		set_endpoint(nullptr, 0);
 		return endpoint == nullptr;
