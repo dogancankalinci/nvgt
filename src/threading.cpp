@@ -96,6 +96,15 @@ static bool convert_number(asIScriptEngine* engine, int from_type, const void* f
 	return true;
 }
 
+// Raises the failure to set up an async call's argument on the calling context, unless setting it up raised an exception of its own there:
+// a script class's constructor, copy constructor or opAssign (making the object, or assigning a default value to it) runs as a nested
+// call on that context, and AngelScript forwards its exception to it with its own text and line, which say why (this text, raised over
+// it, said only which argument).
+static void async_arg_failed(asIScriptContext* aCtx, const std::string& text) {
+	if (aCtx->GetState() != asEXECUTION_EXCEPTION)
+		aCtx->SetException(text.c_str());
+}
+
 // We'll put the code for the highest level of nvgt's multithreading support on the top this time. This allows an nvgt user to write a line of code such as async<string> result(url_get, "https://nvgt.dev"); and after result.try_wait(ms) returns true, user can fetch result with result.value or opImplCast.
 class async_result : public RefCountedObject, public Runnable {
 	void* value;
@@ -200,7 +209,7 @@ public:
 					// Create a copy of the object.
 					void* obj = engine->CreateScriptObject(param_type);
 					if (!obj) {
-						aCtx->SetException(format("Cannot create empty object for default assign of argument %u of async function call", i + 1).c_str());
+						async_arg_failed(aCtx, format("Cannot create empty object for default assign of argument %u of async function call", i + 1));
 						engine->ReturnContext(ctx);
 						engine->ReturnContext(defCtx);
 						return false;
@@ -221,7 +230,7 @@ public:
 				// Not only a negative error: ExecuteString returns the result of the execution, and one ending in an exception (or an abort) gave no value, so the call went ahead with the argument left unset.
 				if (success != asEXECUTION_FINISHED) {
 					std::string why = success == asEXECUTION_EXCEPTION? ": " + std::string(defCtx->GetExceptionString()) : "";
-					aCtx->SetException(format("Angelscript error %d while setting default argument %u in async call to %s%s", success, i + 1, std::string(func->GetDeclaration()), why).c_str());
+					async_arg_failed(aCtx, format("Angelscript error %d while setting default argument %u in async call to %s%s", success, i + 1, std::string(func->GetDeclaration()), why));
 					engine->ReturnContext(ctx);
 					engine->ReturnContext(defCtx);
 					return false;
@@ -280,7 +289,7 @@ public:
 					success = ctx->SetArgObject(i, obj);
 					// An object passed by value is copied by SetArgObject(), which leaves the argument null when the copy fails (the copy constructor of a script class raised an exception): the function ran with a null object.
 					if (success >= 0 && !by_ref && !param_is_handle && !*(void**)ctx->GetAddressOfArg(i)) {
-						aCtx->SetException(format("Cannot copy object for argument %u of async function call", i + 1).c_str());
+						async_arg_failed(aCtx, format("Cannot copy object for argument %u of async function call", i + 1));
 						engine->ReturnContext(ctx);
 						return false;
 					}
@@ -293,7 +302,7 @@ public:
 			} else if (arg_typeid & asTYPEID_MASK_OBJECT) {
 				void* obj = engine->CreateScriptObjectCopy(gen->GetArgAddress(i + 2), arg_type);
 				if (!obj) {
-					aCtx->SetException(format("Cannot copy object for argument %u of async function call", i + 1).c_str());
+					async_arg_failed(aCtx, format("Cannot copy object for argument %u of async function call", i + 1));
 					engine->ReturnContext(ctx);
 					return false;
 				}
@@ -308,7 +317,7 @@ public:
 					else engine->ReleaseScriptObject(obj, arg_type);
 					// By value, the function gets a copy SetArgObject() makes of the copy, null if that fails (see above).
 					if (success >= 0 && !by_ref && !*(void**)ctx->GetAddressOfArg(i)) {
-						aCtx->SetException(format("Cannot copy object for argument %u of async function call", i + 1).c_str());
+						async_arg_failed(aCtx, format("Cannot copy object for argument %u of async function call", i + 1));
 						engine->ReturnContext(ctx);
 						return false;
 					}
