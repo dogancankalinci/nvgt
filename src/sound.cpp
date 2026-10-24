@@ -2330,6 +2330,7 @@ struct held_sound : ma_sound {
 	bool end_silence_taken = false;
 	ma_uint32 cache_cap = 0; // The capacity MiniAudio gave the sound's cache, which held_sound_process() lowers for each call (see bound_read()).
 	ma_uint64 restart_cursor = ~(ma_uint64)0; // The source's cursor when held_sound_process() last played the sound on from its loop's start at its end.
+	ma_uint64 stream_seek = ~(ma_uint64)0; // The frame of the stream's seek held_sound_process() last made, until checked once its job is done.
 	std::atomic<ma_uint64> seek_target{~(ma_uint64)0}; // The frame a seek asked for, ~0 for none, made by held_sound_process() in place of MiniAudio's seekTarget.
 };
 struct held_sound_delete {
@@ -2484,6 +2485,19 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 		return;
 	}
 	held_sound* h = held(s);
+	// A stream seeks on its job thread with MiniAudio's decoder function itself, rather than through the decoder's data source functions, so that it skips a seek NVGT's decoders don't (see held_decoder_seek()): the stream then played on from earlier in its file, its position reading the frame sought, and stopped short of its end. Once the job is done, which leaves the decoder two pages on, as far as the stream has, until this sound reads them, a decoder found elsewhere is sought again, which it then can't skip, and its resampler counted from where it is. Sought again by way of a frame beside the one sought, as MiniAudio makes nothing of a stream's seek to the frame its cursor reads while it isn't seeking. Not where a looping stream's pages wrapped past its end, its decoder then sought to its start.
+	if (stream && h->stream_seek != ~(ma_uint64)0 && reinterpret_cast<std::atomic<ma_bool32>*>(&stream->seekCounter)->load() == 0) {
+		ma_uint64 made = h->stream_seek, filled = (ma_uint64)reinterpret_cast<std::atomic<ma_uint32>*>(&stream->pageFrameCount[0])->load() + reinterpret_cast<std::atomic<ma_uint32>*>(&stream->pageFrameCount[1])->load();
+		h->stream_seek = ~(ma_uint64)0;
+		if (stream->totalLengthInPCMFrames && made + filled <= stream->totalLengthInPCMFrames) {
+			if (stream->decoder.readPointerInPCMFrames == made + filled) count_resampling_from_here(&stream->decoder);
+			else if (ma_data_source_seek_to_pcm_frame(s->pDataSource, made + 1 < stream->totalLengthInPCMFrames? made + 1 : made - 1) == MA_SUCCESS && ma_data_source_seek_to_pcm_frame(s->pDataSource, made) == MA_SUCCESS) {
+				h->stream_seek = made;
+				*frame_count_out = 0;
+				return;
+			}
+		}
+	}
 	// Looping turned on at the source's end, while what the resampler owed was being given or before MiniAudio stopped the sound for it: it plays on from the loop's start, as from a looping source's end, rather than stopping, as play_looped() says it plays. Before a seek made meanwhile, which then is made. Not when the source can't seek there, nor when its pass gave nothing since the last such start, as for a source with no frames, which MiniAudio stops at its end, rather than started over every block.
 	if (ma_sound_at_end(s) && ma_data_source_is_looping(s->pDataSource)) {
 		ma_uint64 loop_begin = 0, loop_end = 0, cursor = ~(ma_uint64)0;
@@ -2491,13 +2505,14 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 		ma_data_source_get_cursor_in_pcm_frames(s->pDataSource, &cursor);
 		if (cursor != h->restart_cursor && ma_data_source_seek_to_pcm_frame(s->pDataSource, loop_begin) == MA_SUCCESS) {
 			h->restart_cursor = loop_begin;
+			if (stream) h->stream_seek = loop_begin;
 			s->processingCacheFramesRemaining = 0;
 			reinterpret_cast<std::atomic<ma_bool32>*>(&s->atEnd)->store(MA_FALSE);
 		}
 	}
 	ma_uint64 target = seek_target.load();
 	if (target != ~(ma_uint64)0 && !ma_sound_at_end(s)) { // ~0 is "no seek", as for MiniAudio.
-		ma_data_source_seek_to_pcm_frame(s->pDataSource, target);
+		if (ma_data_source_seek_to_pcm_frame(s->pDataSource, target) == MA_SUCCESS && stream) h->stream_seek = target;
 		ma_node_set_time(s, target);
 		s->processingCacheFramesRemaining = 0;
 		seek_target.compare_exchange_strong(target, ~(ma_uint64)0); // A seek made meanwhile stays for the next block.
