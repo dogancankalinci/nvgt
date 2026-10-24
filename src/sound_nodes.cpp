@@ -728,6 +728,22 @@ class freeverb_node_impl : public audio_node_impl, public virtual freeverb_node 
 };
 freeverb_node* freeverb_node::create(audio_engine* e) { return new freeverb_node_impl(e); }
 
+// How many reverb3ds use each reverb node, under its own lock, which nothing is taken inside: a node shared by several is taken from its destination only once the last of them lets go of it, as one replacing its reverb cut the others' off before.
+static std::mutex g_reverb_users_mutex;
+static std::unordered_map<audio_node*, int> g_reverb_users;
+static void reverb_used(audio_node* verb) {
+	std::lock_guard<std::mutex> lock(g_reverb_users_mutex);
+	g_reverb_users[verb]++;
+}
+// The reverb3ds still using it.
+static int reverb_let_go(audio_node* verb) {
+	std::lock_guard<std::mutex> lock(g_reverb_users_mutex);
+	auto it = g_reverb_users.find(verb);
+	if (it == g_reverb_users.end()) return 0;
+	int left = --it->second;
+	if (left <= 0) g_reverb_users.erase(it);
+	return left > 0? left : 0;
+}
 class reverb3d_impl : public passthrough_node_impl, public virtual reverb3d {
 	audio_node* reverb;
 	mixer* output_mixer;
@@ -743,6 +759,7 @@ public:
 		if (!attach_output_bus(0, verb, 0)) return;
 		reverb = verb;
 		reverb->duplicate();
+		reverb_used(reverb);
 		send_onward(reverb, output_mixer);
 	}
 	// The reverb into the destination, the engine's output without one. A mixer given as the reverb goes there as a mixer, through its chain, effects and spatializer, and with the link a parent the loop check follows, rather than having its group's output taken from its chain, which skipped them and, once the reverb was replaced, left the mixer silent for good.
@@ -755,7 +772,10 @@ public:
 		if (!dynamic_cast<mixer*>(verb)) verb->detach_output_bus(0);
 	}
 	~reverb3d_impl() {
-		if (reverb) reverb->release();
+		if (reverb) {
+			reverb_let_go(reverb);
+			reverb->release();
+		}
 		if (output_mixer) output_mixer->release();
 	}
 	void set_reverb(audio_node* verb) override {
@@ -782,10 +802,11 @@ public:
 		reverb = verb;
 		if (reverb) {
 			reverb->duplicate();
+			reverb_used(reverb);
 			if (!verb_mixer) send_onward(reverb, output_mixer);
 		}
 		if (old) {
-			stop_onward(old);
+			if (!reverb_let_go(old)) stop_onward(old); // Still sent on for the reverb3ds that use it too.
 			old->release();
 		}
 	}
