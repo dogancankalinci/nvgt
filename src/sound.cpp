@@ -2454,7 +2454,7 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 	if (ma_sound_at_end(s) && h->end_state != held_sound::end_flush::given && done < wanted) done += give_end(node, frames_in, frame_count_in, frames_out[0] + (size_t)done * channels, wanted - done);
 	*frame_count_out = done;
 }
-// MiniAudio's buffer of a sound it decodes asynchronously gives, while its job threads decode it, as many frames as the buffer holds rather than as were decoded, the rest the silence it was filled with before the decode or a page half written, and moves its cursor past them: a sound read ahead of the decode, as by an engine without a device read at once, or by any engine after a seek made just after loading or while the job threads were busy, skipped what wasn't decoded yet. Read through this, a buffer still decoding gives no frame past those decoded, returning MA_BUSY, as MiniAudio's buffer of unknown length does, so that a sound at that point waits for them; once decoded, reads go straight through. A count of decoded frames, which MiniAudio stores without ordering the frames before it, is trusted only once the job that may have been writing it is done, so that the frames are seen with it: up to a page behind the decode.
+// MiniAudio's buffer of a sound it decodes asynchronously gives, while its job threads decode it, as many frames as the buffer holds rather than as were decoded, the rest the silence it was filled with before the decode or a page half written, and moves its cursor past them: a sound read ahead of the decode, as by an engine without a device read at once, or by any engine after a seek made just after loading or while the job threads were busy, skipped what wasn't decoded yet. Read through this, a buffer still decoding gives no frame past those decoded, returning MA_BUSY, as MiniAudio's buffer of unknown length does, so that a sound at that point waits for them; once decoded, reads go straight through. A count of decoded frames, which MiniAudio stores without ordering the frames before it, is trusted only once the job that may have been writing it is done, so that the frames are seen with it: up to a page behind the decode. A stream, which MiniAudio holds to what it decoded, is read through this too, which ends it at the end of the pass being played when it isn't looping (see decode_front_read()).
 struct decode_front_view {
 	ma_data_source_base base;
 	ma_resource_manager_data_source* inner;
@@ -2466,6 +2466,18 @@ struct decode_front_view {
 };
 static ma_result decode_front_read(ma_data_source* source, void* frames_out, ma_uint64 frame_count, ma_uint64* frames_read) {
 	decode_front_view* view = (decode_front_view*)source;
+	// A stream decodes its pages ahead, looping while it loops, so once looping is turned off its pages can hold its next pass already: read to the end of the pass being played, its end then, which MiniAudio wraps its cursor at.
+	if (view->inner->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM) {
+		ma_uint64 cursor = 0, length = 0;
+		if (!ma_data_source_is_looping(source) && ma_data_source_get_length_in_pcm_frames((ma_data_source*)view->inner, &length) == MA_SUCCESS && length && ma_data_source_get_cursor_in_pcm_frames((ma_data_source*)view->inner, &cursor) == MA_SUCCESS) {
+			if (cursor >= length) {
+				if (frames_read) *frames_read = 0;
+				return MA_AT_END;
+			}
+			frame_count = std::min(frame_count, length - cursor);
+		}
+		return ma_data_source_read_pcm_frames((ma_data_source*)view->inner, frames_out, frame_count, frames_read);
+	}
 	ma_resource_manager_data_buffer* buffer = &view->inner->backend.buffer;
 	ma_resource_manager_data_buffer_node* node = buffer->pNode;
 	bool held_back = false;
@@ -2504,10 +2516,9 @@ static ma_result decode_front_get_cursor(ma_data_source* source, ma_uint64* curs
 static ma_result decode_front_get_length(ma_data_source* source, ma_uint64* length) { return ma_data_source_get_length_in_pcm_frames((ma_data_source*)((decode_front_view*)source)->inner, length); }
 static ma_result decode_front_set_looping(ma_data_source* source, ma_bool32 looping) { return ma_data_source_set_looping((ma_data_source*)((decode_front_view*)source)->inner, looping); }
 static ma_data_source_vtable g_decode_front_vtable = {decode_front_read, decode_front_seek, decode_front_get_data_format, decode_front_get_cursor, decode_front_get_length, decode_front_set_looping, 0};
-// The source a sound reads a resource manager's source through: a decode_front_view of it made in view for a buffer, the source itself for a stream, which MiniAudio already holds to what it decoded.
+// The source a sound reads a resource manager's source through: a decode_front_view of it made in view, which for a stream, which MiniAudio already holds to what it decoded, only ends it at its pass's end when not looping.
 static ma_data_source* decode_front(ma_resource_manager_data_source* source, unique_ptr<decode_front_view>& view) {
 	view.reset();
-	if (source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM) return (ma_data_source*)source;
 	view = make_unique<decode_front_view>();
 	ma_data_source_config cfg = ma_data_source_config_init();
 	cfg.vtable = &g_decode_front_vtable;
@@ -3451,7 +3462,7 @@ class sound_impl final : public mixer_impl, public virtual sound {
 	mutable std::atomic_flag load_completed;
 	unique_ptr<pcm_queue> pcm_stream;
 	unique_ptr<float_view> view; // What the sound reads its source through when that isn't in float, freed after the sound.
-	unique_ptr<decode_front_view> front; // What the sound reads a buffer it loaded through, under view, freed after the sound and view.
+	unique_ptr<decode_front_view> front; // What the sound reads a source it loaded through, under view, freed after the sound and view.
 	unique_ptr<chain_view> chain; // What a sound playing a chain of sources reads it through, freed after the sound and view.
 	unsigned long long chain_length_frames() const { // The length of the chain chain reads, 0 when unknown.
 		ma_uint64 length = 0;
