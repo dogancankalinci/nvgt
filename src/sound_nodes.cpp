@@ -743,26 +743,57 @@ class freeverb_node_impl : public audio_node_impl, public virtual freeverb_node 
 };
 freeverb_node* freeverb_node::create(audio_engine* e) { return new freeverb_node_impl(e); }
 
-// How many reverb3ds use each reverb node, under its own lock, which nothing is taken inside: a node shared by several is taken from its destination only once the last of them lets go of it, as one replacing its reverb cut the others' off before.
+// How many reverb3ds use each reverb node, and the lock under which one that isn't a mixer is sent on and taken off: a node shared by several is taken from its destination only once the last of them lets go of it, as one replacing its reverb cut the others' off before. g_reverb_users_mutex is a leaf, nothing taken inside it. A node's send lock is taken on its own or under the topology lock, and only what sending or detaching that node takes, as a chain's lock and the graph lock, is taken inside it, nothing being let go of there: a chain lets go of its nodes under its own lock, which can destroy a reverb3d and take these locks.
+struct reverb_use {
+	int users = 0;
+	std::shared_ptr<std::recursive_mutex> send = std::make_shared<std::recursive_mutex>();
+};
 static std::mutex g_reverb_users_mutex;
-static std::unordered_map<audio_node*, int> g_reverb_users;
-static void reverb_used(audio_node* verb) {
+static std::unordered_map<audio_node*, reverb_use> g_reverb_users;
+// A reverb3d counts itself among a node's users, before it sends the node on, under the lock returned for one that isn't a mixer.
+static std::shared_ptr<std::recursive_mutex> reverb_used(audio_node* verb) {
 	std::lock_guard<std::mutex> lock(g_reverb_users_mutex);
-	g_reverb_users[verb]++;
+	reverb_use& use = g_reverb_users[verb];
+	use.users++;
+	return use.send;
 }
-// A reverb3d lets go of its reverb: the last of them takes a node that isn't a mixer from its destination, in the same step, so that another reverb3d taking the node up meanwhile, which counts itself before it sends the node on, isn't cut off. A mixer keeps its parent, as a mixer of the script's. Detaching takes only the graph lock, which nothing holding it takes this lock under.
+// What a reverb node that isn't a mixer goes into now, with a reference the caller lets go of after the node's send lock: sending the node elsewhere or detaching it lets go of the one it held, whose destructor, as a mixer's letting go of a reverb3d of its own, takes the reverb locks.
+static audio_node* reverb_destination(audio_node* verb) {
+	if (auto chain = dynamic_cast<audio_node_chain_impl*>(verb)) return chain->acquire_endpoint();
+	if (auto impl = dynamic_cast<audio_node_impl*>(verb)) return impl->acquire_output_destination(0);
+	return nullptr;
+}
+// A reverb3d lets go of its reverb. The last of them takes a node that isn't a mixer off its destination under the node's send lock, the count's entry kept until then, so that a reverb3d taking the node up meanwhile counts itself into that entry and sends under the same lock, after, rather than being cut off. A let-go finding the entry gone or made anew has nothing to take off: the one before took the node off, or a new user sends it now. A mixer keeps its parent, as a mixer of the script's.
 static void reverb_let_go(audio_node* verb) {
-	audio_node* destination = nullptr;
+	std::shared_ptr<std::recursive_mutex> send;
 	{
 		std::lock_guard<std::mutex> lock(g_reverb_users_mutex);
 		auto it = g_reverb_users.find(verb);
-		if (it != g_reverb_users.end() && --it->second > 0) return;
-		if (it != g_reverb_users.end()) g_reverb_users.erase(it);
-		if (!dynamic_cast<mixer*>(verb)) {
-			// Held past the lock: the detach can let go of the last reference to it, and its destructor, as a mixer's letting go of a reverb3d of its own, takes this lock again.
-			if (auto chain = dynamic_cast<audio_node_chain_impl*>(verb)) destination = chain->acquire_endpoint();
-			else if (auto impl = dynamic_cast<audio_node_impl*>(verb)) destination = impl->acquire_output_destination(0);
+		if (it == g_reverb_users.end() || --it->second.users > 0) return;
+		if (dynamic_cast<mixer*>(verb)) {
+			g_reverb_users.erase(it);
+			return;
+		}
+		send = it->second.send;
+	}
+	audio_node* destination = nullptr;
+	{
+		std::lock_guard<std::recursive_mutex> send_lock(*send);
+		auto unused = [&]() {
+			auto it = g_reverb_users.find(verb);
+			return it != g_reverb_users.end() && it->second.users == 0 && it->second.send == send? it : g_reverb_users.end();
+		};
+		bool take_off;
+		{
+			std::lock_guard<std::mutex> lock(g_reverb_users_mutex);
+			take_off = unused() != g_reverb_users.end();
+		}
+		if (take_off) {
+			destination = reverb_destination(verb);
 			verb->detach_output_bus(0);
+			std::lock_guard<std::mutex> lock(g_reverb_users_mutex);
+			auto it = unused();
+			if (it != g_reverb_users.end()) g_reverb_users.erase(it);
 		}
 	}
 	if (destination) destination->release();
@@ -782,8 +813,19 @@ public:
 		if (!attach_output_bus(0, verb, 0)) return;
 		reverb = verb;
 		reverb->duplicate();
-		reverb_used(reverb);
-		send_onward(reverb, output_mixer);
+		std::shared_ptr<std::recursive_mutex> send = reverb_used(reverb);
+		if (dynamic_cast<mixer*>(reverb)) send_onward(reverb, output_mixer);
+		else send_counted(reverb, send);
+	}
+	// Sends a reverb that isn't a mixer, counted, on under its send lock (see reverb_let_go()), letting go of what it went into before after that lock (see reverb_destination()).
+	void send_counted(audio_node* verb, const std::shared_ptr<std::recursive_mutex>& send) {
+		audio_node* previous;
+		{
+			std::lock_guard<std::recursive_mutex> send_lock(*send);
+			previous = reverb_destination(verb);
+			send_onward(verb, output_mixer);
+		}
+		if (previous) previous->release();
 	}
 	// The reverb into the destination, the engine's output without one. A mixer given as the reverb goes there as a mixer, through its chain, effects and spatializer, and with the link a parent the loop check follows, rather than having its group's output taken from its chain, which skipped them and, once the reverb was replaced, left the mixer silent for good.
 	bool send_onward(audio_node* verb, mixer* destination) {
@@ -821,8 +863,8 @@ public:
 		reverb = verb;
 		if (reverb) {
 			reverb->duplicate();
-			reverb_used(reverb);
-			if (!verb_mixer) send_onward(reverb, output_mixer);
+			std::shared_ptr<std::recursive_mutex> send = reverb_used(reverb);
+			if (!verb_mixer) send_counted(reverb, send);
 		}
 		if (old) {
 			reverb_let_go(old); // Still sent on for the reverb3ds that use it too.
