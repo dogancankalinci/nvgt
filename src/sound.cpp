@@ -1531,6 +1531,36 @@ public:
 	unsigned int get_sample_rate() const override { return rb? ma_pcm_rb_get_sample_rate(&*rb) : 0; }
 };
 audio_ring_buffer* audio_ring_buffer::create(unsigned int channels, unsigned int size, audio_engine* e) { return new audio_ring_buffer_impl(channels, size, e); }
+// MiniAudio's decoder reads a file of another rate through a resampler, NVGT's WDL one, which gives what it holds at the input's end only on a second call without input, while MiniAudio's read makes one such call, returning no frames and its end if that gives none: a read starting where only those frames were left got none, ending a sound, a chain's link or a pass of a loop, or a script's reading, tens of frames early. In NVGT's decoders such a read is made once more (see hold_decoder()).
+static ma_data_source_vtable g_held_decoder_vtable;
+static ma_result (*g_ma_decoder_read)(ma_data_source*, void*, ma_uint64, ma_uint64*) = nullptr;
+static ma_result held_decoder_read(ma_data_source* source, void* frames_out, ma_uint64 frame_count, ma_uint64* frames_read) {
+	ma_decoder* decoder = (ma_decoder*)source;
+	const ma_uint32 frame_size = ma_get_bytes_per_frame(decoder->outputFormat, decoder->outputChannels);
+	ma_uint64 total = 0;
+	ma_result result = MA_SUCCESS;
+	bool again = false; // The read just made gave nothing at the end, and is being made once more.
+	while (total < frame_count) {
+		ma_uint64 got = 0;
+		result = g_ma_decoder_read(source, frames_out? (ma_uint8*)frames_out + total * frame_size : nullptr, frame_count - total, &got);
+		total += got;
+		if (got) again = false;
+		else if (result == MA_AT_END && !again) again = true;
+		else break;
+	}
+	if (frames_read) *frames_read = total;
+	return total? MA_SUCCESS : result;
+}
+// Gives a decoder made the function above, before anything reads it.
+static void hold_decoder(ma_decoder* decoder) {
+	static std::once_flag made;
+	std::call_once(made, [decoder]() {
+		g_held_decoder_vtable = *decoder->ds.vtable;
+		g_ma_decoder_read = g_held_decoder_vtable.onRead;
+		g_held_decoder_vtable.onRead = held_decoder_read;
+	});
+	decoder->ds.vtable = &g_held_decoder_vtable;
+}
 class audio_decoder_impl : public audio_data_source_impl, public virtual audio_decoder {
 	unique_ptr<ma_decoder> decoder;
 	// The decoder's own length in frames once worked out, -1 before. Some formats count it by reading the whole file, as an MP3 without a header giving it does, from the start and back, which a read of the length while a sound or the graph read the decoder did at the same time, corrupting what was played or hanging the audio thread. So it is worked out only while nothing else reads the decoder, as a reader starts (prepare_length()) or when the script asks before then, and kept.
@@ -1715,7 +1745,10 @@ public:
 		ma_decoder_config cfg = decoder_config_init(sample_rate, channels);
 		std::string triplet = g_sound_service->prepare_triplet(filename, pack? g_pack_protocol_slot : sound_service::fs_protocol_slot, pack, 0, nullptr); // Without a pack, from disk, as sound.load() reads, rather than from the default protocol, which can be a pack.
 		if ((g_soundsystem_last_error = ma_decoder_init_vfs(g_sound_service->get_vfs(), triplet.c_str(), &cfg, &*decoder)) != MA_SUCCESS) decoder.reset();
-		else set_ma_data_source((ma_data_source*)&*decoder);
+		else {
+			hold_decoder(&*decoder);
+			set_ma_data_source((ma_data_source*)&*decoder);
+		}
 		g_sound_service->cleanup_triplet(triplet);
 		return g_soundsystem_last_error == MA_SUCCESS;
 	}
@@ -1755,6 +1788,7 @@ public:
 			ds->release();
 		} else {
 			datastream_ref = ds;
+			hold_decoder(&*decoder);
 			set_ma_data_source((ma_data_source*)&*decoder);
 		}
 		return g_soundsystem_last_error == MA_SUCCESS;
