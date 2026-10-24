@@ -769,14 +769,20 @@ public:
 			return;
 		}
 		std::lock_guard<std::recursive_mutex> topology(g_audio_topology_mutex);
+		mixer* verb_mixer = verb? dynamic_cast<mixer*>(verb) : nullptr;
+		// Not a mixer that sends to this reverb3d, or goes into one that does (see mixer_reaches()): this feeds the mixer, which would feed it back.
+		if (verb_mixer && mixer_reaches(verb_mixer, [this](mixer* m) { return m->get_reverb3d_sent_to() == static_cast<reverb3d*>(this); })) {
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return;
+		}
 		// A mixer goes into the destination first, which refuses a loop, and then this node into the new reverb, which replaces the link to the old one: either refused leaves the old reverb as it was, rather than let go of before the new one was refused.
-		if (verb && dynamic_cast<mixer*>(verb) && !send_onward(verb, output_mixer)) return;
+		if (verb_mixer && !send_onward(verb, output_mixer)) return;
 		if (verb? !attach_output_bus(0, verb, 0) : !detach_output_bus(0)) return;
 		audio_node* old = reverb;
 		reverb = verb;
 		if (reverb) {
 			reverb->duplicate();
-			if (!dynamic_cast<mixer*>(reverb)) send_onward(reverb, output_mixer);
+			if (!verb_mixer) send_onward(reverb, output_mixer);
 		}
 		if (old) {
 			stop_onward(old);
@@ -872,9 +878,18 @@ bool mixer_reaches(mixer* from, const std::function<bool(mixer*)>& is_target) {
 		if (!m || !seen.insert(m).second) continue;
 		if (is_target(m)) return true;
 		pending.push_back(m->get_mixer());
-		if (reverb3d* verb = m->get_reverb3d_sent_to()) pending.push_back(verb->get_mixer());
+		if (reverb3d* verb = m->get_reverb3d_sent_to()) {
+			pending.push_back(verb->get_mixer());
+			if (audio_node* through = verb->get_reverb()) pending.push_back(dynamic_cast<mixer*>(through)); // A mixer used as its reverb, which it feeds.
+		}
 	}
 	return false;
+}
+bool reverb3d_reaches(reverb3d* verb, const std::function<bool(mixer*)>& is_target) {
+	mixer* into = verb->get_mixer();
+	audio_node* through = verb->get_reverb();
+	mixer* through_mixer = through? dynamic_cast<mixer*>(through) : nullptr;
+	return (into && mixer_reaches(into, is_target)) || (through_mixer && mixer_reaches(through_mixer, is_target));
 }
 reverb3d* reverb3d::create(audio_node* reverb, mixer* destination, audio_engine* e) {
 	if (!e) throw std::runtime_error("no audio engine available");
@@ -1190,7 +1205,7 @@ public:
 		// Not a reverb3d whose mixer is this one, or goes into it (see mixer_reaches()). Asked before this spatializer's chain lock is taken: mixer_reaches() takes other spatializers' chain locks, one at a time, so a thread holding this one while another, holding one of those, set a reverb3d sending back here deadlocked with it. The topology lock is held through the change.
 		std::lock_guard<std::recursive_mutex> topology(g_audio_topology_mutex);
 		mixer* owner = get_mixer();
-		if (new_reverb && owner && new_reverb != get_reverb3d() && new_reverb->get_mixer() && mixer_reaches(new_reverb->get_mixer(), [owner](mixer* m) { return m == owner; })) {
+		if (new_reverb && owner && new_reverb != get_reverb3d() && reverb3d_reaches(new_reverb, [owner](mixer* m) { return m == owner; })) {
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return;
 		}

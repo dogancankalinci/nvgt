@@ -417,6 +417,8 @@ bool get_audio_attenuator_enabled(int id);
 bool sound_set_spatialization(int panner, int attenuator, bool disable_previous = false, bool set_default = true);
 // Whether audio from the given mixer reaches a mixer the test is true for, through mixers' parents and the reverb3d each sends to, which goes into its own mixer: a link that would close such a loop is refused, as the loop never reaches the engine, its reverb hears only silence, and the references around it keep it all alive, running on the audio thread for good.
 bool mixer_reaches(mixer* from, const std::function<bool(mixer*)>& is_target);
+// As mixer_reaches(), from where a reverb3d sends: its mixer and a mixer used as its reverb, which it feeds.
+bool reverb3d_reaches(reverb3d* verb, const std::function<bool(mixer*)>& is_target);
 // Held by whatever changes the links mixer_reaches() follows (a mixer's parent, its spatializer and the reverb3d that sends to, a reverb3d's mixer) and by the checks that follow them, and taken before any chain, spatialization or graph lock: each link holds a reference to what it points to, so under this nothing a check reaches can be freed, as it was when another thread let go of a mixer the check had just stepped to.
 extern std::recursive_mutex g_audio_topology_mutex;
 bool reverb_fits(audio_node* verb, audio_node* destination, ma_uint32 channels_in);
