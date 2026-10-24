@@ -138,7 +138,7 @@ static ma_uint64 resampler_get_input_latency(void *pUserData, const ma_resamplin
 static ma_uint64 resampler_get_output_latency(void *pUserData, const ma_resampling_backend *pBackend)
 {
     wdl_resampler_state *state = (wdl_resampler_state *)pBackend;
-    return (ma_uint64)(state->resampler.GetCurrentLatency() * state->rate_in);
+    return (ma_uint64)(state->resampler.GetCurrentLatency() * state->rate_out); // WDL's latency is in seconds.
 }
 // Important: returns how many frames would need to be provided in order to produce the requested amount of output.
 static ma_result resampler_get_required_input_frame_count(void *pUserData, const ma_resampling_backend *pBackend, ma_uint64 outputFrameCount, ma_uint64 *pInputFrameCount)
