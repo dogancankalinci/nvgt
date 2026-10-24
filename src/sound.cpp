@@ -889,17 +889,22 @@ public:
 		garbage_collect_inline_sounds();
 		sound* snd = new_sound();
 		if (!snd) return nullptr;
-		if (!snd->load(path, pack_file)) {
+		try { // A load can throw, as for a pack open for writing: the sound is let go of, rather than left holding its engine, and the default mixer, for good.
+			if (!snd->load(path, pack_file)) {
+				snd->release();
+				return nullptr;
+			}
+			if (mix) snd->set_mixer(mix);
+			if (position.x != FLT_MAX || position.y != FLT_MAX || position.z != FLT_MAX) snd->set_position_3d_vector(position);
+			// As for the position, FLT_MAX leaves the sound's own default, which is right whether or not the engine takes these as percentages and decibels.
+			if (volume != FLT_MAX) snd->set_volume(volume);
+			if (pan != FLT_MAX) snd->set_pan(pan);
+			if (pitch != FLT_MAX) snd->set_pitch(pitch);
+			if (autoplay) snd->play();
+		} catch (...) {
 			snd->release();
-			return nullptr;
+			throw;
 		}
-		if (mix) snd->set_mixer(mix);
-		if (position.x != FLT_MAX || position.y != FLT_MAX || position.z != FLT_MAX) snd->set_position_3d_vector(position);
-		// As for the position, FLT_MAX leaves the sound's own default, which is right whether or not the engine takes these as percentages and decibels.
-		if (volume != FLT_MAX) snd->set_volume(volume);
-		if (pan != FLT_MAX) snd->set_pan(pan);
-		if (pitch != FLT_MAX) snd->set_pitch(pitch);
-		if (autoplay) snd->play();
 		snd->set_autoclose();
 		return snd;
 	}
@@ -4204,7 +4209,13 @@ sound* sound_play(const string& path, const reactphysics3d::Vector3& position, f
 	default_engine_ref engine;
 	if (!engine) return nullptr;
 	mixer* default_mix = mix? nullptr : acquire_default_mixer();
-	sound* s = engine->play(path, position, volume, pan, pitch, mix? mix : default_mix, pack_file, autoplay); // Without a mixer of its own, on sound_default_mixer as other new sounds are, unless that mixer is of another engine.
+	sound* s;
+	try {
+		s = engine->play(path, position, volume, pan, pitch, mix? mix : default_mix, pack_file, autoplay); // Without a mixer of its own, on sound_default_mixer as other new sounds are, unless that mixer is of another engine.
+	} catch (...) { // As when the load throws.
+		if (default_mix) default_mix->release();
+		throw;
+	}
 	if (default_mix) default_mix->release();
 	return s;
 }
