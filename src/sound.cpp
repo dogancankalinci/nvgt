@@ -1547,12 +1547,13 @@ static ma_result held_decoder_read(ma_data_source* source, void* frames_out, ma_
 		ma_uint64 got = 0;
 		result = g_ma_decoder_read(source, frames_out? (ma_uint8*)frames_out + total * frame_size : nullptr, std::min(part, frame_count - total), &got);
 		total += got;
+		if (result != MA_SUCCESS && result != MA_AT_END) break; // Given with the frames got, as MiniAudio's read gives it.
 		if (got) again = false;
 		else if (result == MA_AT_END && !again) again = true;
 		else break;
 	}
 	if (frames_read) *frames_read = total;
-	return total? MA_SUCCESS : result;
+	return result != MA_SUCCESS && result != MA_AT_END? result : total? MA_SUCCESS : result;
 }
 static ma_result held_decoder_seek(ma_data_source* source, ma_uint64 frame) {
 	ma_decoder* decoder = (ma_decoder*)source;
