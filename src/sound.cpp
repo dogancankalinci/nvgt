@@ -1537,8 +1537,9 @@ audio_ring_buffer* audio_ring_buffer::create(unsigned int channels, unsigned int
 // MiniAudio's decoder reads a file of another rate through a resampler, NVGT's WDL one, with faults its data source functions are wrapped for in NVGT's decoders and streams (see hold_decoder()). The resampler gives what it holds at the input's end only on a second call without input, and MiniAudio's read makes one such call, returning no frames and its end if that gives none: a read starting where only those frames were left got none, ending a sound, a chain's link or a pass of a loop, or a script's reading, tens of frames early; such a read is made once more. Raising the channel count while resampling up, MiniAudio's converter resamples in chunks of its stack buffer, asking the resampler for the input each chunk needs, a count WDL's doesn't add up over chunks, and the decoder drops the input the converter didn't take, so that a read of more than a chunk lost frames of the file; reads are made in parts no larger than a chunk. A seek resets the resampler, and with it the counts its flush at the input's end is capped by (see wdl_resampler_set_counts()), so that they counted from the seek's frame and allowed a frame or two more than the decoder's length; the first read after a reset sets them to where the decoder is, on the thread that reads it, a stream's job thread too.
 static ma_data_source_vtable g_held_decoder_vtable;
 static ma_result (*g_ma_decoder_read)(ma_data_source*, void*, ma_uint64, ma_uint64*) = nullptr;
+static ma_result (*g_ma_decoder_seek)(ma_data_source*, ma_uint64) = nullptr;
 static constexpr ma_uint64 converter_chunk_bytes = 4096; // MiniAudio's MA_DATA_CONVERTER_STACK_BUFFER_SIZE, which its header doesn't give.
-// MiniAudio skips a decoder's seek, the converter's reset with it, when the file's cursor is already where the frame maps to, which a resampler reading ahead leaves it at for one frame some tens of frames on, so that the read went on from where it was; a stream, which seeks its decoder with MiniAudio's own function on its job thread, then played on from earlier in its file and stopped short of its end. That cursor is read for nothing else, so the decoder's file is given data source functions whose cursor no frame maps to, and the decoder always seeks; its own cursor is kept for counting the resampling (see file_cursor()). A seek the file refuses, to a frame past what a truncated file holds though within the length its header gives, left the decoder reading on from where it was, which a stream played while its position read the frame sought; the decoder now gives silence from the frame sought to its length until a seek the file makes, as a sound loaded whole plays the part of such a file that isn't there.
+// MiniAudio skips a decoder's seek, the converter's reset with it, when the file's cursor is already where the frame maps to, which a resampler reading ahead leaves it at for one frame some tens of frames on, so that the read went on from where it was; a stream, which seeks its decoder with MiniAudio's own function on its job thread, then played on from earlier in its file and stopped short of its end. That cursor is read for nothing else, so the file of a decoder whose source can seek is given data source functions whose cursor no frame maps to, and the decoder always seeks; its own cursor is kept for counting the resampling (see file_cursor()). Not the file of a source that can't seek, as a URL, which refuses every seek, even to where it is, which MiniAudio's skip made nothing of. A seek the file refuses, to a frame past what a truncated file holds though within the length its header gives, left the decoder reading on from where it was, which a stream played while its position read the frame sought; the decoder now gives silence from the frame sought to its length until a seek the file makes, as a sound loaded whole plays the part of such a file that isn't there.
 struct held_backend {
 	ma_data_source_vtable vtable; // First, as a source's base points to it.
 	const ma_data_source_vtable* original;
@@ -1649,22 +1650,34 @@ static ma_result held_decoder_read(ma_data_source* source, void* frames_out, ma_
 	if (frames_read) *frames_read = total;
 	return result != MA_SUCCESS && result != MA_AT_END? result : total? MA_SUCCESS : result;
 }
+// A seek MiniAudio skipped, as it still does for a decoder whose file isn't held, resets the converter and places the read point itself.
+static ma_result held_decoder_seek(ma_data_source* source, ma_uint64 frame) {
+	ma_decoder* decoder = (ma_decoder*)source;
+	ma_result result = g_ma_decoder_seek(source, frame);
+	if (result == MA_SUCCESS && decoder->readPointerInPCMFrames != frame) {
+		ma_data_converter_reset(&decoder->converter);
+		decoder->readPointerInPCMFrames = frame;
+	}
+	return result;
+}
 // A decoder whose seek a script is told failed reads on from where it was, rather than giving silence for the frame sought, as one a sound's seek, which can't tell, does.
 static void keep_place_after_refused_seek(ma_data_source* source) {
 	if (((ma_data_source_base*)source)->vtable == &g_held_decoder_vtable && ((ma_decoder*)source)->pBackend) note_seek(((ma_decoder*)source)->pBackend, false);
 }
-// Gives a decoder made the functions above, and its file those of hold_backend(), before anything reads or seeks it.
-static void hold_decoder(ma_decoder* decoder) {
+// Gives a decoder made the functions above, and the file of one whose source can seek those of hold_backend(), before anything reads or seeks it.
+static void hold_decoder(ma_decoder* decoder, bool can_seek) {
 	static std::once_flag made;
 	std::call_once(made, [decoder]() {
 		g_held_decoder_vtable = *decoder->ds.vtable;
 		g_ma_decoder_read = g_held_decoder_vtable.onRead;
+		g_ma_decoder_seek = g_held_decoder_vtable.onSeek;
 		g_held_decoder_vtable.onRead = held_decoder_read;
+		g_held_decoder_vtable.onSeek = held_decoder_seek;
 	});
 	decoder->ds.vtable = &g_held_decoder_vtable;
 	if (!decoder->pBackend) return;
-	hold_backend(decoder->pBackend);
 	note_seek(decoder->pBackend, false); // A file of a decoder let go of earlier may have left the address noted.
+	if (can_seek) hold_backend(decoder->pBackend);
 }
 class audio_decoder_impl : public audio_data_source_impl, public virtual audio_decoder {
 	unique_ptr<ma_decoder> decoder;
@@ -1851,7 +1864,7 @@ public:
 		std::string triplet = g_sound_service->prepare_triplet(filename, pack? g_pack_protocol_slot : sound_service::fs_protocol_slot, pack, 0, nullptr); // Without a pack, from disk, as sound.load() reads, rather than from the default protocol, which can be a pack.
 		if ((g_soundsystem_last_error = ma_decoder_init_vfs(g_sound_service->get_vfs(), triplet.c_str(), &cfg, &*decoder)) != MA_SUCCESS) decoder.reset();
 		else {
-			hold_decoder(&*decoder);
+			hold_decoder(&*decoder, true);
 			set_ma_data_source((ma_data_source*)&*decoder);
 		}
 		g_sound_service->cleanup_triplet(triplet);
@@ -1893,7 +1906,7 @@ public:
 			ds->release();
 		} else {
 			datastream_ref = ds;
-			hold_decoder(&*decoder);
+			hold_decoder(&*decoder, seekable);
 			set_ma_data_source((ma_data_source*)&*decoder);
 		}
 		return g_soundsystem_last_error == MA_SUCCESS;
@@ -3864,8 +3877,8 @@ public:
 		if (g_soundsystem_last_error == MA_SUCCESS) {
 			if (made_source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM) {
 				held(&*made)->stream = &made_source->backend.stream;
-				// The stream's job thread fills its pages through its decoder's data source functions, and seeks the decoder, so that NVGT's (see hold_decoder()) make the read at its end that gave nothing once more, count the resampling from where a seek left it and keep the seek from being skipped. Given here, before the sound first reads the stream, which no job touches until then.
-				hold_decoder(&made_source->backend.stream.decoder);
+				// The stream's job thread fills its pages through its decoder's data source functions, and seeks the decoder, so that NVGT's (see hold_decoder()) make the read at its end that gave nothing once more, count the resampling from where a seek left it and, for a source that can seek, keep the seek from being skipped. Given here, before the sound first reads the stream, which no job touches until then.
+				hold_decoder(&made_source->backend.stream.decoder, !(ma_flags & MA_SOUND_FLAG_UNKNOWN_LENGTH)); // A URL's source can't seek.
 			}
 			source = std::move(made_source);
 			view = std::move(made_view);
