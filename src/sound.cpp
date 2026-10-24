@@ -1633,24 +1633,37 @@ static ma_result held_decoder_read(ma_data_source* source, void* frames_out, ma_
 	if (frames_read) *frames_read = total;
 	return result != MA_SUCCESS && result != MA_AT_END? result : total? MA_SUCCESS : result;
 }
-// A seek MiniAudio skipped, as it still does for a decoder whose file can't seek (see held_file), resets the converter and places the read point itself.
+// A decoder's file is sought here rather than by MiniAudio's seek, which resets the converter even when the file refuses the seek, dropping the input the resampler held, so that a script's decoder whose seek failed didn't read on from where it was. A file that can't seek isn't sought to where its cursor already is, as MiniAudio skips such a seek (see held_file), the converter then reset and the read point placed when the decoder isn't there.
 // One a file that can't seek refuses, of a decoder that can't read on, as to its loop's start, to a chain's link's start or to that of a source linked to itself, finishes the decoder: it gives nothing until a seek its file makes, and the seek reports success, so that MiniAudio's loop, which ends once a pass gives nothing twice, ends there, as a chain does, rather than taking the error for no end, playing silence for good, and so that no end is given from a seek, which MiniAudio asserts against once frames were read. A finished decoder not looping, sought again without having given anything, as in a ring of links that all finished, gives the error, which ends MiniAudio's move through them. A script's call is told the error (see script_seek).
 static ma_result held_decoder_seek(ma_data_source* source, ma_uint64 frame) {
 	ma_decoder* decoder = (ma_decoder*)source;
 	held_file* file = file_held(decoder->pBackend);
-	ma_result result = g_ma_decoder_seek(source, frame);
-	if (result == MA_SUCCESS) {
-		if (decoder->readPointerInPCMFrames != frame) {
+	ma_result result;
+	if (!file) { // A file without a seek of its own, which MiniAudio's seek handles.
+		result = g_ma_decoder_seek(source, frame);
+		if (result == MA_SUCCESS && decoder->readPointerInPCMFrames != frame) {
 			ma_data_converter_reset(&decoder->converter);
 			decoder->readPointerInPCMFrames = frame;
 		}
-		if (file) {
-			file->finished.store(false);
-			file->ended.store(false);
-		}
 		return result;
 	}
-	if (!file || file->can_seek || t_script_seek || !at_its_end(decoder, file)) return result;
+	ma_uint32 file_rate = 0;
+	if ((result = ma_data_source_get_data_format(decoder->pBackend, nullptr, nullptr, &file_rate, nullptr, 0)) != MA_SUCCESS) return result;
+	const ma_uint64 file_frame = file_rate == decoder->outputSampleRate? frame : wdl_frames_after_resampling(file_rate, decoder->outputSampleRate, frame);
+	ma_uint64 cursor = 0;
+	const bool there = !file->can_seek && file_cursor(decoder->pBackend, &cursor) && cursor == file_frame;
+	result = there? MA_SUCCESS : ma_data_source_seek_to_pcm_frame(decoder->pBackend, file_frame);
+	if (result == MA_SUCCESS && t_script_seek && file->refused.load() != MA_SUCCESS) return (ma_result)file->refused.exchange(MA_SUCCESS); // Refused by a file that can seek, which a script is told, the decoder reading on from where it was rather than giving silence from the frame (see held_file_seek()).
+	if (result == MA_SUCCESS) {
+		if (!there || decoder->readPointerInPCMFrames != frame) {
+			ma_data_converter_reset(&decoder->converter);
+			decoder->readPointerInPCMFrames = frame;
+		}
+		file->finished.store(false);
+		file->ended.store(false);
+		return result;
+	}
+	if (file->can_seek || t_script_seek || !at_its_end(decoder, file)) return result;
 	if (file->finished.load() && !ma_data_source_is_looping(source)) return result;
 	file->finished.store(true);
 	return MA_SUCCESS;
@@ -1672,18 +1685,10 @@ static ma_result start_again(ma_data_source* source) {
 	}
 	return MA_SUCCESS;
 }
-// A seek a script makes of a source, which it is told failed when a decoder's file refused it, the decoder then reading on from where it was rather than giving silence from the frame sought, as after a sound's seek, which can't tell.
+// A seek a script makes of a source, which it is told failed when a decoder's file refused it, the decoder then reading on from where it was rather than giving silence from the frame sought, as after a sound's seek, which can't tell (see held_decoder_seek()).
 static ma_result seek_or_keep_place(ma_data_source* source, ma_uint64 frame) {
-	ma_decoder* decoder = ((ma_data_source_base*)source)->vtable == &g_held_decoder_vtable? (ma_decoder*)source : nullptr;
-	held_file* file = decoder? file_held(decoder->pBackend) : nullptr;
-	const ma_uint64 at = decoder? decoder->readPointerInPCMFrames : 0;
 	script_seek told;
-	ma_result result = ma_data_source_seek_to_pcm_frame(source, frame);
-	if (result == MA_SUCCESS && file && file->refused.load() != MA_SUCCESS) {
-		result = (ma_result)file->refused.exchange(MA_SUCCESS);
-		decoder->readPointerInPCMFrames = at;
-	}
-	return result;
+	return ma_data_source_seek_to_pcm_frame(source, frame);
 }
 // Gives a decoder made the functions above, and its file its own (see held_file), with the decoder's length when known, before anything reads or seeks it. What it makes is freed by let_go_of_decoder() or uninit_resource_source().
 static void hold_decoder(ma_decoder* decoder, bool can_seek, ma_uint64 length = 0) {

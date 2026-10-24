@@ -35,6 +35,10 @@ void wdl_resampler_set_counts(ma_resampling_backend *backend, ma_uint64 frames_i
     state->frames_in = frames_in;
     state->frames_out = frames_out;
 }
+ma_uint64 wdl_frames_after_resampling(ma_uint32 rate_out, ma_uint32 rate_in, ma_uint64 frame_count_in)
+{
+    return frames_after_resampling(rate_out, rate_in, frame_count_in);
+}
 bool wdl_resampler_take_reset(ma_resampling_backend *backend)
 {
     wdl_resampler_state *state = (wdl_resampler_state *)backend;
