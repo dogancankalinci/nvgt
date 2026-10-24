@@ -56,7 +56,8 @@ static int ma_libopus_of_callback__read(void* pUserData, unsigned char* pBufferO
 
     result = pOpus->onRead(pOpus->pReadSeekTellUserData, (void*)pBufferOut, bytesToRead, &bytesRead);
 
-    if (result != MA_SUCCESS) {
+    /* The end of the data is 0 bytes for opusfile, not an error: a stream that can't seek, whose end opusfile doesn't know, reads to it, and taken as an error it never ended, a sound playing it staying on silence for good. */
+    if (result != MA_SUCCESS && result != MA_AT_END) {
         return -1;
     }
 
