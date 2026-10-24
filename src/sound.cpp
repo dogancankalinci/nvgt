@@ -2434,6 +2434,14 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 	}
 	ma_uint32 wanted = *frame_count_out, done = 0, channels = ma_node_get_output_channels(node, 0);
 	held_sound* h = held(s);
+	// Looping turned on at the source's end, while what the resampler owed was being given or before MiniAudio stopped the sound for it: it plays on from the loop's start, as from a looping source's end, rather than stopping, as play_looped() says it plays.
+	if (ma_sound_at_end(s) && ma_data_source_is_looping(s->pDataSource)) {
+		ma_uint64 loop_begin = 0, loop_end = 0;
+		ma_data_source_get_loop_point_in_pcm_frames(s->pDataSource, &loop_begin, &loop_end);
+		ma_data_source_seek_to_pcm_frame(s->pDataSource, loop_begin);
+		s->processingCacheFramesRemaining = 0;
+		reinterpret_cast<std::atomic<ma_bool32>*>(&s->atEnd)->store(MA_FALSE);
+	}
 	if (!ma_sound_at_end(s)) { // Playing since its last end, if any.
 		h->end_state = held_sound::end_flush::none;
 		h->end_silence_taken = false;
