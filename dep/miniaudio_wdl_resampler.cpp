@@ -64,14 +64,21 @@ static ma_result resampler_process(void *pUserData, ma_resampling_backend *pBack
     if (*pFrameCountIn == 0 && state->should_flush)
     {
         // MiniAudio didn't give us any input but it expects output. This is at least the second time it has done this back to back. In this situation we know that no more input will come, so we flush the resampler's internal buffers and produce the final few frames.
-        prepare = state->resampler.ResamplePrepare(1, state->channels, &dest);
         // No more than MiniAudio counts for the input taken, as it reports a decoder's length from that count: the flush gave a frame more, which a stream, its cursor wrapping at that length, played as one more each pass, so that a stream turned from looping ended further from its pass's end the longer it had looped.
         ma_uint64 owed = frames_after_resampling(state->rate_out, state->rate_in, state->frames_in);
         ma_uint64 left = owed > state->frames_out ? owed - state->frames_out : 0;
         if (*pFrameCountOut > left)
             *pFrameCountOut = left;
-        // When you want to finalize the WDL resampler, you prepare and then report that you provided fewer samples than you prepared for.
-        *pFrameCountOut = *pFrameCountOut ? state->resampler.ResampleOut((float *)pFramesOut, 0, *pFrameCountOut, state->channels) : 0;
+        // When you want to finalize the WDL resampler, you prepare and then report that you provided fewer samples than you prepared for. As many silent frames as one output frame spans are given first, as input past the end, which WDL pads with silence anyway, so that its tail reaches MiniAudio's count where it fell a frame short: for a rate an integer multiple of the output's, MiniAudio counts a last frame that lies at the input's end. Measured against MiniAudio's count for every length from 48000 to 48119 frames at 13 rate pairs: fewer were short for some, none came out longer.
+        if (*pFrameCountOut)
+        {
+            int silent = (int)((state->rate_in + state->rate_out - 1) / state->rate_out);
+            state->resampler.SetFeedMode(true);
+            prepare = state->resampler.ResamplePrepare(silent + 1, state->channels, &dest);
+            if (prepare > silent)
+                memset(dest, 0, sizeof(float) * state->channels * silent);
+            *pFrameCountOut = state->resampler.ResampleOut((float *)pFramesOut, prepare > silent ? silent : 0, *pFrameCountOut, state->channels);
+        }
         state->frames_out += *pFrameCountOut;
         return MA_SUCCESS;
     }
