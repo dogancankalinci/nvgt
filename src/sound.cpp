@@ -1538,7 +1538,7 @@ static ma_result (*g_ma_decoder_read)(ma_data_source*, void*, ma_uint64, ma_uint
 static ma_result (*g_ma_decoder_seek)(ma_data_source*, ma_uint64) = nullptr;
 static constexpr ma_uint64 converter_chunk_bytes = 4096; // MiniAudio's MA_DATA_CONVERTER_STACK_BUFFER_SIZE, which its header doesn't give.
 // MiniAudio skips a decoder's seek, the converter's reset with it, when the file's cursor is already where the frame maps to, which a resampler reading ahead leaves it at for one frame some tens of frames on, so that the read went on from where it was; a stream, which seeks its decoder with MiniAudio's own function on its job thread, then played on from earlier in its file and stopped short of its end. That cursor is read for nothing else, so a decoder's file is given functions of its own, which for a source that can seek give a cursor no frame maps to, and the decoder always seeks; the file's own cursor is kept for counting the resampling (see file_cursor()). Not for a source that can't seek, as a URL, which refuses every seek, even to where it is, which MiniAudio's skip made nothing of.
-// A file whose header gives more frames than it holds, as a truncated FLAC or MP3, refused a seek past what it holds though within that length, after which the decoder read on from where it was while a stream's position read the frame sought. Such a file that can seek now gives silence from the frame of a seek it refused, until it makes one, to the decoder's length, as a sound loaded whole plays the part of such a file that isn't there.
+// A file whose header gives more frames than it holds, as a truncated FLAC or MP3, ended its decoder early, so that a looping stream wrapped its position at that length and its file before it, and refused a seek past what it holds though within that length, after which the decoder read on from where it was while a stream's position read the frame sought. Such a file now gives silence from its end, or from the frame of a seek it refused until it makes one, to the decoder's length, as a sound loaded whole plays the part of such a file that isn't there.
 struct held_file {
 	ma_data_source_vtable vtable; // First, as the file's base points to it, which leads back here.
 	const ma_data_source_vtable* original;
@@ -1597,7 +1597,7 @@ static ma_result held_decoder_read(ma_data_source* source, void* frames_out, ma_
 			else break;
 		}
 	}
-	if (file && file->refused.load() != MA_SUCCESS && total < frame_count) { // From a seek the file refused to the decoder's length.
+	if (file && result == MA_AT_END && total < frame_count) { // The file's end, or a seek it refused, short of the decoder's length; a file that can't seek is given its length only once worked out without consuming it (see get_length_frames()).
 		const ma_uint64 length = file->length.load(), at = decoder->readPointerInPCMFrames;
 		const ma_uint64 count = length > at? std::min(frame_count - total, length - at) : 0;
 		if (frames_out && count) ma_silence_pcm_frames((ma_uint8*)frames_out + total * frame_size, count, decoder->outputFormat, decoder->outputChannels);
