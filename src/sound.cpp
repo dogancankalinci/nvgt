@@ -1555,13 +1555,21 @@ static ma_result held_decoder_read(ma_data_source* source, void* frames_out, ma_
 	if (frames_read) *frames_read = total;
 	return result != MA_SUCCESS && result != MA_AT_END? result : total? MA_SUCCESS : result;
 }
+// Sets the counts of a decoder's WDL resampler to where the decoder is, its file's cursor and its read point, as after a seek, which reset them to count from the seek's frame (see wdl_resampler_set_counts()).
+static void count_resampling_from_here(ma_decoder* decoder) {
+	ma_uint64 file_cursor = 0;
+	if (!decoder->converter.hasResampler || decoder->converter.resampler.pBackendVTable != &wdl_resampler_backend_vtable || ma_data_source_get_cursor_in_pcm_frames(decoder->pBackend, &file_cursor) != MA_SUCCESS) return;
+	wdl_resampler_set_counts(decoder->converter.resampler.pBackend, file_cursor, decoder->readPointerInPCMFrames);
+}
 static ma_result held_decoder_seek(ma_data_source* source, ma_uint64 frame) {
 	ma_decoder* decoder = (ma_decoder*)source;
 	ma_result result = g_ma_decoder_seek(source, frame);
-	if (result == MA_SUCCESS && decoder->readPointerInPCMFrames != frame) { // Skipped.
+	if (result != MA_SUCCESS) return result;
+	if (decoder->readPointerInPCMFrames != frame) { // Skipped.
 		ma_data_converter_reset(&decoder->converter);
 		decoder->readPointerInPCMFrames = frame;
 	}
+	count_resampling_from_here(decoder);
 	return result;
 }
 // Gives a decoder made the functions above, before anything reads it.

@@ -27,6 +27,13 @@ static ma_uint64 frames_after_resampling(ma_uint32 rate_out, ma_uint32 rate_in, 
         frame_count_out += 1;
     return frame_count_out;
 }
+// Counted from a seek's frame rather than from the reset the seek made, the flush at the end gives no more than the decoder's length, rather than no more than its length counted from that frame, a frame or two more.
+void wdl_resampler_set_counts(ma_resampling_backend *backend, ma_uint64 frames_in, ma_uint64 frames_out)
+{
+    wdl_resampler_state *state = (wdl_resampler_state *)backend;
+    state->frames_in = frames_in;
+    state->frames_out = frames_out;
+}
 // Miniaudio allocates heap space for our resampler and expects us to fill it in. So we must report how much we need.
 static ma_result resampler_get_heap_size(void *pUserData, const ma_resampler_config *pConfig, size_t *pHeapSizeInBytes)
 {
