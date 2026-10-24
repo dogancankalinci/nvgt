@@ -1143,8 +1143,8 @@ public:
 	}
 	CScriptArray* read_script(unsigned long long frame_count) override {
 		std::lock_guard<std::recursive_mutex> guard(source_mutex);
+		unsigned int channels = get_channels(); // Asked once, before the read: asking reads the source's format, which sets the error the read or a refusal to read set.
 		if (!frame_count && ready_to_read()) frame_count = get_advised_read_frame_count(); // Counted once what was to be dropped is gone, which an advised count leaves out.
-		unsigned int channels = get_channels();
 		if (channels && frame_count > 0xFFFFFFFF / channels) throw runtime_error("too many frames requested");
 		CScriptArray* array = CScriptArray::Create(get_array_type("array<float>"), frame_count * channels);
 		asIScriptContext* ctx = asGetActiveContext();
@@ -1154,7 +1154,7 @@ public:
 		}
 		if (!frame_count) return array;
 		unsigned long long frames_read = read(array->GetBuffer(), frame_count);
-		array->Resize(frames_read * get_channels());
+		array->Resize(frames_read * channels);
 		return array;
 	}
 	// Skips by reading into a scratch buffer: MiniAudio's seek by a frame count reads too, but once it reaches the source's end it reports no frames skipped, though the source moved there.
