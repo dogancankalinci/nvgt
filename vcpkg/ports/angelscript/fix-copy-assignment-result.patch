@@ -1,0 +1,20 @@
+diff --git a/sdk/angelscript/source/as_scriptengine.cpp b/sdk/angelscript/source/as_scriptengine.cpp
+--- a/sdk/angelscript/source/as_scriptengine.cpp
++++ b/sdk/angelscript/source/as_scriptengine.cpp
+@@ -6129,7 +6129,15 @@
+ 		newObj = CreateScriptObject(type);
+ 		if( newObj == 0 ) return 0;
+ 
+-		AssignScriptObject(newObj, origObj, type);
++		// ALTERED: no object is returned when the assignment failed (the opAssign raised an exception, or the type has no
++		// copy behaviour), as when a copy constructor or copy factory fails. The default-made object was returned as the
++		// copy: script_function.call() and async<T> ran the function with it in place of the object they were given (async
++		// even while it raised the opAssign's exception), and a dictionary or any stored it.
++		if( AssignScriptObject(newObj, origObj, type) < 0 )
++		{
++			ReleaseScriptObject(newObj, type);
++			return 0;
++		}
+ 	}
+ 
+ 	return newObj;
