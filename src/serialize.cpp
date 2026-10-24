@@ -29,6 +29,7 @@
 #include <Poco/Net/NameValueCollection.h>
 #include <scriptarray.h>
 #include <scriptdictionary.h>
+#include <scripthelper.h>
 #include "nvgt.h"
 #include "pocostuff.h"
 #include "serialize.h"
@@ -276,6 +277,11 @@ static bool write_value(Poco::BinaryWriter& w, const void* ref, int type_id) {
 using value_setter = std::function<void(void*, int)>;
 
 static CScriptDictionary* read_dictionary_body(Poco::BinaryReader& r, asIScriptModule* mod);
+// A type looked up in the module by its declaration: the lookup starts in the module's default namespace, which ExecuteString sets for the time of a build on another thread (a default value of script_function.call() or async<T>), and a declaration naming an array type that doesn't exist yet makes it, so it is done under the build lock (see GetScriptBuildMutex).
+static asITypeInfo* type_by_decl(asIScriptModule* mod, const std::string& decl) {
+	std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex());
+	return mod->GetTypeInfoByDecl(decl.c_str());
+}
 static void read_array_body(Poco::BinaryReader& r, asIScriptModule* mod, CScriptArray* arr);
 static void read_value(Poco::BinaryReader& r, asIScriptModule* mod, const value_setter& set) {
 	serialize_depth_guard depth;
@@ -302,7 +308,7 @@ static void read_value(Poco::BinaryReader& r, asIScriptModule* mod, const value_
 			r >> size;
 			std::string bytes;
 			r.readRaw(size, bytes);
-			asITypeInfo* ti = mod ? mod->GetTypeInfoByDecl(decl.c_str()) : nullptr;
+			asITypeInfo* ti = mod ? type_by_decl(mod, decl) : nullptr;
 			if (ti && !(ti->GetFlags() & asOBJ_ENUM) && (ti->GetFlags() & (asOBJ_VALUE | asOBJ_POD)) != (asOBJ_VALUE | asOBJ_POD)) ti = nullptr;
 			if (ti && (asUINT)ti->GetSize() == size) set((void*)bytes.data(), ti->GetTypeId());
 			return;
@@ -322,7 +328,7 @@ static void read_value(Poco::BinaryReader& r, asIScriptModule* mod, const value_
 			r >> elem_decl;
 			bool is_null;
 			r >> is_null;
-			asITypeInfo* arr_ti = mod ? mod->GetTypeInfoByDecl(("array<" + elem_decl + ">").c_str()) : nullptr;
+			asITypeInfo* arr_ti = mod ? type_by_decl(mod, "array<" + elem_decl + ">") : nullptr;
 			if (is_null) {
 				if (arr_ti) { void* n = nullptr; int tid = arr_ti->GetTypeId() | asTYPEID_OBJHANDLE; set(&n, tid); }
 				return;
@@ -387,7 +393,11 @@ static void read_value(Poco::BinaryReader& r, asIScriptModule* mod, const value_
 			r >> class_name;
 			bool is_null;
 			r >> is_null;
-			asITypeInfo* ti = mod ? mod->GetTypeInfoByName(class_name.c_str()) : nullptr;
+			asITypeInfo* ti = nullptr;
+			if (mod) {
+				std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex()); // See type_by_decl().
+				ti = mod->GetTypeInfoByName(class_name.c_str());
+			}
 			if (is_null) {
 				if (ti) { void* n = nullptr; int tid = ti->GetTypeId() | asTYPEID_OBJHANDLE; set(&n, tid); }
 				return;

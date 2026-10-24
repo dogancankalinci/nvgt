@@ -625,12 +625,14 @@ bool CDebugger::InterpretCommand(const string &cmd, asIScriptContext *ctx)
 			}
 			asIScriptModule* mod = ctx && ctx->GetFunction()? ctx->GetFunction()->GetModule() : nullptr;
 			asIScriptContext* execCtx = GetEngine()->RequestContext();
-			GetEngine()->SetMessageCallback(asFUNCTION(DebuggerMessageCallback), nullptr, asCALL_CDECL);
+			// ALTERED: the messages of this thread only, through a sink, see CScriptMessageSink: the engine's message callback was
+			// replaced for the evaluation and then cleared, which also took the application's callback away for good
+			CScriptMessageSink messageSink(DebuggerMessageCallback, nullptr);
 			DebugAction lastDebugAction = m_action;
 			m_action = CONTINUE;
 			int r = ExecuteString(GetEngine(), statement.c_str(), ref, typeId, mod, execCtx);
 			m_action = lastDebugAction;
-			GetEngine()->ClearMessageCallback();
+			messageSink.End();
 			if (r == asEXECUTION_FINISHED)
 			{
 				Output(ToString(ref, typeId, 0, GetEngine()) + "\n");

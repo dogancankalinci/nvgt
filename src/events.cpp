@@ -14,13 +14,21 @@
 #include <unordered_set>
 #include <vector>
 #include <Poco/Format.h>
+#include <scripthelper.h>
 #include "events.h"
 #include "nvgt.h"
 #include "nvgt_angelscript.h"
 
 using namespace std::string_literals;
 
-engine_event_listener::engine_event_listener(asIScriptObject* obj, const engine_event* parent) : obj(std::make_shared<CScriptWeakRef>(obj, obj->GetObjectType()->GetModule()->GetTypeInfoByDecl(Poco::format("weakref<%s::%s>", obj->GetObjectType()->GetNamespace()? std::string(obj->GetObjectType()->GetNamespace()) : "", std::string(obj->GetObjectType()->GetName())).c_str()))), func(nullptr), is_object(true) {
+// The weak reference type of a listener object's class, looked up in its module under the build lock: the lookup starts in the module's default namespace, which ExecuteString sets for the time of a build on another thread, and the first lookup of a class's weakref<T> makes that type (see GetScriptBuildMutex).
+static asITypeInfo* listener_weakref_type(asIScriptModule* mod, asITypeInfo* ot) {
+	if (!mod || !ot) return nullptr;
+	std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex());
+	return mod->GetTypeInfoByDecl(Poco::format("weakref<%s::%s>", ot->GetNamespace()? std::string(ot->GetNamespace()) : "", std::string(ot->GetName())).c_str());
+}
+
+engine_event_listener::engine_event_listener(asIScriptObject* obj, const engine_event* parent) : obj(std::make_shared<CScriptWeakRef>(obj, listener_weakref_type(obj->GetObjectType()->GetModule(), obj->GetObjectType()))), func(nullptr), is_object(true) {
 	asITypeInfo* ot = obj->GetObjectType();
 	if (ot) func = ot->GetMethodByDecl(("void "s + parent->callback_declaration()).c_str());
 	if (!func && ot) func = ot->GetMethodByDecl(("bool "s + parent->callback_declaration()).c_str());
@@ -32,7 +40,7 @@ engine_event_listener::engine_event_listener(asIScriptFunction* func) : obj(null
 	if (func->GetFuncType() == asFUNC_DELEGATE) {
 		asITypeInfo* ot = func->GetDelegateObjectType();
 		asIScriptModule* mod = ot? ot->GetModule() : nullptr;
-		if (mod) weak_type = mod->GetTypeInfoByDecl(Poco::format("weakref<%s::%s>", ot->GetNamespace()? std::string(ot->GetNamespace()) : "", std::string(ot->GetName())).c_str());
+		if (mod) weak_type = listener_weakref_type(mod, ot);
 	}
 	if (!weak_type) {
 		// A function, or a delegate of a registered class's method: such a class belongs to no module to find its weak reference type in (GetModule() is null, and calling through it crashed), so the listener holds the delegate itself, and with it the object, until it is removed.

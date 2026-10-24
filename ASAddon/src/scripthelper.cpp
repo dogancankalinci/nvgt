@@ -133,6 +133,36 @@ int CompareEquality(asIScriptEngine *engine, void *lobj, void *robj, int typeId,
 	return retval;
 }
 
+static thread_local CScriptMessageSink *g_scriptMessageSink = 0;
+CScriptMessageSink::CScriptMessageSink(SCRIPT_MESSAGE_SINK_FUNC func, void *param) : m_func(func), m_param(param), m_outer(g_scriptMessageSink), m_active(true)
+{
+	g_scriptMessageSink = this;
+}
+CScriptMessageSink::~CScriptMessageSink()
+{
+	End();
+}
+void CScriptMessageSink::End()
+{
+	if( !m_active ) return;
+	m_active = false;
+	// Sinks end in the reverse order they were made in, on the thread that made them
+	if( g_scriptMessageSink == this )
+		g_scriptMessageSink = m_outer;
+}
+bool DeliverToScriptMessageSink(const asSMessageInfo *msg)
+{
+	CScriptMessageSink *sink = g_scriptMessageSink;
+	if( !sink ) return false;
+	if( sink->m_func ) sink->m_func(msg, sink->m_param);
+	return true;
+}
+std::recursive_mutex &GetScriptBuildMutex()
+{
+	static std::recursive_mutex mutex;
+	return mutex;
+}
+
 int ExecuteString(asIScriptEngine *engine, const char *code, asIScriptModule *mod, asIScriptContext *ctx)
 {
 	return ExecuteString(engine, code, 0, asTYPEID_VOID, mod, ctx);
@@ -147,6 +177,9 @@ int ExecuteString(asIScriptEngine *engine, const char *code, void *ref, int refT
 
 	// Determine the return type based on the type of the ref arg
 	funcCode = engine->GetTypeDeclaration(refTypeId, true) + funcCode;
+
+	// ALTERED: built under the application's build lock, see GetScriptBuildMutex
+	std::unique_lock<std::recursive_mutex> buildLock(GetScriptBuildMutex());
 
 	// GetModule will free unused types, so to be on the safe side we'll hold on to a reference to the type
 	asITypeInfo *type = 0;
@@ -177,12 +210,32 @@ int ExecuteString(asIScriptEngine *engine, const char *code, void *ref, int refT
 	int r = execMod->CompileFunction("ExecuteString", funcCode.c_str(), -1, 0, &func);
 	if( nameSpace )
 		execMod->SetDefaultNamespace(oldNameSpace.c_str());
+	buildLock.unlock();
 	if( r < 0 )
 		return r;
 
 	// If no context was provided, request a new one from the engine
 	asIScriptContext *execCtx = ctx ? ctx : engine->RequestContext();
+	// ALTERED: a context the caller gave that ExecuteString prepared before (the one script_function.call() evaluates all its
+	// default values in) lets go of the function built then, see EXECUTESTRING_CONTEXT_USER_DATA. Prepare would let go of it
+	// itself, freeing its id outside the build lock while a build on another thread takes ids from the same list.
+	if( ctx )
+	{
+		asIScriptFunction *previous = reinterpret_cast<asIScriptFunction*>(ctx->SetUserData(0, EXECUTESTRING_CONTEXT_USER_DATA));
+		if( previous )
+		{
+			ctx->Unprepare();
+			buildLock.lock();
+			previous->Release();
+			buildLock.unlock();
+		}
+	}
 	r = execCtx->Prepare(func);
+	if( r >= 0 && ctx )
+	{
+		func->AddRef();
+		ctx->SetUserData(func, EXECUTESTRING_CONTEXT_USER_DATA);
+	}
 	if (r >= 0)
 	{
 		// Execute the function
@@ -224,7 +277,13 @@ int ExecuteString(asIScriptEngine *engine, const char *code, void *ref, int refT
 	}
 
 	// Clean up
+	// ALTERED: the function is released under the build lock, as letting go of it frees its id in the engine, which a build takes
+	// ids from. A context of our own is unprepared first, outside the lock, as what the execution left can have destructors that
+	// are script code; a context the caller gave holds the function until it is taken off (see EXECUTESTRING_CONTEXT_USER_DATA).
+	if( !ctx ) execCtx->Unprepare();
+	buildLock.lock();
 	func->Release();
+	buildLock.unlock();
 	if( !ctx ) engine->ReturnContext(execCtx);
 
 	return r;

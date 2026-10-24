@@ -273,26 +273,40 @@ string g_scriptMessagesErr;
 string g_scriptMessagesLine0;
 string g_scriptMessagesInfo;
 int g_scriptMessagesErrNum;
+// The engine writes messages on whichever thread builds or runs script, so the buffers above are written under this lock (and are taken under it to be shown).
+static Mutex g_scriptMessagesMutex;
 void ShowAngelscriptMessages() {
-	if (g_scriptMessagesErr == "" && g_scriptMessagesWarn == "" && g_scriptMessagesLine0 == "")
-		return;
+	string messagesErr, messagesWarn, messagesLine0;
+	int messagesErrNum;
+	{
+		ScopedLock<Mutex> lock(g_scriptMessagesMutex);
+		if (g_scriptMessagesErr == "" && g_scriptMessagesWarn == "" && g_scriptMessagesLine0 == "")
+			return;
+		messagesErr = g_scriptMessagesErr;
+		messagesWarn = g_scriptMessagesWarn;
+		messagesLine0 = g_scriptMessagesLine0;
+		messagesErrNum = g_scriptMessagesErrNum;
+		g_scriptMessagesErr = g_scriptMessagesWarn = g_scriptMessagesLine0 = ""; // Clear out the message buffers such that only new messages will be displayed upon a second call to this function.
+	}
 	#ifdef _WIN32
 	if (Util::Application::instance().config().hasOption("application.gui")) {
-		if (g_scriptMessagesErrNum)
-			info_box("Compilation error", "", (g_ScriptEngine->GetEngineProperty(asEP_COMPILER_WARNINGS) == 2 ? g_scriptMessagesWarn : "") + (g_scriptMessagesErr != "" ? g_scriptMessagesErr : g_scriptMessagesLine0));
+		if (messagesErrNum)
+			info_box("Compilation error", "", (g_ScriptEngine->GetEngineProperty(asEP_COMPILER_WARNINGS) == 2 ? messagesWarn : "") + (messagesErr != "" ? messagesErr : messagesLine0));
 		else
-			info_box("Compilation warnings", "", g_scriptMessagesWarn);
+			info_box("Compilation warnings", "", messagesWarn);
 	} else {
 	#endif
-		if (g_scriptMessagesErrNum) message((g_ScriptEngine->GetEngineProperty(asEP_COMPILER_WARNINGS) == 2 ? g_scriptMessagesWarn : "") + (g_scriptMessagesErr != "" ? g_scriptMessagesErr : g_scriptMessagesLine0), "Compilation error");
-		else message(g_scriptMessagesWarn, "Compilation warnings");
+		if (messagesErrNum) message((g_ScriptEngine->GetEngineProperty(asEP_COMPILER_WARNINGS) == 2 ? messagesWarn : "") + (messagesErr != "" ? messagesErr : messagesLine0), "Compilation error");
+		else message(messagesWarn, "Compilation warnings");
 		#ifdef _WIN32
 	} // endif gui
 		#endif
-	g_scriptMessagesErr = g_scriptMessagesWarn = g_scriptMessagesLine0 = ""; // Clear out the message buffers such that only new messages will be displayed upon a second call to this function.
 }
 
 void MessageCallback(const asSMessageInfo *msg, void* param) {
+	// A message of a build that gathers its own (script_function.call(), script_module's builds, the debugger) goes to it, if the build is this thread's: see CScriptMessageSink.
+	if (DeliverToScriptMessageSink(msg)) return;
+	ScopedLock<Mutex> lock(g_scriptMessagesMutex);
 	string type = "ERROR";
 	if (msg->type == asMSGTYPE_WARNING)
 		type = "WARNING";
@@ -1250,10 +1264,16 @@ asIScriptContext* RequestContextCallback(asIScriptEngine *engine, void* /*param*
 	return ctx;
 }
 void ReturnContextCallback(asIScriptEngine *engine, asIScriptContext *ctx, void* /*param*/) {
+	// A context ExecuteString prepared with a function it built (a default value of script_function.call() or async<T>) holds that function, which is released once the context is unprepared, under the build lock: see EXECUTESTRING_CONTEXT_USER_DATA.
+	asIScriptFunction* execute_string_func = static_cast<asIScriptFunction*>(ctx->SetUserData(nullptr, EXECUTESTRING_CONTEXT_USER_DATA));
 	// A context given back suspended can't be unprepared, and pooled like that, every later request got a context Prepare() refused; aborting it lets it be. One still running, as when exit() makes the manager give back the context calling it, can't be either way, and is pooled to be prepared again once it has stopped.
 	if (ctx->Unprepare() < 0 && ctx->GetState() == asEXECUTION_SUSPENDED) {
 		ctx->Abort();
 		ctx->Unprepare();
+	}
+	if (execute_string_func) {
+		std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex());
+		execute_string_func->Release();
 	}
 	ctx->SetUserData(nullptr, 1002); // The context manager's pointer (CONTEXT_MGR in contextmgr.cpp), which it sets each time it takes a context: kept, sleep() or yield() in a later user of the context, such as a destructor run after the manager is deleted, reached the deleted manager.
 	if (g_exit_count) ctx->SetUserData(nullptr, EXIT_COUNT_USER_DATA);
@@ -1265,14 +1285,26 @@ void ExceptionHandlerCallback(asIScriptContext *ctx, void* obj) {
 	g_last_exception_callstack = get_call_stack_ctx(ctx);
 }
 
+// Registered functions on every script thread ask for array types, and the first asking for a declaration makes its type (an
+// array type is made when it is first named): looked up and filled with no lock, the cache was read on one thread while another
+// thread's insertion rehashed it, two insertions corrupted it, and two threads made template instances in the engine at once.
+// The cache is used under a lock of its own, and a type missing from it is looked up under the build lock, which keeps the
+// making of types to one thread at a time with every other build NVGT makes (see GetScriptBuildMutex); a type found in the
+// cache doesn't wait for another thread's build.
+static Mutex g_TypeInfoCacheMutex;
 asITypeInfo* get_array_type(const std::string &decl) {
-	if (!g_TypeInfoCache.contains(decl)) {
-		asITypeInfo *t = g_ScriptEngine->GetTypeInfoByDecl(decl.c_str());
-		if (!t)
-			return nullptr;
-		g_TypeInfoCache[decl] = t;
+	{
+		ScopedLock<Mutex> lock(g_TypeInfoCacheMutex);
+		auto it = g_TypeInfoCache.find(decl);
+		if (it != g_TypeInfoCache.end()) return it->second;
 	}
-	return g_TypeInfoCache[decl];
+	std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex());
+	asITypeInfo *t = g_ScriptEngine->GetTypeInfoByDecl(decl.c_str());
+	if (!t)
+		return nullptr;
+	ScopedLock<Mutex> lock(g_TypeInfoCacheMutex);
+	g_TypeInfoCache[decl] = t;
+	return t;
 }
 // As of Angelscript 2.38.0, we need a custom dictionary method to retrieve strings because our string class has constructors for int and double, causing dictionary::get(string, ?&out) to throw a multiple defined signature error.
 bool script_dictionary_get_string(CScriptDictionary* dict, const std::string& key, std::string* value) {

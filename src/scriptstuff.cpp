@@ -464,7 +464,8 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 	std::string failure_reason = "";
 	std::string callstack1 = "";
 	std::string callstack2 = "";
-	g_ScriptEngine->SetMessageCallback(asFUNCTION(script_message_callback), errors, asCALL_CDECL);
+	// The engine's messages for this thread (a default value that doesn't compile) go to errors until the call ends, see CScriptMessageSink: the engine's message callback was replaced with one for errors and then cleared, which also gave the messages of other threads' builds to errors (two threads added to it at once) and took NVGT's own callback away.
+	CScriptMessageSink message_sink(script_message_callback, errors);
 	script_function_call_data call_data {max_statement_count, 0, false, nullptr, false, g_script_function_call};
 	// Every statement run on this thread from here until the results are gathered is the call's, whatever context runs it: the copy constructor or opAssign copying an argument or the result (run on a context of their own, as the call's is already prepared), a default value, a callback run on a context of its own, a script random generator. Only the call's own context and its defaults counted, so a copy that never ended hung the script whatever the limit.
 	script_function_call_scope scope(call_data);
@@ -700,7 +701,7 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 	if (new_context) g_ScriptEngine->ReturnContext(ctx);
 	else pop_nested_state(ctx);
 	release_made_arguments(made_objects, made_handles);
-	g_ScriptEngine->ClearMessageCallback();
+	message_sink.End();
 	if (errors)
 		errors->Release();
 	return args;
@@ -732,7 +733,7 @@ failure:
 		args->Release();
 		args = NULL;
 	}
-	g_ScriptEngine->ClearMessageCallback();
+	message_sink.End();
 	if (errors)
 		errors->Release();
 	return NULL;
@@ -870,9 +871,13 @@ public:
 	int build(CScriptArray* errors) {
 		if (!get_mod())
 			return asNO_MODULE;
-		g_ScriptEngine->SetMessageCallback(asFUNCTION(script_message_callback), errors, asCALL_CDECL);
-		int result = get_mod()->Build();
-		g_ScriptEngine->ClearMessageCallback();
+		// This thread's messages go to errors (see CScriptMessageSink), and the build waits for another thread's (see GetScriptBuildMutex).
+		int result;
+		{
+			CScriptMessageSink message_sink(script_message_callback, errors);
+			std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex());
+			result = get_mod()->Build();
+		}
 		if (errors)
 			errors->Release();
 		return result;
@@ -889,10 +894,13 @@ public:
 				errors->Release();
 			return asNO_MODULE;
 		}
-		g_ScriptEngine->SetMessageCallback(asFUNCTION(script_message_callback), errors, asCALL_CDECL);
-		script_module_bytecode_stream b(code);
-		int ret = get_mod()->LoadByteCode(&b, release);
-		g_ScriptEngine->ClearMessageCallback();
+		int ret;
+		{
+			CScriptMessageSink message_sink(script_message_callback, errors); // See build().
+			std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex());
+			script_module_bytecode_stream b(code);
+			ret = get_mod()->LoadByteCode(&b, release);
+		}
 		if (errors)
 			errors->Release();
 		return ret;
@@ -903,19 +911,19 @@ public:
 				errors->Release();
 			return asNO_MODULE;
 		}
-		g_ScriptEngine->SetMessageCallback(asFUNCTION(script_message_callback), errors, asCALL_CDECL);
+		CScriptMessageSink message_sink(script_message_callback, errors); // See build(). No build lock: the globals' initialisation is script code.
 		asIScriptContext* ctx = g_ScriptEngine->RequestContext();
 		if (!ctx) {
 			std::string err = "ERROR: failed to acquire context";
 			if (errors)
 				errors->InsertLast(&err);
-			g_ScriptEngine->ClearMessageCallback();
+			message_sink.End();
 			if (errors)
 				errors->Release();
 			return asERROR;
 		}
 		int result = get_mod()->ResetGlobalVars(ctx);
-		g_ScriptEngine->ClearMessageCallback();
+		message_sink.End();
 		if (ctx) {
 			ctx->Unprepare();
 			g_ScriptEngine->ReturnContext(ctx);
@@ -941,10 +949,13 @@ public:
 			if (errors) errors->Release();
 			return NULL;
 		}
-		g_ScriptEngine->SetMessageCallback(asFUNCTION(script_message_callback), errors, asCALL_CDECL);
 		asIScriptFunction* out_ptr;
-		int result = get_mod()->CompileFunction(section_name.c_str(), code.c_str(), line_offset, (add_to_module ? asCOMP_ADD_TO_MODULE : 0), &out_ptr);
-		g_ScriptEngine->ClearMessageCallback();
+		int result;
+		{
+			CScriptMessageSink message_sink(script_message_callback, errors); // See build().
+			std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex());
+			result = get_mod()->CompileFunction(section_name.c_str(), code.c_str(), line_offset, (add_to_module ? asCOMP_ADD_TO_MODULE : 0), &out_ptr);
+		}
 		if (result < 0) {
 			if (errors) errors->Release();
 			return NULL;
@@ -957,9 +968,12 @@ public:
 			if (errors) errors->Release();
 			return asNO_MODULE;
 		}
-		g_ScriptEngine->SetMessageCallback(asFUNCTION(script_message_callback), errors, asCALL_CDECL);
-		int result = get_mod()->CompileGlobalVar(section_name.c_str(), code.c_str(), line_offset);
-		g_ScriptEngine->ClearMessageCallback();
+		int result;
+		{
+			CScriptMessageSink message_sink(script_message_callback, errors); // See build().
+			std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex());
+			result = get_mod()->CompileGlobalVar(section_name.c_str(), code.c_str(), line_offset);
+		}
 		if (errors) errors->Release();
 		return result;
 	}
@@ -990,12 +1004,15 @@ public:
 		if (!get_mod()) return NULL;
 		return get_mod()->GetFunctionByIndex(index);
 	}
+	// A lookup by name or declaration starts in the module's default namespace, which ExecuteString sets for the time of a build (a default value of script_function.call() or async<T> evaluated on another thread), so it takes the build lock (see GetScriptBuildMutex); a declaration can also make a type.
 	asIScriptFunction* get_function_by_name(const std::string& name) {
 		if (!get_mod()) return NULL;
+		std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex());
 		return get_mod()->GetFunctionByName(name.c_str());
 	}
 	asIScriptFunction* get_function_by_decl(const std::string& name) {
 		if (!get_mod()) return NULL;
+		std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex());
 		return get_mod()->GetFunctionByDecl(name.c_str());
 	}
 	const std::string get_imported_function_decl(asDWORD index) {
@@ -1038,11 +1055,13 @@ public:
 	int get_global_index_by_decl(const std::string& decl) {
 		if (!get_mod())
 			return asNO_MODULE;
+		std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex()); // See get_function_by_name().
 		return get_mod()->GetGlobalVarIndexByDecl(decl.c_str());
 	}
 	int get_global_index_by_name(const std::string& decl) {
 		if (!get_mod())
 			return asNO_MODULE;
+		std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex()); // See get_function_by_name().
 		return get_mod()->GetGlobalVarIndexByName(decl.c_str());
 	}
 	const std::string get_global_name(asDWORD index) {
