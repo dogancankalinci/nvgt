@@ -4295,6 +4295,8 @@ public:
 	bool restart_if_ending() {
 		if (!snd || !ma_sound_at_end(&*snd) || !ma_sound_is_playing(&*snd)) return false;
 		held_sound* h = held(&*snd);
+		ma_uint64 none = ~(ma_uint64)0;
+		h->seek_target.compare_exchange_strong(none, 0); // Its position reads its start at once, as after ma_sound_start(); made once the audio thread clears its end.
 		h->restart.store(true);
 		if (ma_sound_is_playing(&*snd)) return true;
 		return !h->restart.exchange(false); // Stopped meanwhile: unless the block that stopped it took the ask, started by MiniAudio.
