@@ -1546,6 +1546,13 @@ struct held_file {
 	std::atomic<ma_uint64> length{0}; // The decoder's, once known without reading it whole; 0 before.
 	std::atomic<int> refused{MA_SUCCESS}; // The error of the last seek a file that can seek refused, until it makes one.
 	std::atomic<bool> ended{false}; // The decoder's last read gave nothing at its end.
+	std::atomic<bool> finished{false}; // The decoder can't read on, nor its file seek back (see held_decoder_seek()), until a seek its file makes.
+};
+static thread_local bool t_script_seek = false; // A script's call is seeking, which is told when a file can't seek back rather than finishing its decoder (see held_decoder_seek()).
+struct script_seek {
+	bool was = t_script_seek;
+	script_seek() { t_script_seek = true; }
+	~script_seek() { t_script_seek = was; }
 };
 static ma_result held_file_seek(ma_data_source* backend, ma_uint64 frame);
 static ma_result cursor_no_frame_maps_to(ma_data_source* source, ma_uint64* cursor) {
@@ -1580,6 +1587,11 @@ static void count_resampling_from_here(ma_decoder* decoder) {
 static ma_result held_decoder_read(ma_data_source* source, void* frames_out, ma_uint64 frame_count, ma_uint64* frames_read) {
 	ma_decoder* decoder = (ma_decoder*)source;
 	held_file* file = file_held(decoder->pBackend);
+	if (file && file->finished.load()) {
+		file->ended.store(true);
+		if (frames_read) *frames_read = 0;
+		return MA_AT_END;
+	}
 	const ma_uint32 frame_size = ma_get_bytes_per_frame(decoder->outputFormat, decoder->outputChannels);
 	ma_uint64 total = 0;
 	ma_result result = MA_AT_END;
@@ -1609,23 +1621,33 @@ static ma_result held_decoder_read(ma_data_source* source, void* frames_out, ma_
 	if (frames_read) *frames_read = total;
 	return result != MA_SUCCESS && result != MA_AT_END? result : total? MA_SUCCESS : result;
 }
-// A seek MiniAudio skipped, as it still does for a decoder whose file can't seek (see held_file), resets the converter and places the read point itself. One a looping decoder's file can't make, read to its end, gives the end.
+// A seek MiniAudio skipped, as it still does for a decoder whose file can't seek (see held_file), resets the converter and places the read point itself.
+// One a file that can't seek refuses, of a looping decoder read to its end, as to its loop's start, finishes the decoder: it gives nothing until a seek its file makes, and the seek reports success, so that MiniAudio's loop, which ends once a pass gives nothing twice, ends there, rather than taking the error for no end, playing silence for good, and so that no end is given from a seek, which MiniAudio asserts against once frames were read. A script's call is told the error (see script_seek).
 static ma_result held_decoder_seek(ma_data_source* source, ma_uint64 frame) {
 	ma_decoder* decoder = (ma_decoder*)source;
-	ma_result result = g_ma_decoder_seek(source, frame);
-	if (result == MA_SUCCESS && decoder->readPointerInPCMFrames != frame) {
-		ma_data_converter_reset(&decoder->converter);
-		decoder->readPointerInPCMFrames = frame;
-	}
 	held_file* file = file_held(decoder->pBackend);
-	if (result != MA_SUCCESS && file && !file->can_seek && file->ended.load() && ma_data_source_is_looping(source)) return MA_AT_END;
-	return result;
+	ma_result result = g_ma_decoder_seek(source, frame);
+	if (result == MA_SUCCESS) {
+		if (decoder->readPointerInPCMFrames != frame) {
+			ma_data_converter_reset(&decoder->converter);
+			decoder->readPointerInPCMFrames = frame;
+		}
+		if (file) {
+			file->finished.store(false);
+			file->ended.store(false);
+		}
+		return result;
+	}
+	if (!file || file->can_seek || t_script_seek || !file->ended.load() || !ma_data_source_is_looping(source)) return result;
+	file->finished.store(true);
+	return MA_SUCCESS;
 }
 // A seek a script makes of a source, which it is told failed when a decoder's file refused it, the decoder then reading on from where it was rather than giving silence from the frame sought, as after a sound's seek, which can't tell.
 static ma_result seek_or_keep_place(ma_data_source* source, ma_uint64 frame) {
 	ma_decoder* decoder = ((ma_data_source_base*)source)->vtable == &g_held_decoder_vtable? (ma_decoder*)source : nullptr;
 	held_file* file = decoder? file_held(decoder->pBackend) : nullptr;
 	const ma_uint64 at = decoder? decoder->readPointerInPCMFrames : 0;
+	script_seek told;
 	ma_result result = ma_data_source_seek_to_pcm_frame(source, frame);
 	if (result == MA_SUCCESS && file && file->refused.load() != MA_SUCCESS) {
 		result = (ma_result)file->refused.exchange(MA_SUCCESS);
@@ -2583,6 +2605,7 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 		ma_data_source_get_cursor_in_pcm_frames(s->pDataSource, &cursor);
 		if (cursor != h->restart_cursor && ma_data_source_seek_to_pcm_frame(s->pDataSource, loop_begin) == MA_SUCCESS) {
 			h->restart_cursor = loop_begin;
+			ma_data_source_get_cursor_in_pcm_frames(s->pDataSource, &h->restart_cursor); // Where the seek left it, as a decoder that finished stays at its end (see held_decoder_seek()), started over every block otherwise.
 			s->processingCacheFramesRemaining = 0;
 			reinterpret_cast<std::atomic<ma_bool32>*>(&s->atEnd)->store(MA_FALSE);
 		}
@@ -3174,6 +3197,7 @@ public:
 		if (reset_loop_state)
 			ma_sound_set_looping(&*snd, MA_FALSE);
 		clear_stop_for_restart();
+		script_seek told; // MiniAudio seeks a sound at its end to its start here.
 		return (g_soundsystem_last_error = ma_sound_start(&*snd)) == MA_SUCCESS;
 	}
 	bool play_looped() override {
@@ -3181,6 +3205,7 @@ public:
 			return false;
 		ma_sound_set_looping(&*snd, true);
 		clear_stop_for_restart();
+		script_seek told; // As in play().
 		return (g_soundsystem_last_error = ma_sound_start(&*snd)) == MA_SUCCESS;
 	}
 	ma_sound *get_ma_sound() const override { return &*snd; }
