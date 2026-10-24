@@ -958,7 +958,7 @@ static ma_data_source* next_of_self_linked(ma_data_source* source) {
 }
 // The source after source in its chain: itself for one linked to itself.
 static ma_data_source* next_in_chain(ma_data_source* source) { return ma_data_source_get_next_callback(source) == next_of_self_linked? source : ma_data_source_get_next(source); }
-static void keep_place_after_refused_seek(ma_data_source* source); // See hold_decoder().
+static ma_result seek_or_keep_place(ma_data_source* source, ma_uint64 frame); // See held_file.
 class audio_data_source_impl : public audio_node_impl, public virtual audio_data_source {
 	unique_ptr<ma_data_source_node> src;
 	audio_data_source* src_cur;
@@ -1232,9 +1232,7 @@ public:
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
-		g_soundsystem_last_error = ma_data_source_seek_to_pcm_frame(src->pDataSource, frame_index);
-		if (g_soundsystem_last_error != MA_SUCCESS) keep_place_after_refused_seek(src->pDataSource);
-		return g_soundsystem_last_error == MA_SUCCESS;
+		return (g_soundsystem_last_error = seek_or_keep_place(src->pDataSource, frame_index)) == MA_SUCCESS;
 	}
 	bool seek_milliseconds(float ms) override {
 		if (!src || in_use()) return false;
@@ -1539,88 +1537,38 @@ static ma_data_source_vtable g_held_decoder_vtable;
 static ma_result (*g_ma_decoder_read)(ma_data_source*, void*, ma_uint64, ma_uint64*) = nullptr;
 static ma_result (*g_ma_decoder_seek)(ma_data_source*, ma_uint64) = nullptr;
 static constexpr ma_uint64 converter_chunk_bytes = 4096; // MiniAudio's MA_DATA_CONVERTER_STACK_BUFFER_SIZE, which its header doesn't give.
-// MiniAudio skips a decoder's seek, the converter's reset with it, when the file's cursor is already where the frame maps to, which a resampler reading ahead leaves it at for one frame some tens of frames on, so that the read went on from where it was; a stream, which seeks its decoder with MiniAudio's own function on its job thread, then played on from earlier in its file and stopped short of its end. That cursor is read for nothing else, so the file of a decoder whose source can seek is given data source functions whose cursor no frame maps to, and the decoder always seeks; its own cursor is kept for counting the resampling (see file_cursor()). Not the file of a source that can't seek, as a URL, which refuses every seek, even to where it is, which MiniAudio's skip made nothing of. A seek the file refuses, to a frame past what a truncated file holds though within the length its header gives, left the decoder reading on from where it was, which a stream played while its position read the frame sought; the decoder now gives silence from the frame sought to its length until a seek the file makes, as a sound loaded whole plays the part of such a file that isn't there.
-struct held_backend {
-	ma_data_source_vtable vtable; // First, as a source's base points to it.
+// MiniAudio skips a decoder's seek, the converter's reset with it, when the file's cursor is already where the frame maps to, which a resampler reading ahead leaves it at for one frame some tens of frames on, so that the read went on from where it was; a stream, which seeks its decoder with MiniAudio's own function on its job thread, then played on from earlier in its file and stopped short of its end. That cursor is read for nothing else, so a decoder's file is given functions of its own, which for a source that can seek give a cursor no frame maps to, and the decoder always seeks; the file's own cursor is kept for counting the resampling (see file_cursor()). Not for a source that can't seek, as a URL, which refuses every seek, even to where it is, which MiniAudio's skip made nothing of.
+// A file whose header gives more frames than it holds, as a truncated FLAC or MP3, refused a seek past what it holds though within that length, after which the decoder read on from where it was while a stream's position read the frame sought. Such a file that can seek now gives silence from the frame of a seek it refused, until it makes one, to the decoder's length, as a sound loaded whole plays the part of such a file that isn't there.
+struct held_file {
+	ma_data_source_vtable vtable; // First, as the file's base points to it, which leads back here.
 	const ma_data_source_vtable* original;
+	bool can_seek;
+	std::atomic<ma_uint64> length{0}; // The decoder's, once known without reading it whole; 0 before.
+	std::atomic<int> refused{MA_SUCCESS}; // The error of the last seek a file that can seek refused, until it makes one.
 };
-static std::mutex g_held_backends_mutex;
-static std::vector<std::unique_ptr<held_backend>> g_held_backends; // One for each kind of file, under g_held_backends_mutex.
+static ma_result held_file_seek(ma_data_source* backend, ma_uint64 frame);
 static ma_result cursor_no_frame_maps_to(ma_data_source* source, ma_uint64* cursor) {
 	*cursor = ~(ma_uint64)0;
 	return MA_SUCCESS;
 }
-// The functions a held file had, which its vtable, first in a held_backend, leads back to.
-static const ma_data_source_vtable* original_functions(ma_data_source* backend) {
-	const ma_data_source_vtable* vtable = ((ma_data_source_base*)backend)->vtable;
-	return vtable->onGetCursor == cursor_no_frame_maps_to? reinterpret_cast<const held_backend*>(vtable)->original : vtable;
+static held_file* file_held(ma_data_source* backend) {
+	const ma_data_source_vtable* vtable = backend? ((ma_data_source_base*)backend)->vtable : nullptr;
+	return vtable && vtable->onSeek == held_file_seek? const_cast<held_file*>(reinterpret_cast<const held_file*>(vtable)) : nullptr;
 }
-// Files whose last seek failed, few if any, with the frame it was to, until a decoder's read placed its read point there, under g_failed_seeks_mutex; the count lets reads skip the lock while there are none.
-struct failed_seek {
-	ma_data_source* backend;
-	ma_uint64 frame; // In the file's frames; ~0 once placed.
-};
-static std::mutex g_failed_seeks_mutex;
-static std::vector<failed_seek> g_failed_seeks;
-static std::atomic<size_t> g_failed_seek_count{0};
-static void note_seek(ma_data_source* backend, bool failed, ma_uint64 frame = 0) {
-	if (!failed && !g_failed_seek_count.load()) return;
-	std::lock_guard<std::mutex> lock(g_failed_seeks_mutex);
-	auto found = std::find_if(g_failed_seeks.begin(), g_failed_seeks.end(), [backend](const failed_seek& f) { return f.backend == backend; });
-	if (failed && found == g_failed_seeks.end()) g_failed_seeks.push_back({backend, frame});
-	else if (failed) found->frame = frame;
-	else if (found != g_failed_seeks.end()) g_failed_seeks.erase(found);
-	g_failed_seek_count.store(g_failed_seeks.size());
-}
-static ma_result held_backend_seek(ma_data_source* backend, ma_uint64 frame) {
-	ma_result result = original_functions(backend)->onSeek(backend, frame);
-	note_seek(backend, result != MA_SUCCESS, frame);
-	return result;
-}
-// After a seek its file refused, gives silence from the frame sought to the decoder's length, else returns false.
-static bool read_after_failed_seek(ma_decoder* decoder, void* frames_out, ma_uint64 frame_count, ma_uint64* frames_read, ma_result* result) {
-	if (!g_failed_seek_count.load()) return false;
-	{
-		std::lock_guard<std::mutex> lock(g_failed_seeks_mutex);
-		auto found = std::find_if(g_failed_seeks.begin(), g_failed_seeks.end(), [decoder](const failed_seek& f) { return f.backend == decoder->pBackend; });
-		if (found == g_failed_seeks.end()) return false;
-		if (found->frame != ~(ma_uint64)0) { // MiniAudio's seek left the read point where it was.
-			ma_uint32 file_rate = 0;
-			ma_data_source_get_data_format(decoder->pBackend, nullptr, nullptr, &file_rate, nullptr, 0);
-			decoder->readPointerInPCMFrames = file_rate && file_rate != decoder->outputSampleRate? found->frame * decoder->outputSampleRate / file_rate : found->frame;
-			found->frame = ~(ma_uint64)0;
-		}
+static ma_result held_file_seek(ma_data_source* backend, ma_uint64 frame) {
+	held_file* file = file_held(backend);
+	ma_result result = file->original->onSeek(backend, frame);
+	if (result == MA_SUCCESS || !file->can_seek || !file->length.load()) {
+		file->refused.store(MA_SUCCESS);
+		return result;
 	}
-	ma_uint64 length = 0;
-	ma_decoder_get_length_in_pcm_frames(decoder, &length);
-	const ma_uint64 count = length > decoder->readPointerInPCMFrames? std::min(frame_count, length - decoder->readPointerInPCMFrames) : 0;
-	if (frames_out && count) ma_silence_pcm_frames(frames_out, count, decoder->outputFormat, decoder->outputChannels);
-	decoder->readPointerInPCMFrames += count;
-	if (frames_read) *frames_read = count;
-	*result = count? MA_SUCCESS : MA_AT_END;
-	return true;
-}
-static void hold_backend(ma_data_source* backend) {
-	ma_data_source_base* base = (ma_data_source_base*)backend;
-	std::lock_guard<std::mutex> lock(g_held_backends_mutex);
-	held_backend* held = nullptr;
-	for (const auto& b : g_held_backends) {
-		if (base->vtable == &b->vtable) return;
-		if (base->vtable == b->original) held = b.get();
-	}
-	if (!held) {
-		g_held_backends.push_back(std::make_unique<held_backend>());
-		held = g_held_backends.back().get();
-		held->original = base->vtable;
-		held->vtable = *base->vtable;
-		held->vtable.onGetCursor = cursor_no_frame_maps_to;
-		if (held->vtable.onSeek) held->vtable.onSeek = held_backend_seek;
-	}
-	base->vtable = &held->vtable;
+	file->refused.store(result);
+	return MA_SUCCESS; // So that MiniAudio places the decoder's read point at the frame sought, from which held_decoder_read() gives silence.
 }
 // A decoder's file's own cursor.
 static bool file_cursor(ma_data_source* backend, ma_uint64* cursor) {
-	const ma_data_source_vtable* vtable = original_functions(backend);
+	held_file* file = file_held(backend);
+	const ma_data_source_vtable* vtable = file? file->original : ((ma_data_source_base*)backend)->vtable;
 	return vtable->onGetCursor && vtable->onGetCursor(backend, cursor) == MA_SUCCESS;
 }
 // Sets the counts of a decoder's WDL resampler to where the decoder is, its file's cursor and its read point.
@@ -1630,27 +1578,36 @@ static void count_resampling_from_here(ma_decoder* decoder) {
 }
 static ma_result held_decoder_read(ma_data_source* source, void* frames_out, ma_uint64 frame_count, ma_uint64* frames_read) {
 	ma_decoder* decoder = (ma_decoder*)source;
-	ma_result silent_result;
-	if (read_after_failed_seek(decoder, frames_out, frame_count, frames_read, &silent_result)) return silent_result;
-	if (decoder->converter.hasResampler && decoder->converter.resampler.pBackendVTable == &wdl_resampler_backend_vtable && wdl_resampler_take_reset(decoder->converter.resampler.pBackend)) count_resampling_from_here(decoder);
+	held_file* file = file_held(decoder->pBackend);
 	const ma_uint32 frame_size = ma_get_bytes_per_frame(decoder->outputFormat, decoder->outputChannels);
-	const ma_uint64 part = std::max<ma_uint64>(1, converter_chunk_bytes / (sizeof(float) * std::max(decoder->outputChannels, decoder->converter.channelsIn)));
 	ma_uint64 total = 0;
-	ma_result result = MA_SUCCESS;
-	bool again = false; // The read just made gave nothing at the end, and is being made once more.
-	while (total < frame_count) {
-		ma_uint64 got = 0;
-		result = g_ma_decoder_read(source, frames_out? (ma_uint8*)frames_out + total * frame_size : nullptr, std::min(part, frame_count - total), &got);
-		total += got;
-		if (result != MA_SUCCESS && result != MA_AT_END) break; // Given with the frames got, as MiniAudio's read gives it.
-		if (got) again = false;
-		else if (result == MA_AT_END && !again) again = true;
-		else break;
+	ma_result result = MA_AT_END;
+	if (!file || file->refused.load() == MA_SUCCESS) {
+		if (decoder->converter.hasResampler && decoder->converter.resampler.pBackendVTable == &wdl_resampler_backend_vtable && wdl_resampler_take_reset(decoder->converter.resampler.pBackend)) count_resampling_from_here(decoder);
+		const ma_uint64 part = std::max<ma_uint64>(1, converter_chunk_bytes / (sizeof(float) * std::max(decoder->outputChannels, decoder->converter.channelsIn)));
+		result = MA_SUCCESS;
+		bool again = false; // The read just made gave nothing at the end, and is being made once more.
+		while (total < frame_count) {
+			ma_uint64 got = 0;
+			result = g_ma_decoder_read(source, frames_out? (ma_uint8*)frames_out + total * frame_size : nullptr, std::min(part, frame_count - total), &got);
+			total += got;
+			if (result != MA_SUCCESS && result != MA_AT_END) break; // Given with the frames got, as MiniAudio's read gives it.
+			if (got) again = false;
+			else if (result == MA_AT_END && !again) again = true;
+			else break;
+		}
+	}
+	if (file && file->refused.load() != MA_SUCCESS && total < frame_count) { // From a seek the file refused to the decoder's length.
+		const ma_uint64 length = file->length.load(), at = decoder->readPointerInPCMFrames;
+		const ma_uint64 count = length > at? std::min(frame_count - total, length - at) : 0;
+		if (frames_out && count) ma_silence_pcm_frames((ma_uint8*)frames_out + total * frame_size, count, decoder->outputFormat, decoder->outputChannels);
+		decoder->readPointerInPCMFrames += count;
+		total += count;
 	}
 	if (frames_read) *frames_read = total;
 	return result != MA_SUCCESS && result != MA_AT_END? result : total? MA_SUCCESS : result;
 }
-// A seek MiniAudio skipped, as it still does for a decoder whose file isn't held, resets the converter and places the read point itself.
+// A seek MiniAudio skipped, as it still does for a decoder whose file can't seek (see held_file), resets the converter and places the read point itself.
 static ma_result held_decoder_seek(ma_data_source* source, ma_uint64 frame) {
 	ma_decoder* decoder = (ma_decoder*)source;
 	ma_result result = g_ma_decoder_seek(source, frame);
@@ -1660,12 +1617,20 @@ static ma_result held_decoder_seek(ma_data_source* source, ma_uint64 frame) {
 	}
 	return result;
 }
-// A decoder whose seek a script is told failed reads on from where it was, rather than giving silence for the frame sought, as one a sound's seek, which can't tell, does.
-static void keep_place_after_refused_seek(ma_data_source* source) {
-	if (((ma_data_source_base*)source)->vtable == &g_held_decoder_vtable && ((ma_decoder*)source)->pBackend) note_seek(((ma_decoder*)source)->pBackend, false);
+// A seek a script makes of a source, which it is told failed when a decoder's file refused it, the decoder then reading on from where it was rather than giving silence from the frame sought, as after a sound's seek, which can't tell.
+static ma_result seek_or_keep_place(ma_data_source* source, ma_uint64 frame) {
+	ma_decoder* decoder = ((ma_data_source_base*)source)->vtable == &g_held_decoder_vtable? (ma_decoder*)source : nullptr;
+	held_file* file = decoder? file_held(decoder->pBackend) : nullptr;
+	const ma_uint64 at = decoder? decoder->readPointerInPCMFrames : 0;
+	ma_result result = ma_data_source_seek_to_pcm_frame(source, frame);
+	if (result == MA_SUCCESS && file && file->refused.load() != MA_SUCCESS) {
+		result = (ma_result)file->refused.exchange(MA_SUCCESS);
+		decoder->readPointerInPCMFrames = at;
+	}
+	return result;
 }
-// Gives a decoder made the functions above, and the file of one whose source can seek those of hold_backend(), before anything reads or seeks it.
-static void hold_decoder(ma_decoder* decoder, bool can_seek) {
+// Gives a decoder made the functions above, and its file its own (see held_file), with the decoder's length when known, before anything reads or seeks it. What it makes is freed by let_go_of_decoder() or uninit_resource_source().
+static void hold_decoder(ma_decoder* decoder, bool can_seek, ma_uint64 length = 0) {
 	static std::once_flag made;
 	std::call_once(made, [decoder]() {
 		g_held_decoder_vtable = *decoder->ds.vtable;
@@ -1675,9 +1640,34 @@ static void hold_decoder(ma_decoder* decoder, bool can_seek) {
 		g_held_decoder_vtable.onSeek = held_decoder_seek;
 	});
 	decoder->ds.vtable = &g_held_decoder_vtable;
-	if (!decoder->pBackend) return;
-	note_seek(decoder->pBackend, false); // A file of a decoder let go of earlier may have left the address noted.
-	if (can_seek) hold_backend(decoder->pBackend);
+	if (!decoder->pBackend || !((ma_data_source_base*)decoder->pBackend)->vtable->onSeek) return;
+	ma_data_source_base* base = (ma_data_source_base*)decoder->pBackend;
+	held_file* file = new held_file();
+	file->original = base->vtable;
+	file->vtable = *base->vtable;
+	file->vtable.onSeek = held_file_seek;
+	file->can_seek = can_seek;
+	if (can_seek) file->vtable.onGetCursor = cursor_no_frame_maps_to;
+	file->length.store(length);
+	base->vtable = &file->vtable;
+}
+// The decoder's length once worked out (see held_file).
+static void set_held_length(ma_decoder* decoder, ma_uint64 length) {
+	held_file* file = file_held(decoder->pBackend);
+	if (file) file->length.store(length);
+}
+// Uninitialises a decoder hold_decoder() was given, and then frees what it made, which the uninit still reads.
+static ma_result let_go_of_decoder(ma_decoder* decoder) {
+	held_file* file = file_held(decoder->pBackend);
+	ma_result result = ma_decoder_uninit(decoder);
+	if (result == MA_SUCCESS) delete file;
+	return result;
+}
+// Uninitialises a resource manager source, and for a stream frees what hold_decoder() made for its decoder once that is uninitialised.
+static void uninit_resource_source(ma_resource_manager_data_source* source) {
+	held_file* file = (source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM) && source->backend.stream.isDecoderInitialized? file_held(source->backend.stream.decoder.pBackend) : nullptr;
+	ma_resource_manager_data_source_uninit(source);
+	delete file;
 }
 class audio_decoder_impl : public audio_data_source_impl, public virtual audio_decoder {
 	unique_ptr<ma_decoder> decoder;
@@ -1924,7 +1914,7 @@ public:
 			datastream_ref->release();
 			datastream_ref = nullptr;
 		}
-		if ((g_soundsystem_last_error = ma_decoder_uninit(&*decoder)) != MA_SUCCESS) return false;
+		if ((g_soundsystem_last_error = let_go_of_decoder(&*decoder)) != MA_SUCCESS) return false;
 		decoder.reset();
 		// Both after uninit, since the callbacks read through them.
 		ds_vfs.reset();
@@ -1956,7 +1946,10 @@ public:
 			length_frames = -2;
 			return within_range(0); // As every later ask, which the -2 above answers: the first read 0 for a range with an end.
 		}
-		if (g_soundsystem_last_error == MA_SUCCESS) length_frames = length;
+		if (g_soundsystem_last_error == MA_SUCCESS) {
+			length_frames = length;
+			set_held_length(&*decoder, length);
+		}
 		return within_range(length);
 	}
 	unsigned long long whole_length_frames() const override { // As worked out, without asking the decoder again.
@@ -3571,7 +3564,7 @@ class sound_impl final : public mixer_impl, public virtual sound {
 		{
 			std::shared_lock<std::shared_mutex> tree_lock(g_resource_tree_mutex, std::defer_lock);
 			if (!tree_held && !(src->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM)) tree_lock.lock();
-			ma_resource_manager_data_source_uninit(&*src);
+			uninit_resource_source(&*src);
 		}
 		src.reset();
 	}
@@ -3596,7 +3589,7 @@ class sound_impl final : public mixer_impl, public virtual sound {
 		if (failed_buffer) free_failed_buffer(failed_buffer);
 		{
 			std::shared_lock<std::shared_mutex> tree_lock(g_resource_tree_mutex);
-			ma_resource_manager_data_source_uninit(&*r.source);
+			uninit_resource_source(&*r.source);
 		}
 		r.source.reset();
 		if (!r.claimed_name.empty()) let_go_of_buffer_name(r.manager, r.claimed_name);
@@ -3877,8 +3870,8 @@ public:
 		if (g_soundsystem_last_error == MA_SUCCESS) {
 			if (made_source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM) {
 				held(&*made)->stream = &made_source->backend.stream;
-				// The stream's job thread fills its pages through its decoder's data source functions, and seeks the decoder, so that NVGT's (see hold_decoder()) make the read at its end that gave nothing once more, count the resampling from where a seek left it and, for a source that can seek, keep the seek from being skipped. Given here, before the sound first reads the stream, which no job touches until then.
-				hold_decoder(&made_source->backend.stream.decoder, !(ma_flags & MA_SOUND_FLAG_UNKNOWN_LENGTH)); // A URL's source can't seek.
+				// The stream's job thread fills its pages through its decoder's data source functions, and seeks the decoder, so that NVGT's (see hold_decoder()) make the read at its end that gave nothing once more, count the resampling from where a seek left it and, for a source that can seek, keep the seek from being skipped and give silence for what the file lacks of its length. Given here, before the sound first reads the stream, which no job touches until then.
+				hold_decoder(&made_source->backend.stream.decoder, !(ma_flags & MA_SOUND_FLAG_UNKNOWN_LENGTH), made_source->backend.stream.totalLengthInPCMFrames); // A URL's source can't seek.
 			}
 			source = std::move(made_source);
 			view = std::move(made_view);
@@ -4127,7 +4120,7 @@ public:
 			{
 				std::shared_lock<std::shared_mutex> tree_lock(g_resource_tree_mutex, std::defer_lock);
 				if (!(source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM)) tree_lock.lock();
-				ma_resource_manager_data_source_uninit(&*source);
+				uninit_resource_source(&*source);
 			}
 			source.reset();
 		}
