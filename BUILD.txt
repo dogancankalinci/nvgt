@@ -1,0 +1,1 @@
+iOS stubs + legacy_sound for iOS, private nvgt_config.h and legacy_sound config.h, built from 7c3bf0dd46c5c09e3c65da2e4ffcfa9366c35261 at 2026-10-24T18:18:54Z
