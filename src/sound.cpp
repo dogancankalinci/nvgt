@@ -3245,9 +3245,12 @@ class sound_impl final : public mixer_impl, public virtual sound {
 		__atomic_store_n(field, value, __ATOMIC_SEQ_CST);
 		#endif
 	}
-	// Each job takes a number from the counter when posted and advances the pointer when it is done, so they match once none is left.
+	// Each job takes a number from the counter when posted and advances the pointer when it is done, so they match once none is left. Yielding a while, then sleeping: a buffer's load job posts itself again until its node is decoded, so a wait for a buffer still decoding lasts the decode, through which yielding alone kept a processor busy, slowing the decode it waited for.
 	static void wait_for_jobs(const ma_uint32 *counter, const ma_uint32 *pointer) {
-		while (load_job_field(pointer) != load_job_field(counter)) std::this_thread::yield();
+		for (int tries = 0; load_job_field(pointer) != load_job_field(counter); tries++) {
+			if (tries < 64) std::this_thread::yield();
+			else std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
 	}
 	// Called once the load is done, before the source is freed. Returns the source's buffer if its load failed: such a buffer is freed through a job that counts itself finished after the sound frees it, so the caller frees it on this thread instead, as that job would, with free_failed_buffer().
 	static ma_resource_manager_data_buffer *finish_load_jobs(ma_resource_manager_data_source *src) {
