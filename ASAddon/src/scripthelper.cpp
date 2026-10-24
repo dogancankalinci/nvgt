@@ -952,7 +952,13 @@ string GetExceptionInfo(asIScriptContext *ctx, bool showStack)
 	// exception of script code that the engine ran as a nested call for a registered function (a script class's constructor
 	// making an array's elements, its copy constructor copying a value into a dictionary) is reported where it was raised,
 	// which is no longer on the call stack, and the function that was running, with the line it was at, wasn't named at all.
-	const asUINT first = ctx->GetFunction(0) == function ? 1 : 0;
+	// That function can be the one the exception was raised in, at another statement: a copy constructor that copies the
+	// object into a dictionary, whose copy of it raised in the same constructor. So level 0 counts as the place already named
+	// only when its line and column are the exception's too.
+	int exceptionColumn = 0, levelColumn = 0;
+	const int exceptionLine = ctx->GetExceptionLineNumber(&exceptionColumn);
+	const bool levelIsException = ctx->GetFunction(0) == function && ctx->GetLineNumber(0, &levelColumn) == exceptionLine && levelColumn == exceptionColumn;
+	const asUINT first = levelIsException ? 1 : 0;
 	if( showStack && ctx->GetCallstackSize() > first )
 	{
 		text << "--- call stack ---\n";
