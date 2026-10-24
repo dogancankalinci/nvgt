@@ -2257,7 +2257,7 @@ static float downstream_rate(ma_node_base* node) {
 }
 // The rate a pitch's resampler is given a ratio over, which a ratio up to max_pitch_ratio, as hold_rate() keeps it, keeps within 32 bits: a fine enough step even for a source far below the engine's rate, as one at 1000 Hz on a 48 kHz engine, whose ratio is 1/48.
 static constexpr ma_uint32 pitch_rate_scale = 4000000;
-// Sets the rate of a sound's or group's linear resampler. Moving its timing to the new rate, MiniAudio multiplies the fraction of the input frame it is at, under the old output rate, by the new one in 32 bits, which a fine rate overflows, sending the read to an arbitrary point between two frames: it is moved here in 64 bits instead, the fraction cleared for MiniAudio's move.
+// Sets the rate of a sound's or group's linear resampler. Moving its timing to the new rate, MiniAudio multiplies the fraction of the input frame it is at, under the old output rate, by the new one in 32 bits, which a fine rate overflows, sending the read to an arbitrary point between two frames: it is moved here in 64 bits instead, the fraction cleared for MiniAudio's move. Rounded to the nearest step of the new rate, which for an exact rate, reduced, as 1 over 1 for a source at the engine's rate, can be a whole frame: cut down, as MiniAudio's is, each return to such a rate moved the read back, so that a pitch changed to and from 1 every block lagged.
 static void set_pitch_rate(ma_resampler* resampler, ma_uint32 rate_in, ma_uint32 rate_out) {
 	ma_linear_resampler& linear = resampler->state.linear;
 	ma_uint64 fraction = linear.inTimeFrac, old_out = linear.config.sampleRateOut;
@@ -2266,7 +2266,7 @@ static void set_pitch_rate(ma_resampler* resampler, ma_uint32 rate_in, ma_uint32
 		linear.inTimeFrac = (ma_uint32)fraction;
 		return;
 	}
-	ma_uint64 moved = fraction * linear.config.sampleRateOut / old_out;
+	ma_uint64 moved = (fraction * linear.config.sampleRateOut * 2 + old_out) / (old_out * 2);
 	linear.inTimeInt += (ma_uint32)(moved / linear.config.sampleRateOut);
 	linear.inTimeFrac = (ma_uint32)(moved % linear.config.sampleRateOut);
 }
