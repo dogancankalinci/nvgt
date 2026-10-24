@@ -206,7 +206,14 @@ int ExecuteString(asIScriptEngine *engine, const char *code, void *ref, int refT
 			{
 				// Use the registered assignment operator to do a value assign. 
 				// This assumes that the ref is pointing to a valid object instance.
-				engine->AssignScriptObject(ref, execCtx->GetAddressOfReturnValue(), engine->GetTypeInfoById(refTypeId));
+				// ALTERED: an assignment that failed (the type has no copy behaviour, a deleted opAssign, or its opAssign raised
+				// an exception) is returned as the result. The execution's success was returned, and the caller used the
+				// object it had made as the value although nothing had been assigned to it: script_function.call() and
+				// async<T> passed a default-made object for a parameter's default value (async even while it raised the
+				// assignment's exception), and the debugger showed it as the expression's value.
+				int ar = engine->AssignScriptObject(ref, execCtx->GetAddressOfReturnValue(), engine->GetTypeInfoById(refTypeId));
+				if (ar < 0)
+					r = ar;
 			}
 			else
 			{
