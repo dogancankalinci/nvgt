@@ -177,6 +177,10 @@ public:
 			g_soundsystem_last_error = MA_INVALID_OPERATION;
 			return false;
 		}
+		if (!node) { // As every other node refuses it, rather than taken for set_endpoint(null), which detached the chain and gave true for a handle that happened to be null; set_endpoint(null) and detach_output_bus() detach it.
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return false;
+		}
 		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		set_endpoint(node, input_bus_index);
 		return endpoint == node;
