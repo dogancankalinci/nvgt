@@ -935,6 +935,7 @@ public:
 	int bind_all_imported_functions() {
 		if (!get_mod())
 			return asNO_MODULE;
+		std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex()); // Each import is looked up by its declaration in the module it comes from, as get_function_by_decl() does (see get_function_by_name()).
 		return get_mod()->BindAllImportedFunctions();
 	}
 	int bind_imported_function(asUINT index, asIScriptFunction* func) {
@@ -1025,6 +1026,7 @@ public:
 	int get_imported_function_index(const std::string& decl) {
 		if (!get_mod())
 			return asNO_MODULE;
+		std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex()); // The declaration is parsed as get_function_by_decl() parses one (see get_function_by_name()).
 		return get_mod()->GetImportedFunctionIndexByDecl(decl.c_str());
 	}
 	const std::string get_imported_function_module(asDWORD index) {
