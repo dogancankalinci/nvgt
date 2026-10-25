@@ -4291,6 +4291,7 @@ public:
 		paused = fade_paused = false;
 		// A sound that isn't playing drops what was queued before it is started again, through its reader: see pcm_queue. One already playing keeps its queue.
 		if (pcm_stream && !(snd && ma_sound_is_playing(&*snd))) pcm_stream->discard();
+		wait_out_flush();
 		bool looping = snd && ma_sound_is_looping(&*snd);
 		if (still_ending() && restart_if_ending()) {
 			if (reset_loop_state) ma_sound_set_looping(&*snd, MA_FALSE);
@@ -4304,6 +4305,7 @@ public:
 		if (pcm_stream) return false;
 		if (fade_paused && snd) clear_stop_for_restart(true);
 		paused = fade_paused = false;
+		wait_out_flush();
 		bool looping = snd && ma_sound_is_looping(&*snd);
 		if (still_ending() && restart_if_ending()) {
 			ma_sound_set_looping(&*snd, MA_TRUE);
@@ -4339,6 +4341,10 @@ public:
 			} else if (std::chrono::steady_clock::now() - time_moved > std::chrono::milliseconds(10)) break;
 		}
 		return at_end_seen(&*snd) && ma_sound_is_playing(&*snd);
+	}
+	// MiniAudio's ma_sound_start() reads the end flag itself, which give_end() turns off while it flushes the end (see held_sound::flushing), so that a play() of a sound stopped during that flush started it without going back to its start, and the audio thread stopped it at its end again: waited out first, one call of the sound's processing at most, which never waits on this thread.
+	void wait_out_flush() {
+		while (snd && held(&*snd)->flushing.load()) std::this_thread::yield();
 	}
 	// The audio thread is asked to play a sound still in that window on from its start, which it does in its next block, or once it stopped it in the block under way; a sound stopped meanwhile is taken back and started as any at its end. Whether the audio thread was asked. Its seek can't tell play() that a source can't go back to its start, which then reads nothing more and ends.
 	bool restart_if_ending() {
