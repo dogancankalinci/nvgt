@@ -100,6 +100,7 @@ vcpkg_from_github(
         fix-weak-reference-vs-collector.patch
         fix-last-release-race.patch
         fix-function-type-lifetime-count.patch
+        fix-value-member-publication.patch
 )
 
 vcpkg_cmake_configure(
