@@ -3624,13 +3624,21 @@ public:
 		else
 			set_stop_time_in_milliseconds(absolute_time);
 	}
+	// MiniAudio leaves a sound or group started once its scheduled stop has come, reading it stopped only while that stop is past, so a later stop given to it played it again without play(), where it reads as stopped everywhere else. It is stopped first, as stop() leaves it, and play() starts it on until the new stop.
+	void stop_if_stop_came() {
+		if (!snd || ma_node_get_state(&*snd) != ma_node_state_started) return;
+		ma_uint64 stop_time = ma_node_get_state_time(&*snd, ma_node_state_stopped);
+		if (stop_time != ~(ma_uint64)0 && stop_time <= ma_engine_get_time_in_pcm_frames(ma_sound_get_engine(&*snd))) ma_sound_stop(&*snd);
+	}
 	void set_stop_time_in_frames(ma_uint64 absolute_time) override {
-		if (snd)
-			ma_sound_set_stop_time_in_pcm_frames(&*snd, absolute_time);
+		if (!snd) return;
+		stop_if_stop_came();
+		ma_sound_set_stop_time_in_pcm_frames(&*snd, absolute_time);
 	}
 	void set_stop_time_in_milliseconds(ma_uint64 absolute_time) override {
-		if (snd && frames_fit(absolute_time, ma_engine_get_sample_rate(ma_sound_get_engine(&*snd))))
-			ma_sound_set_stop_time_in_milliseconds(&*snd, absolute_time);
+		if (!snd || !frames_fit(absolute_time, ma_engine_get_sample_rate(ma_sound_get_engine(&*snd)))) return;
+		stop_if_stop_came();
+		ma_sound_set_stop_time_in_milliseconds(&*snd, absolute_time);
 	}
 	ma_uint64 get_time() const override {
 		return snd ? ((get_engine()->get_flags() & audio_engine::DURATIONS_IN_FRAMES) ? get_time_in_frames() : get_time_in_milliseconds()) : 0;
@@ -4556,6 +4564,7 @@ public:
 	// A stop the script schedules replaces one pause_fade() scheduled, which play() then keeps.
 	void set_stop_time_with_fade_in_frames(unsigned long long absolute_time, unsigned long long fade_length) override {
 		if (!snd) return;
+		stop_if_stop_came();
 		ma_sound_set_stop_time_with_fade_in_pcm_frames(&*snd, absolute_time, fade_length);
 		stop_fade_set(fade_length);
 		fade_paused = false;
@@ -4564,6 +4573,7 @@ public:
 		if (!snd) return;
 		ma_uint32 rate = ma_engine_get_sample_rate(ma_sound_get_engine(&*snd));
 		if (!frames_fit(absolute_time, rate) || !frames_fit(fade_length, rate)) return;
+		stop_if_stop_came();
 		ma_sound_set_stop_time_with_fade_in_milliseconds(&*snd, absolute_time, fade_length);
 		stop_fade_set(fade_length * rate / 1000);
 		fade_paused = false;
