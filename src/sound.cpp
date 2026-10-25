@@ -4309,12 +4309,29 @@ public:
 			}
 			reap(std::move(reaped));
 		} else if (source) {
-			{
-				std::shared_lock<std::shared_mutex> tree_lock(g_resource_tree_mutex, std::defer_lock);
-				if (!(source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM)) tree_lock.lock();
-				uninit_resource_source(&*source);
+			std::shared_lock<std::shared_mutex> tree_lock(g_resource_tree_mutex, std::defer_lock);
+			bool tree_held = true;
+			if (!(source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM)) {
+				if (!audio_thread) tree_lock.lock();
+				else tree_held = tree_lock.try_lock();
 			}
-			source.reset();
+			// On an audio thread the tree's lock is only tried: a load holding the tree whole, as one tried again without flags for a file that couldn't be decoded, held a processing callback letting a sound go for as long, 100 ms for a large file; the source is then freed on a thread of its own. Its jobs are done (see finish_load_jobs() above), so it no longer reads memory this sound keeps.
+			if (!tree_held && reserve_reap(source_manager, true)) {
+				unique_ptr<source_reap> late = make_unique<source_reap>();
+				late->manager = source_manager;
+				late->source = std::move(source);
+				if (claimed_manager) {
+					late->claimed_name = std::move(claimed_name);
+					claimed_manager = nullptr;
+					claimed_name.clear();
+				}
+				reap(std::move(late));
+			} else {
+				if (!tree_held) tree_lock.lock();
+				uninit_resource_source(&*source);
+				if (tree_lock.owns_lock()) tree_lock.unlock();
+				source.reset();
+			}
 		}
 		if (claimed_manager) {
 			let_go_of_buffer_name(claimed_manager, claimed_name);
