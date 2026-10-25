@@ -4473,11 +4473,13 @@ public:
 		return !chain && get_length_in_frames() == 0 || seek(0); // A stream without a length, such as PCM or a URL, has no start to go back to; a chain always has (see seek_in_frames()).
 	}
 	// A stream_pcm() sound too, whose queue play() resumes, as after pause_fade(): refused, it read as not paused while pause_fade() paused it.
+	// Only a playing sound is made paused: one stopped, finished or never started read as paused, and play() then resumed what stop() had ended, a stream_pcm() sound's queue included, where it starts such a sound again.
 	bool pause() override {
 		if (snd) {
 			call_off_restart(); // As in stop().
+			const bool playing = ma_sound_is_playing(&*snd);
 			g_soundsystem_last_error = ma_sound_stop(&*snd);
-			if (g_soundsystem_last_error == MA_SUCCESS)
+			if (g_soundsystem_last_error == MA_SUCCESS && playing)
 				paused = true;
 			return g_soundsystem_last_error == MA_SUCCESS;
 		}
@@ -4488,6 +4490,7 @@ public:
 	}
 	bool pause_fade_in_frames(unsigned long long frames) override {
 		if (snd) {
+			if (!ma_sound_is_playing(&*snd)) return (g_soundsystem_last_error = MA_SUCCESS) == MA_SUCCESS; // As pause() leaves a sound that isn't playing, with no stop scheduled for it either, which play() wouldn't have called off.
 			g_soundsystem_last_error = ma_sound_stop_with_fade_in_pcm_frames(&*snd, frames);
 			if (g_soundsystem_last_error == MA_SUCCESS) {
 				stop_fade_set(frames);
@@ -4499,6 +4502,7 @@ public:
 	}
 	bool pause_fade_in_milliseconds(unsigned long long frames) override {
 		if (snd && frames_fit(frames, ma_engine_get_sample_rate(ma_sound_get_engine(&*snd)))) {
+			if (!ma_sound_is_playing(&*snd)) return (g_soundsystem_last_error = MA_SUCCESS) == MA_SUCCESS; // As above.
 			g_soundsystem_last_error = ma_sound_stop_with_fade_in_milliseconds(&*snd, frames);
 			if (g_soundsystem_last_error == MA_SUCCESS) {
 				stop_fade_set(frames * ma_engine_get_sample_rate(ma_sound_get_engine(&*snd)) / 1000); // As MiniAudio counts the fade's frames.
