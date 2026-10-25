@@ -4688,6 +4688,16 @@ public:
 	~microphone_impl() {
 		if (capture_device) uninit_device(&*capture_device);
 	}
+	// The last reference let go on an audio thread, as in a processing callback, whose audio would be held up while the capture device closes, about 200 ms: destroyed on a thread of its own then, as an engine is (see audio_engine_impl::release()), and left to the process's exit once the sound system shut down.
+	void release() override {
+		if (asAtomicDec(refcount) >= 1) return;
+		if (!audio_engine_impl::on_audio_thread()) {
+			delete this;
+			return;
+		}
+		if (g_soundsystem_shut_down.test()) return;
+		try { std::thread([this] { delete this; }).detach(); } catch (...) {}
+	}
 	bool set_device(int device) override {
 		if (audio_engine_impl::on_audio_thread()) { // Opening a device on an audio thread, as in a processing callback, would hold that thread up; refused there, as an engine's set_device() is.
 			g_soundsystem_last_error = MA_INVALID_OPERATION;
