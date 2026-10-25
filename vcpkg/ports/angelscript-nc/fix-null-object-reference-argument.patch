@@ -1,0 +1,158 @@
+diff --git a/sdk/angelscript/source/as_callfunc.cpp b/sdk/angelscript/source/as_callfunc.cpp
+--- a/sdk/angelscript/source/as_callfunc.cpp
++++ b/sdk/angelscript/source/as_callfunc.cpp
+@@ -207,6 +207,40 @@
+ #endif
+ }
+ 
++// ALTERED: a reference to an object handed to a registered function is the address of the object, which is null when the
++// object doesn't exist yet: a member of a value type stored on the heap (a string, a dictionaryValue, a ref) of a script
++// object whose constructor hasn't made it, read by a method a base class's constructor calls (NVGT initializes members after
++// the base class's constructor, asEP_MEMBER_INIT_MODE 0) or by a copy of the object made from one of its member initializers.
++// The script code reading the member pushes the null pointer without a check (asBC_RDSPtr checks the address of the member,
++// not what it holds), and only the object pointer of a method was checked: the function was called with a null reference and
++// crashed (std::string::size on null for `"text" + name`). The call now raises a null pointer exception, as a null object
++// pointer does. The offsets are found once, when the function is prepared.
++static void PrepareObjectRefArgs(asCScriptFunction *func, asSSystemFunctionInterface *internal)
++{
++	internal->objectRefArgs.SetLength(0);
++	// The arguments of a variadic function follow a count of them, see CleanArgsOfUnmadeCall
++	if( func->IsVariadic() )
++		return;
++	int offset = 0;
++	if( func->DoesReturnOnStack() )
++		offset += AS_PTR_SIZE;
++	for( asUINT n = 0; n < func->parameterTypes.GetLength(); n++ )
++	{
++		asCDataType &dt = func->parameterTypes[n];
++		if( dt.IsReference() && dt.IsObject() && !dt.IsObjectHandle() && dt.GetTokenType() != ttQuestion )
++			internal->objectRefArgs.PushLast(short(offset));
++		offset += dt.GetSizeOnStackDWords();
++	}
++}
++
++bool HasNullObjectRefArg(asSSystemFunctionInterface *sysFunc, asDWORD *args)
++{
++	for( asUINT n = 0; n < sysFunc->objectRefArgs.GetLength(); n++ )
++		if( *(asPWORD*)&args[sysFunc->objectRefArgs[n]] == 0 )
++			return true;
++	return false;
++}
++
+ // ALTERED: CallSystemFunction and CallGeneric returned without touching the arguments when the object pointer of a method
+ // was null, but the arguments the caller pushed belong to the called function: the reference held by a handle argument and
+ // the copy of an object passed by value were never released or freed, as neither the compiled script nor the exception
+@@ -261,6 +295,8 @@
+ 	// Calculate the size needed for the parameters
+ 	internal->paramSize = func->GetSpaceNeededForArguments();
+ 
++	PrepareObjectRefArgs(func, internal); // ALTERED: see PrepareObjectRefArgs
++
+ 	// Prepare the clean up instructions for the function arguments
+ 	internal->cleanArgs.SetLength(0);
+ 	int offset = 0;
+@@ -340,6 +376,8 @@
+ 	// are asCALL_GENERIC, which are prepared by PrepareSystemFunctionGeneric
+ 	asASSERT(false);
+ #else
++	PrepareObjectRefArgs(func, internal); // ALTERED: see PrepareObjectRefArgs
++
+ 	// References are always returned as primitive data
+ 	if( func->returnType.IsReference() || func->returnType.IsObjectHandle() )
+ 	{
+@@ -864,6 +902,14 @@
+ #endif // AS_NO_THISCALL_FUNCTOR_METHOD
+ 	}
+ 
++	// ALTERED: a null reference to an object is refused before anything is taken from the stack, see PrepareObjectRefArgs
++	if( sysFunc->objectRefArgs.GetLength() && HasNullObjectRefArg(sysFunc, args) )
++	{
++		context->SetInternalException(TXT_NULL_POINTER_ACCESS);
++		CleanArgsOfUnmadeCall(context, descr, args);
++		return 0;
++	}
++
+ 	if( descr->DoesReturnOnStack() )
+ 	{
+ 		// Get the address of the location for the return value from the stack
+diff --git a/sdk/angelscript/source/as_callfunc.h b/sdk/angelscript/source/as_callfunc.h
+--- a/sdk/angelscript/source/as_callfunc.h
++++ b/sdk/angelscript/source/as_callfunc.h
+@@ -66,6 +66,10 @@
+ // (see as_callfunc.cpp). args points at the first value after the object pointer.
+ void CleanArgsOfUnmadeCall(asCContext *context, asCScriptFunction *descr, asDWORD *args);
+ 
++// ALTERED: whether an argument that is a reference to an object is null (see asSSystemFunctionInterface::objectRefArgs).
++// args points at the first value after the object pointer, as for CleanArgsOfUnmadeCall.
++bool HasNullObjectRefArg(asSSystemFunctionInterface *sysFunc, asDWORD *args);
++
+ inline asPWORD FuncPtrToUInt(asFUNCTION_t func)
+ {
+ 	// A little trickery as the C++ standard doesn't allow direct
+@@ -128,6 +132,11 @@
+ 	};
+ 	asCArray<SClean>     cleanArgs;
+ 
++	// ALTERED: the stack offsets (after the object pointer, the return pointer counted) of the arguments that are references
++	// to objects (T &in, const T &in, T &out, T &inout, not handles nor ?), which are checked for null before the call, see
++	// CallSystemFunction and asCContext::CallGeneric. Set by PrepareSystemFunction and PrepareSystemFunctionGeneric.
++	asCArray<short>      objectRefArgs;
++
+ 	asSSystemFunctionInterface()
+ 	{ 
+ 		Clear(); 
+@@ -155,6 +164,7 @@
+ 
+ 		paramAutoHandles.SetLength(0);
+ 		cleanArgs.SetLength(0);
++		objectRefArgs.SetLength(0);
+ 	}
+ 
+ 	asSSystemFunctionInterface &operator=(const asSSystemFunctionInterface &in)
+@@ -174,6 +184,7 @@
+ 
+ 		cleanArgs           = in.cleanArgs;
+ 		paramAutoHandles    = in.paramAutoHandles;
++		objectRefArgs       = in.objectRefArgs;
+ 
+ 		return *this;
+ 	}
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -6480,6 +6480,14 @@
+ 		args += AS_PTR_SIZE;
+ 	}
+ 
++	// ALTERED: a null reference to an object is refused, see PrepareObjectRefArgs in as_callfunc.cpp
++	if( sysFunc->objectRefArgs.GetLength() && HasNullObjectRefArg(sysFunc, args) )
++	{
++		SetInternalException(TXT_NULL_POINTER_ACCESS);
++		CleanArgsOfUnmadeCall(this, descr, args);
++		return 0;
++	}
++
+ 	if( descr->DoesReturnOnStack() )
+ 	{
+ 		// Skip the address where the return value will be stored
+diff --git a/sdk/angelscript/source/as_scriptobject.cpp b/sdk/angelscript/source/as_scriptobject.cpp
+--- a/sdk/angelscript/source/as_scriptobject.cpp
++++ b/sdk/angelscript/source/as_scriptobject.cpp
+@@ -968,6 +968,17 @@
+ 					void **src = (void**)(const_cast<char*>((const char*)other) + prop->byteOffset);
+ 					if( !prop->type.IsObjectHandle() )
+ 					{
++						// ALTERED: a member stored on the heap that one of the objects hasn't made yet (copied from or into an object
++						// whose constructor hasn't got to it, e.g. from one of its own member initializers) is null: the copy raises a
++						// null pointer exception, as the copy the script compiles does (see PrepareObjectRefArgs in as_callfunc.cpp).
++						// The copy behaviour was called with the null object and crashed.
++						if( (prop->type.IsReference() || (prop->type.GetTypeInfo()->flags & asOBJ_REF)) && (*src == 0 || *dst == 0) )
++						{
++							asIScriptContext *ctx = asGetActiveContext();
++							if( ctx )
++								ctx->SetException(TXT_NULL_POINTER_ACCESS);
++							return asERROR;
++						}
+ 						if( prop->type.IsReference() || (prop->type.GetTypeInfo()->flags & asOBJ_REF) )
+ 							CopyObject(*src, *dst, CastToObjectType(prop->type.GetTypeInfo()), engine);
+ 						else
