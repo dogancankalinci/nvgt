@@ -110,6 +110,21 @@ static std::mutex &BufferSwapLock()
 	return *lock;
 }
 
+// ALTERED: the collector's walk goes into the elements of an array of a value type with garbage collector behaviours (ref,
+// dictionaryValue): it reads each element object, not just its address. Such an array's elements are therefore also moved
+// (removed, inserted, reversed, swapped or written back sorted), and its count changed, under BufferSwapLock: a removed
+// element is freed once it is out of the array, and a walk on another thread went on into it (a use after free). No script
+// code runs under the lock. The collector only looks up the addresses of handles and reference type elements among the
+// objects it holds, so their arrays move elements without the lock.
+static bool CollectorReadsElements(asITypeInfo *objType, int subTypeId)
+{
+	// The type id first: an array of primitives or of handles is answered without a call
+	if( !(subTypeId & asTYPEID_MASK_OBJECT) || (subTypeId & asTYPEID_OBJHANDLE) || !(objType->GetFlags() & asOBJ_GC) )
+		return false;
+	asITypeInfo *subType = objType->GetSubType();
+	return subType && (subType->GetFlags() & asOBJ_VALUE) && (subType->GetFlags() & asOBJ_GC);
+}
+
 // Allows the application to set which memory routines should be used by the array object
 void CScriptArray::SetMemoryFunctions(asALLOCFUNC_t allocFunc, asFREEFUNC_t freeFunc)
 {
@@ -853,8 +868,13 @@ void CScriptArray::RemoveRange(asUINT start, asUINT count)
 	// Compact the elements
 	// As objects in arrays of objects are not stored inline, it is safe to use memmove here
 	// since we're just copying the pointers to objects and not the actual objects.
-	memmove(buffer->data + start*elementSize, buffer->data + (start + count)*elementSize, (buffer->numElements - start - count)*elementSize);
-	buffer->numElements -= count;
+	{
+		// ALTERED: see CollectorReadsElements
+		std::unique_lock<std::mutex> guard(BufferSwapLock(), std::defer_lock);
+		if( CollectorReadsElements(objType, subTypeId) ) guard.lock();
+		memmove(buffer->data + start*elementSize, buffer->data + (start + count)*elementSize, (buffer->numElements - start - count)*elementSize);
+		buffer->numElements -= count;
+	}
 
 	// Destroy the elements that were removed
 	if( removed )
@@ -947,15 +967,24 @@ void CScriptArray::Resize(int delta, asUINT at)
 	// As objects in arrays of objects are not stored inline, it is safe to use memcpy and memmove here
 	// since we're just copying the pointers to objects and not the actual objects.
 	SArrayBuffer *dst = newBuffer ? newBuffer : buffer;
-	if( newBuffer )
-		memcpy(newBuffer->data, buffer->data, at*elementSize);
-	memmove(dst->data + (at+delta)*elementSize, buffer->data + at*elementSize, (buffer->numElements - at)*elementSize);
+	{
+		// ALTERED: the elements are moved in the installed buffer under the lock when the collector reads them, see
+		// CollectorReadsElements
+		std::unique_lock<std::mutex> guard(BufferSwapLock(), std::defer_lock);
+		if( !newBuffer && CollectorReadsElements(objType, subTypeId) ) guard.lock();
+		if( newBuffer )
+			memcpy(newBuffer->data, buffer->data, at*elementSize);
+		memmove(dst->data + (at+delta)*elementSize, buffer->data + at*elementSize, (buffer->numElements - at)*elementSize);
 
-	// Initialize the new elements with the objects made above, or set them to zero whether they are handles or primitives
-	if( made )
-		memcpy(dst->data + at*elementSize, made, delta*sizeof(void*));
-	else
-		memset(dst->data + at*elementSize, 0, delta*elementSize);
+		// Initialize the new elements with the objects made above, or set them to zero whether they are handles or primitives
+		if( made )
+			memcpy(dst->data + at*elementSize, made, delta*sizeof(void*));
+		else
+			memset(dst->data + at*elementSize, 0, delta*elementSize);
+
+		if( !newBuffer )
+			buffer->numElements += delta;
+	}
 
 	if( newBuffer )
 	{
@@ -969,8 +998,6 @@ void CScriptArray::Resize(int delta, asUINT at)
 		}
 		userFree(oldBuffer);
 	}
-	else
-		buffer->numElements += delta;
 }
 
 // internal
@@ -1298,6 +1325,10 @@ void CScriptArray::Reverse()
 
 	if( size >= 2 )
 	{
+		// ALTERED: see CollectorReadsElements
+		std::unique_lock<std::mutex> guard(BufferSwapLock(), std::defer_lock);
+		if( CollectorReadsElements(objType, subTypeId) ) guard.lock();
+
 		asBYTE TEMP[16];
 
 		for( asUINT i = 0; i < size / 2; i++ )
@@ -1665,6 +1696,9 @@ void CScriptArray::Copy(void *dst, void *src)
 // the heap and the array stores the pointers to the objects.
 void CScriptArray::Swap(void* a, void* b)
 {
+	// ALTERED: see CollectorReadsElements
+	std::unique_lock<std::mutex> guard(BufferSwapLock(), std::defer_lock);
+	if( CollectorReadsElements(objType, subTypeId) ) guard.lock();
 	asBYTE tmp[16];
 	Copy(tmp, a);
 	Copy(a, b);
@@ -1889,7 +1923,12 @@ void CScriptArray::Sort(asUINT startAt, asUINT count, bool asc)
 		}
 		bool changed = buffer->numElements != size || memcmp(GetArrayItemPointer(start), before.data(), before.size() * sizeof(void*)) != 0;
 		if( !changed )
+		{
+			// ALTERED: see CollectorReadsElements
+			std::unique_lock<std::mutex> guard(BufferSwapLock(), std::defer_lock);
+			if( CollectorReadsElements(objType, subTypeId) ) guard.lock();
 			memcpy(GetArrayItemPointer(start), items.data(), items.size() * sizeof(void*));
+		}
 		if( hold )
 			for( void *p : before )
 				if( p ) engine->ReleaseScriptObject(p, subType);
