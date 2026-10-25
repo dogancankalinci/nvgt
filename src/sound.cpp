@@ -857,13 +857,17 @@ public:
 			result->Release();
 			return nullptr;
 		}
+		// Whether the engine's endpoint runs for the whole read, so that a short one comes of nothing being attached: one the script stopped, or scheduled to start or stop within the read (set_state_time()), reads short too, and holds the engine's time as on a device, for what was scheduled on it.
+		ma_node* endpoint = ma_engine_get_endpoint(&*engine);
+		const ma_uint64 now = ma_engine_get_time_in_pcm_frames(&*engine), endpoint_stop = ma_node_get_state_time(endpoint, ma_node_state_stopped);
+		const bool endpoint_runs = ma_node_get_state(endpoint) == ma_node_state_started && ma_node_get_state_time(endpoint, ma_node_state_started) <= now && endpoint_stop > now && endpoint_stop - now >= frame_count;
 		unsigned long long frames_read;
 		if (!read(result->GetBuffer(), frame_count, &frames_read)) {
 			result->Resize(0);
 			return result;
 		}
 		// With nothing attached to it, MiniAudio's engine reads no frames and its time stands still, so a script reading it for a time or a number of frames, as before attaching anything, read nothing for good: it reads the silence MiniAudio wrote for the frames asked, and its time moves on by them, as with anything attached.
-		if (frames_read < frame_count) {
+		if (endpoint_runs && frames_read < frame_count) {
 			ma_engine_set_time_in_pcm_frames(&*engine, ma_engine_get_time_in_pcm_frames(&*engine) + (frame_count - frames_read));
 			frames_read = frame_count;
 		}
