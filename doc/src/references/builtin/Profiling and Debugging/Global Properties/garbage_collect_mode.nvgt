@@ -7,6 +7,7 @@
 		2 is automatic (called every wait() cycle on the main thread before sleeping).
 		3 is asynchronous (same as 2, but called on a dedicated thread).
 		In every mode, AngelScript itself also runs small collection steps on the thread running script code, as garbage collected objects are created and when a script call that created some returns. Mode 1 therefore doesn't stop collection entirely, and mode 3 doesn't move all of it off the script's threads: the mode decides when NVGT collects in addition to those steps.
+		The destructors of the objects a collection frees run on the thread that ran it. In mode 3 that is the collector's own thread, at the same time as the script goes on running elsewhere, so a destructor of a garbage collected class (one with handle members, or that can be part of a circular reference) which reads or changes data the rest of the script also uses, such as global variables, arrays or dictionaries, must guard that data with a lock (see mutex) as any other code running on more than one thread must.
 */
 
 // Example:
