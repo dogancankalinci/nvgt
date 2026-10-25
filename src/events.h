@@ -14,6 +14,8 @@
 #include <weakref.h>
 #include <SDL3/SDL_touch.h>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <stdexcept> // std::runtime_error, thrown by engine_event_listener::fire
 #include <string>
 #include <vector>
@@ -39,16 +41,27 @@ public:
 };
 class engine_event {
 	std::vector<engine_event_listener> listeners;
+	// Guards listeners. The main thread fires the events from wait() while a script thread can insert, remove, clear or fire them,
+	// and a vector changed under the firing loop (a reallocation, an erase) was a use after free. It is held only to read or change
+	// the vector, never while a listener runs or a listener is destroyed: a listener let go of is copied out under the lock and
+	// destroyed after it, as its last reference can be a delegate holding an object.
+	mutable std::mutex listeners_mutex;
 	std::string name, type, args;
 	asSFuncPtr fire_func; // Set by children so they don't need to override angelscript_register.
 	void clean_inactive_listeners();
 	bool insert(const engine_event_listener& listener, int index);
+	bool remove(const engine_event_listener& listener);
+	int find_locked(const engine_event_listener& listener) const; // listeners_mutex held
+	std::optional<engine_event_listener> listener_at(size_t index) const; // A copy of listeners[index], none past the end.
 protected:
 	template <typename... Args> void fire(Args&... args) {
 		clean_inactive_listeners();
-		for (size_t i = 0; i < listeners.size(); i++) {
-			engine_event_listener l = listeners[i];
-			if (l.fire(std::forward<Args>(args)...)) break;
+		// Each listener is copied under the lock and called without it, by index as before: a listener that removes or inserts
+		// listeners changes which ones the rest of this firing runs, as it did.
+		for (size_t i = 0;; i++) {
+			std::optional<engine_event_listener> l = listener_at(i);
+			if (!l) break;
+			if (l->fire(std::forward<Args>(args)...)) break;
 		}
 	}
 	engine_event(const std::string& name, const std::string& type, const std::string& args, const asSFuncPtr& fire_func);

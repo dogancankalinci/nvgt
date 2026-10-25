@@ -30,8 +30,12 @@ static asITypeInfo* listener_weakref_type(asIScriptModule* mod, asITypeInfo* ot)
 
 engine_event_listener::engine_event_listener(asIScriptObject* obj, const engine_event* parent) : obj(std::make_shared<CScriptWeakRef>(obj, listener_weakref_type(obj->GetObjectType()->GetModule(), obj->GetObjectType()))), func(nullptr), is_object(true) {
 	asITypeInfo* ot = obj->GetObjectType();
-	if (ot) func = ot->GetMethodByDecl(("void "s + parent->callback_declaration()).c_str());
-	if (!func && ot) func = ot->GetMethodByDecl(("bool "s + parent->callback_declaration()).c_str());
+	{
+		// The declarations are parsed in the class's module, which a build on another thread may be changing: under the build lock, as listener_weakref_type's lookup.
+		std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex());
+		if (ot) func = ot->GetMethodByDecl(("void "s + parent->callback_declaration()).c_str());
+		if (!func && ot) func = ot->GetMethodByDecl(("bool "s + parent->callback_declaration()).c_str());
+	}
 	if (!func) throw std::runtime_error(Poco::format("engine_event_listener instanciation for %s failed, no void/bool %s method", std::string(ot? ot->GetName() : "unknown"), parent->callback_declaration()));
 }
 engine_event_listener::engine_event_listener(asIScriptFunction* func) : obj(nullptr), func(func), is_object(false) {
@@ -71,38 +75,75 @@ bool engine_event_listener::operator==(const engine_event_listener& other) const
 std::unordered_set<std::string> g_engine_event_registered_types;
 
 engine_event::engine_event(const std::string& name, const std::string& type, const std::string& args, const asSFuncPtr& fire_func) : name(name), type(type), args(args), fire_func(fire_func) {}
+std::optional<engine_event_listener> engine_event::listener_at(size_t index) const {
+	std::lock_guard<std::mutex> lock(listeners_mutex);
+	if (index >= listeners.size()) return std::nullopt;
+	return listeners[index];
+}
 void engine_event::clean_inactive_listeners() {
-	for (unsigned int i = 0; i < listeners.size(); i++) {
-		if (listeners[i].good()) continue;
-		listeners.erase(listeners.begin() + i);
-		i--;
+	for (size_t i = 0;; i++) {
+		std::optional<engine_event_listener> l = listener_at(i);
+		if (!l) return;
+		if (l->good()) continue; // Without the lock: good() lets go of the object it checked, which can run its destructor.
+		std::optional<engine_event_listener> removed; // Destroyed after the lock is let go of.
+		std::lock_guard<std::mutex> lock(listeners_mutex);
+		// Only the listener checked: a destructor good() ran, or another thread, may have changed the list meanwhile, and an erase at i then took another listener out.
+		if (i < listeners.size() && listeners[i] == *l) {
+			removed = listeners[i];
+			listeners.erase(listeners.begin() + i);
+			i--;
+		}
 	}
 }
+int engine_event::find_locked(const engine_event_listener& listener) const {
+	auto it = std::find(listeners.begin(), listeners.end(), listener);
+	if (it == listeners.end()) return -1;
+	return distance(listeners.begin(), it);
+}
 bool engine_event::insert(const engine_event_listener& listener, int index = -1) {
-	if (index < -1 || index > (int)listeners.size() || find(listener) > -1) return false;
+	std::lock_guard<std::mutex> lock(listeners_mutex);
+	if (index < -1 || index > (int)listeners.size() || find_locked(listener) > -1) return false;
 	if (index == -1) index = listeners.size();
 	listeners.insert(listeners.begin() + index, listener);
+	return true;
+}
+bool engine_event::remove(const engine_event_listener& listener) {
+	std::optional<engine_event_listener> removed; // Destroyed after the lock is let go of, see listeners_mutex.
+	std::lock_guard<std::mutex> lock(listeners_mutex);
+	int index = find_locked(listener); // Found and taken out at once: another thread can't shift the list in between.
+	if (index < 0) return false;
+	removed = listeners[index];
+	listeners.erase(listeners.begin() + index);
 	return true;
 }
 std::string engine_event::callback_declaration() const { return "on_"s + name + "("s + args + ")"; }
 int engine_event::find(asIScriptObject* obj) const { return obj? find(engine_event_listener(obj, this)) : -1; }
 int engine_event::find(asIScriptFunction* func) const { return func? find(engine_event_listener(func)) : -1; }
 int engine_event::find(const engine_event_listener& listener) const {
-	auto it = std::find(listeners.begin(), listeners.end(), listener);
-	if (it == listeners.end()) return -1;
-	return distance(listeners.begin(), it);
+	std::lock_guard<std::mutex> lock(listeners_mutex);
+	return find_locked(listener);
 }
 bool engine_event::insert(asIScriptObject* obj, int index) { return obj && insert(engine_event_listener(obj, this), index); }
 bool engine_event::insert(asIScriptFunction* func, int index) { return func && insert(engine_event_listener(func), index); }
-bool engine_event::remove(asIScriptObject* obj) { return remove(find(obj)); }
-bool engine_event::remove(asIScriptFunction* func) { return remove(find(func)); }
+bool engine_event::remove(asIScriptObject* obj) { return obj && remove(engine_event_listener(obj, this)); }
+bool engine_event::remove(asIScriptFunction* func) { return func && remove(engine_event_listener(func)); }
 bool engine_event::remove(unsigned int index) {
+	std::optional<engine_event_listener> removed; // Destroyed after the lock is let go of, see listeners_mutex.
+	std::lock_guard<std::mutex> lock(listeners_mutex);
 	if (index >= listeners.size()) return false;
+	removed = listeners[index];
 	listeners.erase(listeners.begin() + index);
 	return true;
 }
-void engine_event::clear() { listeners.clear(); }
-unsigned int engine_event::count() const { return listeners.size(); }
+void engine_event::clear() {
+	std::vector<engine_event_listener> removed; // Destroyed after the lock is let go of, see listeners_mutex.
+	std::lock_guard<std::mutex> lock(listeners_mutex);
+	removed.swap(listeners);
+}
+unsigned int engine_event::count() const {
+	std::lock_guard<std::mutex> lock(listeners_mutex);
+	return listeners.size();
+}
 void engine_event::angelscript_register(asIScriptEngine* engine, engine_event* global_address) {
 	std::string type_name = Poco::format("engine_%s_event", type);
 	if (!g_engine_event_registered_types.contains(type)) {
