@@ -21,6 +21,20 @@ static std::mutex &StructureLock(const void *dictionary)
 	return locks[((address >> 4) ^ (address >> 12)) & 63];
 }
 
+// ALTERED: a value (a dictionary's entry, or a dictionaryValue of its own) changed in place by a script (d['k'] = v, through
+// the reference opIndex returns) is not changed through its dictionary, so StructureLock can't be taken for it. Its value
+// and type are swapped under this lock, which the collector takes to read them (CScriptDictionary::EnumReferences takes it
+// for each entry within StructureLock, CScriptDictValue::EnumReferences for itself): it found the new value under the old
+// type or the old value under the new one, and a value object (a ref, a dictionaryValue) that the assignment then freed was
+// given to its type's enumeration (a use after free). The locks are shared out by address, never destroyed (see
+// StructureLock), and recursive: the enumeration of an entry holding a dictionaryValue takes the lock of that value too.
+static std::recursive_mutex &ValueLock(const CScriptDictValue *value)
+{
+	static std::recursive_mutex *locks = new std::recursive_mutex[64];
+	asPWORD address = reinterpret_cast<asPWORD>(value);
+	return locks[((address >> 4) ^ (address >> 12)) & 63];
+}
+
 // ALTERED: holds a dictionary while script code runs for it (the copy of a value, see CScriptDictionary::Set), which can let go
 // of its last handle. AngelScript doesn't hold the object of a registered method for the call (only when the method returns a
 // reference).
@@ -320,6 +334,8 @@ void CScriptDictionary::EnumReferences(asIScriptEngine *inEngine)
 		// or a value whose copy failed) holds no reference, and nothing keeps its type alive: when the type was a class of a
 		// script module that has been discarded since (a script_module's discard(), or the main module at exit while the
 		// dictionary lives on), GetTypeInfoById returned null and reading its flags crashed the collector.
+		// ALTERED: the value and its type are read under the value's lock, see ValueLock
+		std::lock_guard<std::recursive_mutex> valueGuard(ValueLock(&it->second));
 		if (it->second.m_valueObj && (it->second.m_typeId & asTYPEID_MASK_OBJECT))
 		{
 			asITypeInfo *subType = engine->GetTypeInfoById(it->second.m_typeId);
@@ -552,12 +568,13 @@ bool CScriptDictionary::Delete(const dictKey_t &key)
 		// Releasing it can run a destructor (script code), which ran while the key was still there and could delete it again
 		// or let go of the dictionary, and the erase then used a freed node.
 		CScriptDictValue removed(engine);
-		removed.m_valueInt = it->second.m_valueInt;
-		removed.m_typeId = it->second.m_typeId;
-		it->second.m_valueObj = 0;
-		it->second.m_typeId = 0;
 		{
+			// ALTERED: the entry is emptied under the dictionary's lock too, as the collector reads it under that lock
 			std::lock_guard<std::mutex> guard(StructureLock(this));
+			removed.m_valueInt = it->second.m_valueInt;
+			removed.m_typeId = it->second.m_typeId;
+			it->second.m_valueObj = 0;
+			it->second.m_typeId = 0;
 			dict.erase(it);
 		}
 		iterGuard++;
@@ -798,10 +815,16 @@ void CScriptDictValue::FreeValue()
 	{
 		// ALTERED: the value is emptied before the object is released, not after: a destructor run by the release that set or
 		// cleared this same value (a dictionaryValue, or one the garbage collector releases) released the object a second time
-		void *obj = m_valueObj;
-		int typeId = m_typeId;
-		m_valueObj = 0;
-		m_typeId = 0;
+		// ALTERED: under the value's lock, as the collector can be reading it on another thread, see ValueLock
+		void *obj;
+		int typeId;
+		{
+			std::lock_guard<std::recursive_mutex> guard(ValueLock(this));
+			obj = m_valueObj;
+			typeId = m_typeId;
+			m_valueObj = 0;
+			m_typeId = 0;
+		}
 
 		// Let the engine release the object
 		m_engine->ReleaseScriptObject(obj, m_engine->GetTypeInfoById(typeId));
@@ -819,6 +842,9 @@ void CScriptDictValue::ReleaseReferences(asIScriptEngine*)
 void CScriptDictValue::EnumReferences(asIScriptEngine *inEngine)
 {
 	assert(inEngine == m_engine);
+
+	// ALTERED: the value and its type are read under the value's lock, see ValueLock
+	std::lock_guard<std::recursive_mutex> guard(ValueLock(this));
 
 	// If we're holding a reference, we'll notify the garbage collector of it
 	if (m_valueObj)
@@ -865,6 +891,9 @@ void CScriptDictValue::Set(void *value, int typeId)
 		memcpy(&made.m_valueInt, value, size);
 	}
 
+	// ALTERED: swapped under the value's lock, as the collector can be reading it on another thread, see ValueLock (the value
+	// replaced is released after the lock, by made's destructor)
+	std::lock_guard<std::recursive_mutex> guard(ValueLock(this));
 	asINT64 v = m_valueInt;
 	int t = m_typeId;
 	m_valueInt = made.m_valueInt;
