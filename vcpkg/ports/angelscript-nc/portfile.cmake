@@ -96,6 +96,7 @@ vcpkg_from_github(
         fix-handle-like-handle-assign-noopt.patch
         fix-handle-like-member-handle-assign-in-ctor.patch
         fix-null-object-reference-argument.patch
+        fix-silent-builder-pending-message.patch
 )
 
 vcpkg_cmake_configure(

@@ -1,0 +1,29 @@
+diff --git a/sdk/angelscript/source/as_builder.cpp b/sdk/angelscript/source/as_builder.cpp
+--- a/sdk/angelscript/source/as_builder.cpp
++++ b/sdk/angelscript/source/as_builder.cpp
+@@ -201,7 +201,13 @@
+ {
+ 	numErrors = 0;
+ 	numWarnings = 0;
+-	engine->preMessage.isSet = false;
++	// ALTERED: a silent builder (the declaration lookups: GetTypeInfoByDecl, GetFunctionByDecl, GetMethodByDecl and the
++	// rest) writes no message, so it leaves the engine's pending message alone. Lookups run on any thread, also while a build
++	// on another thread has its "Compiling ..." line pending there: clearing it (a data race on the engine's state) made that
++	// build's next error come without the line saying where it was being compiled, and a lookup made during a build on the
++	// same thread (a template callback, a registered function called by the compiler) did the same.
++	if( !silent )
++		engine->preMessage.isSet = false;
+ 
+ #ifndef AS_NO_COMPILER
+ 	// Clear the cache of known types
+@@ -6090,6 +6096,10 @@
+ 
+ void asCBuilder::WriteInfo(const asCString &scriptname, const asCString &message, int r, int c, bool pre)
+ {
++	// ALTERED: nothing for a silent builder, see Reset
++	if( silent )
++		return;
++
+ 	// Need to store the pre message in a structure
+ 	if( pre )
+ 	{
