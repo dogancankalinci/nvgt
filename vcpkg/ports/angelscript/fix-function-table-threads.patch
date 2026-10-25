@@ -1,0 +1,320 @@
+diff --git a/sdk/angelscript/source/as_module.cpp b/sdk/angelscript/source/as_module.cpp
+--- a/sdk/angelscript/source/as_module.cpp
++++ b/sdk/angelscript/source/as_module.cpp
+@@ -1231,11 +1231,8 @@
+ // internal
+ int asCModule::GetNextImportedFunctionId()
+ {
+-	// TODO: multithread: This will break if one thread if freeing a module, while another is being compiled
+-	if( m_engine->freeImportedFunctionIdxs.GetLength() )
+-		return FUNC_IMPORTED | (asUINT)m_engine->freeImportedFunctionIdxs[m_engine->freeImportedFunctionIdxs.GetLength()-1];
+-
+-	return FUNC_IMPORTED | (asUINT)m_engine->importedFunctions.GetLength();
++	// ALTERED: the engine takes the id under its function table lock (a module freed on another thread gives ids back)
++	return m_engine->GetNextImportedFunctionId();
+ }
+ 
+ #ifndef AS_NO_COMPILER
+@@ -1379,10 +1376,9 @@
+ 	m_bindInformations.PushLast(info);
+ 
+ 	// Add the info to the array in the engine
+-	if( m_engine->freeImportedFunctionIdxs.GetLength() )
+-		m_engine->importedFunctions[m_engine->freeImportedFunctionIdxs.PopLast()] = info;
+-	else
+-		m_engine->importedFunctions.PushLast(info);
++	// ALTERED: in the slot of its id, under the engine's function table lock: the next free slot could be another one by now
++	// (a module freed on another thread gave its ids back), and the info went into that slot while the function kept the id
++	m_engine->AddImportedFunctionInfo(id, info);
+ 
+ 	return 0;
+ }
+diff --git a/sdk/angelscript/source/as_restore.cpp b/sdk/angelscript/source/as_restore.cpp
+--- a/sdk/angelscript/source/as_restore.cpp
++++ b/sdk/angelscript/source/as_restore.cpp
+@@ -533,17 +533,10 @@
+ 			break;
+ 		}
+ 
+-		if( engine->freeImportedFunctionIdxs.GetLength() )
+-		{
+-			int id = engine->freeImportedFunctionIdxs.PopLast();
+-			info->importedFunctionSignature->id = int(FUNC_IMPORTED + id);
+-			engine->importedFunctions[id] = info;
+-		}
+-		else
+-		{
+-			info->importedFunctionSignature->id = int(FUNC_IMPORTED + engine->importedFunctions.GetLength());
+-			engine->importedFunctions.PushLast(info);
+-		}
++		// ALTERED: the engine takes the id and stores the info under its function table lock (a module freed on another
++		// thread gives ids back)
++		info->importedFunctionSignature->id = engine->GetNextImportedFunctionId();
++		engine->AddImportedFunctionInfo(info->importedFunctionSignature->id, info);
+ 		ReadString(&info->importFromModule);
+ 		info->boundFunctionId = -1;
+ 		module->m_bindInformations.PushLast(info);
+@@ -1992,8 +1985,11 @@
+ 						if( isNew )
+ 						{
+ 							// Destroy the function without releasing any references
++							// ALTERED: under the engine's function table lock (see ComputeSignatureId)
++							ENTERCRITICALSECTION(engine->functionTableLock);
+ 							if( func->id == func->signatureId )
+ 								engine->signatureIds.RemoveValue(func);
++							LEAVECRITICALSECTION(engine->functionTableLock);
+ 							func->id = 0;
+ 							if( func->scriptData )
+ 								func->scriptData->byteCode.SetLength(0);
+diff --git a/sdk/angelscript/source/as_scriptengine.cpp b/sdk/angelscript/source/as_scriptengine.cpp
+--- a/sdk/angelscript/source/as_scriptengine.cpp
++++ b/sdk/angelscript/source/as_scriptengine.cpp
+@@ -971,6 +971,11 @@
+ 		asDELETE(nameSpaces[n], asSNameSpace);
+ 	nameSpaces.SetLength(0);
+ 
++	// ALTERED: the previous buffers of the tables other threads read, see GrowSharedTable
++	for( asUINT n = 0; n < retiredTables.GetLength(); n++ )
++		asDELETEARRAY(retiredTables[n]);
++	retiredTables.SetLength(0);
++
+ 	asCThreadManager::Unprepare();
+ }
+ 
+@@ -6454,35 +6459,156 @@
+ 	return old;
+ }
+ 
++// ALTERED: grows a table that other threads read without a lock (see functionTableLock) so that it holds at least minLength
++// elements without reallocating: the elements are copied into a new buffer, which is published only after the copy is
++// complete, and the previous buffer is kept until the engine is destroyed, as a reader may have taken its address just
++// before. The buffers retired this way add up to less than the table's final size. The caller holds functionTableLock.
++template<class T>
++void asCScriptEngine::GrowSharedTable(asCArray<T> &table, asUINT minLength)
++{
++	if( minLength <= table.GetCapacity() )
++		return;
++
++	asUINT capacity = table.GetCapacity() * 2;
++	if( capacity < minLength )
++		capacity = minLength;
++	if( capacity < 64 )
++		capacity = 64;
++	T *buffer = asNEWARRAY(T, capacity);
++	if( buffer == 0 )
++		return; // Out of memory: the table will try to grow itself as before
++	for( asUINT n = 0; n < table.length; n++ )
++		buffer[n] = table.array[n];
++
++	// The atomic operation is a full memory barrier on every platform: the copied elements are visible to other threads
++	// before the address of the new buffer is
++	tableBarrier.atomicInc();
++
++	T *old = table.array;
++	table.array = buffer;
++	table.maxLength = capacity;
++
++	// A small table uses a buffer inside the array object itself, which is not freed
++	if( old && (reinterpret_cast<char*>(old) < reinterpret_cast<char*>(&table) || reinterpret_cast<char*>(old) >= reinterpret_cast<char*>(&table + 1)) )
++		retiredTables.PushLast(old);
++}
++
+ int asCScriptEngine::GetNextScriptFunctionId()
+ {
+ 	// This function only returns the next function id that
+ 	// should be used. It doesn't update the internal arrays.
++	// ALTERED: under functionTableLock, as a function released on another thread changes the free ids
++	ENTERCRITICALSECTION(functionTableLock);
++	int id;
+ 	if( freeScriptFunctionIds.GetLength() )
+-		return freeScriptFunctionIds[freeScriptFunctionIds.GetLength()-1];
++		id = freeScriptFunctionIds[freeScriptFunctionIds.GetLength()-1];
++	else
++		id = (int)scriptFunctions.GetLength();
++	LEAVECRITICALSECTION(functionTableLock);
+ 
+-	return (int)scriptFunctions.GetLength();
++	return id;
+ }
+ 
+ void asCScriptEngine::AddScriptFunction(asCScriptFunction *func)
+ {
++	// ALTERED: under functionTableLock. The id came from GetNextScriptFunctionId, which only looked at the next free id: a
++	// function released on another thread since then can have added a free id after it (the id was then left among the free
++	// ids, and given to another function later, so two functions had the same id: calls by id reached the other one, and the
++	// release of either emptied the slot of the other), or taken the last slot away (the id was then past the end of the
++	// table). The id is now taken out of the free ids wherever it is, and slots left between the end of the table and the id
++	// become free ids. The table grows without freeing the buffer other threads' VMs read, see GrowSharedTable.
++	ENTERCRITICALSECTION(functionTableLock);
++
+ 	// Update the internal arrays with the function id that is now used
+-	if( freeScriptFunctionIds.GetLength() && freeScriptFunctionIds[freeScriptFunctionIds.GetLength()-1] == func->id )
+-		freeScriptFunctionIds.PopLast();
++	for( asUINT n = freeScriptFunctionIds.GetLength(); n-- > 0; )
++	{
++		if( freeScriptFunctionIds[n] == func->id )
++		{
++			freeScriptFunctionIds.RemoveIndex(n);
++			break;
++		}
++	}
+ 
+-	if( asUINT(func->id) == scriptFunctions.GetLength() )
++	if( asUINT(func->id) >= scriptFunctions.GetLength() )
++	{
++		GrowSharedTable(scriptFunctions, asUINT(func->id) + 1);
++		while( scriptFunctions.GetLength() < asUINT(func->id) )
++		{
++			freeScriptFunctionIds.PushLast(int(scriptFunctions.GetLength()));
++			scriptFunctions.PushLast(0);
++		}
+ 		scriptFunctions.PushLast(func);
++	}
+ 	else
+ 	{
+ 		// The slot should be empty or already set with the function, which happens if an existing shared function is reused
+ 		asASSERT( scriptFunctions[func->id] == 0 || scriptFunctions[func->id] == func );
+ 		scriptFunctions[func->id] = func;
+ 	}
++
++	LEAVECRITICALSECTION(functionTableLock);
++}
++
++// ALTERED: the imported functions' id bookkeeping, done by asCModule and the loader before (see AddScriptFunction for why it
++// takes functionTableLock and for the robust take of the id)
++int asCScriptEngine::GetNextImportedFunctionId()
++{
++	ENTERCRITICALSECTION(functionTableLock);
++	int id;
++	if( freeImportedFunctionIdxs.GetLength() )
++		id = FUNC_IMPORTED | (asUINT)freeImportedFunctionIdxs[freeImportedFunctionIdxs.GetLength()-1];
++	else
++		id = FUNC_IMPORTED | (asUINT)importedFunctions.GetLength();
++	LEAVECRITICALSECTION(functionTableLock);
++
++	return id;
++}
++
++void asCScriptEngine::AddImportedFunctionInfo(int id, sBindInfo *info)
++{
++	ENTERCRITICALSECTION(functionTableLock);
++
++	asUINT idx = asUINT(id & ~FUNC_IMPORTED);
++	for( asUINT n = freeImportedFunctionIdxs.GetLength(); n-- > 0; )
++	{
++		if( asUINT(freeImportedFunctionIdxs[n]) == idx )
++		{
++			freeImportedFunctionIdxs.RemoveIndex(n);
++			break;
++		}
++	}
++
++	if( idx >= importedFunctions.GetLength() )
++	{
++		GrowSharedTable(importedFunctions, idx + 1);
++		while( importedFunctions.GetLength() < idx )
++		{
++			freeImportedFunctionIdxs.PushLast(int(importedFunctions.GetLength()));
++			importedFunctions.PushLast(0);
++		}
++		importedFunctions.PushLast(info);
++	}
++	else
++	{
++		asASSERT( importedFunctions[idx] == 0 );
++		importedFunctions[idx] = info;
++	}
++
++	LEAVECRITICALSECTION(functionTableLock);
+ }
+ 
+ void asCScriptEngine::RemoveScriptFunction(asCScriptFunction *func)
+ {
+ 	if( func == 0 || func->id < 0 ) return;
++
++	// ALTERED: under functionTableLock (a function can be released on any thread, while a build on another one takes ids)
++	ENTERCRITICALSECTION(functionTableLock);
++	RemoveScriptFunctionLocked(func);
++	LEAVECRITICALSECTION(functionTableLock);
++}
++
++void asCScriptEngine::RemoveScriptFunctionLocked(asCScriptFunction *func)
++{
+ 	int id = func->id & ~FUNC_IMPORTED;
+ 	if( func->funcType == asFUNC_IMPORTED )
+ 	{
+@@ -7090,7 +7216,14 @@
+ 
+ 	asCString *str = asNEW(asCString)(name);
+ 	if( str )
++	{
++		// ALTERED: the names are read without a lock by the contexts of other threads (line numbers, exceptions), so the
++		// table grows without freeing the buffer they read, see GrowSharedTable
++		ENTERCRITICALSECTION(functionTableLock);
++		GrowSharedTable(scriptSectionNames, scriptSectionNames.GetLength() + 1);
+ 		scriptSectionNames.PushLast(str);
++		LEAVECRITICALSECTION(functionTableLock);
++	}
+ 	int r = int(scriptSectionNames.GetLength()-1);
+ 
+ 	RELEASEEXCLUSIVE(engineRWLock);
+diff --git a/sdk/angelscript/source/as_scriptengine.h b/sdk/angelscript/source/as_scriptengine.h
+--- a/sdk/angelscript/source/as_scriptengine.h
++++ b/sdk/angelscript/source/as_scriptengine.h
+@@ -292,6 +292,11 @@
+ 	int  GetNextScriptFunctionId();
+ 	void AddScriptFunction(asCScriptFunction *func);
+ 	void RemoveScriptFunction(asCScriptFunction *func);
++	void RemoveScriptFunctionLocked(asCScriptFunction *func);
++	// ALTERED: the imported functions' ids are taken and given back under functionTableLock, see there
++	int  GetNextImportedFunctionId();
++	void AddImportedFunctionInfo(int id, sBindInfo *info);
++	template<class T> void GrowSharedTable(asCArray<T> &table, asUINT minLength);
+ 	void RemoveFuncdef(asCFuncdefType *func);
+ 
+ 	int ConfigError(int err, const char *funcName, const char *arg1, const char *arg2);
+@@ -388,6 +393,17 @@
+ 	asCArray<sBindInfo *>  importedFunctions; // doesn't increase ref count
+ 	asCArray<int>          freeImportedFunctionIdxs;
+ 
++	// ALTERED: the tables above and the section names below are read without a lock by the VM and the contexts of every
++	// thread (asBC_CALL, asBC_CALLSYS, asBC_CALLBND, line numbers), while a build, a template instance made at run time or a
++	// function released on another thread changes them. functionTableLock serializes the changes to scriptFunctions,
++	// freeScriptFunctionIds, signatureIds, importedFunctions, freeImportedFunctionIdxs, the growth of scriptSectionNames and
++	// retiredTables (it is a leaf lock: nothing is called while it is held that could take it again). A table grows into a new
++	// buffer that is filled before it is published (tableBarrier), and the previous buffer is kept in retiredTables until the
++	// engine is destroyed, as another thread may still be reading through it.
++	DECLARECRITICALSECTION(functionTableLock)
++	asCArray<void *>       retiredTables;
++	asCAtomic              tableBarrier;
++
+ 	// Synchronized
+ 	mutable asCAtomic      refCount;
+ 	// Synchronized with engineRWLock
+diff --git a/sdk/angelscript/source/as_scriptfunction.cpp b/sdk/angelscript/source/as_scriptfunction.cpp
+--- a/sdk/angelscript/source/as_scriptfunction.cpp
++++ b/sdk/angelscript/source/as_scriptfunction.cpp
+@@ -1093,6 +1093,9 @@
+ 	// function name, return type, and parameter types. The object
+ 	// type for methods is not used, so that class methods and
+ 	// interface methods match each other.
++	// ALTERED: under the engine's function table lock: a function released on another thread changes signatureIds (see
++	// asCScriptEngine::RemoveScriptFunction), which this walked and added to without a lock
++	ENTERCRITICALSECTION(engine->functionTableLock);
+ 	for( asUINT n = 0; n < engine->signatureIds.GetLength(); n++ )
+ 	{
+ 		if( !IsSignatureEqual(engine->signatureIds[n]) ) continue;
+@@ -1101,11 +1104,13 @@
+ 		// asCScriptEngine::FreeScriptFunctionId will maintain the signature
+ 		// id as the function is freed.
+ 		signatureId = engine->signatureIds[n]->signatureId;
++		LEAVECRITICALSECTION(engine->functionTableLock);
+ 		return;
+ 	}
+ 
+ 	signatureId = id;
+ 	engine->signatureIds.PushLast(this);
++	LEAVECRITICALSECTION(engine->functionTableLock);
+ }
+ 
+ // internal

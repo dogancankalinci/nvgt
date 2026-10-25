@@ -86,6 +86,7 @@ vcpkg_from_github(
         fix-copy-assignment-result.patch
         fix-signed-variable-offset.patch
         fix-reference-arguments-first.patch
+        fix-function-table-threads.patch
 )
 
 vcpkg_cmake_configure(
