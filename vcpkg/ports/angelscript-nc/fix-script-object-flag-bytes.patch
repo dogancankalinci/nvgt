@@ -1,0 +1,18 @@
+diff --git a/sdk/angelscript/source/as_scriptobject.h b/sdk/angelscript/source/as_scriptobject.h
+--- a/sdk/angelscript/source/as_scriptobject.h
++++ b/sdk/angelscript/source/as_scriptobject.h
+@@ -143,8 +143,12 @@
+ 
+ protected:
+ 	mutable asCAtomic refCount;
+-	mutable asBYTE    gcFlag:1;
+-	mutable asBYTE    hasRefCountReachedZero:1;
++	// ALTERED: two bytes of their own. As bit fields of one byte they were one memory location, so the garbage collector's
++	// AddRef or SetFlag on its thread (gcFlag, written as a read-modify-write of the byte) and a read of
++	// hasRefCountReachedZero on another (GetWeakRefFlag, AddRef) were a data race even though neither changed the other's
++	// bit. The size of the object doesn't change: the bytes fit in the padding before extra.
++	mutable bool      gcFlag;
++	mutable bool      hasRefCountReachedZero;
+ 	bool              isDestructCalled;
+ 
+ 	// Most script classes instances won't have neither the weakRefFlags nor

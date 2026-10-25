@@ -105,6 +105,7 @@ vcpkg_from_github(
         fix-pointer-member-alignment.patch
         fix-weak-reference-made-by-destructor.patch
         fix-weak-reference-revives-cycle-garbage.patch
+        fix-script-object-flag-bytes.patch
 )
 
 vcpkg_cmake_configure(
