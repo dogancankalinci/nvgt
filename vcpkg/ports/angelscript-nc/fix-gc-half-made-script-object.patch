@@ -1,0 +1,52 @@
+diff --git a/sdk/angelscript/source/as_scriptobject.cpp b/sdk/angelscript/source/as_scriptobject.cpp
+--- a/sdk/angelscript/source/as_scriptobject.cpp
++++ b/sdk/angelscript/source/as_scriptobject.cpp
+@@ -346,9 +346,9 @@
+ 	extra = 0;
+ 	hasRefCountReachedZero = false;
+ 
+-	// Notify the garbage collector of this object
+-	if( objType->flags & asOBJ_GC )
+-		objType->engine->gc.AddScriptObjectToGC(this, objType);
++	// ALTERED: the garbage collector is notified at the end, once the members are zeroed (it was done first, and a full
++	// collection on another thread moves every new object to the set it enumerates: it could enumerate the members while
++	// they still held whatever the memory held before)
+ 
+ 	// Initialize members to zero. Technically we only need to zero the pointer
+ 	// members, but just the memset is faster than having to loop and check the datatypes
+@@ -393,6 +393,11 @@
+ 			}
+ 		}
+ 	}
++
++	// Notify the garbage collector of this object
++	// ALTERED: moved here, see above
++	if( objType->flags & asOBJ_GC )
++		objType->engine->gc.AddScriptObjectToGC(this, objType);
+ }
+ 
+ void asCScriptObject::Destruct()
+@@ -834,7 +839,11 @@
+ 
+ 			// The members of the value type needs to be enumerated
+ 			// too, since the value type may be holding a reference.
+-			if ((prop->type.GetTypeInfo()->flags & asOBJ_VALUE) && (prop->type.GetTypeInfo()->flags & asOBJ_GC))
++			// ALTERED: only a member that exists: the collector also enumerates an object whose constructor hasn't made all
++			// its members yet (each object made in a member's initialization runs a step of the collector, which can reach
++			// this object), and a value member allocated on the heap is null until it is made (the value type's enumeration
++			// was called with a null object)
++			if (ptr && (prop->type.GetTypeInfo()->flags & asOBJ_VALUE) && (prop->type.GetTypeInfo()->flags & asOBJ_GC))
+ 			{
+ 				reinterpret_cast<asCScriptEngine*>(engine)->CallObjectMethod(ptr, engine, CastToObjectType(prop->type.GetTypeInfo())->beh.gcEnumReferences);
+ 			}
+@@ -879,7 +888,9 @@
+ 				else
+ 					ptr = (void*)(((char*)this) + prop->byteOffset);
+ 
+-				reinterpret_cast<asCScriptEngine*>(engine)->CallObjectMethod(ptr, engine, CastToObjectType(prop->type.GetTypeInfo())->beh.gcReleaseAllReferences);
++				// ALTERED: only a member that exists, see EnumReferences
++				if (ptr)
++					reinterpret_cast<asCScriptEngine*>(engine)->CallObjectMethod(ptr, engine, CastToObjectType(prop->type.GetTypeInfo())->beh.gcReleaseAllReferences);
+ 			}
+ 		}
+ 		else if (prop->type.IsFuncdef())
