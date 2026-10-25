@@ -23,8 +23,6 @@
 
 using reactphysics3d::Vector3;
 
-static asIScriptContext* fcallback_ctx = NULL;
-
 Vector3 rotate(const Vector3& p, const Vector3& o, double theta, bool maintain_z = true) {
 	int angle = (180.0 / M_PI) * theta;
 	Vector3 r;
@@ -118,19 +116,20 @@ bool map_area::is_unfiltered(asIScriptFunction* filter_callback) {
 	asIScriptContext* ACtx = asGetActiveContext();
 	if (script_callbacks_stopped(ACtx)) return true; // exit() was called since the script called the coordinate_map function, by the filter for an earlier area or by another thread: no more filter calls; the result is never used.
 	bool new_context = ACtx == NULL || ACtx->PushState() < 0;
-	asIScriptContext* ctx = NULL;
-	if (new_context) {
-		if (!fcallback_ctx) fcallback_ctx = g_ScriptEngine->RequestContext();
-		ctx = fcallback_ctx;
-	} else ctx = ACtx;
+	// A context of the pool for each call, given back after it, as the other callback sites do. One context kept in a static
+	// for every such call was shared by the threads that got there at once and never given back (it outlived the script's
+	// module, holding the last filter it ran).
+	asIScriptContext* ctx = new_context ? g_ScriptEngine->RequestContext() : ACtx;
 	bool ret = true;
 	if (!ctx || ctx->Prepare(filter_callback) < 0 || ctx->SetArgObject(0, this) < 0 || execute_nested(ctx) != asEXECUTION_FINISHED) {
-		if (!new_context && ctx) pop_nested_state(ctx);
+		if (new_context && ctx) g_ScriptEngine->ReturnContext(ctx);
+		else if (!new_context) pop_nested_state(ctx);
 		return true;
 	}
 	profiler_forget_last_function();
 	ret = ctx->GetReturnByte() != 0;
-	if (!new_context) pop_nested_state(ctx);
+	if (new_context) g_ScriptEngine->ReturnContext(ctx);
+	else pop_nested_state(ctx);
 	return ret;
 }
 void map_area::unframe() {
