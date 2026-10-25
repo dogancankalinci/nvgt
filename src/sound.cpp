@@ -519,12 +519,13 @@ ma_result wav_seek_proc(ma_encoder *pEncoder, ma_int64 offset, ma_seek_origin or
 // The following code manages inlined, one-shot sounds. While miniaudio does provide support for this, it is subpar when considering what NVGT users wish for, namely it cannot return the ma_sound that was created.
 unordered_set<sound*> g_inlined_sounds;
 mutex g_inlined_sounds_mutex;
+static bool sound_due_to_play(sound* s); // After sound_impl.
 void garbage_collect_inline_sounds() {
 	vector<sound*> finished;
 	{
 		unique_lock<mutex> lock(g_inlined_sounds_mutex); // For the whole walk, as sounds that start playing on other threads are added meanwhile.
 		for (auto it = g_inlined_sounds.begin(); it != g_inlined_sounds.end();) {
-			if ((*it)->get_playing()) ++it;
+			if (sound_due_to_play(*it)) ++it;
 			else {
 				finished.push_back(*it);
 				it = g_inlined_sounds.erase(it);
@@ -3857,7 +3858,7 @@ public:
 	}
 	inline void release() override {
 		if (asAtomicDec(refcount) < 1) {
-			if (!should_autoclose || !get_playing()) delete this;
+			if (!should_autoclose || !started_to_play()) delete this; // Kept while due to start too, its start scheduled ahead: get_playing() reads false until then, and the sound was freed unplayed.
 			else {
 				should_autoclose = false;
 				duplicate();
@@ -4706,6 +4707,11 @@ public:
 		return 0;
 	}
 };
+// Whether an autoclosed sound is kept: playing, or due to start (see sound_impl::started_to_play()).
+static bool sound_due_to_play(sound* s) {
+	sound_impl* impl = dynamic_cast<sound_impl*>(s);
+	return impl? impl->started_to_play() : s->get_playing();
+}
 
 class microphone_impl : public audio_ring_buffer_impl, public virtual microphone {
 	unique_ptr<ma_device> capture_device;
