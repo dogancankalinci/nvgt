@@ -4566,9 +4566,17 @@ public:
 		if (!snd) return;
 		stop_if_stop_came();
 		pause_called_off();
-		ma_sound_set_stop_time_with_fade_in_pcm_frames(&*snd, absolute_time, fade_length);
+		schedule_stop_with_fade(absolute_time, fade_length);
 		stop_fade_set(fade_length);
 		fade_paused = false;
+	}
+	// MiniAudio starts a stop's fade from the volume the sound's fader is at when it takes it, which for a sound an earlier stop with a fade stopped, as pause_fade()'s, is where that fade got to, 0 once it came, though the sound plays on at full volume until the new fade begins: it cut to silence there rather than fading. For such a sound the new fade starts from full volume; one still playing fades from where its volume is, as a fade the script set.
+	void schedule_stop_with_fade(ma_uint64 stop, ma_uint64 fade) {
+		if (fade > 0 && fade_from_stop && ma_node_get_state(&*snd) != ma_node_state_started) {
+			if (fade > stop) fade = stop; // As MiniAudio limits it.
+			ma_sound_set_fade_start_in_pcm_frames(&*snd, 1, 0, fade, stop - fade);
+			ma_node_set_state_time(&*snd, ma_node_state_stopped, stop);
+		} else ma_sound_set_stop_time_with_fade_in_pcm_frames(&*snd, stop, fade);
 	}
 	void set_stop_time_with_fade_in_milliseconds(unsigned long long absolute_time, unsigned long long fade_length) override {
 		if (!snd) return;
@@ -4576,7 +4584,7 @@ public:
 		if (!frames_fit(absolute_time, rate) || !frames_fit(fade_length, rate)) return;
 		stop_if_stop_came();
 		pause_called_off();
-		ma_sound_set_stop_time_with_fade_in_milliseconds(&*snd, absolute_time, fade_length);
+		schedule_stop_with_fade(absolute_time * rate / 1000, fade_length * rate / 1000); // As MiniAudio converts both.
 		stop_fade_set(fade_length * rate / 1000);
 		fade_paused = false;
 	}
