@@ -1,0 +1,57 @@
+diff --git a/sdk/angelscript/source/as_scriptobject.cpp b/sdk/angelscript/source/as_scriptobject.cpp
+--- a/sdk/angelscript/source/as_scriptobject.cpp
++++ b/sdk/angelscript/source/as_scriptobject.cpp
+@@ -653,21 +653,8 @@
+ 	// and once for the destructor: another thread that turned a weak reference strong and let go of it in between (or the
+ 	// last two references let go of on two threads at once) had the object destroyed with the flag never set, and a weak
+ 	// reference then added a reference to the freed object; or the flag was set on an object that another thread still held.
+-	if( asCLockableSharedBool *weakRefFlag = LoadWeakRefFlag() ) // ALTERED: see LoadWeakRefFlag
+-	{
+-		weakRefFlag->Lock();
+-		if( refCount.get() != 1 )
+-		{
+-			// Not the last reference: no other release or weak reference can make this one the last meanwhile
+-			int r = refCount.atomicDec();
+-			weakRefFlag->Unlock();
+-			return r;
+-		}
+-		// The last reference: no weak reference can turn strong after this
+-		weakRefFlag->SetLocked(true);
+-		weakRefFlag->Unlock();
+-	}
+-	else
++	asCLockableSharedBool *weakRefFlag = LoadWeakRefFlag(); // ALTERED: see LoadWeakRefFlag
++	if( weakRefFlag == 0 )
+ 	{
+ 		// ALTERED: a reference that isn't the last is let go of only while the count is still above 1, as one atomic step.
+ 		// Read first and decremented after, the last two references let go of on two threads at once both saw 2: neither
+@@ -681,6 +668,29 @@
+ 			if( refCount.compareExchange(count, count - 1) )
+ 				return int(count - 1);
+ 		}
++
++		// ALTERED: the flag was looked for while another thread could still hold a reference, and that thread can have made a
++		// weak reference (the flag) and let go of its reference since, which made this one the last: the flag is looked for
++		// again now that the count is 1, and marked dead below before the destructor runs. Left live, a weak reference turned
++		// strong on another thread while the destructor ran revived the object being destroyed, which then lived on with its
++		// destructor run. No other thread holds a reference now, so none can make the flag after this. The fence keeps the
++		// flag's load after the count's (loads can be reordered on ARM).
++		std::atomic_thread_fence(std::memory_order_acquire);
++		weakRefFlag = LoadWeakRefFlag();
++	}
++	if( weakRefFlag )
++	{
++		weakRefFlag->Lock();
++		if( refCount.get() != 1 )
++		{
++			// Not the last reference: no other release or weak reference can make this one the last meanwhile
++			int r = refCount.atomicDec();
++			weakRefFlag->Unlock();
++			return r;
++		}
++		// The last reference: no weak reference can turn strong after this
++		weakRefFlag->SetLocked(true);
++		weakRefFlag->Unlock();
+ 	}
+ 
+ 	// Call the script destructor behaviour if the reference counter is 1.

@@ -107,6 +107,7 @@ vcpkg_from_github(
         fix-weak-reference-revives-cycle-garbage.patch
         fix-script-object-flag-bytes.patch
         fix-offset-limits.patch
+        fix-weak-reference-made-during-last-release.patch
 )
 
 vcpkg_cmake_configure(
