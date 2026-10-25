@@ -4565,6 +4565,7 @@ public:
 	void set_stop_time_with_fade_in_frames(unsigned long long absolute_time, unsigned long long fade_length) override {
 		if (!snd) return;
 		stop_if_stop_came();
+		pause_called_off();
 		ma_sound_set_stop_time_with_fade_in_pcm_frames(&*snd, absolute_time, fade_length);
 		stop_fade_set(fade_length);
 		fade_paused = false;
@@ -4574,6 +4575,7 @@ public:
 		ma_uint32 rate = ma_engine_get_sample_rate(ma_sound_get_engine(&*snd));
 		if (!frames_fit(absolute_time, rate) || !frames_fit(fade_length, rate)) return;
 		stop_if_stop_came();
+		pause_called_off();
 		ma_sound_set_stop_time_with_fade_in_milliseconds(&*snd, absolute_time, fade_length);
 		stop_fade_set(fade_length * rate / 1000);
 		fade_paused = false;
@@ -4581,12 +4583,18 @@ public:
 	// A plain stop replaces a stop with a fade too, so that stop's fade goes with it rather than leaving the sound silent until the new stop.
 	void set_stop_time_in_frames(ma_uint64 absolute_time) override {
 		mixer_impl::set_stop_time_in_frames(absolute_time);
+		pause_called_off();
 		forget_stop_fade();
 	}
 	void set_stop_time_in_milliseconds(ma_uint64 absolute_time) override {
 		if (snd && !frames_fit(absolute_time, ma_engine_get_sample_rate(ma_sound_get_engine(&*snd)))) return; // Refused, so the stop set before stays.
 		mixer_impl::set_stop_time_in_milliseconds(absolute_time);
+		pause_called_off();
 		forget_stop_fade();
+	}
+	// A pause_fade() whose stop hasn't come, which a stop the script schedules replaces: the sound plays on, so it is no longer paused, which play() took for a resume after that stop came, a stream_pcm() sound keeping its queue as no other stopped sound does. One whose pause came, which stop_if_stop_came() stopped, or which pause() stopped since, stays paused.
+	void pause_called_off() {
+		if (fade_paused && snd && ma_node_get_state(&*snd) == ma_node_state_started) paused = false;
 	}
 	void forget_stop_fade() {
 		if (!snd) return;
