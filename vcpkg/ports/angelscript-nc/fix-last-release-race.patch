@@ -1,0 +1,126 @@
+diff --git a/sdk/angelscript/source/as_atomic.cpp b/sdk/angelscript/source/as_atomic.cpp
+--- a/sdk/angelscript/source/as_atomic.cpp
++++ b/sdk/angelscript/source/as_atomic.cpp
+@@ -38,6 +38,9 @@
+ 
+ BEGIN_AS_NAMESPACE
+ 
++// ALTERED: see asCAtomic::compareExchange
++static bool asAtomicCompareExchange(int &value, int expected, int desired);
++
+ asCAtomic::asCAtomic()
+ {
+ 	value = 0;
+@@ -79,6 +82,12 @@
+ 	return asAtomicDec((int&)value);
+ }
+ 
++// ALTERED
++bool asCAtomic::compareExchange(asDWORD expected, asDWORD desired)
++{
++	return asAtomicCompareExchange((int&)value, (int)expected, (int)desired);
++}
++
+ //
+ // The following code implements the atomicInc and atomicDec on different platforms
+ //
+@@ -94,6 +103,14 @@
+ 	return --value;
+ }
+ 
++static bool asAtomicCompareExchange(int &value, int expected, int desired)
++{
++	if( value != expected )
++		return false;
++	value = desired;
++	return true;
++}
++
+ #elif defined(AS_XENON) /// XBox360
+ 
+ END_AS_NAMESPACE
+@@ -110,6 +127,11 @@
+ 	return InterlockedDecrement((LONG*)&value);
+ }
+ 
++static bool asAtomicCompareExchange(int &value, int expected, int desired)
++{
++	return InterlockedCompareExchange((LONG*)&value, (LONG)desired, (LONG)expected) == (LONG)expected;
++}
++
+ #elif defined(AS_WIN)
+ 
+ END_AS_NAMESPACE
+@@ -128,6 +150,11 @@
+ 	return InterlockedDecrement((LONG*)&value);
+ }
+ 
++static bool asAtomicCompareExchange(int &value, int expected, int desired)
++{
++	return InterlockedCompareExchange((LONG*)&value, (LONG)desired, (LONG)expected) == (LONG)expected;
++}
++
+ #elif defined(AS_LINUX) || defined(AS_BSD) || defined(AS_ILLUMOS) || defined(AS_ANDROID)
+ 
+ //
+@@ -151,6 +178,11 @@
+ 	return __sync_sub_and_fetch(&value, 1);
+ }
+ 
++static bool asAtomicCompareExchange(int &value, int expected, int desired)
++{
++	return __sync_bool_compare_and_swap(&value, expected, desired);
++}
++
+ #elif defined(AS_MAC) || defined(AS_IPHONE)
+ 
+ /* old deprecated way of doing it
+@@ -181,6 +213,10 @@
+ {
+ 	return std::atomic_fetch_sub((std::atomic<int>*)&value, 1) - 1;
+ }
++static bool asAtomicCompareExchange(int &value, int expected, int desired)
++{
++	return std::atomic_compare_exchange_strong((std::atomic<int>*)&value, &expected, desired);
++}
+ 
+ #else
+ 
+diff --git a/sdk/angelscript/source/as_atomic.h b/sdk/angelscript/source/as_atomic.h
+--- a/sdk/angelscript/source/as_atomic.h
++++ b/sdk/angelscript/source/as_atomic.h
+@@ -60,6 +60,9 @@
+ 	// Decrease and return new value
+ 	asDWORD atomicDec();
+ 
++	// ALTERED: set the value to desired if it is expected, as one atomic step; returns whether it did
++	bool    compareExchange(asDWORD expected, asDWORD desired);
++
+ protected:
+ 	asDWORD value;
+ };
+diff --git a/sdk/angelscript/source/as_scriptobject.cpp b/sdk/angelscript/source/as_scriptobject.cpp
+--- a/sdk/angelscript/source/as_scriptobject.cpp
++++ b/sdk/angelscript/source/as_scriptobject.cpp
+@@ -651,6 +651,21 @@
+ 		extra->weakRefFlag->SetLocked(true);
+ 		extra->weakRefFlag->Unlock();
+ 	}
++	else
++	{
++		// ALTERED: a reference that isn't the last is let go of only while the count is still above 1, as one atomic step.
++		// Read first and decremented after, the last two references let go of on two threads at once both saw 2: neither
++		// called the destructor, and the second decrement destroyed the object without its script destructor having run.
++		// Whoever finds the count at 1 holds the only reference, which nothing else can add to now.
++		for(;;)
++		{
++			asDWORD count = refCount.get();
++			if( count <= 1 )
++				break;
++			if( refCount.compareExchange(count, count - 1) )
++				return int(count - 1);
++		}
++	}
+ 
+ 	// Call the script destructor behaviour if the reference counter is 1.
+ 	if( refCount.get() == 1 && !isDestructCalled )

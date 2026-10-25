@@ -97,6 +97,7 @@ vcpkg_from_github(
         fix-null-object-reference-argument.patch
         fix-silent-builder-pending-message.patch
         fix-weak-reference-vs-collector.patch
+        fix-last-release-race.patch
 )
 
 vcpkg_cmake_configure(
