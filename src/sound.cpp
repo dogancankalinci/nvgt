@@ -568,6 +568,7 @@ class audio_engine_impl final : public audio_node_impl, public virtual audio_eng
 	std::atomic<asIScriptFunction*> script_data_callback;
 	audio_engine_endpoint *engine_endpoint; // Upon engine creation we'll call ma_engine_get_endpoint once so as to avoid creating more than one of our wrapper objects when our engine->get_endpoint() function is called.
 	std::mutex callback_mutex; // Lets the device's thread take a reference of its own to script_data_callback before set_processing_callback() can let it go.
+	asITypeInfo *script_data_buffer_type = nullptr; // memory_buffer<float>, the type of the callback's buffer, looked up by set_processing_callback() on the script's thread and read under callback_mutex.
 	inline static thread_local audio_engine_impl *processing = nullptr; // The engine whose device this thread is running the data callback of, see release().
 	struct processing_scope {
 		processing_scope(audio_engine_impl *engine) { audio_engine_impl::processing = engine; }
@@ -595,15 +596,18 @@ class audio_engine_impl final : public audio_node_impl, public virtual audio_eng
 		if (!engine->script_data_callback || !engine->duplicate_if_alive()) return;
 		g_script_callbacks_running++; // Before looking at the flag, so sound_stop_script_callbacks() either sees this call or this call sees the flag.
 		asIScriptFunction *callback = nullptr;
+		asITypeInfo *buffer_type = nullptr;
 		if (!g_script_callbacks_stopped) {
 			std::lock_guard<std::mutex> lock(engine->callback_mutex);
 			callback = engine->script_data_callback;
 			if (callback) callback->AddRef();
+			buffer_type = engine->script_data_buffer_type;
 		}
 		if (callback) {
 			asIScriptContext* ctx = g_ScriptEngine->RequestContext();
 			if (ctx && ctx->Prepare(callback) >= 0) { // Todo: Maybe find a way to log error state here?
-				script_memory_buffer buf(g_ScriptEngine->GetTypeInfoByDecl("memory_buffer<float>"), pOutput, pDevice->playback.channels * frames_read); // Todo: Support all data formats.
+				// The type set_processing_callback() looked up: GetTypeInfoByDecl here, on the device's thread for every buffer, searched the engine's template instances while a script thread's build could be adding to them. get_array_type() isn't used here, as it can wait for the build lock, which a thread destroying this engine may hold while it waits for this callback to return.
+				script_memory_buffer buf(buffer_type, pOutput, pDevice->playback.channels * frames_read); // Todo: Support all data formats.
 				if (ctx->SetArgObject(0, static_cast<audio_engine*>(engine)) >= 0 && ctx->SetArgObject(1, &buf) >= 0 && ctx->SetArgQWord(2, frames_read) >= 0)
 					ctx->Execute(); // Really not sure what to do about exceptions and errors taking place in the audio thread yet as we don't have a fully established logging facility set up.
 			}
@@ -821,9 +825,11 @@ public:
 	}
 	void set_processing_callback(asIScriptFunction* cb) override {
 		asIScriptFunction *old;
+		asITypeInfo *buffer_type = cb ? get_array_type("memory_buffer<float>") : nullptr; // See data_callback().
 		{
 			std::lock_guard<std::mutex> lock(callback_mutex);
 			old = script_data_callback.exchange(cb);
+			if (buffer_type) script_data_buffer_type = buffer_type;
 		}
 		if (old) old->Release(); // The device's thread holds a reference of its own to one it is calling.
 	}
