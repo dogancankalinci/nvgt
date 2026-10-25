@@ -1,0 +1,34 @@
+diff --git a/sdk/angelscript/source/as_compiler.cpp b/sdk/angelscript/source/as_compiler.cpp
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -3596,8 +3596,13 @@
+ 	// If the rexpr is already a temporary value of the same type, then it should be used directly without making a copy
+ 	// TODO: This can probably be done for local variables as well
+ 	// TODO: For value types, stored inline the rexpr would have to be compiled already to initialize the value so the following cannot be used
++	// ALTERED: not for a value type that works as a handle (asOBJ_ASHANDLE: ref, dictionaryValue, weakref<T>), which
++	// SupportHandles() accepts: the address of the temporary was stored in the member or global and the temporary destroyed
++	// after it (a value type has no reference to hand over), so the member was a destroyed object, inside the context's
++	// stack when the temporary was there (its destruction freed an address in the stack). Such a type is initialized below.
+ 	if ((isVarGlobOrMem == asVGM_MEMBER || isVarGlobOrMem == asVGM_GLOBAL) &&
+-		rexpr->type.isTemporary && type.GetTypeInfo() == rexpr->type.dataType.GetTypeInfo() && type.IsObject() && (type.IsObjectHandle() || type.SupportHandles()))
++		rexpr->type.isTemporary && type.GetTypeInfo() == rexpr->type.dataType.GetTypeInfo() && type.IsObject() && (type.IsObjectHandle() || type.SupportHandles()) &&
++		(type.IsObjectHandle() || !(type.GetTypeInfo()->flags & asOBJ_VALUE)))
+ 	{
+ 		// Add the rexpr to the bytecode
+ 		if( !(type.GetTypeInfo()->flags & asOBJ_SCOPED) )
+@@ -3642,8 +3647,14 @@
+ 	// Only do this if the expression is of the same type, as the expression is an assignment
+ 	// and an initialization constructor may not have the same meaning.
+ 	// TODO: Should allow initialization constructor if it is declared as allowed for implicit conversions.
++	// ALTERED: a member or global of a value type that works as a handle (see above) initialized with a temporary of the same
++	// type may use its copy constructor (as ref has), what the members and globals the above made meant to hold; without one
++	// it is default constructed and assigned (dictionaryValue, weakref<T>)
++	bool asHandleCopy = (isVarGlobOrMem == asVGM_MEMBER || isVarGlobOrMem == asVGM_GLOBAL) && rexpr->type.isTemporary &&
++		type.GetTypeInfo() && (type.GetTypeInfo()->GetFlags() & asOBJ_ASHANDLE) && (type.GetTypeInfo()->GetFlags() & asOBJ_VALUE) &&
++		type.GetTypeInfo() == rexpr->type.dataType.GetTypeInfo();
+ 	if (!type.IsObjectHandle() && !rexpr->type.isExplicitHandle &&
+-		!(type.GetTypeInfo() && (type.GetTypeInfo()->GetFlags() & asOBJ_ASHANDLE)) &&
++		(!(type.GetTypeInfo() && (type.GetTypeInfo()->GetFlags() & asOBJ_ASHANDLE)) || asHandleCopy) &&
+ 		type.IsEqualExceptRefAndConst(rexpr->type.dataType))
+ 	{
+ 		asSTypeBehaviour* beh = type.GetBehaviour();

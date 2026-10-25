@@ -92,6 +92,7 @@ vcpkg_from_github(
         fix-global-variable-map-threads.patch
         fix-delegate-gc-after-made.patch
         fix-gc-half-made-script-object.patch
+        fix-handle-like-member-init.patch
 )
 
 vcpkg_cmake_configure(
