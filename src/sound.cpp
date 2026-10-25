@@ -4144,15 +4144,15 @@ public:
 			play(true);
 		}
 		if (!pcm_stream) return false;
-		// On an audio thread, which can't wait for room (see below), all of it or none: a part queued before giving up the rest left the script unable to tell what was taken, to send the rest again. The audio thread only makes room meanwhile.
-		if (audio_engine_impl::on_audio_thread() && ma_pcm_rb_available_write(&pcm_stream->rb) < size_in_frames) {
+		// All of it or none where nothing can be waited on for room: on an audio thread (see below), and for a sound not playing, paused or stopped, which nothing reads until play(). A part queued before giving up the rest left the script unable to tell what was taken, to send the rest again, and play() resuming a paused sound played that part. The audio thread only makes room meanwhile.
+		if ((audio_engine_impl::on_audio_thread() || !(snd && ma_sound_is_playing(&*snd))) && ma_pcm_rb_available_write(&pcm_stream->rb) < size_in_frames) {
 			g_soundsystem_last_error = size_in_frames > ma_pcm_rb_get_subbuffer_size(&pcm_stream->rb)? MA_TOO_BIG : MA_BUSY; // More than the whole queue holds, which no later call can take either, to be sent in parts.
 			return false;
 		}
 		const char* input = (const char*)data;
 		unsigned int frames_written = 0;
 		unsigned int frame_size = ma_get_bytes_per_frame(ma_pcm_rb_get_format(&pcm_stream->rb), ma_pcm_rb_get_channels(&pcm_stream->rb));
-		// A full buffer is waited on while the sound plays it out; when nothing has made room for a second, as when the sound was stopped or its engine is never read, the rest is given up rather than waited on forever.
+		// A full buffer is waited on while the sound plays it out; when nothing has made room for a second, as when the sound was stopped meanwhile or its engine is never read, the rest is given up rather than waited on forever.
 		std::chrono::steady_clock::time_point waiting_since;
 		bool waiting = false;
 		while (size_in_frames) {
