@@ -1,0 +1,120 @@
+diff --git a/sdk/angelscript/source/as_module.cpp b/sdk/angelscript/source/as_module.cpp
+--- a/sdk/angelscript/source/as_module.cpp
++++ b/sdk/angelscript/source/as_module.cpp
+@@ -1594,7 +1594,10 @@ asCGlobalProperty *asCModule::AllocateGlobalProperty(const char *propName, const
+ 	prop->AllocateMemory();
+ 
+ 	// Make an entry in the address to variable map
++	// ALTERED: under the engine's function table lock, see asCScriptFunction::GetPropertyByGlobalVarPtr
++	ENTERCRITICALSECTION(m_engine->functionTableLock);
+ 	m_engine->varAddressMap.Insert(prop->GetAddressOfValue(), prop);
++	LEAVECRITICALSECTION(m_engine->functionTableLock);
+ 
+ 	// Store the variable in the module scope
+ 	m_scriptGlobals.Put(prop);
+diff --git a/sdk/angelscript/source/as_restore.cpp b/sdk/angelscript/source/as_restore.cpp
+--- a/sdk/angelscript/source/as_restore.cpp
++++ b/sdk/angelscript/source/as_restore.cpp
+@@ -5362,7 +5362,13 @@ void asCWriter::WriteByteCode(asCScriptFunction *func)
+ 		{
+ 			// Check if the address is a global property or a string constant
+ 			void *ptr = *(void**)(tmpBC + 1);
+-			if (engine->varAddressMap.MoveTo(0, ptr))
++			// ALTERED: looked up under the engine's function table lock, see asCScriptFunction::GetPropertyByGlobalVarPtr (the
++			// bytecode can be saved on one thread while a collection on another deletes a discarded module, which removes its
++			// global variables from the map)
++			ENTERCRITICALSECTION(engine->functionTableLock);
++			bool isGlobalProp = engine->varAddressMap.MoveTo(0, ptr);
++			LEAVECRITICALSECTION(engine->functionTableLock);
++			if (isGlobalProp)
+ 			{
+ 				// Translate global variable pointers into indices
+ 				// Flag the first bit to signal global property
+@@ -5909,10 +5915,13 @@ void asCWriter::WriteUsedGlobalProps()
+ 		// Find the property descriptor from the address
+ 		asCGlobalProperty *prop = 0;
+ 		asSMapNode<void*, asCGlobalProperty*> *cursor;
++		// ALTERED: under the engine's function table lock, see asCWriter::WriteByteCode
++		ENTERCRITICALSECTION(engine->functionTableLock);
+ 		if( engine->varAddressMap.MoveTo(&cursor, p) )
+ 		{
+ 			prop = engine->varAddressMap.GetValue(cursor);
+ 		}
++		LEAVECRITICALSECTION(engine->functionTableLock);
+ 
+ 		asASSERT(prop);
+ 
+diff --git a/sdk/angelscript/source/as_scriptengine.cpp b/sdk/angelscript/source/as_scriptengine.cpp
+--- a/sdk/angelscript/source/as_scriptengine.cpp
++++ b/sdk/angelscript/source/as_scriptengine.cpp
+@@ -2864,7 +2864,10 @@ int asCScriptEngine::RegisterGlobalProperty(const char *declaration, void *point
+ 	prop->accessMask  = defaultAccessMask;
+ 
+ 	prop->SetRegisteredAddress(pointer);
++	// ALTERED: under functionTableLock, see asCScriptFunction::GetPropertyByGlobalVarPtr
++	ENTERCRITICALSECTION(functionTableLock);
+ 	varAddressMap.Insert(prop->GetAddressOfValue(), prop);
++	LEAVECRITICALSECTION(functionTableLock);
+ 
+ 	asUINT idx = registeredGlobalProps.Put(prop);
+ 	prop->AddRef();
+@@ -2908,11 +2911,14 @@ void asCScriptEngine::RemoveGlobalProperty(asCGlobalProperty *prop)
+ 		freeGlobalPropertyIds.PushLast(index);
+ 		globalProperties[index] = 0;
+ 
++		// ALTERED: under functionTableLock, see asCScriptFunction::GetPropertyByGlobalVarPtr
++		ENTERCRITICALSECTION(functionTableLock);
+ 		asSMapNode<void*, asCGlobalProperty*> *node;
+ 		varAddressMap.MoveTo(&node, prop->GetAddressOfValue());
+ 		asASSERT(node);
+ 		if( node )
+ 			varAddressMap.Erase(node);
++		LEAVECRITICALSECTION(functionTableLock);
+ 
+ 		prop->Release();
+ 	}
+diff --git a/sdk/angelscript/source/as_scriptfunction.cpp b/sdk/angelscript/source/as_scriptfunction.cpp
+--- a/sdk/angelscript/source/as_scriptfunction.cpp
++++ b/sdk/angelscript/source/as_scriptfunction.cpp
+@@ -1434,6 +1434,10 @@ void asCScriptFunction::ReleaseReferences()
+ 						break;
+ 					}
+ 
++					// ALTERED: the id is read before the release, which can be the last one but the engine's, after which the
++					// deletion of a discarded module on another thread frees the property (see DeleteDiscardedModules)
++					int propId = prop->id;
++
+ 					// Only release the properties once
+ 					if( !ptrs.Exists(gvarPtr) )
+ 					{
+@@ -1441,7 +1445,7 @@ void asCScriptFunction::ReleaseReferences()
+ 						ptrs.PushLast(gvarPtr);
+ 					}
+ 
+-					asCConfigGroup *group = engine->FindConfigGroupForGlobalVar(prop->id);
++					asCConfigGroup *group = engine->FindConfigGroupForGlobalVar(propId);
+ 					if( group != 0 ) group->Release();
+ 				}
+ 				break;
+@@ -1785,13 +1789,19 @@ void *asCScriptFunction::GetUserData(asPWORD type) const
+ // TODO: cleanup: This method should probably be a member of the engine
+ asCGlobalProperty *asCScriptFunction::GetPropertyByGlobalVarPtr(void *gvarPtr)
+ {
++	// ALTERED: under the engine's function table lock: a function is released on any thread (a compiled function or a
++	// default value's function let go of, a delegate the collector frees), while a build adds global variables to this map
++	// and the deletion of a discarded module removes them, rebalancing the tree and freeing its nodes under the lookup
++	asCGlobalProperty *prop = 0;
++	ENTERCRITICALSECTION(engine->functionTableLock);
+ 	asSMapNode<void*, asCGlobalProperty*> *node;
+ 	if( engine->varAddressMap.MoveTo(&node, gvarPtr) )
+ 	{
+ 		asASSERT(gvarPtr == node->value->GetAddressOfValue());
+-		return node->value;
++		prop = node->value;
+ 	}
+-	return 0;
++	LEAVECRITICALSECTION(engine->functionTableLock);
++	return prop;
+ }
+ 
+ // internal

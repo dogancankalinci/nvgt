@@ -88,6 +88,7 @@ vcpkg_from_github(
         fix-function-table-threads.patch
         fix-signature-id-stable.patch
         fix-discarded-module-delete-during-build.patch
+        fix-global-variable-map-threads.patch
 )
 
 vcpkg_cmake_configure(
