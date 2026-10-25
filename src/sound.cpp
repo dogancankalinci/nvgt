@@ -566,7 +566,7 @@ class audio_engine_impl final : public audio_node_impl, public virtual audio_eng
 	bool device_follows_default = true; // Whether the device was opened as the system's default rather than by its id, as the constructor and assigning -1 do.
 	std::atomic<bool> started{false}; // Whether the engine is meant to run: started by the constructor or start(), until stop(). set_device() starts the new device only then.
 	// set_device(), start() and stop() of the engine, one at a time: two threads changing its device at once, as by assigning sound_output_device, uninitialised and opened its one ma_device under each other, and both waited for good.
-	std::mutex device_mutex;
+	mutable std::mutex device_mutex;
 	std::atomic<asIScriptFunction*> script_data_callback;
 	audio_engine_endpoint *engine_endpoint; // Upon engine creation we'll call ma_engine_get_endpoint once so as to avoid creating more than one of our wrapper objects when our engine->get_endpoint() function is called.
 	std::mutex callback_mutex; // Lets the device's thread take a reference of its own to script_data_callback before set_processing_callback() can let it go.
@@ -742,6 +742,9 @@ public:
 	int get_device() const override {
 		if (!engine || flags & NO_DEVICE)
 			return -1;
+		// Not while set_device() on another thread uninitialises and opens the device again, which zeroes it, so that asking MiniAudio about it then could reach a null context; not taken on the device's own callback, which set_device() waits for, and during which the device isn't being opened.
+		std::unique_lock<std::mutex> lock(device_mutex, std::defer_lock);
+		if (processing != this) lock.lock();
 		ma_device *dev = ma_engine_get_device(&*engine);
 		ma_device_info info;
 		// A device that set_device couldn't open again is left uninitialized, and asking miniaudio about it would reach its backend.
