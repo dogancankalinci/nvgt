@@ -1,0 +1,19 @@
+diff --git a/sdk/angelscript/source/as_compiler.cpp b/sdk/angelscript/source/as_compiler.cpp
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -10252,7 +10252,14 @@
+ 					dt.MakeHandle(true);
+ 					dt.MakeReference(false);
+ 
+-					PrepareArgument(&dt, rctx, rexpr, true, asTM_INREF);
++					// ALTERED: converted to a handle as CompileInitializationWithAssignment does for the same case, not prepared
++					// as an argument: the operator call below prepares it as the argument of opHndlAssign. Prepared twice, the
++					// first preparation's variable placeholder (asBC_VAR) was dereferenced and popped by the second, dead code
++					// the bytecode optimizer removes but that crashed without it (asEP_OPTIMIZE_BYTECODE false).
++					asCDataType to = dt;
++					to.MakeReference(true);
++					to.MakeHandleToConst(rctx->type.dataType.IsReadOnly());
++					ImplicitConversion(rctx, to, rexpr, asIC_IMPLICIT_CONV, true, false);
+ 					if( !dt.IsEqualExceptRefAndConst(rctx->type.dataType) )
+ 					{
+ 						asCString str;
