@@ -90,6 +90,7 @@ vcpkg_from_github(
         fix-signature-id-stable.patch
         fix-discarded-module-delete-during-build.patch
         fix-global-variable-map-threads.patch
+        fix-delegate-gc-after-made.patch
 )
 
 vcpkg_cmake_configure(

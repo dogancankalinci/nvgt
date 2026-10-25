@@ -1,0 +1,27 @@
+diff --git a/sdk/angelscript/source/as_scriptfunction.cpp b/sdk/angelscript/source/as_scriptfunction.cpp
+--- a/sdk/angelscript/source/as_scriptfunction.cpp
++++ b/sdk/angelscript/source/as_scriptfunction.cpp
+@@ -205,6 +205,10 @@
+ 	// The delegate doesn't own the parameters as it will only forward them to the real method
+ 	// so the exception handler must not clean up the parameters for the delegate
+ 	dontCleanUpOnException = true;
++
++	// ALTERED: notify the GC of the delegate now that it is complete (the GC's lock publishes the writes above to the
++	// collecting thread); it was done in the constructor
++	engine->gc.AddScriptObjectToGC(this, &engine->functionBehaviours);
+ }
+ 
+ // interface
+@@ -379,9 +383,9 @@
+ 	if( funcType == asFUNC_SCRIPT )
+ 		AllocateScriptFunctionData();
+ 
+-	// Notify the GC of delegates
+-	if( funcType == asFUNC_DELEGATE )
+-		engine->gc.AddScriptObjectToGC(this, &engine->functionBehaviours);
++	// ALTERED: a delegate is given to the GC by MakeDelegate, once it holds its object. Given here, the collector (another
++	// thread's, as each thread's context runs the collector when it ends) could enumerate the delegate's references while
++	// MakeDelegate was still writing them.
+ }
+ 
+ void asCScriptFunction::AllocateScriptFunctionData()
