@@ -2490,6 +2490,7 @@ struct held_sound : ma_sound {
 	static constexpr int restart_none = 0, restart_asked = 1, restart_taking = 2;
 	std::atomic<int> restart{restart_none};
 	std::atomic<bool> flushing{false}; // give_end() runs MiniAudio's processing at the sound's end with its end flag off, which another thread is to take for the end still (see at_end_seen()).
+	std::atomic<ma_uint32> processed{0}; // Calls of held_sound_process(), by which play() tells whether the audio thread still processes the sound (see sound_impl::still_ending()).
 	std::atomic<ma_uint64> seek_target{~(ma_uint64)0}; // The frame a seek asked for, ~0 for none, made by held_sound_process() in place of MiniAudio's seekTarget.
 };
 struct held_sound_delete {
@@ -2640,6 +2641,7 @@ static void start_from_start(ma_sound* s) {
 static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32* frame_count_in, float** frames_out, ma_uint32* frame_count_out) {
 	hold_rate(node);
 	ma_sound* s = (ma_sound*)node;
+	held(s)->processed.fetch_add(1, std::memory_order_relaxed);
 	std::atomic<ma_uint64>& seek_target = held(s)->seek_target;
 	// A seek given to MiniAudio itself, as by C++ code holding the ma_sound, is moved to the sound's target, to be made as the script's are; MiniAudio's own processing would keep the cache and seek a stream every block.
 	std::atomic<ma_uint64>& given_target = *reinterpret_cast<std::atomic<ma_uint64>*>(&s->seekTarget);
@@ -4314,9 +4316,28 @@ public:
 	// A sound that read its end in a block of the audio thread, which stops it in its next, counts as playing until then, so that ma_sound_start() left it to be stopped while play() returned true. play() waits that stop out, a block or two at most, and then starts the sound as any at its end: from its start, or not, with the error, when its source can't go back there. Whether the sound is still in that window: so it is with no audio thread to wait for, as for an engine without a device, which the script reads, or on the audio thread itself, as in a processing callback, or once the wait ran out, as for a device not running, when the audio thread is asked to start it instead (see restart_if_ending()).
 	bool still_ending() {
 		if (!snd || !at_end_seen(&*snd) || !ma_sound_is_playing(&*snd)) return false;
-		if ((get_engine()->get_flags() & audio_engine::NO_DEVICE) || audio_engine_impl::on_audio_thread()) return true;
+		held_sound* h = held(&*snd);
+		if ((get_engine()->get_flags() & audio_engine::NO_DEVICE) || audio_engine_impl::on_audio_thread() || h->restart.load() == held_sound::restart_asked) return true; // An ask left by an earlier call stands.
+		// Waited out only while the audio thread goes on processing the sound, as it does in each block it reads the engine: not once the engine's time moved 50 ms without a call of the sound's processing, as for a mixer stopped, nor once it stood still for 10 ms, as for an engine stopped or a device lost.
+		ma_engine* engine = ma_sound_get_engine(&*snd);
+		const ma_uint64 idle_frames = std::max<ma_uint64>(1, ma_engine_get_sample_rate(engine) / 20);
 		const auto give_up = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
-		while (at_end_seen(&*snd) && ma_sound_is_playing(&*snd) && std::chrono::steady_clock::now() < give_up) std::this_thread::sleep_for(std::chrono::microseconds(500));
+		ma_uint32 calls = h->processed.load();
+		ma_uint64 time = ma_engine_get_time_in_pcm_frames(engine), processed_at = time;
+		auto time_moved = std::chrono::steady_clock::now();
+		while (at_end_seen(&*snd) && ma_sound_is_playing(&*snd) && std::chrono::steady_clock::now() < give_up) {
+			std::this_thread::sleep_for(std::chrono::microseconds(500));
+			const ma_uint32 now_calls = h->processed.load();
+			const ma_uint64 now_time = ma_engine_get_time_in_pcm_frames(engine);
+			if (now_calls != calls) {
+				calls = now_calls;
+				processed_at = now_time;
+			} else if (now_time - processed_at > idle_frames) break;
+			if (now_time != time) {
+				time = now_time;
+				time_moved = std::chrono::steady_clock::now();
+			} else if (std::chrono::steady_clock::now() - time_moved > std::chrono::milliseconds(10)) break;
+		}
 		return at_end_seen(&*snd) && ma_sound_is_playing(&*snd);
 	}
 	// The audio thread is asked to play a sound still in that window on from its start, which it does in its next block, or once it stopped it in the block under way; a sound stopped meanwhile is taken back and started as any at its end. Whether the audio thread was asked. Its seek can't tell play() that a source can't go back to its start, which then reads nothing more and ends.
