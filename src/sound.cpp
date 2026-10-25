@@ -616,11 +616,16 @@ class audio_engine_impl final : public audio_node_impl, public virtual audio_eng
 		ma_uint64 frames_read;
 		engine->read(pOutput, frameCount, &frames_read);
 		// The script is given the device's whole block, which MiniAudio silenced before the engine mixed into it: the engine reports only the frames its graph gave, none while nothing is attached to it, so that a script making its audio itself got no block to fill, and part of one when a node ended within it.
-		if (!engine->script_data_callback || !engine->duplicate_if_alive()) return;
-		g_script_callbacks_running++; // Before looking at the flag, so sound_stop_script_callbacks() either sees this call or this call sees the flag.
+		if (!engine->script_data_callback) return;
+		// Counted before looking at the flag and before taking the engine's reference, and given back after letting that go, which can destroy the engine on a thread of its own, counted then (see delete_detached()): so sound_stop_script_callbacks() either sees this call, waiting for it and for such a deletion, or this call sees the flag and takes no reference. Given back before letting the reference go, a deletion it started could come after the waiter saw no call running.
+		g_script_callbacks_running++;
+		if (g_script_callbacks_stopped || !engine->duplicate_if_alive()) {
+			g_script_callbacks_running--;
+			return;
+		}
 		asIScriptFunction *callback = nullptr;
 		asITypeInfo *buffer_type = nullptr;
-		if (!g_script_callbacks_stopped) {
+		{
 			std::lock_guard<std::mutex> lock(engine->callback_mutex);
 			callback = engine->script_data_callback;
 			if (callback) callback->AddRef();
@@ -637,8 +642,8 @@ class audio_engine_impl final : public audio_node_impl, public virtual audio_eng
 			if (ctx) g_ScriptEngine->ReturnContext(ctx);
 			callback->Release();
 		}
-		g_script_callbacks_running--;
 		engine->release(); // Can be the last reference, see release().
+		g_script_callbacks_running--;
 	}
 
 public:
