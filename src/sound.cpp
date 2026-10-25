@@ -593,6 +593,7 @@ class audio_engine_impl final : public audio_node_impl, public virtual audio_eng
 		processing_scope scope(engine); // Outlasts every reference let go below.
 		ma_uint64 frames_read;
 		engine->read(pOutput, frameCount, &frames_read);
+		// The script is given the device's whole block, which MiniAudio silenced before the engine mixed into it: the engine reports only the frames its graph gave, none while nothing is attached to it, so that a script making its audio itself got no block to fill, and part of one when a node ended within it.
 		if (!engine->script_data_callback || !engine->duplicate_if_alive()) return;
 		g_script_callbacks_running++; // Before looking at the flag, so sound_stop_script_callbacks() either sees this call or this call sees the flag.
 		asIScriptFunction *callback = nullptr;
@@ -607,8 +608,8 @@ class audio_engine_impl final : public audio_node_impl, public virtual audio_eng
 			asIScriptContext* ctx = g_ScriptEngine->RequestContext();
 			if (ctx && ctx->Prepare(callback) >= 0) { // Todo: Maybe find a way to log error state here?
 				// The type set_processing_callback() looked up: GetTypeInfoByDecl here, on the device's thread for every buffer, searched the engine's template instances while a script thread's build could be adding to them. get_array_type() isn't used here, as it can wait for the build lock, which a thread destroying this engine may hold while it waits for this callback to return.
-				script_memory_buffer buf(buffer_type, pOutput, pDevice->playback.channels * frames_read); // Todo: Support all data formats.
-				if (ctx->SetArgObject(0, static_cast<audio_engine*>(engine)) >= 0 && ctx->SetArgObject(1, &buf) >= 0 && ctx->SetArgQWord(2, frames_read) >= 0)
+				script_memory_buffer buf(buffer_type, pOutput, pDevice->playback.channels * frameCount); // Todo: Support all data formats.
+				if (ctx->SetArgObject(0, static_cast<audio_engine*>(engine)) >= 0 && ctx->SetArgObject(1, &buf) >= 0 && ctx->SetArgQWord(2, frameCount) >= 0)
 					ctx->Execute(); // Really not sure what to do about exceptions and errors taking place in the audio thread yet as we don't have a fully established logging facility set up.
 			}
 			if (ctx) g_ScriptEngine->ReturnContext(ctx);
