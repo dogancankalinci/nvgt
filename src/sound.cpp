@@ -4528,11 +4528,11 @@ public:
 			return MA_SUCCESS;
 		}
 		ma_result result = ma_sound_get_cursor_in_pcm_frames(&*snd, &pos);
-		if (result == MA_SUCCESS && ma_sound_at_end(&*snd) && front) { // A stream ended where it played to, rather than where a looping one that couldn't go back wrapped its cursor (see decode_front_view::played_to).
+		if (result == MA_SUCCESS && at_end_seen(&*snd) && front) { // A stream ended where it played to, rather than where a looping one that couldn't go back wrapped its cursor (see decode_front_view::played_to).
 			ma_uint64 to = front->played_to.load();
 			if (to != ~(ma_uint64)0) pos = to;
 		}
-		if (result == MA_SUCCESS && ma_sound_at_end(&*snd) && !ma_sound_is_looping(&*snd)) {
+		if (result == MA_SUCCESS && at_end_seen(&*snd) && !ma_sound_is_looping(&*snd)) {
 			unsigned long long length = get_length_in_frames();
 			if (length) pos = length;
 		}
