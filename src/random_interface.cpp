@@ -19,6 +19,7 @@
 #include <scriptarray.h>
 
 #include <cstring>
+#include <mutex>
 #include <sstream>
 #include <vector>
 
@@ -153,7 +154,14 @@ public:
 	void release() override { if (asAtomicDec(ref_count) < 1) delete this; }
 };
 
-// Global default random generator
+// Global default random generator. random() and the others use it on whichever thread the script calls them, while
+// set_default_random() can replace it on another: the generator it let go of was deleted under a call that had just read the
+// pointer (a use of freed memory). The pointers change under this lock, and a user takes a reference under it
+// (acquire_default_random()). A generator is let go of after the lock is: its release can run script code that uses random().
+static std::mutex& default_random_mutex() {
+	static std::mutex* m = new std::mutex; // Never destroyed: cleanup_default_random() runs at the program's end.
+	return *m;
+}
 random_interface* g_default_random = nullptr;
 static script_random_wrapper* g_default_script_wrapper = nullptr;
 random_xorshift* g_random_xorshift = nullptr;
@@ -161,12 +169,13 @@ random_xorshift* g_random_xorshift = nullptr;
 // Initialize default generator with provided rng
 void init_default_random(random_interface* rng) {
 	if (rng) {
+		std::lock_guard<std::mutex> lock(default_random_mutex());
 		g_default_random = rng;
 		rng->add_ref();
 	}
 }
 
-// Initialize default generator
+// Initialize default generator (default_random_mutex() held)
 static void ensure_default_random() {
 	// Default should always be initialized from RegisterScriptRandom
 	if (!g_default_random) {
@@ -179,12 +188,18 @@ static void ensure_default_random() {
 
 // Cleanup function to be called before engine shutdown
 void cleanup_default_random() {
-	random_interface* old_default = g_default_random;
-	script_random_wrapper* old_wrapper = g_default_script_wrapper;
-	random_xorshift* old_xorshift = g_random_xorshift;
-	g_default_random = nullptr;
-	g_default_script_wrapper = nullptr;
-	g_random_xorshift = nullptr;
+	random_interface* old_default;
+	script_random_wrapper* old_wrapper;
+	random_xorshift* old_xorshift;
+	{
+		std::lock_guard<std::mutex> lock(default_random_mutex());
+		old_default = g_default_random;
+		old_wrapper = g_default_script_wrapper;
+		old_xorshift = g_random_xorshift;
+		g_default_random = nullptr;
+		g_default_script_wrapper = nullptr;
+		g_random_xorshift = nullptr;
+	}
 	// Be careful not to double-release
 	if (old_default && old_default != old_wrapper)
 		old_default->release();
@@ -195,10 +210,14 @@ void cleanup_default_random() {
 }
 
 void set_default_random(random_interface* rng) {
-	random_interface* old_default = g_default_random;
-	if (g_default_script_wrapper && old_default == g_default_script_wrapper)
-		g_default_script_wrapper = nullptr;
-	g_default_random = rng;
+	random_interface* old_default;
+	{
+		std::lock_guard<std::mutex> lock(default_random_mutex());
+		old_default = g_default_random;
+		if (g_default_script_wrapper && old_default == g_default_script_wrapper)
+			g_default_script_wrapper = nullptr;
+		g_default_random = rng;
+	}
 	// The previous default, a generator of its own or the wrapper of a script generator, holds one reference either way.
 	if (old_default)
 		old_default->release();
@@ -206,11 +225,17 @@ void set_default_random(random_interface* rng) {
 
 void set_default_random_script(asIScriptObject* scriptObj) {
 	if (!scriptObj) return;
-	random_interface* old_default = g_default_random;
-	script_random_wrapper* old_wrapper = g_default_script_wrapper;
-	// Create wrapper and set as default
-	g_default_script_wrapper = new script_random_wrapper(scriptObj);
-	g_default_random = g_default_script_wrapper;
+	script_random_wrapper* wrapper = new script_random_wrapper(scriptObj);
+	random_interface* old_default;
+	script_random_wrapper* old_wrapper;
+	{
+		std::lock_guard<std::mutex> lock(default_random_mutex());
+		old_default = g_default_random;
+		old_wrapper = g_default_script_wrapper;
+		// Create wrapper and set as default
+		g_default_script_wrapper = wrapper;
+		g_default_random = g_default_script_wrapper;
+	}
 	// Clean up previous default
 	if (old_default && old_default != old_wrapper)
 		old_default->release();
@@ -218,8 +243,17 @@ void set_default_random_script(asIScriptObject* scriptObj) {
 		old_wrapper->release();
 }
 
+// Without a reference, for code that can't run while another thread replaces the generator. The script's get_default_random()
+// and NVGT's own users take one (acquire_default_random(), default_random).
 random_interface* get_default_random() {
+	std::lock_guard<std::mutex> lock(default_random_mutex());
 	ensure_default_random();
+	return g_default_random;
+}
+random_interface* acquire_default_random() {
+	std::lock_guard<std::mutex> lock(default_random_mutex());
+	ensure_default_random();
+	g_default_random->add_ref();
 	return g_default_random;
 }
 
@@ -479,7 +513,7 @@ void* random_array_choice(CScriptArray* array, random_interface* rng) {
 		if (ctx) ctx->SetException("Cannot get random element from empty array");
 		return nullptr;
 	}
-	if (!rng) rng = get_default_random();
+	if (!rng) return array->At(default_random()->range(0, array->GetSize() - 1));
 	return array->At(rng->range(0, array->GetSize() - 1));
 }
 
@@ -525,9 +559,11 @@ struct shuffle_hold {
 	~shuffle_hold() { if (rng) rng->release(); array->Release(); }
 };
 void random_array_shuffle(CScriptArray* array, random_interface* rng) {
-	if (!rng) rng = get_default_random();
 	if (array->GetSize() < 2) return;
+	random_interface* default_rng = rng ? nullptr : acquire_default_random(); // let go of once the hold below has its own
+	if (!rng) rng = default_rng;
 	shuffle_hold hold(array, rng);
+	if (default_rng) default_rng->release();
 	asIScriptContext* ACtx = asGetActiveContext();
 	// Use temporary slot for swapping
 	array->Resize(array->GetSize() + 1);
@@ -559,10 +595,8 @@ void* random_script_array_choice(CScriptArray* array, asIScriptObject* scriptRng
 		if (ctx) ctx->SetException("Cannot get random element from empty array");
 		return nullptr;
 	}
-	if (!scriptRng) {
-		random_interface* defaultRng = get_default_random();
-		return array->At(defaultRng->range(0, array->GetSize() - 1));
-	}
+	if (!scriptRng)
+		return array->At(default_random()->range(0, array->GetSize() - 1));
 	asIScriptEngine* engine = scriptRng->GetEngine();
 	asIScriptContext* ctx = engine->CreateContext();
 	if (ctx) ctx->SetLineCallback(asFUNCTION(nvgt_line_callback), NULL, asCALL_CDECL); // See script_random_wrapper.
@@ -578,8 +612,7 @@ void* random_script_array_choice(CScriptArray* array, asIScriptObject* scriptRng
 		return array->At(index);
 	}
 	if (ctx) ctx->Release();
-	random_interface* defaultRng = get_default_random();
-	return array->At(defaultRng->range(0, array->GetSize() - 1));
+	return array->At(default_random()->range(0, array->GetSize() - 1));
 }
 
 void random_script_array_choice_wrapper(asIScriptGeneric* gen) {
@@ -594,8 +627,7 @@ void random_script_array_choice_wrapper(asIScriptGeneric* gen) {
 
 void random_script_array_shuffle(CScriptArray* array, asIScriptObject* scriptRng) {
 	if (!scriptRng) {
-		random_interface* defaultRng = get_default_random();
-		random_array_shuffle(array, defaultRng);
+		random_array_shuffle(array, nullptr); // the default generator, held while it shuffles
 		return;
 	}
 	if (array->GetSize() < 2) return;
@@ -641,7 +673,6 @@ void random_script_array_shuffle(CScriptArray* array, asIScriptObject* scriptRng
 		ctx->Release();
 	} else {
 		if (ctx) ctx->Release();
-		random_interface* defaultRng = get_default_random();
-		random_array_shuffle(array, defaultRng);
+		random_array_shuffle(array, nullptr); // the default generator, held while it shuffles
 	}
 }

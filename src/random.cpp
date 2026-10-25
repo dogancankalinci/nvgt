@@ -42,25 +42,25 @@ asQWORD random_seed64() {
 }
 
 bool random_set_state(const std::string& state) {
-	return get_default_random()->set_state(state);
+	return default_random()->set_state(state);
 }
 std::string random_get_state() {
-	return get_default_random()->get_state();
+	return default_random()->get_state();
 }
 int random(int min, int max) {
-	return get_default_random()->range(min, max);
+	return default_random()->range(min, max);
 }
 int64 random64(int64 min, int64 max) {
 	return g_random_xorshift->range64(min, max);
 }
 
 float random_float() {
-	return get_default_random()->nextf();
+	return default_random()->nextf();
 }
 bool random_bool(int percent) {
 	if (percent < 1) return false;
 	if (percent >= 100) return true;
-	return get_default_random()->next_bool(percent);
+	return default_random()->next_bool(percent);
 }
 std::string random_character(const std::string& min, std::string& max) {
 	if (min == "" || max == "") return "";
@@ -73,7 +73,7 @@ void* random_choice(CScriptArray* array) {
 		if (ctx) ctx->SetException("Cannot get random element from empty array");
 		return nullptr;
 	}
-	return array->At(get_default_random()->range(0, array->GetSize() - 1));
+	return array->At(default_random()->range(0, array->GetSize() - 1));
 }
 
 // Wrapper function for AngelScript registration
@@ -178,7 +178,7 @@ void RegisterScriptRandom(asIScriptEngine* engine) {
 	engine->RegisterInterfaceMethod(_O("random_generator"), _O("int range(int min, int max)"));
 	engine->RegisterInterfaceMethod(_O("random_generator"), _O("bool next_bool(int percent = 50)"));
 	engine->RegisterInterfaceMethod(_O("random_generator"), _O("string next_character(const string &in min, const string &in max)"));
-	engine->RegisterGlobalFunction(_O("random_interface@+ get_default_random()"), asFUNCTION(get_default_random), asCALL_CDECL);
+	engine->RegisterGlobalFunction(_O("random_interface@ get_default_random()"), asFUNCTION(acquire_default_random), asCALL_CDECL); // With the reference taken under the lock: taken by AngelScript after the call (@+), set_default_random() on another thread could let go of the generator in between.
 	engine->RegisterGlobalFunction(_O("void set_default_random(random_interface@ generator)"), asFUNCTION(set_default_random), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("void set_default_random(random_generator@+ generator)"), asFUNCTION(set_default_random_script), asCALL_CDECL);
 	engine->RegisterObjectMethod(_O("array<T>"), _O("const T& random() const"), WRAP_OBJ_FIRST(random_choice), asCALL_GENERIC);

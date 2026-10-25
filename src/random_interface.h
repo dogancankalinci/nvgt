@@ -142,6 +142,16 @@ extern random_interface* g_default_random;
 void set_default_random(random_interface* rng);
 void set_default_random_script(asIScriptObject* scriptObj);
 random_interface* get_default_random();
+random_interface* acquire_default_random(); // The default generator with a reference taken for the caller, see random_interface.cpp.
+// Holds the default generator for one use: default_random()->range(0, 9).
+struct default_random {
+	random_interface* rng;
+	default_random() : rng(acquire_default_random()) {}
+	~default_random() { rng->release(); }
+	default_random(const default_random&) = delete;
+	default_random& operator=(const default_random&) = delete;
+	random_interface* operator->() const { return rng; }
+};
 void cleanup_default_random();
 void init_default_random(random_interface* rng);
 
