@@ -103,12 +103,12 @@ static std::condition_variable g_reaps_done;
 static std::unordered_map<ma_resource_manager*, int> g_reaps; // Under g_reaps_mutex.
 // At most this many of a resource manager's at once; close() waits for another itself, so that sounds loaded and let go of faster than they decode don't pile up decodes nobody plays, each holding its whole decoded file and the job threads.
 static constexpr int max_reaps = 2;
-// Takes a place among those of a resource manager, if there is one: none once uninit_sound() shut the sound system down, the process's exit following.
-static bool reserve_reap(ma_resource_manager* manager) {
+// Takes a place among those of a resource manager, if there is one, or past them for a caller that mustn't wait, as an audio thread: none once uninit_sound() shut the sound system down, the process's exit following.
+static bool reserve_reap(ma_resource_manager* manager, bool past_max = false) {
 	std::lock_guard<std::mutex> lock(g_reaps_mutex);
 	if (g_soundsystem_shut_down.test()) return false;
 	auto it = g_reaps.find(manager);
-	if (it != g_reaps.end() && it->second >= max_reaps) return false;
+	if (!past_max && it != g_reaps.end() && it->second >= max_reaps) return false;
 	g_reaps[manager]++;
 	return true;
 }
@@ -3740,7 +3740,8 @@ class sound_impl final : public mixer_impl, public virtual sound {
 		ma_resource_manager_data_buffer *failed_buffer = finish_load_jobs(&*r.source);
 		if (failed_buffer) free_failed_buffer(failed_buffer);
 		{
-			std::shared_lock<std::shared_mutex> tree_lock(g_resource_tree_mutex);
+			std::shared_lock<std::shared_mutex> tree_lock(g_resource_tree_mutex, std::defer_lock);
+			if (!(r.source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM)) tree_lock.lock(); // As close() frees one: a stream isn't in the tree, and freeing it waits for its reads.
 			uninit_resource_source(&*r.source);
 		}
 		r.source.reset();
@@ -4221,7 +4222,9 @@ public:
 		// A source still being decoded is handed to reap() once the sound is off it, when reserve_reap() gives it a place, rather than waited for here, and its load state let go of without waiting for its end. The memory a source loaded from memory decodes from goes with it, at the same place: a string that kept it within itself, which no file's header is small enough for, would move it, and then the source is waited for here.
 		unique_ptr<source_reap> reaped;
 		ma_resource_manager *source_manager = source? (claimed_manager? claimed_manager : ma_engine_get_resource_manager(get_engine()->get_ma_engine())) : nullptr;
-		if (decoding(source.get()) && reserve_reap(source_manager)) {
+		// On an audio thread, as when a processing callback lets a sound go, which mustn't wait out the rest of a decode, nor a stream's last read, a stalled network read included, a stream too, and past the places reserve_reap() otherwise gives.
+		const bool audio_thread = audio_engine_impl::on_audio_thread();
+		if ((decoding(source.get()) || audio_thread && source && (source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM)) && reserve_reap(source_manager, audio_thread)) {
 			reaped = make_unique<source_reap>();
 			reaped->manager = source_manager;
 			const char *decoded_from = pcm_buffer.data();
