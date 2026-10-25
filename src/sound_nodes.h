@@ -183,7 +183,7 @@ public:
 	bool set_state(ma_node_state state) { return node ? (g_soundsystem_last_error = ma_node_set_state(node, state)) == MA_SUCCESS : false; }
 	ma_node_state get_state() { return node ? ma_node_get_state(node) : ma_node_state_stopped; }
 	bool set_state_time(ma_node_state state, unsigned long long time) { return node ? (g_soundsystem_last_error = ma_node_set_state_time(node, state, time)) == MA_SUCCESS : false; }
-	unsigned long long get_state_time(ma_node_state state) { return node ? ma_node_get_state_time(node, state) : static_cast<unsigned long long>(ma_node_state_stopped); }
+	unsigned long long get_state_time(ma_node_state state) { return node ? ma_node_get_state_time(node, state) : 0; } // As MiniAudio gives for no node, rather than a state, which read as frame 1.
 	ma_node_state get_state_by_time(unsigned long long global_time) { return node ? ma_node_get_state_by_time(node, global_time) : ma_node_state_stopped; }
 	ma_node_state get_state_by_time_range(unsigned long long global_time_begin, unsigned long long global_time_end) { return node ? ma_node_get_state_by_time_range(node, global_time_begin, global_time_end) : ma_node_state_stopped; }
 	unsigned long long get_time() const { return node ? ma_node_get_time(node) : 0; }
