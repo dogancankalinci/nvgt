@@ -615,6 +615,7 @@ class audio_engine_impl final : public audio_node_impl, public virtual audio_eng
 	}
 
 public:
+	static bool on_audio_thread() { return processing; } // This thread runs a device's data callback, as a processing callback does.
 	engine_flags flags;
 	audio_engine_impl(int flags, int sample_rate, int channels) : audio_node_impl(nullptr, this), engine(nullptr), resource_manager(nullptr), script_data_callback(nullptr), engine_endpoint(nullptr), flags(static_cast<engine_flags>(flags)) {
 		if (channels > MA_MAX_CHANNELS) throw runtime_error(Poco::format("exceeded maximum channel count of %d", MA_MAX_CHANNELS));
@@ -4278,7 +4279,7 @@ public:
 		// A sound that isn't playing drops what was queued before it is started again, through its reader: see pcm_queue. One already playing keeps its queue.
 		if (pcm_stream && !(snd && ma_sound_is_playing(&*snd))) pcm_stream->discard();
 		bool looping = snd && ma_sound_is_looping(&*snd);
-		if (restart_if_ending()) {
+		if (still_ending() && restart_if_ending()) {
 			if (reset_loop_state) ma_sound_set_looping(&*snd, MA_FALSE);
 			clear_stop_for_restart();
 			g_soundsystem_last_error = MA_SUCCESS;
@@ -4291,7 +4292,7 @@ public:
 		if (fade_paused && snd) clear_stop_for_restart(true);
 		paused = fade_paused = false;
 		bool looping = snd && ma_sound_is_looping(&*snd);
-		if (restart_if_ending()) {
+		if (still_ending() && restart_if_ending()) {
 			ma_sound_set_looping(&*snd, MA_TRUE);
 			clear_stop_for_restart();
 			g_soundsystem_last_error = MA_SUCCESS;
@@ -4299,7 +4300,15 @@ public:
 		}
 		return started_or_undone(mixer_impl::play_looped(), looping);
 	}
-	// A sound that read its end in a block of the audio thread, which stops it in its next, counts as playing until then, so that ma_sound_start() left it to be stopped while play() returned true. The audio thread is asked to play it on from its start instead, which it does in its next block, or once it stopped it in the block under way; a sound stopped meanwhile is taken back and started as any at its end. Whether the audio thread was asked.
+	// A sound that read its end in a block of the audio thread, which stops it in its next, counts as playing until then, so that ma_sound_start() left it to be stopped while play() returned true. play() waits that stop out, a block or two at most, and then starts the sound as any at its end: from its start, or not, with the error, when its source can't go back there. Whether the sound is still in that window: so it is with no audio thread to wait for, as for an engine without a device, which the script reads, or on the audio thread itself, as in a processing callback, or once the wait ran out, as for a device not running, when the audio thread is asked to start it instead (see restart_if_ending()).
+	bool still_ending() {
+		if (!snd || !ma_sound_at_end(&*snd) || !ma_sound_is_playing(&*snd)) return false;
+		if ((get_engine()->get_flags() & audio_engine::NO_DEVICE) || audio_engine_impl::on_audio_thread()) return true;
+		const auto give_up = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
+		while (ma_sound_at_end(&*snd) && ma_sound_is_playing(&*snd) && std::chrono::steady_clock::now() < give_up) std::this_thread::sleep_for(std::chrono::microseconds(500));
+		return ma_sound_at_end(&*snd) && ma_sound_is_playing(&*snd);
+	}
+	// The audio thread is asked to play a sound still in that window on from its start, which it does in its next block, or once it stopped it in the block under way; a sound stopped meanwhile is taken back and started as any at its end. Whether the audio thread was asked. Its seek can't tell play() that a source can't go back to its start, which then reads nothing more and ends.
 	bool restart_if_ending() {
 		if (!snd || !ma_sound_at_end(&*snd) || !ma_sound_is_playing(&*snd)) return false;
 		held_sound* h = held(&*snd);
