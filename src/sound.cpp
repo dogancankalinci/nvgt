@@ -4126,6 +4126,10 @@ public:
 			if ((g_soundsystem_last_error = ma_pcm_rb_acquire_write(&pcm_stream->rb, &frames_requested, &buffer_ptr)) != MA_SUCCESS || !buffer_ptr) return false;
 			if (!frames_requested) {
 				ma_pcm_rb_commit_write(&pcm_stream->rb, 0);
+				if (audio_engine_impl::on_audio_thread()) { // Not waited on an audio thread, as in a processing callback, which held its engine up for that second, and its own engine, which makes the room, for good.
+					g_soundsystem_last_error = MA_BUSY;
+					return false;
+				}
 				if (!waiting) {
 					waiting = true;
 					waiting_since = std::chrono::steady_clock::now();
@@ -4393,6 +4397,10 @@ public:
 		return started;
 	}
 	bool play_wait() override {
+		if (audio_engine_impl::on_audio_thread()) { // Waiting for the sound to be played out on an audio thread, as in a processing callback, waited for good on its own engine's, which plays nothing while it waits, and held another's up for the sound's length.
+			g_soundsystem_last_error = MA_INVALID_OPERATION;
+			return false;
+		}
 		if (pcm_stream || !play())
 			return false;
 		while (get_playing())
