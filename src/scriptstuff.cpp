@@ -61,6 +61,7 @@ static std::mutex& gc_thread_mutex() {
 	return *m;
 }
 std::atomic<asQWORD> g_GCAutoFullTime{ticks()};
+static std::atomic<bool> g_GCFullRequested{false}; // garbage_collect() in mode 3, see garbage_collect_action().
 std::atomic<unsigned int> g_GCAutoFrequency{300000};
 void garbage_collect(bool full = true) {
 	if (!full && g_GCMode < 3)
@@ -68,9 +69,15 @@ void garbage_collect(bool full = true) {
 	else if (full && g_GCMode < 3)
 		g_ScriptEngine->GarbageCollect(asGC_FULL_CYCLE);
 	else if (full && g_GCMode == 3)
-		g_GCAutoFullTime = 0;
+		g_GCFullRequested = true;
 }
 void garbage_collect_action() {
+	// A full collection garbage_collect() asked for in mode 3, run by its thread: it ran one more step only (by moving the
+	// periodic second step forward), so garbage_collect() did no full collection in that mode, as it does in the others.
+	if (g_GCFullRequested.exchange(false)) {
+		g_ScriptEngine->GarbageCollect(asGC_FULL_CYCLE);
+		return;
+	}
 	g_ScriptEngine->GarbageCollect(asGC_ONE_STEP);
 	if (ticks() - g_GCAutoFullTime > g_GCAutoFrequency) {
 		g_ScriptEngine->GarbageCollect(asGC_ONE_STEP);
