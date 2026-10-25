@@ -1,0 +1,219 @@
+diff --git a/sdk/angelscript/source/as_builder.cpp b/sdk/angelscript/source/as_builder.cpp
+--- a/sdk/angelscript/source/as_builder.cpp
++++ b/sdk/angelscript/source/as_builder.cpp
+@@ -4551,7 +4551,20 @@
+ 	}
+ 
+ 	// Add the property to the object type
+-	return CastToObjectType(decl->typeInfo)->AddPropertyToClass(name, dt, isPrivate, isProtected, isInherited);
++	// ALTERED: the bytecode addresses a member by a 16-bit offset (asBC_ADDSi, (short)prop->byteOffset), as it does a
++	// registered type's (RegisterObjectProperty refuses an offset past 32767), but nothing limited a script class's size: a
++	// member placed past byte 32767 (a class with thousands of members, inherited ones included) was read and written at a
++	// truncated, negative offset, outside the object. Such a class is refused, once, at the first member past the limit.
++	asCObjectType *ot = CastToObjectType(decl->typeInfo);
++	asCObjectProperty *prop = ot->AddPropertyToClass(name, dt, isPrivate, isProtected, isInherited);
++	asUINT count = ot->properties.GetLength();
++	if( prop && prop->byteOffset > 32767 && (count < 2 || ot->properties[count-2]->byteOffset <= 32767) )
++	{
++		asCString str;
++		str.Format(TXT_TOO_MANY_MEMBERS_IN_CLASS_s, ot->name.AddressOf());
++		WriteError(str, decl->script, decl->node);
++	}
++	return prop;
+ }
+ 
+ bool asCBuilder::DoesMethodExist(asCObjectType *objType, int methodId, asUINT *methodIndex)
+diff --git a/sdk/angelscript/source/as_compiler.cpp b/sdk/angelscript/source/as_compiler.cpp
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -303,6 +303,8 @@
+ 	// Count total variable size
+ 	int varSize = GetVariableOffset((int)variableAllocations.GetLength()) - 1;
+ 	outFunc->scriptData->variableSpace = varSize;
++	if( !CheckOffsetLimit(varSize, 32767, TXT_TOO_MANY_VARIABLES, in_node) ) // ALTERED
++		return -1;
+ 
+ 	FinalizeFunction();
+ 
+@@ -360,6 +362,8 @@
+ 	// Count total variable size
+ 	int varSize = GetVariableOffset((int)variableAllocations.GetLength()) - 1;
+ 	outFunc->scriptData->variableSpace = varSize;
++	if( !CheckOffsetLimit(varSize, 32767, TXT_TOO_MANY_VARIABLES, in_node) ) // ALTERED
++		return -1;
+ 
+ 	FinalizeFunction();
+ 
+@@ -573,6 +577,7 @@
+ 
+ 	// Declare parameters
+ 	asUINT n;
++	int lowestParamPos = 0; // ALTERED: see below
+ 	for( n = 0; n < parameterNames.GetLength(); n++ )
+ 	{
+ 		// Get the parameter type
+@@ -615,6 +620,7 @@
+ 			vs.DeclareVariable("", type, stackPos, onHeap);
+ 
+ 		// Move to next parameter
++		lowestParamPos = stackPos; // ALTERED
+ 		stackPos -= type.GetSizeOnStackDWords();
+ 	}
+ 
+@@ -623,6 +629,10 @@
+ 
+ 	variables->DeclareVariable("return", returnType, stackPos, false);
+ 
++	// ALTERED: the parameters are at negative offsets below the object and return pointers (see CheckOffsetLimit); the last
++	// one's offset, where it starts, is the lowest the bytecode refers to
++	CheckOffsetLimit(-lowestParamPos, 32768, TXT_TOO_MANY_PARAMETERS, func);
++
+ 	return stackPos;
+ }
+ 
+@@ -1004,6 +1014,9 @@
+ 	if( nextLabel >= (1<<15) )
+ 		Error(TXT_TOO_MANY_JUMP_LABELS, in_func);
+ 
++	// ALTERED: nor the variables (see CheckOffsetLimit)
++	CheckOffsetLimit(varSize, 32767, TXT_TOO_MANY_VARIABLES, in_func);
++
+ 	// If there are compile errors, there is no reason to build the final code
+ 	if( hasCompileErrors || builder->numErrors != buildErrors )
+ 		return -1;
+@@ -1662,6 +1675,7 @@
+ 
+ 	// Reserve space for all local variables
+ 	outFunc->scriptData->variableSpace = varSize;
++	CheckOffsetLimit(varSize, 32767, TXT_TOO_MANY_VARIABLES, in_gvar->declaredAtNode); // ALTERED
+ 
+ 	ctx.bc.OptimizeLocally(tempVariableOffsets);
+ 
+@@ -2474,9 +2488,11 @@
+ 	// check raised the exception, the object was neither in a variable nor in a call any more: it was never destroyed (a
+ 	// value type leaked, a script class's destructor never ran). An object still in its variable is destroyed with it.
+ 	const int firstOffset = offset;
++	int highestOffset = offset; // ALTERED: see the end
+ 	for( int pass = 0; pass < 2; pass++, offset = firstOffset )
+ 	for( asUINT n = 0; n < args.GetLength(); n++ )
+ 	{
++		if( offset > highestOffset ) highestOffset = offset; // ALTERED
+ 		asUINT realParamIdx = n;
+ 		if (descr->IsVariadic() && n >= descr->parameterTypes.GetLength() - 1)
+ 			realParamIdx = descr->parameterTypes.GetLength() - 1;
+@@ -2576,6 +2592,14 @@
+ 
+ 		offset += descr->parameterTypes[realParamIdx].GetSizeOnStackDWords();
+ 	}
++
++	// ALTERED: the arguments are reached by 16-bit offsets from the top of the stack (see CheckOffsetLimit), the last one's
++	// being the highest. A script function's parameters are limited where it is compiled, so this is a call with many
++	// arguments to a variadic function (or to a declaration nothing implements).
++	asCScriptNode *argNode = 0;
++	for( asUINT n = 0; n < args.GetLength() && argNode == 0; n++ )
++		argNode = args[n]->exprNode;
++	CheckOffsetLimit(highestOffset, 0xFFFF, TXT_TOO_MANY_ARGUMENTS_IN_CALL, argNode);
+ }
+ 
+ int asCCompiler::CompileArgumentList(asCScriptNode *node, asCArray<asCExprContext*> &args, asCArray<asSNamedArgument> &namedArgs)
+@@ -6574,6 +6598,26 @@
+ 	hasCompileErrors = true;
+ }
+ 
++// ALTERED: the bytecode refers to a variable or a parameter by a 16-bit offset from the stack frame (asBC_PSF, asBC_SetV4,
++// asBC_CpyVtoV4, ... take (short)offset), and to an argument by a 16-bit offset from the top of the stack (asBC_GETREF,
++// asBC_GETOBJ, asBC_ChkNullS take an asWORD), but nothing limited a function's variables, parameters or a call's arguments:
++// past 32767 dwords of variables (thousands of locals, or of value types kept on the stack), a parameter starting below
++// offset -32768 or an argument more than 65535 dwords from the top of the stack was read and written at a truncated offset,
++// in another one or outside the stack frame. Such a function or call is refused. Returns false when size is past the limit.
++bool asCCompiler::CheckOffsetLimit(int size, int limit, const char *msg, asCScriptNode *node)
++{
++	if( size <= limit )
++		return true;
++	if( node )
++		Error(msg, node);
++	else
++	{
++		builder->WriteError(script->name, msg, 0, 0);
++		hasCompileErrors = true;
++	}
++	return false;
++}
++
+ void asCCompiler::Warning(const asCString &msg, asCScriptNode *node)
+ {
+ 	asCString str;
+diff --git a/sdk/angelscript/source/as_compiler.h b/sdk/angelscript/source/as_compiler.h
+--- a/sdk/angelscript/source/as_compiler.h
++++ b/sdk/angelscript/source/as_compiler.h
+@@ -418,6 +418,7 @@
+ 	void ProcessHeredocStringConstant(asCString &str, asCScriptNode *node);
+ 	int  GetPrecedence(asCScriptNode *op);
+ 	void Error(const asCString &msg, asCScriptNode *node);
++	bool CheckOffsetLimit(int size, int limit, const char *msg, asCScriptNode *node); // ALTERED
+ 	void Warning(const asCString &msg, asCScriptNode *node);
+ 	void Information(const asCString &msg, asCScriptNode *node);
+ 	void PrintMatchingFuncs(asCArray<int> &funcs, asCScriptNode *node, asCObjectType *inType = 0, asCArray<asSFailedMatch>* failedReasons = NULL);
+diff --git a/sdk/angelscript/source/as_restore.cpp b/sdk/angelscript/source/as_restore.cpp
+--- a/sdk/angelscript/source/as_restore.cpp
++++ b/sdk/angelscript/source/as_restore.cpp
+@@ -2295,7 +2295,23 @@
+ 	// TODO: shared: If the type is shared and pre-existing, we should just
+ 	//               validate that the loaded methods match the original
+ 	if( !existingShared.MoveTo(0, ot) )
+-		ot->AddPropertyToClass(name, dt, isPrivate, isProtected, isInherited);
++	{
++		// ALTERED: the class is laid out again here, and its members are addressed by 16-bit offsets (FindObjectPropOffset).
++		// The compiler refuses a class with a member past byte 32767 (asCBuilder::AddPropertyToClass), but the layout here
++		// can be larger than the one the bytecode was compiled with (pointers are 8 bytes on 64-bit targets, and members
++		// holding a pointer are aligned to it now): such bytecode is refused rather than run with truncated offsets.
++		asCObjectProperty *prop = ot->AddPropertyToClass(name, dt, isPrivate, isProtected, isInherited);
++		if( prop && prop->byteOffset > 32767 )
++		{
++			if( !error )
++			{
++				asCString str;
++				str.Format(TXT_TOO_MANY_MEMBERS_IN_CLASS_s, ot->name.AddressOf());
++				engine->WriteMessage("", 0, 0, asMSGTYPE_ERROR, str.AddressOf());
++			}
++			Error(TXT_INVALID_BYTECODE_d);
++		}
++	}
+ }
+ 
+ void asCReader::ReadDataType(asCDataType *dt)
+@@ -3305,6 +3321,19 @@
+ 	// Adjust the space needed for local variables
+ 	func->scriptData->variableSpace = AdjustStackPosition(func->scriptData->variableSpace);
+ 
++	// ALTERED: the variables and parameters are addressed by 16-bit offsets (the (short) casts above), and the compiler
++	// refuses a function with more than 32767 dwords of variables or a parameter starting below offset -32768
++	// (asCCompiler::CheckOffsetLimit). Here they can take more room than where the bytecode was compiled (pointers and value
++	// types of other sizes), and the offsets were then truncated.
++	int paramPos = -((func->objectType ? AS_PTR_SIZE : 0) + (func->DoesReturnOnStack() ? AS_PTR_SIZE : 0)), lowestParamPos = 0;
++	for( n = 0; n < func->parameterTypes.GetLength(); n++ )
++	{
++		lowestParamPos = paramPos;
++		paramPos -= func->parameterTypes[n].GetSizeOnStackDWords();
++	}
++	if( func->scriptData->variableSpace > 32767 || lowestParamPos < -32768 )
++		Error(TXT_INVALID_BYTECODE_d);
++
+ 	// Adjust the variable information. This will be used during the adjustment below
+ 	for( n = 0; n < func->scriptData->variables.GetLength(); n++ )
+ 	{
+diff --git a/sdk/angelscript/source/as_texts.h b/sdk/angelscript/source/as_texts.h
+--- a/sdk/angelscript/source/as_texts.h
++++ b/sdk/angelscript/source/as_texts.h
+@@ -292,6 +292,11 @@
+ #define TXT_TMPL_s_EXPECTS_d_SUBTYPES          "Template '%s' expects %d sub type(s)"
+ #define TXT_TOO_MANY_ARGUMENTS                 "Rejected due to too many parameters"
+ #define TXT_TOO_MANY_JUMP_LABELS               "The function has too many jump labels to handle. Split the function into smaller ones."
++// ALTERED: the bytecode refers to class members, variables and parameters by 16-bit offsets
++#define TXT_TOO_MANY_MEMBERS_IN_CLASS_s        "The class '%s' has too many members to handle. Split the class into smaller ones."
++#define TXT_TOO_MANY_VARIABLES                 "The function has too many local variables to handle. Split the function into smaller ones."
++#define TXT_TOO_MANY_PARAMETERS                "The function has too many parameters to handle."
++#define TXT_TOO_MANY_ARGUMENTS_IN_CALL         "The function call has too many arguments to handle."
+ #define TXT_TOO_MANY_VALUES_FOR_LIST           "Too many values to match pattern"
+ #define TXT_TYPE_s_CANNOT_BE_REFERENCE         "Type '%s' cannot be a reference"
+ #define TXT_TYPE_s_NOT_AVAILABLE_FOR_MODULE    "Type '%s' is not available for this module"
