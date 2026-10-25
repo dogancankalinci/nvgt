@@ -4146,7 +4146,7 @@ public:
 		if (!pcm_stream) return false;
 		// On an audio thread, which can't wait for room (see below), all of it or none: a part queued before giving up the rest left the script unable to tell what was taken, to send the rest again. The audio thread only makes room meanwhile.
 		if (audio_engine_impl::on_audio_thread() && ma_pcm_rb_available_write(&pcm_stream->rb) < size_in_frames) {
-			g_soundsystem_last_error = MA_BUSY;
+			g_soundsystem_last_error = size_in_frames > ma_pcm_rb_get_subbuffer_size(&pcm_stream->rb)? MA_TOO_BIG : MA_BUSY; // More than the whole queue holds, which no later call can take either, to be sent in parts.
 			return false;
 		}
 		const char* input = (const char*)data;
