@@ -47,10 +47,21 @@ std::string g_DebugInfo;
 void debug_callback(asIScriptContext* ctx, void* obj) {
 }
 
-int g_GCMode = 2;
-Poco::Thread* g_GCThread = nullptr;
-asQWORD g_GCAutoFullTime = ticks();
-unsigned int g_GCAutoFrequency = 300000;
+std::atomic<int> g_GCMode{2};
+// The thread of mode 3 is owned here and stopped (joined) by garbage_collect_stop_thread() before the script's module is
+// discarded and before the engine is shut down. It went on collecting every 5 ms through the program's end: on an engine being
+// shut down and then on a null g_ScriptEngine (a crash at exit), running script destructors after the subsystems they use were
+// gone. It also deleted its own Poco::Thread and cleared the pointer with nothing ordering that against
+// set_garbage_collect_mode(3) on the script's thread, which could then find the thread still there and start none.
+static Poco::Thread* g_GCThread = nullptr; // Guarded by gc_thread_mutex(), as is g_GCThreadRunning.
+static bool g_GCThreadRunning = false;
+static std::atomic<bool> g_GCThreadStopped{false};
+static std::mutex& gc_thread_mutex() {
+	static std::mutex* m = new std::mutex; // Never destroyed: set_garbage_collect_mode() can be called by a destructor run late in the program's end.
+	return *m;
+}
+std::atomic<asQWORD> g_GCAutoFullTime{ticks()};
+std::atomic<unsigned int> g_GCAutoFrequency{300000};
 void garbage_collect(bool full = true) {
 	if (!full && g_GCMode < 3)
 		g_ScriptEngine->GarbageCollect(asGC_ONE_STEP | asGC_DETECT_GARBAGE);
@@ -68,25 +79,56 @@ void garbage_collect_action() {
 }
 void garbage_collect_thread(void* user) {
 	Poco::Thread::sleep(10);
-	while (g_GCMode == 3) {
-		Poco::Thread::sleep(5);
-		garbage_collect_action();
+	for (;;) {
+		while (g_GCMode == 3 && !g_GCThreadStopped) {
+			Poco::Thread::sleep(5);
+			if (g_GCMode == 3 && !g_GCThreadStopped) garbage_collect_action();
+		}
+		std::lock_guard<std::mutex> lock(gc_thread_mutex());
+		if (g_GCMode == 3 && !g_GCThreadStopped) continue; // Mode 3 was set again while this was ending: it goes on.
+		g_GCThreadRunning = false;
+		break;
 	}
-	delete g_GCThread;
-	g_GCThread = nullptr;
+	asThreadCleanup(); // The AngelScript data of a thread that ran script destructors.
+}
+void garbage_collect_stop_thread() {
+	Poco::Thread* thread;
+	{
+		std::lock_guard<std::mutex> lock(gc_thread_mutex());
+		g_GCThreadStopped = true;
+		thread = g_GCThread;
+		g_GCThread = nullptr;
+	}
+	if (thread) {
+		thread->join();
+		delete thread;
+	}
 }
 int get_garbage_collect_mode() {
 	return g_GCMode;
 }
 bool set_garbage_collect_mode(int m) {
 	if (m < 1 || m > 3) return false;
-	if (m == 3 && !g_GCThread) {
-		g_GCThread = new Poco::Thread;
-		if (!g_GCThread)
-			return false;
-		g_GCThread->start(garbage_collect_thread);
-	}
+	std::lock_guard<std::mutex> lock(gc_thread_mutex());
 	g_GCMode = m;
+	// No thread once the script has ended (garbage_collect_stop_thread()); mode 3 is then only recorded.
+	if (m == 3 && !g_GCThreadRunning && !g_GCThreadStopped) {
+		// A thread that ended when mode 1 or 2 was set has left the lock for good and only returns: joined at once.
+		if (g_GCThread) {
+			g_GCThread->join();
+			delete g_GCThread;
+			g_GCThread = nullptr;
+		}
+		Poco::Thread* thread = new Poco::Thread;
+		try {
+			thread->start(garbage_collect_thread);
+		} catch (...) {
+			delete thread;
+			throw;
+		}
+		g_GCThread = thread;
+		g_GCThreadRunning = true;
+	}
 	return true;
 }
 unsigned int get_garbage_collect_auto_frequency() {

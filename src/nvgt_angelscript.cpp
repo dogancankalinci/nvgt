@@ -983,6 +983,7 @@ static void report_unhandled_exception(asIScriptContext *ctx) {
 }
 // Lets the module go once the script ended or failed to start. Engines can outlive it, and their processing callbacks, which run on audio threads, take contexts from the pool, so they are stopped first; the destructors that discarding runs use pooled contexts too, so the pool is emptied after.
 static void discard_module(asIScriptEngine *engine, asIScriptModule *mod) {
+	garbage_collect_stop_thread(); // Its collections run script destructors, which use the sounds and the rest stopped or freed from here on.
 	sound_stop_script_callbacks();
 	{
 		ScopedLock<Mutex> l(g_ctxMgrMutex);

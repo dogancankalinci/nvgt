@@ -48,6 +48,7 @@
 #endif
 #include "random.h"    // random_seed()
 #include "random_interface.h"    // cleanup_default_random()
+#include "scriptstuff.h" // garbage_collect_stop_thread()
 #include "serialize.h" // current location of g_StringTypeid (subject to change)
 #include "sound.h"
 #include "tts.h"
@@ -348,6 +349,7 @@ protected:
 	#endif
 	void uninitialize() override {
 		g_shutting_down = true;
+		garbage_collect_stop_thread(); // Mode 3's collector thread, when the script ended without its module being discarded (preglobals() returning false, a failure): it collects on the engine shut down below.
 		Application::uninitialize();
 		#ifdef _WIN32
 		timeEndPeriod(1);

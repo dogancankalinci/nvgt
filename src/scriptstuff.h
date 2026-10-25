@@ -12,6 +12,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <string>
 #include <angelscript.h>
 #include "nvgt.h"
@@ -20,10 +21,11 @@ bool script_compiled();
 void profiler_callback(asIScriptContext* ctx, void* obj);
 void nvgt_line_callback(asIScriptContext* ctx, void* obj); // Every context's line callback (nvgt_angelscript.cpp): the debugger's, then profiler_callback and script_function_call_count_statement.
 void script_function_call_count_statement(asIScriptContext* ctx); // Counts a statement towards the limits of the script_function.call()s running on this thread.
-extern int g_GCMode;
+extern std::atomic<int> g_GCMode;
 void prepare_profiler();
 void profiler_forget_last_function();
 void garbage_collect_action();
+void garbage_collect_stop_thread(); // Stops the thread of garbage collection mode 3 for good, before the script's module is discarded and the engine shut down.
 extern asIScriptFunction* profiler_last_func;
 extern int profiler_current_line;
 extern const char* profiler_current_section;
