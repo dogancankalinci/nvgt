@@ -29,7 +29,6 @@
 class script_random_wrapper : public random_interface {
 private:
 	asIScriptObject* scriptObj;
-	asIScriptContext* ctx;
 	asIScriptFunction* nextFunc;
 	asIScriptFunction* next64Func;
 	asIScriptFunction* nextfFunc;
@@ -43,10 +42,6 @@ public:
 	script_random_wrapper(asIScriptObject* obj) : scriptObj(obj), ref_count(1) {
 		if (scriptObj) {
 			scriptObj->AddRef();
-			asIScriptEngine* engine = scriptObj->GetEngine();
-			ctx = engine->CreateContext();
-			// NVGT's line callback, which every context has (see RequestContextCallback): the generator's statements are counted towards the limit of a script_function.call() it is used in, and the debugger stops at its breakpoints.
-			if (ctx) ctx->SetLineCallback(asFUNCTION(nvgt_line_callback), NULL, asCALL_CDECL);
 			// Get method pointers
 			nextFunc = scriptObj->GetObjectType()->GetMethodByDecl("uint next()");
 			next64Func = scriptObj->GetObjectType()->GetMethodByDecl("int64 next64()");
@@ -61,8 +56,6 @@ public:
 	~script_random_wrapper() {
 		if (scriptObj)
 			scriptObj->Release();
-		if (ctx)
-			ctx->Release();
 	}
 
 	// Holds the generator while its script runs: set_default_random() in that script lets go of the default generator, and when that was this one, it was deleted together with the context still running the script (a use of freed memory).
@@ -71,53 +64,73 @@ public:
 		running(script_random_wrapper* self) : self(self) { self->add_ref(); }
 		~running() { self->release(); }
 	};
+	// Runs one of the generator's methods: as a nested call of the calling script's context when there is one, as NVGT's other
+	// callbacks run, else on a pooled context (RequestContextCallback gives it NVGT's line callback, so the generator's statements
+	// still count towards a script_function.call()'s limit and the debugger stops at its breakpoints). The wrapper had one context
+	// of its own that every call used: random() on two threads at once with a script generator as the default ran both calls on
+	// that context at the same time (a crash), and a generator method calling random() itself found the context busy, so that
+	// call's Prepare() failed and it returned 0 without running the generator.
+	struct call {
+		asIScriptObject* obj;
+		asIScriptContext* ctx = nullptr;
+		bool nested = false, prepared = false;
+		call(asIScriptObject* obj, asIScriptFunction* func) : obj(obj) {
+			asIScriptContext* active = asGetActiveContext();
+			if (script_callbacks_stopped(active)) return; // exit() was called since the calling script began: no more script calls.
+			nested = active && active->GetEngine() == obj->GetEngine() && active->PushState() >= 0;
+			ctx = nested ? active : obj->GetEngine()->RequestContext();
+			if (!ctx) return;
+			prepared = ctx->Prepare(func) >= 0 && ctx->SetObject(obj) >= 0;
+		}
+		bool run() { return prepared && (nested ? execute_nested(ctx) : ctx->Execute()) == asEXECUTION_FINISHED; }
+		~call() {
+			if (!ctx) return;
+			if (!nested) obj->GetEngine()->ReturnContext(ctx);
+			else if (prepared) pop_nested_state(ctx); // An exit() in the generator is passed on to the calling script.
+			else ctx->PopState();
+		}
+	};
 	uint32 next() override {
-		if (!nextFunc || !ctx) return 0;
+		if (!nextFunc) return 0;
 		running hold(this);
-		ctx->Prepare(nextFunc);
-		ctx->SetObject(scriptObj);
-		ctx->Execute();
-		return ctx->GetReturnDWord();
+		call c(scriptObj, nextFunc);
+		return c.run() ? c.ctx->GetReturnDWord() : 0;
 	}
 
 	float32 nextf() override {
-		if (!nextfFunc || !ctx) return 0.0f;
+		if (!nextfFunc) return 0.0f;
 		running hold(this);
-		ctx->Prepare(nextfFunc);
-		ctx->SetObject(scriptObj);
-		ctx->Execute();
-		return ctx->GetReturnFloat();
+		call c(scriptObj, nextfFunc);
+		return c.run() ? c.ctx->GetReturnFloat() : 0.0f;
 	}
 
 	int64 next64() override {
-		if (!next64Func || !ctx) return 0;
+		if (!next64Func) return 0;
 		running hold(this);
-		ctx->Prepare(next64Func);
-		ctx->SetObject(scriptObj);
-		ctx->Execute();
-		return ctx->GetReturnQWord();
+		call c(scriptObj, next64Func);
+		return c.run() ? c.ctx->GetReturnQWord() : 0;
 	}
 
 	int32 range(int32 min, int32 max) override {
-		if (!rangeFunc || !ctx) return min;
+		if (!rangeFunc) return min;
 		running hold(this);
-		ctx->Prepare(rangeFunc);
-		ctx->SetObject(scriptObj);
-		ctx->SetArgDWord(0, min);
-		ctx->SetArgDWord(1, max);
-		ctx->Execute();
-		return ctx->GetReturnDWord();
+		call c(scriptObj, rangeFunc);
+		if (c.prepared) {
+			c.ctx->SetArgDWord(0, min);
+			c.ctx->SetArgDWord(1, max);
+		}
+		return c.run() ? c.ctx->GetReturnDWord() : 0;
 	}
 
 	int64 range64(int64 min, int64 max) override {
-		if (!range64Func || !ctx) return min;
+		if (!range64Func) return min;
 		running hold(this);
-		ctx->Prepare(range64Func);
-		ctx->SetObject(scriptObj);
-		ctx->SetArgQWord(0, min);
-		ctx->SetArgQWord(1, max);
-		ctx->Execute();
-		return ctx->GetReturnQWord();
+		call c(scriptObj, range64Func);
+		if (c.prepared) {
+			c.ctx->SetArgQWord(0, min);
+			c.ctx->SetArgQWord(1, max);
+		}
+		return c.run() ? c.ctx->GetReturnQWord() : 0;
 	}
 
 	void seed(uint32 s) override {
