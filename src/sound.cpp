@@ -4624,7 +4624,8 @@ class microphone_impl : public audio_ring_buffer_impl, public virtual microphone
 public:
 	// set_device(), set_state() and the volume, one at a time, with capture_device, which set_device() opens anew: two threads changing the device at once uninitialised and opened it under each other.
 	mutable std::mutex device_mutex;
-	// Opens capture_device on the device with that id, or the system's default for null, without starting it.
+	float volume_db = 0; // The volume the script set, which MiniAudio's ma_device_init() sets back to 0 dB on each device opened, so that set_device() lost it.
+	// Opens capture_device on the device with that id, or the system's default for null, without starting it, at the volume the script set.
 	bool open_capture(const ma_device_id* id) {
 		ma_device_config device_config = ma_device_config_init(ma_device_type_capture);
 		device_config.capture.format = ma_format_f32;
@@ -4639,6 +4640,7 @@ public:
 			capture_device.reset();
 			return false;
 		}
+		if (volume_db != 0) ma_device_set_master_volume_db(&*capture_device, volume_db);
 		return true;
 	}
 	// An index out of range opens the default device, as -1 does, and reads as -1 then.
@@ -4710,13 +4712,14 @@ public:
 		return false;
 	}
 	void set_volume(float volume) override {
+		if (!finite_values({volume, ma_volume_db_to_linear(volume)})) return;
 		std::lock_guard<std::mutex> lock(device_mutex);
-		if (capture_device && finite_values({volume, ma_volume_db_to_linear(volume)})) g_soundsystem_last_error = ma_device_set_master_volume_db(&*capture_device, volume);
+		volume_db = volume; // Kept for a device opened later, as without one now (see open_capture()).
+		g_soundsystem_last_error = capture_device? ma_device_set_master_volume_db(&*capture_device, volume) : MA_SUCCESS;
 	}
 	float get_volume() const override {
 		std::lock_guard<std::mutex> lock(device_mutex);
-		float result;
-		return capture_device && (g_soundsystem_last_error = ma_device_get_master_volume_db(&*capture_device, &result)) == MA_SUCCESS? result : 0;
+		return volume_db;
 	}
 };
 microphone* microphone::create(int device, audio_engine* engine) {
