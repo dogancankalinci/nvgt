@@ -1,0 +1,235 @@
+diff --git a/sdk/angelscript/source/as_builder.cpp b/sdk/angelscript/source/as_builder.cpp
+--- a/sdk/angelscript/source/as_builder.cpp
++++ b/sdk/angelscript/source/as_builder.cpp
+@@ -80,7 +80,8 @@
+ 
+ #endif
+ 
+-asCBuilder::asCBuilder(asCScriptEngine *_engine, asCModule *_module)
++// ALTERED: registration, see asSBuilderRegistration
++asCBuilder::asCBuilder(asCScriptEngine *_engine, asCModule *_module) : registration(_engine)
+ {
+ 	this->engine = _engine;
+ 	this->module = _module;
+diff --git a/sdk/angelscript/source/as_builder.h b/sdk/angelscript/source/as_builder.h
+--- a/sdk/angelscript/source/as_builder.h
++++ b/sdk/angelscript/source/as_builder.h
+@@ -136,12 +136,25 @@
+ 
+ 
+ 
++// ALTERED: registers a builder with the engine for its whole life, as its first member (made before, and destroyed after,
++// everything else of the builder): no discarded module is deleted while a builder exists, see
++// asCScriptEngine::BuilderStarted
++struct asSBuilderRegistration
++{
++	asCScriptEngine *engine;
++	asSBuilderRegistration(asCScriptEngine *engine);
++	~asSBuilderRegistration();
++};
++
+ class asCBuilder
+ {
+ public:
+ 	asCBuilder(asCScriptEngine *engine, asCModule *module);
+ 	~asCBuilder();
+ 
++	// ALTERED: see asSBuilderRegistration
++	asSBuilderRegistration registration;
++
+ 	// These methods are used by the application interface
+ 	int VerifyProperty(asCDataType *dt, const char *decl, asCString &outName, asCDataType &outType, asSNameSpace *ns);
+ 	int ParseDataType(const char *datatype, asCDataType *result, asSNameSpace *implicitNamespace, bool isReturnType = false);
+diff --git a/sdk/angelscript/source/as_scriptengine.cpp b/sdk/angelscript/source/as_scriptengine.cpp
+--- a/sdk/angelscript/source/as_scriptengine.cpp
++++ b/sdk/angelscript/source/as_scriptengine.cpp
+@@ -661,6 +661,8 @@
+ 	asCThreadManager::Prepare(0);
+ 
+ 	shuttingDown = false;
++	activeBuilders = 0;         // ALTERED: see BuilderStarted
++	deletingModulesThread = 0;
+ 	inDestructor = false;
+ 
+ 	// Engine properties
+@@ -772,12 +774,102 @@
+ #endif
+ }
+ 
++// ALTERED: a builder (a build, a function or global variable being compiled, bytecode being loaded, or a declaration being
++// parsed for a lookup such as GetTypeInfoByDecl) reads and changes the engine's lists of types, template instances, funcdefs,
++// functions and global properties, and the deletion of a discarded module removes its entries from the same lists. The
++// deletion runs wherever a garbage collection completes (in Execute's automatic collection on any thread, the application's
++// own collection thread) or a module is discarded, and it ran while another thread was building or looking up a declaration:
++// the build read a funcdef or template instance the deletion had just freed (a use after free in asCBuilder::CompleteFuncDef),
++// and both changed the lists at once. Builders and deletions now exclude each other: a deletion is skipped while a builder
++// exists (the discarded modules are deleted by a later collection or discard), and a builder made while a deletion runs on
++// another thread waits for it to end. A deletion runs no script code (the global variables of a discarded module were
++// released when it was discarded), so the wait is short. The thread doing the deletion can make builders (a clean up
++// callback of the application) without waiting for itself.
++void asCScriptEngine::BuilderStarted()
++{
++	void *thread = asCThreadManager::GetLocalData();
++	for(;;)
++	{
++		ACQUIREEXCLUSIVE(engineRWLock);
++		if( deletingModulesThread == 0 || deletingModulesThread == thread )
++		{
++			activeBuilders++;
++			RELEASEEXCLUSIVE(engineRWLock);
++			return;
++		}
++		RELEASEEXCLUSIVE(engineRWLock);
++
++		// The deleting thread holds the critical section until it is done
++		ENTERCRITICALSECTION(deletingModulesCritical);
++		LEAVECRITICALSECTION(deletingModulesCritical);
++	}
++}
++
++asSBuilderRegistration::asSBuilderRegistration(asCScriptEngine *in_engine) : engine(in_engine)
++{
++	engine->BuilderStarted();
++}
++
++asSBuilderRegistration::~asSBuilderRegistration()
++{
++	engine->BuilderEnded();
++}
++
++void asCScriptEngine::BuilderEnded()
++{
++	ACQUIREEXCLUSIVE(engineRWLock);
++	asASSERT( activeBuilders > 0 );
++	if( activeBuilders > 0 )
++		activeBuilders--;
++	RELEASEEXCLUSIVE(engineRWLock);
++}
++
+ void asCScriptEngine::DeleteDiscardedModules()
+ {
+ 	// TODO: redesign: Prevent more than one thread from entering this function at the same time.
+ 	//                 If a thread is already doing the work for the clean-up the other thread should
+ 	//                 simply return, as the first thread will continue.
++	// ALTERED: done, and not while a builder exists, see BuilderStarted. The engine's own shut down deletes them anyway.
++	// The critical section is taken first (never while holding engineRWLock, which the deletion takes inside): if another
++	// thread is deleting, that one deletes these too.
++	bool claimed = false;
++	if( !shuttingDown )
++	{
++		if( !TRYENTERCRITICALSECTION(deletingModulesCritical) )
++			return;
++		ACQUIREEXCLUSIVE(engineRWLock);
++		if( deletingModulesThread != 0 )
++		{
++			// This thread's own deletion, got here again (the critical section is recursive on Windows), holds the claim
++			RELEASEEXCLUSIVE(engineRWLock);
++			DeleteDiscardedModulesClaimed();
++			LEAVECRITICALSECTION(deletingModulesCritical);
++			return;
++		}
++		if( activeBuilders > 0 )
++		{
++			RELEASEEXCLUSIVE(engineRWLock);
++			LEAVECRITICALSECTION(deletingModulesCritical);
++			return;
++		}
++		deletingModulesThread = asCThreadManager::GetLocalData();
++		RELEASEEXCLUSIVE(engineRWLock);
++		claimed = true;
++	}
++
++	DeleteDiscardedModulesClaimed();
++
++	if( claimed )
++	{
++		ACQUIREEXCLUSIVE(engineRWLock);
++		deletingModulesThread = 0;
++		RELEASEEXCLUSIVE(engineRWLock);
++		LEAVECRITICALSECTION(deletingModulesCritical);
++	}
++}
+ 
++void asCScriptEngine::DeleteDiscardedModulesClaimed()
++{
+ 	ACQUIRESHARED(engineRWLock);
+ 	asUINT maxCount = discardedModules.GetLength();
+ 	RELEASESHARED(engineRWLock);
+@@ -1018,6 +1110,9 @@
+ 	if( in_type->module != in_mod)
+ 		return in_type->module;
+ 
++	// ALTERED: the list of modules is read under engineRWLock, as GetModule adds to it on other threads (a module being
++	// made while a discarded one is deleted, see DeleteDiscardedModules); nothing below takes the lock
++	ACQUIRESHARED(engineRWLock);
+ 	for( asUINT n = 0; n < scriptModules.GetLength(); n++ )
+ 	{
+ 		// TODO: optimize: If the modules already stored the shared types separately, this would be quicker
+@@ -1042,6 +1137,8 @@
+ 		}
+ 	}
+ 
++	RELEASESHARED(engineRWLock);
++
+ 	return in_type->module;
+ }
+ 
+@@ -1075,6 +1172,9 @@
+ 		}
+ 	}
+ 
++	// ALTERED: the list of modules is read under engineRWLock, as GetModule adds to it on other threads (a module being
++	// made while a discarded one is deleted, see DeleteDiscardedModules); nothing below takes the lock
++	ACQUIRESHARED(engineRWLock);
+ 	for( asUINT n = 0; n < scriptModules.GetLength(); n++ )
+ 	{
+ 		// TODO: optimize: If the modules already stored the shared types separately, this would be quicker
+@@ -1090,6 +1190,8 @@
+ 		}
+ 	}
+ 
++	RELEASESHARED(engineRWLock);
++
+ 	return in_func->module;
+ }
+ 
+@@ -3651,6 +3753,10 @@
+ 	isBuilding = true;
+ 	RELEASEEXCLUSIVE(engineRWLock);
+ 
++	// ALTERED: a build is a builder, also before it has one (a Build without script sections resets the module), see
++	// BuilderStarted
++	BuilderStarted();
++
+ 	return 0;
+ }
+ 
+@@ -3661,6 +3767,9 @@
+ 	memoryMgr.FreeUnusedMemory();
+ 
+ 	isBuilding = false;
++
++	// ALTERED: see RequestBuild
++	BuilderEnded();
+ }
+ 
+ void asCScriptEngine::RemoveTemplateInstanceType(asCObjectType *t)
+diff --git a/sdk/angelscript/source/as_scriptengine.h b/sdk/angelscript/source/as_scriptengine.h
+--- a/sdk/angelscript/source/as_scriptengine.h
++++ b/sdk/angelscript/source/as_scriptengine.h
+@@ -422,6 +422,15 @@
+ 	// This array holds modules that have been discard (thus are no longer visible to the application)
+ 	// but cannot yet be deleted due to having external references to some of the entities in them
+ 	asCArray<asCModule *>  discardedModules;
++	// ALTERED: synchronized with engineRWLock. The builds in progress and the builders that exist (a module's pending build,
++	// a declaration being parsed), and the thread deleting discarded modules, which holds deletingModulesCritical while it
++	// does: see DeleteDiscardedModules
++	asUINT                 activeBuilders;
++	void                  *deletingModulesThread;
++	DECLARECRITICALSECTION(deletingModulesCritical)
++	void BuilderStarted();
++	void BuilderEnded();
++	void DeleteDiscardedModulesClaimed();
+ 	// This flag is set to true during compilations of scripts (or loading pre-compiled scripts)
+ 	// to delay the validation of template types until the subtypes have been fully declared
+ 	bool                   deferValidationOfTemplateTypes;

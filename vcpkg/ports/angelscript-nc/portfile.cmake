@@ -88,6 +88,7 @@ vcpkg_from_github(
         fix-reference-arguments-first.patch
         fix-function-table-threads.patch
         fix-signature-id-stable.patch
+        fix-discarded-module-delete-during-build.patch
 )
 
 vcpkg_cmake_configure(
