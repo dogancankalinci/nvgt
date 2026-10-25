@@ -1445,6 +1445,7 @@ BOOL legacy_sound::load_script(asIScriptFunction* close, asIScriptFunction* len,
 		len_callback = len;
 		read_callback = read;
 		seek_callback = seek;
+		callback_data = data;
 		BASS_FILEPROCS prox;
 		prox.close = bass_closeproc_script;
 		prox.length = bass_lenproc_script;
