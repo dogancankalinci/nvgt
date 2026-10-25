@@ -123,6 +123,26 @@ static void wait_for_reaps(ma_resource_manager* manager = nullptr) {
 	std::unique_lock<std::mutex> lock(g_reaps_mutex);
 	g_reaps_done.wait(lock, [manager]() { return manager? !g_reaps.count(manager) : g_reaps.empty(); });
 }
+// Engines and microphones being destroyed on threads of their own, let go of on an audio thread (see audio_engine_impl::release()), which sound_stop_script_callbacks() waits for, so that none releases a script function or closes a device once the script's module, or SDL, went.
+static std::mutex g_detached_deletes_mutex;
+static std::condition_variable g_detached_deletes_done;
+static int g_detached_deletes = 0; // Under g_detached_deletes_mutex.
+template<class T> static void delete_detached(T* object) {
+	{
+		std::lock_guard<std::mutex> lock(g_detached_deletes_mutex);
+		g_detached_deletes++;
+	}
+	try {
+		std::thread([object]() {
+			delete object;
+			std::lock_guard<std::mutex> lock(g_detached_deletes_mutex); // Notified under the lock, so that nothing of this thread runs once the waiter goes on.
+			if (--g_detached_deletes == 0) g_detached_deletes_done.notify_all();
+		}).detach();
+	} catch (...) { // Left to the process's exit, as it can't be destroyed here.
+		std::lock_guard<std::mutex> lock(g_detached_deletes_mutex);
+		if (--g_detached_deletes == 0) g_detached_deletes_done.notify_all();
+	}
+}
 static bool g_soundsystem_starting = false; // Under g_soundsystem_init_mutex: this thread is setting up, so a call re-entering from there is answered at once.
 static std::atomic<bool> g_script_callbacks_stopped{false}; // See sound_stop_script_callbacks().
 static std::atomic<int> g_script_callbacks_running{0}; // Processing callbacks calling the script right now.
@@ -735,7 +755,7 @@ public:
 			return;
 		}
 		// Not on another engine's device thread either, whose audio would be held up while this engine's device stops and closes and its closed sounds' decoding is waited out, a hundred milliseconds or more.
-		try { std::thread([this] { delete this; }).detach(); } catch (...) {}
+		delete_detached(this);
 	}
 	ma_engine *get_ma_engine() const override { return engine.get(); }
 	audio_node *get_endpoint() const override { return engine_endpoint; }
@@ -4704,7 +4724,7 @@ public:
 			return;
 		}
 		if (g_soundsystem_shut_down.test()) return;
-		try { std::thread([this] { delete this; }).detach(); } catch (...) {}
+		delete_detached(this);
 	}
 	bool set_device(int device) override {
 		if (audio_engine_impl::on_audio_thread()) { // Opening a device on an audio thread, as in a processing callback, would hold that thread up; refused there, as an engine's set_device() is.
@@ -4830,6 +4850,9 @@ struct default_engine_ref {
 void sound_stop_script_callbacks() {
 	g_script_callbacks_stopped = true;
 	while (g_script_callbacks_running) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	// And for engines and microphones let go of on an audio thread, which could otherwise release a callback once the module is gone, or close a device once SDL is (see delete_detached()).
+	std::unique_lock<std::mutex> lock(g_detached_deletes_mutex);
+	g_detached_deletes_done.wait(lock, []() { return g_detached_deletes == 0; });
 }
 mixer *new_global_mixer() {
 	default_engine_ref engine;
