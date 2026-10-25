@@ -91,46 +91,31 @@ void random_shuffle(CScriptArray* array) {
 void rnd_pcg_construct(rnd_pcg_t* r) {
 	rnd_pcg_seed(r, random_seed());
 }
-void* rnd_pcg_choice(CScriptArray* array, rnd_pcg_t* r) {
-	if (array->GetSize() == 0) {
-		asIScriptContext* ctx = asGetActiveContext();
-		if (ctx) ctx->SetException("Cannot get random element from empty array");
-		return nullptr;
-	}
-	return array->At(rnd_pcg_range(r, 0, array->GetSize() - 1));
+void* rnd_pcg_choice(CScriptArray* array, random_pcg* r) {
+	// The array.random(const random_<kind> &in) overloads, kept for the scripts written when the generators were value types
+	// holding the rnd_*_t state: the generators are reference-counted classes now (random_interface.h), and these functions still
+	// took the state struct, so a call given a generator through a const handle or a const reference (which the @+ overloads
+	// can't take) used the class object as that struct and wrote into it past the state (a crash, or a broken generator). They
+	// take the classes now and do what array.random(random_<kind>@+) does.
+	return random_array_choice(array, r);
 }
 void rnd_well_construct(rnd_well_t* r) {
 	rnd_well_seed(r, random_seed());
 }
-void* rnd_well_choice(CScriptArray* array, rnd_well_t* r) {
-	if (array->GetSize() == 0) {
-		asIScriptContext* ctx = asGetActiveContext();
-		if (ctx) ctx->SetException("Cannot get random element from empty array");
-		return nullptr;
-	}
-	return array->At(rnd_well_range(r, 0, array->GetSize() - 1));
+void* rnd_well_choice(CScriptArray* array, random_well* r) { // See rnd_pcg_choice().
+	return random_array_choice(array, r);
 }
 void rnd_gamerand_construct(rnd_gamerand_t* r) {
 	rnd_gamerand_seed(r, random_seed());
 }
-void* rnd_gamerand_choice(CScriptArray* array, rnd_gamerand_t* r) {
-	if (array->GetSize() == 0) {
-		asIScriptContext* ctx = asGetActiveContext();
-		if (ctx) ctx->SetException("Cannot get random element from empty array");
-		return nullptr;
-	}
-	return array->At(rnd_gamerand_range(r, 0, array->GetSize() - 1));
+void* rnd_gamerand_choice(CScriptArray* array, random_gamerand* r) { // See rnd_pcg_choice().
+	return random_array_choice(array, r);
 }
 void rnd_xorshift_construct(rnd_xorshift_t* r) {
 	rnd_xorshift_seed(r, random_seed64());
 }
-void* rnd_xorshift_choice(CScriptArray* array, rnd_xorshift_t* r) {
-	if (array->GetSize() == 0) {
-		asIScriptContext* ctx = asGetActiveContext();
-		if (ctx) ctx->SetException("Cannot get random element from empty array");
-		return nullptr;
-	}
-	return array->At(rnd_xorshift_range(r, 0, array->GetSize() - 1));
+void* rnd_xorshift_choice(CScriptArray* array, random_xorshift* r) { // See rnd_pcg_choice().
+	return random_array_choice(array, r);
 }
 
 // Cast function for random generators to the base interface.
