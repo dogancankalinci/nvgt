@@ -4371,10 +4371,11 @@ public:
 		return snd ? !ma_sound_is_playing(&*snd) && paused : false;
 	}
 	bool play(bool reset_loop_state = true) override {
+		const bool resuming = paused; // Paused by pause() or pause_fade().
 		if (fade_paused && snd) clear_stop_for_restart(true); // A pause_fade() still fading out is called off.
 		paused = fade_paused = false;
-		// A sound that isn't playing drops what was queued before it is started again, through its reader: see pcm_queue. One already playing keeps its queue.
-		if (pcm_stream && !(snd && ma_sound_is_playing(&*snd))) pcm_stream->discard();
+		// A sound that isn't playing drops what was queued before it is started again, through its reader: see pcm_queue. One already playing keeps its queue, as does one resumed from a pause.
+		if (pcm_stream && !resuming && !(snd && ma_sound_is_playing(&*snd))) pcm_stream->discard();
 		wait_out_flush();
 		bool looping = snd && ma_sound_is_looping(&*snd);
 		if (still_ending() && restart_if_ending()) {
@@ -4471,8 +4472,9 @@ public:
 		if (!mixer_impl::stop()) return false;
 		return !chain && get_length_in_frames() == 0 || seek(0); // A stream without a length, such as PCM or a URL, has no start to go back to; a chain always has (see seek_in_frames()).
 	}
+	// A stream_pcm() sound too, whose queue play() resumes, as after pause_fade(): refused, it read as not paused while pause_fade() paused it.
 	bool pause() override {
-		if (snd && !pcm_stream) {
+		if (snd) {
 			call_off_restart(); // As in stop().
 			g_soundsystem_last_error = ma_sound_stop(&*snd);
 			if (g_soundsystem_last_error == MA_SUCCESS)
