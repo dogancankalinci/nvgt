@@ -3963,8 +3963,8 @@ public:
 		for (int i = 0; i < 10; i++) {
 			attempt_init();
 			if (g_soundsystem_last_error == MA_OUT_OF_MEMORY) {
-				// See above; this is probably job queue backlog rather than an actual out of memory. Take a break and try again.
-				wait(5);
+				// See above; this is probably job queue backlog rather than an actual out of memory. Take a break and try again. Not the script's wait(), which can collect garbage, whose destructors could load this very sound meanwhile, its sound then overwritten here while attached to the graph.
+				std::this_thread::sleep_for(std::chrono::milliseconds(5));
 				continue;
 			}
 			break; // Don't retry any other failure case.
