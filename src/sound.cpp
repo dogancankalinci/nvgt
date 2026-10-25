@@ -4637,7 +4637,14 @@ class microphone_impl : public audio_ring_buffer_impl, public virtual microphone
 public:
 	// set_device(), set_state() and the volume, one at a time, with capture_device, which set_device() opens anew: two threads changing the device at once uninitialised and opened it under each other.
 	mutable std::mutex device_mutex;
-	float volume_db = 0; // The volume the script set, which MiniAudio's ma_device_init() sets back to 0 dB on each device opened, so that set_device() lost it.
+	std::atomic<float> volume_db{0}; // The volume the script set, which MiniAudio's ma_device_init() sets back to 0 dB on each device opened, so that set_device() lost it.
+	// device_mutex, which an audio thread, as in a processing callback, only tries, as it mustn't wait while another thread opens a device; MA_BUSY then, and a lock not held.
+	std::unique_lock<std::mutex> lock_device() const {
+		std::unique_lock<std::mutex> lock(device_mutex, std::defer_lock);
+		if (!audio_engine_impl::on_audio_thread()) lock.lock();
+		else if (!lock.try_lock()) g_soundsystem_last_error = MA_BUSY;
+		return lock;
+	}
 	// Opens capture_device on the device with that id, or the system's default for null, without starting it, at the volume the script set.
 	bool open_capture(const ma_device_id* id) {
 		ma_device_config device_config = ma_device_config_init(ma_device_type_capture);
@@ -4653,7 +4660,7 @@ public:
 			capture_device.reset();
 			return false;
 		}
-		if (volume_db != 0) ma_device_set_master_volume_db(&*capture_device, volume_db);
+		if (volume_db.load() != 0) ma_device_set_master_volume_db(&*capture_device, volume_db.load());
 		return true;
 	}
 	// An index out of range opens the default device, as -1 does, and reads as -1 then.
@@ -4666,6 +4673,10 @@ public:
 		if (capture_device) uninit_device(&*capture_device);
 	}
 	bool set_device(int device) override {
+		if (audio_engine_impl::on_audio_thread()) { // Opening a device on an audio thread, as in a processing callback, would hold that thread up; refused there, as an engine's set_device() is.
+			g_soundsystem_last_error = MA_INVALID_OPERATION;
+			return false;
+		}
 		ma_device_id requested_id; // Copied: the list can be taken anew while the device opens.
 		if (device < -1 || device > -1 && !audio_device_id(ma_device_type_capture, device, requested_id)) {
 			g_soundsystem_last_error = MA_INVALID_ARGS;
@@ -4701,7 +4712,8 @@ public:
 		return true;
 	}
 	int get_device() const override {
-		std::lock_guard<std::mutex> lock(device_mutex);
+		std::unique_lock<std::mutex> lock = lock_device();
+		if (!lock) return -1;
 		return !capture_device || follows_default? -1 : audio_device_index(ma_device_type_capture, device_id);
 	}
 	// A ring buffer has one writer and one reader, and resetting it moves both positions: reset() while the capture thread wrote into it could leave that writer writing past its end. reset() therefore holds this, which the capture thread only tries for, dropping what it captured meanwhile rather than waiting.
@@ -4715,7 +4727,8 @@ public:
 		return audio_ring_buffer_impl::write(frames_in, frame_count);
 	}
 	bool set_state(ma_node_state state) override {
-		std::lock_guard<std::mutex> lock(device_mutex);
+		std::unique_lock<std::mutex> lock = lock_device();
+		if (!lock) return false;
 		if (state == ma_node_state_started && !capture_device) { // Nothing to record from, as after set_device() could open no device.
 			g_soundsystem_last_error = MA_INVALID_OPERATION;
 			return false;
@@ -4736,14 +4749,12 @@ public:
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return;
 		}
-		std::lock_guard<std::mutex> lock(device_mutex);
+		std::unique_lock<std::mutex> lock = lock_device();
+		if (!lock) return;
 		volume_db = volume; // Kept for a device opened later, as without one now (see open_capture()).
 		g_soundsystem_last_error = capture_device? ma_device_set_master_volume_db(&*capture_device, volume) : MA_SUCCESS;
 	}
-	float get_volume() const override {
-		std::lock_guard<std::mutex> lock(device_mutex);
-		return volume_db;
-	}
+	float get_volume() const override { return volume_db.load(); }
 };
 microphone* microphone::create(int device, audio_engine* engine) {
 	if (engine) return new microphone_impl(engine, device);
