@@ -16,6 +16,7 @@
 #include <vector>
 #include <atomic>
 #include <thread>
+#include <mutex>
 
 BEGIN_AS_NAMESPACE
 
@@ -101,6 +102,8 @@ protected:
 	std::atomic<bool>               m_abortAllRequested; // AbortAll was called on another thread
 	bool                            m_abortedWhileExecuting; // AbortAll ran while m_executingCtx was executing
 	asIScriptContext               *m_returnAfterExecution; // that context, to give back once its Execute() returns
+	std::mutex                      m_executingLock;    // ALTERED: AbortAll on another thread holds it while it aborts m_executingCtx
+	void ClearExecutingCtx();                           // ALTERED: clears m_executingCtx under m_executingLock
 
 	// Statistics for Garbage Collection
 	asUINT   m_numExecutions;

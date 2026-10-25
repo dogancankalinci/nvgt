@@ -200,7 +200,7 @@ int CContextMgr::ExecuteScripts()
 			m_executingCtx = ctx;
 			if( m_abortAllRequested.exchange(false) )
 			{
-				m_executingCtx = 0;
+				ClearExecutingCtx();
 				AbortAll();
 				return 0;
 			}
@@ -208,7 +208,7 @@ int CContextMgr::ExecuteScripts()
 			// Execute the script for this thread and co-routine
 			int r = ctx->Execute();
 
-			m_executingCtx = 0;
+			ClearExecutingCtx();
 
 			// Determine how many new objects were created in the GC
 			engine->GetGCStatistics(&gcSize2);
@@ -295,6 +295,15 @@ int CContextMgr::ExecuteScripts()
 	return int(m_threads.size());
 }
 
+// ALTERED: AbortAll on another thread aborts the context it reads here under m_executingLock. Cleared outside the lock, the
+// context could be given back, handed out by the pool and prepared for something else (on_exit(), a destructor's call)
+// before that thread's Abort() landed, which then aborted that execution instead.
+void CContextMgr::ClearExecutingCtx()
+{
+	std::lock_guard<std::mutex> guard(m_executingLock);
+	m_executingCtx = 0;
+}
+
 void CContextMgr::DoneWithContext(asIScriptContext *ctx)
 {
 	ctx->GetEngine()->ReturnContext(ctx);
@@ -323,6 +332,8 @@ void CContextMgr::AbortAll()
 	if( std::this_thread::get_id() != m_ownerThread )
 	{
 		m_abortAllRequested = true;
+		// ALTERED: see ClearExecutingCtx
+		std::lock_guard<std::mutex> guard(m_executingLock);
 		asIScriptContext *ctx = m_executingCtx;
 		if( ctx )
 			ctx->Abort();
