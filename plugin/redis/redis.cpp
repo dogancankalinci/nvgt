@@ -34,6 +34,15 @@
 #include <unordered_map>
 
 int g_StringTypeid = 0;  // Local copy for plugin use
+// The array types the functions below return, looked up once when the plugin registers its functions (RegisterRedis). Looked
+// up on every call, the lookup ran on the script's thread with no lock while a build on another thread could add template
+// instances to the engine's list it walks (NVGT's own lookups take its build lock, see get_array_type(), which a plugin can't
+// reach). Plugins are loaded only while the engine is set up, before any script runs, and the declarations registered made
+// these types.
+static asITypeInfo* g_string_array_type = nullptr;
+static asITypeInfo* g_value_array_type = nullptr;
+static asITypeInfo* g_coordinates_array_type = nullptr;
+static asITypeInfo* g_double_array_type = nullptr;
 
 // Don't want to enforce that pocostuff stays the same since this is a plugin.
 // We'll roll our own
@@ -114,9 +123,7 @@ public:
 	}
 
 	CScriptArray* get_array() const {
-		asIScriptContext* ctx = asGetActiveContext();
-		asIScriptEngine* engine = ctx->GetEngine();
-		asITypeInfo* arrayType = engine->GetTypeInfoByDecl("array<redis_value@>");
+		asITypeInfo* arrayType = g_value_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
 		if (ptr && ptr->isArray()) {
 			const Type<Array>* arr = dynamic_cast<const Type<Array>*>(ptr);
@@ -452,9 +459,7 @@ public:
 	}
 
 	CScriptArray* mget(CScriptArray* keys) {
-		asIScriptContext* ctx = asGetActiveContext();
-		asIScriptEngine* engine = ctx->GetEngine();
-		asITypeInfo* arrayType = engine->GetTypeInfoByDecl("array<string>");
+		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
 		if (!is_connected()) {
 			m_last_error = "Not connected";
@@ -580,9 +585,7 @@ public:
 	}
 
 	CScriptArray* keys(const std::string& pattern) {
-		asIScriptContext* ctx = asGetActiveContext();
-		asIScriptEngine* engine = ctx->GetEngine();
-		asITypeInfo* arrayType = engine->GetTypeInfoByDecl("array<string>");
+		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
 		if (!is_connected()) {
 			m_last_error = "Not connected";
@@ -668,9 +671,7 @@ public:
 	}
 
 	CScriptArray* lrange(const std::string& key, int64_t start, int64_t stop) {
-		asIScriptContext* ctx = asGetActiveContext();
-		asIScriptEngine* engine = ctx->GetEngine();
-		asITypeInfo* arrayType = engine->GetTypeInfoByDecl("array<string>");
+		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
 		if (!is_connected()) {
 			m_last_error = "Not connected";
@@ -813,9 +814,7 @@ public:
 	}
 
 	CScriptArray* hkeys(const std::string& key) {
-		asIScriptContext* ctx = asGetActiveContext();
-		asIScriptEngine* engine = ctx->GetEngine();
-		asITypeInfo* arrayType = engine->GetTypeInfoByDecl("array<string>");
+		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
 		if (!is_connected()) {
 			m_last_error = "Not connected";
@@ -835,9 +834,7 @@ public:
 	}
 
 	CScriptArray* hvals(const std::string& key) {
-		asIScriptContext* ctx = asGetActiveContext();
-		asIScriptEngine* engine = ctx->GetEngine();
-		asITypeInfo* arrayType = engine->GetTypeInfoByDecl("array<string>");
+		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
 		if (!is_connected()) {
 			m_last_error = "Not connected";
@@ -936,9 +933,7 @@ public:
 	}
 
 	CScriptArray* smembers(const std::string& key) {
-		asIScriptContext* ctx = asGetActiveContext();
-		asIScriptEngine* engine = ctx->GetEngine();
-		asITypeInfo* arrayType = engine->GetTypeInfoByDecl("array<string>");
+		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
 		if (!is_connected()) {
 			m_last_error = "Not connected";
@@ -990,9 +985,7 @@ public:
 	}
 
 	CScriptArray* srandmember_count(const std::string& key, int64_t count) {
-		asIScriptContext* ctx = asGetActiveContext();
-		asIScriptEngine* engine = ctx->GetEngine();
-		asITypeInfo* arrayType = engine->GetTypeInfoByDecl("array<string>");
+		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
 		if (!is_connected()) {
 			m_last_error = "Not connected";
@@ -1012,9 +1005,7 @@ public:
 	}
 
 	CScriptArray* sunion(CScriptArray* keys) {
-		asIScriptContext* ctx = asGetActiveContext();
-		asIScriptEngine* engine = ctx->GetEngine();
-		asITypeInfo* arrayType = engine->GetTypeInfoByDecl("array<string>");
+		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
 		if (!is_connected()) {
 			m_last_error = "Not connected";
@@ -1042,9 +1033,7 @@ public:
 	}
 
 	CScriptArray* sinter(CScriptArray* keys) {
-		asIScriptContext* ctx = asGetActiveContext();
-		asIScriptEngine* engine = ctx->GetEngine();
-		asITypeInfo* arrayType = engine->GetTypeInfoByDecl("array<string>");
+		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
 		if (!is_connected()) {
 			m_last_error = "Not connected";
@@ -1072,9 +1061,7 @@ public:
 	}
 
 	CScriptArray* sdiff(CScriptArray* keys) {
-		asIScriptContext* ctx = asGetActiveContext();
-		asIScriptEngine* engine = ctx->GetEngine();
-		asITypeInfo* arrayType = engine->GetTypeInfoByDecl("array<string>");
+		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
 		if (!is_connected()) {
 			m_last_error = "Not connected";
@@ -1163,9 +1150,7 @@ public:
 	}
 
 	CScriptArray* zrange(const std::string& key, int64_t start, int64_t stop, bool withscores = false) {
-		asIScriptContext* ctx = asGetActiveContext();
-		asIScriptEngine* engine = ctx->GetEngine();
-		asITypeInfo* arrayType = engine->GetTypeInfoByDecl("array<string>");
+		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
 		if (!is_connected()) {
 			m_last_error = "Not connected";
@@ -1188,9 +1173,7 @@ public:
 	}
 
 	CScriptArray* zrevrange(const std::string& key, int64_t start, int64_t stop, bool withscores = false) {
-		asIScriptContext* ctx = asGetActiveContext();
-		asIScriptEngine* engine = ctx->GetEngine();
-		asITypeInfo* arrayType = engine->GetTypeInfoByDecl("array<string>");
+		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
 		if (!is_connected()) {
 			m_last_error = "Not connected";
@@ -1256,9 +1239,7 @@ public:
 	}
 
 	CScriptArray* zrangebyscore(const std::string& key, double min, double max, bool withscores = false, int64_t offset = -1, int64_t count = -1) {
-		asIScriptContext* ctx = asGetActiveContext();
-		asIScriptEngine* engine = ctx->GetEngine();
-		asITypeInfo* arrayType = engine->GetTypeInfoByDecl("array<string>");
+		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
 		if (!is_connected()) {
 			m_last_error = "Not connected";
@@ -1625,9 +1606,7 @@ public:
 	}
 
 	CScriptArray* geopos(const std::string& key, CScriptArray* members) {
-		asIScriptContext* ctx = asGetActiveContext();
-		asIScriptEngine* engine = ctx->GetEngine();
-		asITypeInfo* arrayType = engine->GetTypeInfoByDecl("array<array<double>@>");
+		asITypeInfo* arrayType = g_coordinates_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
 		if (!is_connected()) {
 			m_last_error = "Not connected";
@@ -1643,7 +1622,7 @@ public:
 		}
 		Array reply;
 		if (execute_command(cmd, reply)) {
-			asITypeInfo* doubleArrayType = engine->GetTypeInfoByDecl("array<double>");
+			asITypeInfo* doubleArrayType = g_double_array_type;
 			for (size_t i = 0; i < reply.size(); ++i) {
 				CScriptArray* coords = CScriptArray::Create(doubleArrayType);
 				try {
@@ -1680,9 +1659,7 @@ public:
 	}
 
 	CScriptArray* georadius(const std::string& key, double longitude, double latitude, double radius, const std::string& unit, bool withcoord = false, bool withdist = false, bool withhash = false, int64_t count = -1) {
-		asIScriptContext* ctx = asGetActiveContext();
-		asIScriptEngine* engine = ctx->GetEngine();
-		asITypeInfo* arrayType = engine->GetTypeInfoByDecl("array<string>");
+		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
 		if (!is_connected()) {
 			m_last_error = "Not connected";
@@ -1718,9 +1695,7 @@ public:
 	}
 
 	CScriptArray* georadiusbymember(const std::string& key, const std::string& member, double radius, const std::string& unit, bool withcoord = false, bool withdist = false, bool withhash = false, int64_t count = -1) {
-		asIScriptContext* ctx = asGetActiveContext();
-		asIScriptEngine* engine = ctx->GetEngine();
-		asITypeInfo* arrayType = engine->GetTypeInfoByDecl("array<string>");
+		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
 		if (!is_connected()) {
 			m_last_error = "Not connected";
@@ -1843,9 +1818,7 @@ public:
 	}
 
 	CScriptArray* scan(int64_t cursor, const std::string& match = "", int64_t count = -1) {
-		asIScriptContext* ctx = asGetActiveContext();
-		asIScriptEngine* engine = ctx->GetEngine();
-		asITypeInfo* arrayType = engine->GetTypeInfoByDecl("array<string>");
+		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
 		if (!is_connected()) {
 			m_last_error = "Not connected";
@@ -2098,9 +2071,7 @@ public:
 	}
 
 	CScriptArray* client_list() {
-		asIScriptContext* ctx = asGetActiveContext();
-		asIScriptEngine* engine = ctx->GetEngine();
-		asITypeInfo* arrayType = engine->GetTypeInfoByDecl("array<string>");
+		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
 		if (!is_connected()) {
 			m_last_error = "Not connected";
@@ -2164,9 +2135,7 @@ public:
 	}
 
 	CScriptArray* acl_list() {
-		asIScriptContext* ctx = asGetActiveContext();
-		asIScriptEngine* engine = ctx->GetEngine();
-		asITypeInfo* arrayType = engine->GetTypeInfoByDecl("array<string>");
+		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
 		if (!is_connected()) {
 			m_last_error = "Not connected";
@@ -2216,9 +2185,7 @@ public:
 	}
 
 	CScriptArray* acl_getuser(const std::string& username) {
-		asIScriptContext* ctx = asGetActiveContext();
-		asIScriptEngine* engine = ctx->GetEngine();
-		asITypeInfo* arrayType = engine->GetTypeInfoByDecl("array<string>");
+		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
 		if (!is_connected()) {
 			m_last_error = "Not connected";
@@ -2288,9 +2255,7 @@ public:
 	}
 
 	CScriptArray* pipeline_execute() {
-		asIScriptContext* ctx = asGetActiveContext();
-		asIScriptEngine* engine = ctx->GetEngine();
-		asITypeInfo* arrayType = engine->GetTypeInfoByDecl("array<redis_value@>");
+		asITypeInfo* arrayType = g_value_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
 		if (!m_pipeline_mode) {
 			m_last_error = "Not in pipeline mode";
@@ -2427,9 +2392,7 @@ public:
 	}
 
 	CScriptArray* get_messages(const std::string& channel) {
-		asIScriptContext* ctx = asGetActiveContext();
-		asIScriptEngine* engine = ctx->GetEngine();
-		asITypeInfo* arrayType = engine->GetTypeInfoByDecl("array<string>");
+		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
 		Mutex::ScopedLock lock(m_messages_mutex);
 		auto it = m_messages.find(channel);
@@ -2744,6 +2707,10 @@ void RegisterRedis(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("blocking_redis_subscriber", "void stop()", asMETHOD(blocking_redis_subscriber, stop), asCALL_THISCALL);
 	engine->RegisterObjectMethod("blocking_redis_subscriber", "array<string>@ get_messages(const string&in)", asMETHOD(blocking_redis_subscriber, get_messages), asCALL_THISCALL);
 	engine->RegisterObjectMethod("blocking_redis_subscriber", "bool has_messages(const string&in)", asMETHOD(blocking_redis_subscriber, has_messages), asCALL_THISCALL);
+	g_string_array_type = engine->GetTypeInfoByDecl("array<string>");
+	g_value_array_type = engine->GetTypeInfoByDecl("array<redis_value@>");
+	g_coordinates_array_type = engine->GetTypeInfoByDecl("array<array<double>@>");
+	g_double_array_type = engine->GetTypeInfoByDecl("array<double>");
 }
 
 plugin_main(nvgt_plugin_shared* shared) {
