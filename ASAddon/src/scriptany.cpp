@@ -2,8 +2,23 @@
 #include <new>
 #include <assert.h>
 #include <string.h>
+#include <mutex>
 
 BEGIN_AS_NAMESPACE
+
+// ALTERED: the garbage collector runs on whichever thread is executing script code when it is due, or on a thread of its own,
+// so EnumReferences can read an any's value while another thread stores into it. The value and its type are written as one
+// (a store, an assignment, the release of the value) under this lock, which EnumReferences takes to read them: it found the
+// new value under the old type or the old one under the new type (an integer given to a type's enumeration as an object), and
+// a value object (a ref, a dictionaryValue) that the store then freed was given to its type's enumeration (a use after free).
+// The locks are shared out by address so that the any keeps its size, and never destroyed, as a collection can still run
+// while static objects are being torn down.
+static std::mutex &ValueLock(const CScriptAny *any)
+{
+	static std::mutex *locks = new std::mutex[64];
+	asPWORD address = reinterpret_cast<asPWORD>(any);
+	return locks[((address >> 4) ^ (address >> 12)) & 63];
+}
 
 // We'll use the generic interface for the factories as we need the engine pointer
 static void ScriptAnyFactory_Generic(asIScriptGeneric *gen)
@@ -281,8 +296,12 @@ CScriptAny &CScriptAny::operator=(const CScriptAny &other)
 		nv.valueInt = other.value.valueInt;
 	}
 
-	valueStruct old = value;
-	value = nv;
+	valueStruct old;
+	{
+		std::lock_guard<std::mutex> guard(ValueLock(this)); // ALTERED: see ValueLock
+		old = value;
+		value = nv;
+	}
 	ReleaseAnyValue(engine, old.valueObj, old.typeId);
 
 	return *this;
@@ -374,8 +393,12 @@ void CScriptAny::Store(void *ref, int refTypeId)
 		memcpy(&nv.valueInt, ref, size);
 	}
 
-	valueStruct old = value;
-	value = nv;
+	valueStruct old;
+	{
+		std::lock_guard<std::mutex> guard(ValueLock(this)); // ALTERED: see ValueLock
+		old = value;
+		value = nv;
+	}
 	ReleaseAnyValue(engine, old.valueObj, old.typeId);
 }
 
@@ -479,10 +502,15 @@ void CScriptAny::FreeObject()
 	if( value.typeId & asTYPEID_MASK_OBJECT )
 	{
 		// ALTERED: the any is emptied before the object is released, not after (see operator=)
-		void *obj = value.valueObj;
-		int typeId = value.typeId;
-		value.valueObj = 0;
-		value.typeId = 0;
+		void *obj;
+		int typeId;
+		{
+			std::lock_guard<std::mutex> guard(ValueLock(this)); // ALTERED: see ValueLock
+			obj = value.valueObj;
+			typeId = value.typeId;
+			value.valueObj = 0;
+			value.typeId = 0;
+		}
 
 		// Let the engine release the object and the object type info
 		ReleaseAnyValue(engine, obj, typeId);
@@ -494,6 +522,9 @@ void CScriptAny::FreeObject()
 
 void CScriptAny::EnumReferences(asIScriptEngine *inEngine)
 {
+	// ALTERED: the value and its type are read under the any's lock, see ValueLock
+	std::lock_guard<std::mutex> guard(ValueLock(this));
+
 	// If we're holding a reference, we'll notify the garbage collector of it
 	if (value.valueObj && (value.typeId & asTYPEID_MASK_OBJECT))
 	{
