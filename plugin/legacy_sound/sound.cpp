@@ -2461,12 +2461,13 @@ unsigned int get_input_device_name(unsigned int device, char* buffer, unsigned i
 	strncpy(buffer, i.name, namelen);
 	return namelen;
 }
+// The type of the string arrays the device lists are returned in, looked up once when the plugin registers its functions (see
+// g_pack_string_array_type in pack.cpp: looked up on every call, the lookup ran with no lock while a build on another thread
+// could change the engine's list of template instances it walks).
+static asITypeInfo* g_sound_string_array_type = nullptr;
 CScriptArray* list_input_devices() {
 	DWORD count = get_input_device_count();
-	asIScriptContext* ctx = asGetActiveContext();
-	asIScriptEngine* engine = ctx->GetEngine();
-	asITypeInfo* arrayType = engine->GetTypeInfoByDecl("array<string>");
-	CScriptArray* array = CScriptArray::Create(arrayType, count);
+	CScriptArray* array = CScriptArray::Create(g_sound_string_array_type, count);
 	for (int i = 0; i < count; i++) {
 		char devname[512];
 		int r = get_input_device_name(i, devname, 512);
@@ -2510,10 +2511,7 @@ unsigned int get_output_device_name(unsigned int device, char* buffer, unsigned 
 }
 CScriptArray* list_output_devices() {
 	DWORD count = get_output_device_count();
-	asIScriptContext* ctx = asGetActiveContext();
-	asIScriptEngine* engine = ctx->GetEngine();
-	asITypeInfo* arrayType = engine->GetTypeInfoByDecl("array<string>");
-	CScriptArray* array = CScriptArray::Create(arrayType, count);
+	CScriptArray* array = CScriptArray::Create(g_sound_string_array_type, count);
 	for (int i = 0; i < count; i++) {
 		char devname[512];
 		int r = get_output_device_name(i, devname, 512);
@@ -2663,6 +2661,7 @@ void RegisterScriptSound(asIScriptEngine* engine) {
 	engine->RegisterGlobalFunction("void set_sound_output_device(uint) property", asFUNCTION(set_output_device), asCALL_CDECL);
 	engine->RegisterGlobalFunction("uint get_sound_output_device_count() property", asFUNCTION(get_output_device_count), asCALL_CDECL);
 	engine->RegisterGlobalFunction("array<string>@ get_sound_output_devices() property", asFUNCTION(list_output_devices), asCALL_CDECL);
+	g_sound_string_array_type = engine->GetTypeInfoByDecl("array<string>");
 	engine->RegisterGlobalFunction("bool get_sound_global_hrtf() property", asFUNCTION(get_global_hrtf), asCALL_CDECL);
 	engine->RegisterGlobalFunction("void set_sound_global_hrtf(bool) property", asFUNCTION(set_global_hrtf), asCALL_CDECL);
 	engine->RegisterGlobalProperty("mixer@ sound_default_mixer", &g_default_mixer);

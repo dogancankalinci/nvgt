@@ -406,12 +406,14 @@ string legacy_pack::get_file_name(int idx) {
 		return "";
 	return pack_filenames[idx];
 }
+// The type of the string arrays list_files() returns, looked up once when the plugin registers its functions. Looked up on every
+// call, the lookup ran on the script's thread with no lock while a build on another thread could add template instances to the
+// engine's list it walks (NVGT's own lookups take its build lock, see get_array_type(), which a plugin can't reach). Plugins are
+// loaded only while the engine is set up, before any script runs, and the declarations registered below made the type.
+static asITypeInfo* g_pack_string_array_type = nullptr;
 CScriptArray* legacy_pack::list_files() {
 	unsigned int count = pack_filenames.size();
-	asIScriptContext* ctx = asGetActiveContext();
-	asIScriptEngine* engine = ctx->GetEngine();
-	asITypeInfo* arrayType = engine->GetTypeInfoByDecl("array<string>");
-	CScriptArray* array = CScriptArray::Create(arrayType);
+	CScriptArray* array = CScriptArray::Create(g_pack_string_array_type);
 	array->Reserve(count);
 	for (int i = 0; i < count; i++)
 		array->InsertLast(&pack_filenames[i]);
@@ -674,6 +676,7 @@ void RegisterScriptLegacyPack(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod(_O("pack"), _O("bool file_exists(const string &in pack_filename) const"), asMETHOD(legacy_pack, file_exists), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("pack"), _O("string get_file_name(int index) const"), asMETHODPR(legacy_pack, get_file_name, (int), string), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("pack"), _O("string[]@ list_files() const"), asMETHODPR(legacy_pack, list_files, (), CScriptArray*), asCALL_THISCALL);
+	g_pack_string_array_type = engine->GetTypeInfoByDecl("array<string>");
 	engine->RegisterObjectMethod(_O("pack"), _O("uint get_file_size(const string &in pack_filename) const"), asMETHOD(legacy_pack, get_file_size), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("pack"), _O("uint get_file_offset(const string &in pack_filename) const"), asMETHOD(legacy_pack, get_file_offset), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("pack"), _O("string read_file(const string &in pack_filename, uint offset_in_file, uint read_byte_count) const"), asMETHOD(legacy_pack, read_file_string), asCALL_THISCALL);
