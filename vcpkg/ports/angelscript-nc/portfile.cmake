@@ -104,6 +104,7 @@ vcpkg_from_github(
         fix-weak-flag-publication.patch
         fix-namespace-list-threads.patch
         fix-pointer-member-alignment.patch
+        fix-weak-reference-made-by-destructor.patch
 )
 
 vcpkg_cmake_configure(

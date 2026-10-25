@@ -1,0 +1,74 @@
+diff --git a/sdk/angelscript/source/as_scriptobject.cpp b/sdk/angelscript/source/as_scriptobject.cpp
+--- a/sdk/angelscript/source/as_scriptobject.cpp
++++ b/sdk/angelscript/source/as_scriptobject.cpp
+@@ -688,6 +688,11 @@
+ 	{
+ 		// This cast is OK since we are the last reference
+ 		const_cast<asCScriptObject*>(this)->CallDestructor();
++
++		// ALTERED: see MarkWeakRefsMadeByDestructor
++		int r = 0;
++		if( !MarkWeakRefsMadeByDestructor(true, r) )
++			return r;
+ 	}
+ 
+ 	// Now do the actual releasing
+@@ -744,6 +749,11 @@
+ 	if( refCount.get() != 1 )
+ 		return refCount.get();
+ 
++	// ALTERED: see MarkWeakRefsMadeByDestructor (the collector keeps its reference when the object isn't dead)
++	int r = 0;
++	if( !MarkWeakRefsMadeByDestructor(false, r) )
++		return r;
++
+ 	// Nothing else can add a reference now: the weak references are dead and the collector's is the only one
+ 	if( refCount.atomicDec() == 0 && !hasRefCountReachedZero )
+ 	{
+@@ -753,6 +763,34 @@
+ 	return 0;
+ }
+ 
++// ALTERED: a weak reference the destructor made to its own object (weakref<T>(this), or a lookup of the flag, as
++// CScriptWeakRef::Equals does) has a flag that didn't exist when Release or ReleaseByCollector decided that this was the last
++// reference, so nothing marked it dead: once the object was freed, the weak reference still took a reference to it (a use
++// after free in CScriptWeakRef::Get). The flag is marked here, under its lock as in Release, while this is still the only
++// reference. Returns false when the destructor stored a new reference to the object, which then stays alive with its weak
++// references: with release set the caller's reference is let go of under the lock and r is the count left, otherwise r is the
++// count and the collector keeps its reference. Returns true when the object can be destroyed.
++bool asCScriptObject::MarkWeakRefsMadeByDestructor(bool release, int &r) const
++{
++	asCLockableSharedBool *weakRefFlag = LoadWeakRefFlag();
++	if( weakRefFlag == 0 )
++		return true;
++
++	weakRefFlag->Lock();
++	if( !weakRefFlag->Get() )
++	{
++		if( refCount.get() != 1 )
++		{
++			r = release ? refCount.atomicDec() : int(refCount.get());
++			weakRefFlag->Unlock();
++			return false;
++		}
++		weakRefFlag->SetLocked(true);
++	}
++	weakRefFlag->Unlock();
++	return true;
++}
++
+ void asCScriptObject::CallDestructor()
+ {
+ 	// Only allow the destructor to be called once
+diff --git a/sdk/angelscript/source/as_scriptobject.h b/sdk/angelscript/source/as_scriptobject.h
+--- a/sdk/angelscript/source/as_scriptobject.h
++++ b/sdk/angelscript/source/as_scriptobject.h
+@@ -130,6 +130,8 @@
+ 	int  ReleaseByCollector();
+ 	// ALTERED: the weak reference flag if it has been made, read with acquire loads, see GetWeakRefFlag
+ 	asCLockableSharedBool *LoadWeakRefFlag() const;
++	// ALTERED: after the destructor, marks dead the weak references it made to the object, see the definition
++	bool MarkWeakRefsMadeByDestructor(bool release, int &r) const;
+ 
+ //=============================================
+ // Properties
