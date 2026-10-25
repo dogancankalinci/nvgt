@@ -4144,8 +4144,8 @@ public:
 			play(true);
 		}
 		if (!pcm_stream) return false;
-		// All of it or none where nothing can be waited on for room: on an audio thread (see below), and for a sound not playing, paused or stopped, which nothing reads until play(). A part queued before giving up the rest left the script unable to tell what was taken, to send the rest again, and play() resuming a paused sound played that part. The audio thread only makes room meanwhile.
-		if ((audio_engine_impl::on_audio_thread() || !(snd && ma_sound_is_playing(&*snd))) && ma_pcm_rb_available_write(&pcm_stream->rb) < size_in_frames) {
+		// All of it or none where nothing can be waited on for room: on an audio thread (see below), and for a sound not playing, paused or stopped, which nothing reads until play(), or fading out to a pause_fade() stop, after which the rest waited on would be given up. A part queued before giving up the rest left the script unable to tell what was taken, to send the rest again, and play() resuming a paused sound played that part. The audio thread only makes room meanwhile.
+		if ((audio_engine_impl::on_audio_thread() || fade_paused || !(snd && ma_sound_is_playing(&*snd))) && ma_pcm_rb_available_write(&pcm_stream->rb) < size_in_frames) {
 			g_soundsystem_last_error = size_in_frames > ma_pcm_rb_get_subbuffer_size(&pcm_stream->rb)? MA_TOO_BIG : MA_BUSY; // More than the whole queue holds, which no later call can take either, to be sent in parts.
 			return false;
 		}
