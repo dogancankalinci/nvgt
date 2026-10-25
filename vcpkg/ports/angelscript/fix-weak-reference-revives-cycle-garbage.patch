@@ -1,0 +1,128 @@
+diff --git a/sdk/angelscript/source/as_gc.cpp b/sdk/angelscript/source/as_gc.cpp
+--- a/sdk/angelscript/source/as_gc.cpp
++++ b/sdk/angelscript/source/as_gc.cpp
+@@ -696,7 +696,7 @@ int asCGarbageCollector::IdentifyGarbageWithCyclicRefs()
+ 
+ 				if( refCount > 1 )
+ 				{
+-					asSIntTypePair it = {refCount-1, gcObj.type};
++					asSIntTypePair it = {refCount-1, gcObj.type, refCount+1}; // ALTERED: refCount, see MarkWeakRefsOfGarbageDead
+ 
+ 					gcMap.Insert(GetNode(gcObj.obj, it));
+ 
+@@ -868,6 +868,16 @@ int asCGarbageCollector::IdentifyGarbageWithCyclicRefs()
+ 
+ 		case breakCircles_init:
+ 		{
++			// ALTERED: see MarkWeakRefsOfGarbageDead
++			if( !MarkWeakRefsOfGarbageDead() )
++			{
++				// Objects were revived through a weak reference: they are taken as alive, with everything they reach, as
++				// verifyUnmarked does for an object the application touched. Each time this happens the touched objects leave
++				// the map, so it ends, also while a script keeps reviving objects through a weak reference.
++				detectState = detectGarbage_init;
++				return 1;
++			}
++
+ 			gcMap.MoveFirst(&gcMapCursor);
+ 			detectState = breakCircles_loop;
+ 
+@@ -945,6 +955,75 @@ int asCGarbageCollector::IdentifyGarbageWithCyclicRefs()
+ 	UNREACHABLE_RETURN;
+ }
+ 
++// ALTERED: the objects left in the map once verifyUnmarked has passed are garbage, and breakCircles then runs their destructors
++// and releases their references, one object per step with the application running in between. But a script object can have
++// weak references, and one turned strong in the meantime (CScriptWeakRef::Get, NVGT's event listeners) revived the object and
++// everything it reaches: the collector still destroyed them, so the script held an object whose destructor had run and whose
++// handles had been cleared (the other objects of the cycle then freed), and on another thread it could read a handle being
++// cleared under it. And a weak reference turned strong on another thread while buildMap put the object in the map (between
++// reading its count and setting its flag) had the flag that AddRef cleared set again, so the object was taken for garbage
++// although the other thread held it. And a weak reference that a destructor run here made to an object of the garbage revived
++// it the same way. Here, before anything is broken, the weak references are locked (a weak reference's
++// AddRef happens under that lock, so none is half done now), every object is checked for having been touched since it was put
++// in the map (its flag cleared, or its reference count changed), and then either every flag is marked dead under its lock, so
++// that no weak reference can revive the objects any more, or none is and the touched objects are taken as alive: an object
++// whose flag was set again after a revival (its count differs) gets an outside reference in the map, which detectGarbage
++// then reads as alive, as it does a cleared flag. Other threads lock one flag at a time and take no other lock while they
++// hold one, so holding several here can't deadlock.
++bool asCGarbageCollector::MarkWeakRefsOfGarbageDead()
++{
++	asCArray<asCLockableSharedBool*> flags;
++	asSMapNode_t *cursor = 0;
++
++	// Every script object of the map is first given its weak reference flag if it has none. A destructor that breakCircles
++	// runs can make a weak reference to its own object or to another object of the garbage (weakref<T>(this), or to a
++	// handle it holds), whose flag was made live after the others had been marked dead: get() then revived an object the
++	// collector was breaking or had broken. Made now, it is marked dead with the others, and a weak reference made later
++	// finds it so. Nothing but the collector reaches the garbage, so no other thread makes one meanwhile, and no lock is held
++	// yet (GetWeakRefFlag takes the global lock).
++	for( gcMap.MoveFirst(&cursor); cursor; gcMap.MoveNext(&cursor, cursor) )
++		if( gcMap.GetValue(cursor).type->flags & asOBJ_SCRIPT_OBJECT )
++			reinterpret_cast<asCScriptObject*>(gcMap.GetKey(cursor))->GetWeakRefFlag();
++
++	for( gcMap.MoveFirst(&cursor); cursor; gcMap.MoveNext(&cursor, cursor) )
++	{
++		asCObjectType *type = gcMap.GetValue(cursor).type;
++		if( type->flags & asOBJ_SCRIPT_OBJECT )
++		{
++			asCLockableSharedBool *flag = reinterpret_cast<asCScriptObject*>(gcMap.GetKey(cursor))->LoadWeakRefFlag();
++			if( flag )
++			{
++				flag->Lock();
++				flags.PushLast(flag);
++			}
++		}
++	}
++	if( flags.GetLength() == 0 )
++		return true;
++
++	bool touched = false;
++	for( gcMap.MoveFirst(&cursor); cursor; gcMap.MoveNext(&cursor, cursor) )
++	{
++		void *obj = gcMap.GetKey(cursor);
++		asSIntTypePair &it = gcMap.GetValue(cursor);
++		if( !engine->CallObjectMethodRetBool(obj, it.type->beh.gcGetFlag) )
++			touched = true;
++		else if( engine->CallObjectMethodRetInt(obj, it.type->beh.gcGetRefCount) != it.refCount )
++		{
++			touched = true;
++			it.i = 1;
++		}
++	}
++
++	for( asUINT n = 0; n < flags.GetLength(); n++ )
++	{
++		if( !touched )
++			flags[n]->SetLocked(true);
++		flags[n]->Unlock();
++	}
++	return !touched;
++}
++
+ asCGarbageCollector::asSMapNode_t *asCGarbageCollector::GetNode(void *obj, asSIntTypePair it)
+ {
+ 	// This function will only be called within the critical section gcCollecting
+diff --git a/sdk/angelscript/source/as_gc.h b/sdk/angelscript/source/as_gc.h
+--- a/sdk/angelscript/source/as_gc.h
++++ b/sdk/angelscript/source/as_gc.h
+@@ -72,7 +72,9 @@ public:
+ 
+ protected:
+ 	struct asSObjTypePair {void *obj; asCObjectType *type; asUINT seqNbr;};
+-	struct asSIntTypePair {int i; asCObjectType *type;};
++	// ALTERED: refCount is the object's reference count when it was put in the map, the map's own reference included, see
++	// MarkWeakRefsOfGarbageDead
++	struct asSIntTypePair {int i; asCObjectType *type; int refCount;};
+ 	typedef asSMapNode<void*, asSIntTypePair> asSMapNode_t;
+ 
+ 	enum egcDestroyState
+@@ -103,6 +105,8 @@ protected:
+ 	int            DestroyNewGarbage();
+ 	int            DestroyOldGarbage();
+ 	int            IdentifyGarbageWithCyclicRefs();
++	// ALTERED: marks dead the weak references to the objects found to be garbage, unless one was revived, see the definition
++	bool           MarkWeakRefsOfGarbageDead();
+ 	asSObjTypePair GetNewObjectAtIdx(int idx);
+ 	asSObjTypePair GetOldObjectAtIdx(int idx);
+ 	void           RemoveNewObjectAtIdx(int idx);
