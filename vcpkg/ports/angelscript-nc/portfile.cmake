@@ -99,6 +99,7 @@ vcpkg_from_github(
         fix-silent-builder-pending-message.patch
         fix-weak-reference-vs-collector.patch
         fix-last-release-race.patch
+        fix-function-type-lifetime-count.patch
 )
 
 vcpkg_cmake_configure(

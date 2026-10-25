@@ -1,0 +1,189 @@
+diff --git a/sdk/angelscript/source/as_scriptfunction.cpp b/sdk/angelscript/source/as_scriptfunction.cpp
+--- a/sdk/angelscript/source/as_scriptfunction.cpp
++++ b/sdk/angelscript/source/as_scriptfunction.cpp
+@@ -361,6 +361,7 @@
+ 		internalRefCount.set(1);
+ 		externalRefCount.set(0);
+ 	}
++	lifetimeRefCount.set(1); // ALTERED: see Release()
+ 
+ 	this->engine           = engine;
+ 	this->scriptData       = 0;
+@@ -514,6 +515,7 @@
+ int asCScriptFunction::AddRef() const
+ {
+ 	gcFlag = false;
++	lifetimeRefCount.atomicInc(); // ALTERED: see Release()
+ 	return externalRefCount.atomicInc();
+ }
+ 
+@@ -522,19 +524,21 @@
+ {
+ 	gcFlag = false;
+ 	int r = externalRefCount.atomicDec();
+-	if( r == 0 &&
++	// ALTERED: the function (or type) is deleted when lifetimeRefCount, the sum of the external and internal counts, reaches 0, by
++	// the one thread that brings it there. Each release decremented its own count and then read the other one to decide: a thread
++	// letting go of the last external reference while another thread's module deletion let go of the last internal one could
++	// read the other count of an object the other thread had just deleted, or both could see 0 and delete it twice. The two
++	// counts are kept for what they report (external references, the collector's count).
++	if( lifetimeRefCount.atomicDec() == 0 &&
+ 		funcType != asFUNC_DUMMY )    // Dummy functions are allocated on the stack and cannot be deleted
+ 	{
+-		// There are no more external references, if there are also no
+-		// internal references then it is time to delete the function
+-		if( internalRefCount.get() == 0 )
+-		{
+-			// If there are no internal references, then no module is owning the function
+-			// For example if the function was dynamically compiled without adding it to the scope of the module
+-			asASSERT( module == 0 );
++		// There are no more external references, and also no
++		// internal references, so it is time to delete the function
++		// If there are no internal references, then no module is owning the function
++		// For example if the function was dynamically compiled without adding it to the scope of the module
++		asASSERT( module == 0 );
+ 
+-			asDELETE(const_cast<asCScriptFunction*>(this),asCScriptFunction);
+-		}
++		asDELETE(const_cast<asCScriptFunction*>(this),asCScriptFunction);
+ 	}
+ 
+ 	return r;
+@@ -543,6 +547,7 @@
+ // internal
+ int asCScriptFunction::AddRefInternal()
+ {
++	lifetimeRefCount.atomicInc(); // ALTERED: see Release()
+ 	return internalRefCount.atomicInc();
+ }
+ 
+@@ -550,15 +555,13 @@
+ int asCScriptFunction::ReleaseInternal()
+ {
+ 	int r = internalRefCount.atomicDec();
+-	if( r == 0 &&
++	// ALTERED: see Release()
++	if( lifetimeRefCount.atomicDec() == 0 &&
+ 		funcType != asFUNC_DUMMY )
+ 	{
+-		// There are no more internal references, if there are also no
+-		// external references then it is time to delete the function
+-		if( externalRefCount.get() == 0 )
+-		{
+-			asDELETE(const_cast<asCScriptFunction*>(this),asCScriptFunction);
+-		}
++		// There are no more internal references, and also no
++		// external references, so it is time to delete the function
++		asDELETE(const_cast<asCScriptFunction*>(this),asCScriptFunction);
+ 	}
+ 
+ 	return r;
+diff --git a/sdk/angelscript/source/as_scriptfunction.h b/sdk/angelscript/source/as_scriptfunction.h
+--- a/sdk/angelscript/source/as_scriptfunction.h
++++ b/sdk/angelscript/source/as_scriptfunction.h
+@@ -313,6 +313,7 @@
+ 
+ 	mutable asCAtomic            externalRefCount; // Used for external referneces
+ 	        asCAtomic            internalRefCount; // Used for internal references
++	mutable asCAtomic            lifetimeRefCount; // ALTERED: externalRefCount + internalRefCount, see Release()
+ 	mutable bool                 gcFlag;
+ 	asCScriptEngine             *engine;
+ 	asCModule                   *module;
+diff --git a/sdk/angelscript/source/as_typeinfo.cpp b/sdk/angelscript/source/as_typeinfo.cpp
+--- a/sdk/angelscript/source/as_typeinfo.cpp
++++ b/sdk/angelscript/source/as_typeinfo.cpp
+@@ -44,6 +44,7 @@
+ {
+ 	externalRefCount.set(0);
+ 	internalRefCount.set(1); // start with one internal ref-count
++	lifetimeRefCount.set(1); // ALTERED: see Release()
+ 	engine = 0;
+ 	module = 0;
+ 	size = 0;
+@@ -61,6 +62,7 @@
+ {
+ 	externalRefCount.set(0);
+ 	internalRefCount.set(1); // start with one internal ref count
++	lifetimeRefCount.set(1); // ALTERED: see Release()
+ 	engine = in_engine;
+ 	module = 0;
+ 	size = 0;
+@@ -81,6 +83,7 @@
+ // interface
+ int asCTypeInfo::AddRef() const
+ {
++	lifetimeRefCount.atomicInc(); // ALTERED: see Release()
+ 	return externalRefCount.atomicInc();
+ }
+ 
+@@ -89,16 +92,18 @@
+ {
+ 	int r = externalRefCount.atomicDec();
+ 
+-	if (r == 0)
++	// ALTERED: the function (or type) is deleted when lifetimeRefCount, the sum of the external and internal counts, reaches 0, by
++	// the one thread that brings it there. Each release decremented its own count and then read the other one to decide: a thread
++	// letting go of the last external reference while another thread's module deletion let go of the last internal one could
++	// read the other count of an object the other thread had just deleted, or both could see 0 and delete it twice. The two
++	// counts are kept for what they report (external references, the collector's count).
++	if (lifetimeRefCount.atomicDec() == 0)
+ 	{
+-		// There are no more external references, if there are also no
+-		// internal references then it is time to delete the object type
+-		if (internalRefCount.get() == 0)
+-		{
+-			// If the engine is no longer set, then it has already been
+-			// released and we must take care of the deletion ourselves
+-			asDELETE(const_cast<asCTypeInfo*>(this), asCTypeInfo);
+-		}
++		// There are no more external references, and also no
++		// internal references, so it is time to delete the object type
++		// If the engine is no longer set, then it has already been
++		// released and we must take care of the deletion ourselves
++		asDELETE(const_cast<asCTypeInfo*>(this), asCTypeInfo);
+ 	}
+ 
+ 	return r;
+@@ -106,6 +111,7 @@
+ 
+ int asCTypeInfo::AddRefInternal()
+ {
++	lifetimeRefCount.atomicInc(); // ALTERED: see Release()
+ 	return internalRefCount.atomicInc();
+ }
+ 
+@@ -113,16 +119,14 @@
+ {
+ 	int r = internalRefCount.atomicDec();
+ 
+-	if (r == 0)
++	// ALTERED: see Release()
++	if (lifetimeRefCount.atomicDec() == 0)
+ 	{
+-		// There are no more internal references, if there are also no
+-		// external references then it is time to delete the object type
+-		if (externalRefCount.get() == 0)
+-		{
+-			// If the engine is no longer set, then it has already been
+-			// released and we must take care of the deletion ourselves
+-			asDELETE(const_cast<asCTypeInfo*>(this), asCTypeInfo);
+-		}
++		// There are no more internal references, and also no
++		// external references, so it is time to delete the object type
++		// If the engine is no longer set, then it has already been
++		// released and we must take care of the deletion ourselves
++		asDELETE(const_cast<asCTypeInfo*>(this), asCTypeInfo);
+ 	}
+ 
+ 	return r;
+diff --git a/sdk/angelscript/source/as_typeinfo.h b/sdk/angelscript/source/as_typeinfo.h
+--- a/sdk/angelscript/source/as_typeinfo.h
++++ b/sdk/angelscript/source/as_typeinfo.h
+@@ -185,6 +185,7 @@
+ 
+ 	mutable asCAtomic externalRefCount;
+ 	asCAtomic         internalRefCount;
++	mutable asCAtomic lifetimeRefCount; // ALTERED: externalRefCount + internalRefCount, see Release()
+ };
+ 
+ struct asSEnumValue
