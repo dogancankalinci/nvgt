@@ -861,6 +861,11 @@ public:
 			result->Resize(0);
 			return result;
 		}
+		// With nothing attached to it, MiniAudio's engine reads no frames and its time stands still, so a script reading it for a time or a number of frames, as before attaching anything, read nothing for good: it reads the silence MiniAudio wrote for the frames asked, and its time moves on by them, as with anything attached.
+		if (frames_read < frame_count) {
+			ma_engine_set_time_in_pcm_frames(&*engine, ma_engine_get_time_in_pcm_frames(&*engine) + (frame_count - frames_read));
+			frames_read = frame_count;
+		}
 		result->Resize(frames_read * ma_engine_get_channels(&*engine));
 		return result;
 	}
