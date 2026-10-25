@@ -620,6 +620,7 @@ class audio_engine_impl final : public audio_node_impl, public virtual audio_eng
 
 public:
 	static bool on_audio_thread() { return processing; } // This thread runs a device's data callback, as a processing callback does.
+	bool meant_to_run() const { return started; } // Started, by the constructor or start(), and not stopped since.
 	engine_flags flags;
 	audio_engine_impl(int flags, int sample_rate, int channels) : audio_node_impl(nullptr, this), engine(nullptr), resource_manager(nullptr), script_data_callback(nullptr), engine_endpoint(nullptr), flags(static_cast<engine_flags>(flags)) {
 		if (channels > MA_MAX_CHANNELS) throw runtime_error(Poco::format("exceeded maximum channel count of %d", MA_MAX_CHANNELS));
@@ -4320,14 +4321,15 @@ public:
 		if (!snd || !at_end_seen(&*snd) || !ma_sound_is_playing(&*snd)) return false;
 		held_sound* h = held(&*snd);
 		if ((get_engine()->get_flags() & audio_engine::NO_DEVICE) || audio_engine_impl::on_audio_thread() || h->restart.load() == held_sound::restart_asked) return true; // An ask left by an earlier call stands.
-		// Waited out only while the audio thread goes on processing the sound, as it does in each block it reads the engine: not once the engine's time moved 50 ms without a call of the sound's processing, as for a mixer stopped, nor once it stood still for 10 ms, as for an engine stopped or a device lost.
+		// Waited out only while the audio thread goes on processing the sound, as it does in each block it reads the engine, however far apart a device asks for its blocks: not for an engine stopped, nor once the engine's time moved 50 ms without a call of the sound's processing, as for a mixer stopped, nor for longer than 200 ms, as for a device lost.
+		audio_engine_impl* engine_impl = dynamic_cast<audio_engine_impl*>(get_engine());
+		if (engine_impl && !engine_impl->meant_to_run()) return true;
 		ma_engine* engine = ma_sound_get_engine(&*snd);
 		const ma_uint64 idle_frames = std::max<ma_uint64>(1, ma_engine_get_sample_rate(engine) / 20);
 		const auto give_up = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
 		ma_uint32 calls = h->processed.load();
-		ma_uint64 time = ma_engine_get_time_in_pcm_frames(engine), processed_at = time;
-		auto time_moved = std::chrono::steady_clock::now();
-		while (at_end_seen(&*snd) && ma_sound_is_playing(&*snd) && std::chrono::steady_clock::now() < give_up) {
+		ma_uint64 processed_at = ma_engine_get_time_in_pcm_frames(engine);
+		while (at_end_seen(&*snd) && ma_sound_is_playing(&*snd) && std::chrono::steady_clock::now() < give_up && !(engine_impl && !engine_impl->meant_to_run())) {
 			std::this_thread::sleep_for(std::chrono::microseconds(500));
 			const ma_uint32 now_calls = h->processed.load();
 			const ma_uint64 now_time = ma_engine_get_time_in_pcm_frames(engine);
@@ -4335,10 +4337,6 @@ public:
 				calls = now_calls;
 				processed_at = now_time;
 			} else if (now_time - processed_at > idle_frames) break;
-			if (now_time != time) {
-				time = now_time;
-				time_moved = std::chrono::steady_clock::now();
-			} else if (std::chrono::steady_clock::now() - time_moved > std::chrono::milliseconds(10)) break;
 		}
 		return at_end_seen(&*snd) && ma_sound_is_playing(&*snd);
 	}
