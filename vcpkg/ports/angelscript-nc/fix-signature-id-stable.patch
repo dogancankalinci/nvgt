@@ -1,0 +1,95 @@
+diff --git a/sdk/angelscript/source/as_restore.cpp b/sdk/angelscript/source/as_restore.cpp
+--- a/sdk/angelscript/source/as_restore.cpp
++++ b/sdk/angelscript/source/as_restore.cpp
+@@ -1987,8 +1987,9 @@
+ 							// Destroy the function without releasing any references
+ 							// ALTERED: under the engine's function table lock (see ComputeSignatureId)
+ 							ENTERCRITICALSECTION(engine->functionTableLock);
+-							if( func->id == func->signatureId )
+-								engine->signatureIds.RemoveValue(func);
++							// ALTERED: the function represents its signature when it is in signatureIds (the signature id is no
++							// longer the function's id, see asCScriptFunction::ComputeSignatureId)
++							engine->signatureIds.RemoveValue(func);
+ 							LEAVECRITICALSECTION(engine->functionTableLock);
+ 							func->id = 0;
+ 							if( func->scriptData )
+diff --git a/sdk/angelscript/source/as_scriptengine.cpp b/sdk/angelscript/source/as_scriptengine.cpp
+--- a/sdk/angelscript/source/as_scriptengine.cpp
++++ b/sdk/angelscript/source/as_scriptengine.cpp
+@@ -743,6 +743,7 @@
+ 
+ 	// Reserve function id 0 for no function
+ 	scriptFunctions.PushLast(0);
++	signatureIdSeqNbr = 0; // ALTERED: signature id 0 is no signature, as function id 0 is no function
+ 
+ 	// Reserve the first typeIds for the primitive types
+ 	typeIdSeqNbr = asTYPEID_DOUBLE + 1;
+@@ -6647,26 +6648,30 @@
+ 			}
+ 
+ 			// Is the function used as signature id?
+-			if( func->signatureId == id )
++			// ALTERED: signature ids are numbers of their own that are never reused (see asCScriptFunction::ComputeSignatureId),
++			// so when the function representing a signature goes, another function of the signature represents it and no
++			// function's signature id changes. The signature id was the representing function's id, which was given back
++			// here, so every other function of the signature was given a new one; another thread compared signature ids in
++			// the meantime (asCContext::GetRealFunc when a delegate or an interface method is called, the compiler matching
++			// interface methods) and found a method and its implementation with different ones: a call failed with "Null
++			// pointer access".
++			int sigIdx = signatureIds.IndexOf(func);
++			if( sigIdx >= 0 )
+ 			{
+-				// Remove the signature id
+-				signatureIds.RemoveValue(func);
+-
+-				// Update all functions using the signature id
+-				int newSigId = 0;
++				asCScriptFunction *other = 0;
+ 				for( asUINT n = 0; n < scriptFunctions.GetLength(); n++ )
+ 				{
+-					if( scriptFunctions[n] && scriptFunctions[n]->signatureId == id )
++					if( scriptFunctions[n] && scriptFunctions[n] != func && scriptFunctions[n]->signatureId == func->signatureId )
+ 					{
+-						if( newSigId == 0 )
+-						{
+-							newSigId = scriptFunctions[n]->id;
+-							signatureIds.PushLast(scriptFunctions[n]);
+-						}
+-
+-						scriptFunctions[n]->signatureId = newSigId;
++						other = scriptFunctions[n];
++						break;
+ 					}
+ 				}
++
++				if( other )
++					signatureIds[sigIdx] = other;
++				else
++					signatureIds.RemoveIndex(sigIdx);
+ 			}
+ 		}
+ 	}
+diff --git a/sdk/angelscript/source/as_scriptengine.h b/sdk/angelscript/source/as_scriptengine.h
+--- a/sdk/angelscript/source/as_scriptengine.h
++++ b/sdk/angelscript/source/as_scriptengine.h
+@@ -388,6 +388,7 @@
+ 	asCArray<asCScriptFunction *> scriptFunctions;       // doesn't increase ref count
+ 	asCArray<int>                 freeScriptFunctionIds;
+ 	asCArray<asCScriptFunction *> signatureIds;
++	int                           signatureIdSeqNbr; // ALTERED: the last signature id given, see asCScriptFunction::ComputeSignatureId
+ 
+ 	// An array with all module imported functions
+ 	asCArray<sBindInfo *>  importedFunctions; // doesn't increase ref count
+diff --git a/sdk/angelscript/source/as_scriptfunction.cpp b/sdk/angelscript/source/as_scriptfunction.cpp
+--- a/sdk/angelscript/source/as_scriptfunction.cpp
++++ b/sdk/angelscript/source/as_scriptfunction.cpp
+@@ -1108,7 +1108,8 @@
+ 		return;
+ 	}
+ 
+-	signatureId = id;
++	// ALTERED: a number of its own, never reused (see asCScriptEngine::RemoveScriptFunction). It was the function's id.
++	signatureId = ++engine->signatureIdSeqNbr;
+ 	engine->signatureIds.PushLast(this);
+ 	LEAVECRITICALSECTION(engine->functionTableLock);
+ }
