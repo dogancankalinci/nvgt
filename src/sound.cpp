@@ -744,7 +744,10 @@ public:
 			return -1;
 		// Not while set_device() on another thread uninitialises and opens the device again, which zeroes it, so that asking MiniAudio about it then could reach a null context. Not taken on the device's own callback, which set_device() waits for, and during which the device isn't being opened; only tried on another engine's, which mustn't wait for a set_device() that waits for this engine's callback, as two callbacks reading each other's engines while both engines changed device did, for good: -1 then, as while a device is being opened.
 		std::unique_lock<std::mutex> lock(device_mutex, std::defer_lock);
-		if (processing && processing != this && !lock.try_lock()) return -1;
+		if (processing && processing != this && !lock.try_lock()) {
+			g_soundsystem_last_error = MA_BUSY;
+			return -1;
+		}
 		if (!processing) lock.lock();
 		ma_device *dev = ma_engine_get_device(&*engine);
 		ma_device_info info;
@@ -860,7 +863,7 @@ public:
 			g_soundsystem_last_error = MA_BUSY;
 			return false;
 		}
-		if (ma_engine_start(&*engine) != MA_SUCCESS) return false;
+		if ((g_soundsystem_last_error = ma_engine_start(&*engine)) != MA_SUCCESS) return false;
 		started = true;
 		return true;
 	}
@@ -872,7 +875,7 @@ public:
 		}
 		if (!engine) return false;
 		std::lock_guard<std::mutex> lock(device_mutex);
-		if (ma_engine_stop(&*engine) != MA_SUCCESS) return false;
+		if ((g_soundsystem_last_error = ma_engine_stop(&*engine)) != MA_SUCCESS) return false;
 		started = false;
 		return true;
 	}
@@ -4133,7 +4136,10 @@ public:
 				if (!waiting) {
 					waiting = true;
 					waiting_since = std::chrono::steady_clock::now();
-				} else if (std::chrono::steady_clock::now() - waiting_since >= std::chrono::seconds(1)) return false;
+				} else if (std::chrono::steady_clock::now() - waiting_since >= std::chrono::seconds(1)) {
+					g_soundsystem_last_error = MA_TIMEOUT;
+					return false;
+				}
 				std::this_thread::sleep_for(std::chrono::milliseconds(1));
 				continue;
 			}
