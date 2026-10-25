@@ -143,8 +143,11 @@ CScriptWeakRef &CScriptWeakRef::Set(void *newRef)
 	m_ref = newRef;
 	if( newRef )
 	{
+		// The flag is null for an object whose reference count already reached zero (it is being destroyed), as in the
+		// constructor, which checks it too: the weak reference then reads null
 		m_weakRefFlag = m_type->GetEngine()->GetWeakRefFlagOfScriptObject(newRef, m_type->GetSubType());
-		m_weakRefFlag->AddRef();
+		if( m_weakRefFlag )
+			m_weakRefFlag->AddRef();
 	}
 	else
 		m_weakRefFlag = 0;
