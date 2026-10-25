@@ -4712,7 +4712,10 @@ public:
 		return false;
 	}
 	void set_volume(float volume) override {
-		if (!finite_values({volume, ma_volume_db_to_linear(volume)})) return;
+		if (!finite_values({volume, ma_volume_db_to_linear(volume)}) || volume > 0) { // A device's volume goes no higher than 0 dB, which MiniAudio refuses, so that it was kept and read back while no device took it.
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return;
+		}
 		std::lock_guard<std::mutex> lock(device_mutex);
 		volume_db = volume; // Kept for a device opened later, as without one now (see open_capture()).
 		g_soundsystem_last_error = capture_device? ma_device_set_master_volume_db(&*capture_device, volume) : MA_SUCCESS;
