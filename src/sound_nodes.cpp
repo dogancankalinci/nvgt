@@ -1054,7 +1054,12 @@ class audio_spatializer_impl;
 static std::unordered_set<audio_spatializer_impl*> g_tracked_spatializers;
 static std::mutex g_tracked_spatializers_mutex; // every mixer/sound constructs a spatializer on whatever script thread creates it, while sound_set_spatialization iterates the set from another
 static std::mutex g_spatializer_sweep_mutex; // One panner or attenuator change at a time rewires the spatializers, so that two don't reach each in different orders.
-static void sweep_tracked_spatializers(bool panner, int id, bool enabled); // After audio_spatializer_impl.
+// The spatializers a panner or attenuator change took a reference to, let go of as it goes out of scope. Declared before the change's lock, so after that lock, as letting go of a last reference can run a teardown ending in script code that makes such a change again; and on an exception, as a component that can't be made throws, rather than kept for good with their engines.
+struct swept_spatializers {
+	std::vector<audio_spatializer_impl*> taken;
+	~swept_spatializers(); // After audio_spatializer_impl.
+};
+static void sweep_tracked_spatializers(swept_spatializers &swept, bool panner, int id, bool enabled); // After audio_spatializer_impl.
 
 int register_audio_panner(spatializer_component_node_factory factory, bool default_enabled) {
 	int id = g_next_panner_id++;
@@ -1081,22 +1086,24 @@ spatializer_component_node* create_audio_attenuator(int id, audio_spatializer* s
 }
 
 void set_audio_panner_enabled(int id, bool enabled) {
+	swept_spatializers swept;
 	std::lock_guard<std::mutex> sweep(g_spatializer_sweep_mutex);
 	auto it = g_audio_panners.find(id);
 	if (it != g_audio_panners.end()) {
 		bool was_enabled = it->second.enabled;
 		it->second.enabled = enabled;
-		if (was_enabled != enabled) sweep_tracked_spatializers(true, id, enabled);
+		if (was_enabled != enabled) sweep_tracked_spatializers(swept, true, id, enabled);
 	}
 }
 
 void set_audio_attenuator_enabled(int id, bool enabled) {
+	swept_spatializers swept;
 	std::lock_guard<std::mutex> sweep(g_spatializer_sweep_mutex);
 	auto it = g_audio_attenuators.find(id);
 	if (it != g_audio_attenuators.end()) {
 		bool was_enabled = it->second.enabled;
 		it->second.enabled = enabled;
-		if (was_enabled != enabled) sweep_tracked_spatializers(false, id, enabled);
+		if (was_enabled != enabled) sweep_tracked_spatializers(swept, false, id, enabled);
 	}
 }
 
@@ -1241,7 +1248,7 @@ public:
 		{ std::lock_guard<std::mutex> lock(g_tracked_spatializers_mutex); g_tracked_spatializers.insert(this); }
 	}
 	~audio_spatializer_impl() {
-		// Out of the set first: a global panner or attenuator change rewires every spatializer in it under that lock, so once this one is out, none is rewiring it as its node goes.
+		// Out of the set first, which a global panner or attenuator change takes its references from: it takes none once the last one went (see duplicate_if_alive()), so none is rewiring this one as its node goes, nor reaches it once it is out.
 		{ std::lock_guard<std::mutex> lock(g_tracked_spatializers_mutex); g_tracked_spatializers.erase(this); }
 		// A component the script kept goes on without this spatializer: off the graph first, which waits for the audio thread to stop processing it, then without its pointer back here, so it passes audio through if used again.
 		for (spatializer_component_node *component : {panner, attenuator}) {
@@ -1448,20 +1455,21 @@ public:
 	}
 };
 audio_spatializer* audio_spatializer::create(mixer* mixer, audio_engine* engine) { return new audio_spatializer_impl(mixer, engine); }
-// Rewires each spatializer for a panner or attenuator turned on or off, with a reference taken to each under g_tracked_spatializers_mutex and the rewiring done after it: done under it, a spatializer made or destroyed meanwhile, as by a processing callback placing a sound or letting one go, waited for the whole sweep, 60 ms for 700 spatializers. One whose last reference already went is passed over, its destructor taking it out.
-static void sweep_tracked_spatializers(bool panner, int id, bool enabled) {
-	std::vector<audio_spatializer_impl*> taken;
+// Rewires each spatializer for a panner or attenuator turned on or off, with a reference taken to each under g_tracked_spatializers_mutex and the rewiring done after it: done under it, a spatializer made or destroyed meanwhile, as by a processing callback placing a sound or letting one go, waited for the whole sweep, 60 ms for 700 spatializers. One whose last reference already went is passed over, its destructor taking it out. The references are let go of by swept.
+static void sweep_tracked_spatializers(swept_spatializers &swept, bool panner, int id, bool enabled) {
 	{
 		std::lock_guard<std::mutex> lock(g_tracked_spatializers_mutex);
-		taken.reserve(g_tracked_spatializers.size());
+		swept.taken.reserve(g_tracked_spatializers.size());
 		for (audio_spatializer_impl* spatializer : g_tracked_spatializers)
-			if (spatializer->duplicate_if_alive()) taken.push_back(spatializer);
+			if (spatializer->duplicate_if_alive()) swept.taken.push_back(spatializer);
 	}
-	for (audio_spatializer_impl* spatializer : taken) {
+	for (audio_spatializer_impl* spatializer : swept.taken) {
 		if (panner) spatializer->on_panner_enabled_changed(id, enabled);
 		else spatializer->on_attenuator_enabled_changed(id, enabled);
-		spatializer->release();
 	}
+}
+swept_spatializers::~swept_spatializers() {
+	for (audio_spatializer_impl* spatializer : taken) spatializer->release();
 }
 
 class spatializer_component_node_impl : public effect_node_impl, public virtual spatializer_component_node {
