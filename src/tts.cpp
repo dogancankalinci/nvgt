@@ -979,7 +979,7 @@ CScriptArray *tts_voice::list_voices() {
 	ensure_enumerated();
 	asIScriptContext *ctx = asGetActiveContext();
 	asIScriptEngine *engine = ctx->GetEngine();
-	asITypeInfo *arrayType = engine->GetTypeInfoByDecl("array<string>");
+	asITypeInfo *arrayType = get_array_type("array<string>");
 	CScriptArray *array = CScriptArray::Create(arrayType);
 	array->Reserve(voices.size());
 	for (const auto &voice : voices) {
@@ -1374,7 +1374,7 @@ ma_result tts_voice::job_proc(ma_job *pJob) {
 CScriptArray *tts_get_engines() {
 	asIScriptContext *ctx = asGetActiveContext();
 	asIScriptEngine *engine = ctx->GetEngine();
-	asITypeInfo *arrayType = engine->GetTypeInfoByDecl("array<string>");
+	asITypeInfo *arrayType = get_array_type("array<string>");
 	CScriptArray *array = CScriptArray::Create(arrayType);
 	vector<string> names;
 	{

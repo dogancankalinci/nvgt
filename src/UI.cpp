@@ -53,6 +53,7 @@
 #include "input.h"
 #include "misc_functions.h"
 #include "scriptstuff.h"
+#include "nvgt_angelscript.h" // get_array_type()
 #include "timestuff.h"
 #include "UI.h"
 #if defined(__APPLE__) || (!defined(__ANDROID__) && (defined(__linux__) || defined(__unix__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__))) || defined(__ANDROID__)
@@ -698,7 +699,7 @@ int system_tray_menu::get_entry_count() const {
 	return count;
 }
 CScriptArray* system_tray_menu::get_entries() {
-	asITypeInfo* array_type = g_ScriptEngine->GetTypeInfoByDecl("array<system_tray_menu_item@>");
+	asITypeInfo* array_type = get_array_type("array<system_tray_menu_item@>");
 	CScriptArray* arr = CScriptArray::Create(array_type);
 	for (auto& item : _items) {
 		system_tray_menu_item* ptr = item.get();

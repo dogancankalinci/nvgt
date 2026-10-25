@@ -27,6 +27,7 @@
 #include "crypto.h" // chacha_stream
 #include "datastreams.h"
 #include <scriptarray.h>
+#include "nvgt_angelscript.h" // get_array_type()
 #include "xplatform.h"
 
 bool find_embedded_pack(std::string& filename, uint64_t& file_offset, uint64_t& file_size);
@@ -410,7 +411,7 @@ CScriptArray* pack::list_files() {
 	asIScriptEngine* engine = context->GetEngine();
 	if (engine == nullptr)
 		return nullptr;
-	asITypeInfo* string_array = engine->GetTypeInfoByDecl("string[]");
+	asITypeInfo* string_array = get_array_type("string[]");
 	if (string_array == nullptr)
 		return nullptr;
 	CScriptArray* array = CScriptArray::Create(string_array);

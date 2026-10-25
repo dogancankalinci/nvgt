@@ -33,6 +33,7 @@
 #include "nvgt.h"
 #include "pocostuff.h"  // angelscript_refcounted
 #include "scriptstuff.h"
+#include "nvgt_angelscript.h" // get_array_type()
 #include "xplatform.h"
 
 using namespace Poco;
@@ -132,7 +133,7 @@ CScriptArray* timer_queue::list_timers() {
 	if (context == nullptr) return nullptr;
 	asIScriptEngine *engine = context->GetEngine();
 	if (engine == nullptr) return nullptr;
-	asITypeInfo *string_array = engine->GetTypeInfoByDecl("string[]");
+	asITypeInfo *string_array = get_array_type("string[]");
 	if (string_array == nullptr) return nullptr;
 	CScriptArray *array = CScriptArray::Create(string_array);
 	if (array == nullptr) return nullptr;

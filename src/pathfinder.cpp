@@ -15,6 +15,7 @@
 #include <reactphysics3d/reactphysics3d.h>
 #include "pathfinder.h"
 #include "scriptstuff.h"
+#include "nvgt_angelscript.h" // get_array_type()
 #include <cmath>
 using namespace std;
 static asITypeInfo* VectorArrayType = NULL;
@@ -190,7 +191,7 @@ float pathfinder::get_difficulty(int x, int y, int z, int parent_x, int parent_y
 			ctx->SetArgDWord(3, parent_y);
 			string ud;
 			if (StringType == nullptr)
-				StringType = g_ScriptEngine->GetTypeInfoByDecl("string");
+				StringType = get_array_type("string");
 			if (callback_data != nullptr)
 				callback_data->Retrieve((void*)&ud, StringType->GetTypeId());
 			ctx->SetArgObject(4, (void*)&ud);
@@ -243,7 +244,7 @@ CScriptArray* pathfinder::find(int start_x, int start_y, int start_z, int end_x,
 		holder(pathfinder* p) : p(p) { p->AddRef(); }
 		~holder() { p->Release(); }
 	} hold(this);
-	if (!VectorArrayType) VectorArrayType = g_ScriptEngine->GetTypeInfoByDecl("array<vector>");
+	if (!VectorArrayType) VectorArrayType = get_array_type("array<vector>");
 	CScriptArray* array = CScriptArray::Create(VectorArrayType);
 	if (solving) return array;
 	abort = false;
@@ -297,7 +298,7 @@ CScriptArray* pathfinder::find_legacy(int start_x, int start_y, int parent_x, in
 	if (callback_mode != CALLBACK_LEGACY)
 		return nullptr;
 	if (StringType == nullptr)
-		StringType = g_ScriptEngine->GetTypeInfoByDecl("string");
+		StringType = get_array_type("string");
 	CScriptAny* ud = new CScriptAny(g_ScriptEngine);
 	ud->Store((void*)&user_data, StringType->GetTypeId());
 	CScriptArray* result = find(start_x, start_y, 0, parent_x, parent_y, 0, ud);

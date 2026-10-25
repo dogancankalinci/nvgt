@@ -24,6 +24,7 @@
 #include <Poco/RegularExpression.h>
 #include <angelscript.h>
 #include <scriptarray.h>
+#include "nvgt_angelscript.h" // get_array_type()
 
 #include <sstream>
 #include <vector>
@@ -113,7 +114,7 @@ public:
 	CScriptArray* get_recipients() const {
 		asIScriptContext* ctx = asGetActiveContext();
 		asIScriptEngine* engine = ctx->GetEngine();
-		asITypeInfo* arrayType = engine->GetTypeInfoByDecl("array<mail_recipient@>");
+		asITypeInfo* arrayType = get_array_type("array<mail_recipient@>");
 		CScriptArray* arr = CScriptArray::Create(arrayType);
 		const MailMessage::Recipients& recipients = m_message.recipients();
 		for (const auto& r : recipients) {

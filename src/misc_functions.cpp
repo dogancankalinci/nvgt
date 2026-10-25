@@ -460,7 +460,7 @@ const void* script_memory_buffer::at(size_t index) const {
 void* script_memory_buffer::at(size_t index) { return const_cast<void*>(const_cast<const script_memory_buffer*>(this)->at(index)); }
 CScriptArray* script_memory_buffer::to_array() const {
 	if (!fits()) throw std::out_of_range("memory buffer address or size out of range on this platform");
-	CScriptArray* array = CScriptArray::Create(g_ScriptEngine->GetTypeInfoByDecl(Poco::format("array<%s>", std::string(g_ScriptEngine->GetTypeDeclaration(subtypeid, false))).c_str()), size);
+	CScriptArray* array = CScriptArray::Create(get_array_type(Poco::format("array<%s>", std::string(g_ScriptEngine->GetTypeDeclaration(subtypeid, false)))), size);
 	if (!array) return nullptr;
 	std::memcpy(array->GetBuffer(), ptr, size * g_ScriptEngine->GetSizeOfPrimitiveType(subtypeid));
 	return array;

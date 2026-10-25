@@ -272,7 +272,7 @@ CScriptArray* keys_pressed() {
 	asIScriptContext* ctx = asGetActiveContext();
 	asIScriptEngine* engine = ctx->GetEngine();
 	if (!key_code_array_type)
-		key_code_array_type = engine->GetTypeInfoByDecl("array<int>");
+		key_code_array_type = get_array_type("array<int>");
 	CScriptArray* array = CScriptArray::Create(key_code_array_type);
 	for (int i = 0; i < SDL_SCANCODE_COUNT; i++) {
 		int k = (int)i;
@@ -285,7 +285,7 @@ CScriptArray* keys_down() {
 	asIScriptContext* ctx = asGetActiveContext();
 	asIScriptEngine* engine = ctx->GetEngine();
 	if (!key_code_array_type)
-		key_code_array_type = engine->GetTypeInfoByDecl("array<int>");
+		key_code_array_type = get_array_type("array<int>");
 	CScriptArray* array = CScriptArray::Create(key_code_array_type);
 	if (!g_KeysDown)
 		return array;
@@ -314,7 +314,7 @@ CScriptArray* keys_released() {
 	asIScriptContext* ctx = asGetActiveContext();
 	asIScriptEngine* engine = ctx->GetEngine();
 	if (!key_code_array_type)
-		key_code_array_type = engine->GetTypeInfoByDecl("array<int>");
+		key_code_array_type = get_array_type("array<int>");
 	CScriptArray* array = CScriptArray::Create(key_code_array_type);
 	for (int i = 0; i < g_KeysDownArrayLen; i++) {
 		if (KeyReleased(i))

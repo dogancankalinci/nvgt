@@ -494,7 +494,7 @@ static CScriptArray* as_iap_get_products() {
 	asIScriptContext* ctx = asGetActiveContext();
 	if (!ctx) return nullptr;
 	asIScriptEngine* engine = ctx->GetEngine();
-	asITypeInfo* t = engine->GetTypeInfoByDecl("array<iap_product@>");
+	asITypeInfo* t = get_array_type("array<iap_product@>");
 	if (!t) return nullptr;
 
 	std::vector<iap_product_info> snapshot;
@@ -538,7 +538,7 @@ static CScriptArray* as_iap_get_pending_purchases() {
 	asIScriptContext* ctx = asGetActiveContext();
 	if (!ctx) return nullptr;
 	asIScriptEngine* engine = ctx->GetEngine();
-	asITypeInfo* t = engine->GetTypeInfoByDecl("array<iap_purchase@>");
+	asITypeInfo* t = get_array_type("array<iap_purchase@>");
 	if (!t) return nullptr;
 
 	std::vector<iap_purchase_info> drained;

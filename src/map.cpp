@@ -19,6 +19,7 @@
 #include <obfuscate.h>
 #include <limits>
 #include "scriptstuff.h"
+#include "nvgt_angelscript.h" // get_array_type()
 
 using reactphysics3d::Vector3;
 
@@ -369,7 +370,7 @@ void coordinate_map::get_areas(float minx, float maxx, float miny, float maxy, f
 CScriptArray* coordinate_map::get_areas_script(float x, float y, float z, float d, asIScriptFunction* filter_callback, asINT64 flags, asINT64 excluded_flags) {
 	std::vector<map_area*> local_areas;
 	local_areas.reserve(20);
-	if (!g_MapAreaArrayType) g_MapAreaArrayType = g_ScriptEngine->GetTypeInfoByDecl("array<coordinate_map_area@>");
+	if (!g_MapAreaArrayType) g_MapAreaArrayType = get_array_type("array<coordinate_map_area@>");
 	CScriptArray* array = CScriptArray::Create(g_MapAreaArrayType);
 	get_areas(x, x, y, y, z, z, d, local_areas, false, filter_callback, flags, excluded_flags);
 	array->Reserve(local_areas.size());
@@ -382,7 +383,7 @@ CScriptArray* coordinate_map::get_areas_script(float x, float y, float z, float 
 CScriptArray* coordinate_map::get_areas_in_range_script(float minx, float maxx, float miny, float maxy, float minz, float maxz, float d, asIScriptFunction* filter_callback, asINT64 flags, asINT64 excluded_flags) {
 	std::vector<map_area*> local_areas;
 	local_areas.reserve(20);
-	if (!g_MapAreaArrayType) g_MapAreaArrayType = g_ScriptEngine->GetTypeInfoByDecl("array<coordinate_map_area@>");
+	if (!g_MapAreaArrayType) g_MapAreaArrayType = get_array_type("array<coordinate_map_area@>");
 	CScriptArray* array = CScriptArray::Create(g_MapAreaArrayType);
 	get_areas(minx, maxx, miny, maxy, minz, maxz, d, local_areas, false, filter_callback, flags, excluded_flags);
 	array->Reserve(local_areas.size());
