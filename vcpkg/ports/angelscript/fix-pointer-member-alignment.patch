@@ -1,0 +1,59 @@
+diff --git a/sdk/angelscript/source/as_atomic.h b/sdk/angelscript/source/as_atomic.h
+--- a/sdk/angelscript/source/as_atomic.h
++++ b/sdk/angelscript/source/as_atomic.h
+@@ -51,9 +51,10 @@
+ // object, which the garbage collector on another thread walks into): stored after the object is made with a release store, and
+ // loaded with an acquire load, so the reader sees the object's contents made. A plain store and load let a weak-memory CPU show
+ // the reader the pointer before the contents. On x86/x64 both compile to plain moves. The cast is the one the Apple branch of
+-// as_atomic.cpp makes for the counters. Script object members are only aligned to 4 bytes, so a pointer member can be
+-// misaligned on 64-bit targets, where the acquire/release instructions need natural alignment (ARM64 raised SIGBUS): such a
+-// slot gets a plain access with a fence on the right side instead.
++// as_atomic.cpp makes for the counters. The acquire/release instructions need natural alignment (ARM64 raised SIGBUS), so a
++// misaligned slot gets a plain access with a fence on the right side instead. Pointer members of script objects are aligned
++// to the pointer size (asCObjectType::AddPropertyToClass); a slot can still be misaligned on 64-bit targets when it is a
++// variable on the VM stack, which is laid out in dwords and read only by the thread that runs it.
+ inline bool asIsPointerAligned(const void *slot)
+ {
+ 	return (reinterpret_cast<asPWORD>(slot) & (sizeof(void*) - 1)) == 0;
+diff --git a/sdk/angelscript/source/as_objecttype.cpp b/sdk/angelscript/source/as_objecttype.cpp
+--- a/sdk/angelscript/source/as_objecttype.cpp
++++ b/sdk/angelscript/source/as_objecttype.cpp
+@@ -529,6 +529,7 @@
+ 	prop->isInherited = isInherited;
+ 
+ 	int propSize;
++	bool holdsPointer = false; // ALTERED: see the alignment below
+ 	if( dt.IsObject() )
+ 	{
+ 		// Non-POD value types can't be allocated inline,
+@@ -540,6 +541,7 @@
+ 		else
+ 		{
+ 			propSize = dt.GetSizeOnStackDWords()*4;
++			holdsPointer = true;
+ 			if( !dt.IsObjectHandle() )
+ 				prop->type.MakeReference(true);
+ 		}
+@@ -549,6 +551,7 @@
+ 		// Funcdefs don't have a size, as they must always be stored as handles
+ 		asASSERT(dt.IsObjectHandle());
+ 		propSize = AS_PTR_SIZE * 4;
++		holdsPointer = true;
+ 	}
+ 	else
+ 		propSize = dt.GetSizeInMemoryBytes();
+@@ -557,6 +560,14 @@
+ #ifndef WIP_16BYTE_ALIGN
+ 	if( propSize == 2 && (size & 1) ) size += 1;
+ 	if( propSize > 2 && (size & 3) ) size += 4 - (size & 3);
++	// ALTERED: a member that holds a pointer (a handle, a funcdef, an object of a reference type, a value type stored on the
++	// heap) is aligned to the pointer size. The 4-byte alignment above put such a member after an int at 4 mod 8 on 64-bit
++	// targets, where an 8-byte access isn't single-copy atomic (ARMv8.0-8.3; x86 across a cache line) and ARM64's
++	// load-acquire/store-release need natural alignment (asStorePointerRelease): the garbage collector reads these members on
++	// another thread while the script stores them (asCScriptObject::EnumReferences, ReleaseAllHandles). Nothing changes on
++	// 32-bit targets. The bytecode refers to members by their index (asCWriter::FindObjectPropIndex,
++	// asCReader::FindObjectPropOffset) and the loader lays the class out again, so bytecode saved before this loads too.
++	if( holdsPointer && (size & (AS_PTR_SIZE*4-1)) ) size += AS_PTR_SIZE*4 - (size & (AS_PTR_SIZE*4-1));
+ #else
+ 	asUINT alignment = dt.GetAlignment();
+ 	const asUINT propSizeAlignmentDifference = size & (alignment-1);

@@ -102,6 +102,7 @@ vcpkg_from_github(
         fix-value-member-publication.patch
         fix-weak-flag-publication.patch
         fix-namespace-list-threads.patch
+        fix-pointer-member-alignment.patch
 )
 
 vcpkg_cmake_configure(
