@@ -742,9 +742,10 @@ public:
 	int get_device() const override {
 		if (!engine || flags & NO_DEVICE)
 			return -1;
-		// Not while set_device() on another thread uninitialises and opens the device again, which zeroes it, so that asking MiniAudio about it then could reach a null context; not taken on the device's own callback, which set_device() waits for, and during which the device isn't being opened.
+		// Not while set_device() on another thread uninitialises and opens the device again, which zeroes it, so that asking MiniAudio about it then could reach a null context. Not taken on the device's own callback, which set_device() waits for, and during which the device isn't being opened; only tried on another engine's, which mustn't wait for a set_device() that waits for this engine's callback, as two callbacks reading each other's engines while both engines changed device did, for good: -1 then, as while a device is being opened.
 		std::unique_lock<std::mutex> lock(device_mutex, std::defer_lock);
-		if (processing != this) lock.lock();
+		if (processing && processing != this && !lock.try_lock()) return -1;
+		if (!processing) lock.lock();
 		ma_device *dev = ma_engine_get_device(&*engine);
 		ma_device_info info;
 		// A device that set_device couldn't open again is left uninitialized, and asking miniaudio about it would reach its backend.
@@ -753,7 +754,7 @@ public:
 		return audio_device_index(ma_device_type_playback, info.id);
 	}
 	bool set_device(int device) override {
-		if (processing == this || !engine || flags & NO_DEVICE) { // Closing the device from its own thread would wait for that thread, see release().
+		if (processing || !engine || flags & NO_DEVICE) { // Closing the device from its own thread would wait for that thread, see release(); from another engine's, it could wait for a callback waiting for this one, see stop().
 			g_soundsystem_last_error = MA_INVALID_OPERATION;
 			return false;
 		}
@@ -853,13 +854,22 @@ public:
 	bool start() override {
 		if (!engine) return false;
 		if (processing == this) return true; // Its device runs, this being its callback; waiting for device_mutex here could be for set_device() on another thread, which waits for this callback to return.
-		std::lock_guard<std::mutex> lock(device_mutex);
+		std::unique_lock<std::mutex> lock(device_mutex, std::defer_lock);
+		if (!processing) lock.lock();
+		else if (!lock.try_lock()) { // Only tried on another engine's callback, see get_device().
+			g_soundsystem_last_error = MA_BUSY;
+			return false;
+		}
 		if (ma_engine_start(&*engine) != MA_SUCCESS) return false;
 		started = true;
 		return true;
 	}
 	bool stop() override {
-		if (processing == this) return false; // Stopping the device from its own thread would wait for that thread, see release().
+		// Stopping a device waits for its callback: from its own thread that would wait for that thread, see release(), and from another engine's callback it waited for good when that device's callback stopped this engine in turn.
+		if (processing) {
+			g_soundsystem_last_error = MA_INVALID_OPERATION;
+			return false;
+		}
 		if (!engine) return false;
 		std::lock_guard<std::mutex> lock(device_mutex);
 		if (ma_engine_stop(&*engine) != MA_SUCCESS) return false;
