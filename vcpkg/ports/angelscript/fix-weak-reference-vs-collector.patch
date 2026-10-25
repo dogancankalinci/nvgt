@@ -1,0 +1,175 @@
+diff --git a/sdk/angelscript/source/as_gc.cpp b/sdk/angelscript/source/as_gc.cpp
+--- a/sdk/angelscript/source/as_gc.cpp
++++ b/sdk/angelscript/source/as_gc.cpp
+@@ -404,17 +404,22 @@
+ 					// Make sure the refCount is really 0, because the
+ 					// destructor may have increased the refCount again.
+ 					bool addRef = false;
++					bool kept = false;
+ 					if( gcObj.type->flags & asOBJ_SCRIPT_OBJECT )
+ 					{
+ 						// Script objects may actually be resurrected in the destructor
+-						int refCount = ((asCScriptObject*)gcObj.obj)->Release();
+-						if( refCount > 0 ) addRef = true;
++						// ALTERED: or turned strong again through a weak reference on another thread; the collector then keeps
++						// its reference instead of releasing it and adding it back, see asCScriptObject::ReleaseByCollector
++						int refCount = ((asCScriptObject*)gcObj.obj)->ReleaseByCollector();
++						if( refCount > 0 ) kept = true;
+ 					}
+ 					else
+ 						engine->CallObjectMethod(gcObj.obj, gcObj.type->beh.release);
+ 
+ 					// Was the object really destroyed?
+-					if( !addRef )
++					if( kept )
++						;
++					else if( !addRef )
+ 					{
+ 						numDestroyed++;
+ 						numNewDestroyed++;
+@@ -568,17 +573,22 @@
+ 					// Make sure the refCount is really 0, because the
+ 					// destructor may have increased the refCount again.
+ 					bool addRef = false;
++					bool kept = false;
+ 					if( gcObj.type->flags & asOBJ_SCRIPT_OBJECT )
+ 					{
+ 						// Script objects may actually be resurrected in the destructor
+-						int refCount = ((asCScriptObject*)gcObj.obj)->Release();
+-						if( refCount > 0 ) addRef = true;
++						// ALTERED: or turned strong again through a weak reference on another thread; the collector then keeps
++						// its reference instead of releasing it and adding it back, see asCScriptObject::ReleaseByCollector
++						int refCount = ((asCScriptObject*)gcObj.obj)->ReleaseByCollector();
++						if( refCount > 0 ) kept = true;
+ 					}
+ 					else
+ 						engine->CallObjectMethod(gcObj.obj, gcObj.type->beh.release);
+ 
+ 					// Was the object really destroyed?
+-					if( !addRef )
++					if( kept )
++						;
++					else if( !addRef )
+ 					{
+ 						numDestroyed++;
+ 						RemoveOldObjectAtIdx(destroyOldIdx);
+diff --git a/sdk/angelscript/source/as_scriptobject.cpp b/sdk/angelscript/source/as_scriptobject.cpp
+--- a/sdk/angelscript/source/as_scriptobject.cpp
++++ b/sdk/angelscript/source/as_scriptobject.cpp
+@@ -630,14 +630,26 @@
+ 	// is ok to check the existance of the weakRefFlag without locking here
+ 	// because if the refCount is 1 then no other thread is currently 
+ 	// creating the weakRefFlag.
+-	if( refCount.get() == 1 && extra && extra->weakRefFlag )
+-	{
+-		// Set the flag to tell others that the object is no longer alive
+-		// We must do this before decreasing the refCount to 0 so we don't
+-		// end up with a race condition between this thread attempting to 
+-		// destroy the object and the other that temporary added a strong
+-		// ref from the weak ref.
+-		extra->weakRefFlag->Set(true);
++	// ALTERED: (and a thread creating it holds a reference of its own, so this one isn't the last.) An object that has weak
++	// references is released under the flag's lock, under which a weak reference turns into a strong one (CScriptWeakRef::Get):
++	// whether this is the last reference, the flag that says the object is gone, and every other release are decided there one
++	// at a time. The reference count was read twice outside the lock, once for the flag
++	// and once for the destructor: another thread that turned a weak reference strong and let go of it in between (or the
++	// last two references let go of on two threads at once) had the object destroyed with the flag never set, and a weak
++	// reference then added a reference to the freed object; or the flag was set on an object that another thread still held.
++	if( extra && extra->weakRefFlag )
++	{
++		extra->weakRefFlag->Lock();
++		if( refCount.get() != 1 )
++		{
++			// Not the last reference: no other release or weak reference can make this one the last meanwhile
++			int r = refCount.atomicDec();
++			extra->weakRefFlag->Unlock();
++			return r;
++		}
++		// The last reference: no weak reference can turn strong after this
++		extra->weakRefFlag->SetLocked(true);
++		extra->weakRefFlag->Unlock();
+ 	}
+ 
+ 	// Call the script destructor behaviour if the reference counter is 1.
+@@ -669,6 +681,47 @@
+ 	return r;
+ }
+ 
++// ALTERED: the garbage collector found the object with no reference but its own and lets go of it (DestroyNewGarbage,
++// DestroyOldGarbage). It used Release() and, when the object was still alive afterwards, added its reference back: a weak
++// reference turned into a strong one on another thread in between (CScriptWeakRef::Get) kept the object alive past that
++// Release(), and when that thread let go of it before the collector added its reference back, the object was destroyed and
++// the collector's AddRef() wrote to freed memory. Here the weak references are marked dead under their lock only while the
++// collector's reference is still the only one; otherwise, or when the destructor stores a new reference to the object, the
++// collector keeps its reference and the object stays in its list. Returns 0 when the object was destroyed.
++int asCScriptObject::ReleaseByCollector()
++{
++	gcFlag = false;
++
++	if( extra && extra->weakRefFlag )
++	{
++		extra->weakRefFlag->Lock();
++		if( refCount.get() != 1 )
++		{
++			extra->weakRefFlag->Unlock();
++			return refCount.get();
++		}
++		extra->weakRefFlag->SetLocked(true);
++		extra->weakRefFlag->Unlock();
++	}
++	else if( refCount.get() != 1 )
++		return refCount.get();
++
++	if( !isDestructCalled )
++		CallDestructor();
++
++	// Resurrected by the destructor
++	if( refCount.get() != 1 )
++		return refCount.get();
++
++	// Nothing else can add a reference now: the weak references are dead and the collector's is the only one
++	if( refCount.atomicDec() == 0 && !hasRefCountReachedZero )
++	{
++		hasRefCountReachedZero = true;
++		Destruct();
++	}
++	return 0;
++}
++
+ void asCScriptObject::CallDestructor()
+ {
+ 	// Only allow the destructor to be called once
+@@ -1246,6 +1299,12 @@
+ 	return value;
+ }
+ 
++// ALTERED: see the declaration
++void asCLockableSharedBool::SetLocked(bool v)
++{
++	value = v;
++}
++
+ void asCLockableSharedBool::Set(bool v)
+ {
+ 	// Make sure the value is not changed while another thread  
+diff --git a/sdk/angelscript/source/as_scriptobject.h b/sdk/angelscript/source/as_scriptobject.h
+--- a/sdk/angelscript/source/as_scriptobject.h
++++ b/sdk/angelscript/source/as_scriptobject.h
+@@ -60,6 +60,8 @@
+ 
+ 	bool Get() const;
+ 	void Set(bool);
++	// ALTERED: sets the value while the caller holds the lock (Set takes it itself, and the lock isn't recursive everywhere)
++	void SetLocked(bool);
+ 
+ 	void Lock() const;
+ 	void Unlock() const;
+@@ -124,6 +126,8 @@
+ 	int  CopyFromAs(const asCScriptObject *other, asCObjectType *objType);
+ 
+ 	void CallDestructor();
++	// ALTERED: the garbage collector's release of an object it holds the only reference to, see the definition
++	int  ReleaseByCollector();
+ 
+ //=============================================
+ // Properties
