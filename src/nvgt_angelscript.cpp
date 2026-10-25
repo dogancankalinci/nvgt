@@ -19,6 +19,7 @@
 #include <exception>
 #include <fstream>
 #include <iterator>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -125,7 +126,7 @@ vector<string> g_IncludeScripts;
 std::string g_CommandLine;
 CScriptArray* g_command_line_args = 0;
 bool g_debug = true;         // Whether script has been compiled with extra debug information in the bytecode, true by default because source runs contain such information.
-bool g_ASDebugBreak = false; // If the angelscript debugger is in use, user can ctrl+c to perform a manual break.
+std::atomic<bool> g_ASDebugBreak(false); // If the angelscript debugger is in use, user can ctrl+c to perform a manual break. Set by the console's control handler thread.
 asIScriptEngine* g_ScriptEngine = NULL;
 std::string g_command_line;
 int g_LastError;
@@ -325,11 +326,24 @@ void MessageCallback(const asSMessageInfo *msg, void* param) {
 	} else
 		g_scriptMessagesWarn += g_scriptMessagesInfo + buffer;
 }
+#ifndef NVGT_STUB
+// The debugger (CDebugger) is used by one thread at a time. Every context's line callback runs it, on every thread that runs
+// script code (async<T>, thread pools, the debugger's own evaluations), and debug_break() and the breakpoint functions can be
+// called from any of them: its breakpoint list, the function breakpoints it turns into line breakpoints, its step state and
+// the console were changed by two threads at once. A thread that stops at a breakpoint holds the lock while it takes
+// commands, so the others wait at their next line (all of the script stops, as in other debuggers). Recursive: an expression
+// the e command evaluates runs line callbacks on the same thread. Never destroyed, as threads can still run script code while
+// static objects are torn down.
+static std::recursive_mutex& debugger_mutex() {
+	static std::recursive_mutex* m = new std::recursive_mutex;
+	return *m;
+}
+#endif
 void nvgt_line_callback(asIScriptContext *ctx, void* obj) {
 	#ifndef NVGT_STUB
 	if (g_dbg) {
-		if (g_ASDebugBreak) {
-			g_ASDebugBreak = false;
+		std::lock_guard<std::recursive_mutex> dbg_lock(debugger_mutex());
+		if (g_ASDebugBreak.exchange(false)) {
 			cout << "user debug break" << endl;
 			g_dbg->TakeCommands(ctx);
 		}
@@ -1037,6 +1051,7 @@ int ExecuteScript(asIScriptEngine *engine, const string &scriptFile) {
 	}
 	#ifndef NVGT_STUB
 	if (g_dbg) {
+		std::lock_guard<std::recursive_mutex> dbg_lock(debugger_mutex()); // See debugger_mutex().
 		cout << "Debugging, waiting for commands. Type 'h' for help." << endl;
 		g_dbg->TakeCommands(ctx);
 	}
@@ -1224,16 +1239,21 @@ void InitializeDebugger(asIScriptEngine *engine) {
 void asDebugBreak() {
 	if (!g_dbg)
 		return;
+	std::lock_guard<std::recursive_mutex> dbg_lock(debugger_mutex()); // See debugger_mutex().
 	cout << "script debug break" << endl;
 	g_dbg->TakeCommands(asGetActiveContext());
 }
 void asDebuggerAddFileBreakpoint(const std::string &file, int line) {
-	if (g_dbg)
-		g_dbg->AddFileBreakPoint(file, line);
+	if (!g_dbg)
+		return;
+	std::lock_guard<std::recursive_mutex> dbg_lock(debugger_mutex()); // See debugger_mutex().
+	g_dbg->AddFileBreakPoint(file, line);
 }
 void asDebuggerAddFuncBreakpoint(const std::string &func) {
-	if (g_dbg)
-		g_dbg->AddFuncBreakPoint(func);
+	if (!g_dbg)
+		return;
+	std::lock_guard<std::recursive_mutex> dbg_lock(debugger_mutex()); // See debugger_mutex().
+	g_dbg->AddFuncBreakPoint(func);
 }
 #else
 void asDebugBreak() {} // Debugger not present for compiled executables.

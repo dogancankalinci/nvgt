@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <thread>
 
 BEGIN_AS_NAMESPACE
 
@@ -70,6 +71,7 @@ protected:
 	};
 	DebugAction        m_action;
 	asUINT             m_lastCommandAtStackLevel;
+	std::thread::id    m_stepThread; // ALTERED: the thread that took the last step command (s, n, o), see LineCallback
 	asIScriptFunction *m_lastFunction;
 	bool m_takingCommands;
 

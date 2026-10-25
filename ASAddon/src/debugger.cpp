@@ -220,12 +220,19 @@ void CDebugger::LineCallback(asIScriptContext *ctx)
 	if( ctx->GetState() != asEXECUTION_ACTIVE )
 		return;
 
-	if( m_action == CONTINUE )
+	// ALTERED: a step command (s, n, o) is the thread's that took it. Scripts can run on several threads (NVGT serializes the
+	// debugger's use between them), and the next line of any other thread ended the step there instead (its stack level
+	// compared with that of another thread's stack).
+	DebugAction action = m_action;
+	if( action != CONTINUE && std::this_thread::get_id() != m_stepThread )
+		action = CONTINUE;
+
+	if( action == CONTINUE )
 	{
 		if( !CheckBreakPoint(ctx) )
 			return;
 	}
-	else if( m_action == STEP_OVER )
+	else if( action == STEP_OVER )
 	{
 		if( ctx->GetCallstackSize() > m_lastCommandAtStackLevel )
 		{
@@ -233,7 +240,7 @@ void CDebugger::LineCallback(asIScriptContext *ctx)
 				return;
 		}
 	}
-	else if( m_action == STEP_OUT )
+	else if( action == STEP_OUT )
 	{
 		if( ctx->GetCallstackSize() >= m_lastCommandAtStackLevel )
 		{
@@ -241,7 +248,7 @@ void CDebugger::LineCallback(asIScriptContext *ctx)
 				return;
 		}
 	}
-	else if( m_action == STEP_INTO )
+	else if( action == STEP_INTO )
 	{
 		CheckBreakPoint(ctx);
 
@@ -436,16 +443,19 @@ bool CDebugger::InterpretCommand(const string &cmd, asIScriptContext *ctx)
 
 	case 's':
 		m_action = STEP_INTO;
+		m_stepThread = std::this_thread::get_id(); // ALTERED: see LineCallback
 		break;
 
 	case 'n':
 		m_action = STEP_OVER;
 		m_lastCommandAtStackLevel = ctx ? ctx->GetCallstackSize() : 1;
+		m_stepThread = std::this_thread::get_id(); // ALTERED: see LineCallback
 		break;
 
 	case 'o':
 		m_action = STEP_OUT;
 		m_lastCommandAtStackLevel = ctx ? ctx->GetCallstackSize() : 0;
+		m_stepThread = std::this_thread::get_id(); // ALTERED: see LineCallback
 		break;
 
 	case 'b':
@@ -609,7 +619,15 @@ bool CDebugger::InterpretCommand(const string &cmd, asIScriptContext *ctx)
 			statement = cmd.substr(p2);
 			if (statement.find_first_of(";") == string::npos) statement = string("return ") + statement + ";";
 			void* ref;
-			int typeId = GetEngine()->GetTypeIdByDecl(rettype.c_str());
+			// ALTERED: parsed under the build lock, as every declaration NVGT parses while scripts may build on other threads (a
+			// template type such as array<T> named for the first time is made here, while a build adds to the same lists). The
+			// debugger's lock is held here and ExecuteString below takes the build lock too: no script code runs under the build
+			// lock, so it is never taken the other way round.
+			int typeId;
+			{
+				std::lock_guard<std::recursive_mutex> buildLock(GetScriptBuildMutex());
+				typeId = GetEngine()->GetTypeIdByDecl(rettype.c_str());
+			}
 			if ( typeId < 0 )
 			{
 				Output(string("invalid return type " + rettype) + "\n");
