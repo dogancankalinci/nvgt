@@ -444,6 +444,12 @@ bool CScriptAny::Retrieve(void *ref, int refTypeId) const
 		// Copy the object into the given reference
 		if( value.typeId == refTypeId )
 		{
+			// ALTERED: an any whose value's copy failed (its copy constructor or opAssign raised when it was stored or assigned
+			// from another any) holds the value's type with no object, and there is nothing to retrieve: AssignScriptObject
+			// refused the null object, and true was returned with nothing given (the caller got the &out temporary, a
+			// default-made object, as the value)
+			if( value.valueObj == 0 )
+				return false;
 			SAnyValueHold hold(this, engine, value.valueObj, value.typeId); // ALTERED: see SAnyValueHold
 			engine->AssignScriptObject(ref, hold.obj ? hold.obj : value.valueObj, engine->GetTypeInfoById(refTypeId));
 			return true;
