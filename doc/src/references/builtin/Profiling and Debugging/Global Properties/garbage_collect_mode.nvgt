@@ -6,6 +6,7 @@
 		1 is manual (you are responsible for calling the garbage_collect function when convenient).
 		2 is automatic (called every wait() cycle on the main thread before sleeping).
 		3 is asynchronous (same as 2, but called on a dedicated thread).
+		In every mode, AngelScript itself also runs small collection steps on the thread running script code, as garbage collected objects are created and when a script call that created some returns. Mode 1 therefore doesn't stop collection entirely, and mode 3 doesn't move all of it off the script's threads: the mode decides when NVGT collects in addition to those steps.
 */
 
 // Example:
