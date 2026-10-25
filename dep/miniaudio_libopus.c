@@ -542,7 +542,8 @@ MA_API ma_result ma_libopus_get_length_in_pcm_frames(ma_libopus* pOpus, ma_uint6
     {
         ogg_int64_t length = op_pcm_total((OggOpusFile*)pOpus->of, -1);
         if (length < 0) {
-            return MA_ERROR;
+            /* A stream that can't seek has no total opusfile can give: unknown, 0, as libvorbis gives, rather than an error, which left a decoder's length asked again on each read and failed a resource manager's whole load. */
+            return op_seekable((OggOpusFile*)pOpus->of) ? MA_ERROR : MA_SUCCESS;
         }
 
         *pLength = (ma_uint64)length;
