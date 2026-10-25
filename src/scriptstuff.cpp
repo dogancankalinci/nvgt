@@ -18,6 +18,7 @@
 #include <cstring>
 #include <map>
 #include <mutex>
+#include <shared_mutex>
 #include <string_view>
 #include <tuple>
 #include <utility>
@@ -1151,6 +1152,23 @@ void RegisterScripting(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod(_O("script_module"), _O("void set_name(const string&in name) property"), asMETHOD(script_module, set_name), asCALL_THISCALL);
 	engine->RegisterGlobalFunction(_O("script_module@ script_get_module(const string&in name, int mode=1)"), asFUNCTION(script_get_module), asCALL_CDECL);
 }
+
+// acquire_exclusive_lock() and the others were AngelScript's own global lock (asAcquireExclusiveLock), which
+// AngelScript and its add-ons take themselves, without recursion, inside ordinary script operations: the first weak
+// reference to a script object (asCScriptObject::GetWeakRefFlag), an object's user data, the first array of a type with
+// comparisons (CScriptArray::Precache) and every string constant a build or a function's release adds or removes
+// (CStdStringFactory). A script holding the lock across any of these waited for itself for good (weakref<T> w(obj) between
+// acquire_exclusive_lock() and release_exclusive_lock() never returned), and a shared holder blocked them on every thread.
+// Scripts now share a reader/writer lock of their own, which nothing else takes; it is never destroyed, so a thread still
+// holding or asking for it while the program exits finds it alive.
+static std::shared_mutex& script_lock() {
+	static std::shared_mutex* lock = new std::shared_mutex();
+	return *lock;
+}
+static void script_acquire_exclusive_lock() { script_lock().lock(); }
+static void script_release_exclusive_lock() { script_lock().unlock(); }
+static void script_acquire_shared_lock() { script_lock().lock_shared(); }
+static void script_release_shared_lock() { script_lock().unlock_shared(); }
 void RegisterScriptstuff(asIScriptEngine* engine) {
 	engine->SetDefaultAccessMask(NVGT_SUBSYSTEM_UNCLASSIFIED);
 	engine->RegisterGlobalProperty("const bool profiler_is_running", &is_profiling);
@@ -1175,10 +1193,11 @@ void RegisterScriptstuff(asIScriptEngine* engine) {
 	engine->RegisterGlobalFunction("string get_SCRIPT_EXECUTABLE() property", asFUNCTION(get_script_executable), asCALL_CDECL);
 	engine->RegisterGlobalFunction("bool get_SCRIPT_COMPILED() property", asFUNCTION(script_compiled), asCALL_CDECL);
 	engine->RegisterGlobalFunction("string get_function_signature(?&in)", asFUNCTION(get_function_signature), asCALL_CDECL);
-	engine->RegisterGlobalFunction("void acquire_exclusive_lock()", asFUNCTION(asAcquireExclusiveLock), asCALL_CDECL);
-	engine->RegisterGlobalFunction("void release_exclusive_lock()", asFUNCTION(asReleaseExclusiveLock), asCALL_CDECL);
-	engine->RegisterGlobalFunction("void acquire_shared_lock()", asFUNCTION(asAcquireSharedLock), asCALL_CDECL);
-	engine->RegisterGlobalFunction("void release_shared_lock()", asFUNCTION(asReleaseSharedLock), asCALL_CDECL);
+	// A lock of the scripts' own, see script_lock().
+	engine->RegisterGlobalFunction("void acquire_exclusive_lock()", asFUNCTION(script_acquire_exclusive_lock), asCALL_CDECL);
+	engine->RegisterGlobalFunction("void release_exclusive_lock()", asFUNCTION(script_release_exclusive_lock), asCALL_CDECL);
+	engine->RegisterGlobalFunction("void acquire_shared_lock()", asFUNCTION(script_acquire_shared_lock), asCALL_CDECL);
+	engine->RegisterGlobalFunction("void release_shared_lock()", asFUNCTION(script_release_shared_lock), asCALL_CDECL);
 	engine->RegisterGlobalFunction("void script_dump_engine_configuration(datastream@+ output)", asFUNCTION(dump_angelscript_engine_configuration), asCALL_CDECL);
 	RegisterScripting(engine);
 }
