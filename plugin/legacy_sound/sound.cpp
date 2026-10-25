@@ -515,17 +515,45 @@ BOOL CALLBACK bass_seekproc_push(QWORD offset, void* user) {
 	return FALSE;
 }
 // script
+// The user data of a stream made by sound.load() from script callbacks, which holds the callbacks and their string. It was the
+// sound itself, but BASS calls the close callback when the stream is freed, which the reaper does on its own thread after
+// close() returned, often after the sound was deleted: bass_closeproc_script read the freed sound's close_callback (and ran a
+// callback a later load() set, on the reaper's thread, while the script ran). The stream owns this, and its close callback
+// deletes it. close() sets detached and lets go of the callbacks once the channel is out of its mixer, after which BASS reads
+// no more; a stream whose creation fails is deleted by load_script() (BASS calls the close callback first, which then runs
+// the script's).
+struct legacy_script_stream {
+	asIScriptFunction* close;
+	asIScriptFunction* len;
+	asIScriptFunction* read;
+	asIScriptFunction* seek;
+	const std::string data;
+	std::atomic<bool> detached;
+	legacy_script_stream(asIScriptFunction* close, asIScriptFunction* len, asIScriptFunction* read, asIScriptFunction* seek, const std::string& data) : close(close), len(len), read(read), seek(seek), data(data), detached(false) {}
+	~legacy_script_stream() { release_callbacks(); }
+	void release_callbacks() {
+		if (close) close->Release();
+		if (len) len->Release();
+		if (read) read->Release();
+		if (seek) seek->Release();
+		close = len = read = seek = NULL;
+	}
+};
 void CALLBACK bass_closeproc_script(void* user) {
 	if (!user)
 		return;
-	legacy_sound* s = (legacy_sound*)user;
-	if (!s->close_callback)
+	legacy_script_stream* s = (legacy_script_stream*)user;
+	if (s->detached.load()) {
+		delete s; // the reaper freed the stream close() let go of; the callbacks are released already
+		return;
+	}
+	if (!s->close)
 		return;
 	asIScriptContext* ctx = g_ScriptEngine->RequestContext();
 	if (!ctx) return;
-	if (ctx->Prepare(s->close_callback) < 0)
+	if (ctx->Prepare(s->close) < 0)
 		goto finish;
-	if (ctx->SetArgObject(0, &s->callback_data) < 0)
+	if (ctx->SetArgObject(0, (void*)&s->data) < 0)
 		goto finish;
 	ctx->Execute();
 finish:
@@ -535,15 +563,15 @@ finish:
 QWORD CALLBACK bass_lenproc_script(void* user) {
 	if (!user)
 		return 0;
-	legacy_sound* s = (legacy_sound*)user;
+	legacy_script_stream* s = (legacy_script_stream*)user;
 	unsigned long long ret = 0;
-	if (!s->len_callback)
+	if (!s->len || s->detached.load())
 		return 0;
 	asIScriptContext* ctx = g_ScriptEngine->RequestContext();
 	if (!ctx) return 0;
-	if (!ctx || ctx->Prepare(s->len_callback) < 0)
+	if (ctx->Prepare(s->len) < 0)
 		goto finish;
-	if (ctx->SetArgObject(0, &s->callback_data) < 0)
+	if (ctx->SetArgObject(0, (void*)&s->data) < 0)
 		goto finish;
 	if (ctx->Execute() != asEXECUTION_FINISHED)
 		goto finish;
@@ -556,15 +584,15 @@ finish:
 DWORD CALLBACK bass_readproc_script(void* buffer, DWORD length, void* user) {
 	if (!user)
 		return -1;
-	legacy_sound* s = (legacy_sound*)user;
+	legacy_script_stream* s = (legacy_script_stream*)user;
 	int ret = -1;
 	std::string data;
-	if (!s->read_callback)
+	if (!s->read || s->detached.load())
 		return -1;
 	asIScriptContext* ctx = g_ScriptEngine->RequestContext();
 	if (!ctx) return -1;
-	if (ctx->Prepare(s->read_callback) < 0) goto finish;
-	if (ctx->SetArgObject(0, &data) < 0 || ctx->SetArgDWord(1, length) < 0 || ctx->SetArgObject(2, &s->callback_data) < 0)
+	if (ctx->Prepare(s->read) < 0) goto finish;
+	if (ctx->SetArgObject(0, &data) < 0 || ctx->SetArgDWord(1, length) < 0 || ctx->SetArgObject(2, (void*)&s->data) < 0)
 		goto finish;
 	if (ctx->Execute() != asEXECUTION_FINISHED) goto finish;
 	ret = ctx->GetReturnDWord();
@@ -582,15 +610,15 @@ finish:
 BOOL CALLBACK bass_seekproc_script(QWORD offset, void* user) {
 	if (!user)
 		return false;
-	legacy_sound* s = (legacy_sound*)user;
+	legacy_script_stream* s = (legacy_script_stream*)user;
 	bool ret = false;
-	if (!s->seek_callback)
+	if (!s->seek || s->detached.load())
 		return false;
 	asIScriptContext* ctx = g_ScriptEngine->RequestContext();
 	if (!ctx) return false;
-	if (ctx->Prepare(s->seek_callback) < 0)
+	if (ctx->Prepare(s->seek) < 0)
 		goto finish;
-	if (ctx->SetArgDWord(0, offset) < 0 || ctx->SetArgObject(1, &s->callback_data) < 0) goto finish;
+	if (ctx->SetArgDWord(0, offset) < 0 || ctx->SetArgObject(1, (void*)&s->data) < 0) goto finish;
 	if (ctx->Execute() != asEXECUTION_FINISHED) goto finish;
 	ret = ctx->GetReturnByte();
 finish:
@@ -1258,11 +1286,7 @@ legacy_sound::legacy_sound() {
 	output_mixer = NULL;
 	parent_mixer = NULL;
 	preload_ref = NULL;
-	close_callback = NULL;
-	len_callback = NULL;
-	read_callback = NULL;
-	seek_callback = NULL;
-	callback_data = "";
+	script_stream = NULL;
 	script_loading = FALSE;
 	closing.store(false);
 	thread_mutex_init(&close_mutex);
@@ -1414,10 +1438,13 @@ BOOL legacy_sound::load(const string& filename, legacy_pack* containing_pack, BO
 }
 
 BOOL legacy_sound::load_script(asIScriptFunction* close, asIScriptFunction* len, asIScriptFunction* read, asIScriptFunction* seek, const std::string& data, const std::string& preload_filename) {
+	legacy_script_stream* stream = new legacy_script_stream(close, len, read, seek, data); // Holds the references of the callbacks given to this function, let go of on every return unless the stream keeps them.
 	if (!sound_initialized)
 		init_sound();
-	if (!sound_initialized)
+	if (!sound_initialized) {
+		delete stream;
 		return FALSE;
+	}
 	if (channel)
 		this->close();
 	sound_preload* pre = (preload_filename != "" ? get_sound_preload(preload_filename) : NULL);
@@ -1430,29 +1457,20 @@ BOOL legacy_sound::load_script(asIScriptFunction* close, asIScriptFunction* len,
 			preload_ref = NULL;
 		}
 		if (channel) {
-			if (close) close->Release();
-			if (len) len->Release();
-			if (read) read->Release();
-			if (seek) seek->Release();
+			delete stream; // Lets go of the callbacks.
+			stream = NULL;
 		}
 	}
 	if (!channel) {
-		if (close_callback) close_callback->Release();
-		if (len_callback) len_callback->Release();
-		if (read_callback) read_callback->Release();
-		if (seek_callback) seek_callback->Release();
-		close_callback = close;
-		len_callback = len;
-		read_callback = read;
-		seek_callback = seek;
-		callback_data = data;
 		BASS_FILEPROCS prox;
 		prox.close = bass_closeproc_script;
 		prox.length = bass_lenproc_script;
 		prox.read = bass_readproc_script;
 		prox.seek = bass_seekproc_script;
 		script_loading = TRUE;
-		channel = BASS_StreamCreateFileUser(STREAMFILE_NOBUFFER, BASS_STREAM_DECODE | BASS_SAMPLE_FLOAT, &prox, this);
+		channel = BASS_StreamCreateFileUser(STREAMFILE_NOBUFFER, BASS_STREAM_DECODE | BASS_SAMPLE_FLOAT, &prox, stream);
+		if (channel) script_stream = stream;
+		else delete stream; // BASS has called its close callback already.
 		if (preload_filename != "" && channel && !pre)
 			sound_preload_capture_pcm(channel, preload_filename);
 	}
@@ -1585,14 +1603,8 @@ BOOL legacy_sound::postload(const string& filename) {
 
 BOOL legacy_sound::close() {
 	LOCK_MIXER_GRAPH();
-	if (close_callback) close_callback->Release();
-	if (len_callback) len_callback->Release();
-	if (read_callback) read_callback->Release();
-	if (seek_callback) seek_callback->Release();
-	close_callback = NULL;
-	len_callback = NULL;
-	read_callback = NULL;
-	seek_callback = NULL;
+	// A stream made from script callbacks calls no script once detached; its callbacks are let go of below.
+	if (script_stream) script_stream->detached.store(true);
 	if (channel) {
 		closing.store(true, std::memory_order_release);
 		stop();
@@ -1612,6 +1624,9 @@ BOOL legacy_sound::close() {
 			delete output_mixer;
 			output_mixer = NULL;
 		}
+		// Out of its mixer, the stream reads no more (BASSmix waits for its processing); the reaper's free of it deletes script_stream.
+		if (script_stream) script_stream->release_callbacks();
+		script_stream = NULL;
 		pos_effect = 0; // dies with the mixer stream it was set on
 		if (hrtf_effect) {
 			iplBinauralEffectReset(hrtf_effect);

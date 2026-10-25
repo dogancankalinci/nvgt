@@ -144,11 +144,7 @@ public:
 	std::string loaded_filename;
 	BASS_CHANNELINFO channel_info;
 	sound_preload* preload_ref;
-	asIScriptFunction* len_callback;
-	asIScriptFunction* read_callback;
-	asIScriptFunction* seek_callback;
-	asIScriptFunction* close_callback;
-	std::string callback_data;
+	struct legacy_script_stream* script_stream; // The callbacks of a stream made by sound.load() from script callbacks, owned by that stream (see sound.cpp).
 	BOOL script_loading;
 	thread_mutex_t close_mutex;
 	std::atomic<bool> closing; // Set before the BASS channel is torn down so file callbacks stop touching it without taking a lock on the audio thread.
