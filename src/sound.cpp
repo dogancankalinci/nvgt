@@ -4672,7 +4672,8 @@ public:
 		if (!open_capture(device > -1? &requested_id : nullptr)) {
 			// The device asked for couldn't be opened: the one in use before is opened again, as an engine's set_device() does, so that asking for it changes nothing. The error reported stays that of the device asked for.
 			ma_result error = g_soundsystem_last_error;
-			if (had_device && open_capture(follows_default? nullptr : &device_id) && recording) ma_device_start(&*capture_device);
+			if (had_device && open_capture(follows_default? nullptr : &device_id) && recording && ma_device_start(&*capture_device) == MA_SUCCESS) {} // Recording on as before.
+			else if (recording) audio_node_impl::set_state(ma_node_state_stopped); // No device, or one that didn't start: not recording, as the constructor leaves it.
 			g_soundsystem_last_error = error;
 			return false;
 		}
@@ -4705,14 +4706,20 @@ public:
 	}
 	bool set_state(ma_node_state state) override {
 		std::lock_guard<std::mutex> lock(device_mutex);
+		if (state == ma_node_state_started && !capture_device) { // Nothing to record from, as after set_device() could open no device.
+			g_soundsystem_last_error = MA_INVALID_OPERATION;
+			return false;
+		}
 		// A microphone started again drops what it recorded before it stopped, through its reader (see pcm_queue), before its node is read again; one already recording keeps its queue.
 		if (capture_device && state == ma_node_state_started && !ma_device_is_started(&*capture_device)) discard_queued();
 		bool ret = audio_node_impl::set_state(state);
-		if (!capture_device) return ret;
-		if (!ret) return false;
-		if (state == ma_node_state_stopped) return ma_device_stop(&*capture_device) == MA_SUCCESS;
-		else if (state == ma_node_state_started) return ma_device_start(&*capture_device) == MA_SUCCESS;
-		return false;
+		if (!capture_device || !ret) return ret;
+		if (state == ma_node_state_stopped) return (g_soundsystem_last_error = ma_device_stop(&*capture_device)) == MA_SUCCESS;
+		if (state != ma_node_state_started) return false;
+		ma_result result = ma_device_start(&*capture_device);
+		if (result != MA_SUCCESS) audio_node_impl::set_state(ma_node_state_stopped); // A device that didn't start leaves the microphone stopped, as the constructor and set_device() do, rather than reading started.
+		g_soundsystem_last_error = result;
+		return result == MA_SUCCESS;
 	}
 	void set_volume(float volume) override {
 		if (!finite_values({volume, ma_volume_db_to_linear(volume)}) || volume > 0) { // A device's volume goes no higher than 0 dB, which MiniAudio refuses, so that it was kept and read back while no device took it.
