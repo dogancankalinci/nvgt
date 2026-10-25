@@ -4475,7 +4475,7 @@ public:
 		}
 		if (pcm_stream || !play())
 			return false;
-		while (get_playing())
+		while (started_to_play()) // Due to start too, its start scheduled ahead, which get_playing() reads as not playing until then, so play_wait() returned before it played.
 			wait(5);
 		return true;
 	}
