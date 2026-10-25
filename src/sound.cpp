@@ -4638,6 +4638,7 @@ public:
 	// set_device(), set_state() and the volume, one at a time, with capture_device, which set_device() opens anew: two threads changing the device at once uninitialised and opened it under each other.
 	mutable std::mutex device_mutex;
 	std::atomic<float> volume_db{0}; // The volume the script set, which MiniAudio's ma_device_init() sets back to 0 dB on each device opened, so that set_device() lost it.
+	bool wants_recording = true; // Whether the microphone is meant to record: by the constructor and set_state(); the node's state, which reads stopped while no device records, left one that set_device() couldn't open a device for stopped once a later one could. Under device_mutex.
 	// device_mutex, which an audio thread, as in a processing callback, only tries, as it mustn't wait while another thread opens a device; MA_BUSY then, and a lock not held.
 	std::unique_lock<std::mutex> lock_device() const {
 		std::unique_lock<std::mutex> lock(device_mutex, std::defer_lock);
@@ -4683,33 +4684,34 @@ public:
 			return false;
 		}
 		std::lock_guard<std::mutex> lock(device_mutex);
-		// Without a device open, as after one failed to, or with one the backend stopped while the microphone records, it is opened anew.
-		if (capture_device && (get_state() != ma_node_state_started || ma_device_is_started(&*capture_device)) && (device == -1? follows_default : !follows_default && ma_device_id_equal(&requested_id, &device_id))) return true;
-		const bool had_device = capture_device != nullptr, recording = get_state() == ma_node_state_started;
+		// Without a device open, as after one failed to, or with one the backend stopped while the microphone is meant to record, it is opened anew.
+		if (capture_device && (!wants_recording || ma_device_is_started(&*capture_device)) && (device == -1? follows_default : !follows_default && ma_device_id_equal(&requested_id, &device_id))) return true;
+		const bool had_device = capture_device != nullptr;
 		if (had_device) {
 			ma_device_stop(&*capture_device);
 			uninit_device(&*capture_device);
 		}
-		if (!open_capture(device > -1? &requested_id : nullptr)) {
-			// The device asked for couldn't be opened: the one in use before is opened again, as an engine's set_device() does, so that asking for it changes nothing. The error reported stays that of the device asked for.
-			ma_result error = g_soundsystem_last_error;
-			if (had_device && open_capture(follows_default? nullptr : &device_id) && recording && ma_device_start(&*capture_device) == MA_SUCCESS) {} // Recording on as before.
-			else if (recording) audio_node_impl::set_state(ma_node_state_stopped); // No device, or one that didn't start: not recording, as the constructor leaves it.
-			g_soundsystem_last_error = error;
-			return false;
-		}
-		follows_default = device == -1;
-		if (!follows_default) device_id = requested_id;
-		// A microphone the script stopped stays stopped on the new device, as set_state() starts it, dropping what it held then.
-		if (!recording) return true;
-		if ((g_soundsystem_last_error = ma_device_start(&*capture_device)) != MA_SUCCESS) {
-			audio_node_impl::set_state(ma_node_state_stopped);
-			follows_default = true;
+		ma_result error;
+		if (open_capture(device > -1? &requested_id : nullptr)) {
+			// A microphone the script stopped stays stopped on the new device, as set_state() starts it, dropping what it held then; one meant to record records on it, as again after a spell without a device.
+			if (!wants_recording || (error = ma_device_start(&*capture_device)) == MA_SUCCESS) {
+				follows_default = device == -1;
+				if (!follows_default) device_id = requested_id;
+				if (wants_recording && get_state() != ma_node_state_started) {
+					discard_queued();
+					audio_node_impl::set_state(ma_node_state_started);
+				}
+				g_soundsystem_last_error = MA_SUCCESS;
+				return true;
+			}
 			uninit_device(&*capture_device);
 			capture_device.reset();
-			return false;
-		}
-		return true;
+		} else error = g_soundsystem_last_error;
+		// The device asked for couldn't be opened or started: the one in use before is opened again, as an engine's set_device() does, so that asking for it changes nothing. The error reported stays that of the device asked for. Without a device that records, the node reads stopped, the microphone still meant to record once a set_device() opens one.
+		const bool recording = had_device && open_capture(follows_default? nullptr : &device_id) && wants_recording && ma_device_start(&*capture_device) == MA_SUCCESS;
+		if (wants_recording) audio_node_impl::set_state(recording? ma_node_state_started : ma_node_state_stopped);
+		g_soundsystem_last_error = error;
+		return false;
 	}
 	int get_device() const override {
 		std::unique_lock<std::mutex> lock = lock_device();
@@ -4733,6 +4735,7 @@ public:
 			g_soundsystem_last_error = MA_INVALID_OPERATION;
 			return false;
 		}
+		if (state == ma_node_state_started || state == ma_node_state_stopped) wants_recording = state == ma_node_state_started;
 		// A microphone started again drops what it recorded before it stopped, through its reader (see pcm_queue), before its node is read again; one already recording keeps its queue.
 		if (capture_device && state == ma_node_state_started && !ma_device_is_started(&*capture_device)) discard_queued();
 		bool ret = audio_node_impl::set_state(state);
