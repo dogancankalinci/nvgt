@@ -79,9 +79,9 @@ void timer_queue_item::execute() {
 	}
 	ctx->SetArgObject(0, &id);
 	ctx->SetArgObject(1, &callback_data);
-	parent->executing_timers.insert(this);
+	parent->executing_timers[this]++;
 	int xr = execute_nested(ctx);
-	parent->executing_timers.erase(this);
+	if (--parent->executing_timers[this] == 0) parent->executing_timers.erase(this);
 	int ms = 0;
 	if (xr == asEXECUTION_FINISHED) ms = ctx->GetReturnDWord();
 	else if (!is_scheduled || xr == asEXECUTION_EXCEPTION) repeating = false;
@@ -118,7 +118,7 @@ void timer_queue::reset() {
 }
 void timer_queue::purge_deleting_timers() {
 	for (auto it = deleting_timers.begin(); it != deleting_timers.end();) {
-		if (executing_timers.contains(*it)) {
+		if (executing_timers.contains(*it)) { // A run of its callback is going on, see executing_timers.
 			it++;
 			continue;
 		}

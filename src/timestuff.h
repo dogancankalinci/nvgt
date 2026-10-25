@@ -51,7 +51,10 @@ class timer_queue {
 	void purge_deleting_timers();
 public:
 	std::string failures;
-	std::unordered_set<timer_queue_item*> executing_timers;
+	// How many runs of each timer's callback are going on: a callback that runs loop() again can have its own timer run again
+	// inside it (restart() or set() put it back in the wheel), and that inner run ending cleared a mark that was only a set entry,
+	// so purge_deleting_timers() deleted the timer (erased by the inner run, or by the callback) while its first run still used it.
+	std::unordered_map<timer_queue_item*, int> executing_timers;
 	std::vector<timer_queue_item*> stopped_timers; // Due timers loop() didn't run because the script is ending (see timer_queue_item::execute), scheduled again once it has advanced the wheel.
 	bool owns(timer_queue_item* t) {
 		auto it = timer_objects.find(t->id);
