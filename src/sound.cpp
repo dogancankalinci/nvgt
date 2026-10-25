@@ -730,10 +730,11 @@ public:
 	void release() override {
 		if (asAtomicDec(refcount) >= 1) return;
 		if (g_soundsystem_shut_down.test()) return; // Once the sound system shut down, engines are left to the process's exit, as they always were: destroying one closes its device, which by then can come after SDL took down what the backend needs, COM on Windows.
-		if (processing != this) {
+		if (!processing) {
 			delete this;
 			return;
 		}
+		// Not on another engine's device thread either, whose audio would be held up while this engine's device stops and closes and its closed sounds' decoding is waited out, a hundred milliseconds or more.
 		try { std::thread([this] { delete this; }).detach(); } catch (...) {}
 	}
 	ma_engine *get_ma_engine() const override { return engine.get(); }
