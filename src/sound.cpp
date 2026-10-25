@@ -2483,6 +2483,7 @@ struct held_sound : ma_sound {
 	// play() came at the sound's end before MiniAudio stopped it, which held_sound_process() starts it again from (see sound_impl::restart_if_ending()): restart_asked, then restart_taking while the audio thread starts it, which stop() and pause() wait out, so that the sound isn't started after they stopped it.
 	static constexpr int restart_none = 0, restart_asked = 1, restart_taking = 2;
 	std::atomic<int> restart{restart_none};
+	std::atomic<bool> flushing{false}; // give_end() runs MiniAudio's processing at the sound's end with its end flag off, which another thread is to take for the end still (see at_end_seen()).
 	std::atomic<ma_uint64> seek_target{~(ma_uint64)0}; // The frame a seek asked for, ~0 for none, made by held_sound_process() in place of MiniAudio's seekTarget.
 };
 struct held_sound_delete {
@@ -2610,16 +2611,20 @@ static ma_uint32 give_end(ma_node* node, const float** frames_in, ma_uint32* fra
 	std::fill_n(s->pProcessingCache, source_channels, 0.0f); // Fed again once taken, so that MiniAudio's processing runs the resampler, which then takes none.
 	s->processingCacheFramesRemaining = 1;
 	std::atomic<ma_bool32>& at_end = *reinterpret_cast<std::atomic<ma_bool32>*>(&s->atEnd);
+	h->flushing.store(true);
 	at_end.store(MA_FALSE);
 	ma_uint32 count = (ma_uint32)std::min<ma_uint64>(room, owed);
 	g_ma_sound_process(node, frames_in, frame_count_in, &out, &count);
 	if (!h->end_silence_taken && !s->processingCacheFramesRemaining) h->end_silence_taken = true;
 	s->processingCacheFramesRemaining = 0;
 	at_end.store(MA_TRUE);
+	h->flushing.store(false);
 	if (count < owed) h->end_state = held_sound::end_flush::giving; // The rest in the next block.
 	return count;
 }
 // MiniAudio's processing of a sound plays first from a cache of the source's frames it read and converted to float but hadn't played yet, up to a block of them. A seek, made there from seekTarget, moved the source but kept the cache, so a sound not read in whole blocks, at a pitch other than 1 or a source rate other than the engine's, played up to that many frames from where it had been, at a pitch of 0.3 for 18 ms; the seek is made here, from the sound's own target, the cache emptied with it, and the target cleared only after it, as MiniAudio does, as the sound's position reads the target until then. MiniAudio's seekTarget is left unset: taken over from there, a seek stored just after the takeover looked was still made by MiniAudio's own code in the call that followed. A sound at its end is stopped in the block first, and a seek kept for when it plays again, as MiniAudio keeps it. And when a read that refills the cache returns MA_BUSY with frames, as a stream does while its next page is being decoded or a seek is being made, MiniAudio ends the call before playing them, so the rest of the block was silent while they waited a block; it is called again then, for the rest of the block, playing the cache first. On the thread reading the engine.
+// Whether a sound is at its end, as another thread than the audio thread sees it: give_end() turns the end flag off while it flushes the end (see held_sound::flushing), which then read as a sound playing on, so that play() was left by ma_sound_start() to a sound about to stop, and at_end read false. Read so that the flag turned back on between the reads is seen.
+static bool at_end_seen(ma_sound* s) { return ma_sound_at_end(s) || held(s)->flushing.load() || ma_sound_at_end(s); }
 // Plays a sound at its end on from its start, as ma_sound_start() does, by a seek made in held_sound_process(), one made meanwhile standing.
 static void start_from_start(ma_sound* s) {
 	ma_uint64 none = ~(ma_uint64)0;
@@ -4302,15 +4307,15 @@ public:
 	}
 	// A sound that read its end in a block of the audio thread, which stops it in its next, counts as playing until then, so that ma_sound_start() left it to be stopped while play() returned true. play() waits that stop out, a block or two at most, and then starts the sound as any at its end: from its start, or not, with the error, when its source can't go back there. Whether the sound is still in that window: so it is with no audio thread to wait for, as for an engine without a device, which the script reads, or on the audio thread itself, as in a processing callback, or once the wait ran out, as for a device not running, when the audio thread is asked to start it instead (see restart_if_ending()).
 	bool still_ending() {
-		if (!snd || !ma_sound_at_end(&*snd) || !ma_sound_is_playing(&*snd)) return false;
+		if (!snd || !at_end_seen(&*snd) || !ma_sound_is_playing(&*snd)) return false;
 		if ((get_engine()->get_flags() & audio_engine::NO_DEVICE) || audio_engine_impl::on_audio_thread()) return true;
 		const auto give_up = std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
-		while (ma_sound_at_end(&*snd) && ma_sound_is_playing(&*snd) && std::chrono::steady_clock::now() < give_up) std::this_thread::sleep_for(std::chrono::microseconds(500));
-		return ma_sound_at_end(&*snd) && ma_sound_is_playing(&*snd);
+		while (at_end_seen(&*snd) && ma_sound_is_playing(&*snd) && std::chrono::steady_clock::now() < give_up) std::this_thread::sleep_for(std::chrono::microseconds(500));
+		return at_end_seen(&*snd) && ma_sound_is_playing(&*snd);
 	}
 	// The audio thread is asked to play a sound still in that window on from its start, which it does in its next block, or once it stopped it in the block under way; a sound stopped meanwhile is taken back and started as any at its end. Whether the audio thread was asked. Its seek can't tell play() that a source can't go back to its start, which then reads nothing more and ends.
 	bool restart_if_ending() {
-		if (!snd || !ma_sound_at_end(&*snd) || !ma_sound_is_playing(&*snd)) return false;
+		if (!snd || !at_end_seen(&*snd) || !ma_sound_is_playing(&*snd)) return false;
 		held_sound* h = held(&*snd);
 		ma_uint64 none = ~(ma_uint64)0;
 		h->seek_target.compare_exchange_strong(none, 0); // Its position reads its start at once, as after ma_sound_start(); made once the audio thread clears its end.
@@ -4449,7 +4454,7 @@ public:
 		return snd ? ma_sound_is_looping(&*snd) : false;
 	}
 	bool get_at_end() override {
-		return snd ? ma_sound_at_end(&*snd) : false;
+		return snd ? at_end_seen(&*snd) : false;
 	}
 	bool seek(unsigned long long position) override { return get_engine()->get_flags() & audio_engine::DURATIONS_IN_FRAMES? seek_in_frames(position) : seek_in_milliseconds(position); }
 	bool seek_in_frames(unsigned long long position) override {
