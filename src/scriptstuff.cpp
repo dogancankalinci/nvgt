@@ -827,17 +827,17 @@ std::string script_function_get_namespace(asIScriptFunction* func) {
 	if (!func) return "";
 	return std::string(func->GetNamespace());
 }
+// A function loaded from bytecode saved without debug information (every game compiled in release mode, a module given get_bytecode(true)) has no section name: GetDeclaredAt() succeeds and gives null, of which a string was made (a crash on Windows and Apple platforms, an exception elsewhere).
 std::string script_function_get_declared_at(asIScriptFunction* func, int* row, int* col) {
 	const char* script = nullptr;
 	if (!func || func->GetDeclaredAt(&script, row, col) < 0) return "";
-	return std::string(script);
+	return script ? std::string(script) : "";
 }
 std::string script_function_get_script_property(asIScriptFunction* func) {
 	const char* script = nullptr;
 	int row, col;
 	if (!func || func->GetDeclaredAt(&script, &row, &col) < 0) return "";
-	if (!func || func->GetDeclaredAt(&script, &row, &col) < 0) return "";
-	return std::string(script);
+	return script ? std::string(script) : ""; // See script_function_get_declared_at().
 }
 // Whether the execution running on ctx began in a script class's destructor, whose name the compiler starts with '~'. That is the function the execution was prepared with, which the context keeps for its current nested call (the state registers of level 0). It was found by walking the call stack down to the marker of the nested call, a step per frame at every statement of a call with a limit: a function recursing without end inside such a call ran in time growing with the square of the limit (80000 statements took 13 seconds instead of milliseconds).
 static bool executing_script_destructor(asIScriptContext* ctx) {
