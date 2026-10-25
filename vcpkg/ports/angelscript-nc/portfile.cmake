@@ -102,6 +102,7 @@ vcpkg_from_github(
         fix-function-type-lifetime-count.patch
         fix-value-member-publication.patch
         fix-weak-flag-publication.patch
+        fix-namespace-list-threads.patch
 )
 
 vcpkg_cmake_configure(

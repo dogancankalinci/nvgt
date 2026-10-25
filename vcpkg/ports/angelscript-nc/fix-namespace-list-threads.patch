@@ -1,0 +1,70 @@
+diff --git a/sdk/angelscript/source/as_scriptengine.cpp b/sdk/angelscript/source/as_scriptengine.cpp
+--- a/sdk/angelscript/source/as_scriptengine.cpp
++++ b/sdk/angelscript/source/as_scriptengine.cpp
+@@ -1276,20 +1276,29 @@
+ // internal
+ asSNameSpace *asCScriptEngine::AddNameSpace(const char *name)
+ {
+-	// First check if it doesn't exist already
+-	asSNameSpace *ns = FindNameSpace(name);
+-	if( ns ) return ns;
++	// ALTERED: the namespace list is read by every thread: asCScriptFunction's, asCTypeInfo's and asCModule's constructors read
++	// nameSpaces[0] without a lock (a script makes delegates at run time on any thread), and FindNameSpace searches it. A build,
++	// LoadByteCode or SetDefaultNamespace on another thread added to it with a PushLast that reallocated the buffer and freed the
++	// old one under those readers. It now changes under functionTableLock (a leaf lock, see there), which FindNameSpace takes
++	// too, and grows without freeing the buffer a lock-free reader may hold (GrowSharedTable). The first element, the global
++	// namespace, is made in the engine's constructor and never changes, so nameSpaces[0] reads the same pointer in any buffer.
++	ENTERCRITICALSECTION(functionTableLock);
+ 
+-	ns = asNEW(asSNameSpace);
++	// First check if it doesn't exist already
++	asSNameSpace *ns = FindNameSpaceLocked(name);
+ 	if( ns == 0 )
+ 	{
+-		// Out of memory
+-		return 0;
++		ns = asNEW(asSNameSpace);
++		if( ns )
++		{
++			ns->name = name;
++			GrowSharedTable(nameSpaces, nameSpaces.GetLength() + 1);
++			nameSpaces.PushLast(ns);
++		}
++		// else: out of memory, 0 is returned
+ 	}
+-	ns->name = name;
+ 
+-	// TODO: thread-safety: This can potentially be called from multiple threads so it must be protected with critical section
+-	nameSpaces.PushLast(ns);
++	LEAVECRITICALSECTION(functionTableLock);
+ 
+ 	return ns;
+ }
+@@ -1297,6 +1306,16 @@
+ // internal
+ asSNameSpace *asCScriptEngine::FindNameSpace(const char *name) const
+ {
++	// ALTERED: under functionTableLock, see AddNameSpace
++	ENTERCRITICALSECTION(const_cast<asCScriptEngine*>(this)->functionTableLock);
++	asSNameSpace *ns = FindNameSpaceLocked(name);
++	LEAVECRITICALSECTION(const_cast<asCScriptEngine*>(this)->functionTableLock);
++	return ns;
++}
++
++// internal
++asSNameSpace *asCScriptEngine::FindNameSpaceLocked(const char *name) const
++{
+ 	asCString searchName = name;
+ 	if( searchName.SubString(0, 2) == "::" )
+ 		searchName = searchName.SubString(2);
+diff --git a/sdk/angelscript/source/as_scriptengine.h b/sdk/angelscript/source/as_scriptengine.h
+--- a/sdk/angelscript/source/as_scriptengine.h
++++ b/sdk/angelscript/source/as_scriptengine.h
+@@ -333,6 +333,7 @@
+ 	// Namespace management
+ 	asSNameSpace *AddNameSpace(const char *name);
+ 	asSNameSpace *FindNameSpace(const char *name) const;
++	asSNameSpace *FindNameSpaceLocked(const char *name) const; // ALTERED: the search, functionTableLock held, see AddNameSpace
+ 	asSNameSpace *GetParentNameSpace(asSNameSpace *ns) const;
+ 
+ //===========================================================
