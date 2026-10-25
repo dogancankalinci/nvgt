@@ -35,6 +35,7 @@
 #include <scriptany.h>
 #include <scriptarray.h>
 #include <scriptdictionary.h>
+#include <scripthandle.h>
 #include <scripthelper.h>
 #include "datastreams.h"
 #include "nvgt.h"
@@ -844,6 +845,55 @@ public:
 		return to_copy;
 	}
 };
+// A rebuild (Build() or LoadByteCode()) lets go of the module's old global variables, under the build lock that
+// both take (see GetScriptBuildMutex). The objects they held were destroyed there, and a destructor is script code: one
+// waiting for another thread that needs the lock (an async<T> calling a module lookup, call() with default values, a type
+// made by get_array_type) waited for good, and so did the rebuild (a global of a shared class whose destructor waited for an
+// async<int>). The objects the globals hold are held here for the time of the rebuild, so the rebuild only lets go of its
+// references, and the last ones are let go of once the lock is released, where the destructors can wait. Covered: handles,
+// objects of reference types (script classes, arrays, dictionaries, any), function handles, and the object a ref or a
+// dictionaryValue global holds; value types' destructors are application code that doesn't run scripts.
+class rebuild_hold {
+	std::vector<std::pair<void*, asITypeInfo*>> held;
+	void hold(void* obj, asITypeInfo* type) {
+		if (!obj || !type) return;
+		if (type->GetFlags() & (asOBJ_SCOPED | asOBJ_NOCOUNT)) return; // no reference to take (a scoped type's release destroys it)
+		g_ScriptEngine->AddRefScriptObject(obj, type);
+		held.emplace_back(obj, type);
+	}
+public:
+	rebuild_hold() {}
+	rebuild_hold(const rebuild_hold&) = delete;
+	rebuild_hold& operator=(const rebuild_hold&) = delete;
+	// Called under the build lock, before the rebuild.
+	void take(asIScriptModule* mod) {
+		if (!mod) return;
+		for (asUINT i = 0; i < mod->GetGlobalVarCount(); i++) {
+			int type_id = 0;
+			if (mod->GetGlobalVar(i, nullptr, nullptr, &type_id) < 0 || !(type_id & asTYPEID_MASK_OBJECT)) continue;
+			void* address = mod->GetAddressOfGlobalVar(i);
+			asITypeInfo* type = g_ScriptEngine->GetTypeInfoById(type_id);
+			if (!address || !type) continue;
+			asDWORD flags = type->GetFlags();
+			if (type_id & asTYPEID_OBJHANDLE) hold(*(void**)address, type);
+			else if (flags & (asOBJ_REF | asOBJ_FUNCDEF)) hold(address, type); // GetAddressOfGlobalVar gives the object itself
+			else if ((flags & asOBJ_ASHANDLE) && std::string(type->GetName()) == "ref") {
+				CScriptHandle* handle = static_cast<CScriptHandle*>(address);
+				hold(handle->GetRef(), handle->GetType());
+			} else if ((flags & asOBJ_ASHANDLE) && std::string(type->GetName()) == "dictionaryValue") {
+				CScriptDictValue* value = static_cast<CScriptDictValue*>(address);
+				int value_type_id = value->GetTypeId();
+				asITypeInfo* value_type = (value_type_id & asTYPEID_MASK_OBJECT) ? g_ScriptEngine->GetTypeInfoById(value_type_id) : nullptr;
+				if (value_type && (value_type->GetFlags() & (asOBJ_REF | asOBJ_FUNCDEF)))
+					hold((value_type_id & asTYPEID_OBJHANDLE) ? *(void* const*)value->GetAddressOfValue() : const_cast<void*>(value->GetAddressOfValue()), value_type);
+			}
+		}
+	}
+	// Destroyed after the build lock is released (declared before it).
+	~rebuild_hold() {
+		for (auto& h : held) g_ScriptEngine->ReleaseScriptObject(h.first, h.second);
+	}
+};
 class script_module {
 	std::string mod_name;
 	asIScriptModule* get_mod() { return g_ScriptEngine->GetModule(mod_name.c_str(), asGM_ONLY_IF_EXISTS); }
@@ -875,8 +925,10 @@ public:
 		// This thread's messages go to errors (see CScriptMessageSink), and the build waits for another thread's (see GetScriptBuildMutex).
 		int result;
 		{
+			rebuild_hold old_globals; // See rebuild_hold; destroyed after the lock below.
 			CScriptMessageSink message_sink(script_message_callback, errors);
 			std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex());
+			old_globals.take(get_mod());
 			result = get_mod()->Build();
 		}
 		if (errors)
@@ -897,8 +949,10 @@ public:
 		}
 		int ret;
 		{
+			rebuild_hold old_globals; // See build().
 			CScriptMessageSink message_sink(script_message_callback, errors); // See build().
 			std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex());
+			old_globals.take(get_mod());
 			script_module_bytecode_stream b(code);
 			ret = get_mod()->LoadByteCode(&b, release);
 		}
