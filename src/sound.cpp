@@ -565,6 +565,8 @@ class audio_engine_impl final : public audio_node_impl, public virtual audio_eng
 	std::unique_ptr<ma_device> device;
 	bool device_follows_default = true; // Whether the device was opened as the system's default rather than by its id, as the constructor and assigning -1 do.
 	std::atomic<bool> started{false}; // Whether the engine is meant to run: started by the constructor or start(), until stop(). set_device() starts the new device only then.
+	// set_device(), start() and stop() of the engine, one at a time: two threads changing its device at once, as by assigning sound_output_device, uninitialised and opened its one ma_device under each other, and both waited for good.
+	std::mutex device_mutex;
 	std::atomic<asIScriptFunction*> script_data_callback;
 	audio_engine_endpoint *engine_endpoint; // Upon engine creation we'll call ma_engine_get_endpoint once so as to avoid creating more than one of our wrapper objects when our engine->get_endpoint() function is called.
 	std::mutex callback_mutex; // Lets the device's thread take a reference of its own to script_data_callback before set_processing_callback() can let it go.
@@ -757,6 +759,7 @@ public:
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
+		std::lock_guard<std::mutex> lock(device_mutex);
 		ma_device *old_dev = ma_engine_get_device(&*engine);
 		bool old_open = old_dev && ma_device_get_state(old_dev) != ma_device_state_uninitialized;
 		if (!old_dev) return false;
@@ -845,13 +848,18 @@ public:
 	int get_channels() const override { return engine ? ma_engine_get_channels(&*engine) : 0; }
 	int get_sample_rate() const override { return engine ? ma_engine_get_sample_rate(&*engine) : 0; }
 	bool start() override {
-		if (!engine || ma_engine_start(&*engine) != MA_SUCCESS) return false;
+		if (!engine) return false;
+		if (processing == this) return true; // Its device runs, this being its callback; waiting for device_mutex here could be for set_device() on another thread, which waits for this callback to return.
+		std::lock_guard<std::mutex> lock(device_mutex);
+		if (ma_engine_start(&*engine) != MA_SUCCESS) return false;
 		started = true;
 		return true;
 	}
 	bool stop() override {
 		if (processing == this) return false; // Stopping the device from its own thread would wait for that thread, see release().
-		if (!engine || ma_engine_stop(&*engine) != MA_SUCCESS) return false;
+		if (!engine) return false;
+		std::lock_guard<std::mutex> lock(device_mutex);
+		if (ma_engine_stop(&*engine) != MA_SUCCESS) return false;
 		started = false;
 		return true;
 	}
@@ -4614,6 +4622,8 @@ class microphone_impl : public audio_ring_buffer_impl, public virtual microphone
 		if (lock.owns_lock()) node->audio_ring_buffer_impl::write((float*)pInput, frameCount); // Not write(), which takes this lock.
 	}
 public:
+	// set_device(), set_state() and the volume, one at a time, with capture_device, which set_device() opens anew: two threads changing the device at once uninitialised and opened it under each other.
+	mutable std::mutex device_mutex;
 	// Opens capture_device on the device with that id, or the system's default for null, without starting it.
 	bool open_capture(const ma_device_id* id) {
 		ma_device_config device_config = ma_device_config_init(ma_device_type_capture);
@@ -4646,6 +4656,7 @@ public:
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
+		std::lock_guard<std::mutex> lock(device_mutex);
 		// Without a device open, as after one failed to, or with one the backend stopped while the microphone records, it is opened anew.
 		if (capture_device && (get_state() != ma_node_state_started || ma_device_is_started(&*capture_device)) && (device == -1? follows_default : !follows_default && ma_device_id_equal(&requested_id, &device_id))) return true;
 		const bool had_device = capture_device != nullptr, recording = get_state() == ma_node_state_started;
@@ -4673,7 +4684,10 @@ public:
 		}
 		return true;
 	}
-	int get_device() const override { return !capture_device || follows_default? -1 : audio_device_index(ma_device_type_capture, device_id); }
+	int get_device() const override {
+		std::lock_guard<std::mutex> lock(device_mutex);
+		return !capture_device || follows_default? -1 : audio_device_index(ma_device_type_capture, device_id);
+	}
 	// A ring buffer has one writer and one reader, and resetting it moves both positions: reset() while the capture thread wrote into it could leave that writer writing past its end. reset() therefore holds this, which the capture thread only tries for, dropping what it captured meanwhile rather than waiting.
 	void reset() override {
 		std::lock_guard<std::mutex> lock(capture_write_mutex);
@@ -4685,6 +4699,7 @@ public:
 		return audio_ring_buffer_impl::write(frames_in, frame_count);
 	}
 	bool set_state(ma_node_state state) override {
+		std::lock_guard<std::mutex> lock(device_mutex);
 		// A microphone started again drops what it recorded before it stopped, through its reader (see pcm_queue), before its node is read again; one already recording keeps its queue.
 		if (capture_device && state == ma_node_state_started && !ma_device_is_started(&*capture_device)) discard_queued();
 		bool ret = audio_node_impl::set_state(state);
@@ -4694,8 +4709,15 @@ public:
 		else if (state == ma_node_state_started) return ma_device_start(&*capture_device) == MA_SUCCESS;
 		return false;
 	}
-	void set_volume(float volume) override { if (capture_device && finite_values({volume, ma_volume_db_to_linear(volume)})) g_soundsystem_last_error = ma_device_set_master_volume_db(&*capture_device, volume); }
-	float get_volume() const override { float result; return capture_device && (g_soundsystem_last_error = ma_device_get_master_volume_db(&*capture_device, &result)) == MA_SUCCESS? result : 0; }
+	void set_volume(float volume) override {
+		std::lock_guard<std::mutex> lock(device_mutex);
+		if (capture_device && finite_values({volume, ma_volume_db_to_linear(volume)})) g_soundsystem_last_error = ma_device_set_master_volume_db(&*capture_device, volume);
+	}
+	float get_volume() const override {
+		std::lock_guard<std::mutex> lock(device_mutex);
+		float result;
+		return capture_device && (g_soundsystem_last_error = ma_device_get_master_volume_db(&*capture_device, &result)) == MA_SUCCESS? result : 0;
+	}
 };
 microphone* microphone::create(int device, audio_engine* engine) {
 	if (engine) return new microphone_impl(engine, device);
