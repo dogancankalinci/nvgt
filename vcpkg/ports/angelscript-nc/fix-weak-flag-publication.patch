@@ -1,0 +1,117 @@
+diff --git a/sdk/angelscript/source/as_scriptobject.cpp b/sdk/angelscript/source/as_scriptobject.cpp
+--- a/sdk/angelscript/source/as_scriptobject.cpp
++++ b/sdk/angelscript/source/as_scriptobject.cpp
+@@ -502,13 +502,27 @@
+ 	asASSERT( refCount.get() == 0 );
+ }
+ 
++// ALTERED: the extra data and the weak reference flag are made under the global lock but read without it (here, and by Release
++// on any thread): they are published with release stores once made and read with acquire loads (see asStorePointerRelease),
++// so a reader that sees the pointer sees the flag's lock initialized. Plain stores and loads let a weak-memory CPU show the
++// pointer first.
++asCLockableSharedBool *asCScriptObject::LoadWeakRefFlag() const
++{
++	SExtra *e = reinterpret_cast<SExtra*>(asLoadPointerAcquire(reinterpret_cast<void *const *>(&extra)));
++	if( e == 0 )
++		return 0;
++	return reinterpret_cast<asCLockableSharedBool*>(asLoadPointerAcquire(reinterpret_cast<void *const *>(&e->weakRefFlag)));
++}
++
+ asILockableSharedBool *asCScriptObject::GetWeakRefFlag() const
+ {
+ 	// If the object's refCount has already reached zero then the object is already
+ 	// about to be destroyed so it's ok to return null if the weakRefFlag doesn't already
+ 	// exist
+-	if( extra && extra->weakRefFlag )
+-		return extra->weakRefFlag;
++	// ALTERED: read with acquire loads, see LoadWeakRefFlag
++	asCLockableSharedBool *flag = LoadWeakRefFlag();
++	if( flag )
++		return flag;
+ 	if( hasRefCountReachedZero )
+ 		return 0;
+ 
+@@ -521,10 +535,11 @@
+ 
+ 	// Make sure another thread didn't create the 
+ 	// flag while we waited for the lock
++	// ALTERED: published with release stores, see LoadWeakRefFlag
+ 	if( !extra )
+-		extra = asNEW(SExtra);
++		asStorePointerRelease(reinterpret_cast<void**>(&extra), asNEW(SExtra));
+ 	if( !extra->weakRefFlag )
+-		extra->weakRefFlag = asNEW(asCLockableSharedBool);
++		asStorePointerRelease(reinterpret_cast<void**>(&extra->weakRefFlag), asNEW(asCLockableSharedBool));
+ 
+ 	asReleaseExclusiveLock();
+ 
+@@ -567,8 +582,9 @@
+ 
+ 	// Make sure another thread didn't create the 
+ 	// flag while we waited for the lock
++	// ALTERED: published with a release store, see LoadWeakRefFlag
+ 	if( !extra )
+-		extra = asNEW(SExtra);
++		asStorePointerRelease(reinterpret_cast<void**>(&extra), asNEW(SExtra));
+ 
+ 	// It is not intended to store a lot of different types of userdata,
+ 	// so a more complex structure like a associative map would just have
+@@ -637,19 +653,19 @@
+ 	// and once for the destructor: another thread that turned a weak reference strong and let go of it in between (or the
+ 	// last two references let go of on two threads at once) had the object destroyed with the flag never set, and a weak
+ 	// reference then added a reference to the freed object; or the flag was set on an object that another thread still held.
+-	if( extra && extra->weakRefFlag )
++	if( asCLockableSharedBool *weakRefFlag = LoadWeakRefFlag() ) // ALTERED: see LoadWeakRefFlag
+ 	{
+-		extra->weakRefFlag->Lock();
++		weakRefFlag->Lock();
+ 		if( refCount.get() != 1 )
+ 		{
+ 			// Not the last reference: no other release or weak reference can make this one the last meanwhile
+ 			int r = refCount.atomicDec();
+-			extra->weakRefFlag->Unlock();
++			weakRefFlag->Unlock();
+ 			return r;
+ 		}
+ 		// The last reference: no weak reference can turn strong after this
+-		extra->weakRefFlag->SetLocked(true);
+-		extra->weakRefFlag->Unlock();
++		weakRefFlag->SetLocked(true);
++		weakRefFlag->Unlock();
+ 	}
+ 	else
+ 	{
+@@ -707,16 +723,16 @@
+ {
+ 	gcFlag = false;
+ 
+-	if( extra && extra->weakRefFlag )
++	if( asCLockableSharedBool *weakRefFlag = LoadWeakRefFlag() ) // ALTERED: see LoadWeakRefFlag
+ 	{
+-		extra->weakRefFlag->Lock();
++		weakRefFlag->Lock();
+ 		if( refCount.get() != 1 )
+ 		{
+-			extra->weakRefFlag->Unlock();
++			weakRefFlag->Unlock();
+ 			return refCount.get();
+ 		}
+-		extra->weakRefFlag->SetLocked(true);
+-		extra->weakRefFlag->Unlock();
++		weakRefFlag->SetLocked(true);
++		weakRefFlag->Unlock();
+ 	}
+ 	else if( refCount.get() != 1 )
+ 		return refCount.get();
+diff --git a/sdk/angelscript/source/as_scriptobject.h b/sdk/angelscript/source/as_scriptobject.h
+--- a/sdk/angelscript/source/as_scriptobject.h
++++ b/sdk/angelscript/source/as_scriptobject.h
+@@ -128,6 +128,8 @@
+ 	void CallDestructor();
+ 	// ALTERED: the garbage collector's release of an object it holds the only reference to, see the definition
+ 	int  ReleaseByCollector();
++	// ALTERED: the weak reference flag if it has been made, read with acquire loads, see GetWeakRefFlag
++	asCLockableSharedBool *LoadWeakRefFlag() const;
+ 
+ //=============================================
+ // Properties
