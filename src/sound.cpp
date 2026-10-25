@@ -4118,6 +4118,11 @@ public:
 			play(true);
 		}
 		if (!pcm_stream) return false;
+		// On an audio thread, which can't wait for room (see below), all of it or none: a part queued before giving up the rest left the script unable to tell what was taken, to send the rest again. The audio thread only makes room meanwhile.
+		if (audio_engine_impl::on_audio_thread() && ma_pcm_rb_available_write(&pcm_stream->rb) < size_in_frames) {
+			g_soundsystem_last_error = MA_BUSY;
+			return false;
+		}
 		const char* input = (const char*)data;
 		unsigned int frames_written = 0;
 		unsigned int frame_size = ma_get_bytes_per_frame(ma_pcm_rb_get_format(&pcm_stream->rb), ma_pcm_rb_get_channels(&pcm_stream->rb));
