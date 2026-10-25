@@ -94,6 +94,7 @@ vcpkg_from_github(
         fix-gc-half-made-script-object.patch
         fix-handle-like-member-init.patch
         fix-handle-like-handle-assign-noopt.patch
+        fix-handle-like-member-handle-assign-in-ctor.patch
 )
 
 vcpkg_cmake_configure(

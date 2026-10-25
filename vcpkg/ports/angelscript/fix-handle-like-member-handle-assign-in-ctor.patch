@@ -1,0 +1,17 @@
+diff --git a/sdk/angelscript/source/as_compiler.cpp b/sdk/angelscript/source/as_compiler.cpp
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -10100,7 +10100,12 @@
+ 
+ 	// If a constructor is being compiled, then check if this is the first time a member properties is
+ 	// assigned, in which case it should be considered an initialization instead of an ordinary assignment
+-	if (engine->ep.memberInitMode == 1 && m_isConstructor)
++	// ALTERED: except a handle assignment (@m = ...) to a member of a value type that works as a handle (asOBJ_ASHANDLE: ref,
++	// dictionaryValue): the initialization only knows value semantics, so it stored a copy of the object in a dictionaryValue
++	// (in any other place @dv = obj stores the handle) and refused it for a ref ("No appropriate opAssign method found").
++	// Such a member is made by its default constructor first, and the handle assignment is compiled as anywhere else.
++	if (engine->ep.memberInitMode == 1 && m_isConstructor &&
++		!(lctx->type.isExplicitHandle && lctx->type.dataType.GetTypeInfo() && (lctx->type.dataType.GetTypeInfo()->flags & asOBJ_ASHANDLE) && (lctx->type.dataType.GetTypeInfo()->flags & asOBJ_VALUE)))
+ 	{
+ 		// Is the left expression a member property of this object?
+ 		// TODO: Should probably have a boolean on asCExprContext to indicate that it is a property, and have it set in CompilerVariableAccess, and then cleared if any pre/post operation is done it
