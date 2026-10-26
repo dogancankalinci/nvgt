@@ -236,7 +236,13 @@ bool timer_queue::loop(int max_timers, int max_catchup) {
 	uint64_t t = 0;
 	if (!open_tick) {
 		uint64_t now = ticks();
-		t = now > last_looped ? now - last_looped : 0;
+		// ticks() is the wall clock whatever speedhack_protection says, which goes back when the system time is set back, and
+		// past the time the program started wraps around to near 2^64. Time is then counted from the clock's new value: kept
+		// ahead of the clock, last_looped stopped every timer until the clock got back to it (an hour for a clock set back an
+		// hour), and a wrapped clock looked nearly 2^64 ms ahead, so every loop() handed the wheel max_catchup ms however
+		// little time had passed. The signed difference tells a step back from a step forward.
+		if (int64_t(now - last_looped) < 0) last_looped = now;
+		t = now - last_looped;
 		if (t > max_catchup) t = max_catchup;
 		if (t <= 0) return true;
 		last_looped += t;
