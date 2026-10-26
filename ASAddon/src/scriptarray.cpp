@@ -1491,6 +1491,13 @@ bool CScriptArray::Equals(const void *a, const void *b, asIScriptContext *ctx, S
 			if( *(void**)a == *(void**)b ) return true;
 		}
 
+		// ALTERED: both objects are held while the comparison runs (see SElementHold), as the sort holds the elements it compares:
+		// an opEquals or opCmp that took its own element out of the array (or the other operand's out of the other array, for
+		// ==) freed the object it was running on, or its argument, in the middle of the call.
+		asIScriptEngine *engine = objType->GetEngine();
+		SElementHold holdA(engine, objType->GetSubType(), (subTypeId & asTYPEID_OBJHANDLE) ? *((void**)a) : (void*)a);
+		SElementHold holdB(engine, objType->GetSubType(), (subTypeId & asTYPEID_OBJHANDLE) ? *((void**)b) : (void*)b);
+
 		// Execute object opEquals if available
 		if( cache && cache->eqFunc )
 		{
