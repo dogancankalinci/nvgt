@@ -245,6 +245,6 @@ class pack_interface {
 class audio_plugin_node_interface {
 public:
 	virtual void process(audio_plugin_node_interface* node, const float** frames_in, unsigned int* frame_count_in, float** frames_out, unsigned int* frame_count_out) = 0;
-	// Called once, if the node made with this implementation was made with NVGT_AUDIO_PLUGIN_NODE_RELEASE, when the node is destroyed and the audio thread no longer calls process(): from then on the plugin may free this object.
+	// Called once, if the node made with this implementation was made with NVGT_AUDIO_PLUGIN_NODE_RELEASE, when the node is destroyed and the audio thread no longer calls process(): from then on the plugin may free this object. When nvgt_audio_plugin_node_create() returns null, no node was made with it and it stays the plugin's.
 	virtual void release() {}
 };
