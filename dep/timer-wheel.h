@@ -93,6 +93,7 @@
 #include <cstdio>
 #include <limits>
 #include <memory>
+#include <vector>
 
 typedef uint64_t Tick;
 using std::min;
@@ -224,6 +225,7 @@ public:
             now_[i] = now >> (WIDTH_BITS * i);
         }
         ticks_pending_ = 0;
+        advances_ = 0;
     }
 
     // Advance the TimerWheel by the specified number of ticks, and execute
@@ -282,6 +284,8 @@ private:
     // This handles the actual work of executing event callbacks and
     // recursing to the outer wheels.
     inline bool process_current_slot(Tick now, size_t max_execute, int level);
+    // See advances_.
+    inline void requeue(TimerWheelSlot* slot);
 
     static const int WIDTH_BITS = 8;
     static const int NUM_LEVELS = (64 + WIDTH_BITS - 1) / WIDTH_BITS;
@@ -298,6 +302,15 @@ private:
     // We've done a partial tick advance. This is how many ticks remain
     // unprocessed.
     Tick ticks_pending_;
+    // How many times advance() was called, counted on the core wheel. An event callback can advance the wheel again
+    // (NVGT's timer_queue::loop() run from a timer callback, as a modal loop inside one is), which moves now_ on and can finish
+    // a partial tick, or leave one, of its own. The advance() and process_current_slot() it happened under find the count
+    // changed when the callback returns and go on from the state the wheel was left in: the slot being emptied is no longer
+    // the current tick's (see requeue()), and ticks_pending_ is the nested call's. They went on as if nothing had happened:
+    // with a partial tick finished by the nested call, ticks_pending_ - 1 underflowed to 2^64 - 1 ticks to process (advance()
+    // never returned), and an event put back during the nested call into the slot still being emptied was taken out of it,
+    // run early and put back into it again without end.
+    uint64_t advances_;
     TimerWheelSlot slots_[NUM_LEVELS][NUM_SLOTS];
 };
 
@@ -350,6 +363,9 @@ void TimerEventInterface::cancel() {
 }
 
 bool TimerWheel::advance(Tick delta, size_t max_events, int level) {
+    if (level == 0) {
+        ++advances_; // See advances_.
+    }
     if (ticks_pending_) {
         if (level == 0) {
             // Continue collecting a backlog of ticks to process if
@@ -360,10 +376,16 @@ bool TimerWheel::advance(Tick delta, size_t max_events, int level) {
         // current slot, rather incrementing like advance() normally
         // does.
         Tick now = now_[level];
+        uint64_t advances = advances_;
         if (!process_current_slot(now, max_events, level)) {
             // Outer layers are still not done, propagate that information
             // back up.
             return false;
+        }
+        if (level == 0 && advances_ != advances) {
+            // An event advanced the wheel (see advances_), taking the partial tick and the pending ticks (this call's
+            // delta with them) over: it processed them all, or left a partial tick of its own for the next call.
+            return ticks_pending_ == 0;
         }
         if (level == 0) {
             // The core wheel has been fully processed. We can now close
@@ -383,8 +405,15 @@ bool TimerWheel::advance(Tick delta, size_t max_events, int level) {
 
     while (delta--) {
         Tick now = ++now_[level];
+        uint64_t advances = advances_;
         if (!process_current_slot(now, max_events, level)) {
             ticks_pending_ = (delta + 1);
+            return false;
+        }
+        if (level == 0 && advances_ != advances && ticks_pending_) {
+            // An event advanced the wheel (see advances_) and left a partial tick: the ticks this call still had
+            // to process come after it.
+            ticks_pending_ += delta;
             return false;
         }
     }
@@ -394,9 +423,14 @@ bool TimerWheel::advance(Tick delta, size_t max_events, int level) {
 bool TimerWheel::process_current_slot(Tick now, size_t max_events, int level) {
     size_t slot_index = now & MASK;
     auto slot = &slots_[level][slot_index];
+    uint64_t advances = advances_; // See advances_.
     if (slot_index == 0 && level < MAX_LEVEL) {
         if (!advance(1, max_events, level + 1)) {
             return false;
+        }
+        if (advances_ != advances) {
+            requeue(slot);
+            return true;
         }
     }
     while (slot->events()) {
@@ -405,6 +439,10 @@ bool TimerWheel::process_current_slot(Tick now, size_t max_events, int level) {
             assert((now_[0] & MASK) == 0);
             if (now_[0] >= event->scheduled_at()) {
                 event->execute();
+                if (advances_ != advances) {
+                    requeue(slot);
+                    return true;
+                }
                 if (!--max_events) {
                     return false;
                 }
@@ -421,12 +459,30 @@ bool TimerWheel::process_current_slot(Tick now, size_t max_events, int level) {
             }
         } else {
             event->execute();
+            if (advances_ != advances) {
+                requeue(slot);
+                return true;
+            }
             if (!--max_events) {
                 return false;
             }
         }
     }
     return true;
+}
+
+// An event advanced the wheel (see advances_), so this slot is no longer the current tick's: what is left in it (the
+// events due on that tick, and any put there meanwhile for a later turn of the wheel) goes where it belongs now, the overdue
+// ones to the next tick. They are all taken out first and scheduled after, with no callback in between: one put back while
+// the slot was still being emptied would be taken out again.
+void TimerWheel::requeue(TimerWheelSlot* slot) {
+    std::vector<TimerEventInterface*> events;
+    while (slot->events()) {
+        events.push_back(slot->pop_event());
+    }
+    for (auto event : events) {
+        schedule(event, event->scheduled_at() > now_[0] ? event->scheduled_at() - now_[0] : 1);
+    }
 }
 
 void TimerWheel::schedule(TimerEventInterface* event, Tick delta) {
