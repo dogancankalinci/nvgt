@@ -2757,7 +2757,7 @@ static void give_deferred_fade(ma_sound* s, ma_uint32 frames) {
 		if (elapsed < length) {
 			if (beg >= 0) beg += (end - beg) * (float)((double)elapsed / (double)length); // A negative beginning is the volume the sound is at.
 			const ma_uint64 early = at > now? at - now : 0, left = length - elapsed;
-			ma_sound_set_fade_start_in_pcm_frames(s, beg, end, left > ~(ma_uint64)0 - early? ~(ma_uint64)0 : left + early, ~(ma_uint64)0);
+			ma_sound_set_fade_start_in_pcm_frames(s, beg, end, left >= UINT_MAX - early? UINT_MAX : left + early, ~(ma_uint64)0); // MiniAudio's own limit, under its ~0 for no fade, which lost a fade that long.
 		} else ma_sound_set_fade_start_in_pcm_frames(s, end, end, 0, ~(ma_uint64)0);
 		h->fade_at = ~(ma_uint64)0;
 		h->fade_pending.store(false, std::memory_order_relaxed);
@@ -3680,7 +3680,7 @@ public:
 		if (!finite_values({start_volume, end_volume})) return;
 		drop_deferred_fade(); // A fade set now replaces one scheduled ahead, as in MiniAudio's only fader.
 		fade_from_stop = false;
-		ma_sound_set_fade_in_pcm_frames(&*snd, start_volume, end_volume, frames);
+		ma_sound_set_fade_in_pcm_frames(&*snd, start_volume, end_volume, std::min<ma_uint64>(frames, UINT_MAX)); // MiniAudio's own limit, under its ~0 for no fade, which lost a fade that long.
 	}
 	void set_fade_in_milliseconds(float start_volume, float end_volume, ma_uint64 milliseconds) override {
 		if (!snd)
