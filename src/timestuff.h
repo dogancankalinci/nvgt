@@ -90,6 +90,8 @@ public:
 	}
 	bool loop(int max_timers = 0, int max_catchup = 100);
 	uint64_t ticks_to_next_event(uint64_t max = 100) {
+		// Under the lock as the other methods are: it walks the wheel's slots, which loop() on another thread relinks, and whose timers it deletes.
+		std::lock_guard<std::recursive_mutex> l(mtx);
 		return timers.ticks_to_next_event(max);
 	}
 };
