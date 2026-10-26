@@ -2709,14 +2709,18 @@ static void start_from_start(ma_sound* s) {
 	held(s)->seek_target.compare_exchange_strong(none, 0);
 	reinterpret_cast<std::atomic<ma_bool32>*>(&s->atEnd)->store(MA_FALSE);
 }
-// MiniAudio's fader stops at 2^32 - 1 frames from where its fade was set, processing no frames after, so a sound or group played on unfaded from there: a sound held at a fade of its own, or faded to silence, came back at full volume some 25 hours on at 48 kHz. One long past the end of its fade is set to its end volume afresh, its cursor back at 0. Only the thread reading the engine writes the fader; the script's fades reach it through MiniAudio's fade settings.
+// MiniAudio's fader stops at 2^32 - 1 frames from where its fade was set, processing no frames after, so a sound or group played on unfaded from there, part of a block first: a sound held at a fade of its own, or faded to silence, came back at full volume some 25 hours on at 48 kHz. One whose cursor passed 2^31 is set afresh from where it got to, its cursor back at 0: at its end volume past its fade, the rest of its fade from the volume it reached otherwise. Only the thread reading the engine writes the fader; the script's fades reach it through MiniAudio's fade settings.
 static void keep_fader_in_range(ma_sound* s) {
 	ma_fader& fader = s->engineNode.fader;
-	if (fader.cursorInFrames > (ma_int64)INT_MAX && (ma_uint64)fader.cursorInFrames >= fader.lengthInFrames) {
+	if (fader.cursorInFrames <= (ma_int64)INT_MAX) return;
+	if ((ma_uint64)fader.cursorInFrames >= fader.lengthInFrames) {
 		fader.volumeBeg = fader.volumeEnd;
 		fader.lengthInFrames = 0;
-		fader.cursorInFrames = 0;
+	} else {
+		fader.volumeBeg = ma_fader_get_current_volume(&fader);
+		fader.lengthInFrames -= (ma_uint64)fader.cursorInFrames;
 	}
+	fader.cursorInFrames = 0;
 }
 // MiniAudio places a fade given an absolute start, as ma_sound_stop_with_fade_in_*() gives pause_fade()'s and the TTS queue's, by setting its fader's cursor to how far the engine's time is past that start when it takes the fade: with the engine's time moved on past 2^32 frames meanwhile, as set_time_in_frames() can, that cursor overran MiniAudio's fader processing, which wrote past the block. Such a fade is taken here from the current frame instead, at the volume it reached, over what is left, as give_deferred_fade() gives one.
 static void take_past_fade(ma_sound* s) {
