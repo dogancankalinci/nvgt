@@ -2775,13 +2775,16 @@ static void give_deferred_fade(ma_sound* s, ma_uint32 frames) {
 	h->unlock_fade();
 }
 // After the sound's processing: a fade given in this block that MiniAudio didn't take, as it takes one only when it has frames to process, none while a stream seeks or waits for data, is taken back to be given again with the time since counted, rather than taken later from where it was given and cut off by its stop; one it took is done with. A fade the script replaced meanwhile, or one MiniAudio was given since by other code, is left alone.
+// Removes from MiniAudio's settings a fade the sound gave it, this long, that MiniAudio hasn't taken: whether it did. Under fade_locked.
+static bool remove_untaken_fade(ma_sound* s, ma_uint64 given) {
+	std::atomic<ma_uint64>& length_field = *reinterpret_cast<std::atomic<ma_uint64>*>(&s->engineNode.fadeSettings.fadeLengthInFrames);
+	return length_field.load() == given && reinterpret_cast<std::atomic<ma_uint64>*>(&s->engineNode.fadeSettings.absoluteGlobalTimeInFrames)->load() == ~(ma_uint64)0 && length_field.compare_exchange_strong(given, ~(ma_uint64)0);
+}
 static void take_back_fade(ma_sound* s) {
 	held_sound* h = held(s);
 	if ((!h->fade_given && !h->given_stale) || h->fade_locked.exchange(true, std::memory_order_acquire)) return; // Only the audio thread sets fade_given; under the lock, the script only clears it, or turns it into given_stale.
 	if (h->fade_given || h->given_stale) {
-		std::atomic<ma_uint64>& length_field = *reinterpret_cast<std::atomic<ma_uint64>*>(&s->engineNode.fadeSettings.fadeLengthInFrames);
-		ma_uint64 given = h->given_length;
-		const bool untaken = length_field.load() == given && reinterpret_cast<std::atomic<ma_uint64>*>(&s->engineNode.fadeSettings.absoluteGlobalTimeInFrames)->load() == ~(ma_uint64)0 && length_field.compare_exchange_strong(given, ~(ma_uint64)0);
+		const bool untaken = remove_untaken_fade(s, h->given_length);
 		// A replaced one MiniAudio didn't take is removed, never heard, as one replaced after it was taken back is dropped; the one scheduled since stays.
 		if (h->fade_given) {
 			if (untaken) h->fade_pending.store(true, std::memory_order_release);
@@ -2796,6 +2799,7 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 	hold_rate(node);
 	ma_sound* s = (ma_sound*)node;
 	held(s)->processed.fetch_add(1, std::memory_order_relaxed);
+	take_back_fade(s); // One the end of the block before couldn't, the script holding the fade's lock then.
 	keep_fader_in_range(s);
 	std::atomic<ma_uint64>& seek_target = held(s)->seek_target;
 	// A seek given to MiniAudio itself, as by C++ code holding the ma_sound, is moved to the sound's target, to be made as the script's are; MiniAudio's own processing would keep the cache and seek a stream every block.
@@ -3465,9 +3469,11 @@ public:
 		held_sound* h = held(&*snd);
 		h->lock_fade();
 		bool dropped = h->fade_at != ~(ma_uint64)0 && !h->fade_given; // One given to MiniAudio in the block under way may have begun.
+		// One given to MiniAudio that it hasn't taken is removed there, before the caller sets a fade of its own, if it does: left, MiniAudio took it once it had frames, untracked.
+		if (h->fade_given || h->given_stale) remove_untaken_fade(&*snd, h->given_length);
 		h->fade_at = ~(ma_uint64)0;
 		h->fade_given = false;
-		h->given_stale = false; // The caller sets MiniAudio's fade itself, which a fade of that length must not lose.
+		h->given_stale = false;
 		h->fade_pending.store(false, std::memory_order_relaxed);
 		h->unlock_fade();
 		return dropped;
