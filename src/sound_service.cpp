@@ -246,7 +246,7 @@ public:
 	std::string prepare_triplet(const std::string &name, const size_t protocol_slot, const directive_t protocol_directive, const size_t filter_slot, directive_t filter_directive, bool own_entry, unsigned salt) {
 		if (protocol_slot >= protocols.size())
 			return "";
-		if (!is_valid_utf8(name))
+		if (!is_valid_utf8(name) || name.find('\x1e') != std::string::npos) // Nor the separator itself, so that every triplet stands for one name, slot and suffix.
 			return "";
 		vfs_args args;
 		protocol_registration preg;

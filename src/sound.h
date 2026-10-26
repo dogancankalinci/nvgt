@@ -351,7 +351,7 @@ public:
 	 * ma_uint32 flags = MA_SOUND_FLAG_DECODE: MiniAudio specific flags that govern how MiniAudio will load the data.
 	 * Remarks:
 	 * Directive_t is simply short for std::shared_ptr <void>
-	 * The sound service does not retain your directives after this method returns, so it's okay to allocate them on the stack.
+	 * The sound service keeps a directive only while it needs it, through its shared_ptr; data a directive points to without owning it, as a memory directive's buffer, must stay valid while the sound loads asynchronously or streams from it.
 	 * A warning to protocol and filter developers: never store directive_t handles.
 	 * Also to those implementing custom sound methods: review the MiniAudio documentation to be sure you understand what the flags passed to ma_sound_init_from_file do. Some data sources, by their nature, only make sense in combination with certain flags. For example, MA_SOUND_FLAG_STREAM would be inappropriate for a string source unless you can guarantee it won't go away or be modified by script during playback.
 	 */
