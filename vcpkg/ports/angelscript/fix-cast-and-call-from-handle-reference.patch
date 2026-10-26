@@ -1,0 +1,51 @@
+diff --git a/sdk/angelscript/source/as_compiler.cpp b/sdk/angelscript/source/as_compiler.cpp
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -7315,6 +7315,16 @@
+ 				// because that will raise a null pointer exception due to the cast behaviour
+ 				// being a class method, and the this pointer cannot be null.
+ 
++				// ALTERED: a handle parameter taken by reference (T@ &in, &out, &inout) is a variable whose slot holds the address
++				// of the handle, which the null test and the call below read as the handle: the cast called the opCast with the
++				// handle's address as the object. Its handle is copied to a variable of its own, as one that isn't in a variable is.
++				if (ctx->type.isVariable)
++				{
++					sVariable *v = variables ? variables->GetVariableByOffset(ctx->type.stackOffset) : 0;
++					if (v && v->type.IsReference() && v->type.IsObjectHandle())
++						ctx->type.isVariable = false;
++				}
++
+ 				if (!ctx->type.isVariable)
+ 				{
+ 					Dereference(ctx, true);
+@@ -7438,6 +7448,14 @@
+ 				asCExprContext tmp(engine);
+ 				if ((ctx->type.dataType.GetTypeInfo()->flags & asOBJ_REF) && !(ctx->type.dataType.GetTypeInfo()->flags & asOBJ_NOHANDLE))
+ 				{
++					// ALTERED: a handle parameter taken by reference, see the opCast path above
++					if (ctx->type.isVariable)
++					{
++						sVariable *v = variables ? variables->GetVariableByOffset(ctx->type.stackOffset) : 0;
++						if (v && v->type.IsReference() && v->type.IsObjectHandle())
++							ctx->type.isVariable = false;
++					}
++
+ 					tmp.bc.AddCode(&ctx->bc);
+ 					tmp.Merge(ctx);
+ 
+@@ -15362,6 +15380,15 @@
+ 					Dereference(ctx, true);
+ 					if( ctx->type.dataType.IsFuncdef() )
+ 					{
++						// ALTERED: a function handle parameter taken by reference, as in CompileFunctionCall ((a)() called the address
++						// of the handle as a function)
++						if( ctx->type.isVariable )
++						{
++							sVariable *v = variables ? variables->GetVariableByOffset(ctx->type.stackOffset) : 0;
++							if( v && v->type.IsReference() )
++								ctx->type.isVariable = false;
++						}
++
+ 						if( !ctx->type.isVariable )
+ 							ConvertToVariable(ctx);
+ 
