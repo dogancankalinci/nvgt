@@ -4960,14 +4960,14 @@ public:
 	~microphone_impl() {
 		if (capture_device) uninit_device(&*capture_device);
 	}
-	// The last reference let go on an audio thread, as in a processing callback, whose audio would be held up while the capture device closes, about 200 ms: destroyed on a thread of its own then, as an engine is (see audio_engine_impl::release()), and left to the process's exit once the sound system shut down.
+	// The last reference let go on an audio thread, as in a processing callback, whose audio would be held up while the capture device closes, about 200 ms: destroyed on a thread of its own then, as an engine is (see audio_engine_impl::release()). Once the sound system shut down it is left to the process's exit on any thread, as an engine is: closing its capture device then can come after SDL took down what the backend needs.
 	void release() override {
 		if (asAtomicDec(refcount) >= 1) return;
+		if (g_soundsystem_shut_down.test()) return;
 		if (!audio_engine_impl::on_audio_thread()) {
 			delete this;
 			return;
 		}
-		if (g_soundsystem_shut_down.test()) return;
 		delete_detached(this);
 	}
 	bool set_device(int device) override {
