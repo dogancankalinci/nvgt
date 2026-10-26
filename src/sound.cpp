@@ -2722,7 +2722,7 @@ static void keep_fader_in_range(ma_sound* s) {
 	}
 	fader.cursorInFrames = 0;
 }
-// MiniAudio places a fade given an absolute start, as ma_sound_stop_with_fade_in_*() gives pause_fade()'s and the TTS queue's, by setting its fader's cursor to how far the engine's time is past that start when it takes the fade: with the engine's time moved on past 2^32 frames meanwhile, as set_time_in_frames() can, that cursor overran MiniAudio's fader processing, which wrote past the block. Such a fade is taken here from the current frame instead, at the volume it reached, over what is left, as give_deferred_fade() gives one.
+// MiniAudio places a fade given an absolute start, as ma_sound_stop_with_fade_in_*() gives one, by setting its fader's cursor to how far the engine's time is past that start when it takes the fade: with the engine's time moved on past 2^32 frames meanwhile, as set_time_in_frames() can, that cursor overran MiniAudio's fader processing, which wrote past the block. NVGT's own fades wait in the sound instead (see held_sound::fade_at); one C++ code or a plugin gave MiniAudio itself is taken here from the current frame, over what is left, as give_deferred_fade() gives one. It narrows rather than closes the window, as MiniAudio reads the engine's time again later in the block.
 static void take_past_fade(ma_sound* s) {
 	auto& settings = s->engineNode.fadeSettings;
 	std::atomic<ma_uint64>& length_field = *reinterpret_cast<std::atomic<ma_uint64>*>(&settings.fadeLengthInFrames);
@@ -4616,12 +4616,9 @@ public:
 		if (snd) {
 			if (!started_to_play()) return (g_soundsystem_last_error = MA_SUCCESS) == MA_SUCCESS; // As pause() leaves a sound that isn't playing, with no stop scheduled for it either, which play() wouldn't have called off.
 			if (drop_deferred_fade()) fade_from_stop = false; // Its fade, which begins now, replaces one scheduled ahead; a stop's that never began left the fader as it was, the script's own fade, which pause_fade(0), a plain stop, then kept.
-			g_soundsystem_last_error = ma_sound_stop_with_fade_in_pcm_frames(&*snd, frames);
-			if (g_soundsystem_last_error == MA_SUCCESS) {
-				stop_fade_set(frames);
-				paused = fade_paused = true; // As pause() does, so play() resumes it.
-			}
-			return g_soundsystem_last_error == MA_SUCCESS;
+			stop_fade_set(schedule_pause_fade(frames));
+			paused = fade_paused = true; // As pause() does, so play() resumes it.
+			return (g_soundsystem_last_error = MA_SUCCESS) == MA_SUCCESS;
 		}
 		return false;
 	}
@@ -4629,12 +4626,9 @@ public:
 		if (snd && frames_fit(frames, ma_engine_get_sample_rate(ma_sound_get_engine(&*snd)))) {
 			if (!started_to_play()) return (g_soundsystem_last_error = MA_SUCCESS) == MA_SUCCESS; // As above.
 			if (drop_deferred_fade()) fade_from_stop = false;
-			g_soundsystem_last_error = ma_sound_stop_with_fade_in_milliseconds(&*snd, frames);
-			if (g_soundsystem_last_error == MA_SUCCESS) {
-				stop_fade_set(frames * ma_engine_get_sample_rate(ma_sound_get_engine(&*snd)) / 1000); // As MiniAudio counts the fade's frames.
-				paused = fade_paused = true;
-			}
-			return g_soundsystem_last_error == MA_SUCCESS;
+			stop_fade_set(schedule_pause_fade(frames * ma_engine_get_sample_rate(ma_sound_get_engine(&*snd)) / 1000)); // As MiniAudio counts the fade's frames.
+			paused = fade_paused = true;
+			return (g_soundsystem_last_error = MA_SUCCESS) == MA_SUCCESS;
 		}
 		return false;
 	}
@@ -4670,6 +4664,14 @@ public:
 		fade_paused = false;
 	}
 	// The stop is MiniAudio's, its fade waits in the sound for its time (see held_sound::fade_at), to fade from the volume the sound is at then. It replaces the fade of a stop before it, which goes back to full volume if it began, as a sound pause_fade() stopped is at 0 though it plays on at full volume once started.
+	// pause_fade()'s stop, now and the fade's length on, as ma_sound_stop_with_fade_in_pcm_frames() makes it, its fade waiting in the sound as a stop's does rather than given to MiniAudio with that absolute start, from which MiniAudio counted its fader's cursor: with the engine's time moved on past 2^32 frames before it took the fade, as set_time_in_frames() can, the cursor overran its fader's processing, which wrote past the block. The length is cut to MiniAudio's limit for fades, so that the stop can't wrap past 2^64 to now, or to ~0, which is no stop at all. Returns that length.
+	ma_uint64 schedule_pause_fade(ma_uint64 frames) {
+		frames = std::min<ma_uint64>(frames, UINT_MAX);
+		const ma_uint64 now = ma_engine_get_time_in_pcm_frames(ma_sound_get_engine(&*snd)), stop = now < ~(ma_uint64)0 - frames? now + frames : ~(ma_uint64)0 - 1;
+		ma_node_set_state_time(&*snd, ma_node_state_stopped, stop);
+		if (frames > 0) defer_fade(-1, 0, frames, stop - frames);
+		return frames;
+	}
 	// Returns the fade's length as limited, none for a stop at 0, which is a plain stop.
 	ma_uint64 schedule_stop_with_fade(ma_uint64 stop, ma_uint64 fade) {
 		reset_stop_fade();
