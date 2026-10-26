@@ -263,11 +263,14 @@ public:
 		args.filter_directive = (filter_directive == nullptr ? freg->get_directive() : filter_directive);
 		// Build our triplet. This is the name that will actually be remembered by MiniAudio's resource manager.
 		std::stringstream triplet;
+		const std::string suffix = preg->get()->get_suffix(args.protocol_directive);
+		if (suffix.find('\x1e') != std::string::npos) // As for the name, so that the parts after it, an own entry's number or a salt, can't be read as part of it.
+			return "";
 		triplet << name
 		        << "\x1e"
 		        << args.protocol_slot
 		        << "\x1e"
-		        << preg->get()->get_suffix(args.protocol_directive);
+		        << suffix;
 		if (own_entry) triplet << "\x1e" << ++own_entries;
 		if (salt) triplet << "\x1e~" << salt;
 		set_temp_args(triplet.str(), args);

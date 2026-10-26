@@ -22,7 +22,7 @@ typedef struct
     ma_tell_proc onTell;
     void* pReadSeekTellUserData;
     ma_format format;           /* Will be either f32 or s16. */
-    /*OggVorbis_File**/ void* vf;   /* Typed as void* so we can avoid a dependency on opusfile in the header section. */
+    /*OggVorbis_File**/ void* vf;   /* Typed as void* so we can avoid a dependency on vorbisfile in the header section. */
     ma_uint32 channels;         /* The first logical stream's, which MiniAudio reads every frame in (see miniaudio_ogg_link.h). */
     ma_uint32 sampleRate;
     ma_uint64 cursor;           /* In frames given: the library's count runs ahead by the frames held, and counts a later logical stream at another sample rate at its own. */

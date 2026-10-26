@@ -92,7 +92,7 @@ public:
 	/**
 	 * Converts a plain URI into a triplet that can be uniquely identified by the sound system.
 	 * A triplet contains the original URI, a protocol identifier and a suffix, each separated by an ASCII "Record separator" character (0X1E).
-	 * This method refuses a name that isn't valid UTF-8 or holds this separator character, returning an empty string, so the separator is guaranteed not to appear in it.
+	 * This method refuses a name that isn't valid UTF-8 or holds this separator character, or a protocol whose suffix holds it, returning an empty string, so the separator only ever separates the parts.
 	 * The protocol identifier is just its slot number, as this is guaranteed to be unique for the lifetime of an application instance.
 	 * The suffix is up to the protocol, but should be derived from the provided directive. For example, the suffix provided by the pack protocol is just the absolute path to the pack file on disk.
 	 * This guarantees that assets are always loaded even if they have the same name as a previously loaded asset from a different origin.
@@ -106,7 +106,7 @@ public:
 	 */
 	virtual std::istream *open_triplet(const char *triplet, size_t filter_slot = 0, const directive_t filter_directive = nullptr) = 0;
 	/**
-	 * Preparing a triplet involves provision of internal state that must be dealt with after opening the asset.ABC
+	 * Preparing a triplet involves provision of internal state that must be dealt with after opening the asset.
 	 * Don't forget to call this or you leak.
 	 */
 	virtual bool cleanup_triplet(const std::string &triplet) = 0;
