@@ -2718,6 +2718,29 @@ static void keep_fader_in_range(ma_sound* s) {
 		fader.cursorInFrames = 0;
 	}
 }
+// MiniAudio places a fade given an absolute start, as ma_sound_stop_with_fade_in_*() gives pause_fade()'s and the TTS queue's, by setting its fader's cursor to how far the engine's time is past that start when it takes the fade: with the engine's time moved on past 2^32 frames meanwhile, as set_time_in_frames() can, that cursor overran MiniAudio's fader processing, which wrote past the block. Such a fade is taken here from the current frame instead, at the volume it reached, over what is left, as give_deferred_fade() gives one.
+static void take_past_fade(ma_sound* s) {
+	auto& settings = s->engineNode.fadeSettings;
+	std::atomic<ma_uint64>& length_field = *reinterpret_cast<std::atomic<ma_uint64>*>(&settings.fadeLengthInFrames);
+	std::atomic<ma_uint64>& at_field = *reinterpret_cast<std::atomic<ma_uint64>*>(&settings.absoluteGlobalTimeInFrames);
+	const ma_uint64 length = length_field.load();
+	if (length == ~(ma_uint64)0) return; // None waiting.
+	const ma_uint64 at = at_field.load(), now = ma_engine_get_time_in_pcm_frames(ma_sound_get_engine(s));
+	if (at == ~(ma_uint64)0 || at >= now) return; // Now, or ahead, which MiniAudio places itself.
+	std::atomic<float>& beg_field = *reinterpret_cast<std::atomic<float>*>(&settings.volumeBeg);
+	const float end = reinterpret_cast<std::atomic<float>*>(&settings.volumeEnd)->load();
+	const ma_uint64 elapsed = now - at;
+	float beg = beg_field.load();
+	if (beg < 0) beg = ma_fader_get_current_volume(&s->engineNode.fader); // As MiniAudio takes it.
+	if (elapsed < length) {
+		beg_field.store(beg + (end - beg) * (float)((double)elapsed / (double)length));
+		length_field.store(length - elapsed);
+	} else {
+		beg_field.store(end);
+		length_field.store(0);
+	}
+	at_field.store(~(ma_uint64)0);
+}
 // Gives MiniAudio the fade scheduled ahead in the sound in the block of frames its time falls in (see held_sound::fade_at), before MiniAudio's processing, which takes it in the same block; one the script is setting meanwhile is given in the next.
 static void give_deferred_fade(ma_sound* s, ma_uint32 frames) {
 	held_sound* h = held(s);
@@ -2747,6 +2770,7 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 	held(s)->processed.fetch_add(1, std::memory_order_relaxed);
 	keep_fader_in_range(s);
 	give_deferred_fade(s, *frame_count_out);
+	take_past_fade(s);
 	std::atomic<ma_uint64>& seek_target = held(s)->seek_target;
 	// A seek given to MiniAudio itself, as by C++ code holding the ma_sound, is moved to the sound's target, to be made as the script's are; MiniAudio's own processing would keep the cache and seek a stream every block.
 	std::atomic<ma_uint64>& given_target = *reinterpret_cast<std::atomic<ma_uint64>*>(&s->seekTarget);
@@ -3108,6 +3132,7 @@ static ma_data_source* chain_source(ma_data_source* head, audio_engine* engine, 
 static void held_group_process(ma_node* node, const float** frames_in, ma_uint32* frame_count_in, float** frames_out, ma_uint32* frame_count_out) {
 	hold_rate(node);
 	keep_fader_in_range((ma_sound*)node);
+	take_past_fade((ma_sound*)node);
 	g_ma_group_process(node, frames_in, frame_count_in, frames_out, frame_count_out);
 }
 // Gives a sound or group that was made but isn't attached to anything yet hold_rate()'s processing: a copy of MiniAudio's node vtable for its kind, whose processing holds the rate first.
