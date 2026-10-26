@@ -1,0 +1,39 @@
+diff --git a/sdk/angelscript/source/as_compiler.cpp b/sdk/angelscript/source/as_compiler.cpp
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -2147,6 +2147,35 @@ int asCCompiler::PrepareArgument(asCDataType *paramType, asCExprContext *ctx, as
+ 						!ctx->type.dataType.IsObjectHandle() &&
+ 						ctx->type.dataType.IsReference() )
+ 						Dereference(ctx, true);
++
++					// ALTERED: a handle parameter received by reference (T@ &in, T@ &out, T@ &inout) is a variable whose slot holds
++					// the address of the handle, and the variable placed below was read as the handle: the default copy of a
++					// value assignment (`c = p` in `void f(C@ &in p)`, for a script class with no opAssign of its own) copied
++					// from the handle's address as the object. The handle is copied to a variable of its own, as for an argument
++					// that isn't a copy (see above).
++					if( !param.IsObjectHandle() && ctx->type.isVariable && !ctx->type.isTemporary )
++					{
++						sVariable *var = variables->GetVariableByOffset(ctx->type.stackOffset);
++						if( var && var->type.IsReference() && var->type.IsObjectHandle() )
++						{
++							// Allocate a handle variable
++							dt.MakeHandle(true);
++							dt.MakeReadOnly(false);
++							offset = AllocateVariableNotIn(dt, true, false, ctx);
++
++							// Copy the handle
++							Dereference(ctx, true);
++							ctx->bc.InstrWORD(asBC_PSF, (asWORD)offset);
++							if( ctx->type.dataType.IsFuncdef() )
++								ctx->bc.InstrPTR(asBC_REFCPY, &engine->functionBehaviours);
++							else
++								ctx->bc.InstrPTR(asBC_REFCPY, ctx->type.dataType.GetTypeInfo());
++							ctx->bc.Instr(asBC_PopPtr);
++							ctx->bc.InstrWORD(asBC_PSF, (asWORD)offset);
++
++							ctx->type.SetVariable(param, offset, true);
++						}
++					}
+ 				}
+ 			}
+ 		}
