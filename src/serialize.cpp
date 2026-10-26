@@ -34,6 +34,8 @@
 #include "pocostuff.h"
 #include "serialize.h"
 
+bool script_callbacks_stopped(asIScriptContext* ctx); // nvgt_angelscript.cpp, see invoke()
+
 int g_StringTypeid = 0;
 static int g_DictionaryTypeId = 0;
 static int string_type_id() {
@@ -77,6 +79,8 @@ static bool being_serialized(const void* obj) { return std::find(g_serialize_pat
 // Runs a registered/script function (which must return an object handle) through a pooled context. Only needed for the script_object contract below, everything else we can talk to directly in c++.
 static void* invoke(asIScriptFunction* func, void* obj, void* arg = nullptr) {
 	if (!func) return nullptr;
+	// exit() was called since the script called serialize() or deserialize() (by an opCast or factory run before this one, or by another thread): no more script code runs for it, as for every other callback (see script_callbacks_stopped). An object whose opCast called exit() had every later object's opCast run all the same.
+	if (script_callbacks_stopped(asGetActiveContext())) return nullptr;
 	asIScriptContext* ctx = g_ScriptEngine->RequestContext();
 	if (!ctx) return nullptr;
 	// A factory can take the dictionary by reference (dictionary@ &in, &inout or &out), whose argument is the address of a handle: it is given that of a handle here, which holds the dictionary (nothing for &out), and whatever the factory left in it is let go afterwards. The dictionary itself was passed as that address, so the constructor read its first bytes as the handle, or wrote its handle over them.
