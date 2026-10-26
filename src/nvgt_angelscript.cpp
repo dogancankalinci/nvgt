@@ -151,6 +151,14 @@ class NVGTBytecodeStream : public asIBinaryStream {
 	int written_size;
 	int alloc_size;
 	const int buffer_size = 32 * 1024;
+	#ifndef NVGT_STUB
+	void grow_output() {
+		alloc_size *= 2;
+		content = (unsigned char*)realloc(content, alloc_size);
+		zstr.next_out = (Bytef*)(content + zstr.total_out);
+		zstr.avail_out = alloc_size - zstr.total_out;
+	}
+	#endif
 
 public:
 	NVGTBytecodeStream() {
@@ -183,16 +191,14 @@ public:
 			zstr.avail_out = alloc_size;
 		}
 		written_size += size;
-		if (written_size > alloc_size) {
-			alloc_size *= 2;
-			content = (unsigned char*)realloc(content, alloc_size);
-			zstr.next_out = (Bytef*)(content + zstr.total_out);
-			zstr.avail_out = alloc_size - zstr.total_out;
-		}
+		if (written_size > alloc_size) grow_output();
 		zstr.next_in = (Bytef*)ptr;
 		zstr.avail_in = size;
-		while (zstr.avail_in > 0)
+		while (zstr.avail_in > 0) {
+			// deflate() takes no input while the output buffer is full. Doubled once per Write, the buffer could fill during a Write bigger than that (a long string constant compressing badly, like a few hundred KB of base64 or text) with input still to go, and this loop spun for ever: the compile hung.
+			if (zstr.avail_out == 0) grow_output();
 			deflate(&zstr, Z_NO_FLUSH);
+		}
 		cursor += size;
 		return size;
 	}
@@ -229,7 +235,12 @@ public:
 			content = (unsigned char*)realloc(content, alloc_size);
 		}
 		zstr.next_out = (Bytef*)(content + zstr.total_out);
-		deflate(&zstr, Z_FINISH);
+		// Z_FINISH writes out what deflate() still holds, up to a block of 16K symbols (40 KB and more of long-distance matches), so it runs until the stream ends, growing the buffer whenever it fills: called once with the 32 KB of room above, it could leave the end of the bytecode unwritten. And 16 bytes stay free for the padding angelscript_bytecode_encrypt() adds, as its realloc() of a full buffer (it gets the pointer by value) would leave this stream holding the freed block.
+		while (deflate(&zstr, Z_FINISH) == Z_OK) grow_output();
+		if (alloc_size - int(zstr.total_out) < 16) {
+			alloc_size += 16;
+			content = (unsigned char*)realloc(content, alloc_size);
+		}
 		written_size = zstr.total_out;
 		written_size = angelscript_bytecode_encrypt(content, written_size, alloc_size);
 		*code = content;
