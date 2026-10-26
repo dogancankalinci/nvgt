@@ -4709,15 +4709,23 @@ public:
 		fade_volumes_to_linear(start_volume, end_volume);
 		if (!finite_values({start_volume, end_volume})) return;
 		reset_stop_fade(); // It replaces a stop's fade, as in MiniAudio's only fader.
-		defer_fade(start_volume, end_volume, frames, absolute_time_in_frames == ~(ma_uint64)0? ma_engine_get_time_in_pcm_frames(ma_sound_get_engine(&*snd)) : absolute_time_in_frames); // ~0 is now to MiniAudio.
+		if (absolute_time_in_frames == ~(ma_uint64)0) return set_timed_fade_now(start_volume, end_volume, frames);
+		defer_fade(start_volume, end_volume, frames, absolute_time_in_frames);
+	}
+	// ~0 is now to MiniAudio, which then begins the fade where it takes it, over its whole length, as a fade set at once: counted from the engine's time instead, which is the start of the block under way while the audio thread processes one, a fade shorter than a block given in the next jumped to its end.
+	void set_timed_fade_now(float start_volume, float end_volume, ma_uint64 frames) {
+		drop_deferred_fade(); // It replaces one scheduled ahead, as set_fade() does.
+		set_fade_now(start_volume, end_volume, std::min<ma_uint64>(frames, UINT_MAX));
 	}
 	void set_timed_fade_in_milliseconds(float start_volume, float end_volume, unsigned long long frames, unsigned long long absolute_time_in_frames) override {
 		if (!snd) return;
 		fade_volumes_to_linear(start_volume, end_volume);
 		if (!finite_values({start_volume, end_volume})) return;
 		ma_uint32 rate = ma_engine_get_sample_rate(ma_sound_get_engine(&*snd));
-		if (!frames_fit(frames, rate) || !frames_fit(absolute_time_in_frames, rate)) return;
+		const bool now = absolute_time_in_frames == ~(ma_uint64)0; // Now, as in frames, rather than refused for its size.
+		if (!frames_fit(frames, rate) || !now && !frames_fit(absolute_time_in_frames, rate)) return;
 		reset_stop_fade();
+		if (now) return set_timed_fade_now(start_volume, end_volume, frames * rate / 1000);
 		defer_fade(start_volume, end_volume, frames * rate / 1000, absolute_time_in_frames * rate / 1000); // As MiniAudio converts both.
 	}
 	void set_stop_time_with_fade(unsigned long long absolute_time, unsigned long long fade_length) override {
