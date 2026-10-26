@@ -2565,6 +2565,10 @@ struct held_sound : ma_sound {
 	std::atomic<bool> fade_given{false};
 	std::atomic<bool> given_stale{false}; // That fade was replaced by one scheduled since, before MiniAudio took it: take_back_fade() removes it, not to be given again.
 	ma_uint64 given_length = 0;
+	// A fade set to begin at once, by set_fade() or as a stop's fade is undone, which give_now_fade() writes into MiniAudio's settings at the start of the next block, as the script's thread wrote it before: MiniAudio reads the settings and then marks them taken, on the audio thread, so that a fade written by another thread in between was lost, or taken half old and half new. Under fade_locked.
+	std::atomic<bool> now_pending{false};
+	float now_beg = 0, now_end = 1;
+	ma_uint64 now_length = 0;
 	void lock_fade() { while (fade_locked.exchange(true, std::memory_order_acquire)) std::this_thread::yield(); }
 	void unlock_fade() { fade_locked.store(false, std::memory_order_release); }
 };
@@ -2748,6 +2752,16 @@ static void take_past_fade(ma_sound* s) {
 	}
 	at_field.store(~(ma_uint64)0);
 }
+// Gives MiniAudio the fade set at once (see held_sound::now_pending), before its processing and before a fade scheduled ahead, which replaces it when it begins in the same block, as it did in MiniAudio's settings; one the script is setting meanwhile is given in the next block.
+static void give_now_fade(ma_sound* s) {
+	held_sound* h = held(s);
+	if (!h->now_pending.load(std::memory_order_acquire) || h->fade_locked.exchange(true, std::memory_order_acquire)) return;
+	if (h->now_pending.load(std::memory_order_relaxed) && !h->fade_given && !h->given_stale) { // Not before take_back_fade() dealt with a fade given before, which it would take this one for.
+		ma_sound_set_fade_start_in_pcm_frames(s, h->now_beg, h->now_end, h->now_length, ~(ma_uint64)0);
+		h->now_pending.store(false, std::memory_order_relaxed);
+	}
+	h->unlock_fade();
+}
 // Gives MiniAudio the fade scheduled ahead in the sound in the block of frames its time falls in (see held_sound::fade_at), before MiniAudio's processing, which takes it in the same block; one the script is setting meanwhile is given in the next.
 static void give_deferred_fade(ma_sound* s, ma_uint32 frames) {
 	held_sound* h = held(s);
@@ -2814,6 +2828,7 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 		*frame_count_out = 0;
 		return;
 	}
+	give_now_fade(s);
 	give_deferred_fade(s, *frame_count_out);
 	take_past_fade(s);
 	held_sound* h = held(s);
@@ -3165,6 +3180,7 @@ static ma_data_source* chain_source(ma_data_source* head, audio_engine* engine, 
 static void held_group_process(ma_node* node, const float** frames_in, ma_uint32* frame_count_in, float** frames_out, ma_uint32* frame_count_out) {
 	hold_rate(node);
 	keep_fader_in_range((ma_sound*)node);
+	give_now_fade((ma_sound*)node);
 	take_past_fade((ma_sound*)node);
 	g_ma_group_process(node, frames_in, frame_count_in, frames_out, frame_count_out);
 }
@@ -3463,24 +3479,33 @@ public:
 		h->fade_pending.store(true, std::memory_order_release);
 		h->unlock_fade();
 	}
+	// Sets a fade to begin at once, as ma_sound_set_fade_in_pcm_frames() does, given to MiniAudio by the audio thread at its next block (see held_sound::now_pending).
+	void set_fade_now(float volume_beg, float volume_end, ma_uint64 length) {
+		held_sound* h = held(&*snd);
+		h->lock_fade();
+		h->now_beg = volume_beg;
+		h->now_end = volume_end;
+		h->now_length = length;
+		h->now_pending.store(true, std::memory_order_release);
+		h->unlock_fade();
+	}
 	// Drops a fade scheduled ahead that hasn't begun, which left the sound's fader as it was: whether there was one.
 	bool drop_deferred_fade() {
 		if (!snd) return false;
 		held_sound* h = held(&*snd);
 		h->lock_fade();
 		bool dropped = h->fade_at != ~(ma_uint64)0 && !h->fade_given; // One given to MiniAudio in the block under way may have begun.
-		// One given to MiniAudio that it hasn't taken is removed there, before the caller sets a fade of its own, if it does: left, MiniAudio took it once it had frames, untracked.
-		if (h->fade_given || h->given_stale) remove_untaken_fade(&*snd, h->given_length);
+		// One given to MiniAudio that it hasn't taken is removed there, before a fade the caller sets, if it does, is given: left, MiniAudio took it once it had frames, untracked. The audio thread removes it (see take_back_fade()), as only that thread writes MiniAudio's fade settings.
+		if (h->fade_given) h->given_stale = true;
 		h->fade_at = ~(ma_uint64)0;
 		h->fade_given = false;
-		h->given_stale = false;
 		h->fade_pending.store(false, std::memory_order_relaxed);
 		h->unlock_fade();
 		return dropped;
 	}
 	// Undoes the fade a stop with a fade set, as pause_fade()'s, putting the sound back at full volume, unless that fade was still waiting for its time, which left the fader at whatever fade the script set.
 	void reset_stop_fade() {
-		if (fade_from_stop && !drop_deferred_fade()) ma_sound_reset_fade(&*snd);
+		if (fade_from_stop && !drop_deferred_fade()) set_fade_now(0, 1, 0); // As ma_sound_reset_fade() sets it.
 		fade_from_stop = false;
 	}
 	bool play(bool reset_loop_state = true) override {
@@ -3719,7 +3744,7 @@ public:
 		if (!finite_values({start_volume, end_volume})) return;
 		drop_deferred_fade(); // A fade set now replaces one scheduled ahead, as in MiniAudio's only fader.
 		fade_from_stop = false;
-		ma_sound_set_fade_in_pcm_frames(&*snd, start_volume, end_volume, std::min<ma_uint64>(frames, UINT_MAX)); // MiniAudio's own limit, under its ~0 for no fade, which lost a fade that long.
+		set_fade_now(start_volume, end_volume, std::min<ma_uint64>(frames, UINT_MAX)); // MiniAudio's own limit, under its ~0 for no fade, which lost a fade that long.
 	}
 	void set_fade_in_milliseconds(float start_volume, float end_volume, ma_uint64 milliseconds) override {
 		if (!snd)
@@ -3728,7 +3753,7 @@ public:
 		if (!finite_values({start_volume, end_volume}) || !frames_fit(milliseconds, ma_engine_get_sample_rate(ma_sound_get_engine(&*snd)))) return;
 		drop_deferred_fade();
 		fade_from_stop = false;
-		ma_sound_set_fade_in_milliseconds(&*snd, start_volume, end_volume, milliseconds);
+		set_fade_now(start_volume, end_volume, milliseconds * snd->engineNode.fader.config.sampleRate / 1000); // As ma_sound_set_fade_in_milliseconds() converts it.
 	}
 	float get_current_fade_volume() const override {
 		return snd ? (get_engine()->get_flags() & audio_engine::PERCENTAGE_ATTRIBUTES ? ma_volume_linear_to_db(ma_sound_get_current_fade_volume(&*snd)) : ma_sound_get_current_fade_volume(&*snd)) : NAN;
