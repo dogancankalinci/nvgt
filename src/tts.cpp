@@ -1326,7 +1326,10 @@ tts_voice::sound_queue tts_voice::clear() {
 }
 // Fades interrupted speech out over 20 ms and stops it then, rather than letting it play on silently to its end.
 bool tts_voice::fade(soundptr &item) {
-	ma_sound_stop_with_fade_in_milliseconds(item->get_ma_sound(), 20);
+	// Through the sound, which holds the fade until it begins rather than giving MiniAudio its absolute start, which, with the engine's time moved on past 2^32 frames before MiniAudio took it, overran MiniAudio's fader processing.
+	ma_engine* engine = ma_sound_get_engine(item->get_ma_sound());
+	const ma_uint64 fade = 20 * (ma_uint64)ma_engine_get_sample_rate(engine) / 1000;
+	item->set_stop_time_with_fade_in_frames(ma_engine_get_time_in_pcm_frames(engine) + fade, fade);
 	try {
 		fade_queue.push(item);
 		return true;
