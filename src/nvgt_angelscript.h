@@ -36,7 +36,7 @@ int ExecuteScript(asIScriptEngine* engine, const std::string& scriptFile);
 	int CompileExecutable(asIScriptEngine* engine, const std::string& scriptFile);
 	void              InitializeDebugger(asIScriptEngine* engine);
 #else
-	int LoadCompiledScript(asIScriptEngine* engine, unsigned char* code, asUINT size);
+	int LoadCompiledScript(asIScriptEngine* engine, unsigned char*& code, asUINT size);
 	int LoadCompiledExecutable(asIScriptEngine* engine);
 #endif
 asITypeInfo* get_array_type(const std::string& decl);

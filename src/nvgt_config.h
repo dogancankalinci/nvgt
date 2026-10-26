@@ -16,13 +16,13 @@
 // A simple integer can be used to xor encrypt numbers used to save bits of the bytecode location data.
 #define NVGT_BYTECODE_NUMBER_XOR 47635
 // Functions to encrypt/decrypt or otherwise mutate the Angelscript bytecode when creating executables. It is not recommended to use thee examples provided if you are compiling a custom build of NVGT, you should modify these and come up with your own security routines here!
-// code: Pointer to the data which should be modified in place. If you need to resize it beyond alloc_size bytes, use the c realloc function to do so.
+// code: Reference to the pointer to the data, which should be modified in place. If you need more than alloc_size bytes, realloc() the data and store the pointer realloc returns in code: the caller then uses (and frees) that block.
 // size: Size of the provided code in bytes.
 // alloc_size: Number of bytes allocated in the data block provided in the code argument, you should call realloc on the data if you need to increase the code size beyond this value.
 // return: The size of the code as provided in the size argument, or a modified version of it if the function changed the size of the data.
 #include <aes.hpp>
 #include <Poco/SHA2Engine.h>
-inline int angelscript_bytecode_decrypt(unsigned char* code, int size, int alloc_size) {
+inline int angelscript_bytecode_decrypt(unsigned char*& code, int size, int alloc_size) {
 	unsigned char iv[16];
 	char tmp[32];
 	Poco::SHA2Engine hash;
@@ -38,7 +38,7 @@ inline int angelscript_bytecode_decrypt(unsigned char* code, int size, int alloc
 	memset(&crypt, 0, sizeof(AES_ctx));
 	return size - code[size - 1];
 }
-inline int angelscript_bytecode_encrypt(unsigned char* code, int size, int alloc_size) {
+inline int angelscript_bytecode_encrypt(unsigned char*& code, int size, int alloc_size) {
 	unsigned char r = 16 - (size % 16);
 	if (r == 0) r = 16;
 	if (alloc_size - size < r) code = (unsigned char*)realloc(code, alloc_size + 16);

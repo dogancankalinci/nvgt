@@ -219,17 +219,19 @@ public:
 	void reset_cursor() {
 		cursor = 0; // This storage area holds more than bytecode, and after extra non-bytecode data is read, we may need to reset the variable keeping track of the number of bytes read encase we need to use that information later for debugging angelscript bytecode load failures which only provide an offset of bytes read in the stream as debug info. We don't store our non-bytecode data at the end of the stream to avoid any imagined edgecase where Angelscript could read a few less bytes than it's written during compilation thus making such data inaccessible.
 	}
-	// Receives raw bytes read from a compiled executable for decryption and decompression.
-	void set(unsigned char* code, int size) {
-		written_size = angelscript_bytecode_decrypt(code, size, alloc_size);
+	// Receives raw bytes read from a compiled executable for decryption and decompression. code is the malloc()ed block holding them, of size bytes; angelscript_bytecode_decrypt() may realloc() it (it takes the pointer by reference), so code is updated to the block the caller must free. Returns false for data that doesn't decrypt to a size within the block.
+	bool set(unsigned char*& code, int size) {
+		written_size = angelscript_bytecode_decrypt(code, size, size);
 		content = code;
+		if (written_size < 0 || written_size > size) return false;
 		zstr.data_type = 0;
 		inflateInit(&zstr);
 		zstr.next_in = (Bytef*)content;
 		zstr.avail_in = written_size;
+		return true;
 	}
 	#ifndef NVGT_STUB
-	// ZLib compress and encrypt the bytecode for saving to a compiled binary. Encryption is handled by function angelscript_bytecode_encrypt in nvgt_config.h. If that function needs to change the size of the data, it should realloc() the data.
+	// ZLib compress and encrypt the bytecode for saving to a compiled binary. Encryption is handled by function angelscript_bytecode_encrypt in nvgt_config.h. If that function needs to change the size of the data, it should realloc() the data and store the new pointer in its code argument (a reference), which this stream then returns.
 	int get(unsigned char** code) {
 		if (zstr.avail_out < buffer_size) {
 			alloc_size += buffer_size;
@@ -237,10 +239,11 @@ public:
 			content = (unsigned char*)realloc(content, alloc_size);
 		}
 		zstr.next_out = (Bytef*)(content + zstr.total_out);
-		// Z_FINISH writes out what deflate() still holds, up to a block of 16K symbols (40 KB and more of long-distance matches), so it runs until the stream ends, growing the buffer whenever it fills: called once with the 32 KB of room above, it could leave the end of the bytecode unwritten. And 16 bytes stay free for the padding angelscript_bytecode_encrypt() adds, as its realloc() of a full buffer (it gets the pointer by value) would leave this stream holding the freed block.
+		// Z_FINISH writes out what deflate() still holds, up to a block of 16K symbols (40 KB and more of long-distance matches), so it runs until the stream ends, growing the buffer whenever it fills: called once with the 32 KB of room above, it could leave the end of the bytecode unwritten.
 		while (deflate(&zstr, Z_FINISH) == Z_OK) grow_output();
-		if (alloc_size - int(zstr.total_out) < 16) {
-			alloc_size += 16;
+		// angelscript_bytecode_encrypt() takes the pointer by reference, so a realloc() it makes is followed here. A config written for the old signature, taking the pointer by value, still compiles (content binds to either) but its realloc() of a moved block would leave this stream holding the freed one, so 256 bytes stay free: more than the default's padding (16) and the generated config's prefixes and padding (up to 208) add.
+		if (alloc_size - int(zstr.total_out) < 256) {
+			alloc_size = int(zstr.total_out) + 256;
 			content = (unsigned char*)realloc(content, alloc_size);
 		}
 		written_size = zstr.total_out;
@@ -836,7 +839,7 @@ public:
 			if (CompileScript(g_ScriptEngine, script_file.c_str()) < 0) { fail = true; return; }
 			output->prepare();
 			unsigned char* code = NULL;
-			UInt32 code_size = SaveCompiledScript(engine, &code);
+			int code_size = SaveCompiledScript(engine, &code); // Signed: a failure (-1) must not pass the check below as a size of 4 GB.
 			if (code_size < 1) {
 				engine->WriteMessage(script_file.c_str(), 0, 0, asMSGTYPE_ERROR, format("failed to retrieve bytecode while trying to compile %s", output->get_output_file()).c_str());
 				fail = true;
@@ -879,13 +882,14 @@ int CompileExecutable(asIScriptEngine *engine, const string &scriptFile) {
 	#endif // !NVGT_MOBILE
 }
 #else
-int LoadCompiledScript(asIScriptEngine *engine, unsigned char* code, asUINT size) {
+// code is the malloc()ed block holding the payload; decrypting it may move it (see NVGTBytecodeStream::set), so the caller frees code as this function leaves it.
+int LoadCompiledScript(asIScriptEngine *engine, unsigned char*& code, asUINT size) {
 	asIScriptModule *mod = engine->GetModule("nvgt_game", asGM_ALWAYS_CREATE);
 	if (mod == 0)
 		return -1;
 	mod->SetAccessMask(NVGT_SUBSYSTEM_EVERYTHING);
 	NVGTBytecodeStream codestream;
-	codestream.set(code, size);
+	if (size < 1 || !codestream.set(code, size)) return -1;
 	nvgt_bytecode_istream istr(&codestream);
 	BinaryReader br(istr);
 	if (!load_serialized_nvgt_plugins(br)) return -1;

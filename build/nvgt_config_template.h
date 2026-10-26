@@ -23,7 +23,8 @@ static inline void _nvgt_bc_derive_key(unsigned char* key_out, unsigned char* iv
 		iv_out[i] = (unsigned char)std::rotl((unsigned char)key_out[i * 2 % 32], {{iv_rot}}) ^ key_out[(i + {{iv_offset}}) % 32] ^ (unsigned char)({{iv_xor_base}} + i * {{iv_step}});
 }
 
-inline int angelscript_bytecode_decrypt(unsigned char* code, int size, int alloc_size) {
+// code is a reference to the pointer to the data: a function that needs more than alloc_size bytes realloc()s the data and stores the new pointer in code, which the caller then uses (and frees).
+inline int angelscript_bytecode_decrypt(unsigned char*& code, int size, int alloc_size) {
 	int aes_size = size - {{prefix_size}};
 	unsigned char key[32], iv[16];
 	_nvgt_bc_derive_key(key, iv, aes_size);
@@ -39,7 +40,7 @@ inline int angelscript_bytecode_decrypt(unsigned char* code, int size, int alloc
 	return content_size;
 }
 
-inline int angelscript_bytecode_encrypt(unsigned char* code, int size, int alloc_size) {
+inline int angelscript_bytecode_encrypt(unsigned char*& code, int size, int alloc_size) {
 	unsigned char r = 16 - ((size + {{prefix_size2}}) % 16);
 	if (!r) r = 16;
 	int aes_size = {{prefix_size2}} + size + r;
