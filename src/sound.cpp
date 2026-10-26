@@ -2752,18 +2752,21 @@ static void take_past_fade(ma_sound* s) {
 	}
 	at_field.store(~(ma_uint64)0);
 }
-// Gives MiniAudio the fade set at once (see held_sound::now_pending), before its processing and before a fade scheduled ahead, which replaces it when it begins in the same block, as it did in MiniAudio's settings; one the script is setting meanwhile is given in the next block.
-static void give_now_fade(ma_sound* s) {
+// Gives MiniAudio the fade set at once (see held_sound::now_pending), before its processing and before a fade scheduled ahead, which replaces it when it begins in the same block, as it did in MiniAudio's settings; one the script is setting meanwhile is given in the next block. Returns the volume it puts the sound at, which such a replacing fade begins from, or -1 for none given, or one from the volume the sound is at.
+static float give_now_fade(ma_sound* s) {
 	held_sound* h = held(s);
-	if (!h->now_pending.load(std::memory_order_acquire) || h->fade_locked.exchange(true, std::memory_order_acquire)) return;
+	if (!h->now_pending.load(std::memory_order_acquire) || h->fade_locked.exchange(true, std::memory_order_acquire)) return -1;
+	float volume = -1;
 	if (h->now_pending.load(std::memory_order_relaxed) && !h->fade_given && !h->given_stale) { // Not before take_back_fade() dealt with a fade given before, which it would take this one for.
 		ma_sound_set_fade_start_in_pcm_frames(s, h->now_beg, h->now_end, h->now_length, ~(ma_uint64)0);
 		h->now_pending.store(false, std::memory_order_relaxed);
+		volume = h->now_length? h->now_beg : h->now_end;
 	}
 	h->unlock_fade();
+	return volume;
 }
 // Gives MiniAudio the fade scheduled ahead in the sound in the block of frames its time falls in (see held_sound::fade_at), before MiniAudio's processing, which takes it in the same block; one the script is setting meanwhile is given in the next.
-static void give_deferred_fade(ma_sound* s, ma_uint32 frames) {
+static void give_deferred_fade(ma_sound* s, ma_uint32 frames, float now_volume = -1) {
 	held_sound* h = held(s);
 	if (!h->fade_pending.load(std::memory_order_acquire) || h->fade_locked.exchange(true, std::memory_order_acquire)) return;
 	// The block's first frame the sound plays, which is its start when that is scheduled within the block, MiniAudio then processing it from there.
@@ -2774,6 +2777,8 @@ static void give_deferred_fade(ma_sound* s, ma_uint32 frames) {
 		// Given in the block it begins in, from the sound's first frame there, rather than in the first block starting past it: a stop's fade beginning and ending within one block, as a short one did more often than not, was never given, the sound stopped before the next, and cut off unfaded. It may begin up to a block early, still ending when it would have.
 		// Given at the volume it got to by then, never with its past start, from which MiniAudio would count its fader's cursor: past 2^32 frames that cursor overran the fader's processing, which wrote past the block.
 		const ma_uint64 length = h->fade_length, elapsed = at < now? now - at : 0;
+		// One from the volume the sound is at, given in the block a fade set at once was, which it replaces in MiniAudio's settings, begins at the volume that fade put the sound at, also when given again: from the fader's own, a stop's fade after play() reset a sound pause_fade() had faded to 0 began at 0, cut to silence rather than fading.
+		if (h->fade_beg < 0 && now_volume >= 0) h->fade_beg = now_volume;
 		float beg = h->fade_beg, end = h->fade_end;
 		ma_uint64 given = 0;
 		if (elapsed < length) {
@@ -2828,8 +2833,8 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 		*frame_count_out = 0;
 		return;
 	}
-	give_now_fade(s);
-	give_deferred_fade(s, *frame_count_out);
+	const float now_volume = give_now_fade(s);
+	give_deferred_fade(s, *frame_count_out, now_volume);
 	take_past_fade(s);
 	held_sound* h = held(s);
 	int asked = held_sound::restart_asked;
