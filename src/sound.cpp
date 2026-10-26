@@ -2734,10 +2734,9 @@ static void take_past_fade(ma_sound* s) {
 	std::atomic<float>& beg_field = *reinterpret_cast<std::atomic<float>*>(&settings.volumeBeg);
 	const float end = reinterpret_cast<std::atomic<float>*>(&settings.volumeEnd)->load();
 	const ma_uint64 elapsed = now - at;
-	float beg = beg_field.load();
-	if (beg < 0) beg = ma_fader_get_current_volume(&s->engineNode.fader); // As MiniAudio takes it.
+	const float beg = beg_field.load();
 	if (elapsed < length) {
-		beg_field.store(beg + (end - beg) * (float)((double)elapsed / (double)length));
+		if (beg >= 0) beg_field.store(beg + (end - beg) * (float)((double)elapsed / (double)length)); // A negative beginning is the volume the sound is at, which it fades from over what is left, as give_deferred_fade() gives it.
 		length_field.store(length - elapsed);
 	} else {
 		beg_field.store(end);
