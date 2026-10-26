@@ -918,10 +918,11 @@ public:
 		float v;
 		if (distance <= max_volume_distance) v = max_volume_distance > 0? range_convert(distance, 0, max_volume_distance, min_volume, max_volume) : max_volume; // A range of no width would divide by zero; its one point is max_volume_distance itself.
 		else {
-			if (volume_curve <= 0) return ma_volume_db_to_linear(max_volume);
-			else if (volume_curve >= 1) return ma_volume_db_to_linear(min_volume);
 			v = range_convert(distance, max_volume_distance, max_audible_distance, 1, 0);
-			v = (1.0 - volume_curve) * ((v <= volume_curve? v : volume_curve) / volume_curve) + volume_curve * ((v > volume_curve? v - volume_curve : 0) / (1 - volume_curve));
+			// A curve of 0 or less, or 1 or more, takes the curve's own limit there, which the formula would reach dividing by zero: the loudest short of the audible distance, or the quietest past the loudest's distance. They gave max_volume or min_volume at every distance past max_volume_distance instead, the audible distance's -60 dB never reached, so that a sound far beyond it was still sent at about full level.
+			if (volume_curve <= 0) v = v > 0? 1 : 0;
+			else if (volume_curve >= 1) v = v >= 1? 1 : 0;
+			else v = (1.0 - volume_curve) * ((v <= volume_curve? v : volume_curve) / volume_curve) + volume_curve * ((v > volume_curve? v - volume_curve : 0) / (1 - volume_curve));
 			v = range_convert(v, 0, 1, -60, max_volume);
 		}
 		return ma_volume_db_to_linear(clamp_volume(v, max_volume < -70.0f? max_volume : -70.0f, max_volume)); // Not below -70 dB, unless the script set the loudest lower.
