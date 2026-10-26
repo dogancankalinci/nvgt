@@ -1,0 +1,19 @@
+diff --git a/sdk/angelscript/source/as_restore.cpp b/sdk/angelscript/source/as_restore.cpp
+--- a/sdk/angelscript/source/as_restore.cpp
++++ b/sdk/angelscript/source/as_restore.cpp
+@@ -1762,10 +1762,14 @@ void asCReader::ReadTypeDeclaration(asCTypeInfo *type, int phase, bool *isExtern
+ 			{
+ 				// Verify that the enum values exists in the original
+ 				asCString name;
+-				int value;
++				// ALTERED: read as the values above are (asINT64, zeroed): an int took 8 bytes of an int64 enum's value (a stack
++				// overflow) and kept stack garbage above a 1 or 2 byte one's, so loading a module sharing an existing enum failed
++				// with "doesn't match the original" or corrupted the stack
++				asINT64 value;
+ 				for( int n = 0; n < count && !error; n++ ) // ALTERED: stops at an error
+ 				{
+ 					ReadString(&name);
++					value = 0;
+ 					ReadData(&value, t->GetSize()); // TODO: Should be encoded
+ 					bool found = false;
+ 					for( asUINT e = 0; e < t->enumValues.GetLength(); e++ )

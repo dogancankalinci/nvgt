@@ -113,6 +113,7 @@ vcpkg_from_github(
         fix-object-arg-from-handle-reference.patch
         fix-cast-and-call-from-handle-reference.patch
         fix-loader-limits.patch
+        fix-shared-enum-value-read.patch
 )
 
 vcpkg_cmake_configure(
