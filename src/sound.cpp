@@ -2556,6 +2556,8 @@ struct held_sound : ma_sound {
 	std::atomic<int> restart{restart_none};
 	std::atomic<bool> flushing{false}; // give_end() runs MiniAudio's processing at the sound's end with its end flag off, which another thread is to take for the end still (see at_end_seen()).
 	std::atomic<ma_uint32> processed{0}; // Calls of held_sound_process(), by which play() tells whether the audio thread still processes the sound (see sound_impl::still_ending()).
+	std::atomic<ma_uint64> block_at{~(ma_uint64)0}; // The engine's time when held_sound_process() last ran, the start of that block; ~0 before it ran (see sound_impl::schedule_stop_and_fade()).
+	std::atomic<ma_uint64> block_done{~(ma_uint64)0}; // block_at once held_sound_process() returned for that block.
 	std::atomic<ma_uint64> seek_target{~(ma_uint64)0}; // The frame a seek asked for, ~0 for none, made by held_sound_process() in place of MiniAudio's seekTarget.
 	// A fade scheduled ahead, by set_timed_fade() or a stop with a fade, kept here rather than given to MiniAudio, which takes a fade's settings into the sound's only fader at its next block and plays the sound unfaded until the fade begins, so that a sound at a fade of its own jumped to full volume and back: held_sound_process() gives it in the first block starting at or past fade_at, ~0 for none. Under fade_locked, which the audio thread only tries.
 	std::atomic<bool> fade_locked{false}, fade_pending{false};
@@ -2570,8 +2572,9 @@ struct held_sound : ma_sound {
 	float now_beg = 0, now_end = 1;
 	ma_uint64 now_length = 0;
 	float now_given_volume = -1; // The volume the fade set at once last given puts the sound at, while MiniAudio hasn't taken it, which a fade scheduled ahead replacing it begins from; -1 for none.
-	void lock_fade() { while (fade_locked.exchange(true, std::memory_order_acquire)) std::this_thread::yield(); }
-	void unlock_fade() { fade_locked.store(false, std::memory_order_release); }
+	// Sequentially consistent, as the audio thread's tries are, so that a script thread finding after its unlock that the block it holds the lock in started reads that block's time (see sound_impl::schedule_stop_and_fade()).
+	void lock_fade() { while (fade_locked.exchange(true)) std::this_thread::yield(); }
+	void unlock_fade() { fade_locked.store(false); }
 };
 struct held_sound_delete {
 	void operator()(ma_sound* s) const { delete static_cast<held_sound*>(s); }
@@ -2785,7 +2788,7 @@ static void give_deferred_fade(ma_sound* s, ma_uint32 frames) {
 static void give_fades(ma_sound* s, ma_uint32 frames) {
 	held_sound* h = held(s);
 	if (!h->now_pending.load(std::memory_order_acquire) && !h->fade_pending.load(std::memory_order_acquire)) return;
-	if (h->fade_locked.exchange(true, std::memory_order_acquire)) return;
+	if (h->fade_locked.exchange(true)) return;
 	// Once MiniAudio took the fade set at once, it marked its settings so, and a fade replacing them begins from the fader's own volume.
 	if (h->now_given_volume >= 0 && reinterpret_cast<std::atomic<ma_uint64>*>(&s->engineNode.fadeSettings.fadeLengthInFrames)->load() == ~(ma_uint64)0) h->now_given_volume = -1;
 	if (h->now_pending.load(std::memory_order_relaxed) && !h->fade_given && !h->given_stale) { // Not before take_back_fade() dealt with a fade given before, which it would take this one for.
@@ -2804,7 +2807,7 @@ static bool remove_untaken_fade(ma_sound* s, ma_uint64 given) {
 }
 static void take_back_fade(ma_sound* s) {
 	held_sound* h = held(s);
-	if ((!h->fade_given && !h->given_stale) || h->fade_locked.exchange(true, std::memory_order_acquire)) return; // Only the audio thread sets fade_given; under the lock, the script only clears it, or turns it into given_stale.
+	if ((!h->fade_given && !h->given_stale) || h->fade_locked.exchange(true)) return; // Only the audio thread sets fade_given; under the lock, the script only clears it, or turns it into given_stale.
 	if (h->fade_given || h->given_stale) {
 		const bool untaken = remove_untaken_fade(s, h->given_length);
 		// A replaced one MiniAudio didn't take is removed, never heard, as one replaced after it was taken back is dropped; the one scheduled since stays.
@@ -2821,6 +2824,7 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 	hold_rate(node);
 	ma_sound* s = (ma_sound*)node;
 	held(s)->processed.fetch_add(1, std::memory_order_relaxed);
+	held(s)->block_at.store(ma_engine_get_time_in_pcm_frames(ma_sound_get_engine(s))); // Before the fade's lock is tried, in the order a script thread holding it reads them (see sound_impl::schedule_stop_and_fade()).
 	take_back_fade(s); // One the end of the block before couldn't, the script holding the fade's lock then.
 	keep_fader_in_range(s);
 	std::atomic<ma_uint64>& seek_target = held(s)->seek_target;
@@ -2834,6 +2838,7 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 	ma_resource_manager_data_stream* stream = held(s)->stream;
 	if (stream && seek_target.load() != ~(ma_uint64)0 && reinterpret_cast<std::atomic<ma_bool32>*>(&stream->seekCounter)->load() > 0) {
 		*frame_count_out = 0;
+		held(s)->block_done.store(held(s)->block_at.load());
 		return;
 	}
 	give_fades(s, *frame_count_out);
@@ -2890,6 +2895,7 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 	}
 	take_back_fade(s);
 	*frame_count_out = done;
+	h->block_done.store(h->block_at.load());
 }
 // MiniAudio's buffer of a sound it decodes asynchronously gives, while its job threads decode it, as many frames as the buffer holds rather than as were decoded, the rest the silence it was filled with before the decode or a page half written, and moves its cursor past them: a sound read ahead of the decode, as by an engine without a device read at once, or by any engine after a seek made just after loading or while the job threads were busy, skipped what wasn't decoded yet. Read through this, a buffer still decoding gives no frame past those decoded, returning MA_BUSY, as MiniAudio's buffer of unknown length does, so that a sound at that point waits for them; once decoded, reads go straight through. A count of decoded frames, which MiniAudio stores without ordering the frames before it, is trusted only once the job that may have been writing it is done, so that the frames are seen with it: up to a page behind the decode. A stream, which MiniAudio holds to what it decoded, is read through this too, which ends it at the end of the pass being played when it isn't looping (see decode_front_read()).
 struct decode_front_view {
@@ -4744,17 +4750,40 @@ public:
 	ma_uint64 schedule_pause_fade(ma_uint64 frames) {
 		frames = std::min<ma_uint64>(frames, UINT_MAX);
 		const ma_uint64 now = ma_engine_get_time_in_pcm_frames(ma_sound_get_engine(&*snd)), stop = now < ~(ma_uint64)0 - frames? now + frames : ~(ma_uint64)0 - 1;
-		ma_node_set_state_time(&*snd, ma_node_state_stopped, stop);
-		if (frames > 0) defer_fade(-1, 0, frames, stop - frames);
+		if (frames > 0) schedule_stop_and_fade(stop, frames);
+		else ma_node_set_state_time(&*snd, ma_node_state_stopped, stop);
 		return frames;
 	}
 	// Returns the fade's length as limited, none for a stop at 0, which is a plain stop.
 	ma_uint64 schedule_stop_with_fade(ma_uint64 stop, ma_uint64 fade) {
 		reset_stop_fade();
 		if (fade > stop) fade = stop; // As MiniAudio limits it.
-		ma_node_set_state_time(&*snd, ma_node_state_stopped, stop);
-		if (fade > 0) defer_fade(-1, 0, fade, stop - fade);
+		if (fade > 0) schedule_stop_and_fade(stop, fade);
+		else ma_node_set_state_time(&*snd, ma_node_state_stopped, stop);
 		return fade;
+	}
+	// A stop at stop with a fade of fade frames before it, from the volume the sound is at. The fade waits in the sound before the stop is set, so the audio thread never takes the stop without it. While the audio thread processes a block, the engine's time is that block's start, and the sound may have been processed in it already, without the fade, which it then gives in its next block: a stop before that block was taken there without processing the sound, the fade never heard and the sound cut at full volume, as a pause_fade() or a TTS interruption shorter than a block mostly were with the engine read on another thread, and a fade beginning before it was heard only in part. The fade then begins at that next block, the stop its length after. The audio thread records the block before it tries the fade's lock, so a block it gave nothing in, the script holding the lock, is seen too.
+	void schedule_stop_and_fade(ma_uint64 stop, ma_uint64 fade) {
+		const ma_uint64 at = stop - fade;
+		defer_fade(-1, 0, fade, at);
+		ma_node_set_state_time(&*snd, ma_node_state_stopped, stop);
+		held_sound* h = held(&*snd);
+		const ma_uint64 block = h->block_at.load(); // The last block the sound was processed in, maybe the one under way.
+		// Given in time when the fade begins after the last block the sound was processed in.
+		if (block == ~(ma_uint64)0 || block > ~(ma_uint64)0 - SOUNDSYSTEM_FRAMESIZE || at >= block + SOUNDSYSTEM_FRAMESIZE || !h->fade_pending.load()) return;
+		// Whether that block gave it is known once the audio thread is done with the sound there, a few microseconds at most: in it after the fade waited, it gives it, unless the lock was held, and then read the stop only after it was set, as MiniAudio reads a sound's state before processing it, so that the stop is moved before MiniAudio took it.
+		if (!audio_engine_impl::on_audio_thread()) {
+			for (int i = 0; i < 100000 && h->block_done.load() != block && h->block_at.load() == block; i++) std::this_thread::yield();
+		}
+		h->lock_fade();
+		if (h->fade_pending.load() && !h->fade_given && h->fade_at == at) { // Not given since, nor replaced.
+			// The block after it, or after the one under way should the audio thread have moved on meanwhile, its stop passing before it could process the sound.
+			const ma_uint64 later = std::max(block, ma_engine_get_time_in_pcm_frames(ma_sound_get_engine(&*snd)));
+			const ma_uint64 next = later <= ~(ma_uint64)0 - SOUNDSYSTEM_FRAMESIZE? later + SOUNDSYSTEM_FRAMESIZE : later;
+			h->fade_at = next;
+			ma_node_set_state_time(&*snd, ma_node_state_stopped, next < ~(ma_uint64)0 - fade && next + fade > stop? next + fade : stop);
+		}
+		h->unlock_fade();
 	}
 	void set_stop_time_with_fade_in_milliseconds(unsigned long long absolute_time, unsigned long long fade_length) override {
 		if (!snd) return;
