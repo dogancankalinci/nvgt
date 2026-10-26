@@ -2715,9 +2715,13 @@ static void give_deferred_fade(ma_sound* s) {
 	if (!h->fade_pending.load(std::memory_order_acquire) || h->fade_locked.exchange(true, std::memory_order_acquire)) return;
 	ma_uint64 now = ma_engine_get_time_in_pcm_frames(ma_sound_get_engine(s));
 	if (h->fade_at != ~(ma_uint64)0 && h->fade_at <= now) {
-		if (h->fade_beg >= 0) ma_sound_set_fade_start_in_pcm_frames(s, h->fade_beg, h->fade_end, h->fade_length, h->fade_at); // MiniAudio counts the frames since it began, so it is where it would be by now.
-		else if (h->fade_at + h->fade_length > now) ma_sound_set_fade_start_in_pcm_frames(s, -1, h->fade_end, h->fade_at + h->fade_length - now, ~(ma_uint64)0); // From the volume the sound is at, ending when it would have.
-		else ma_sound_set_fade_start_in_pcm_frames(s, h->fade_end, h->fade_end, 0, ~(ma_uint64)0);
+		// Given from now, at the volume it got to, never with its past start, from which MiniAudio would count its fader's cursor: past 2^32 frames that cursor overran the fader's processing, which wrote past the block.
+		const ma_uint64 elapsed = now - h->fade_at, length = h->fade_length;
+		float beg = h->fade_beg, end = h->fade_end;
+		if (elapsed < length) {
+			if (beg >= 0) beg += (end - beg) * (float)((double)elapsed / (double)length); // A negative beginning is the volume the sound is at.
+			ma_sound_set_fade_start_in_pcm_frames(s, beg, end, length - elapsed, ~(ma_uint64)0);
+		} else ma_sound_set_fade_start_in_pcm_frames(s, end, end, 0, ~(ma_uint64)0);
 		h->fade_at = ~(ma_uint64)0;
 		h->fade_pending.store(false, std::memory_order_relaxed);
 	}
@@ -4598,7 +4602,7 @@ public:
 		fade_volumes_to_linear(start_volume, end_volume);
 		if (!finite_values({start_volume, end_volume})) return;
 		reset_stop_fade(); // It replaces a stop's fade, as in MiniAudio's only fader.
-		defer_fade(start_volume, end_volume, frames, absolute_time_in_frames == ~(ma_uint64)0? 0 : absolute_time_in_frames); // ~0 is now to MiniAudio.
+		defer_fade(start_volume, end_volume, frames, absolute_time_in_frames == ~(ma_uint64)0? ma_engine_get_time_in_pcm_frames(ma_sound_get_engine(&*snd)) : absolute_time_in_frames); // ~0 is now to MiniAudio.
 	}
 	void set_timed_fade_in_milliseconds(float start_volume, float end_volume, unsigned long long frames, unsigned long long absolute_time_in_frames) override {
 		if (!snd) return;
