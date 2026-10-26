@@ -187,7 +187,8 @@ bool timer_queue::restart(const std::string &id) {
 	if (it == timer_objects.end()) return false;
 	it->second->is_scheduled = true;
 	it->second->cancel();
-	timers.schedule(it->second, it->second->timeout);
+	// A timeout of 0 (set_timeout()) is a delay of one tick: given 0, the wheel put the timer into the slot of the tick it had already processed, where it came up only when the wheel came round to that slot again, 256 milliseconds later.
+	timers.schedule(it->second, it->second->timeout > 0 ? it->second->timeout : 1);
 	return true;
 }
 bool timer_queue::is_repeating(const std::string &id) {
@@ -204,7 +205,7 @@ bool timer_queue::set_timeout(const std::string &id, uint64_t timeout, bool repe
 	it->second->repeating = repeating;
 	if (timeout > 0 || repeating) {
 		it->second->is_scheduled = true;
-		timers.schedule(it->second, timeout);
+		timers.schedule(it->second, timeout > 0 ? timeout : 1); // A timeout of 0 is a delay of one tick, see restart().
 	}
 	return true;
 }
