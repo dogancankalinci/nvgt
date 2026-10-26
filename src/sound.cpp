@@ -2557,6 +2557,12 @@ struct held_sound : ma_sound {
 	std::atomic<bool> flushing{false}; // give_end() runs MiniAudio's processing at the sound's end with its end flag off, which another thread is to take for the end still (see at_end_seen()).
 	std::atomic<ma_uint32> processed{0}; // Calls of held_sound_process(), by which play() tells whether the audio thread still processes the sound (see sound_impl::still_ending()).
 	std::atomic<ma_uint64> seek_target{~(ma_uint64)0}; // The frame a seek asked for, ~0 for none, made by held_sound_process() in place of MiniAudio's seekTarget.
+	// A fade scheduled ahead, by set_timed_fade() or a stop with a fade, kept here rather than given to MiniAudio, which takes a fade's settings into the sound's only fader at its next block and plays the sound unfaded until the fade begins, so that a sound at a fade of its own jumped to full volume and back: held_sound_process() gives it in the first block starting at or past fade_at, ~0 for none. Under fade_locked, which the audio thread only tries.
+	std::atomic<bool> fade_locked{false}, fade_pending{false};
+	ma_uint64 fade_at = ~(ma_uint64)0, fade_length = 0;
+	float fade_beg = -1, fade_end = 0; // A negative beginning is the volume the fader is at when the fade begins, as for MiniAudio.
+	void lock_fade() { while (fade_locked.exchange(true, std::memory_order_acquire)) std::this_thread::yield(); }
+	void unlock_fade() { fade_locked.store(false, std::memory_order_release); }
 };
 struct held_sound_delete {
 	void operator()(ma_sound* s) const { delete static_cast<held_sound*>(s); }
@@ -2703,10 +2709,25 @@ static void start_from_start(ma_sound* s) {
 	held(s)->seek_target.compare_exchange_strong(none, 0);
 	reinterpret_cast<std::atomic<ma_bool32>*>(&s->atEnd)->store(MA_FALSE);
 }
+// Gives MiniAudio the fade scheduled ahead in the sound once its time came (see held_sound::fade_at), before MiniAudio's processing, which takes it in the same block; one the script is setting meanwhile is given in the next.
+static void give_deferred_fade(ma_sound* s) {
+	held_sound* h = held(s);
+	if (!h->fade_pending.load(std::memory_order_acquire) || h->fade_locked.exchange(true, std::memory_order_acquire)) return;
+	ma_uint64 now = ma_engine_get_time_in_pcm_frames(ma_sound_get_engine(s));
+	if (h->fade_at != ~(ma_uint64)0 && h->fade_at <= now) {
+		if (h->fade_beg >= 0) ma_sound_set_fade_start_in_pcm_frames(s, h->fade_beg, h->fade_end, h->fade_length, h->fade_at); // MiniAudio counts the frames since it began, so it is where it would be by now.
+		else if (h->fade_at + h->fade_length > now) ma_sound_set_fade_start_in_pcm_frames(s, -1, h->fade_end, h->fade_at + h->fade_length - now, ~(ma_uint64)0); // From the volume the sound is at, ending when it would have.
+		else ma_sound_set_fade_start_in_pcm_frames(s, h->fade_end, h->fade_end, 0, ~(ma_uint64)0);
+		h->fade_at = ~(ma_uint64)0;
+		h->fade_pending.store(false, std::memory_order_relaxed);
+	}
+	h->unlock_fade();
+}
 static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32* frame_count_in, float** frames_out, ma_uint32* frame_count_out) {
 	hold_rate(node);
 	ma_sound* s = (ma_sound*)node;
 	held(s)->processed.fetch_add(1, std::memory_order_relaxed);
+	give_deferred_fade(s);
 	std::atomic<ma_uint64>& seek_target = held(s)->seek_target;
 	// A seek given to MiniAudio itself, as by C++ code holding the ma_sound, is moved to the sound's target, to be made as the script's are; MiniAudio's own processing would keep the cache and seek a stream every block.
 	std::atomic<ma_uint64>& given_target = *reinterpret_cast<std::atomic<ma_uint64>*>(&s->seekTarget);
@@ -3349,7 +3370,33 @@ public:
 		if (stop_time == ~(ma_uint64)0) return;
 		if (!pending && stop_time > ma_engine_get_time_in_pcm_frames(ma_sound_get_engine(&*snd))) return;
 		ma_sound_reset_stop_time(&*snd);
-		if (fade_from_stop) ma_sound_reset_fade(&*snd);
+		reset_stop_fade();
+	}
+	// Schedules a fade from volume_beg to volume_end over length frames, beginning at the engine's time at, which the sound gives MiniAudio when that time comes (see held_sound::fade_at), replacing one scheduled before.
+	void defer_fade(float volume_beg, float volume_end, ma_uint64 length, ma_uint64 at) {
+		held_sound* h = held(&*snd);
+		h->lock_fade();
+		h->fade_beg = volume_beg;
+		h->fade_end = volume_end;
+		h->fade_length = length;
+		h->fade_at = at;
+		h->fade_pending.store(true, std::memory_order_release);
+		h->unlock_fade();
+	}
+	// Drops a fade scheduled ahead that hasn't begun, which left the sound's fader as it was: whether there was one.
+	bool drop_deferred_fade() {
+		if (!snd) return false;
+		held_sound* h = held(&*snd);
+		h->lock_fade();
+		bool dropped = h->fade_at != ~(ma_uint64)0;
+		h->fade_at = ~(ma_uint64)0;
+		h->fade_pending.store(false, std::memory_order_relaxed);
+		h->unlock_fade();
+		return dropped;
+	}
+	// Undoes the fade a stop with a fade set, as pause_fade()'s, putting the sound back at full volume, unless that fade was still waiting for its time, which left the fader at whatever fade the script set.
+	void reset_stop_fade() {
+		if (fade_from_stop && !drop_deferred_fade()) ma_sound_reset_fade(&*snd);
 		fade_from_stop = false;
 	}
 	bool play(bool reset_loop_state = true) override {
@@ -3586,6 +3633,7 @@ public:
 			return;
 		fade_volumes_to_linear(start_volume, end_volume);
 		if (!finite_values({start_volume, end_volume})) return;
+		drop_deferred_fade(); // A fade set now replaces one scheduled ahead, as in MiniAudio's only fader.
 		fade_from_stop = false;
 		ma_sound_set_fade_in_pcm_frames(&*snd, start_volume, end_volume, frames);
 	}
@@ -3594,6 +3642,7 @@ public:
 			return;
 		fade_volumes_to_linear(start_volume, end_volume);
 		if (!finite_values({start_volume, end_volume}) || !frames_fit(milliseconds, ma_engine_get_sample_rate(ma_sound_get_engine(&*snd)))) return;
+		drop_deferred_fade();
 		fade_from_stop = false;
 		ma_sound_set_fade_in_milliseconds(&*snd, start_volume, end_volume, milliseconds);
 	}
@@ -4517,6 +4566,7 @@ public:
 	bool pause_fade_in_frames(unsigned long long frames) override {
 		if (snd) {
 			if (!started_to_play()) return (g_soundsystem_last_error = MA_SUCCESS) == MA_SUCCESS; // As pause() leaves a sound that isn't playing, with no stop scheduled for it either, which play() wouldn't have called off.
+			drop_deferred_fade(); // Its fade, which begins now, replaces one scheduled ahead.
 			g_soundsystem_last_error = ma_sound_stop_with_fade_in_pcm_frames(&*snd, frames);
 			if (g_soundsystem_last_error == MA_SUCCESS) {
 				stop_fade_set(frames);
@@ -4529,6 +4579,7 @@ public:
 	bool pause_fade_in_milliseconds(unsigned long long frames) override {
 		if (snd && frames_fit(frames, ma_engine_get_sample_rate(ma_sound_get_engine(&*snd)))) {
 			if (!started_to_play()) return (g_soundsystem_last_error = MA_SUCCESS) == MA_SUCCESS; // As above.
+			drop_deferred_fade();
 			g_soundsystem_last_error = ma_sound_stop_with_fade_in_milliseconds(&*snd, frames);
 			if (g_soundsystem_last_error == MA_SUCCESS) {
 				stop_fade_set(frames * ma_engine_get_sample_rate(ma_sound_get_engine(&*snd)) / 1000); // As MiniAudio counts the fade's frames.
@@ -4546,8 +4597,8 @@ public:
 		if (!snd) return;
 		fade_volumes_to_linear(start_volume, end_volume);
 		if (!finite_values({start_volume, end_volume})) return;
-		fade_from_stop = false;
-		ma_sound_set_fade_start_in_pcm_frames(&*snd, start_volume, end_volume, frames, absolute_time_in_frames);
+		reset_stop_fade(); // It replaces a stop's fade, as in MiniAudio's only fader.
+		defer_fade(start_volume, end_volume, frames, absolute_time_in_frames == ~(ma_uint64)0? 0 : absolute_time_in_frames); // ~0 is now to MiniAudio.
 	}
 	void set_timed_fade_in_milliseconds(float start_volume, float end_volume, unsigned long long frames, unsigned long long absolute_time_in_frames) override {
 		if (!snd) return;
@@ -4555,8 +4606,8 @@ public:
 		if (!finite_values({start_volume, end_volume})) return;
 		ma_uint32 rate = ma_engine_get_sample_rate(ma_sound_get_engine(&*snd));
 		if (!frames_fit(frames, rate) || !frames_fit(absolute_time_in_frames, rate)) return;
-		fade_from_stop = false;
-		ma_sound_set_fade_start_in_milliseconds(&*snd, start_volume, end_volume, frames, absolute_time_in_frames);
+		reset_stop_fade();
+		defer_fade(start_volume, end_volume, frames * rate / 1000, absolute_time_in_frames * rate / 1000); // As MiniAudio converts both.
 	}
 	void set_stop_time_with_fade(unsigned long long absolute_time, unsigned long long fade_length) override {
 		return (get_engine()->get_flags() & audio_engine::DURATIONS_IN_FRAMES) ? set_stop_time_with_fade_in_frames(absolute_time, fade_length) : set_stop_time_with_fade_in_milliseconds(absolute_time, fade_length);
@@ -4570,13 +4621,12 @@ public:
 		stop_fade_set(fade_length);
 		fade_paused = false;
 	}
-	// MiniAudio starts a stop's fade from the volume the sound's fader is at when it takes it, which for a sound an earlier stop with a fade stopped, as pause_fade()'s, is where that fade got to, 0 once it came, though the sound plays on at full volume until the new fade begins: it cut to silence there rather than fading. For such a sound the new fade starts from full volume; one still playing fades from where its volume is, as a fade the script set.
+	// The stop is MiniAudio's, its fade waits in the sound for its time (see held_sound::fade_at), to fade from the volume the sound is at then. It replaces the fade of a stop before it, which goes back to full volume if it began, as a sound pause_fade() stopped is at 0 though it plays on at full volume once started.
 	void schedule_stop_with_fade(ma_uint64 stop, ma_uint64 fade) {
-		if (fade > 0 && fade_from_stop && ma_node_get_state(&*snd) != ma_node_state_started) {
-			if (fade > stop) fade = stop; // As MiniAudio limits it.
-			ma_sound_set_fade_start_in_pcm_frames(&*snd, 1, 0, fade, stop - fade);
-			ma_node_set_state_time(&*snd, ma_node_state_stopped, stop);
-		} else ma_sound_set_stop_time_with_fade_in_pcm_frames(&*snd, stop, fade);
+		reset_stop_fade();
+		if (fade > stop) fade = stop; // As MiniAudio limits it.
+		ma_node_set_state_time(&*snd, ma_node_state_stopped, stop);
+		if (fade > 0) defer_fade(-1, 0, fade, stop - fade);
 	}
 	void set_stop_time_with_fade_in_milliseconds(unsigned long long absolute_time, unsigned long long fade_length) override {
 		if (!snd) return;
@@ -4606,8 +4656,8 @@ public:
 	}
 	void forget_stop_fade() {
 		if (!snd) return;
-		if (fade_from_stop) ma_sound_reset_fade(&*snd);
-		fade_from_stop = fade_paused = false;
+		reset_stop_fade();
+		fade_paused = false;
 	}
 	// After a stop with a fade was scheduled, its fade being this many frames long. MiniAudio sets no fade of no length, so such a stop is a plain one, after which play() mustn't reset the script's own fade, and which replaced a stop with a fade along with that stop's fade, as set_stop_time() does.
 	void stop_fade_set(ma_uint64 fade_frames) {
