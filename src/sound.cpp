@@ -2709,6 +2709,15 @@ static void start_from_start(ma_sound* s) {
 	held(s)->seek_target.compare_exchange_strong(none, 0);
 	reinterpret_cast<std::atomic<ma_bool32>*>(&s->atEnd)->store(MA_FALSE);
 }
+// MiniAudio's fader stops at 2^32 - 1 frames from where its fade was set, processing no frames after, so a sound or group played on unfaded from there: a sound held at a fade of its own, or faded to silence, came back at full volume some 25 hours on at 48 kHz. One long past the end of its fade is set to its end volume afresh, its cursor back at 0. Only the thread reading the engine writes the fader; the script's fades reach it through MiniAudio's fade settings.
+static void keep_fader_in_range(ma_sound* s) {
+	ma_fader& fader = s->engineNode.fader;
+	if (fader.cursorInFrames > (ma_int64)INT_MAX && (ma_uint64)fader.cursorInFrames >= fader.lengthInFrames) {
+		fader.volumeBeg = fader.volumeEnd;
+		fader.lengthInFrames = 0;
+		fader.cursorInFrames = 0;
+	}
+}
 // Gives MiniAudio the fade scheduled ahead in the sound in the block of frames its time falls in (see held_sound::fade_at), before MiniAudio's processing, which takes it in the same block; one the script is setting meanwhile is given in the next.
 static void give_deferred_fade(ma_sound* s, ma_uint32 frames) {
 	held_sound* h = held(s);
@@ -2736,6 +2745,7 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 	hold_rate(node);
 	ma_sound* s = (ma_sound*)node;
 	held(s)->processed.fetch_add(1, std::memory_order_relaxed);
+	keep_fader_in_range(s);
 	give_deferred_fade(s, *frame_count_out);
 	std::atomic<ma_uint64>& seek_target = held(s)->seek_target;
 	// A seek given to MiniAudio itself, as by C++ code holding the ma_sound, is moved to the sound's target, to be made as the script's are; MiniAudio's own processing would keep the cache and seek a stream every block.
@@ -3097,6 +3107,7 @@ static ma_data_source* chain_source(ma_data_source* head, audio_engine* engine, 
 }
 static void held_group_process(ma_node* node, const float** frames_in, ma_uint32* frame_count_in, float** frames_out, ma_uint32* frame_count_out) {
 	hold_rate(node);
+	keep_fader_in_range((ma_sound*)node);
 	g_ma_group_process(node, frames_in, frame_count_in, frames_out, frame_count_out);
 }
 // Gives a sound or group that was made but isn't attached to anything yet hold_rate()'s processing: a copy of MiniAudio's node vtable for its kind, whose processing holds the rate first.
