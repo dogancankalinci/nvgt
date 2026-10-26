@@ -211,8 +211,10 @@ public:
 		zstr.next_out = (Bytef*)ptr;
 		zstr.avail_out = size;
 		inflate(&zstr, Z_SYNC_FLUSH);
+		// All of the data is given to inflate() at once, so it fills the request unless the bytecode ended (or is corrupt). That is an error to the reader: without it, a corrupt count or length made AngelScript's loader read on past the end, getting whatever was in its own buffers, instead of failing there.
+		size -= zstr.avail_out;
 		cursor += size;
-		return size;
+		return zstr.avail_out ? -1 : int(size);
 	}
 	void reset_cursor() {
 		cursor = 0; // This storage area holds more than bytecode, and after extra non-bytecode data is read, we may need to reset the variable keeping track of the number of bytes read encase we need to use that information later for debugging angelscript bytecode load failures which only provide an offset of bytes read in the stream as debug info. We don't store our non-bytecode data at the end of the stream to avoid any imagined edgecase where Angelscript could read a few less bytes than it's written during compilation thus making such data inaccessible.

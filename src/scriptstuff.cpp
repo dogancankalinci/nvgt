@@ -886,12 +886,11 @@ public:
 		return size;
 	}
 	int Read(void* ptr, asUINT size) {
-		if (cursor >= data.size()) return -1;
-		asUINT available = static_cast<asUINT>(data.size() - cursor);
-		asUINT to_copy = size < available ? size : available;
-		memcpy(ptr, data.data() + cursor, to_copy);
-		cursor += to_copy;
-		return to_copy;
+		// A read the bytecode can't fill is an error to the loader, as the end is: given the part that was there, AngelScript's loader went on with the rest of the request unwritten (it only stops at a negative result).
+		if (cursor >= data.size() || data.size() - cursor < size) return -1;
+		memcpy(ptr, data.data() + cursor, size);
+		cursor += size;
+		return size;
 	}
 };
 // A rebuild (Build() or LoadByteCode()) lets go of the module's old global variables, under the build lock that
