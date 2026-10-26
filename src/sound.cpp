@@ -2563,6 +2563,7 @@ struct held_sound : ma_sound {
 	float fade_beg = -1, fade_end = 0; // A negative beginning is the volume the fader is at when the fade begins, as for MiniAudio.
 	// Given to MiniAudio in the block under way, with this length, but kept until MiniAudio took it (see take_back_fade()).
 	std::atomic<bool> fade_given{false};
+	std::atomic<bool> given_stale{false}; // That fade was replaced by one scheduled since, before MiniAudio took it: take_back_fade() removes it, not to be given again.
 	ma_uint64 given_length = 0;
 	void lock_fade() { while (fade_locked.exchange(true, std::memory_order_acquire)) std::this_thread::yield(); }
 	void unlock_fade() { fade_locked.store(false, std::memory_order_release); }
@@ -2776,13 +2777,18 @@ static void give_deferred_fade(ma_sound* s, ma_uint32 frames) {
 // After the sound's processing: a fade given in this block that MiniAudio didn't take, as it takes one only when it has frames to process, none while a stream seeks or waits for data, is taken back to be given again with the time since counted, rather than taken later from where it was given and cut off by its stop; one it took is done with. A fade the script replaced meanwhile, or one MiniAudio was given since by other code, is left alone.
 static void take_back_fade(ma_sound* s) {
 	held_sound* h = held(s);
-	if (!h->fade_given || h->fade_locked.exchange(true, std::memory_order_acquire)) return; // Only the audio thread sets fade_given; under the lock, the script only clears it.
-	if (h->fade_given) {
+	if ((!h->fade_given && !h->given_stale) || h->fade_locked.exchange(true, std::memory_order_acquire)) return; // Only the audio thread sets fade_given; under the lock, the script only clears it, or turns it into given_stale.
+	if (h->fade_given || h->given_stale) {
 		std::atomic<ma_uint64>& length_field = *reinterpret_cast<std::atomic<ma_uint64>*>(&s->engineNode.fadeSettings.fadeLengthInFrames);
 		ma_uint64 given = h->given_length;
-		if (length_field.load() == given && reinterpret_cast<std::atomic<ma_uint64>*>(&s->engineNode.fadeSettings.absoluteGlobalTimeInFrames)->load() == ~(ma_uint64)0 && length_field.compare_exchange_strong(given, ~(ma_uint64)0)) h->fade_pending.store(true, std::memory_order_release);
-		else h->fade_at = ~(ma_uint64)0;
+		const bool untaken = length_field.load() == given && reinterpret_cast<std::atomic<ma_uint64>*>(&s->engineNode.fadeSettings.absoluteGlobalTimeInFrames)->load() == ~(ma_uint64)0 && length_field.compare_exchange_strong(given, ~(ma_uint64)0);
+		// A replaced one MiniAudio didn't take is removed, never heard, as one replaced after it was taken back is dropped; the one scheduled since stays.
+		if (h->fade_given) {
+			if (untaken) h->fade_pending.store(true, std::memory_order_release);
+			else h->fade_at = ~(ma_uint64)0;
+		}
 		h->fade_given = false;
+		h->given_stale = false;
 	}
 	h->unlock_fade();
 }
@@ -3448,6 +3454,7 @@ public:
 		h->fade_end = volume_end;
 		h->fade_length = length;
 		h->fade_at = at;
+		if (h->fade_given) h->given_stale = true; // Given to MiniAudio in the block under way but replaced: removed if MiniAudio didn't take it (see take_back_fade()).
 		h->fade_given = false;
 		h->fade_pending.store(true, std::memory_order_release);
 		h->unlock_fade();
@@ -3460,6 +3467,7 @@ public:
 		bool dropped = h->fade_at != ~(ma_uint64)0 && !h->fade_given; // One given to MiniAudio in the block under way may have begun.
 		h->fade_at = ~(ma_uint64)0;
 		h->fade_given = false;
+		h->given_stale = false; // The caller sets MiniAudio's fade itself, which a fade of that length must not lose.
 		h->fade_pending.store(false, std::memory_order_relaxed);
 		h->unlock_fade();
 		return dropped;
