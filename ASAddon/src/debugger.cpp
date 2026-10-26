@@ -421,7 +421,19 @@ void CDebugger::TakeCommands(asIScriptContext *ctx)
 		getline(cin, line);
 if (!cin.good())
 {
+	// ALTERED: at the end of the input (stdin closed, a file of commands used up, ctrl+d) nothing more can be read: clearing the
+	// error and reading again failed at once, for good, so the debugger spun on a core and the script never went on. The last
+	// line is still a command when no line break ended it, and the script then continues, as after 'c'.
+	bool atEnd = cin.eof();
 	cin.clear();
+	if (atEnd)
+	{
+		if (!line.empty() && InterpretCommand(line, ctx))
+			break;
+		Output("\nNo more input, continuing\n");
+		m_action = CONTINUE;
+		break;
+	}
 	output_header = false;
 	continue; // Allow the user to handle ctrl+c or loss of stdin on their own.
 }
