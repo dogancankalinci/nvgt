@@ -1,0 +1,16 @@
+diff --git a/sdk/angelscript/source/as_compiler.cpp b/sdk/angelscript/source/as_compiler.cpp
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -2107,7 +2107,11 @@
+ 					// When calling a function expecting a var arg with a parameter received as reference to handle
+ 					// then it is necessary to copy the handle to a local variable, otherwise MoveArgsToStack will
+ 					// not be able to do the correct double dereference to put the reference to the object on the stack.
+-					if (paramType->GetTokenType() == ttQuestion && !param.IsObjectHandle() && ctx->type.isVariable)
++					// ALTERED: for every parameter taking an object by reference, not only a var arg: a const one (const T &in)
++					// takes a variable as it is (see above), and a handle parameter received by reference (T@ &in, T@ &out,
++					// T@ &inout) is a variable whose slot holds the address of the handle, which the function was given as the
++					// object: `void g(const C &in c)` called as g(p) in `void f(C@ &in p)` read the handle's slot as a C.
++					if (!param.IsObjectHandle() && ctx->type.isVariable)
+ 					{
+ 						sVariable *var = variables->GetVariableByOffset(ctx->type.stackOffset);
+ 						if (var && var->type.IsReference() && var->type.IsObjectHandle())
