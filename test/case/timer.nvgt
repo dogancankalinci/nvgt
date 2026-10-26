@@ -6,11 +6,11 @@ void test_timer_functionality() {
 	
 	// Test pause/resume
 	wait(5);
-	int64 before_pause = t.elapsed;
-	assert(before_pause > 0);
-	
+	assert(t.elapsed > 0);
+
 	t.pause();
 	assert(t.running == false);
+	int64 before_pause = t.elapsed; // read once paused: a millisecond can pass between a read and pause()
 	wait(5);
 	assert(t.elapsed == before_pause); // Should not change while paused
 	
