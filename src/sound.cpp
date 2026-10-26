@@ -3475,9 +3475,14 @@ public:
 	void clear_stop_for_restart(bool pending = false) {
 		ma_uint64 stop_time = ma_node_get_state_time(&*snd, ma_node_state_stopped);
 		if (stop_time == ~(ma_uint64)0) return;
-		if (!pending && stop_time > ma_engine_get_time_in_pcm_frames(ma_sound_get_engine(&*snd))) return;
+		if (!pending && stop_time > heard_until()) return;
 		ma_sound_reset_stop_time(&*snd);
 		reset_stop_fade();
+	}
+	// The engine's time up to which the sound has been played, by which a stop has come: while the audio thread processes a block, the engine's time is that block's start, but a sound processed in it already played to its end, so that a stop within it came, MiniAudio stopping the sound there, though it read as still to come: play() then left it, and the sound didn't play, and a later stop played it again. A race of the few instructions between reading this and acting on it remains.
+	ma_uint64 heard_until() const {
+		const ma_uint64 now = ma_engine_get_time_in_pcm_frames(ma_sound_get_engine(&*snd)), block = held(&*snd)->block_at.load();
+		return block != ~(ma_uint64)0 && block >= now && block <= ~(ma_uint64)0 - SOUNDSYSTEM_FRAMESIZE? block + SOUNDSYSTEM_FRAMESIZE : now;
 	}
 	// Schedules a fade from volume_beg to volume_end over length frames, beginning at the engine's time at, which the sound gives MiniAudio when that time comes (see held_sound::fade_at), replacing one scheduled before.
 	void defer_fade(float volume_beg, float volume_end, ma_uint64 length, ma_uint64 at) {
@@ -3799,7 +3804,7 @@ public:
 	void stop_if_stop_came() {
 		if (!snd || ma_node_get_state(&*snd) != ma_node_state_started) return;
 		ma_uint64 stop_time = ma_node_get_state_time(&*snd, ma_node_state_stopped);
-		if (stop_time != ~(ma_uint64)0 && stop_time <= ma_engine_get_time_in_pcm_frames(ma_sound_get_engine(&*snd))) ma_sound_stop(&*snd);
+		if (stop_time != ~(ma_uint64)0 && stop_time <= heard_until()) ma_sound_stop(&*snd);
 	}
 	void set_stop_time_in_frames(ma_uint64 absolute_time) override {
 		if (!snd) return;
@@ -4566,7 +4571,7 @@ public:
 	// Playing, or started and due to play, its start scheduled ahead with set_start_time(), which ma_sound_is_playing() reads as stopped until then: not a sound stopped, played to its end or never started, nor one whose scheduled stop has come, which MiniAudio leaves started (see clear_stop_for_restart()).
 	bool started_to_play() {
 		if (!snd || ma_node_get_state(&*snd) != ma_node_state_started) return false;
-		return ma_node_get_state_time(&*snd, ma_node_state_stopped) > ma_engine_get_time_in_pcm_frames(ma_sound_get_engine(&*snd));
+		return ma_node_get_state_time(&*snd, ma_node_state_stopped) > heard_until();
 	}
 	bool play(bool reset_loop_state = true) override {
 		const bool resuming = paused; // Paused by pause() or pause_fade().
