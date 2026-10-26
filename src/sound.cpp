@@ -5210,7 +5210,8 @@ float get_sound_master_volume() {
 	default_engine_ref engine;
 	if (!engine)
 		return 0;
-	return ma_volume_linear_to_db(ma_engine_get_volume(engine->get_ma_engine()));
+	const float db = ma_volume_linear_to_db(ma_engine_get_volume(engine->get_ma_engine()));
+	return db >= -100? db : -100; // As quiet as it can be set, also for a volume of 0 set on the engine itself, which is -inf dB, outside the range it is read in.
 }
 audio_engine* get_sound_default_engine() { return acquire_default_engine(); } // The reference goes to the script.
 // Whether there is a default engine, starting the sound system to build it if need be; unlike sound_default_engine, it reports one that can't be built, as on a machine without an output device, rather than throwing.
