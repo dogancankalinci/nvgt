@@ -96,7 +96,7 @@ static bool map_area_sort(map_area* a1, map_area* a2) {
 	return a1 == NULL || a2 == NULL || a1->priority < a2->priority;
 }
 
-map_area::map_area(coordinate_map* p, float minx, float maxx, float miny, float maxy, float minz, float maxz, float rotation, CScriptAny* primary_data, const std::string& data1, const std::string& data2, const std::string& data3, int priority, asINT64 flags) : parent(p), minx(minx), maxx(maxx), miny(miny), maxy(maxy), minz(minz), maxz(maxz), rotation(rotation), framesize(0), primary_data(primary_data), data1(data1), data2(data2), data3(data3), priority(priority), flags(flags), framed(false), tmp_adding_to_result(false), ref_count(1) {
+map_area::map_area(coordinate_map* p, float minx, float maxx, float miny, float maxy, float minz, float maxz, float rotation, CScriptAny* primary_data, const std::string& data1, const std::string& data2, const std::string& data3, int priority, asINT64 flags) : parent(p), minx(minx), maxx(maxx), miny(miny), maxy(maxy), minz(minz), maxz(maxz), rotation(rotation), framesize(0), primary_data(primary_data), data1(data1), data2(data2), data3(data3), priority(priority), flags(flags), framed(false), ref_count(1) {
 	center = get_center(minx, maxx, miny, maxy, minz, maxz);
 	reframe();
 }
@@ -249,14 +249,15 @@ int map_frame::add_areas_for_point(std::vector<map_area*>& local_areas, float x,
 	release_snapshot(snap);
 	return p;
 }
-int map_frame::add_areas_for_range(std::vector<map_area*>& local_areas, float minx, float maxx, float miny, float maxy, float minz, float maxz, float d, int p, asIScriptFunction* filter_callback, asINT64 flags, asINT64 excluded_flags) {
+// taken holds the areas this query has already put in local_areas, so that an area spanning several frames is put there once. It was a mark on each area, cleared once the query ended, which a query run meanwhile by a filter callback on the same map read too: it skipped every area the outer query had already taken.
+int map_frame::add_areas_for_range(std::vector<map_area*>& local_areas, std::unordered_set<map_area*>& taken, float minx, float maxx, float miny, float maxy, float minz, float maxz, float d, int p, asIScriptFunction* filter_callback, asINT64 flags, asINT64 excluded_flags) {
 	std::vector<map_area*> snap = snapshot_areas(areas);
 	for (map_area* a : snap) {
-		if (!a->tmp_adding_to_result && a->priority >= p && a->is_in_area_range(minx, maxx, miny, maxy, minz, maxz, d, 0, filter_callback, flags, excluded_flags) && a->framed) {
+		if (!taken.contains(a) && a->priority >= p && a->is_in_area_range(minx, maxx, miny, maxy, minz, maxz, d, 0, filter_callback, flags, excluded_flags) && a->framed) {
 			//p=a->priority; // Object can be reframed at the end of frame with lower priority than something that is higher in the frame, such item will not be included in list if p keeps getting reset.
 			a->add_ref(); // the result list owns a reference; the callers below release it
 			local_areas.push_back(a);
-			a->tmp_adding_to_result = true;
+			taken.insert(a);
 		}
 	}
 	release_snapshot(snap);
@@ -336,21 +337,20 @@ void coordinate_map::get_areas(float minx, float maxx, float miny, float maxy, f
 			if (!priority_check) p = -1;
 		}
 	} else {
+		std::unordered_set<map_area*> taken; // See map_frame::add_areas_for_range.
 		for (int i = total_frame_sizes - 1; i >= 0; i--) {
 			for (int x = minx - d; x <= maxx + d + frame_sizes[i]; x += frame_sizes[i]) {
 				for (int y = miny - d; y <= maxy + d + frame_sizes[i]; y += frame_sizes[i]) {
 					for (int z = minz - d; z <= maxz + d + frame_sizes[i]; z += frame_sizes[i]) {
 						map_frame* f = get_frame(x, y, z, i, false);
 						if (!f) continue;
-						p = f->add_areas_for_range(local_areas, minx, maxx, miny, maxy, minz, maxz, d, p, filter_callback, flags, excluded_flags);
+						p = f->add_areas_for_range(local_areas, taken, minx, maxx, miny, maxy, minz, maxz, d, p, filter_callback, flags, excluded_flags);
 						if (!priority_check) p = -1;
 					}
 				}
 			}
 		}
 	}
-	for (auto i : local_areas)
-		i->tmp_adding_to_result = false;
 	if (priority_check && local_areas.size() > 1) {
 		// Move the highest priority area to the end, where get_area looks for it. This has to swap two elements of the
 		// list: swapping a local pointer with the last element instead would overwrite the last area with a second copy
