@@ -1,0 +1,22 @@
+diff --git a/sdk/angelscript/source/as_compiler.cpp b/sdk/angelscript/source/as_compiler.cpp
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -13697,6 +13697,18 @@
+ 					else
+ 					{
+ 						Dereference(&funcExpr, true);
++
++						// ALTERED: a function handle parameter taken by reference (CB@ &in, CB@ &out, and CB@ &inout with unsafe
++						// references) is a variable whose slot holds the address of the handle, not the handle. The call below
++						// reads the function from the variable's slot, so it called the handle's address as a function (a
++						// crash): the handle is copied to a variable of its own, as one that isn't in a variable is.
++						if( funcExpr.type.isVariable )
++						{
++							sVariable *v = variables ? variables->GetVariableByOffset(funcExpr.type.stackOffset) : 0;
++							if( v && v->type.IsReference() )
++								funcExpr.type.isVariable = false;
++						}
++
+ 						ConvertToVariable(&funcExpr);
+ 					}
+ 

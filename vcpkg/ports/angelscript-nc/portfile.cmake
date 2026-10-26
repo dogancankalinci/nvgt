@@ -110,6 +110,7 @@ vcpkg_from_github(
         fix-offset-limits.patch
         fix-weak-reference-made-during-last-release.patch
         fix-return-property-accessor.patch
+        fix-call-through-handle-reference.patch
 )
 
 vcpkg_cmake_configure(
