@@ -112,6 +112,7 @@ vcpkg_from_github(
         fix-call-through-handle-reference.patch
         fix-object-arg-from-handle-reference.patch
         fix-cast-and-call-from-handle-reference.patch
+        fix-loader-limits.patch
 )
 
 vcpkg_cmake_configure(
