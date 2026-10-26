@@ -3481,8 +3481,13 @@ public:
 	}
 	// The engine's time up to which the sound has been played, by which a stop has come: while the audio thread processes a block, the engine's time is that block's start, but a sound processed in it already played to its end, so that a stop within it came, MiniAudio stopping the sound there, though it read as still to come: play() then left it, and the sound didn't play, and a later stop played it again. A race of the few instructions between reading this and acting on it remains.
 	ma_uint64 heard_until() const {
-		const ma_uint64 now = ma_engine_get_time_in_pcm_frames(ma_sound_get_engine(&*snd)), block = held(&*snd)->block_at.load();
-		return block != ~(ma_uint64)0 && block >= now && block <= ~(ma_uint64)0 - SOUNDSYSTEM_FRAMESIZE? block + SOUNDSYSTEM_FRAMESIZE : now;
+		const ma_uint64 now = ma_engine_get_time_in_pcm_frames(ma_sound_get_engine(&*snd)), block = current_block(now);
+		return block != ~(ma_uint64)0? block + SOUNDSYSTEM_FRAMESIZE : now;
+	}
+	// The block the sound was last processed in when that is the one under way at now, or the next should the audio thread have moved on: an older one, or one from before the engine's time was set back, which lies ahead of it, says nothing of the block under way. ~0 for none.
+	ma_uint64 current_block(ma_uint64 now) const {
+		const ma_uint64 block = held(&*snd)->block_at.load();
+		return block != ~(ma_uint64)0 && block >= now && now <= ~(ma_uint64)0 - 2 * SOUNDSYSTEM_FRAMESIZE && block <= now + SOUNDSYSTEM_FRAMESIZE? block : ~(ma_uint64)0;
 	}
 	// Schedules a fade from volume_beg to volume_end over length frames, beginning at the engine's time at, which the sound gives MiniAudio when that time comes (see held_sound::fade_at), replacing one scheduled before.
 	void defer_fade(float volume_beg, float volume_end, ma_uint64 length, ma_uint64 at) {
@@ -4755,7 +4760,7 @@ public:
 	ma_uint64 schedule_pause_fade(ma_uint64 frames) {
 		frames = std::min<ma_uint64>(frames, UINT_MAX);
 		const ma_uint64 now = ma_engine_get_time_in_pcm_frames(ma_sound_get_engine(&*snd)), stop = now < ~(ma_uint64)0 - frames? now + frames : ~(ma_uint64)0 - 1;
-		if (frames > 0) schedule_stop_and_fade(stop, frames);
+		if (frames > 0) schedule_stop_and_fade(stop, frames, now);
 		else ma_node_set_state_time(&*snd, ma_node_state_stopped, stop);
 		return frames;
 	}
@@ -4768,25 +4773,31 @@ public:
 		return fade;
 	}
 	// A stop at stop with a fade of fade frames before it, from the volume the sound is at. The fade waits in the sound before the stop is set, so the audio thread never takes the stop without it. While the audio thread processes a block, the engine's time is that block's start, and the sound may have been processed in it already, without the fade, which it then gives in its next block: a stop before that block was taken there without processing the sound, the fade never heard and the sound cut at full volume, as a pause_fade() or a TTS interruption shorter than a block mostly were with the engine read on another thread, and a fade beginning before it was heard only in part. The fade then begins at that next block, the stop its length after. The audio thread records the block before it tries the fade's lock, so a block it gave nothing in, the script holding the lock, is seen too.
-	void schedule_stop_and_fade(ma_uint64 stop, ma_uint64 fade) {
-		const ma_uint64 at = stop - fade;
+	// from: the engine's time a fade from now, as pause_fade()'s, whose length counts, was counted from; ~0 for a stop at an absolute time, which counts, and which is moved only when it would come before the sound could be processed with its fade, a stop that had come already being taken at once without one, as before. The block under way is judged at the time the stop was counted from: judged at a time read later, it could already be past the block that played the sound without the fade.
+	void schedule_stop_and_fade(ma_uint64 stop, ma_uint64 fade, ma_uint64 from = ~(ma_uint64)0) {
+		const bool relative = from != ~(ma_uint64)0;
+		const ma_uint64 now = relative? from : ma_engine_get_time_in_pcm_frames(ma_sound_get_engine(&*snd)), at = stop - fade;
 		defer_fade(-1, 0, fade, at);
 		ma_node_set_state_time(&*snd, ma_node_state_stopped, stop);
 		held_sound* h = held(&*snd);
-		const ma_uint64 block = h->block_at.load(); // The last block the sound was processed in, maybe the one under way.
-		// Given in time when the fade begins after the last block the sound was processed in.
-		if (block == ~(ma_uint64)0 || block > ~(ma_uint64)0 - SOUNDSYSTEM_FRAMESIZE || at >= block + SOUNDSYSTEM_FRAMESIZE || !h->fade_pending.load()) return;
-		// Whether that block gave it is known once the audio thread is done with the sound there, a few microseconds at most: in it after the fade waited, it gives it, unless the lock was held, and then read the stop only after it was set, as MiniAudio reads a sound's state before processing it, so that the stop is moved before MiniAudio took it.
+		const ma_uint64 block = current_block(now); // The block under way, if the sound was processed in it.
+		if (block == ~(ma_uint64)0 || !h->fade_pending.load()) return; // Given in time in the next block the sound is processed in.
+		const ma_uint64 next = block + SOUNDSYSTEM_FRAMESIZE;
+		// From now, the fade begins in that block, which played the sound already; at a time, a stop from that block's end on lets the next give what is left of the fade, from the volume the sound is at, as for a fade given late.
+		if (relative? at >= next : stop >= next || stop < now) return;
+		// Whether that block gave it is known once the audio thread is done with the sound there, a few microseconds at most: in it after the fade waited, it gives it, unless the lock was held, and then read the stop only after it was set, as MiniAudio reads a sound's state before processing it, so that the stop is moved before MiniAudio took it. A sound the audio thread is held up in, as by a slow datastream, isn't waited for past a few milliseconds.
 		if (!audio_engine_impl::on_audio_thread()) {
-			for (int i = 0; i < 100000 && h->block_done.load() != block && h->block_at.load() == block; i++) std::this_thread::yield();
+			const auto give_up = std::chrono::steady_clock::now() + std::chrono::milliseconds(5);
+			while (h->block_done.load() != block && h->block_at.load() == block && std::chrono::steady_clock::now() < give_up) std::this_thread::yield();
 		}
 		h->lock_fade();
 		if (h->fade_pending.load() && !h->fade_given && h->fade_at == at) { // Not given since, nor replaced.
-			// The block after it, or after the one under way should the audio thread have moved on meanwhile, its stop passing before it could process the sound.
-			const ma_uint64 later = std::max(block, ma_engine_get_time_in_pcm_frames(ma_sound_get_engine(&*snd)));
-			const ma_uint64 next = later <= ~(ma_uint64)0 - SOUNDSYSTEM_FRAMESIZE? later + SOUNDSYSTEM_FRAMESIZE : later;
-			h->fade_at = next;
-			ma_node_set_state_time(&*snd, ma_node_state_stopped, next < ~(ma_uint64)0 - fade && next + fade > stop? next + fade : stop);
+			// The block after it, or after the one under way should the audio thread have moved on, or the engine's time been set back, meanwhile, its stop passing before it could process the sound.
+			const ma_uint64 time = ma_engine_get_time_in_pcm_frames(ma_sound_get_engine(&*snd)), still = current_block(time);
+			const ma_uint64 later = still != ~(ma_uint64)0? std::max(still, time) : time;
+			const ma_uint64 moved = later <= ~(ma_uint64)0 - SOUNDSYSTEM_FRAMESIZE? later + SOUNDSYSTEM_FRAMESIZE : later;
+			h->fade_at = moved;
+			ma_node_set_state_time(&*snd, ma_node_state_stopped, moved < ~(ma_uint64)0 - fade && moved + fade > stop? moved + fade : stop);
 		}
 		h->unlock_fade();
 	}
