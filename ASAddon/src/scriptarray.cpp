@@ -67,6 +67,49 @@ struct SElementHold
 	~SElementHold() { if( obj ) engine->ReleaseScriptObject(obj, type); }
 };
 
+// ALTERED: an element given to a sort callback as an argument, kept valid while the callback runs. The callback was given the
+// element where it was in the array: one that took it out (or emptied the array, or grew it into a new buffer) freed the
+// object, or the memory of the handle or value, that its argument still referred to, which it then read. A handle or a
+// primitive is copied (the handle's object held), an object of a reference type held, and a value type's object copied, as a
+// script passing an array element to a function's &in parameter gets.
+struct SCallbackArg
+{
+	asIScriptEngine *engine;
+	asITypeInfo *type;
+	void *held;
+	asQWORD local;
+	void *address;
+	SCallbackArg(asIScriptEngine *engine, asITypeInfo *subType, int subTypeId, int elementSize, void *element) : engine(engine), type(subType), held(0), local(0), address(element)
+	{
+		if( element == 0 )
+			return;
+		asDWORD flags = subType ? subType->GetFlags() : 0;
+		bool counted = (flags & asOBJ_REF) && !(flags & (asOBJ_NOCOUNT | asOBJ_SCOPED));
+		if( (subTypeId & asTYPEID_OBJHANDLE) || !(subTypeId & asTYPEID_MASK_OBJECT) )
+		{
+			memcpy(&local, element, elementSize <= (int)sizeof(local) ? elementSize : sizeof(local));
+			address = &local;
+			if( (subTypeId & asTYPEID_OBJHANDLE) && counted && *(void**)&local )
+			{
+				held = *(void**)&local;
+				engine->AddRefScriptObject(held, subType);
+			}
+		}
+		else if( counted )
+		{
+			held = element;
+			engine->AddRefScriptObject(held, subType);
+		}
+		else if( flags & asOBJ_VALUE )
+		{
+			held = engine->CreateScriptObjectCopy(element, subType);
+			if( held )
+				address = held;
+		}
+	}
+	~SCallbackArg() { if( held ) engine->ReleaseScriptObject(held, type); }
+};
+
 // This macro is used to avoid warnings about unused variables.
 // Usually where the variables are only used in debug mode.
 #define UNUSED_VAR(x) (void)(x)
@@ -2043,8 +2086,11 @@ void CScriptArray::Sort(asIScriptFunction *func, asUINT startAt, asUINT count)
 			if (ArrayCallbacksStopped(callerCtx, cmpContext))
 				break;
 			cmpContext->Prepare(func);
-			cmpContext->SetArgAddress(0, At(j));
-			cmpContext->SetArgAddress(1, At(best));
+			// ALTERED: see SCallbackArg
+			SCallbackArg argA(objType->GetEngine(), objType->GetSubType(), subTypeId, elementSize, At(j));
+			SCallbackArg argB(objType->GetEngine(), objType->GetSubType(), subTypeId, elementSize, At(best));
+			cmpContext->SetArgAddress(0, argA.address);
+			cmpContext->SetArgAddress(1, argB.address);
 			int r = ExecuteResumed(cmpContext);
 			if (r != asEXECUTION_FINISHED)
 				break;
