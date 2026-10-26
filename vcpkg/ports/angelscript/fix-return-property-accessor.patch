@@ -1,0 +1,19 @@
+diff --git a/sdk/angelscript/source/as_compiler.cpp b/sdk/angelscript/source/as_compiler.cpp
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -6301,6 +6301,15 @@
+ 
+ 		if( v->type.IsReference() )
+ 		{
++			// ALTERED: a property accessor in the expression is called first, as everywhere else an expression's value is
++			// used, so the rules below apply to what the accessor returns. Left as it was, the call was never made: the code
++			// returned the address of the object the accessor belongs to as the reference (for a global accessor, whatever
++			// the stack held), and `const string& f(obj@ o) { return o.name; }` handed its caller the object, or garbage, as a
++			// string. An accessor returning by value now gets the error for a reference to a temporary, and one returning a
++			// reference returns that reference, as an explicit call of the accessor does.
++			if( ProcessPropertyGetAccessor(&expr, rnode) < 0 )
++				return;
++
+ 			// The expression that gives the reference must not use any of the
+ 			// variables that must be destroyed upon exit, because then it means
+ 			// reference will stay alive while the clean-up is done, which could
