@@ -66,6 +66,8 @@ class pathfinder : public micropather::Graph {
 public:
 	bool solving;
 	int desperation_factor;
+	// The desperation factor the running find() searches with, taken when it starts. The states it searches are keyed by it (encode_state), so a difficulty callback that changed desperation_factor in the middle of the search put the goal, keyed by the old one, out of reach: the search went through every state it could reach (everything within search_range, or without end with none) and found no path.
+	int solve_desperation;
 	bool allow_diagonals;
 	bool automatic_reset;
 	int search_range;

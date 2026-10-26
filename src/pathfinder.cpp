@@ -55,6 +55,7 @@ pathfinder::pathfinder(int size, bool cache) : gc_flag(false) {
 	callback_data = NULL;
 	RefCount = 1;
 	desperation_factor = 0;
+	solve_desperation = 0;
 	allow_diagonals = false;
 	must_reset = false;
 	search_range = 0;
@@ -143,7 +144,7 @@ float pathfinder::get_difficulty(void* state, void* parent_state) {
 	return get_difficulty(x, y, z, parent_x, parent_y, parent_z);
 }
 float pathfinder::get_difficulty(int x, int y, int z, int parent_x, int parent_y, int parent_z) {
-	int _ds = desperation_factor;
+	int _ds = solve_desperation; // see pathfinder::solve_desperation
 	if (_ds < 0 || _ds > 10) _ds = 0;
 	hashpoint pt(x, y, z);
 	hashpoint_float_map::iterator n = difficulty_cache[_ds].find(pt);
@@ -247,6 +248,7 @@ CScriptArray* pathfinder::find(int start_x, int start_y, int start_z, int end_x,
 	if (!VectorArrayType) VectorArrayType = get_array_type("array<vector>");
 	CScriptArray* array = CScriptArray::Create(VectorArrayType);
 	if (solving) return array;
+	solve_desperation = desperation_factor; // for the whole search, see solve_desperation
 	abort = false;
 	must_reset = false;
 	total_cost = 0;
@@ -261,11 +263,11 @@ CScriptArray* pathfinder::find(int start_x, int start_y, int start_z, int end_x,
 		callback_data = NULL;
 		return array;
 	}
-	void* start = encode_state(start_x, start_y, start_z, desperation_factor);
+	void* start = encode_state(start_x, start_y, start_z, solve_desperation);
 	this->start_x = start_x;
 	this->start_y = start_y;
 	this->start_z = start_z;
-	void* end = encode_state(end_x, end_y, end_z, desperation_factor);
+	void* end = encode_state(end_x, end_y, end_z, solve_desperation);
 	if (!start || !end) {
 		if (data) data->Release();
 		callback_data = NULL;
@@ -330,7 +332,7 @@ void pathfinder::AdjacentCost(void* node, micropather::MPVector<micropather::Sta
 		int nx = x + dx[i];
 		int ny = y + dy[i];
 		int nz = i >= 8 && i != 9 && i < 14 ? z + 1 : (i == 9 || i >= 14 ? z - 1 : z);
-		void* st = encode_state(nx, ny, nz, desperation_factor);
+		void* st = encode_state(nx, ny, nz, solve_desperation);
 		if (!st)
 			continue;
 		if (search_range > 0 && (nx < start_x - search_range || nx > start_x + search_range || ny < start_y - search_range || ny > start_y + search_range || nz < start_z - search_range || nz > start_z + search_range)) {
