@@ -1025,7 +1025,7 @@ int ExecuteScript(asIScriptEngine *engine, const string &scriptFile) {
 		}
 		if (!ctx->GetReturnByte()) {
 			engine->ReturnContext(ctx);
-			return 0;
+			return g_exit_called ? g_retcode : 0; // exit() called by preglobals() before it returned false, which it can't abort (see below): its code, as on the other paths.
 		}
 		engine->ReturnContext(ctx);
 		if (g_exit_called) return g_retcode; // exit() ends the script before main(), which it can't abort, as preglobals() doesn't run under the context manager.
