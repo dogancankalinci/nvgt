@@ -989,7 +989,10 @@ void CDebugger::PrintCallstack(asIScriptContext *ctx)
 	for( asUINT n = 0; n < ctx->GetCallstackSize(); n++ )
 	{
 		lineNbr = ctx->GetLineNumber(n, 0, &file);
-		s << (file ? file : "{unnamed}") << ":" << lineNbr << "; " << ctx->GetFunction(n)->GetDeclaration() << endl;
+		// ALTERED: the level of a nested call's marker has no function when the nested call wasn't made by a registered function
+		// (a script class destructor run when the script let go of its last handle): its declaration was read from null.
+		asIScriptFunction *func = ctx->GetFunction(n);
+		s << (file ? file : "{unnamed}") << ":" << lineNbr << "; " << (func ? func->GetDeclaration() : "{nested call}") << endl;
 	}
 	Output(s.str());
 }
