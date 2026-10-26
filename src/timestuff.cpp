@@ -231,11 +231,18 @@ bool timer_queue::loop(int max_timers, int max_catchup) {
 	} hold(this);
 	std::lock_guard<std::recursive_mutex> l(mtx);
 	purge_deleting_timers();
-	uint64_t t = !open_tick ? ticks() - last_looped : 0;
-	if (t > max_catchup) t = max_catchup;
-	if (!open_tick && t <= 0) return true;
+	// The time handed to the wheel is added to last_looped before any timer runs. Added after advance(), and only once no tick was left open, it was given to the wheel twice: by a loop() that a timer callback ran meanwhile (a modal loop inside a callback), which advanced the wheel by the same time again and left last_looped ahead of the clock, after which ticks() - last_looped wrapped around and every loop() advanced max_catchup milliseconds however little time had passed; and, after a loop() that stopped at max_timers in the middle of a tick (which still hands all of t to the wheel), by the loop() after the tick was finished.
+	uint64_t t = 0;
+	if (!open_tick) {
+		uint64_t now = ticks();
+		t = now > last_looped ? now - last_looped : 0;
+		if (t > max_catchup) t = max_catchup;
+		if (t <= 0) return true;
+		last_looped += t;
+	}
+	// And a loop() run by a timer callback meanwhile goes on from where the wheel is, which advance() keeps track of: still taken for open, a tick this call was finishing had it advance the wheel by nothing and run no timer.
+	open_tick = false;
 	open_tick = !(max_timers > 0 ? timers.advance(t, max_timers) : timers.advance(t));
-	if (!open_tick) last_looped += t;
 	for (timer_queue_item* item : stopped_timers) {
 		if (owns(item)) timers.schedule(item, 1);
 	}
