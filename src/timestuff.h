@@ -49,8 +49,18 @@ class timer_queue {
 	bool open_tick;
 	int RefCount;
 	void purge_deleting_timers();
-public:
+	// Scripts read failures (get_failures()) on any thread while loop() adds to it on the thread looping the queue, so it has a lock of its own, which nothing holds while script code runs: under mtx, which loop() holds while it runs timer callbacks, a read would wait for every callback of the loop() under way, and never end if one of them waited for the reading thread.
+	std::mutex failures_mtx;
 	std::string failures;
+public:
+	void add_failure(const std::string& text) {
+		std::lock_guard<std::mutex> l(failures_mtx);
+		failures += text;
+	}
+	std::string get_failures() {
+		std::lock_guard<std::mutex> l(failures_mtx);
+		return failures;
+	}
 	// How many runs of each timer's callback are going on: a callback that runs loop() again can have its own timer run again
 	// inside it (restart() or set() put it back in the wheel), and that inner run ending cleared a mark that was only a set entry,
 	// so purge_deleting_timers() deleted the timer (erased by the inner run, or by the callback) while its first run still used it.

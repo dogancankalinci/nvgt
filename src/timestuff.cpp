@@ -58,9 +58,7 @@ void timer_queue_item::execute() {
 	bool new_context = ACtx == NULL || ACtx->PushState() < 0;
 	asIScriptContext *ctx = (new_context ? g_ScriptEngine->RequestContext() : ACtx);
 	if (!ctx) {
-		parent->failures += id;
-		parent->failures += "; can't get context.\r\n";
-		parent->failures += get_call_stack();
+		parent->add_failure(id + "; can't get context.\r\n" + get_call_stack());
 		parent->erase(id);
 		return;
 	}
@@ -68,8 +66,7 @@ void timer_queue_item::execute() {
 	if ((rp = ctx->Prepare(callback)) < 0) {
 		char tmp[200];
 		snprintf(tmp, 200, "%s; can't prepare; %d\r\n", id.c_str(), rp);
-		parent->failures += tmp;
-		parent->failures += get_call_stack();
+		parent->add_failure(tmp + get_call_stack());
 		parent->erase(id);
 		if (new_context)
 			g_ScriptEngine->ReturnContext(ctx);
@@ -680,7 +677,7 @@ void RegisterScriptTimestuffCore(asIScriptEngine *engine) {
 	engine->RegisterObjectBehaviour(_O("timer_queue"), asBEHAVE_ADDREF, _O("void f()"), asMETHOD(timer_queue, add_ref), asCALL_THISCALL);
 	engine->RegisterObjectBehaviour(_O("timer_queue"), asBEHAVE_RELEASE, _O("void f()"), asMETHOD(timer_queue, release), asCALL_THISCALL);
 	engine->RegisterFuncdef(_O("uint timer_callback(string timer_id, string user_data)"));
-	engine->RegisterObjectProperty(_O("timer_queue"), _O("const string failures"), asOFFSET(timer_queue, failures));
+	engine->RegisterObjectMethod(_O("timer_queue"), _O("string get_failures() const property"), asMETHOD(timer_queue, get_failures), asCALL_THISCALL); // An accessor rather than the property it was, to read the text under its lock; q.failures reads as before.
 	engine->RegisterObjectMethod(_O("timer_queue"), _O("void set(const string&in timer_id, timer_callback@ callback, const string&in callback_data, uint64 milliseconds, bool repeating = false)"), asMETHOD(timer_queue, set), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("timer_queue"), _O("void set(const string&in timer_id, timer_callback@ callback, uint64 milliseconds, bool repeating = false)"), asMETHOD(timer_queue, set_dataless), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("timer_queue"), _O("uint64 elapsed(const string&in timer_id) const"), asMETHOD(timer_queue, elapsed), asCALL_THISCALL);
