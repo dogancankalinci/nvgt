@@ -2556,8 +2556,8 @@ struct held_sound : ma_sound {
 	std::atomic<int> restart{restart_none};
 	std::atomic<bool> flushing{false}; // give_end() runs MiniAudio's processing at the sound's end with its end flag off, which another thread is to take for the end still (see at_end_seen()).
 	std::atomic<ma_uint32> processed{0}; // Calls of held_sound_process(), by which play() tells whether the audio thread still processes the sound (see sound_impl::still_ending()).
-	std::atomic<ma_uint64> block_at{~(ma_uint64)0}; // The engine's time when held_sound_process() last ran, the start of that block; ~0 before it ran (see sound_impl::schedule_stop_and_fade()).
-	std::atomic<ma_uint64> block_done{~(ma_uint64)0}; // block_at once held_sound_process() returned for that block.
+	std::atomic<ma_uint64> block_at{~(ma_uint64)0}; // The engine's time when held_sound_process() or held_group_process() last ran, the start of that block; ~0 before it ran (see sound_impl::schedule_stop_and_fade()).
+	std::atomic<ma_uint64> block_done{~(ma_uint64)0}; // block_at once that processing returned for that block.
 	std::atomic<ma_uint64> seek_target{~(ma_uint64)0}; // The frame a seek asked for, ~0 for none, made by held_sound_process() in place of MiniAudio's seekTarget.
 	// A fade scheduled ahead, by set_timed_fade() or a stop with a fade, kept here rather than given to MiniAudio, which takes a fade's settings into the sound's only fader at its next block and plays the sound unfaded until the fade begins, so that a sound at a fade of its own jumped to full volume and back: held_sound_process() gives it in the first block starting at or past fade_at, ~0 for none. Under fade_locked, which the audio thread only tries.
 	std::atomic<bool> fade_locked{false}, fade_pending{false};
@@ -3191,11 +3191,14 @@ static ma_data_source* chain_source(ma_data_source* head, audio_engine* engine, 
 	return &view->base;
 }
 static void held_group_process(ma_node* node, const float** frames_in, ma_uint32* frame_count_in, float** frames_out, ma_uint32* frame_count_out) {
+	held_sound* h = held((ma_sound*)node);
+	h->block_at.store(ma_engine_get_time_in_pcm_frames(ma_sound_get_engine((ma_sound*)node))); // As for a sound, by which a stop within the block a mixer played past counts as come (see mixer_impl::heard_until()).
 	hold_rate(node);
 	keep_fader_in_range((ma_sound*)node);
 	give_fades((ma_sound*)node, *frame_count_out);
 	take_past_fade((ma_sound*)node);
 	g_ma_group_process(node, frames_in, frame_count_in, frames_out, frame_count_out);
+	h->block_done.store(h->block_at.load());
 }
 // Gives a sound or group that was made but isn't attached to anything yet hold_rate()'s processing: a copy of MiniAudio's node vtable for its kind, whose processing holds the rate first.
 static void hold_rate_of(ma_sound* s) {
