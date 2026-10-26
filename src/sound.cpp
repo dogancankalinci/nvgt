@@ -5977,6 +5977,10 @@ void nvgt_audio_plugin_node_register(const string& nodename) {
 // The node is made as the plugin's node type the script function calling the plugin returns, as its factory does; a node made otherwise, as outside a call from a script, has no type known.
 // A node that can't be made gives null rather than an exception, which a plugin built apart from NVGT can't reliably catch; impl then stays the plugin's, release() never being called for it.
 plugin_node* nvgt_audio_plugin_node_create(audio_plugin_node_interface* impl, unsigned char input_bus_count, unsigned char output_bus_count, unsigned int flags, audio_engine* engine) {
+	if (!engine) { // The node is made in that engine's graph, which the constructor reads.
+		g_soundsystem_last_error = MA_INVALID_ARGS;
+		return nullptr;
+	}
 	plugin_node* node;
 	try {
 		node = plugin_node::create(impl, input_bus_count, output_bus_count, flags, engine);
