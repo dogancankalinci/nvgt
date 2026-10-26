@@ -46,7 +46,7 @@ Poco::FastMutex g_time_mutex;
 static bool g_time_cache_initialized = false;
 
 static asIScriptContext* callback_ctx = NULL;
-timer_queue_item::timer_queue_item(timer_queue *parent, const std::string &id, asIScriptFunction *callback, const std::string &callback_data, int timeout, bool repeating) : parent(parent), id(id), callback(callback), callback_data(callback_data), timeout(timeout), repeating(repeating), is_scheduled(true) {}
+timer_queue_item::timer_queue_item(timer_queue *parent, const std::string &id, asIScriptFunction *callback, const std::string &callback_data, uint64_t timeout, bool repeating) : parent(parent), id(id), callback(callback), callback_data(callback_data), timeout(timeout), repeating(repeating), is_scheduled(true) {}
 void timer_queue_item::execute() {
 	asIScriptContext *ACtx = asGetActiveContext();
 	// exit() was called since the script called loop(), by a callback loop() ran (the abort it passes on to the script only takes effect once loop() returns) or by another thread: run no more callbacks. The timer stays due, for a later loop() such as one in on_exit().
@@ -82,9 +82,12 @@ void timer_queue_item::execute() {
 	parent->executing_timers[this]++;
 	int xr = execute_nested(ctx);
 	if (--parent->executing_timers[this] == 0) parent->executing_timers.erase(this);
-	int ms = 0;
-	if (xr == asEXECUTION_FINISHED) ms = ctx->GetReturnDWord();
-	else if (!is_scheduled || xr == asEXECUTION_EXCEPTION) repeating = false;
+	// 64-bit, as the timeout is (see timer_queue_item::timeout). A callback returning 2^31 or more still asks for no delay, as it did when this was an int.
+	uint64_t ms = 0;
+	if (xr == asEXECUTION_FINISHED) {
+		asDWORD returned = ctx->GetReturnDWord();
+		ms = returned <= INT32_MAX ? returned : 0;
+	} else if (!is_scheduled || xr == asEXECUTION_EXCEPTION) repeating = false;
 	if (repeating && ms < 1) ms = timeout;
 	if (new_context) g_ScriptEngine->ReturnContext(ctx);
 	else pop_nested_state(ctx);

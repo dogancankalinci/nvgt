@@ -32,11 +32,11 @@ public:
 	std::string id;
 	asIScriptFunction* callback;
 	std::string callback_data;
-	int timeout;
+	uint64_t timeout; // The milliseconds set() and set_timeout() take: an int made one of 2^31 or more (about 24.8 days) negative, timeout() returned it sign-extended, and a repeating timer with one was deleted after its first run.
 	bool repeating;
 	bool is_scheduled;
 	timer_queue* parent;
-	timer_queue_item(timer_queue* parent, const std::string& id, asIScriptFunction* callback, const std::string& callback_data, int timeout, bool repeating);
+	timer_queue_item(timer_queue* parent, const std::string& id, asIScriptFunction* callback, const std::string& callback_data, uint64_t timeout, bool repeating);
 	void execute();
 };
 class timer_queue {
