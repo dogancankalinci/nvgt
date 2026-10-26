@@ -2709,18 +2709,23 @@ static void start_from_start(ma_sound* s) {
 	held(s)->seek_target.compare_exchange_strong(none, 0);
 	reinterpret_cast<std::atomic<ma_bool32>*>(&s->atEnd)->store(MA_FALSE);
 }
-// Gives MiniAudio the fade scheduled ahead in the sound once its time came (see held_sound::fade_at), before MiniAudio's processing, which takes it in the same block; one the script is setting meanwhile is given in the next.
-static void give_deferred_fade(ma_sound* s) {
+// Gives MiniAudio the fade scheduled ahead in the sound in the block of frames its time falls in (see held_sound::fade_at), before MiniAudio's processing, which takes it in the same block; one the script is setting meanwhile is given in the next.
+static void give_deferred_fade(ma_sound* s, ma_uint32 frames) {
 	held_sound* h = held(s);
 	if (!h->fade_pending.load(std::memory_order_acquire) || h->fade_locked.exchange(true, std::memory_order_acquire)) return;
-	ma_uint64 now = ma_engine_get_time_in_pcm_frames(ma_sound_get_engine(s));
-	if (h->fade_at != ~(ma_uint64)0 && h->fade_at <= now) {
-		// Given from now, at the volume it got to, never with its past start, from which MiniAudio would count its fader's cursor: past 2^32 frames that cursor overran the fader's processing, which wrote past the block.
-		const ma_uint64 elapsed = now - h->fade_at, length = h->fade_length;
+	// The block's first frame the sound plays, which is its start when that is scheduled within the block, MiniAudio then processing it from there.
+	ma_uint64 now = ma_engine_get_time_in_pcm_frames(ma_sound_get_engine(s)), start = ma_node_get_state_time(s, ma_node_state_started);
+	if (start > now) now = start;
+	const ma_uint64 at = h->fade_at;
+	if (at != ~(ma_uint64)0 && (at <= now || at - now < frames)) {
+		// Given in the block it begins in, from the sound's first frame there, rather than in the first block starting past it: a stop's fade beginning and ending within one block, as a short one did more often than not, was never given, the sound stopped before the next, and cut off unfaded. It may begin up to a block early, still ending when it would have.
+		// Given at the volume it got to by then, never with its past start, from which MiniAudio would count its fader's cursor: past 2^32 frames that cursor overran the fader's processing, which wrote past the block.
+		const ma_uint64 length = h->fade_length, elapsed = at < now? now - at : 0;
 		float beg = h->fade_beg, end = h->fade_end;
 		if (elapsed < length) {
 			if (beg >= 0) beg += (end - beg) * (float)((double)elapsed / (double)length); // A negative beginning is the volume the sound is at.
-			ma_sound_set_fade_start_in_pcm_frames(s, beg, end, length - elapsed, ~(ma_uint64)0);
+			const ma_uint64 early = at > now? at - now : 0, left = length - elapsed;
+			ma_sound_set_fade_start_in_pcm_frames(s, beg, end, left > ~(ma_uint64)0 - early? ~(ma_uint64)0 : left + early, ~(ma_uint64)0);
 		} else ma_sound_set_fade_start_in_pcm_frames(s, end, end, 0, ~(ma_uint64)0);
 		h->fade_at = ~(ma_uint64)0;
 		h->fade_pending.store(false, std::memory_order_relaxed);
@@ -2731,7 +2736,7 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 	hold_rate(node);
 	ma_sound* s = (ma_sound*)node;
 	held(s)->processed.fetch_add(1, std::memory_order_relaxed);
-	give_deferred_fade(s);
+	give_deferred_fade(s, *frame_count_out);
 	std::atomic<ma_uint64>& seek_target = held(s)->seek_target;
 	// A seek given to MiniAudio itself, as by C++ code holding the ma_sound, is moved to the sound's target, to be made as the script's are; MiniAudio's own processing would keep the cache and seek a stream every block.
 	std::atomic<ma_uint64>& given_target = *reinterpret_cast<std::atomic<ma_uint64>*>(&s->seekTarget);
