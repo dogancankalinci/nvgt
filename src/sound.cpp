@@ -4507,8 +4507,9 @@ public:
 	bool get_active() override {
 		return snd ? true : false;
 	}
+	// Not once it played to its end, as one does while pause_fade() fades it out, as its page says a sound that isn't playing doesn't read as paused: play() then starts it from its start rather than resuming it.
 	bool get_paused() override {
-		return snd ? !ma_sound_is_playing(&*snd) && paused : false;
+		return snd ? !ma_sound_is_playing(&*snd) && paused && !at_end_seen(&*snd) : false;
 	}
 	// Playing, or started and due to play, its start scheduled ahead with set_start_time(), which ma_sound_is_playing() reads as stopped until then: not a sound stopped, played to its end or never started, nor one whose scheduled stop has come, which MiniAudio leaves started (see clear_stop_for_restart()).
 	bool started_to_play() {
