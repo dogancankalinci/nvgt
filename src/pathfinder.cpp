@@ -257,10 +257,15 @@ CScriptArray* pathfinder::find(int start_x, int start_y, int start_z, int end_x,
 	if (automatic_reset || !cache) reset();
 	callback_data = data;
 	if (data) data->AddRef();
+	// The search starts here: the check below runs the callback for the start and the end. Marked as solving only once MicroPather was called, a find() that callback ran was a whole search of its own, which ended by clearing callback_data, so every later callback of this search got a null callback_data; and a reset() or cancel() there didn't stop this search, as it does from any later callback.
+	solving = true;
 	// Only perform this fast-fail optimization if callback is "simple", otherwise it will just produce false positives.
 	if (callback_mode == CALLBACK_SIMPLE && (get_difficulty(start_x, start_y, start_z, start_x, start_y, start_z) > 9 || get_difficulty(end_x, end_y, end_z, end_x, end_y, end_z) > 9)) {
+		solving = false;
 		if (data) data->Release();
 		callback_data = NULL;
+		abort = false;
+		if (must_reset) reset();
 		return array;
 	}
 	void* start = encode_state(start_x, start_y, start_z, solve_desperation);
@@ -269,12 +274,14 @@ CScriptArray* pathfinder::find(int start_x, int start_y, int start_z, int end_x,
 	this->start_z = start_z;
 	void* end = encode_state(end_x, end_y, end_z, solve_desperation);
 	if (!start || !end) {
+		solving = false;
 		if (data) data->Release();
 		callback_data = NULL;
+		abort = false;
+		if (must_reset) reset();
 		return array;
 	}
 	micropather::MPVector<void*> path;
-	solving = true;
 	int result = pf->Solve(start, end, &path, &total_cost);
 	solving = false;
 	if (data) data->Release();
