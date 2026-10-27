@@ -17,6 +17,8 @@
 #include <miniaudio_phonon.h>
 #include <phonon.h>
 #include <unordered_map>
+#include <unordered_set>
+#include <atomic>
 #include <vector>
 #include <mutex>
 #include "sound.h"
@@ -101,6 +103,19 @@ public:
 		return false;
 	}
 	// The node this one was attached to is let go of after the graph lock: letting go can destroy it, and a destructor, such as a spatializer's, takes locks that are taken before the graph lock elsewhere.
+	// Whether from is to, or its output reaches to through attachments. Under g_node_graph_mutex, which attachments change under.
+	static bool reaches_node(audio_node* from, const audio_node* to) {
+		std::vector<audio_node*> todo{from};
+		std::unordered_set<audio_node*> seen;
+		while (!todo.empty()) {
+			audio_node* n = todo.back();
+			todo.pop_back();
+			if (n == to) return true;
+			if (!n || !seen.insert(n).second) continue;
+			if (audio_node_impl* impl = dynamic_cast<audio_node_impl*>(n)) todo.insert(todo.end(), impl->output_connections.begin(), impl->output_connections.end());
+		}
+		return false;
+	}
 	bool attach_output_bus(unsigned int output_bus, audio_node *destination, unsigned int destination_input_bus) {
 		if (!node || !destination) return false;
 		unsigned int from = output_sample_rate(), to = destination->get_engine()? (unsigned int)destination->get_engine()->get_sample_rate() : 0; // Before the graph lock, so that no lock a subclass may read its rate under is taken inside it.
@@ -109,6 +124,11 @@ public:
 			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); 
 			// Checked under the graph lock the attach is made under, which feeds_engine() takes too, so that two threads mixing two no-device engines into each other at once can't both pass it before either attached. Only into this node's own engine, whose audio thread alone reads its graph: a node read by two engines' threads at once crashes. An engine itself is the exception, as a no-device engine is mixed into another through its own node, which only that other engine's thread then reads; an engine with a device would be read by its own device thread too, and one fed back into itself, directly or through other engines, would read itself without end.
 			if (is_engine()? !(engine->get_flags() & audio_engine::NO_DEVICE) || feeds_engine(destination->get_engine()) : destination->get_engine() != engine) {
+				g_soundsystem_last_error = MA_INVALID_ARGS;
+				return false;
+			}
+			// Nor into itself, or into a node whose output reaches this one, as a chain's endpoint set to the chain or one of its own nodes: each attachment holds the node it goes into, so the loop kept every node on it, and their engine with its device, alive for good.
+			if (reaches_node(destination, this)) {
 				g_soundsystem_last_error = MA_INVALID_ARGS;
 				return false;
 			}
@@ -449,8 +469,8 @@ public:
 typedef spatializer_component_node* (*spatializer_component_node_factory)(audio_spatializer*, audio_engine*);
 
 struct spatializer_component {
-	spatializer_component_node_factory factory;
-	bool enabled;
+	spatializer_component_node_factory factory = nullptr;
+	std::atomic<bool> enabled{false}; // Written under the sweep's lock, read by spatializers made on any thread.
 };
 
 int register_audio_panner(spatializer_component_node_factory factory, bool default_enabled = true);

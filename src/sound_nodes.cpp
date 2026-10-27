@@ -1048,8 +1048,8 @@ static std::unordered_map<int, spatializer_component> g_audio_panners;
 static std::unordered_map<int, spatializer_component> g_audio_attenuators;
 static int g_next_panner_id = 0;
 static int g_next_attenuator_id = 0;
-static int g_default_3d_panner = -1;
-static int g_default_3d_attenuator = -1;
+static std::atomic<int> g_default_3d_panner{-1}; // Set by one script thread, read by spatializers made on any.
+static std::atomic<int> g_default_3d_attenuator{-1};
 std::recursive_mutex g_node_graph_mutex;
 class audio_spatializer_impl;
 static std::unordered_set<audio_spatializer_impl*> g_tracked_spatializers;
@@ -1064,13 +1064,17 @@ static void sweep_tracked_spatializers(swept_spatializers &swept, bool panner, i
 
 int register_audio_panner(spatializer_component_node_factory factory, bool default_enabled) {
 	int id = g_next_panner_id++;
-	g_audio_panners[id] = {factory, default_enabled};
+	spatializer_component& component = g_audio_panners[id];
+	component.factory = factory;
+	component.enabled = default_enabled;
 	return id;
 }
 
 int register_audio_attenuator(spatializer_component_node_factory factory, bool default_enabled) {
 	int id = g_next_attenuator_id++;
-	g_audio_attenuators[id] = {factory, default_enabled};
+	spatializer_component& component = g_audio_attenuators[id];
+	component.factory = factory;
+	component.enabled = default_enabled;
 	return id;
 }
 
