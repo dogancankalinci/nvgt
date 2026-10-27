@@ -4929,8 +4929,7 @@ public:
 			ma_uint64 frames = 0;
 			ma_uint32 sample_rate = 0;
 			if ((g_soundsystem_last_error = get_cursor(frames)) != MA_SUCCESS || (g_soundsystem_last_error = ma_sound_get_data_format(&*snd, nullptr, nullptr, &sample_rate, nullptr, 0)) != MA_SUCCESS) return 0;
-			float pos = (ma_int64)frames / (float)sample_rate; // As ma_sound_get_cursor_in_seconds() works it out.
-			return pos * 1000.0f;
+			return frames_to_milliseconds(frames, sample_rate);
 		}
 		return 0;
 	}
@@ -4959,11 +4958,17 @@ public:
 		}
 		if (snd && datasource_opened && datasource) return (unsigned long long)datasource->get_length_milliseconds(); // As get_length_in_frames().
 		if (snd) {
-			float len;
-			g_soundsystem_last_error = ma_sound_get_length_in_seconds(&*snd, &len);
-			return g_soundsystem_last_error == MA_SUCCESS ? len * 1000.0f : 0;
+			ma_uint64 len = 0;
+			ma_uint32 sample_rate = 0;
+			if ((g_soundsystem_last_error = ma_sound_get_length_in_pcm_frames(&*snd, &len)) != MA_SUCCESS || (g_soundsystem_last_error = ma_sound_get_data_format(&*snd, nullptr, nullptr, &sample_rate, nullptr, 0)) != MA_SUCCESS) return 0;
+			return frames_to_milliseconds(len, sample_rate);
 		}
 		return 0;
+	}
+	// Exactly, as seek_in_milliseconds() counts the other way: through a float, as MiniAudio's seconds go, a position or length past about 2^24 frames, six minutes at 48 kHz, came out rounded, by milliseconds after an hour, so that a position read and sought back drifted.
+	static unsigned long long frames_to_milliseconds(ma_uint64 frames, ma_uint32 sample_rate) {
+		if (!sample_rate) return 0;
+		return frames <= ~(ma_uint64)0 / 1000? frames * 1000 / sample_rate : (unsigned long long)((double)frames / sample_rate * 1000);
 	}
 	bool get_data_format(ma_format *format, unsigned int *channels, unsigned int *sample_rate) override {
 		if (format) *format = ma_format_unknown; // As MiniAudio sets them when it fails, for a sound without anything loaded.
