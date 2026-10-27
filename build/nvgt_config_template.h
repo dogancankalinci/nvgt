@@ -25,6 +25,8 @@ static inline void _nvgt_bc_derive_key(unsigned char* key_out, unsigned char* iv
 
 // code is a reference to the pointer to the data: a function that needs more than alloc_size bytes realloc()s the data and stores the new pointer in code, which the caller then uses (and frees).
 inline int angelscript_bytecode_decrypt(unsigned char*& code, int size, int alloc_size) {
+	// The payload comes from the executable, which may be truncated or corrupt. AES decrypts whole 16-byte blocks (a size that isn't a multiple of 16 is decrypted past the end of the data), and the encryption below always writes the prefixes and 1 to 16 bytes of padding: refuse a size it can't have written before any arithmetic on it.
+	if (size > alloc_size || size < {{prefix_size}} + 16 || (size - {{prefix_size}}) % 16 != 0 || size - {{prefix_size}} < {{prefix_size2}} + 1) return -1;
 	int aes_size = size - {{prefix_size}};
 	unsigned char key[32], iv[16];
 	_nvgt_bc_derive_key(key, iv, aes_size);
@@ -35,8 +37,9 @@ inline int angelscript_bytecode_decrypt(unsigned char*& code, int size, int allo
 	for (int i = 0; i < aes_size - {{prefix_size2}}; i++) code[{{prefix_size}} + {{prefix_size2}} + i] ^= code[{{prefix_size}} + i % {{prefix_size2}}];
 	unsigned char pad = code[size - 1];
 	int content_size = aes_size - {{prefix_size2}} - pad;
-	memmove(code, code + {{prefix_size}} + {{prefix_size2}}, content_size);
 	memset(key, 0, 32); memset(iv, 0, 16); memset(&crypt, 0, sizeof(AES_ctx));
+	if (pad < 1 || pad > 16 || content_size < 0) return -1; // Not padding the encryption below wrote: the data is corrupt.
+	memmove(code, code + {{prefix_size}} + {{prefix_size2}}, content_size);
 	return content_size;
 }
 

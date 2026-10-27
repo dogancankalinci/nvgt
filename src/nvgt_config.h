@@ -23,6 +23,8 @@
 #include <aes.hpp>
 #include <Poco/SHA2Engine.h>
 inline int angelscript_bytecode_decrypt(unsigned char*& code, int size, int alloc_size) {
+	// The payload comes from the executable, which may be truncated or corrupt: AES decrypts whole 16-byte blocks (a size that isn't a multiple of 16 is decrypted past the end of the data), and the padding read below needs at least one block. Refuse what this function can't have written.
+	if (size < 16 || size % 16 != 0 || size > alloc_size) return -1;
 	unsigned char iv[16];
 	char tmp[32];
 	Poco::SHA2Engine hash;
@@ -36,7 +38,9 @@ inline int angelscript_bytecode_decrypt(unsigned char*& code, int size, int allo
 	memset(tmp, 0, sizeof(tmp));
 	memset(iv, 0, sizeof(iv));
 	memset(&crypt, 0, sizeof(AES_ctx));
-	return size - code[size - 1];
+	unsigned char pad = code[size - 1];
+	if (pad < 1 || pad > 16) return -1; // The encryption below always pads with 1 to 16 bytes of this value.
+	return size - pad;
 }
 inline int angelscript_bytecode_encrypt(unsigned char*& code, int size, int alloc_size) {
 	unsigned char r = 16 - (size % 16);
