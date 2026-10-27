@@ -2135,9 +2135,10 @@ protected:
 	virtual bool open_impl(const string& filename, datastream* ds, unsigned int sample_rate, unsigned int channels, unsigned int flags) { return false; } // Override in subclasses to initialize encoder state, one of either ds or filename will be set.
 	virtual unsigned int write_impl(const void* buffer, unsigned int size) { return 0; } // Override in subclasses, send given buffer to encoder.
 	// Frames in float, at the encoder's channels and rate, given to write_impl() in its format.
+	vector<char> converted, dc_buffer; // Scratch for write_converted() and write_locked(), under write_mtx.
 	unsigned int write_converted(const void* frames, unsigned int frame_count) {
 		if (output_format == ma_format_f32) return write_impl(frames, frame_count);
-		vector<char> converted((size_t)frame_count * ma_get_bytes_per_frame(output_format, channels));
+		converted.resize((size_t)frame_count * ma_get_bytes_per_frame(output_format, channels)); // Kept, so that an encoder in the graph doesn't allocate on the audio thread every block.
 		ma_pcm_convert(converted.data(), output_format, frames, ma_format_f32, (ma_uint64)frame_count * channels, ma_dither_mode_none);
 		return write_impl(converted.data(), frame_count);
 	}
@@ -2277,7 +2278,7 @@ public:
 			return frames;
 		}
 		unsigned int dc_bufsize = 1024; // frames
-		vector<char> dc_buffer(dc_bufsize * ma_get_bytes_per_frame(dc->formatOut, dc->channelsOut));
+		dc_buffer.resize(dc_bufsize * ma_get_bytes_per_frame(dc->formatOut, dc->channelsOut));
 		ma_uint64 total_processed = 0;
 		while (total_processed < frame_count) {
 			ma_uint64 frame_count_in = frame_count - total_processed, frame_count_out = dc_bufsize;
