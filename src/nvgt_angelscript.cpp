@@ -926,8 +926,10 @@ int LoadCompiledExecutable(asIScriptEngine *engine) {
 	Sint64 sdl_size = SDL_GetIOSize(sdl_io);
 	if (sdl_size < 4) { SDL_CloseIO(sdl_io); return -1; }
 	std::string sdl_content(sdl_size, '\0');
-	SDL_ReadIO(sdl_io, &sdl_content[0], sdl_size);
+	// A short read leaves the rest of the buffer zeroed, which the checks below can't tell from data.
+	size_t sdl_read = SDL_ReadIO(sdl_io, &sdl_content[0], sdl_size);
 	SDL_CloseIO(sdl_io);
+	if (sdl_read != size_t(sdl_size)) return -1;
 	std::istringstream fs(sdl_content, std::ios::binary);
 	BinaryReader br(fs);
 	UInt32 data_location, code_size;
@@ -937,7 +939,10 @@ int LoadCompiledExecutable(asIScriptEngine *engine) {
 	if (!load_embedded_packs(br)) return -1;
 	br.read7BitEncoded(code_size);
 	code_size ^= NVGT_BYTECODE_NUMBER_XOR;
+	// The size comes from the file: a corrupt one can be larger than the decryption takes (an int) or than can be allocated, and reading into a null block would write through it.
+	if (code_size < 1 || code_size > 0x7fffffff) return -1;
 	unsigned char* code = (unsigned char*)malloc(code_size);
+	if (!code) return -1;
 	br.readRaw((char*)code, code_size);
 	if (!fs.good()) {
 		// The payload is missing or truncated, as the desktop branch below checks: the rest of the buffer was never written, and the bytecode was decrypted and loaded from whatever it held (the default decryption takes the padding's length from its last byte).
@@ -981,7 +986,10 @@ int LoadCompiledExecutable(asIScriptEngine *engine) {
 	if (!load_embedded_packs(br)) return -1;
 	br.read7BitEncoded(code_size);
 	code_size ^= NVGT_BYTECODE_NUMBER_XOR;
+	// The size comes from the file: a corrupt one can be larger than the decryption takes (an int) or than can be allocated, and reading into a null block would write through it.
+	if (code_size < 1 || code_size > 0x7fffffff) return -1;
 	unsigned char* code = (unsigned char*)malloc(code_size);
+	if (!code) return -1;
 	br.readRaw((char*)code, code_size);
 	if (!fs.good()) {
 		// The payload is missing or truncated, for example because a resource editor rewrote the executable and dropped the data after its last section. Decrypting whatever is in the buffer would write past it and corrupt the heap, so fail cleanly instead.
