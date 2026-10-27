@@ -37,7 +37,8 @@ class pack : public pack_interface {
 	std::shared_ptr<read_mode_internals> read;
 	std::shared_ptr<write_mode_internals> write;
 	std::string pack_name; // The name the pack file was opened or created with, as the script reads it back.
-	std::string pack_path; // That name made absolute when the pack was opened, by which its files are opened anew and the sound system tells it apart: resolved at each load, a directory changed since open() read another file with this pack's table of contents.
+	std::string pack_absolute; // That name made absolute when the pack was opened, by which the sound system tells it apart, and its files are opened anew: resolved at each load, a directory changed since open() read another file with this pack's table of contents.
+	std::string pack_path; // What its files are opened anew by: pack_absolute, or on Android the name as given, as SDL opens a file packaged with the app by its relative name.
 	std::string key;
 	const pack_interface* mutable_ptr; // If a pack is made immutable for the sound system, contains 2a pointer to the mutable version.
 	// Sets the pack name, converting it to an absolute path if necessary.

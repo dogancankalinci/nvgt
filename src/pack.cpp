@@ -268,7 +268,12 @@ toc_map& pack::write_mode_internals::get_toc_map() {
 }
 void pack::set_pack_name(const std::string& name) {
 	pack_name = name;
-	pack_path = absolute_file_name(name);
+	pack_absolute = absolute_file_name(name);
+#ifdef __ANDROID__
+	pack_path = name;
+#else
+	pack_path = pack_absolute;
+#endif
 }
 pack::pack() : mutable_ptr(nullptr) {
 	open_mode = OPEN_NOT;
@@ -279,6 +284,7 @@ pack::pack(const pack& other) : mutable_ptr(&other) {
 	open_mode = OPEN_READ;
 	read = other.read;
 	pack_name = other.pack_name;
+	pack_absolute = other.pack_absolute;
 	pack_path = other.pack_path;
 	key = other.key;
 	other.duplicate(); // We have no choice but to hold on to a reference to the pack we're cloning so that the user can safely query the pack in use.
@@ -447,7 +453,7 @@ const std::string pack::get_pack_name() const {
 	return pack_name;
 }
 std::string pack::get_identity() const {
-	std::string identity = pack_path;
+	std::string identity = pack_absolute;
 	if (read) identity += "\x1f" + std::to_string(read->pack_offset) + "\x1f" + std::to_string(read->pack_size);
 	return identity;
 }
