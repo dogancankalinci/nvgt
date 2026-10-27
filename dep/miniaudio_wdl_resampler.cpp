@@ -82,6 +82,7 @@ static ma_result resampler_process(void *pUserData, ma_resampling_backend *pBack
         // MiniAudio gives no output to skip frames: they are made into scratch memory a part at a time and dropped. The state is MiniAudio's zeroed heap, which holds no container of its own.
         float scratch[4096];
         const ma_uint64 per_part = sizeof(scratch) / sizeof(float) / (state->channels ? state->channels : 1);
+        const bool flushing = *pFrameCountIn == 0 && state->should_flush;
         ma_uint64 in_total = 0, out_total = 0;
         while (out_total < *pFrameCountOut)
         {
@@ -95,6 +96,9 @@ static ma_result resampler_process(void *pUserData, ma_resampling_backend *pBack
         }
         *pFrameCountIn = in_total;
         *pFrameCountOut = out_total;
+        // As one call making all of it would leave it: the parts after the input ran out, given none, marked the resampler as at its end, which the next call without input then took for the end, flushing it mid-stream.
+        if (!flushing)
+            state->should_flush = out_total == 0;
         return MA_SUCCESS;
     }
     state->resampler.SetFeedMode(false);
