@@ -116,6 +116,7 @@ vcpkg_from_github(
         fix-loader-limits.patch
         fix-shared-enum-value-read.patch
         fix-copy-from-handle-reference.patch
+        fix-shared-enum-underlying-type.patch
 )
 
 vcpkg_cmake_configure(

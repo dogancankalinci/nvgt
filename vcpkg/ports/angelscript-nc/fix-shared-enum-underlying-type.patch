@@ -1,0 +1,38 @@
+--- a/sdk/angelscript/source/as_restore.cpp
++++ b/sdk/angelscript/source/as_restore.cpp
+@@ -1737,10 +1737,33 @@
+ 				Error(TXT_INVALID_BYTECODE_d);
+ 				return;
+ 			}
+-			t->enumType = asCDataType::CreatePrimitive(tt, false);
+-
+ 			int count = ReadCount(); // ALTERED: see ReadCount
+ 			bool sharedExists = existingShared.MoveTo(0, type);
++			// ALTERED: the underlying type of an enum that exists already (a shared enum another module declared) is checked
++			// against the bytecode's, not set from it: it was set before this was known, so loading bytecode that declares the
++			// enum with another underlying type changed the live enum's (its size stayed as it was), also when the load then
++			// failed, and code reading its values by their underlying type (an array's sort and find, the dictionary) read past
++			// them. The size of a new enum must also be its underlying type's (the bytecode gives both).
++			if( sharedExists )
++			{
++				if( t->enumType.GetTokenType() != tt )
++				{
++					asCString str;
++					str.Format(TXT_SHARED_s_DOESNT_MATCH_ORIGINAL_s, type->GetName(), type->GetModule() ? type->GetModule()->GetName() : "");
++					engine->WriteMessage("", 0, 0, asMSGTYPE_ERROR, str.AddressOf());
++					Error(TXT_INVALID_BYTECODE_d);
++					return;
++				}
++			}
++			else
++			{
++				t->enumType = asCDataType::CreatePrimitive(tt, false);
++				if( t->size != (asUINT)t->enumType.GetSizeInMemoryBytes() )
++				{
++					Error(TXT_INVALID_BYTECODE_d);
++					return;
++				}
++			}
+ 			if( !sharedExists )
+ 			{
+ 				t->enumValues.Allocate(PreallocCount(count), false);
