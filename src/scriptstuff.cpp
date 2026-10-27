@@ -968,8 +968,10 @@ public:
 		return get_mod()->AddScriptSection(name.c_str(), code.c_str(), code.size(), line_offset);
 	}
 	int build(CScriptArray* errors) {
-		if (!get_mod())
+		if (!get_mod()) {
+			if (errors) errors->Release(); // The handle given for errors is this function's to let go of, as on every other path.
 			return asNO_MODULE;
+		}
 		// This thread's messages go to errors (see CScriptMessageSink), and the build waits for another thread's (see GetScriptBuildMutex).
 		int result;
 		{
