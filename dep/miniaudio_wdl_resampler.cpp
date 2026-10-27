@@ -77,6 +77,26 @@ static void resampler_uninit(void *pUserData, ma_resampling_backend *pBackend, c
 static ma_result resampler_process(void *pUserData, ma_resampling_backend *pBackend, const void *pFramesIn, ma_uint64 *pFrameCountIn, void *pFramesOut, ma_uint64 *pFrameCountOut)
 {
     wdl_resampler_state *state = (wdl_resampler_state *)pBackend;
+    if (pFramesOut == nullptr)
+    {
+        // MiniAudio gives no output to skip frames: they are made into scratch memory a part at a time and dropped. The state is MiniAudio's zeroed heap, which holds no container of its own.
+        float scratch[4096];
+        const ma_uint64 per_part = sizeof(scratch) / sizeof(float) / (state->channels ? state->channels : 1);
+        ma_uint64 in_total = 0, out_total = 0;
+        while (out_total < *pFrameCountOut)
+        {
+            ma_uint64 in = *pFrameCountIn - in_total, out = *pFrameCountOut - out_total < per_part ? *pFrameCountOut - out_total : per_part;
+            const void *in_part = pFramesIn ? (const float *)pFramesIn + in_total * state->channels : nullptr;
+            ma_result result = resampler_process(pUserData, pBackend, in_part, &in, scratch, &out);
+            in_total += in;
+            out_total += out;
+            if (result != MA_SUCCESS || out == 0)
+                break;
+        }
+        *pFrameCountIn = in_total;
+        *pFrameCountOut = out_total;
+        return MA_SUCCESS;
+    }
     state->resampler.SetFeedMode(false);
     float *dest; // The resampler will point this to internal memory where we'll need to write some audio data.
     int prepare;

@@ -284,6 +284,35 @@ MA_API ma_result ma_libopus_read_pcm_frames(ma_libopus* pOpus, void* pFramesOut,
         return MA_INVALID_ARGS;
     }
 
+    /* NVGT: a NULL output skips frames, as MiniAudio's data sources allow, read into scratch memory a chunk at a time; the reads below write to it. */
+    if (pFramesOut == NULL) {
+        ma_uint8 scratch[16384];
+        ma_format format;
+        ma_uint32 channels;
+        ma_uint64 skipped = 0;
+        ma_uint64 chunk;
+        ma_result result = ma_libopus_get_data_format(pOpus, &format, &channels, NULL, NULL, 0);
+        if (result != MA_SUCCESS) {
+            return result;
+        }
+        chunk = ma_get_bytes_per_frame(format, channels) ? sizeof(scratch) / ma_get_bytes_per_frame(format, channels) : 0;
+        if (chunk == 0) {
+            return MA_INVALID_OPERATION;
+        }
+        while (skipped < frameCount) {
+            ma_uint64 got = 0;
+            result = ma_libopus_read_pcm_frames(pOpus, scratch, frameCount - skipped < chunk ? frameCount - skipped : chunk, &got);
+            skipped += got;
+            if (result != MA_SUCCESS || got == 0) {
+                break;
+            }
+        }
+        if (pFramesRead != NULL) {
+            *pFramesRead = skipped;
+        }
+        return result;
+    }
+
     #if !defined(MA_NO_LIBOPUS)
     {
         ma_result result = MA_SUCCESS;  /* Must be initialized to MA_SUCCESS. */
