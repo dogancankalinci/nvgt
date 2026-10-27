@@ -3,7 +3,7 @@
 	string sound_default_decryption_key;
 	## Remarks:
 		This property can only be assigned, not read. Assign an empty string to stop decrypting sounds.
-		While a key is set, sounds loaded with `sound::load()` or `sound::stream()` are decrypted with it, whether they are loaded from disk or from a pack. Files that aren't encrypted still load normally while a key is set.
+		While a key is set, sounds loaded with `sound::load()`, `sound::load_memory()`, `sound::stream()` or `sound::stream_url()`, and files opened by `audio_decoder.open()`, are decrypted with it, whether they are loaded from disk or from a pack; PCM given to `sound::load_pcm()` and generated sounds are not. Files that aren't encrypted still load normally while a key is set.
 		A load that failed because the right key wasn't set yet can be tried again once it is set.
 		When encrypting a file with `asset_encryptor`, close both the encryptor and the underlying file before loading the result, otherwise the end of the data may not have been written to disk yet.
 */
