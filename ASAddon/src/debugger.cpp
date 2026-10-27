@@ -647,10 +647,28 @@ bool CDebugger::InterpretCommand(const string &cmd, asIScriptContext *ctx)
 			}
 			int bytes = GetEngine()->GetSizeOfPrimitiveType(typeId);
 			if (!bytes) bytes = sizeof(void*);
+			// The object that receives the value of an object type. A type without a default constructor (a script class with only
+			// C(int)) has none: the statement ran, its value was dropped, and "<null>" was shown as the value. A reference type is
+			// evaluated as a handle to the value instead; for any other type the evaluation is refused.
+			void* made = nullptr;
+			if ((typeId & asTYPEID_MASK_OBJECT) && !(typeId & asTYPEID_OBJHANDLE))
+			{
+				asITypeInfo* type = GetEngine()->GetTypeInfoById(typeId);
+				made = GetEngine()->CreateScriptObject(type);
+				if (!made)
+				{
+					if (!type || !(type->GetFlags() & asOBJ_REF) || (type->GetFlags() & asOBJ_SCOPED))
+					{
+						Output(string("can't make a ") + rettype + " to hold the value; evaluate it as another type\n");
+						return false;
+					}
+					typeId |= asTYPEID_OBJHANDLE;
+				}
+			}
 			if (!(typeId & asTYPEID_MASK_OBJECT) || typeId & asTYPEID_OBJHANDLE) ref = malloc(bytes);
 			if (typeId & asTYPEID_MASK_OBJECT)
 			{
-				if (!(typeId & asTYPEID_OBJHANDLE)) ref = GetEngine()->CreateScriptObject(GetEngine()->GetTypeInfoById(typeId));
+				if (!(typeId & asTYPEID_OBJHANDLE)) ref = made;
 				else *(void**)ref = nullptr;
 			}
 			asIScriptModule* mod = ctx && ctx->GetFunction()? ctx->GetFunction()->GetModule() : nullptr;
