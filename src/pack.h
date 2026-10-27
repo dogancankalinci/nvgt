@@ -69,8 +69,10 @@ public:
 	bool extract_file(const std::string& internal_name, const std::string& file_on_disk);
 
 	CScriptArray* list_files();
-	// Returns the absolute path to this pack file on disk.
+	// Returns the name this pack file was opened or created with.
 	const std::string get_pack_name() const override;
+	// What the sound system's cache tells this pack's contents apart by: the pack file's absolute name, and an embedded pack's offset and size within it.
+	std::string get_identity() const;
 	/**
 	 * Creates a shared pointer to this object that can be used as a sound_service directive.
 	 * It calls duplicate() on the object, then returns a shared pointer which calls release() instead of deleting directly.
@@ -98,6 +100,8 @@ public:
 	section_istream(std::istream& source, std::streamoff start, std::streamsize size);
 	~section_istream();
 };
+// A file name made absolute against the current directory, by which a cache tells a file from one of the same relative name in another directory; the name as given when it can't be made absolute.
+std::string absolute_file_name(const std::string& path);
 // Pack embedding
 void embed_pack(const std::string& disc_filename, const std::string& embed_filename);
 bool load_embedded_packs(Poco::BinaryReader& br);

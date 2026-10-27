@@ -94,7 +94,7 @@ public:
 	 * A triplet contains the original URI, a protocol identifier and a suffix, each separated by an ASCII "Record separator" character (0X1E).
 	 * This method refuses a name that isn't valid UTF-8 or holds this separator character, or a protocol whose suffix holds it, returning an empty string, so the separator only ever separates the parts.
 	 * The protocol identifier is just its slot number, as this is guaranteed to be unique for the lifetime of an application instance.
-	 * The suffix is up to the protocol, but should be derived from the provided directive. For example, the suffix provided by the pack protocol is just the absolute path to the pack file on disk.
+	 * The suffix is up to the protocol, but should be derived from the provided directive. For example, the suffix provided by the pack protocol identifies the pack file by its absolute path, and an embedded pack by its place in that file; for the file system protocol the name itself is made absolute.
 	 * This guarantees that assets are always loaded even if they have the same name as a previously loaded asset from a different origin.
 	 * own_entry adds a number no other triplet has, so that MiniAudio's resource manager, which shares a decoded asset between the loads of one triplet, shares this one with no other load, and the asset is read as it is now.
 	 * A salt other than 0 adds itself, giving the same asset another triplet, and so another hash in the resource manager, the same for the same salt.

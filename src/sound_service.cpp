@@ -264,9 +264,11 @@ public:
 		// Build our triplet. This is the name that will actually be remembered by MiniAudio's resource manager.
 		std::stringstream triplet;
 		const std::string suffix = preg->get()->get_suffix(args.protocol_directive);
+		// A file from the file system stands for the file the name reaches from the current directory: its name alone made a relative name loaded from another directory share the buffer MiniAudio cached for the file it reached before while that buffer was held, playing the wrong file. A file rewritten while a sound loaded from it lives still shares that sound's buffer, as before: telling it apart would cost every load, cached ones included, a look at the file.
+		const std::string key_name = preg->get() == fs_protocol::get_instance()? absolute_file_name(name) : name;
 		if (suffix.find('\x1e') != std::string::npos) // As for the name, so that the parts after it, an own entry's number or a salt, can't be read as part of it.
 			return "";
-		triplet << name
+		triplet << key_name
 		        << "\x1e"
 		        << args.protocol_slot
 		        << "\x1e"
@@ -471,11 +473,16 @@ std::istream *pack_protocol::open_uri(const char *uri, const directive_t directi
 	std::istream *item = obj->get_file(uri);
 	return item;
 }
+// What tells the pack's contents apart: an NVGT pack's identity, which its name alone, as given to open(), didn't for a pack of that name in another directory or rewritten since, nor for two packs embedded in one file; a plugin's pack's name, and for one that gives none, a suffix no other load gets, so its loads share no buffer with any other.
 const std::string pack_protocol::get_suffix(const directive_t &directive) const {
 	std::shared_ptr<const pack_interface> obj = std::static_pointer_cast<const pack_interface>(directive);
 	if (obj == nullptr)
 		return "error";
-	return obj->get_pack_name();
+	if (const pack* own = dynamic_cast<const pack*>(obj.get())) return own->get_identity();
+	const std::string name = obj->get_pack_name();
+	if (!name.empty()) return name;
+	static std::atomic<uint64_t> unnamed_packs{0};
+	return "\x1f" + std::to_string(++unnamed_packs);
 }
 const pack_protocol pack_protocol::instance;
 const sound_service::protocol *pack_protocol::get_instance() {

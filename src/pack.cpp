@@ -444,6 +444,20 @@ bool pack::extract_file(const std::string& internal_name, const std::string& fil
 const std::string pack::get_pack_name() const {
 	return pack_name;
 }
+std::string pack::get_identity() const {
+	std::string identity = absolute_file_name(pack_name);
+	if (read) identity += "\x1f" + std::to_string(read->pack_offset) + "\x1f" + std::to_string(read->pack_size);
+	return identity;
+}
+std::string absolute_file_name(const std::string& path) {
+	try {
+		Poco::Path absolute(path);
+		absolute.makeAbsolute();
+		return absolute.toString();
+	} catch (const Poco::Exception&) {
+		return path;
+	}
+}
 void pack::release_pack(pack* obj) {
 	obj->release();
 }
