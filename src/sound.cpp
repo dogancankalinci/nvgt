@@ -1940,14 +1940,6 @@ class audio_decoder_impl : public audio_data_source_impl, public virtual audio_d
 		stream->seekg(offset, dir);
 		if (stream->fail()) {
 			stream->clear(); // genuinely unseekable and outside what was kept; say so instead of claiming a seek that didn't happen
-			if (sc->mirrors_stream()) { // A stream can fail a seek after it moved: put it back where the window ends, which reads past the window take it to be at, as the seeks the window answers itself don't move it.
-				stream->seekg(sc->base + (std::streamoff)sc->window.size(), stream->beg);
-				if (stream->fail()) {
-					stream->clear();
-					std::string().swap(sc->window);
-					sc->window_moved = true;
-				}
-			}
 			return MA_NOT_IMPLEMENTED;
 		}
 		// The stream really moved, so the window no longer describes where the decoder is; from here the stream answers for itself. It can never mirror again, so free it rather than just clearing it.
