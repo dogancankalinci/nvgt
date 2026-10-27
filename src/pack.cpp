@@ -266,9 +266,9 @@ bool pack::write_mode_internals::exists(const std::string& filename) {
 toc_map& pack::write_mode_internals::get_toc_map() {
 	return toc;
 }
-void pack::set_pack_name(const std::string& name) {
+void pack::set_pack_name(const std::string& name, const std::string& absolute) {
 	pack_name = name;
-	pack_absolute = absolute_file_name(name);
+	pack_absolute = absolute.empty()? absolute_file_name(name) : absolute;
 #ifdef __ANDROID__
 	pack_path = name;
 #else
@@ -311,15 +311,21 @@ bool pack::open(const std::string& filename, const std::string& key, uint64_t pa
 	close();
 	std::string pack_filename = filename;
 	if (!pack_size) find_embedded_pack(pack_filename, pack_offset, pack_size);
+	// Opened by the absolute name its files are opened by later, made once, so that another thread changing the directory meanwhile can't give the table of contents of one file and the files of another; pack_name stays the name as given.
+	const std::string absolute = absolute_file_name(pack_filename);
 	sdl_file_input_stream* file = NULL;
 	try {
+#ifdef __ANDROID__
 		file = new sdl_file_input_stream(pack_filename);
+#else
+		file = new sdl_file_input_stream(absolute);
+#endif
 		read = std::make_shared<read_mode_internals>(*file, key, pack_offset, pack_size);
 	} catch (std::exception&) {
 		// Don't delete here; internals may have chained several mutations onto the stream before it failed, so trust that it cleaned up.
 		return false;
 	}
-	set_pack_name(pack_filename);
+	set_pack_name(pack_filename, absolute);
 	this->key = key;
 	open_mode = OPEN_READ;
 	return true;

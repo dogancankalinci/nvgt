@@ -498,7 +498,7 @@ const std::string pack_protocol::get_suffix(const directive_t &directive) const 
 		return "error";
 	if (const pack* own = dynamic_cast<const pack*>(obj.get())) return own->get_identity();
 	const std::string name = obj->get_pack_name();
-	if (!name.empty()) return name;
+	if (!name.empty()) return absolute_file_name(name); // As a file's: two packs of one relative name in different directories shared buffers.
 	static std::atomic<uint64_t> unnamed_packs{0};
 	return "\x1f" + std::to_string(++unnamed_packs);
 }

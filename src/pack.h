@@ -42,7 +42,7 @@ class pack : public pack_interface {
 	std::string key;
 	const pack_interface* mutable_ptr; // If a pack is made immutable for the sound system, contains 2a pointer to the mutable version.
 	// Sets the pack name, converting it to an absolute path if necessary.
-	void set_pack_name(const std::string& name);
+	void set_pack_name(const std::string& name, const std::string& absolute = "");
 
 public:
 	struct toc_entry;
