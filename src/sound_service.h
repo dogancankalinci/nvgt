@@ -66,6 +66,8 @@ public:
 	public:
 		// Attaches itself to the given input stream. The wrapping istream is expected to take ownership of its data source and clean it up on destruction.
 		virtual std::istream *wrap(std::istream &source, const directive_t directive) const = 0;
+		// What tells the filter's directive apart for the sound system's cache, as a decryption key does: loads of one file through different keys then share no decoded data. Empty for none, without the record separator.
+		virtual std::string get_suffix(const directive_t &directive) const { return ""; }
 	};
 	sound_service();
 	virtual ~sound_service();
@@ -121,6 +123,7 @@ public:
 	static const sound_service::filter *get_instance();
 	encryption_filter();
 	virtual std::istream *wrap(std::istream &source, const directive_t directive) const;
+	virtual std::string get_suffix(const directive_t &directive) const;
 	static encryption_filter instance;
 };
 class memory_protocol : public sound_service::protocol {

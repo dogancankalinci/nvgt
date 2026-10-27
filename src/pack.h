@@ -36,7 +36,8 @@ class pack : public pack_interface {
 	// bleh... can't be a union because these need to be shared_ptrs.
 	std::shared_ptr<read_mode_internals> read;
 	std::shared_ptr<write_mode_internals> write;
-	std::string pack_name; // When a pack is opened for reading, this should be set to the name of the pack file so we can create new streams to open files.
+	std::string pack_name; // The name the pack file was opened or created with, as the script reads it back.
+	std::string pack_path; // That name made absolute when the pack was opened, by which its files are opened anew and the sound system tells it apart: resolved at each load, a directory changed since open() read another file with this pack's table of contents.
 	std::string key;
 	const pack_interface* mutable_ptr; // If a pack is made immutable for the sound system, contains 2a pointer to the mutable version.
 	// Sets the pack name, converting it to an absolute path if necessary.

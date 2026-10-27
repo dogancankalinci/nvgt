@@ -29,6 +29,7 @@
 #include <unordered_map>
 #include <mutex>
 #include <atomic>
+#include <functional>
 
 /**
  * The VFS is the glue between the sound service and MiniAudio.
@@ -265,7 +266,16 @@ public:
 		std::stringstream triplet;
 		const std::string suffix = preg->get()->get_suffix(args.protocol_directive);
 		// A file from the file system stands for the file the name reaches from the current directory: its name alone made a relative name loaded from another directory share the buffer MiniAudio cached for the file it reached before while that buffer was held, playing the wrong file. A file rewritten while a sound loaded from it lives still shares that sound's buffer, as before: telling it apart would cost every load, cached ones included, a look at the file.
-		const std::string key_name = preg->get() == fs_protocol::get_instance()? absolute_file_name(name) : name;
+		const bool from_fs = preg->get() == fs_protocol::get_instance();
+		const std::string key_name = from_fs? absolute_file_name(name) : name;
+		if (key_name.find('\x1e') != std::string::npos) // As for the name: a current directory holding the separator.
+			return "";
+#ifndef __ANDROID__
+		if (from_fs) args.name = key_name; // The file opened is the one the key names, should another thread change the current directory before it is opened. Not on Android, whose files inside the package SDL opens by their relative name.
+#endif
+		const std::string filter_suffix = freg->get()->get_suffix(args.filter_directive);
+		if (filter_suffix.find('\x1e') != std::string::npos)
+			return "";
 		if (suffix.find('\x1e') != std::string::npos) // As for the name, so that the parts after it, an own entry's number or a salt, can't be read as part of it.
 			return "";
 		triplet << key_name
@@ -273,6 +283,7 @@ public:
 		        << args.protocol_slot
 		        << "\x1e"
 		        << suffix;
+		if (!filter_suffix.empty()) triplet << "\x1e#" << args.filter_slot << ":" << filter_suffix; // A file decoded through one key shares nothing with a load through another, which would otherwise have played it without its key being checked.
 		if (own_entry) triplet << "\x1e" << ++own_entries;
 		if (salt) triplet << "\x1e~" << salt;
 		set_temp_args(triplet.str(), args);
@@ -419,6 +430,11 @@ const sound_service::filter *encryption_filter::get_instance() {
 	return &instance;
 }
 encryption_filter::encryption_filter() {
+}
+std::string encryption_filter::get_suffix(const directive_t &directive) const {
+	const std::shared_ptr<const std::string> key = std::static_pointer_cast<const std::string>(directive);
+	if (key == nullptr || key->empty()) return "";
+	return Poco::NumberFormatter::formatHex((Poco::UInt64)std::hash<std::string>{}(*key)); // A hash of the key, not the key, as the triplet is kept in MiniAudio's tables.
 }
 std::istream *encryption_filter::wrap(std::istream &source, const directive_t directive) const {
 	// Key is expected to have been passed in through the directive interface.

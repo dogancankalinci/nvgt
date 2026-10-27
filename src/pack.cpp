@@ -268,6 +268,7 @@ toc_map& pack::write_mode_internals::get_toc_map() {
 }
 void pack::set_pack_name(const std::string& name) {
 	pack_name = name;
+	pack_path = absolute_file_name(name);
 }
 pack::pack() : mutable_ptr(nullptr) {
 	open_mode = OPEN_NOT;
@@ -278,6 +279,7 @@ pack::pack(const pack& other) : mutable_ptr(&other) {
 	open_mode = OPEN_READ;
 	read = other.read;
 	pack_name = other.pack_name;
+	pack_path = other.pack_path;
 	key = other.key;
 	other.duplicate(); // We have no choice but to hold on to a reference to the pack we're cloning so that the user can safely query the pack in use.
 }
@@ -371,7 +373,7 @@ std::istream* pack::get_file(const std::string& filename) const {
 		return nullptr;
 	std::istream* fis = nullptr;
 	try {
-		fis = new sdl_file_input_stream(pack_name);
+		fis = new sdl_file_input_stream(pack_path);
 		if (read->pack_offset != 0 || read->pack_size != 0)
 			fis = new section_istream(*fis, read->pack_offset, read->pack_size);
 		if (!key.empty())
@@ -445,7 +447,7 @@ const std::string pack::get_pack_name() const {
 	return pack_name;
 }
 std::string pack::get_identity() const {
-	std::string identity = absolute_file_name(pack_name);
+	std::string identity = pack_path;
 	if (read) identity += "\x1f" + std::to_string(read->pack_offset) + "\x1f" + std::to_string(read->pack_size);
 	return identity;
 }
