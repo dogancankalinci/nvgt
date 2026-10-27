@@ -96,6 +96,7 @@ void set_sound_default_mixer(mixer* mix) { // Takes the script's reference.
 static std::atomic_flag g_soundsystem_initialized; // The context, the sound service and the device lists are set up, see init_sound_context().
 static std::atomic_flag g_soundsystem_ready; // The engine exists. Set last so that no other thread can be told "initialized" while g_audio_engine is still null.
 static std::recursive_mutex g_soundsystem_init_mutex; // Recursive because setting up re-enters init_sound() and init_sound_context() on this same thread.
+static std::atomic<ma_uint64> g_engine_time_sets{0}; // Times a script set an engine's time (see held_sound::block_set).
 static std::atomic_flag g_soundsystem_shut_down; // uninit_sound() ran: script threads still running are refused rather than given the default engine it let go.
 // Sources being freed off the script's thread, by resource manager (see sound_impl::reap()), so that an engine, before its resource manager goes, and uninit_sound() can wait for them.
 static std::mutex g_reaps_mutex;
@@ -888,9 +889,17 @@ public:
 	unsigned long long get_time() const override { return engine ? (flags & DURATIONS_IN_FRAMES ? get_time_in_frames() : get_time_in_milliseconds()) : 0; }
 	bool set_time(unsigned long long time) override { return engine ? (flags & DURATIONS_IN_FRAMES) ? set_time_in_frames(time) : set_time_in_milliseconds(time) : false; }
 	unsigned long long get_time_in_frames() const override { return engine ? ma_engine_get_time_in_pcm_frames(&*engine) : 0; }
-	bool set_time_in_frames(unsigned long long time) override { return engine ? (g_soundsystem_last_error = ma_engine_set_time_in_pcm_frames(&*engine, time)) == MA_SUCCESS : false; }
+	bool set_time_in_frames(unsigned long long time) override {
+		if (!engine || (g_soundsystem_last_error = ma_engine_set_time_in_pcm_frames(&*engine, time)) != MA_SUCCESS) return false;
+		g_engine_time_sets.fetch_add(1); // A block a sound recorded is no longer the one under way (see held_sound::block_set).
+		return true;
+	}
 	unsigned long long get_time_in_milliseconds() const override { return engine ? ma_engine_get_time_in_milliseconds(&*engine) : 0; }
-	bool set_time_in_milliseconds(unsigned long long time) override { return engine && frames_fit(time, ma_engine_get_sample_rate(&*engine))? (g_soundsystem_last_error = ma_engine_set_time_in_milliseconds(&*engine, time)) == MA_SUCCESS : false; }
+	bool set_time_in_milliseconds(unsigned long long time) override {
+		if (!engine || !frames_fit(time, ma_engine_get_sample_rate(&*engine)) || (g_soundsystem_last_error = ma_engine_set_time_in_milliseconds(&*engine, time)) != MA_SUCCESS) return false;
+		g_engine_time_sets.fetch_add(1);
+		return true;
+	}
 	int get_channels() const override { return engine ? ma_engine_get_channels(&*engine) : 0; }
 	int get_sample_rate() const override { return engine ? ma_engine_get_sample_rate(&*engine) : 0; }
 	bool start() override {
@@ -2558,6 +2567,7 @@ struct held_sound : ma_sound {
 	std::atomic<ma_uint32> processed{0}; // Calls of held_sound_process(), by which play() tells whether the audio thread still processes the sound (see sound_impl::still_ending()).
 	std::atomic<ma_uint64> block_at{~(ma_uint64)0}; // The engine's time when held_sound_process() or held_group_process() last ran, the start of that block; ~0 before it ran (see sound_impl::schedule_stop_and_fade()).
 	std::atomic<ma_uint64> block_done{~(ma_uint64)0}; // block_at once that processing returned for that block.
+	std::atomic<ma_uint64> block_set{0}; // g_engine_time_sets when block_at was recorded: a block recorded before a script set an engine's time says nothing of the block under way, which a time set back by less than a block would otherwise take it for.
 	std::atomic<ma_uint64> seek_target{~(ma_uint64)0}; // The frame a seek asked for, ~0 for none, made by held_sound_process() in place of MiniAudio's seekTarget.
 	// A fade scheduled ahead, by set_timed_fade() or a stop with a fade, kept here rather than given to MiniAudio, which takes a fade's settings into the sound's only fader at its next block and plays the sound unfaded until the fade begins, so that a sound at a fade of its own jumped to full volume and back: held_sound_process() gives it in the first block starting at or past fade_at, ~0 for none. Under fade_locked, which the audio thread only tries.
 	std::atomic<bool> fade_locked{false}, fade_pending{false};
@@ -2824,6 +2834,7 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 	hold_rate(node);
 	ma_sound* s = (ma_sound*)node;
 	held(s)->processed.fetch_add(1, std::memory_order_relaxed);
+	held(s)->block_set.store(g_engine_time_sets.load());
 	held(s)->block_at.store(ma_engine_get_time_in_pcm_frames(ma_sound_get_engine(s))); // Before the fade's lock is tried, in the order a script thread holding it reads them (see sound_impl::schedule_stop_and_fade()).
 	take_back_fade(s); // One the end of the block before couldn't, the script holding the fade's lock then.
 	keep_fader_in_range(s);
@@ -3192,6 +3203,7 @@ static ma_data_source* chain_source(ma_data_source* head, audio_engine* engine, 
 }
 static void held_group_process(ma_node* node, const float** frames_in, ma_uint32* frame_count_in, float** frames_out, ma_uint32* frame_count_out) {
 	held_sound* h = held((ma_sound*)node);
+	h->block_set.store(g_engine_time_sets.load());
 	h->block_at.store(ma_engine_get_time_in_pcm_frames(ma_sound_get_engine((ma_sound*)node))); // As for a sound, by which a stop within the block a mixer played past counts as come (see mixer_impl::heard_until()).
 	hold_rate(node);
 	keep_fader_in_range((ma_sound*)node);
@@ -3489,7 +3501,8 @@ public:
 	}
 	// The block the sound was last processed in when that is the one under way at now, or the next should the audio thread have moved on: an older one, or one from before the engine's time was set back, which lies ahead of it, says nothing of the block under way. ~0 for none.
 	ma_uint64 current_block(ma_uint64 now) const {
-		const ma_uint64 block = held(&*snd)->block_at.load();
+		const ma_uint64 sets = g_engine_time_sets.load(), block = held(&*snd)->block_at.load();
+		if (held(&*snd)->block_set.load() != sets) return ~(ma_uint64)0;
 		return block != ~(ma_uint64)0 && block >= now && now <= ~(ma_uint64)0 - 2 * SOUNDSYSTEM_FRAMESIZE && block <= now + SOUNDSYSTEM_FRAMESIZE? block : ~(ma_uint64)0;
 	}
 	// Schedules a fade from volume_beg to volume_end over length frames, beginning at the engine's time at, which the sound gives MiniAudio when that time comes (see held_sound::fade_at), replacing one scheduled before.
@@ -4792,7 +4805,7 @@ public:
 		if (block == ~(ma_uint64)0 || !h->fade_pending.load()) return; // Given in time in the next block the sound is processed in.
 		const ma_uint64 next = block + SOUNDSYSTEM_FRAMESIZE;
 		// From now, the fade begins in that block, which played the sound already; at a time, a stop from that block's end on lets the next give what is left of the fade, from the volume the sound is at, as for a fade given late.
-		if (relative? at >= next : stop >= next || stop < now) return;
+		if (relative? at >= next : stop >= next || stop < block) return; // A stop before the block that played the sound came already, as audio past it was played.
 		// Whether that block gave it is known once the audio thread is done with the sound there, a few microseconds at most: in it after the fade waited, it gives it, unless the lock was held, and then read the stop only after it was set, as MiniAudio reads a sound's state before processing it, so that the stop is moved before MiniAudio took it. A sound the audio thread is held up in, as by a slow datastream, isn't waited for past a few milliseconds.
 		if (!audio_engine_impl::on_audio_thread()) {
 			const auto give_up = std::chrono::steady_clock::now() + std::chrono::milliseconds(5);
