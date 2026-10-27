@@ -1940,6 +1940,14 @@ class audio_decoder_impl : public audio_data_source_impl, public virtual audio_d
 		stream->seekg(offset, dir);
 		if (stream->fail()) {
 			stream->clear(); // genuinely unseekable and outside what was kept; say so instead of claiming a seek that didn't happen
+			if (sc->mirrors_stream()) { // A stream can fail a seek after it moved: put it back where the window ends, which reads past the window take it to be at, as the seeks the window answers itself don't move it.
+				stream->seekg(sc->base + (std::streamoff)sc->window.size(), stream->beg);
+				if (stream->fail()) {
+					stream->clear();
+					std::string().swap(sc->window);
+					sc->window_moved = true;
+				}
+			}
 			return MA_NOT_IMPLEMENTED;
 		}
 		// The stream really moved, so the window no longer describes where the decoder is; from here the stream answers for itself. It can never mirror again, so free it rather than just clearing it.
@@ -3271,7 +3279,15 @@ public:
 		if (!sound_group) return;
 		snd = held_sound_ptr(new held_sound());
 		// Not attached by MiniAudio, which would attach a group without a parent to the endpoint at once, while it still had MiniAudio's own processing; it is attached to its chain below.
-		{ std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); if (ma_sound_group_init(e->get_ma_engine(), MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT, nullptr, &*snd) == MA_SUCCESS) hold_rate_of(&*snd, e); }
+		{
+			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex);
+			if ((g_soundsystem_last_error = ma_sound_group_init(e->get_ma_engine(), MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT, nullptr, &*snd)) != MA_SUCCESS) {
+				snd.reset(); // Not uninitialised by the destructor, which the constructor throwing doesn't run, nor configured, attached and played as before.
+				if (node_chain) node_chain->release();
+				throw std::runtime_error("failed to create mixer");
+			}
+			hold_rate_of(&*snd, e);
+		}
 		node = (ma_node_base *)&*snd;
 		set_max_distance(70);
 		ma_sound_group_set_rolloff(&*snd, 0); // Our own spatializer controls attenuation.
@@ -3575,7 +3591,12 @@ public:
 		if (snd && finite_values({volume, linear}))
 			ma_sound_set_volume(&*snd, linear);
 	}
-	float get_volume() const override { return snd ? (get_engine()->get_flags() & audio_engine::PERCENTAGE_ATTRIBUTES ? ma_volume_linear_to_db(ma_sound_get_volume(&*snd)) : ma_sound_get_volume(&*snd)) : NAN; }
+	float get_volume() const override { return snd ? (get_engine()->get_flags() & audio_engine::PERCENTAGE_ATTRIBUTES ? readable_db(ma_sound_get_volume(&*snd)) : ma_sound_get_volume(&*snd)) : NAN; }
+	// A linear volume in decibels no lower than -100, as sound_master_volume reads: a volume of 0, as a pause_fade() ends at or a setting of -1000 dB underflows to, read -inf, which a script adding to it then had refused.
+	static float readable_db(float linear) {
+		const float db = ma_volume_linear_to_db(linear);
+		return db >= -100? db : -100;
+	}
 	void set_pan(float pan) override {
 		if (snd && finite_values({pan})) // MiniAudio's clamp turns NaN into 1, all the way right.
 			ma_sound_set_pan(&*snd, get_engine()->get_flags() & audio_engine::PERCENTAGE_ATTRIBUTES ? pan_db_to_linear(pan) : pan);
@@ -3798,7 +3819,7 @@ public:
 		set_fade_now(start_volume, end_volume, milliseconds * snd->engineNode.fader.config.sampleRate / 1000); // As ma_sound_set_fade_in_milliseconds() converts it.
 	}
 	float get_current_fade_volume() const override {
-		return snd ? (get_engine()->get_flags() & audio_engine::PERCENTAGE_ATTRIBUTES ? ma_volume_linear_to_db(ma_sound_get_current_fade_volume(&*snd)) : ma_sound_get_current_fade_volume(&*snd)) : NAN;
+		return snd ? (get_engine()->get_flags() & audio_engine::PERCENTAGE_ATTRIBUTES ? readable_db(ma_sound_get_current_fade_volume(&*snd)) : ma_sound_get_current_fade_volume(&*snd)) : NAN;
 	}
 	void set_start_time(ma_uint64 absolute_time) override {
 		if (!snd)
@@ -4617,7 +4638,7 @@ public:
 		return started_or_undone(mixer_impl::play(reset_loop_state), looping);
 	}
 	bool play_looped() override {
-		if (pcm_stream) return false;
+		if (pcm_stream) return (g_soundsystem_last_error = MA_INVALID_OPERATION) == MA_SUCCESS; // Fed by stream_pcm(), it has no end to loop from, as play_wait() says.
 		if (fade_paused && snd) clear_stop_for_restart(true);
 		paused = fade_paused = false;
 		wait_out_flush();
