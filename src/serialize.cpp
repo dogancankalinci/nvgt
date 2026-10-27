@@ -287,13 +287,30 @@ static asITypeInfo* type_by_decl(asIScriptModule* mod, const std::string& decl) 
 	return mod->GetTypeInfoByDecl(decl.c_str());
 }
 static void read_array_body(Poco::BinaryReader& r, asIScriptModule* mod, CScriptArray* arr);
+// The data can come from anywhere (over the network, say), so every size and count read from it is checked against what is left of it before anything is made from it: Poco's string read reserves the whole size it reads first, and a corrupt or hostile size made it allocate up to 4 GB, as an array was resized to a count of up to 4 billion elements. Every element, entry or byte counted takes at least one byte of the data.
+static void check_left(Poco::BinaryReader& r, Poco::UInt64 count) {
+	std::streamsize left = r.available();
+	if (left < 0 || count > Poco::UInt64(left)) throw std::runtime_error("corrupt serialized data");
+}
+static void read_string(Poco::BinaryReader& r, std::string& value) {
+	Poco::UInt32 size = 0;
+	r.read7BitEncoded(size);
+	check_left(r, size);
+	r.readRaw(std::streamsize(size), value);
+}
+// A bool is read as its byte: one that isn't 0 or 1 read straight into a bool is undefined, and a script saw it as both true (if (v)) and not equal to true.
+static bool read_bool(Poco::BinaryReader& r) {
+	unsigned char v;
+	r >> v;
+	return v != 0;
+}
 static void read_value(Poco::BinaryReader& r, asIScriptModule* mod, const value_setter& set) {
 	serialize_depth_guard depth;
 	if (depth.exceeded) throw std::runtime_error("serialized data is nested too deeply");
 	unsigned char tag;
 	r >> tag;
 	switch ((value_tag)tag) {
-		case value_tag::boolean: { bool v; r >> v; set(&v, asTYPEID_BOOL); return; }
+		case value_tag::boolean: { bool v = read_bool(r); set(&v, asTYPEID_BOOL); return; }
 		case value_tag::int8: { int8_t v; r >> v; set(&v, asTYPEID_INT8); return; }
 		case value_tag::uint8: { uint8_t v; r >> v; set(&v, asTYPEID_UINT8); return; }
 		case value_tag::int16: { int16_t v; r >> v; set(&v, asTYPEID_INT16); return; }
@@ -304,22 +321,22 @@ static void read_value(Poco::BinaryReader& r, asIScriptModule* mod, const value_
 		case value_tag::uint64: { uint64_t v; r >> v; set(&v, asTYPEID_UINT64); return; }
 		case value_tag::float32: { float v; r >> v; set(&v, asTYPEID_FLOAT); return; }
 		case value_tag::float64: { double v; r >> v; set(&v, asTYPEID_DOUBLE); return; }
-		case value_tag::string: { std::string v; r >> v; set(&v, string_type_id()); return; }
+		case value_tag::string: { std::string v; read_string(r, v); set(&v, string_type_id()); return; }
 		case value_tag::pod: {
 			std::string decl;
-			r >> decl;
+			read_string(r, decl);
 			Poco::UInt32 size = 0;
 			r >> size;
+			check_left(r, size);
 			std::string bytes;
-			r.readRaw(size, bytes);
+			r.readRaw(std::streamsize(size), bytes);
 			asITypeInfo* ti = mod ? type_by_decl(mod, decl) : nullptr;
 			if (ti && !(ti->GetFlags() & asOBJ_ENUM) && (ti->GetFlags() & (asOBJ_VALUE | asOBJ_POD)) != (asOBJ_VALUE | asOBJ_POD)) ti = nullptr;
 			if (ti && (asUINT)ti->GetSize() == size) set((void*)bytes.data(), ti->GetTypeId());
 			return;
 		}
 		case value_tag::dictionary: {
-			bool is_null;
-			r >> is_null;
+			bool is_null = read_bool(r);
 			int tid = dictionary_handle_type_id();
 			if (is_null) { void* n = nullptr; set(&n, tid); return; }
 			CScriptDictionary* d = read_dictionary_body(r, mod);
@@ -329,9 +346,8 @@ static void read_value(Poco::BinaryReader& r, asIScriptModule* mod, const value_
 		}
 		case value_tag::array: {
 			std::string elem_decl;
-			r >> elem_decl;
-			bool is_null;
-			r >> is_null;
+			read_string(r, elem_decl);
+			bool is_null = read_bool(r);
 			asITypeInfo* arr_ti = mod ? type_by_decl(mod, "array<" + elem_decl + ">") : nullptr;
 			if (is_null) {
 				if (arr_ti) { void* n = nullptr; int tid = arr_ti->GetTypeId() | asTYPEID_OBJHANDLE; set(&n, tid); }
@@ -348,12 +364,11 @@ static void read_value(Poco::BinaryReader& r, asIScriptModule* mod, const value_
 			return;
 		}
 		case value_tag::json_object: {
-			bool is_null;
-			r >> is_null;
+			bool is_null = read_bool(r);
 			asITypeInfo* ti = g_ScriptEngine->GetTypeInfoByName("json_object");
 			if (is_null) { if (ti) { void* n = nullptr; int tid = ti->GetTypeId() | asTYPEID_OBJHANDLE; set(&n, tid); } return; }
 			std::string text;
-			r >> text;
+			read_string(r, text);
 			Poco::JSON::Parser parser;
 			poco_json_object* obj = new poco_json_object(parser.parse(text).extract<Poco::JSON::Object::Ptr>());
 			if (ti) { void* p = obj; set(&p, ti->GetTypeId() | asTYPEID_OBJHANDLE); }
@@ -361,12 +376,11 @@ static void read_value(Poco::BinaryReader& r, asIScriptModule* mod, const value_
 			return;
 		}
 		case value_tag::json_array: {
-			bool is_null;
-			r >> is_null;
+			bool is_null = read_bool(r);
 			asITypeInfo* ti = g_ScriptEngine->GetTypeInfoByName("json_array");
 			if (is_null) { if (ti) { void* n = nullptr; int tid = ti->GetTypeId() | asTYPEID_OBJHANDLE; set(&n, tid); } return; }
 			std::string text;
-			r >> text;
+			read_string(r, text);
 			Poco::JSON::Parser parser;
 			poco_json_array* obj = new poco_json_array(parser.parse(text).extract<Poco::JSON::Array::Ptr>());
 			if (ti) { void* p = obj; set(&p, ti->GetTypeId() | asTYPEID_OBJHANDLE); }
@@ -374,17 +388,17 @@ static void read_value(Poco::BinaryReader& r, asIScriptModule* mod, const value_
 			return;
 		}
 		case value_tag::name_value_collection: {
-			bool is_null;
-			r >> is_null;
+			bool is_null = read_bool(r);
 			asITypeInfo* ti = g_ScriptEngine->GetTypeInfoByName("name_value_collection");
 			if (is_null) { if (ti) { void* n = nullptr; int tid = ti->GetTypeId() | asTYPEID_OBJHANDLE; set(&n, tid); } return; }
 			Poco::UInt32 count = 0;
 			r >> count;
+			check_left(r, count);
 			std::unique_ptr<Poco::Net::NameValueCollection, void(*)(Poco::Net::NameValueCollection*)> guard(new (angelscript_refcounted_create<Poco::Net::NameValueCollection>()) Poco::Net::NameValueCollection(), angelscript_refcounted_release<Poco::Net::NameValueCollection>);
 			for (Poco::UInt32 i = 0; i < count; i++) {
 				std::string name, value;
-				r >> name;
-				r >> value;
+				read_string(r, name);
+				read_string(r, value);
 				guard->add(name, value);
 			}
 			Poco::Net::NameValueCollection* nvc = guard.release();
@@ -394,9 +408,8 @@ static void read_value(Poco::BinaryReader& r, asIScriptModule* mod, const value_
 		}
 		case value_tag::script_object: {
 			std::string class_name;
-			r >> class_name;
-			bool is_null;
-			r >> is_null;
+			read_string(r, class_name);
+			bool is_null = read_bool(r);
 			asITypeInfo* ti = nullptr;
 			if (mod) {
 				std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex()); // See type_by_decl().
@@ -426,9 +439,10 @@ static CScriptDictionary* read_dictionary_body(Poco::BinaryReader& r, asIScriptM
 	std::unique_ptr<CScriptDictionary, void(*)(CScriptDictionary*)> dict(CScriptDictionary::Create(g_ScriptEngine), [](CScriptDictionary* d) { d->Release(); });
 	Poco::UInt32 count = 0;
 	r >> count;
+	check_left(r, count);
 	for (Poco::UInt32 i = 0; i < count; i++) {
 		std::string key;
-		r >> key;
+		read_string(r, key);
 		read_value(r, mod, [&](void* v, int t) {
 			// A number is kept as an int64 or a double, as the script's dictionary::set() keeps it: get() converts only from those, so a float or an integer of another size (from the data of an array element, say) couldn't be read back as a double or an int64, and script_function.call() refused it.
 			switch (t) {
@@ -449,6 +463,7 @@ static CScriptDictionary* read_dictionary_body(Poco::BinaryReader& r, asIScriptM
 static void read_array_body(Poco::BinaryReader& r, asIScriptModule* mod, CScriptArray* arr) {
 	Poco::UInt32 count = 0;
 	r >> count;
+	check_left(r, count);
 	if (arr) arr->Resize(count);
 	for (Poco::UInt32 i = 0; i < count; i++) {
 		read_value(r, mod, [&](void* v, int t) {
