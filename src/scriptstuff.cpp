@@ -198,8 +198,13 @@ void profiler_callback(asIScriptContext* ctx, void* obj) {
 		profiler_entry(func, profiler_start) += elapsed;
 		return;
 	}
+	// The time since the last line was spent by the function that ran it, the one that is now calling or returning to func:
+	// it was added to func, so the work of the statement that makes a call (its arguments, such as callee(slow())) was counted
+	// to the callee, and that of a return statement to the caller. func's entry is made now, while it runs, so that its
+	// declaration is taken before it can be freed (see profiler_decls).
 	if (profiler_last_func != NULL)
-		profiler_entry(func, profiler_start) += elapsed;
+		profiler_entry(profiler_last_func, profiler_start) += elapsed;
+	profiler_entry(func, profiler_start);
 	profiler_last_func = func;
 }
 void reset_profiler() {
