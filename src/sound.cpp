@@ -4958,7 +4958,11 @@ public:
 			ma_uint32 sample_rate = 0;
 			return ma_data_source_get_data_format(chain->head, nullptr, nullptr, &sample_rate, nullptr, 0) == MA_SUCCESS && sample_rate? chain_length_frames() * 1000 / sample_rate : 0;
 		}
-		if (snd && datasource_opened && datasource) return (unsigned long long)datasource->get_length_milliseconds(); // As get_length_in_frames().
+		if (snd && datasource_opened && datasource) { // As get_length_in_frames(), counted exactly as below rather than through the source's float milliseconds.
+			ma_uint32 sample_rate = 0;
+			if ((g_soundsystem_last_error = ma_sound_get_data_format(&*snd, nullptr, nullptr, &sample_rate, nullptr, 0)) != MA_SUCCESS) return 0;
+			return frames_to_milliseconds(datasource->get_length_frames(), sample_rate);
+		}
 		if (snd) {
 			ma_uint64 len = 0;
 			ma_uint32 sample_rate = 0;
