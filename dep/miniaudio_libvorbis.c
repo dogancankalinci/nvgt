@@ -119,6 +119,9 @@ static long ma_libvorbis_vf_callback__tell(void* pUserData)
     ma_result result;
     ma_int64 cursor;
     
+    if (pVorbis->onTell == NULL) {
+        return -1; /* NVGT: as the seek callback and the Opus backend's tell check theirs; -1 is libvorbisfile's "can't tell". */
+    }
     result = pVorbis->onTell(pVorbis->pReadSeekTellUserData, &cursor);
     if (result != MA_SUCCESS) {
         return -1;

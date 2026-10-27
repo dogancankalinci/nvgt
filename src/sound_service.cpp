@@ -451,6 +451,8 @@ std::istream *memory_protocol::open_uri(const char *uri, const directive_t direc
 }
 const std::string memory_protocol::get_suffix(const directive_t &directive) const {
 	std::shared_ptr<const memory_args> args = std::static_pointer_cast<const memory_args>(directive);
+	if (args == nullptr)
+		return "error"; // As open_uri() refuses it, and the pack protocol names it.
 	return Poco::NumberFormatter::format(args->id);
 }
 directive_t memory_protocol::directive(const void *data, size_t size) {
