@@ -124,7 +124,8 @@ static opus_int64 ma_libopus_of_callback__tell(void* pUserData)
 
 /*
 opusfile reports a hole where the stream is interrupted, as at a damaged page: reading goes on past it rather than ending there. Only so many in a
-row without a frame end the stream, as a guard against data with nothing to decode in it.
+row without a frame fail the read with MA_ERROR, as a guard against data with nothing to decode in it, which a sound playing it takes for its end
+(see held_decoder_read() in src/sound.cpp).
 */
 #define MA_LIBOPUS_MAX_HOLES 16
 

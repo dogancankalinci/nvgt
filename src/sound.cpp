@@ -174,6 +174,12 @@ static bool playable_volumes(std::initializer_list<float> linear_volumes) {
 	}
 	return true;
 }
+static thread_local bool t_script_read = false; // A script's own read or skip of a source is under way, which is told a decoder's read error rather than given its end (see held_decoder_read()).
+struct script_read {
+	bool was = t_script_read;
+	script_read() { t_script_read = true; }
+	~script_read() { t_script_read = was; }
+};
 static unordered_map<ma_data_source*, audio_data_source*> g_data_sources_map; // Only allow one audio_data_source wrapper per ma_data_source, should never be populated enough to be a performance hit.
 static std::mutex g_data_sources_map_mutex; // Every decoder open/close inserts into or erases from this map, from whichever script thread does it; an unlocked unordered_map rehashing under a concurrent erase corrupts the heap.
 static std::unique_ptr<sound_service> g_sound_service;
@@ -1250,6 +1256,7 @@ public:
 	}
 	// Reads frame_count frames of frame_size bytes into buffer, adding to frames_read. MiniAudio ends a read of a looping source after it met the source's end twice with nothing read between, as a source shorter than half the read does, though the source would go on: a looping decoder of 1000 frames gave 2000 of 4096, then 1000 a read. So a looping source is read again for the rest while each read gives frames.
 	void read_whole(void* buffer, ma_uint64 frame_count, ma_uint32 frame_size, ma_uint64& frames_read) {
+		script_read told;
 		bool looping = ma_data_source_is_looping(src->pDataSource);
 		do {
 			ma_uint64 got = 0;
@@ -1305,6 +1312,7 @@ public:
 		const ma_uint64 chunk_frames = 4096;
 		std::vector<char> scratch(chunk_frames * frame_size);
 		unsigned long long skipped = 0;
+		script_read told;
 		bool looping = ma_data_source_is_looping(src->pDataSource);
 		while (skipped < frame_count) {
 			ma_uint64 chunk = std::min<unsigned long long>(frame_count - skipped, chunk_frames), got = 0;
@@ -1727,6 +1735,8 @@ static ma_result held_decoder_read(ma_data_source* source, void* frames_out, ma_
 			else break;
 		}
 	}
+	// A read error, as of a stream closed under the decoder or of more damage than the decoder reads past, ended a script's read but nothing else: MiniAudio ends a sound, a chain or a loop only at MA_AT_END, so they played silence for good, a sound reading as playing and play_wait() never returning. They're given the file's end there instead, with silence up to its length as for a file cut short; a script's own read is told the error.
+	if (result != MA_SUCCESS && result != MA_AT_END && result != MA_BUSY && !total && !t_script_read) result = MA_AT_END;
 	if (file && result == MA_AT_END && total < frame_count) { // The file's end, or a seek it refused, short of the decoder's length; a file that can't seek is given its length only once worked out without consuming it (see get_length_frames()).
 		const ma_uint64 length = file->length.load(), at = decoder->readPointerInPCMFrames;
 		const ma_uint64 count = length > at? std::min(frame_count - total, length - at) : 0;

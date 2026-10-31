@@ -143,7 +143,8 @@ static long ma_libvorbis_vf_callback__tell(void* pUserData)
 /*
 libvorbisfile reports a hole, which it calls recoverable, where the stream is interrupted, at a damaged page, and in a stream that can't seek at
 the start of each logical stream after the first: reading goes on past it, as the library means, rather than ending there. Only so many in a row
-without a frame end the stream, as a guard against data with nothing to decode in it.
+without a frame fail the read with MA_ERROR, as a guard against data with nothing to decode in it, which a sound playing it takes for its end
+(see held_decoder_read() in src/sound.cpp).
 */
 #define MA_LIBVORBIS_MAX_HOLES 16
 
