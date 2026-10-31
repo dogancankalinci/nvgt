@@ -455,7 +455,8 @@ ma_format ma_format_from_angelscript_type(int type_id) {
 
 // The following function based on ma_sound_get_direction_to_listener.
 // A sound's position relative to its listener, as MiniAudio's ma_spatializer_get_relative_position_and_direction() works it out, but in double: in float the listener's transform overflowed for positions about 1e19 or more apart, giving an infinite position with no direction to pan by, and a NaN one for positions near the float's limit. False without an engine.
-static bool sound_relative_position(const ma_sound* sound, double relative[3]) {
+// With facing, the sound's direction in the same frame, as MiniAudio's function gives it: turned by the same axes, so that a cone compares it with the position in one frame, which MiniAudio's own axes and these differ from when the listener looks along the world's up.
+static bool sound_relative_position(const ma_sound* sound, double relative[3], double* facing = nullptr) {
 	const ma_spatializer* spatializer = &sound->engineNode.spatializer;
 	ma_vec3f position = ma_spatializer_get_position(spatializer);
 	ma_engine* engine = ma_sound_get_engine(sound);
@@ -464,6 +465,12 @@ static bool sound_relative_position(const ma_sound* sound, double relative[3]) {
 		relative[0] = position.x;
 		relative[1] = position.y;
 		relative[2] = position.z;
+		if (facing) {
+			ma_vec3f direction = ma_spatializer_get_direction(spatializer);
+			facing[0] = direction.x;
+			facing[1] = direction.y;
+			facing[2] = direction.z;
+		}
 		return true;
 	}
 	const ma_spatializer_listener* listener = &engine->listeners[ma_sound_get_listener_index(sound)];
@@ -491,6 +498,13 @@ static bool sound_relative_position(const ma_sound* sound, double relative[3]) {
 	relative[0] = axis_x[0] * offset[0] + axis_x[1] * offset[1] + axis_x[2] * offset[2];
 	relative[1] = axis_y[0] * offset[0] + axis_y[1] * offset[1] + axis_y[2] * offset[2];
 	relative[2] = -(axis_z[0] * offset[0] + axis_z[1] * offset[1] + axis_z[2] * offset[2]);
+	if (facing) {
+		ma_vec3f direction = ma_spatializer_get_direction(spatializer);
+		const double d[3] = {direction.x, direction.y, direction.z};
+		facing[0] = axis_x[0] * d[0] + axis_x[1] * d[1] + axis_x[2] * d[2];
+		facing[1] = axis_y[0] * d[0] + axis_y[1] * d[1] + axis_y[2] * d[2];
+		facing[2] = -(axis_z[0] * d[0] + axis_z[1] * d[1] + axis_z[2] * d[2]);
+	}
 	return true;
 }
 MA_API float ma_sound_get_distance_to_listener(const ma_sound *pSound) {
@@ -979,7 +993,7 @@ public:
 	reactphysics3d::Vector3 get_listener_position(unsigned int index) const override { return engine ? ma_vec3_to_rp_vec3(ma_engine_listener_get_position(&*engine, index)) : reactphysics3d::Vector3(); }
 	// A direction or world up of no length, which left the listener without a forward or up axis: every sound's place relative to it lost two of its axes, so that sounds anywhere along them were heard at the listener. MA_INVALID_ARGS, as for values that aren't finite.
 	static bool has_length(float x, float y, float z) {
-		if (x != 0 || y != 0 || z != 0) return true;
+		if (x * x + y * y + z * z > 0) return true; // In float, as MiniAudio's normalize takes a vector whose squared length underflows as one of no length.
 		g_soundsystem_last_error = MA_INVALID_ARGS;
 		return false;
 	}
@@ -3601,12 +3615,10 @@ public:
 		if (listener >= ma_engine_get_listener_count(e)) return 1;
 		float listener_inner, listener_outer, listener_outer_gain;
 		get_engine()->get_listener_cone(listener, &listener_inner, &listener_outer, &listener_outer_gain);
-		const ma_spatializer* spatializer_of_sound = &snd->engineNode.spatializer;
 		const ma_spatializer_listener* l = &e->listeners[listener];
-		ma_vec3f direction; // The sound's, relative to the listener.
-		ma_spatializer_get_relative_position_and_direction(spatializer_of_sound, l, nullptr, &direction);
-		double position[3];
-		if (!sound_relative_position(&*snd, position)) return 1;
+		double position[3], facing[3];
+		if (!sound_relative_position(&*snd, position, facing)) return 1;
+		ma_vec3f direction{(float)facing[0], (float)facing[1], (float)facing[2]}; // The sound's, relative to the listener, in the frame of its position.
 		double distance = sqrt(position[0] * position[0] + position[1] * position[1] + position[2] * position[2]);
 		if (!(distance > 0.001)) return 1; // As MiniAudio, which has no direction to the listener then.
 		ma_vec3f to_sound{(float)(position[0] / distance), (float)(position[1] / distance), (float)(position[2] / distance)}, from_sound{-to_sound.x, -to_sound.y, -to_sound.z};
