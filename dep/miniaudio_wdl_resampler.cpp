@@ -2,6 +2,7 @@
  *
  * Written by Caturria and released into the public domain
  */
+#include <new>
 #include <resample.h>
 #include <miniaudio.h>
 struct wdl_resampler_state
@@ -60,7 +61,7 @@ static ma_result resampler_init(void *pUserData, const ma_resampler_config *pCon
     state->rate_in = pConfig->sampleRateIn;
     state->rate_out = pConfig->sampleRateOut;
     state->should_flush = false;
-    state->resampler = WDL_Resampler();
+    new (&state->resampler) WDL_Resampler(); /* Constructed in the heap MiniAudio gives, rather than assigned into one never constructed; resampler_uninit() destroys it. */
     state->resampler.SetMode(false, 0, true, 64, 32);
     state->resampler.SetRates(pConfig->sampleRateIn, pConfig->sampleRateOut);
     state->resampler.SetFeedMode(false);
