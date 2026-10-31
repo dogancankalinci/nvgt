@@ -2337,19 +2337,23 @@ public:
 	}
 	bool open_pull(unsigned int sample_rate, unsigned int channels, unsigned int flags) override {
 		if (!output_in_range(sample_rate, channels, open_flags(flags))) return false;
-		if (get_active()) close();
-		if (pull_stream) pull_stream->release();
+		if (get_active() && !close()) return false; // As on an audio thread while a script thread holds the encoder's lock (MA_BUSY): the session open stays, writing to its stream, which letting go of the pulled stream below freed under it, and a later close() let go of again.
+		// What an earlier pull session left for read() is let go of only once this one is open, and kept when the open is refused.
+		datastream* earlier = pull_stream;
 		pull_stream = new datastream(new stringstream());
 		bool opened;
 		try {
 			opened = open_stream(pull_stream, sample_rate, channels, flags);
 		} catch (...) { // open_stream() released the stream then too.
-			pull_stream = nullptr;
+			pull_stream = earlier;
 			throw;
 		}
-		if (opened) return true;
-		pull_stream = nullptr;
-		return false;
+		if (!opened) {
+			pull_stream = earlier;
+			return false;
+		}
+		if (earlier) earlier->release();
+		return true;
 	}
 	bool close() override {
 		unique_lock<mutex> lock = lock_writes();
