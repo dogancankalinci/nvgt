@@ -709,6 +709,7 @@ public:
 		if (sample_rate > ma_standard_sample_rate_max) throw runtime_error(Poco::format("exceeded maximum sample rate of %d", int(ma_standard_sample_rate_max))); // At a higher one, the highest MiniAudio has a name for, a device's every period needed many times the frames it plays resampled, more than the audio thread could keep up with.
 		if (sample_rate && sample_rate < int(min_sample_rate)) throw runtime_error(Poco::format("below minimum sample rate of %d", int(min_sample_rate))); // Below it, the resource manager's pages held no frames, and every sound loaded or streamed on the engine played silence while its load succeeded.
 		if (!init_sound_context()) throw runtime_error(Poco::format("failed to initialize sound context %d", int(g_soundsystem_last_error)));
+		if (!(flags & NO_DEVICE) && processing) throw runtime_error("an engine with a device can't be made on an audio thread"); // As in a processing callback: opening and starting its device held that audio up, as starting or changing a device there is refused for.
 		engine = std::make_unique<ma_engine>();
 		// We need a self-managed device because at least on Windows, we can't meet low-latency requirements without specific configurations.
 		if ((flags & NO_DEVICE) == 0) {
@@ -5300,6 +5301,7 @@ public:
 	}
 	// An index out of range opens the default device, as -1 does, and reads as -1 then.
 	microphone_impl(audio_engine* e, int device) : audio_ring_buffer_impl(e->get_channels(), 8192, e) {
+		if (audio_engine_impl::on_audio_thread()) throw std::runtime_error("a microphone can't be made on an audio thread"); // As an engine with a device: opening and starting a capture device there held that audio up, as set_device() and set_state() are refused for.
 		follows_default = !(device >= 0 && audio_device_id(ma_device_type_capture, device, device_id));
 		if (!open_capture(follows_default? nullptr : &device_id)) throw std::runtime_error("failed to initialize capture device");
 		if ((g_soundsystem_last_error = ma_device_start(&*capture_device)) != MA_SUCCESS) audio_node_impl::set_state(ma_node_state_stopped);
