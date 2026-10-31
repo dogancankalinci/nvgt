@@ -240,20 +240,44 @@ std::streampos chacha_istreambuf::seekoff(std::streamoff off, std::ios_base::see
 	// Deal only with the end direction; beg and cur can be mapped to a regular seekpos call.
 	if (dir == std::ios_base::beg)
 		return seekpos(off);
-	else if (dir == std::ios_base::cur) {
-		// Current position in source, plus distance we want to jump, minus position in source where we started, minus size of asset header, minus number of bytes we've prepared but haven't delivered to the caller yet.
-		return seekpos((uint64_t)source->tellg() + off - source_offset - 4 - in_avail());
+	std::streamoff before = position();
+	if (dir == std::ios_base::cur) {
+		if (before < 0) return -1;
+		return seekpos(before + off);
 	}
 	// If we're here it means the caller has requested to seek to an offset from the end of the stream.
 	// Now we naively seek the source to our target byte, because we want to convert our offset and direction into an absolute position.
 	source->seekg(off, dir);
 	// If the seek failed for any reason, the source will be in a failure state, in which case we want to enter a failure state ourselves.
-	if (!source->good())
+	if (!source->good()) {
+		come_back(before);
 		return -1;
-	// Now just defer to seekpos. Don't forget about the pre-stream source data and asset header here.
-	return seekpos((uint64_t)source->tellg() - source_offset - 4);
+	}
+	// Now just defer to seek_block. Don't forget about the pre-stream source data and asset header here.
+	std::streampos result = seek_block((uint64_t)source->tellg() - source_offset - 4);
+	if (result == std::streampos(-1)) come_back(before);
+	return result;
+}
+// Current position in source, minus position in source where we started, minus size of asset header, minus number of bytes we've prepared but haven't delivered to the caller yet. The source is cleared first, as a read that reached its end leaves it failed, which tellg() answers with -1.
+std::streamoff chacha_istreambuf::position() {
+	source->clear();
+	std::streampos at = source->tellg();
+	if (at == std::streampos(-1)) return -1;
+	return std::streamoff(at) - source_offset - 4 - in_avail();
+}
+// After a seek that failed: seek_block() moves the source and the block counter before it can tell a target is out of reach, which left the stream reading nothing more, as its counter no longer matched the source, or reading from the block it tried. A failed seek leaves it where it was instead, as streams do.
+void chacha_istreambuf::come_back(std::streamoff to) {
+	if (to < 0) return;
+	source->clear();
+	seek_block(to);
 }
 std::streampos chacha_istreambuf::seekpos(std::streampos pos, std::ios_base::openmode which) {
+	std::streamoff before = position();
+	std::streampos result = seek_block(pos);
+	if (result == std::streampos(-1)) come_back(before);
+	return result;
+}
+std::streampos chacha_istreambuf::seek_block(std::streampos pos) {
 
 	// Commenting this heavily because this genuinely is no picnic.
 	// First, we need to clear any failure state that the underlying stream might have:

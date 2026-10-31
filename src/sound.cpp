@@ -2028,7 +2028,7 @@ public:
 			in->seekg(0, std::ios_base::end);
 			seekable = !in->fail();
 			in->clear();
-			in->seekg(at); // Back whether or not that worked: a stream can fail a seek after it moved, as an encrypted one whose payload is a whole number of blocks does.
+			in->seekg(at); // Back whether or not that worked, should a stream have moved before failing the seek.
 			if (in->fail()) seekable = false;
 			in->clear();
 		}

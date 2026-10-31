@@ -57,6 +57,9 @@ class chacha_istreambuf : public Poco::BasicBufferedStreamBuf<char, std::char_tr
 	uint64_t counter;
 	std::streamoff source_offset; // Location in the backing source after reading the nonce.
 	bool owns_source;
+	std::streamoff position(); // Where the stream stands in its payload, or -1 when the source can't tell.
+	std::streampos seek_block(std::streampos pos);
+	void come_back(std::streamoff to);
 
 public:
 	// Note that the nonce is not passed in here because it's expected to be prepended to the payload itself.
