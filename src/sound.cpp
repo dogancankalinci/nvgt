@@ -2334,11 +2334,32 @@ class audio_wav_encoder_impl : public audio_encoder_impl, public virtual audio_w
 	struct stream_output {
 		datastream *ds = nullptr;
 		std::streamoff base = 0;
+		std::string header; // What the encoder writes while it opens, held until then: see open_impl().
+		bool holding_header = false;
 	} output;
+	// A WAV's header gives the RIFF and data chunk sizes, which the encoder writes as nothing at first and over that when it closes, by seeking back to them. A stream that can't seek, such as an encrypting, encoding or compressing one, kept the first ones, so that its WAV read as holding no audio. They are written as 0xFFFFFFFF instead, a length unknown, as a WAV streamed out is written, which readers take as running to the file's end; closing writes the real ones over them where it can.
+	static void mark_sizes_unknown(std::string& header) {
+		if (header.size() < 12 || header.compare(0, 4, "RIFF") || header.compare(8, 4, "WAVE")) return;
+		header.replace(4, 4, 4, '\xff');
+		for (size_t at = 12; at + 8 <= header.size();) {
+			if (!header.compare(at, 4, "data")) {
+				header.replace(at + 4, 4, 4, '\xff');
+				return;
+			}
+			ma_uint32 size = ma_uint32(ma_uint8(header[at + 4])) | ma_uint32(ma_uint8(header[at + 5])) << 8 | ma_uint32(ma_uint8(header[at + 6])) << 16 | ma_uint32(ma_uint8(header[at + 7])) << 24;
+			if (size > header.size()) return;
+			at += 8 + size + (size & 1);
+		}
+	}
 	static ma_result stream_write(ma_encoder *pEncoder, const void *pBufferIn, size_t bytesToWrite, size_t *pBytesWritten) {
 		stream_output *out = static_cast<stream_output *>(pEncoder->pUserData);
-		std::ostream *stream = out->ds? out->ds->get_ostr() : nullptr;
 		*pBytesWritten = 0;
+		if (out->holding_header) {
+			out->header.append(static_cast<const char*>(pBufferIn), bytesToWrite);
+			*pBytesWritten = bytesToWrite;
+			return MA_SUCCESS;
+		}
+		std::ostream *stream = out->ds? out->ds->get_ostr() : nullptr;
 		if (!stream) return MA_ERROR;
 		stream->write((const char *)pBufferIn, bytesToWrite);
 		if (!stream->good()) return MA_ERROR;
@@ -2349,9 +2370,12 @@ class audio_wav_encoder_impl : public audio_encoder_impl, public virtual audio_w
 		if (origin != ma_seek_origin_start) return MA_NOT_IMPLEMENTED;
 		stream_output *out = static_cast<stream_output *>(pEncoder->pUserData);
 		std::ostream *stream = out->ds? out->ds->get_ostr() : nullptr;
-		if (!stream) return MA_ERROR;
+		if (!stream || out->holding_header) return MA_ERROR;
+		std::ios_base::iostate was = stream->rdstate();
 		stream->seekp(out->base + offset);
-		return stream->good()? MA_SUCCESS : MA_ERROR;
+		if (stream->good()) return MA_SUCCESS;
+		stream->clear(was); // A stream that can't seek is left as good as it was, for what the script writes to it after the encoder.
+		return MA_ERROR;
 	}
 protected:
 	bool open_impl(const string& filename, datastream* ds, unsigned int sample_rate, unsigned int channels, unsigned int flags) override {
@@ -2371,7 +2395,16 @@ protected:
 			output.ds = ds;
 			std::streampos start = ds->get_ostr()->tellp();
 			output.base = start == std::streampos(-1)? 0 : std::streamoff(start);
+			output.header.clear();
+			output.holding_header = true;
 			g_soundsystem_last_error = ma_encoder_init(stream_write, stream_seek, &output, &cfg, &*encoder);
+			output.holding_header = false;
+			if (g_soundsystem_last_error == MA_SUCCESS) {
+				mark_sizes_unknown(output.header);
+				size_t written;
+				if ((g_soundsystem_last_error = stream_write(&*encoder, output.header.data(), output.header.size(), &written)) != MA_SUCCESS) ma_encoder_uninit(&*encoder);
+			}
+			output.header = std::string();
 		}
 		else if (!filename.empty()) {
 #ifdef _WIN32
