@@ -174,14 +174,15 @@ MA_API ma_result ma_libopus_init(ma_read_proc onRead, ma_seek_proc onSeek, ma_te
     ma_result result;
 
     (void)pAllocationCallbacks; /* Can't seem to find a way to configure memory allocations in libopus. */
-    
+
+    /* NVGT: checked before the data source is initialized, and that uninitialized again when the open fails below, as the Vorbis backend does. */
+    if (onRead == NULL || onSeek == NULL) {
+        return MA_INVALID_ARGS; /* onRead and onSeek are mandatory. */
+    }
+
     result = ma_libopus_init_internal(pConfig, pAllocationCallbacks, pOpus);
     if (result != MA_SUCCESS) {
         return result;
-    }
-
-    if (onRead == NULL || onSeek == NULL) {
-        return MA_INVALID_ARGS; /* onRead and onSeek are mandatory. */
     }
 
     pOpus->onRead = onRead;
@@ -202,6 +203,7 @@ MA_API ma_result ma_libopus_init(ma_read_proc onRead, ma_seek_proc onSeek, ma_te
 
         pOpus->of = op_open_callbacks(pOpus, &libopusCallbacks, NULL, 0, &libopusResult);
         if (pOpus->of == NULL) {
+            ma_data_source_uninit(&pOpus->ds);
             return MA_INVALID_FILE;
         }
         ma_libopus_opened(pOpus);
