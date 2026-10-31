@@ -3542,8 +3542,9 @@ public:
 		return shape_handle;
 	}
 	sound_shape* get_shape_object() const override { return shape; }
-	void set_reverb3d(reverb3d* verb) override { get_spatializer()->set_reverb3d(verb); }
-	void set_reverb3d_at(reverb3d* verb, audio_spatializer_reverb3d_placement placement) override { get_spatializer()->set_reverb3d(verb, placement); }
+	// Clearing a reverb without a spatializer has nothing to clear, rather than making one for it, as reading the settings doesn't (see made_spatializer()).
+	void set_reverb3d(reverb3d* verb) override { if (verb || made_spatializer()) get_spatializer()->set_reverb3d(verb); }
+	void set_reverb3d_at(reverb3d* verb, audio_spatializer_reverb3d_placement placement) override { if (verb || made_spatializer()) get_spatializer()->set_reverb3d(verb, placement); }
 	reverb3d* get_reverb3d() const override { audio_spatializer* made = made_spatializer(); return made? made->get_reverb3d() : nullptr; }
 	reverb3d* get_reverb3d_sent_to() const override { // Read by the loop check of another thread, under the topology lock, which close() clears this under (see get_spatializer()).
 		audio_spatializer* sending = reinterpret_cast<std::atomic<audio_spatializer*>&>(spatializer).load(std::memory_order_acquire);
