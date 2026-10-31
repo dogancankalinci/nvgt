@@ -1134,7 +1134,12 @@ bool get_audio_attenuator_enabled(int id) {
 	return it != g_audio_attenuators.end() && it->second.enabled;
 }
 
+// An id no panner or attenuator has is refused with MA_INVALID_ARGS: it was kept and read back, while every positioned sound fell back to another.
 void sound_set_default_3d_panner(int panner_id) {
+	if (g_audio_panners.find(panner_id) == g_audio_panners.end()) {
+		g_soundsystem_last_error = MA_INVALID_ARGS;
+		return;
+	}
 	g_default_3d_panner = panner_id;
 }
 
@@ -1143,6 +1148,10 @@ int sound_get_default_3d_panner() {
 }
 
 void sound_set_default_3d_attenuator(int attenuator_id) {
+	if (g_audio_attenuators.find(attenuator_id) == g_audio_attenuators.end()) {
+		g_soundsystem_last_error = MA_INVALID_ARGS;
+		return;
+	}
 	g_default_3d_attenuator = attenuator_id;
 }
 

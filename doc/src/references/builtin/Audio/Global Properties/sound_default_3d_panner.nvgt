@@ -7,6 +7,7 @@
 	## Remarks:
 		This property is read only. To change it, call `set_sound_default_3d_panner()`.
 		The default is `audio_panner_basic`, which pans sounds with simple left and right volume changes. `audio_panner_phonon_hrtf` uses Steam Audio's HRTF processing to make sounds seem to come from a direction around the listener, and works best with headphones. Calling `set_sound_global_hrtf(true)` sets this property to `audio_panner_phonon_hrtf` and also enables that panner, which is easier than changing the panner yourself.
+		An id that no panner has is refused, leaving the default as it was, with SOUNDSYSTEM_LAST_ERROR set to AUDIO_ERROR_STATE_INVALID_ARGS.
 		The default only affects sounds that start being positioned after it changes. It is used when a sound hasn't been given a panner of its own.
 */
 
