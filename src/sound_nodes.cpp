@@ -1169,6 +1169,10 @@ bool sound_set_spatialization(int panner, int attenuator, bool disable_previous,
 	bool panner_success = false, attenuator_success = false;
 	int prev_panner = g_default_3d_panner, prev_attenuator = g_default_3d_attenuator;
 	auto panner_it = g_audio_panners.find(panner);
+	if (panner_it == g_audio_panners.end() || g_audio_attenuators.find(attenuator) == g_audio_attenuators.end()) { // Both checked before either is applied: an unknown attenuator left the panner applied while this returned false.
+		g_soundsystem_last_error = MA_INVALID_ARGS;
+		return false;
+	}
 	if (panner_it != g_audio_panners.end()) {
 		if (!panner_it->second.enabled) set_audio_panner_enabled(panner, true);
 		if (set_default) sound_set_default_3d_panner(panner);
