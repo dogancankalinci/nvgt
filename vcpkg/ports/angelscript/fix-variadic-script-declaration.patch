@@ -1,0 +1,30 @@
+--- a/sdk/angelscript/source/as_parser.cpp
++++ b/sdk/angelscript/source/as_parser.cpp
+@@ -838,6 +838,16 @@
+ 			// Variadic
+ 			if (t1.type == ttVariadic)
+ 			{
++				// ALTERED: only a registered function or funcdef can be variadic. A script declaration with "..." (a function,
++				// method, interface method, funcdef or import) was parsed, and the builder then crashed on the parameter node
++				// that follows it (asCBuilder::GetParsedFunctionDetails counts the parameters in pairs of type and type
++				// modifier, and the variadic node has no type modifier after it).
++				if( !isParsingAppInterface )
++				{
++					Error(TXT_VARIADIC_ONLY_FOR_APP_FUNCS, &t1);
++					return node;
++				}
++
+ 				node->AddChildLast(CreateNode(snVariadic));
+ 				
+ 				sToken t2;
+--- a/sdk/angelscript/source/as_texts.h
++++ b/sdk/angelscript/source/as_texts.h
+@@ -311,6 +311,8 @@
+ #define TXT_UNRECOGNIZED_VIRTUAL_PROPERTY_NODE "Virtual property contains unrecognized aspect"
+ #define TXT_UNUSED_SCRIPT_NODE                 "Unused script node"
+ 
++// ALTERED: see asCParser::ParseParameterList
++#define TXT_VARIADIC_ONLY_FOR_APP_FUNCS        "Only application registered functions can have variadic parameters"
+ #define TXT_VALUE_TOO_LARGE_FOR_TYPE      "Value is too large for data type"
+ #define TXT_VOID_CANT_BE_OPERAND          "Void cannot be an operand in expressions"
+ 

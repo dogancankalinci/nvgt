@@ -123,6 +123,7 @@ vcpkg_from_github(
         fix-shared-class-child-funcdef-check.patch
         fix-pod-copy-size.patch
         fix-variadic-generic-arg-cleanup.patch
+        fix-variadic-script-declaration.patch
 )
 
 vcpkg_cmake_configure(
