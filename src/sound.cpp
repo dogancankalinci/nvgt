@@ -163,6 +163,11 @@ static bool finite_values(std::initializer_list<float> values) {
 	}
 	return true;
 }
+// Frames in milliseconds, exactly while frames * 1000 fits in 64 bits and through a double past that, where MiniAudio's multiplication overflowed.
+static unsigned long long milliseconds_of_frames(ma_uint64 frames, ma_uint32 sample_rate) {
+	if (!sample_rate) return 0;
+	return frames <= ~(ma_uint64)0 / 1000? frames * 1000 / sample_rate : (unsigned long long)((double)frames / sample_rate * 1000);
+}
 // Linear volumes a sound, mixer, engine or fade can be set to: finite, and no louder than max_volume_gain. MA_INVALID_ARGS otherwise.
 static bool playable_volumes(std::initializer_list<float> linear_volumes) {
 	if (!finite_values(linear_volumes)) return false;
@@ -966,7 +971,7 @@ public:
 		time_sets->fetch_add(1); // A block a sound of this engine recorded is no longer the one under way (see held_sound::block_set).
 		return true;
 	}
-	unsigned long long get_time_in_milliseconds() const override { return engine ? ma_engine_get_time_in_milliseconds(&*engine) : 0; }
+	unsigned long long get_time_in_milliseconds() const override { return engine ? milliseconds_of_frames(ma_engine_get_time_in_pcm_frames(&*engine), ma_engine_get_sample_rate(&*engine)) : 0; } // MiniAudio multiplies the frames by 1000 in 64 bits, which overflowed past 2^64 / 1000 frames.
 	bool set_time_in_milliseconds(unsigned long long time) override {
 		if (!engine || !frames_fit(time, ma_engine_get_sample_rate(&*engine)) || (g_soundsystem_last_error = ma_engine_set_time_in_milliseconds(&*engine, time)) != MA_SUCCESS) return false;
 		time_sets->fetch_add(1);
@@ -4101,7 +4106,7 @@ public:
 		return snd ? ma_sound_get_time_in_pcm_frames(&*snd) : 0;
 	}
 	ma_uint64 get_time_in_milliseconds() const override {
-		return snd ? ma_sound_get_time_in_milliseconds(&*snd) : 0ULL;
+		return snd ? milliseconds_of_frames(ma_sound_get_time_in_pcm_frames(&*snd), ma_engine_get_sample_rate(ma_sound_get_engine(&*snd))) : 0ULL; // As the engine's, see milliseconds_of_frames().
 	}
 	bool get_playing() const override {
 		return snd ? ma_sound_is_playing(&*snd) : false;
@@ -5233,10 +5238,7 @@ public:
 		return 0;
 	}
 	// Exactly, as seek_in_milliseconds() counts the other way: through a float, as MiniAudio's seconds go, a position or length past about 2^24 frames, six minutes at 48 kHz, came out rounded, by milliseconds after an hour, so that a position read and sought back drifted.
-	static unsigned long long frames_to_milliseconds(ma_uint64 frames, ma_uint32 sample_rate) {
-		if (!sample_rate) return 0;
-		return frames <= ~(ma_uint64)0 / 1000? frames * 1000 / sample_rate : (unsigned long long)((double)frames / sample_rate * 1000);
-	}
+	static unsigned long long frames_to_milliseconds(ma_uint64 frames, ma_uint32 sample_rate) { return milliseconds_of_frames(frames, sample_rate); }
 	bool get_data_format(ma_format *format, unsigned int *channels, unsigned int *sample_rate) override {
 		if (format) *format = ma_format_unknown; // As MiniAudio sets them when it fails, for a sound without anything loaded.
 		if (channels) *channels = 0;
