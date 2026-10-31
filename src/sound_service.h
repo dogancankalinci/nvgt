@@ -30,7 +30,7 @@ public:
 	 * Sound_service protocol class.
 	 * Instances of this class provide a bridge between the sound system and your arbitrary data sources, such as packs, archives, the internet, etc.
 	 * How to implement:
-	 * First, define a std::istream that works with your custom data source. This is the hard part. It involves defining a new streambuf that can read and seek your custom data source (Poco's BasicBufferedStreamBuf class takes a lot of the pain out of this; see encryption_filter.cpp or pack_protocol.cpp for examples). Then, define a std::istream which wraps your streambuf.
+	 * First, define a std::istream that works with your custom data source. This is the hard part. It involves defining a new streambuf that can read and seek your custom data source (Poco's BasicBufferedStreamBuf class takes a lot of the pain out of this; see chacha_istreambuf in crypto.cpp, which the encryption filter in sound_service.cpp uses, or pack.cpp for examples). Then, define a std::istream which wraps your streambuf.
 	 * Finally, define your protocol class.
 	 * The only method that must be defined is open_uri. It must return a pointer to a std::istream if the provided uri make sense for your custom data protocol, or nullptr otherwise.
 	 * The sound system will take ownership of the returned pointer and delete it when the script is done with the sound source it represents.
@@ -59,7 +59,7 @@ public:
 	 * private:
 	 * static my_filter instance;
 	 * public:
-	 * sound_service::protocol* get_instance();
+	 * sound_service::filter* get_instance();
 	 *
 	 */
 	class filter {

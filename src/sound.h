@@ -110,7 +110,7 @@ public:
 	virtual int get_sample_rate() const = 0;
 	virtual bool start() = 0;                  // Begins audio playback <ma_engine_start>, only needs to be called if NO_AUTO_START flag is set in engine construction or after stop is called.
 	virtual bool stop() = 0;                   // Stops audio playback.
-	virtual bool set_volume(float volume) = 0; // 0.0 to 1.0.
+	virtual bool set_volume(float volume) = 0; // A linear gain from 0 (silent) through 1 (unchanged) up to max_volume_gain (+100 dB, see sound_nodes.h); negative volumes are refused.
 	virtual float get_volume() const = 0;
 	virtual bool set_gain(float db) = 0;
 	virtual float get_gain() const = 0;
