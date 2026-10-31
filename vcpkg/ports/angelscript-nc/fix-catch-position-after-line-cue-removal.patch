@@ -1,0 +1,26 @@
+--- a/sdk/angelscript/source/as_bytecode.cpp
++++ b/sdk/angelscript/source/as_bytecode.cpp
+@@ -75,11 +75,20 @@
+ 	// Optimize the code
+ 	Optimize();
+ 
+-	// Resolve jumps
+-	ResolveJumpAddresses();
+-
++	// ALTERED: the line numbers are extracted before the jumps are resolved. Extracting them deletes the line cues at the
++	// start of the function (the first SUSPEND isn't needed, PrepareScriptFunction calls the line callback), which with
++	// line cues take a dword each, while the jumps resolved first had stored the catch position of each try block as an
++	// absolute offset counting them. Every catch position came out too large by the size deleted: by one dword normally,
++	// so a caught exception skipped the catch block's first SUSPEND (no line callback for its first line), and by two or
++	// more when the function began with a statement that has a line cue but no code (a local of a registered POD value
++	// type without a default constructor), so the exception handler resumed the script inside an instruction of the catch
++	// block and ran its operands as instructions. The relative jumps weren't affected, but are resolved after the
++	// deletion as well now.
+ 	// Build line numbers buffer
+ 	ExtractLineNumbers();
++
++	// Resolve jumps
++	ResolveJumpAddresses();
+ }
+ 
+ void asCByteCode::ClearAll()
