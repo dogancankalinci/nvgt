@@ -4465,7 +4465,9 @@ public:
 		// Same as load_pcm, but without the setup. A loaded sound is closed first, since closing empties pcm_buffer, which the directive points into.
 		if (snd) close();
 		pcm_buffer = data;
-		return load_special(":quickstring", g_memory_protocol_slot, memory_protocol::directive(&pcm_buffer[0], pcm_buffer.size()), sound_service::null_filter_slot, nullptr, MA_SOUND_FLAG_DECODE | MA_SOUND_FLAG_ASYNC);
+		if (load_special(":quickstring", g_memory_protocol_slot, memory_protocol::directive(&pcm_buffer[0], pcm_buffer.size()), sound_service::null_filter_slot, nullptr, MA_SOUND_FLAG_DECODE | MA_SOUND_FLAG_ASYNC)) return true;
+		std::string().swap(pcm_buffer); // Not kept for a load that failed, until the sound loaded again or went.
+		return false;
 	}
 	bool load_memory(const void *buffer, unsigned int size) override {
 		return load_special("::memory", g_memory_protocol_slot, memory_protocol::directive(buffer, size));
@@ -4476,11 +4478,19 @@ public:
 		pcm_buffer.clear();
 		// At least for now, the strat here is just to write the PCM to wav and then load it the normal way.
 		// Should optimization become necessary (this does result in a couple of copies), a protocol could be written that simulates its input having a RIFF header on it.
-		if (!pcm_to_wav(buffer, size, format, samplerate, channels, pcm_buffer))
+		if (!pcm_to_wav(buffer, size, format, samplerate, channels, pcm_buffer)) {
+			std::string().swap(pcm_buffer);
 			return false;
+		}
 		// At this point we can just use the sound service to load this. We use the low level API though because we need to be clear that no filters apply.
 		// Also, our PCM buffer is a permanent class property so we can enjoy the speed of async loading.
-		return load_special(":pcm", g_memory_protocol_slot, memory_protocol::directive(&pcm_buffer[0], pcm_buffer.size()), sound_service::null_filter_slot, nullptr, MA_SOUND_FLAG_DECODE | MA_SOUND_FLAG_ASYNC);
+		if (load_special(":pcm", g_memory_protocol_slot, memory_protocol::directive(&pcm_buffer[0], pcm_buffer.size()), sound_service::null_filter_slot, nullptr, MA_SOUND_FLAG_DECODE | MA_SOUND_FLAG_ASYNC)) return true;
+		std::string().swap(pcm_buffer); // As in load_string_async().
+		return false;
+	}
+	// The WAV a sound loaded from PCM or a string decodes from, which MiniAudio is done with once it decoded it: it was kept until the sound closed, so that each such sound, as each utterance speech queued, held its audio twice. Let go of when the sound is played after that.
+	void let_go_of_decoded_wav() {
+		if (!pcm_buffer.empty() && load_completed.test() && !decoding(source.get())) std::string().swap(pcm_buffer);
 	}
 	// A script's PCM at a sample rate of a few hertz was resampled up to the engine's as it loaded, so that a second at 1 Hz took gigabytes: below min_sample_rate, it is refused. Above the highest, and with a channel count past MA_MAX_CHANNELS, it was refused only once the sound already loaded had been closed, and dr_wav keeps the count in 16 bits, so one past 65535 loaded other audio, or at a multiple of 65536 divided by zero.
 	static bool pcm_format_in_range(int samplerate, int channels) {
@@ -4654,7 +4664,10 @@ public:
 			load_state->abandon();
 			load_state = nullptr;
 		} else let_go_of_load_state();
-		if (!snd) return false;
+		if (!snd) {
+			if (!source) std::string().swap(pcm_buffer); // A load_pcm() that failed, with no source left to decode it.
+			return false;
+		}
 		if (spatializer) {
 			// Not under this sound's lock, which no chain's lock is taken inside: forgetting the mixer takes the spatializer's, and taking it out of the chain rewires the chains around it, and each of these, like letting go of the spatializer itself, can let go of the last reference to a mixer, such as one a reverb3d made or one the script pointed a chain at. A mixer's destructor takes g_shaped_mixers_mutex, which a listener's move holds while it waits for this sound's lock.
 			// The spatializer forgets this sound before the sound lets go of it, so that it stops asking the sound for its parameters first.
@@ -4738,7 +4751,7 @@ public:
 		node = nullptr;
 		if (pcm_stream) pcm_stream->uninit();
 		pcm_stream.reset();
-		pcm_buffer.resize(0);
+		std::string().swap(pcm_buffer); // Its memory too, which resize(0) kept with the object.
 		loaded_filename.clear();
 		load_completed.clear();
 		paused = fade_paused = fade_from_stop = should_autoclose = false;
@@ -4767,6 +4780,7 @@ public:
 		return ma_node_get_state_time(&*snd, ma_node_state_stopped) > heard_until();
 	}
 	bool play(bool reset_loop_state = true) override {
+		let_go_of_decoded_wav();
 		const bool resuming = paused; // Paused by pause() or pause_fade().
 		if (fade_paused && snd) clear_stop_for_restart(true); // A pause_fade() still fading out is called off.
 		paused = fade_paused = false;
@@ -4784,6 +4798,7 @@ public:
 	}
 	bool play_looped() override {
 		if (pcm_stream) return (g_soundsystem_last_error = MA_INVALID_OPERATION) == MA_SUCCESS; // Fed by stream_pcm(), it has no end to loop from, as play_wait() says.
+		let_go_of_decoded_wav();
 		if (fade_paused && snd) clear_stop_for_restart(true);
 		paused = fade_paused = false;
 		wait_out_flush();
