@@ -530,7 +530,12 @@ static_assert(always_false<T>, "value_type has no matching AngelScript primitive
 }
 template<typename atomic_type, typename divisible_type> void register_atomic_type(asIScriptEngine* engine, const std::string& type_name, const std::string& regular_type_name) {
 	// The following functions are available on all atomic types
-	engine->RegisterObjectType(type_name.c_str(), sizeof(atomic_type), asOBJ_VALUE | asOBJ_POD | asGetTypeTraits<atomic_type>());
+	// An atomic that needs more than 4-byte alignment (the 8-byte ones: atomic_int64, atomic_uint64, atomic_double) is flagged
+	// asOBJ_APP_CLASS_ALIGN8, which AngelScript (with its fix-align8-value-type-layout patch) honours by putting a declared
+	// variable of such a type on the heap and a script class member of it at an 8-byte offset. AngelScript aligns value types
+	// to 4 bytes otherwise, so `int x; atomic_int64 a;` and `class C { int x; atomic_int64 a; }` put the atomic at an address
+	// that was 4 mod 8, and its first operation crashed with SIGBUS on ARMv8.0 and ARMv7 Android devices.
+	engine->RegisterObjectType(type_name.c_str(), sizeof(atomic_type), asOBJ_VALUE | asOBJ_POD | asGetTypeTraits<atomic_type>() | (alignof(atomic_type) > 4 ? asOBJ_APP_CLASS_ALIGN8 : 0));
 	engine->RegisterObjectBehaviour(type_name.c_str(), asBEHAVE_CONSTRUCT, "void f()", asFUNCTION(atomics_construct<atomic_type>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectBehaviour(type_name.c_str(), asBEHAVE_DESTRUCT, "void f()", asFUNCTION(atomics_destruct<atomic_type>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type_name.c_str(), "bool is_lock_free() const", asMETHODPR(atomic_type, is_lock_free, () const noexcept, bool), asCALL_THISCALL);
