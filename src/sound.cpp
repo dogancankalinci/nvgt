@@ -5478,9 +5478,13 @@ sound* sound_play(const string& path, const reactphysics3d::Vector3& position, f
 	default_engine_ref engine;
 	if (!engine) return nullptr;
 	mixer* default_mix = mix? nullptr : acquire_default_mixer();
+	if (default_mix && default_mix->get_engine() != engine.engine) { // sound_default_mixer of an engine that is no longer the default: the sound plays straight through the default engine, as sound_default_mixer's page says, rather than refused by play() as given another engine's mixer.
+		default_mix->release();
+		default_mix = nullptr;
+	}
 	sound* s;
 	try {
-		s = engine->play(path, position, volume, pan, pitch, mix? mix : default_mix, pack_file, autoplay); // Without a mixer of its own, on sound_default_mixer as other new sounds are, unless that mixer is of another engine.
+		s = engine->play(path, position, volume, pan, pitch, mix? mix : default_mix, pack_file, autoplay); // Without a mixer of its own, on sound_default_mixer as other new sounds are.
 	} catch (...) { // As when the load throws.
 		if (default_mix) default_mix->release();
 		throw;
