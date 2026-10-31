@@ -393,6 +393,7 @@ static bool audio_device_id(ma_device_type type, int index, ma_device_id &id) {
 	return true;
 }
 // The index of an open device in its list, or -1. A device that isn't there, as one plugged in after the lists were taken, has them taken anew once; one still missing then isn't looked for anew until another device goes missing.
+static bool on_an_audio_thread();
 static int audio_device_index(ma_device_type type, const ma_device_id &id) {
 	static ma_device_id unlisted[2];
 	static bool has_unlisted[2] = {false, false};
@@ -411,7 +412,8 @@ static int audio_device_index(ma_device_type type, const ma_device_id &id) {
 			}
 			if (has_unlisted[t] && ma_device_id_equal(&unlisted[t], &id)) return -1;
 		}
-		if (!refresh_audio_devices()) return -1;
+		// Not from an audio thread, as a processing callback reading the device: listing the devices there held up the audio for milliseconds, and making the script's arrays for the list can wait for the script's build lock, which a thread destroying the engine can hold while it waits for that callback. Only the list as last taken is looked in then.
+		if (on_an_audio_thread() || !refresh_audio_devices()) return -1;
 	}
 }
 // Better to return an empty array instead of null for now. A single one, as the script adds its own reference to what these return, so a new array each time was never let go.
@@ -923,7 +925,15 @@ public:
 	}
 	void set_processing_callback(asIScriptFunction* cb) override {
 		asIScriptFunction *old;
-		asITypeInfo *buffer_type = cb ? get_array_type("memory_buffer<float>") : nullptr; // See data_callback().
+		asITypeInfo *buffer_type = nullptr;
+		if (cb && on_audio_thread()) { // As from a processing callback: not looked up there, which can wait for the build lock (see data_callback()), but the one this engine has, from its callback set on a script thread.
+			std::lock_guard<std::mutex> lock(callback_mutex);
+			buffer_type = script_data_buffer_type;
+			if (!buffer_type) {
+				g_soundsystem_last_error = MA_INVALID_OPERATION;
+				return;
+			}
+		} else if (cb) buffer_type = get_array_type("memory_buffer<float>"); // See data_callback().
 		{
 			std::lock_guard<std::mutex> lock(callback_mutex);
 			old = script_data_callback.exchange(cb);
@@ -2591,6 +2601,7 @@ public:
 	ma_format get_wav_format() const override { return !get_active()? ma_format_unknown : get_output_format(); } // Unknown while not open, rather than float, which a closed encoder wrote no more than any other format.
 };
 audio_wav_encoder* audio_wav_encoder::create(audio_engine* e) { return new audio_wav_encoder_impl(e); }
+static bool on_an_audio_thread() { return audio_engine_impl::on_audio_thread(); }
 class audio_opus_encoder_impl : public audio_encoder_impl, public virtual audio_opus_encoder {
 	OggOpusEnc* encoder;
 	OggOpusComments* comments;
