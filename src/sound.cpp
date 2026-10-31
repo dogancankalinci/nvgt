@@ -1018,7 +1018,8 @@ public:
 	reactphysics3d::Vector3 get_listener_position(unsigned int index) const override { return engine ? ma_vec3_to_rp_vec3(ma_engine_listener_get_position(&*engine, index)) : reactphysics3d::Vector3(); }
 	// A direction or world up of no length, which left the listener without a forward or up axis: every sound's place relative to it lost two of its axes, so that sounds anywhere along them were heard at the listener. MA_INVALID_ARGS, as for values that aren't finite.
 	static bool has_length(float x, float y, float z) {
-		if (x * x + y * y + z * z > 0) return true; // In float, as MiniAudio's normalize takes a vector whose squared length underflows as one of no length.
+		const float squared = x * x + y * y + z * z;
+		if (squared > 0 && std::isfinite(squared)) return true; // In float, as MiniAudio's normalize takes a vector whose squared length underflows to 0, or overflows, giving 1 over an infinite length, as one of no length.
 		g_soundsystem_last_error = MA_INVALID_ARGS;
 		return false;
 	}
