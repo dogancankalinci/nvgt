@@ -993,6 +993,11 @@ public:
 		}
 		if (!engine) return false;
 		std::lock_guard<std::mutex> lock(device_mutex);
+		ma_device* device = ma_engine_get_device(&*engine);
+		if (device && ma_device_get_state(device) == ma_device_state_uninitialized) { // Left without one by a set_device() that couldn't open any: nothing runs to stop, and the stop is kept for the next device opened, which started the device the script had stopped.
+			started = false;
+			return true;
+		}
 		if ((g_soundsystem_last_error = ma_engine_stop(&*engine)) != MA_SUCCESS) return false;
 		started = false;
 		return true;
