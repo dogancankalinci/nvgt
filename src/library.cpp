@@ -244,7 +244,9 @@ void library::call(asIScriptGeneric* gen) {
 	std::string* sig = (std::string*)gen->GetArgObject(0);
 	library_function* fn = get(*sig); // throws if not loaded or signature is bad
 	struct auto_release { library_function* p; ~auto_release() { p->release(); } } guard{fn};
-	gen->SetReturnObject(fn->invoke(gen, 1));
+	// The var invoke() makes holds the reference the script gets, so it is stored as the return value: SetReturnObject() would add
+	// another, which nothing let go of (one var leaked per call).
+	*(poco_shared<Poco::Dynamic::Var>**)gen->GetAddressOfReturnLocation() = fn->invoke(gen, 1);
 }
 
 // --- AngelScript glue ---
@@ -253,7 +255,8 @@ static library* new_script_library() { return new library(); }
 
 static void library_function_opCall(asIScriptGeneric* gen) {
 	library_function* self = (library_function*)gen->GetObject();
-	gen->SetReturnObject(self->invoke(gen, 0));
+	// As in library::call(), the new var's reference is the script's
+	*(poco_shared<Poco::Dynamic::Var>**)gen->GetAddressOfReturnLocation() = self->invoke(gen, 0);
 }
 
 static void library_call_wrapper(asIScriptGeneric* gen) {
