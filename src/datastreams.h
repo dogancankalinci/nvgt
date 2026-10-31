@@ -12,7 +12,9 @@
 
 #pragma once
 
+#include <atomic>
 #include <mutex>
+#include <thread>
 #include <sstream>
 #include <vector>
 #include <angelscript.h>
@@ -120,6 +122,8 @@ class datastream : public Poco::RefCountedObject {
 	std::recursive_mutex children_mutex;
 	std::vector<datastream*> children; // The open streams opened on this one, whose streams read or write through its own: see close(). Not references, as each holds this one; each removes itself when it closes.
 	std::vector<datastream*> also_on; // Streams this one reads or writes through besides the one it was opened on (see opened_on_too()), under children_mutex.
+	std::atomic<int> pins{0}; // Closes of streams this one was opened on under way on other threads, which this one isn't freed under (see ~datastream()).
+	void leave_parents();
 	void add_child(datastream* child);
 	void remove_child(datastream* child);
 public:
@@ -141,7 +145,9 @@ public:
 	}
 	~datastream() {
 		close();
-		if (ds) ds->remove_child(this); // One marked unclosable, which close() left as it was.
+		leave_parents(); // One marked unclosable, which close() left as it was.
+		// A stream this one was opened on, closing it on another thread, pinned it to do so: this waits for that close rather than free what it uses.
+		while (pins.load()) std::this_thread::yield();
 	}
 	bool open(std::istream* istr, std::ostream* ostr, const std::string& encoding, int byteorder, datastream* obj);
 	bool open(std::ios* stream, const std::string& encoding = "", int byteorder = Poco::BinaryReader::StreamByteOrder::NATIVE_BYTE_ORDER, datastream* obj = nullptr) {
