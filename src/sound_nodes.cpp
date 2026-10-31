@@ -1093,13 +1093,22 @@ int register_audio_attenuator(spatializer_component_node_factory factory, bool d
 spatializer_component_node* create_audio_panner(int id, audio_spatializer* spatializer, audio_engine* engine) {
 	auto it = g_audio_panners.find(id);
 	if (it == g_audio_panners.end() || !it->second.enabled) return nullptr;
-	return it->second.factory(spatializer, engine);
+	// A component that can't be made, as Steam Audio's when it can't start, gives none, as a disabled one does, so that the spatializer falls back to another (see set_fallback_panner()) rather than every positioning call throwing.
+	try {
+		return it->second.factory(spatializer, engine);
+	} catch (const std::exception&) {
+		return nullptr;
+	}
 }
 
 spatializer_component_node* create_audio_attenuator(int id, audio_spatializer* spatializer, audio_engine* engine) {
 	auto it = g_audio_attenuators.find(id);
 	if (it == g_audio_attenuators.end() || !it->second.enabled) return nullptr;
-	return it->second.factory(spatializer, engine);
+	try { // As create_audio_panner().
+		return it->second.factory(spatializer, engine);
+	} catch (const std::exception&) {
+		return nullptr;
+	}
 }
 
 void set_audio_panner_enabled(int id, bool enabled) {
