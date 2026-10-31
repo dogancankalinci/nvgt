@@ -3630,7 +3630,7 @@ public:
 			get_spatializer()->set_attenuator_by_id(g_audio_basic_attenuator);
 		}
 	}
-	bool get_hrtf() const override { return get_preferred_3d_panner() == g_audio_phonon_hrtf_panner && get_preferred_3d_attenuator() == g_audio_phonon_attenuator; }
+	bool get_hrtf() const override { return get_3d_panner() == g_audio_phonon_hrtf_panner && get_3d_attenuator() == g_audio_phonon_attenuator; } // The components in use, rather than those asked for: one that couldn't be made, as for an engine that isn't stereo or Steam Audio that couldn't start, falls back to the basic one, which read as HRTF though none was heard.
 	bool set_shape(CScriptHandle new_shape) override {
 		// A type no shape is made from leaves the old shape in place.
 		int ot = new_shape.GetTypeId() ^ asTYPEID_OBJHANDLE;
