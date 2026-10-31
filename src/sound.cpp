@@ -2224,8 +2224,7 @@ public:
 	virtual unsigned int get_channels() const override { return decoder? decoder->outputChannels : 0; }
 	void prepare_length() override { get_length_frames(); }
 	unsigned long long get_length_frames() const override {
-		auto guard = lock_source();
-		if (!guard) return 0;
+		std::lock_guard<std::recursive_mutex> guard(source_mutex); // Waited for on an audio thread too, unlike the script's other calls (see lock_source()): stop(), seek() and sound.open() take a length of 0 for none, so that one not given while the lock was held made stop() not rewind and seeks be refused.
 		ma_data_source* source = get_ma_data_source();
 		if (!decoder || !source) return 0;
 		long long known = length_frames; // The whole decoder's, whatever its range.
