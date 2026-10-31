@@ -1003,6 +1003,11 @@ public:
 			return false;
 		}
 		std::unique_lock<std::mutex> lock(device_mutex);
+		ma_device* device = ma_engine_get_device(&*engine);
+		if (device && ma_device_get_state(device) == ma_device_state_uninitialized) { // As stop(): with no device open, the start is kept for the next one, which opened stopped.
+			started = true;
+			return true;
+		}
 		if ((g_soundsystem_last_error = ma_engine_start(&*engine)) != MA_SUCCESS) return false;
 		started = true;
 		return true;
