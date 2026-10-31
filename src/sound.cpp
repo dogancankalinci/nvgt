@@ -973,12 +973,11 @@ public:
 	bool start() override {
 		if (!engine) return false;
 		if (processing == this) return true; // Its device runs, this being its callback; waiting for device_mutex here could be for set_device() on another thread, which waits for this callback to return.
-		std::unique_lock<std::mutex> lock(device_mutex, std::defer_lock);
-		if (!processing) lock.lock();
-		else if (!lock.try_lock()) { // Only tried on another engine's callback, see get_device().
-			g_soundsystem_last_error = MA_BUSY;
+		if (processing) { // Another engine's callback: starting a device waits for its thread to start, holding that engine's audio up meanwhile, as stop() and set_device() are refused there for.
+			g_soundsystem_last_error = MA_INVALID_OPERATION;
 			return false;
 		}
+		std::unique_lock<std::mutex> lock(device_mutex);
 		if ((g_soundsystem_last_error = ma_engine_start(&*engine)) != MA_SUCCESS) return false;
 		started = true;
 		return true;
@@ -5368,6 +5367,7 @@ public:
 	}
 	bool set_state(ma_node_state state) override {
 		if (state != ma_node_state_started && state != ma_node_state_stopped) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // Not kept, as by other nodes.
+		if (audio_engine_impl::on_audio_thread()) return (g_soundsystem_last_error = MA_INVALID_OPERATION) == MA_SUCCESS; // Starting or stopping the capture device waits for its thread, holding the audio thread up, as set_device() is refused there for.
 		std::unique_lock<std::mutex> lock = lock_device();
 		if (!lock) return false;
 		if (state == ma_node_state_started && !capture_device) { // Nothing to record from, as after set_device() could open no device.
