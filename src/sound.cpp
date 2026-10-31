@@ -2432,7 +2432,7 @@ public:
 		unique_lock<mutex> lock = lock_writes();
 		if (!lock) return false;
 		if (dc && get_active()) drain_converter();
-		if (!close_impl()) return false;
+		if (!close_impl()) return (g_soundsystem_last_error = MA_INVALID_OPERATION) == MA_SUCCESS; // Nothing open, which said nothing, as a decoder's close() now says (1d7d055b).
 		if (dc) {
 			ma_data_converter_uninit(&*dc, nullptr);
 			dc.reset();
