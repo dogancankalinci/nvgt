@@ -653,8 +653,10 @@ class audio_engine_impl final : public audio_node_impl, public virtual audio_eng
 	static void data_callback(ma_device *pDevice, void *pOutput, const void *pInput, ma_uint32 frameCount) {
 		audio_engine_impl* engine = reinterpret_cast<audio_engine_impl*>(pDevice->pUserData);
 		processing_scope scope(engine); // Outlasts every reference let go below.
+		const bool endpoint_runs = engine->endpoint_runs_for(frameCount);
 		ma_uint64 frames_read;
 		engine->read(pOutput, frameCount, &frames_read);
+		engine->move_time_past_silence(endpoint_runs, frameCount, frames_read);
 		// The script is given the device's whole block, which MiniAudio silenced before the engine mixed into it: the engine reports only the frames its graph gave, none while nothing is attached to it, so that a script making its audio itself got no block to fill, and part of one when a node ended within it.
 		if (!engine->script_data_callback) return;
 		// Counted before looking at the flag and before taking the engine's reference, and given back after letting that go, which can destroy the engine on a thread of its own, counted then (see delete_detached()): so sound_stop_script_callbacks() either sees this call, waiting for it and for such a deletion, or this call sees the flag and takes no reference. Given back before letting the reference go, a deletion it started could come after the waiter saw no call running.
@@ -897,22 +899,27 @@ public:
 			result->Release();
 			return nullptr;
 		}
-		// Whether the engine's endpoint runs for the whole read, so that a short one comes of nothing being attached: one the script stopped, or scheduled to start or stop within the read (set_state_time()), reads short too, and holds the engine's time as on a device, for what was scheduled on it.
-		ma_node* endpoint = ma_engine_get_endpoint(&*engine);
-		const ma_uint64 now = ma_engine_get_time_in_pcm_frames(&*engine), endpoint_stop = ma_node_get_state_time(endpoint, ma_node_state_stopped);
-		const bool endpoint_runs = ma_node_get_state(endpoint) == ma_node_state_started && ma_node_get_state_time(endpoint, ma_node_state_started) <= now && endpoint_stop > now && endpoint_stop - now >= frame_count;
+		const bool endpoint_runs = endpoint_runs_for(frame_count);
 		unsigned long long frames_read;
 		if (!read(result->GetBuffer(), frame_count, &frames_read)) {
 			result->Resize(0);
 			return result;
 		}
-		// With nothing attached to it, MiniAudio's engine reads no frames and its time stands still, so a script reading it for a time or a number of frames, as before attaching anything, read nothing for good: it reads the silence MiniAudio wrote for the frames asked, and its time moves on by them, as with anything attached.
-		if (endpoint_runs && frames_read < frame_count) {
-			ma_engine_set_time_in_pcm_frames(&*engine, ma_engine_get_time_in_pcm_frames(&*engine) + (frame_count - frames_read));
-			frames_read = frame_count;
-		}
+		if (move_time_past_silence(endpoint_runs, frame_count, frames_read)) frames_read = frame_count; // It reads the silence MiniAudio wrote for the frames asked.
 		result->Resize(frames_read * ma_engine_get_channels(&*engine));
 		return result;
+	}
+	// Whether the engine's endpoint runs for the whole of a read of frame_count frames, so that a short one comes of nothing being attached: one the script stopped, or scheduled to start or stop within the read (set_state_time()), reads short too, and holds the engine's time, for what was scheduled on it.
+	bool endpoint_runs_for(ma_uint64 frame_count) const {
+		ma_node* endpoint = ma_engine_get_endpoint(&*engine);
+		const ma_uint64 now = ma_engine_get_time_in_pcm_frames(&*engine), endpoint_stop = ma_node_get_state_time(endpoint, ma_node_state_stopped);
+		return ma_node_get_state(endpoint) == ma_node_state_started && ma_node_get_state_time(endpoint, ma_node_state_started) <= now && endpoint_stop > now && endpoint_stop - now >= frame_count;
+	}
+	// With nothing attached to it, MiniAudio's engine reads no frames and its time stands still: a script reading a no-device engine for a time or a number of frames, as before attaching anything, read nothing for good, and a device's engine making its audio in a processing callback kept one time throughout. Its time moves on by the frames asked, as with anything attached, when its endpoint ran for them. True when it did.
+	bool move_time_past_silence(bool endpoint_runs, ma_uint64 frames_asked, ma_uint64 frames_read) {
+		if (!endpoint_runs || frames_read >= frames_asked) return false;
+		ma_engine_set_time_in_pcm_frames(&*engine, ma_engine_get_time_in_pcm_frames(&*engine) + (frames_asked - frames_read));
+		return true;
 	}
 	void set_processing_callback(asIScriptFunction* cb) override {
 		asIScriptFunction *old;
