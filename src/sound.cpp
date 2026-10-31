@@ -656,9 +656,8 @@ class audio_engine_impl final : public audio_node_impl, public virtual audio_eng
 		audio_engine_impl* engine = reinterpret_cast<audio_engine_impl*>(pDevice->pUserData);
 		processing_scope scope(engine); // Outlasts every reference let go below.
 		const bool endpoint_runs = engine->endpoint_runs_for(frameCount);
-		ma_uint64 frames_read;
-		engine->read(pOutput, frameCount, &frames_read);
-		engine->move_time_past_silence(endpoint_runs, frameCount, frames_read);
+		ma_uint64 frames_read = 0;
+		if (engine->read(pOutput, frameCount, &frames_read)) engine->move_time_past_silence(endpoint_runs, frameCount, frames_read); // Not after a read that failed, as read() doesn't.
 		// The script is given the device's whole block, which MiniAudio silenced before the engine mixed into it: the engine reports only the frames its graph gave, none while nothing is attached to it, so that a script making its audio itself got no block to fill, and part of one when a node ended within it.
 		if (!engine->script_data_callback) return;
 		// Counted before looking at the flag and before taking the engine's reference, and given back after letting that go, which can destroy the engine on a thread of its own, counted then (see delete_detached()): so sound_stop_script_callbacks() either sees this call, waiting for it and for such a deletion, or this call sees the flag and takes no reference. Given back before letting the reference go, a deletion it started could come after the waiter saw no call running.
