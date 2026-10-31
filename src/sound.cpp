@@ -973,7 +973,11 @@ public:
 		started = false;
 		return true;
 	}
-	bool set_volume(float volume) override { return engine && playable_volumes({volume})? (g_soundsystem_last_error = ma_engine_set_volume(&*engine, volume)) == MA_SUCCESS : false; }
+	bool set_volume(float volume) override {
+		if (!engine || !playable_volumes({volume})) return false;
+		if (volume < 0) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // MiniAudio takes it as 0, so that the engine went silent while this returned true.
+		return (g_soundsystem_last_error = ma_engine_set_volume(&*engine, volume)) == MA_SUCCESS;
+	}
 	float get_volume() const override { return engine ? ma_engine_get_volume(&*engine) : 0; }
 	bool set_gain(float db) override { return engine && finite_values({db}) && playable_volumes({ma_volume_db_to_linear(db)})? (g_soundsystem_last_error = ma_engine_set_gain_db(&*engine, db)) == MA_SUCCESS : false; }
 	float get_gain() const override { return engine ? std::max(-100.0f, ma_engine_get_gain_db(&*engine)) : 0; } // No lower than -100 dB, as volumes read (see readable_db()): a silent engine read -inf, which nothing could be set from.

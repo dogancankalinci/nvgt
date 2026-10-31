@@ -196,7 +196,7 @@ public:
 	}
 	bool set_output_bus_volume(unsigned int bus, float volume) {
 		if (!node) return false;
-		if (!std::isfinite(volume) || std::fabs(volume) > max_volume_gain) { // A NaN or infinite volume made every sample the bus fed NaN, as one past max_volume_gain could.
+		if (!std::isfinite(volume) || std::fabs(volume) > max_volume_gain || volume < 0) { // A NaN or infinite volume made every sample the bus fed NaN, as one past max_volume_gain could; MiniAudio takes a negative one as 0, which then read back as 0 though it was set.
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
