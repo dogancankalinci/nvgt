@@ -290,80 +290,56 @@ std::ios* datastream::stream() {
 	else
 		return _ostr;
 }
+// A seek starts from a stream cleared of an earlier failure or end, which a script has no way to clear itself, and one that fails leaves the stream as it was, reading and writing on from where it did: it used to be left failed, so that every later read, write and seek failed too, and a script couldn't even seek back. The result tells whether it moved.
+template <class seek_function> static bool seek_stream(std::ios& stream, seek_function seek) {
+	std::ios::iostate before = stream.rdstate();
+	stream.clear(before & std::ios::badbit);
+	seek();
+	if (stream.good()) return true;
+	stream.clear(before | (stream.rdstate() & std::ios::badbit));
+	return false;
+}
 bool datastream::seek(unsigned long long offset) {
 	if (!r && !w)
 		return false;
-	if (_istr) {
-		if (r && r->eof() && offset < _istr->tellg())
-			_istr->clear();
-		_istr->seekg(offset, std::ios::beg);
-	}
-	if (_ostr)
-		_ostr->seekp(offset, std::ios::beg);
-	return r && r->good() || w && w->good();
+	bool read_moved = false, write_moved = false;
+	if (_istr) read_moved = seek_stream(*_istr, [&] { _istr->seekg(offset, std::ios::beg); });
+	if (_ostr) write_moved = seek_stream(*_ostr, [&] { _ostr->seekp(offset, std::ios::beg); });
+	return r && read_moved || w && write_moved;
 }
 bool datastream::seek_end(unsigned long long offset) {
 	if (!r && !w)
 		return false;
-	if (_istr) {
-		if (r && r->eof() && offset > 0)
-			_istr->clear();
-		_istr->seekg(offset, std::ios::end);
-	}
-	if (_ostr)
-		_ostr->seekp(offset, std::ios::end);
-	return r && r->good() || w && w->good();
+	bool read_moved = false, write_moved = false;
+	if (_istr) read_moved = seek_stream(*_istr, [&] { _istr->seekg(offset, std::ios::end); });
+	if (_ostr) write_moved = seek_stream(*_ostr, [&] { _ostr->seekp(offset, std::ios::end); });
+	return r && read_moved || w && write_moved;
 }
 bool datastream::seek_relative(long long offset) {
 	if (!r && !w)
 		return false;
-	if (_istr) {
-		if (r && r->eof() && offset < 0)
-			_istr->clear();
-		_istr->seekg(offset, std::ios::cur);
-	}
-	if (_ostr)
-		_ostr->seekp(offset, std::ios::cur);
-	return r && r->good() || w && w->good();
+	bool read_moved = false, write_moved = false;
+	if (_istr) read_moved = seek_stream(*_istr, [&] { _istr->seekg(offset, std::ios::cur); });
+	if (_ostr) write_moved = seek_stream(*_ostr, [&] { _ostr->seekp(offset, std::ios::cur); });
+	return r && read_moved || w && write_moved;
 }
 bool datastream::rseek(unsigned long long offset) {
-	if (_istr) {
-		if (r->eof() && offset < _istr->tellg())
-			_istr->clear();
-		_istr->seekg(offset, std::ios::beg);
-	}
-	return _istr ? _istr->good() : false;
+	return _istr && seek_stream(*_istr, [&] { _istr->seekg(offset, std::ios::beg); });
 }
 bool datastream::rseek_end(unsigned long long offset) {
-	if (_istr) {
-		if (r->eof() && offset > 0)
-			_istr->clear();
-		_istr->seekg(offset, std::ios::end);
-	}
-	return _istr ? _istr->good() : false;
+	return _istr && seek_stream(*_istr, [&] { _istr->seekg(offset, std::ios::end); });
 }
 bool datastream::rseek_relative(long long offset) {
-	if (_istr) {
-		if (r->eof() && offset < 0)
-			_istr->clear();
-		_istr->seekg(offset, std::ios::cur);
-	}
-	return _istr ? _istr->good() : false;
+	return _istr && seek_stream(*_istr, [&] { _istr->seekg(offset, std::ios::cur); });
 }
 bool datastream::wseek(unsigned long long offset) {
-	if (_ostr)
-		_ostr->seekp(offset, std::ios::beg);
-	return _ostr ? _ostr->good() : false;
+	return _ostr && seek_stream(*_ostr, [&] { _ostr->seekp(offset, std::ios::beg); });
 }
 bool datastream::wseek_end(unsigned long long offset) {
-	if (_ostr)
-		_ostr->seekp(offset, std::ios::end);
-	return _ostr ? _ostr->good() : false;
+	return _ostr && seek_stream(*_ostr, [&] { _ostr->seekp(offset, std::ios::end); });
 }
 bool datastream::wseek_relative(long long offset) {
-	if (_ostr)
-		_ostr->seekp(offset, std::ios::cur);
-	return _ostr ? _ostr->good() : false;
+	return _ostr && seek_stream(*_ostr, [&] { _ostr->seekp(offset, std::ios::cur); });
 }
 long long datastream::get_pos() {
 	if (_istr)

@@ -7,6 +7,7 @@
 		bool: Returns true if the stream could seek, false otherwise.
 	## Remarks:
 		Note that most datastreams do not support seeking as this would result in needing to store more data in memory than we are comfortable with, however, file objects and raw datastreams that read from a string do support seeking. Other than these stream types, you should assume that seek operations are not supported unless otherwise documented.
+		A seek that fails leaves the stream where it was, so reading and writing go on from there, and a seek clears the stream's eof and fail state from earlier reads, so that it can always be tried.
 */
 
 // Example:
