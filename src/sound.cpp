@@ -73,6 +73,17 @@ void wait(int ms);
 // Globals, currently NVGT does not support instanciating multiple miniaudio contexts and NVGT provides a global sound engine.
 static ma_context g_sound_context;
 audio_engine *g_audio_engine = nullptr;
+// g_audio_engine itself is read and swapped under this, held only for that and for taking a reference, never while an engine is made or destroyed, so that an audio thread can wait for it (see acquire_default_engine()). It's also written under g_soundsystem_init_mutex, which keeps the setup to one thread.
+static std::mutex g_audio_engine_mutex;
+static bool on_an_audio_thread();
+static audio_engine* default_engine_pointer() {
+	std::lock_guard<std::mutex> lock(g_audio_engine_mutex);
+	return g_audio_engine;
+}
+static void set_default_engine_pointer(audio_engine* engine) {
+	std::lock_guard<std::mutex> lock(g_audio_engine_mutex);
+	g_audio_engine = engine;
+}
 // The lowest sample rate taken for an engine, a decoder's or an encoder's output or a script's PCM. MiniAudio's resource manager decodes in pages of 1000 * (rate / 1000) frames, none below it, and rates of a few hertz made a source decode thousands of frames for each it gave, or a second of PCM take gigabytes, while rates between it and 8000, the lowest MiniAudio names, are found in old recordings and in sounds scripts make, and worked.
 static constexpr ma_uint32 min_sample_rate = 1000;
 mixer* g_audio_mixer = nullptr; // sound_default_mixer, under g_audio_mixer_mutex.
@@ -319,8 +330,13 @@ bool init_sound_context() {
 }
 bool init_sound() {
 	if (g_soundsystem_ready.test()) return true;
-	// Everything below runs under the lock: a second thread must wait for the engine to exist rather than be told the system is ready while it is still being built.
-	std::lock_guard<std::recursive_mutex> lock(g_soundsystem_init_mutex);
+	// Everything below runs under the lock: a second thread must wait for the engine to exist rather than be told the system is ready while it is still being built. Not an audio thread, as a processing callback of a script's own engine, which waited there while another thread made the default engine, opening and starting its device: it's told MA_BUSY instead.
+	std::unique_lock<std::recursive_mutex> lock(g_soundsystem_init_mutex, std::defer_lock);
+	if (!on_an_audio_thread()) lock.lock();
+	else if (!lock.try_lock()) {
+		g_soundsystem_last_error = MA_BUSY;
+		return false;
+	}
 	if (g_soundsystem_ready.test()) return true; // another thread finished initializing while we waited for the lock
 	if (g_soundsystem_shut_down.test()) throw runtime_error("the sound system has shut down");
 	if (g_soundsystem_starting) return true; // re-entrant call from the setup, on this very thread; the engine is not assigned yet but everything it needs already is
@@ -328,7 +344,7 @@ bool init_sound() {
 	// An engine that can't be built, as on a machine without an output device, throws here, and again on each later call, which tries anew, rather than letting later calls report the system ready with g_audio_engine null.
 	{
 		soundsystem_starting starting;
-		g_audio_engine = new_audio_engine(audio_engine::PERCENTAGE_ATTRIBUTES | audio_engine::NO_CLIP);
+		set_default_engine_pointer(new_audio_engine(audio_engine::PERCENTAGE_ATTRIBUTES | audio_engine::NO_CLIP));
 	}
 	g_soundsystem_ready.test_and_set(); // only now may other threads use the default engine
 	return true;
@@ -342,9 +358,9 @@ void uninit_sound() {
 	wait_for_reaps(); // Sources a closed sound left still decoding are freed before the process's exit, as closing them did; none are handed over once shut down.
 	std::lock_guard<std::recursive_mutex> lock(g_soundsystem_init_mutex);
 	g_soundsystem_ready.clear(); // So that init_sound() refuses later calls instead of reporting a ready system whose engine is gone.
-	if (g_audio_engine != nullptr) {
-		g_audio_engine->release();
-		g_audio_engine = nullptr;
+	if (audio_engine* engine = default_engine_pointer()) {
+		set_default_engine_pointer(nullptr);
+		engine->release();
 	}
 }
 
@@ -5445,10 +5461,8 @@ sound *new_sound(audio_engine *engine) { return new sound_impl(engine); }
 // The default engine with a reference of the caller's own: another thread making a different engine the default lets go of the old one, which could otherwise be destroyed while it is used. Null when the sound system couldn't start.
 audio_engine *acquire_default_engine() {
 	if (!init_sound()) return nullptr;
-	// Which set_sound_default_engine() swaps the engine under, and init_sound() holds while it makes the default engine, opening and starting its device: on an audio thread, as in a processing callback, only tried for, there being no default engine to give meanwhile, rather than holding that audio up.
-	std::unique_lock<std::recursive_mutex> lock(g_soundsystem_init_mutex, std::defer_lock);
-	if (!on_an_audio_thread()) lock.lock();
-	else if (!lock.try_lock()) return nullptr;
+	// Under the pointer's own lock, which an audio thread can wait for, rather than the setup lock, which 37091344 only tried for there: every script call taking the default engine holds that one for a moment, so that a processing callback's calls failed at random.
+	std::lock_guard<std::mutex> lock(g_audio_engine_mutex);
 	if (g_audio_engine) g_audio_engine->duplicate();
 	return g_audio_engine;
 }
@@ -5618,8 +5632,11 @@ void set_sound_default_engine(audio_engine* engine) {
 			engine->release();
 			throw runtime_error("the sound system has shut down");
 		}
-		old = g_audio_engine;
-		g_audio_engine = engine;
+		{
+			std::lock_guard<std::mutex> pointer_lock(g_audio_engine_mutex);
+			old = g_audio_engine;
+			g_audio_engine = engine;
+		}
 		g_soundsystem_ready.test_and_set(); // The script's engine is the default now, possibly before init_sound() ever built one, which it then doesn't do over it.
 	}
 	if (old) old->release(); // After the lock: destroying the engine waits for its processing callback, which can be asking for the default engine.
