@@ -12,6 +12,7 @@
 
 #pragma once
 
+#include <mutex>
 #include <sstream>
 #include <vector>
 #include <angelscript.h>
@@ -115,6 +116,11 @@ class datastream : public Poco::RefCountedObject {
 	std::ostream* _ostr;
 	datastream* ds; // If this object was created from another angelscript object, holds a reference to it so we can keep all parent streams alive until the close or destruction of this object.
 	datastream_close_callback* close_cb; // Some advanced streams may allocate some extra user data that needs to be destroyed when a stream is closed, this is such a stream's opertunity to destroy that data.
+	std::recursive_mutex use_mutex; // Held while the streams are deleted, and by hold_open().
+	std::recursive_mutex children_mutex;
+	std::vector<datastream*> children; // The open streams opened on this one, whose streams read or write through its own: see close(). Not references, as each holds this one; each removes itself when it closes.
+	void add_child(datastream* child);
+	void remove_child(datastream* child);
 public:
 	void* user; // Free for advanced streams to use.
 	bool no_close; // If set to true, the close function becomes a no-op for singleton streams like stdin/stdout.
@@ -134,6 +140,7 @@ public:
 	}
 	~datastream() {
 		close();
+		if (ds) ds->remove_child(this); // One marked unclosable, which close() left as it was.
 	}
 	bool open(std::istream* istr, std::ostream* ostr, const std::string& encoding, int byteorder, datastream* obj);
 	bool open(std::ios* stream, const std::string& encoding = "", int byteorder = Poco::BinaryReader::StreamByteOrder::NATIVE_BYTE_ORDER, datastream* obj = nullptr) {
@@ -188,6 +195,10 @@ public:
 	}
 	inline unsigned long long available() {
 		return r ? r->available() : -1;
+	}
+	// For code reading or writing the streams on a thread of its own, as the audio thread does for a sound's decoder or encoder: while it's held, close() waits rather than delete the streams under that code. The streams are looked up after taking it, as they're gone once closed.
+	std::unique_lock<std::recursive_mutex> hold_open() {
+		return std::unique_lock<std::recursive_mutex>(use_mutex);
 	}
 	inline std::istream* get_istr() {
 		return _istr;

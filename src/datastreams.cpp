@@ -13,6 +13,7 @@
  * 3. This notice may not be removed or altered from any source distribution.
  */
 
+#include <algorithm>
 #include <cstdint>
 #include <exception>
 #include <stdexcept>
@@ -251,11 +252,32 @@ bool datastream::open(std::istream* istr, std::ostream* ostr, const std::string&
 	ds = obj;
 	_istr = istr;
 	_ostr = ostr;
+	if (ds) ds->add_child(this);
 	return true;
 }
+void datastream::add_child(datastream* child) {
+	std::lock_guard<std::recursive_mutex> lock(children_mutex);
+	children.push_back(child);
+}
+void datastream::remove_child(datastream* child) {
+	std::lock_guard<std::recursive_mutex> lock(children_mutex);
+	auto it = std::find(children.begin(), children.end(), child);
+	if (it != children.end()) children.erase(it);
+}
 bool datastream::close(bool close_all) {
-	if (no_close || (!r && !w))
-		return false; // Nothing opened or stream was marked unclosable, the only fail case.
+	if (no_close)
+		return false; // The stream was marked unclosable.
+	if (ds) ds->remove_child(this);
+	// The streams opened on this one read and write through its streams, which go now: they're closed first, rather than left to use them once deleted, which reading or writing one did. They're closed under the lock that one closing by itself on another thread waits for in remove_child(), so it can't go away meanwhile.
+	{
+		std::lock_guard<std::recursive_mutex> lock(children_mutex);
+		std::vector<datastream*> opened_on;
+		opened_on.swap(children);
+		for (datastream* child : opened_on) child->close();
+	}
+	std::unique_lock<std::recursive_mutex> hold(use_mutex);
+	if (!r && !w)
+		return false; // Nothing opened, the only other fail case.
 	if (close_cb) {
 		close_cb(this);
 		close_cb = nullptr;
@@ -274,13 +296,15 @@ bool datastream::close(bool close_all) {
 		delete _ostr;
 	_istr = nullptr;
 	_ostr = nullptr;
-	if (ds) {
-		if (close_all)
-			ds->close(close_all);
-		ds->release();
-	}
+	datastream* parent = ds;
 	ds = nullptr;
 	user = nullptr;
+	hold.unlock();
+	if (parent) {
+		if (close_all)
+			parent->close(close_all);
+		parent->release();
+	}
 	return true;
 }
 std::ios* datastream::stream() {
