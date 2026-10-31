@@ -2264,7 +2264,9 @@ public:
 		}
 		if (get_active()) close();
 		unique_lock<mutex> lock(write_mtx);
-		return open_impl(filename, nullptr, sample_rate, channels, flags); // The encoders create the file anew, replacing one there, once their arguments check out; deleting it first lost it to an open that then failed.
+		if (!open_impl(filename, nullptr, sample_rate, channels, flags)) return false; // The encoders create the file anew, replacing one there, once their arguments check out; deleting it first lost it to an open that then failed.
+		drop_pulled();
+		return true;
 	}
 	bool open_stream(datastream* ds, unsigned int sample_rate, unsigned int channels, unsigned int flags) override {
 		if (!ds) return false;
@@ -2289,7 +2291,14 @@ public:
 			return false;
 		}
 		output_stream = ds;
+		if (ds != pull_stream) drop_pulled();
 		return true;
+	}
+	// What an earlier pull session left for read(), which a session writing elsewhere replaces: read() gave it after that session, and an Opus encoder's even while it was open. Under write_mtx.
+	void drop_pulled() {
+		if (!pull_stream) return;
+		pull_stream->release();
+		pull_stream = nullptr;
 	}
 	bool open_pull(unsigned int sample_rate, unsigned int channels, unsigned int flags) override {
 		if (!output_in_range(sample_rate, channels, open_flags(flags))) return false;
