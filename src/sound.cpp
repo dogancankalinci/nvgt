@@ -928,7 +928,7 @@ public:
 	// With nothing attached to it, MiniAudio's engine reads no frames and its time stands still: a script reading a no-device engine for a time or a number of frames, as before attaching anything, read nothing for good, and a device's engine making its audio in a processing callback kept one time throughout. Its time moves on by the frames asked, as with anything attached, when its endpoint ran for them. True when it did.
 	bool move_time_past_silence(bool endpoint_runs, ma_uint64 frames_asked, ma_uint64 frames_read) {
 		if (!endpoint_runs || frames_read >= frames_asked) return false;
-		ma_engine_set_time_in_pcm_frames(&*engine, ma_engine_get_time_in_pcm_frames(&*engine) + (frames_asked - frames_read));
+		reinterpret_cast<std::atomic<ma_uint64>*>(&engine->nodeGraph.endpoint.localTime)->fetch_add(frames_asked - frames_read); // At once, as MiniAudio moves it on: reading and setting it lost a time the script set between the two, on a device's thread every block.
 		return true;
 	}
 	void set_processing_callback(asIScriptFunction* cb) override {
