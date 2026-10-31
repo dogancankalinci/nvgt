@@ -5451,12 +5451,19 @@ sound *new_global_sound_unmixed() {
 	if (!engine) return nullptr; // The sound system couldn't start.
 	return new sound_impl(engine.engine);
 }
+// The script's sound factory, which throws when the sound system can't start, as a mixer's does and sound_system_available says, rather than giving null, which failed later as a null pointer. Speech and the tone synth, which check for null, use new_global_sound().
+sound *script_new_global_sound();
 sound *new_global_sound() {
 	sound* s = new_global_sound_unmixed();
 	if (mixer* mix = s? acquire_default_mixer() : nullptr) { // Refused for a sound_default_mixer of an engine other than the default one, which leaves the sound on the default engine's endpoint.
 		s->set_mixer(mix);
 		mix->release();
 	}
+	return s;
+}
+sound *script_new_global_sound() {
+	sound* s = new_global_sound();
+	if (!s) throw runtime_error("no audio engine available");
 	return s;
 }
 int get_sound_output_device() {
@@ -6155,7 +6162,7 @@ void RegisterSoundsystem(asIScriptEngine *engine) {
 	RegisterSoundsystemNodes(engine);
 	RegisterSoundsystemEncoders(engine);
 	RegisterSoundsystemShapes(engine);
-	engine->RegisterObjectBehaviour("sound", asBEHAVE_FACTORY, "sound@ s()", asFUNCTION(new_global_sound), asCALL_CDECL);
+	engine->RegisterObjectBehaviour("sound", asBEHAVE_FACTORY, "sound@ s()", asFUNCTION(script_new_global_sound), asCALL_CDECL);
 	engine->RegisterObjectMethod("sound", "bool load(const string&in filename, const pack_interface@+ pack = sound_default_pack)", asFUNCTION((virtual_call < sound, &sound::load, bool, const string &, pack_interface * >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("sound", "bool stream(const string&in filename, const pack_interface@+ pack = sound_default_pack)", asFUNCTION((virtual_call < sound, &sound::stream, bool, const string &, pack_interface * >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("sound", "bool stream_url(const string&in url)", asFUNCTION((virtual_call < sound, &sound::stream_url, bool, const string&>)), asCALL_CDECL_OBJFIRST);
