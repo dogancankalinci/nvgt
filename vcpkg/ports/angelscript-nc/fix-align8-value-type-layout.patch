@@ -1,0 +1,34 @@
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -6788,6 +6788,17 @@
+ 	{
+ 		// Primitives and value types (unless overridden) are allocated on the stack
+ 		isOnHeap = false;
++
++		// ALTERED: a declared variable of a value type flagged asOBJ_APP_CLASS_ALIGN8 (its C++ type may need 8-byte alignment)
++		// is allocated on the heap, where the allocator aligns it. Stack variables are aligned to 4 bytes only, as the frames
++		// are, so such an object (an 8-byte std::atomic, which NVGT registers as atomic_int64, atomic_uint64 and atomic_double)
++		// was at an address that was 4 mod 8 after any 4-byte local: its atomic operations faulted on ARMv8.0 and ARMv7
++		// (SIGBUS) and were split locks on x86. Temporaries stay on the stack: the compiler reuses a temporary's slot for
++		// another one of the same type and placement while the first is still in use in some expressions (a heap temporary
++		// for a copy made by a call's result and one for an argument passed by value got the same variable), which a stack
++		// temporary and the heap copy of a by-value argument never share.
++		if( !isTemporary && !t.IsPrimitive() && (t.GetTypeInfo()->GetFlags() & asOBJ_APP_CLASS_ALIGN8) )
++			isOnHeap = true;
+ 	}
+ 
+ 	// Find a free location with the same type
+--- a/sdk/angelscript/source/as_objecttype.cpp
++++ b/sdk/angelscript/source/as_objecttype.cpp
+@@ -568,6 +568,11 @@
+ 	// 32-bit targets. The bytecode refers to members by their index (asCWriter::FindObjectPropIndex,
+ 	// asCReader::FindObjectPropOffset) and the loader lays the class out again, so bytecode saved before this loads too.
+ 	if( holdsPointer && (size & (AS_PTR_SIZE*4-1)) ) size += AS_PTR_SIZE*4 - (size & (AS_PTR_SIZE*4-1));
++	// ALTERED: a POD value type stored inline that is flagged asOBJ_APP_CLASS_ALIGN8 (its C++ type may need 8-byte alignment)
++	// is aligned to 8 bytes, as the object itself is by the allocator: it was aligned to 4, so an 8-byte std::atomic member
++	// (NVGT's atomic_int64) after an int was at an address that was 4 mod 8, where its atomic operations faulted on ARMv8.0
++	// and ARMv7. The loader lays the class out again, so bytecode saved before this loads too.
++	if( !holdsPointer && dt.IsObject() && (dt.GetTypeInfo()->flags & asOBJ_APP_CLASS_ALIGN8) && (size & 7) ) size += 8 - (size & 7);
+ #else
+ 	asUINT alignment = dt.GetAlignment();
+ 	const asUINT propSizeAlignmentDifference = size & (alignment-1);

@@ -124,6 +124,7 @@ vcpkg_from_github(
         fix-pod-copy-size.patch
         fix-variadic-generic-arg-cleanup.patch
         fix-variadic-script-declaration.patch
+        fix-align8-value-type-layout.patch
 )
 
 vcpkg_cmake_configure(
