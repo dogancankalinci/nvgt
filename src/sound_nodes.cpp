@@ -1261,6 +1261,7 @@ public:
 		spatialization_params.rolloff = 1.0f;
 		spatialization_params.directional_attenuation_factor = 1.0f;
 		spatialization_params.cone_volume = 1.0f;
+		spatialization_params.max_volume = 1.0f; // MiniAudio's maximum gain, so that a reverb's first send, worked out from these before the mixer gives any, is the one at the listener rather than clamped to 0 with an attenuator.
 		{ std::lock_guard<std::mutex> lock(g_tracked_spatializers_mutex); g_tracked_spatializers.insert(this); }
 	}
 	~audio_spatializer_impl() {
@@ -1417,7 +1418,8 @@ public:
 			parameters_valid = attached_mixer->get_spatialization_parameters(spatialization_params);
 			spatialization_params.rolloff = rolloff_set.load(std::memory_order_relaxed);
 			spatialization_params.directional_attenuation_factor = directional_attenuation_factor_set.load(std::memory_order_relaxed);
-			if (parameters_valid && reverb) reverb_attachment->set_output_bus_volume(1, reverb_send_volume(reverb));
+			// Spatialization off, the mixer plays unattenuated, as at the listener: its send is the reverb's there too, rather than kept at what it was when spatialization went off, loud or nearly silent.
+			if (reverb) reverb_attachment->set_output_bus_volume(1, parameters_valid? reverb_send_volume(reverb) : std::min(reverb->get_volume_at(0), max_volume_gain));
 		} else parameters_valid = false;
 	}
 	void on_panner_enabled_changed(int panner_id, bool enabled) override {
