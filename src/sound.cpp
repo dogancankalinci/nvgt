@@ -945,32 +945,39 @@ public:
 	unsigned int get_listener_count() const override { return engine ? ma_engine_get_listener_count(&*engine) : 0; }
 	int find_closest_listener(float x, float y, float z) const override { return engine ? ma_engine_find_closest_listener(&*engine, x, y, z) : -1; }
 	int find_closest_listener_vector(const reactphysics3d::Vector3 &position) const override { return engine ? ma_engine_find_closest_listener(&*engine, position.x, position.y, position.z) : -1; }
+	// A listener the engine has, refusing with MA_INVALID_ARGS otherwise: MiniAudio ignores one it doesn't have, so that setting it changed nothing and said nothing.
+	bool has_listener(unsigned int index) const {
+		if (!engine) return false;
+		if (index < ma_engine_get_listener_count(&*engine)) return true;
+		g_soundsystem_last_error = MA_INVALID_ARGS;
+		return false;
+	}
 	void set_listener_position(unsigned int index, float x, float y, float z) override {
-		if (engine && finite_values({x, y, z}))
+		if (has_listener(index) && finite_values({x, y, z}))
 			ma_engine_listener_set_position(&*engine, index, x, y, z);
 		place_shaped_mixers(this);
 	}
 	void set_listener_position_vector(unsigned int index, const reactphysics3d::Vector3 &position) override {
-		if (engine && finite_values({position.x, position.y, position.z}))
+		if (has_listener(index) && finite_values({position.x, position.y, position.z}))
 			ma_engine_listener_set_position(&*engine, index, position.x, position.y, position.z);
 		place_shaped_mixers(this);
 	}
 	reactphysics3d::Vector3 get_listener_position(unsigned int index) const override { return engine ? ma_vec3_to_rp_vec3(ma_engine_listener_get_position(&*engine, index)) : reactphysics3d::Vector3(); }
 	void set_listener_direction(unsigned int index, float x, float y, float z) override {
-		if (engine && finite_values({x, y, z}))
+		if (has_listener(index) && finite_values({x, y, z}))
 			ma_engine_listener_set_direction(&*engine, index, x, y, z);
 	}
 	void set_listener_direction_vector(unsigned int index, const reactphysics3d::Vector3 &direction) override {
-		if (engine && finite_values({direction.x, direction.y, direction.z}))
+		if (has_listener(index) && finite_values({direction.x, direction.y, direction.z}))
 			ma_engine_listener_set_direction(&*engine, index, direction.x, direction.y, direction.z);
 	}
 	reactphysics3d::Vector3 get_listener_direction(unsigned int index) const override { return engine ? ma_vec3_to_rp_vec3(ma_engine_listener_get_direction(&*engine, index)) : reactphysics3d::Vector3(); }
 	void set_listener_velocity(unsigned int index, float x, float y, float z) override {
-		if (engine && finite_values({x, y, z}))
+		if (has_listener(index) && finite_values({x, y, z}))
 			ma_engine_listener_set_velocity(&*engine, index, x, y, z);
 	}
 	void set_listener_velocity_vector(unsigned int index, const reactphysics3d::Vector3 &velocity) override {
-		if (engine && finite_values({velocity.x, velocity.y, velocity.z}))
+		if (has_listener(index) && finite_values({velocity.x, velocity.y, velocity.z}))
 			ma_engine_listener_set_velocity(&*engine, index, velocity.x, velocity.y, velocity.z);
 	}
 	reactphysics3d::Vector3 get_listener_velocity(unsigned int index) const override { return engine ? ma_vec3_to_rp_vec3(ma_engine_listener_get_velocity(&*engine, index)) : reactphysics3d::Vector3(); }
@@ -979,7 +986,7 @@ public:
 		std::atomic<float> inner{6.283185f}, outer{6.283185f}, outer_gain{0};
 	} listener_cones[MA_ENGINE_MAX_LISTENERS];
 	void set_listener_cone(unsigned int index, float inner_radians, float outer_radians, float outer_gain) override {
-		if (engine && index < ma_engine_get_listener_count(&*engine) && finite_values({inner_radians, outer_radians, outer_gain})) {
+		if (has_listener(index) && finite_values({inner_radians, outer_radians, outer_gain})) {
 			listener_cones[index].inner = inner_radians;
 			listener_cones[index].outer = outer_radians;
 			listener_cones[index].outer_gain = outer_gain;
@@ -993,19 +1000,19 @@ public:
 		if (outer_gain) *outer_gain = listening? listener_cones[index].outer_gain.load() : 0;
 	}
 	void set_listener_world_up(unsigned int index, float x, float y, float z) override {
-		if (engine && finite_values({x, y, z}))
+		if (has_listener(index) && finite_values({x, y, z}))
 			ma_engine_listener_set_world_up(&*engine, index, x, y, z);
 	}
 	void set_listener_world_up_vector(unsigned int index, const reactphysics3d::Vector3 &world_up) override {
-		if (engine && finite_values({world_up.x, world_up.y, world_up.z}))
+		if (has_listener(index) && finite_values({world_up.x, world_up.y, world_up.z}))
 			ma_engine_listener_set_world_up(&*engine, index, world_up.x, world_up.y, world_up.z);
 	}
 	reactphysics3d::Vector3 get_listener_world_up(unsigned int index) const override { return engine ? ma_vec3_to_rp_vec3(ma_engine_listener_get_world_up(&*engine, index)) : reactphysics3d::Vector3(); }
 	void set_listener_enabled(unsigned int index, bool enabled) override {
-		if (engine)
+		if (has_listener(index))
 			ma_engine_listener_set_enabled(&*engine, index, enabled);
 	}
-	bool get_listener_enabled(unsigned int index) const override { return ma_engine_listener_is_enabled(&*engine, index); }
+	bool get_listener_enabled(unsigned int index) const override { return engine && ma_engine_listener_is_enabled(&*engine, index); }
 	sound* play(const string& path, const reactphysics3d::Vector3& position, float volume, float pan, float pitch, mixer* mix, const pack_interface* pack_file, bool autoplay) override {
 		garbage_collect_inline_sounds();
 		sound* snd = new_sound();
