@@ -397,17 +397,16 @@ private:
 	static ma_result onInfo(ma_vfs *pVFS, ma_vfs_file file, ma_file_info *pInfo) {
 		file_cast(file);
 		stream->clear();
-		size_t cursor = stream->tellg();
+		pInfo->sizeInBytes = 0;
+		std::streampos cursor = stream->tellg();
+		if (cursor == std::streampos(-1)) return MA_NOT_IMPLEMENTED; // A stream that can't tell where it is couldn't be put back there after finding its end, and -1 read as a size near 2^64.
 		stream->seekg(0, stream->end);
-		if (stream->fail()) {
-			pInfo->sizeInBytes = 0;
-			stream->clear();
-			stream->seekg(cursor, stream->beg); // Back where it was, as a stream can fail a seek after it moved.
-			stream->clear();
-			return MA_NOT_IMPLEMENTED;
-		}
-		pInfo->sizeInBytes = stream->tellg();
-		stream->seekg(cursor, stream->beg);
+		std::streampos end = stream->fail()? std::streampos(-1) : stream->tellg();
+		stream->clear();
+		stream->seekg(cursor); // Back where it was, whether or not that worked, should a stream have moved before failing the seek.
+		stream->clear();
+		if (end == std::streampos(-1)) return MA_NOT_IMPLEMENTED;
+		pInfo->sizeInBytes = static_cast<ma_uint64>(std::streamoff(end));
 		return MA_SUCCESS;
 	}
 };
