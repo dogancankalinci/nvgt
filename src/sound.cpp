@@ -5418,7 +5418,10 @@ sound *new_sound(audio_engine *engine) { return new sound_impl(engine); }
 // The default engine with a reference of the caller's own: another thread making a different engine the default lets go of the old one, which could otherwise be destroyed while it is used. Null when the sound system couldn't start.
 audio_engine *acquire_default_engine() {
 	if (!init_sound()) return nullptr;
-	std::lock_guard<std::recursive_mutex> lock(g_soundsystem_init_mutex); // Which set_sound_default_engine() swaps the engine under.
+	// Which set_sound_default_engine() swaps the engine under, and init_sound() holds while it makes the default engine, opening and starting its device: on an audio thread, as in a processing callback, only tried for, there being no default engine to give meanwhile, rather than holding that audio up.
+	std::unique_lock<std::recursive_mutex> lock(g_soundsystem_init_mutex, std::defer_lock);
+	if (!on_an_audio_thread()) lock.lock();
+	else if (!lock.try_lock()) return nullptr;
 	if (g_audio_engine) g_audio_engine->duplicate();
 	return g_audio_engine;
 }
