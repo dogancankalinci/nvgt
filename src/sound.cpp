@@ -3615,10 +3615,11 @@ public:
 	audio_engine *get_engine() const override { return engine; }
 	bool stop() override { return snd ? (g_soundsystem_last_error = ma_sound_stop(&*snd)) == MA_SUCCESS : false; }
 	void set_volume(float volume) override {
+		if (!snd || !finite_values({volume})) return;
 		const bool db = get_engine()->get_flags() & audio_engine::PERCENTAGE_ATTRIBUTES;
-		if (db && volume < -100) volume = -100; // As it reads back (see readable_db()) and as sound_master_volume takes it: below, a volume set read back louder than it was set, so that a loop fading down to a lower one never ended.
+		if (db && volume < -100) volume = -100; // As it reads back (see readable_db()): below, a volume set read back louder than it was set, so that a loop fading down to a lower one never ended.
 		float linear = db? ma_volume_db_to_linear(volume) : volume;
-		if (snd && finite_values({volume, linear}))
+		if (finite_values({linear}))
 			ma_sound_set_volume(&*snd, linear);
 	}
 	float get_volume() const override { return snd ? (get_engine()->get_flags() & audio_engine::PERCENTAGE_ATTRIBUTES ? readable_db(ma_sound_get_volume(&*snd)) : ma_sound_get_volume(&*snd)) : NAN; }
