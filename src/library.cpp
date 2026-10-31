@@ -38,7 +38,9 @@ static const std::unordered_map<std::string, ffi_type*> g_ffi_types = {
 	{"float",  &ffi_type_float},  {"double", &ffi_type_double},
 	{"char",   &ffi_type_sint8},  {"uchar",  &ffi_type_uint8},
 	{"short",  &ffi_type_sint16}, {"ushort", &ffi_type_uint16},
-	{"long",   &ffi_type_sint32}, {"ulong",  &ffi_type_uint32},
+	// C's long, as the other names here are C's: 64 bits on Linux, macOS, iOS and Android arm64, 32 on Windows and 32-bit
+	// targets. It was always 32 bits, so a long argument above them was cut down and a long result lost its upper half.
+	{"long",   &ffi_type_slong},  {"ulong",  &ffi_type_ulong},
 };
 
 static std::string str_trim(const std::string& s) {
@@ -137,6 +139,7 @@ poco_shared<Poco::Dynamic::Var>* library_function::invoke(asIScriptGeneric* gen,
 			int64_t iv = 0;
 			double dv = 0;
 			bool is_float = false;
+			bool is_u64 = false; // A uint64 above INT64_MAX is converted to a real as itself, not as the negative int64 of its bits (2^64 - 1 arrived as -1.0).
 			switch (tid) {
 				case asTYPEID_BOOL: iv = *(bool*)addr; break;
 				case asTYPEID_INT8: iv = *(int8_t*)addr; break;
@@ -144,7 +147,8 @@ poco_shared<Poco::Dynamic::Var>* library_function::invoke(asIScriptGeneric* gen,
 				case asTYPEID_INT16: iv = *(int16_t*)addr; break;
 				case asTYPEID_UINT16: iv = *(uint16_t*)addr; break;
 				case asTYPEID_UINT32: iv = *(uint32_t*)addr; break;
-				case asTYPEID_INT64: case asTYPEID_UINT64: iv = *(int64_t*)addr; break;
+				case asTYPEID_INT64: iv = *(int64_t*)addr; break;
+				case asTYPEID_UINT64: iv = *(int64_t*)addr; is_u64 = true; break;
 				case asTYPEID_FLOAT: dv = *(float*)addr; is_float = true; break;
 				case asTYPEID_DOUBLE: dv = *(double*)addr; is_float = true; break;
 				default: {
@@ -155,8 +159,8 @@ poco_shared<Poco::Dynamic::Var>* library_function::invoke(asIScriptGeneric* gen,
 			}
 			ffi_value& v = values[i];
 			switch (arg_types[i]->type) {
-				case FFI_TYPE_FLOAT: v.f = is_float? (float)dv : (float)iv; break;
-				case FFI_TYPE_DOUBLE: v.d = is_float? dv : (double)iv; break;
+				case FFI_TYPE_FLOAT: v.f = is_float? (float)dv : is_u64? (float)(uint64_t)iv : (float)iv; break;
+				case FFI_TYPE_DOUBLE: v.d = is_float? dv : is_u64? (double)(uint64_t)iv : (double)iv; break;
 				case FFI_TYPE_UINT8: case FFI_TYPE_SINT8: v.s8 = (int8_t)(is_float? (int64_t)dv : iv); break;
 				case FFI_TYPE_UINT16: case FFI_TYPE_SINT16: v.s16 = (int16_t)(is_float? (int64_t)dv : iv); break;
 				case FFI_TYPE_UINT32: case FFI_TYPE_SINT32: case FFI_TYPE_INT: v.s32 = (int32_t)(is_float? (int64_t)dv : iv); break;
@@ -167,7 +171,9 @@ poco_shared<Poco::Dynamic::Var>* library_function::invoke(asIScriptGeneric* gen,
 			arg_ptrs.push_back(gen->GetArgAddress(n));
 		} else throw Poco::InvalidArgumentException("argument " + std::to_string(i + 1) + " can't be converted to " + arg_type_strings[i]);
 	}
-	union { ffi_arg i; float f; double d; } retval = {};
+	// A 64-bit result is read whole: ffi_arg, which libffi widens smaller integer results to, is 32 bits on 32-bit targets
+	// (armeabi-v7a), and an int64 or uint64 result read through it lost its upper half there.
+	union { ffi_arg i; float f; double d; uint64_t u64; } retval = {};
 	ffi_call(&cif, FFI_FN(func_ptr), &retval, nffi > 0 ? arg_ptrs.data() : nullptr);
 	auto make_var = [](auto v) {
 		return new poco_shared<Poco::Dynamic::Var>(new Poco::Dynamic::Var(v));
@@ -197,8 +203,8 @@ poco_shared<Poco::Dynamic::Var>* library_function::invoke(asIScriptGeneric* gen,
 	case FFI_TYPE_UINT32: return make_var((uint32_t)retval.i);
 	case FFI_TYPE_SINT32: return make_var((int32_t)retval.i);
 	case FFI_TYPE_INT:    return make_var((int32_t)retval.i);
-	case FFI_TYPE_UINT64: return make_var((uint64_t)retval.i);
-	case FFI_TYPE_SINT64: return make_var((int64_t)retval.i);
+	case FFI_TYPE_UINT64: return make_var(retval.u64);
+	case FFI_TYPE_SINT64: return make_var((int64_t)retval.u64);
 	case FFI_TYPE_FLOAT:  return make_var(retval.f);
 	case FFI_TYPE_DOUBLE: return make_var(retval.d);
 	default:              return make_var((uint64_t)retval.i);
