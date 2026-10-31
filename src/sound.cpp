@@ -1570,16 +1570,20 @@ public:
 		audio_data_source_impl::reset(); // Qualified: audio_ring_buffer_impl::reset() below overrides a different (ring-buffer-clearing) virtual and would otherwise hide this one.
 		if (rb) queue->uninit();
 	}
-	void reset() override {
+	void reset() override { reset_ring(is_used(this)); }
+protected:
+	// reset(), told whether the ring buffer is read elsewhere, which takes the graph lock to find out: the microphone finds out before it takes its capture lock, which the capture thread only tries for, so that one isn't held while the graph lock is waited for.
+	void reset_ring(bool used) {
 		if (!rb) return;
 		// While the graph, a sound or a chain reads it on the audio thread, what is queued is dropped by that reader (see pcm_queue): resetting the ring buffer under it had it play old frames again. Either way get_available_read() reads 0 at once and what is written after this is kept.
-		if (is_used(this)) {
+		if (used) {
 			queue->discard();
 			return;
 		}
 		ma_pcm_rb_reset(&*rb);
 		queue->emptied(); // What was queued is gone already; skipping it later would drop frames written after this.
 	}
+public:
 	unsigned int get_advised_read_frame_count() const override { return get_available_read(); }
 	unsigned int write(const float* frames_in, unsigned int frame_count) override {
 		if (!rb) return 0;
@@ -5157,8 +5161,9 @@ public:
 	}
 	// A ring buffer has one writer and one reader, and resetting it moves both positions: reset() while the capture thread wrote into it could leave that writer writing past its end. reset() therefore holds this, which the capture thread only tries for, dropping what it captured meanwhile rather than waiting.
 	void reset() override {
+		bool used = is_used(this);
 		std::lock_guard<std::mutex> lock(capture_write_mutex);
-		audio_ring_buffer_impl::reset();
+		reset_ring(used);
 	}
 	// The script's writes, which the capture thread's would otherwise overlap as a second writer, the two then committing over each other and leaving later writes granted space past the buffer's end. They take turns as reset() does.
 	unsigned int write(const float* frames_in, unsigned int frame_count) override {
