@@ -900,17 +900,19 @@ public:
 		}
 		// The device asked for couldn't be opened: the one in use before is opened again, so that assigning it changes nothing, or failing that the system's default, so as not to leave the engine without a device. The error reported stays that of the device asked for.
 		ma_result error = g_soundsystem_last_error;
-		bool reopened = false;
-		if (old_open) {
-			cfg.playback.pDeviceID = previous_default? nullptr : &previous_id;
-			reopened = ma_device_init(&g_sound_context, &cfg, old_dev) == MA_SUCCESS;
-		}
+		// Opened and, for an engine meant to run, started; one that opens but won't start is let go of as one that won't open, rather than left in use silent.
+		auto reopen = [&](const ma_device_id* id) {
+			cfg.playback.pDeviceID = id;
+			if (ma_device_init(&g_sound_context, &cfg, old_dev) != MA_SUCCESS) return false;
+			if (!started || ma_engine_start(&*engine) == MA_SUCCESS) return true;
+			uninit_device(old_dev);
+			return false;
+		};
+		bool reopened = old_open && reopen(previous_default? nullptr : &previous_id);
 		if (!reopened && !(old_open && previous_default)) {
-			cfg.playback.pDeviceID = nullptr;
-			reopened = ma_device_init(&g_sound_context, &cfg, old_dev) == MA_SUCCESS;
+			reopened = reopen(nullptr);
 			if (reopened) device_follows_default = true;
 		}
-		if (reopened && started) ma_engine_start(&*engine);
 		g_soundsystem_last_error = error;
 		return false;
 	}
