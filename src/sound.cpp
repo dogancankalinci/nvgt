@@ -3206,7 +3206,7 @@ static ma_result float_view_read(ma_data_source* source, void* frames_out, ma_ui
 	while (total < frame_count) {
 		ma_uint64 wanted = std::min(capacity, frame_count - total), got = 0;
 		result = ma_data_source_read_pcm_frames(view->inner, temp, wanted, &got);
-		ma_convert_pcm_frames_format((float*)frames_out + total * view->channels, ma_format_f32, temp, view->format, got, view->channels, ma_dither_mode_none);
+		if (frames_out) ma_convert_pcm_frames_format((float*)frames_out + total * view->channels, ma_format_f32, temp, view->format, got, view->channels, ma_dither_mode_none); // None for a read that skips, as MiniAudio allows.
 		total += got;
 		if (result != MA_SUCCESS || got < wanted) break;
 	}
