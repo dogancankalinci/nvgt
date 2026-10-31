@@ -5028,6 +5028,7 @@ public:
 	ma_uint64 schedule_stop_with_fade(ma_uint64 stop, ma_uint64 fade) {
 		reset_stop_fade();
 		if (fade > stop) fade = stop; // As MiniAudio limits it.
+		fade = std::min<ma_uint64>(fade, UINT_MAX); // MiniAudio's limit for a fade, which the fade is given at most (see give_deferred_fade()): longer, it began that much before the stop, reached silence UINT_MAX frames later and played on silent, as playing, until the stop. As schedule_pause_fade() limits it.
 		if (fade > 0) schedule_stop_and_fade(stop, fade);
 		else ma_node_set_state_time(&*snd, ma_node_state_stopped, stop);
 		return fade;
