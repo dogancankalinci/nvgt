@@ -2062,6 +2062,7 @@ public:
 	}
 	virtual bool open_stream(datastream* ds, unsigned int sample_rate = 0, unsigned int channels = 0) override {
 		std::lock_guard<std::recursive_mutex> guard(source_mutex);
+		if (!ds || !ds->get_istr()) g_soundsystem_last_error = MA_INVALID_ARGS; // Nothing to read, which said nothing.
 		if (!ds || !ds->get_istr() || !output_format_in_range(sample_rate, channels) || decoder && !close()) {
 			if (ds) ds->release();
 			return false;
@@ -2269,7 +2270,10 @@ public:
 		return true;
 	}
 	bool open_stream(datastream* ds, unsigned int sample_rate, unsigned int channels, unsigned int flags) override {
-		if (!ds) return false;
+		if (!ds) {
+			g_soundsystem_last_error = MA_INVALID_ARGS; // As for a stream that can't be written to.
+			return false;
+		}
 		flags = open_flags(flags);
 		bool writable = ds->can_write();
 		if (!writable) g_soundsystem_last_error = MA_INVALID_ARGS; // Nothing to write to, which a WAV encoder threw for after closing the one open.
@@ -3447,7 +3451,10 @@ public:
 	inline void duplicate() override { audio_node_impl::duplicate(); }
 	inline void release() override { audio_node_impl::release(); }
 	bool set_mixer(mixer *mix) override {
-		if (mix && mix->get_engine() != get_engine()) return false; // Another engine's mixer is in that engine's graph, which would play this one's sound.
+		if (mix && mix->get_engine() != get_engine()) { // Another engine's mixer is in that engine's graph, which would play this one's sound.
+			g_soundsystem_last_error = MA_INVALID_ARGS; // As the other cross-engine refusals give.
+			return false;
+		}
 		mixer* old;
 		{
 			std::lock_guard<std::recursive_mutex> topology(g_audio_topology_mutex);
@@ -3761,9 +3768,12 @@ public:
 			return ma_sound_is_spatialization_enabled(&*snd);
 		return false;
 	}
+	// MiniAudio ignores a listener the engine doesn't have, which is refused here, and MA_LISTENER_INDEX_CLOSEST too, which unpins the sound so that it follows the closest listener, and is set directly; a sound starts pinned to listener 0.
 	void set_pinned_listener(unsigned int index) override {
-		if (snd)
-			ma_sound_set_pinned_listener_index(&*snd, index);
+		if (!snd) return;
+		if (index == MA_LISTENER_INDEX_CLOSEST) reinterpret_cast<std::atomic<ma_uint32>*>(&snd->engineNode.pinnedListenerIndex)->store(index, std::memory_order_release); // As MiniAudio stores it.
+		else if (index < ma_engine_get_listener_count(ma_sound_get_engine(&*snd))) ma_sound_set_pinned_listener_index(&*snd, index);
+		else g_soundsystem_last_error = MA_INVALID_ARGS;
 	}
 	unsigned int get_pinned_listener() const override {
 		return snd ? ma_sound_get_pinned_listener_index(&*snd) : 0;
