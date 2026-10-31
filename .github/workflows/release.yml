@@ -9,13 +9,13 @@ on:
       - "*"
     paths-ignore:
       - "web/**"
-# A push does not cancel the run in progress: it waits as the one pending run, and a later push replaces it. A cancelled
-# run never saves the dependencies it built, and after a runner image update every port has to be rebuilt (vcpkg's ABI
-# hashes include the compiler), which takes longer than the time between pushes, so cancelling kept repeating it. A manual run
-# has a group of its own, so that a push doesn't replace it while it waits.
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'auto' }}
-  cancel-in-progress: false
+# A push does not cancel a build in progress: each build job and each publish job has a concurrency group of its own, in
+# which a later run's job waits as the one pending job, and a still later push replaces it. A cancelled build never saves
+# the dependencies it built, and after a runner image update every port has to be rebuilt (vcpkg's ABI hashes include the
+# compiler), which takes longer than the time between pushes, so cancelling kept repeating it. The groups are on the jobs
+# rather than on the workflow so that a waiting run has started and its waiting jobs show on the commit's checks: a run held
+# by a workflow-level group has no jobs at all, and the commit showed only the other workflows' checks, as passed. A manual
+# run has groups of its own, so that a push doesn't replace it while it waits.
 jobs:
   generate_config:
     runs-on: ubuntu-latest
@@ -40,6 +40,9 @@ jobs:
 
   mac_build:
     runs-on: macos-26
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-mac_build-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'auto' }}
+      cancel-in-progress: false
     needs: generate_config
     env:
       # vcpkg keeps a per-port binary cache here (each port keyed by its own ABI hash), restored below with a prefix
@@ -146,6 +149,9 @@ jobs:
 
   linux_build:
     runs-on: ubuntu-22.04
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-linux_build-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'auto' }}
+      cancel-in-progress: false
     needs: generate_config
     env:
       # vcpkg keeps a per-port binary cache here (each port keyed by its own ABI hash), restored below with a prefix
@@ -230,6 +236,9 @@ jobs:
 
   android_build:
     runs-on: macos-26
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-android_build-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'auto' }}
+      cancel-in-progress: false
     needs: generate_config
     env:
       # Single source of truth: consumed by setup-ndk below and baked into the droidev
@@ -353,6 +362,9 @@ jobs:
     # and MSVC only links a library with a toolset at least as new as the one that compiled it. A windev built with MSVC 14.5x
     # failed to link with Visual Studio 2022's 14.44 (PocoNet.lib calls an STL function 14.44's library doesn't have).
     runs-on: windows-2022
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-windows_build-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'auto' }}
+      cancel-in-progress: false
     needs: generate_config
     env:
       # vcpkg keeps a per-port binary cache here (each port keyed by its own ABI hash), restored below with a prefix
@@ -655,6 +667,9 @@ jobs:
 
   publish_latest:
     runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-publish_latest-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'auto' }}
+      cancel-in-progress: false
     needs: ["windows_package", "mac_package", "linux_package"]
     if: ( github.ref == 'refs/heads/main' || github.ref == 'refs/heads/fallback' ) && github.event.repository.fork == false
     permissions:
@@ -685,6 +700,9 @@ jobs:
 
   publish_release:
     runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-publish_release-${{ github.event_name == 'workflow_dispatch' && 'manual' || 'auto' }}
+      cancel-in-progress: false
     needs: ["windows_package", "mac_package", "linux_package"]
     if: github.ref_type == 'tag' && github.event.repository.fork == false
     permissions:
