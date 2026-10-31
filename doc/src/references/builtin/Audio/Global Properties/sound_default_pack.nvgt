@@ -5,6 +5,7 @@
 		This is null by default, which means sounds are loaded from files on disk. Assign an open `pack_file` to load sounds from that pack instead, and assign null to go back to loading from disk.
 		The pack must be open for reading when it is assigned, otherwise an exception is thrown. Always check the return value of `pack_file::open()` before assigning the pack. Reading the property returns the same pack object that was assigned, so you can get the pack_file back with `cast<pack_file@>(sound_default_pack)`.
 		This value is also the default for the pack argument of `sound_play()` and other functions that load audio.
+		A pack that isn't open, as one closed after it was assigned, is passed over as null is, so sounds are loaded from disk then. This lets a game load its sounds from a pack where it has one, and from files on disk while it's being made, with the same calls.
 */
 
 // Example:

@@ -5,7 +5,7 @@ Loads a sound file.
 
 ## Arguments:
 * const string&in filename: the name or path of the file to load.
-* const pack_interface@+ pack = sound_default_pack: the pack to load the file from; null loads it from disk.
+* const pack_interface@+ pack = sound_default_pack: the pack to load the file from; null, or a pack that isn't open, loads it from disk.
 
 ## Returns:
 bool: true if the sound was successfully loaded, false otherwise.
