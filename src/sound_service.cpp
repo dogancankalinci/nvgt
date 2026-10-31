@@ -12,6 +12,7 @@
  */
 
 #include "sound_service.h"
+#include "xplatform.h" // NVGT_MOBILE
 #include <Poco/URIStreamOpener.h>
 #include <vector>
 #include <cassert>
@@ -270,8 +271,8 @@ public:
 		const std::string key_name = from_fs? absolute_file_name(name) : name;
 		if (key_name.find('\x1e') != std::string::npos) // As for the name: a current directory holding the separator.
 			return "";
-#ifndef __ANDROID__
-		if (from_fs) args.name = key_name; // The file opened is the one the key names, should another thread change the current directory before it is opened. Not on Android, whose files inside the package SDL opens by their relative name.
+#ifndef NVGT_MOBILE
+		if (from_fs) args.name = key_name; // The file opened is the one the key names, should another thread change the current directory before it is opened. Not on Android and iOS, whose files packaged with the app SDL finds by their relative name, in the package or the app bundle.
 #endif
 		const std::string filter_suffix = freg->get()->get_suffix(args.filter_directive);
 		if (filter_suffix.find('\x1e') != std::string::npos)

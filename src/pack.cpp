@@ -269,7 +269,7 @@ toc_map& pack::write_mode_internals::get_toc_map() {
 void pack::set_pack_name(const std::string& name, const std::string& absolute) {
 	pack_name = name;
 	pack_absolute = absolute.empty()? absolute_file_name(name) : absolute;
-#ifdef __ANDROID__
+#ifdef NVGT_MOBILE
 	pack_path = name;
 #else
 	pack_path = pack_absolute;
@@ -315,7 +315,7 @@ bool pack::open(const std::string& filename, const std::string& key, uint64_t pa
 	const std::string absolute = absolute_file_name(pack_filename);
 	sdl_file_input_stream* file = NULL;
 	try {
-#ifdef __ANDROID__
+#ifdef NVGT_MOBILE
 		file = new sdl_file_input_stream(pack_filename);
 #else
 		file = new sdl_file_input_stream(absolute);
