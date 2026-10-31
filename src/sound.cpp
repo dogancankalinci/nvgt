@@ -1848,6 +1848,7 @@ class audio_decoder_impl : public audio_data_source_impl, public virtual audio_d
 		if (pBytesRead) *pBytesRead = 0;
 		stream_cursor* sc = (stream_cursor*)f;
 		if (!sc || !sc->ds) return MA_ERROR;
+		auto held_open = sc->ds->hold_open(); // On the audio thread too, while the script can close the datastream.
 		istream* stream = sc->ds->get_istr();
 		if (!stream) return MA_ERROR;
 		char* out = static_cast<char*>(pDst);
@@ -1891,6 +1892,7 @@ class audio_decoder_impl : public audio_data_source_impl, public virtual audio_d
 	static ma_result vfs_seek(ma_vfs*, ma_vfs_file f, ma_int64 offset, ma_seek_origin origin) {
 		stream_cursor* sc = (stream_cursor*)f;
 		if (!sc || !sc->ds) return MA_ERROR;
+		auto held_open = sc->ds->hold_open(); // As in vfs_read(), which this calls under it.
 		istream* stream = sc->ds->get_istr();
 		if (!stream) return MA_ERROR;
 		// Where this wants to land, when that can be worked out; a seek from the end is left for the stream to accept or refuse, since a live stream's length is unknown.
@@ -2363,7 +2365,9 @@ class audio_wav_encoder_impl : public audio_encoder_impl, public virtual audio_w
 			*pBytesWritten = bytesToWrite;
 			return MA_SUCCESS;
 		}
-		std::ostream *stream = out->ds? out->ds->get_ostr() : nullptr;
+		if (!out->ds) return MA_ERROR;
+		auto held_open = out->ds->hold_open(); // On the audio thread too, while the script can close the datastream.
+		std::ostream *stream = out->ds->get_ostr();
 		if (!stream) return MA_ERROR;
 		stream->write((const char *)pBufferIn, bytesToWrite);
 		if (!stream->good()) return MA_ERROR;
@@ -2373,8 +2377,10 @@ class audio_wav_encoder_impl : public audio_encoder_impl, public virtual audio_w
 	static ma_result stream_seek(ma_encoder *pEncoder, ma_int64 offset, ma_seek_origin origin) {
 		if (origin != ma_seek_origin_start) return MA_NOT_IMPLEMENTED;
 		stream_output *out = static_cast<stream_output *>(pEncoder->pUserData);
-		std::ostream *stream = out->ds? out->ds->get_ostr() : nullptr;
-		if (!stream || out->holding_header) return MA_ERROR;
+		if (!out->ds || out->holding_header) return MA_ERROR;
+		auto held_open = out->ds->hold_open();
+		std::ostream *stream = out->ds->get_ostr();
+		if (!stream) return MA_ERROR;
 		std::ios_base::iostate was = stream->rdstate();
 		stream->seekp(out->base + offset);
 		if (stream->good()) return MA_SUCCESS;
@@ -2462,7 +2468,9 @@ class audio_opus_encoder_impl : public audio_encoder_impl, public virtual audio_
 	bool vbr, cvbr, dtx;
 	static int write_callback(void* user_data, const unsigned char* ptr, opus_int32 len) {
 		datastream* ds = static_cast<datastream*>(user_data);
-		ostream* ostr = ds? ds->get_ostr() : nullptr; // Looked up each time, as closing the datastream deletes it while the encoder still holds the datastream.
+		if (!ds) return 1;
+		auto held_open = ds->hold_open(); // On the audio thread too, while the script can close the datastream.
+		ostream* ostr = ds->get_ostr(); // Looked up each time, as closing the datastream deletes it while the encoder still holds the datastream.
 		if (!ostr) return 1;
 		ostr->write((const char*)ptr, len);
 		return ostr->good()? 0 : 1;
