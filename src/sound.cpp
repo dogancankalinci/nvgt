@@ -2010,10 +2010,17 @@ public:
 		// The pack's copy made first, which throws for a pack open for writing: the decoder open before stays open, as for other refusals, rather than closed by a call that then threw.
 		std::shared_ptr<const pack_interface> pack = pack_file && pack_file->get_is_active()? std::shared_ptr<const pack_interface>(pack_file->make_immutable()) : nullptr;
 		std::lock_guard<std::recursive_mutex> guard(source_mutex);
-		if (decoder && !close()) return false;
+		std::string triplet = g_sound_service->prepare_triplet(filename, pack? g_pack_protocol_slot : sound_service::fs_protocol_slot, pack, 0, nullptr); // Without a pack, from disk, as sound.load() reads, rather than from the default protocol, which can be a pack.
+		if (triplet.empty()) { // A name the sound service can't make one of, such as one that isn't valid UTF-8, refused as load() refuses it rather than failing to open as MA_ERROR, and before the decoder open is closed, as other refusals are.
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return false;
+		}
+		if (decoder && !close()) {
+			g_sound_service->cleanup_triplet(triplet);
+			return false;
+		}
 		seekable = true;
 		ma_decoder_config cfg = decoder_config_init(sample_rate, channels);
-		std::string triplet = g_sound_service->prepare_triplet(filename, pack? g_pack_protocol_slot : sound_service::fs_protocol_slot, pack, 0, nullptr); // Without a pack, from disk, as sound.load() reads, rather than from the default protocol, which can be a pack.
 		if ((g_soundsystem_last_error = ma_decoder_init_vfs(g_sound_service->get_vfs(), triplet.c_str(), &cfg, &*decoder)) != MA_SUCCESS) decoder.reset();
 		else {
 			hold_decoder(&*decoder, true);
