@@ -3402,6 +3402,8 @@ public:
 		}
 		return spatializer;
 	}
+	// The spatializer if one was made, for reading a setting: get_spatializer() made one, putting a node into the chain to be processed and tracked, for a value a new one starts with anyway.
+	audio_spatializer* made_spatializer() const { return reinterpret_cast<const std::atomic<audio_spatializer*>&>(spatializer).load(std::memory_order_acquire); }
 	inline void duplicate() override { audio_node_impl::duplicate(); }
 	inline void release() override { audio_node_impl::release(); }
 	bool set_mixer(mixer *mix) override {
@@ -3431,13 +3433,13 @@ public:
 	void set_3d_panner(int panner_id) override {
 		get_spatializer()->set_panner_by_id(panner_id);
 	}
-	int get_3d_panner() const override { return get_spatializer()->get_current_panner_id(); }
+	int get_3d_panner() const override { audio_spatializer* made = made_spatializer(); return made? made->get_current_panner_id() : -1; }
 	void set_3d_attenuator(int attenuator_id) override {
 		get_spatializer()->set_attenuator_by_id(attenuator_id);
 	}
-	int get_3d_attenuator() const override { return get_spatializer()->get_current_attenuator_id(); }
-	int get_preferred_3d_panner() const override { return get_spatializer()->get_preferred_panner_id(); }
-	int get_preferred_3d_attenuator() const override { return get_spatializer()->get_preferred_attenuator_id(); }
+	int get_3d_attenuator() const override { audio_spatializer* made = made_spatializer(); return made? made->get_current_attenuator_id() : -1; }
+	int get_preferred_3d_panner() const override { audio_spatializer* made = made_spatializer(); return made? made->get_preferred_panner_id() : -1; }
+	int get_preferred_3d_attenuator() const override { audio_spatializer* made = made_spatializer(); return made? made->get_preferred_attenuator_id() : -1; }
 	void set_hrtf(bool enabled) override {
 		if (enabled) {
 			get_spatializer()->set_panner_by_id(g_audio_phonon_hrtf_panner);
@@ -3447,7 +3449,7 @@ public:
 			get_spatializer()->set_attenuator_by_id(g_audio_basic_attenuator);
 		}
 	}
-	bool get_hrtf() const override { return get_spatializer()->get_preferred_panner_id() == g_audio_phonon_hrtf_panner && get_spatializer()->get_preferred_attenuator_id() == g_audio_phonon_attenuator; }
+	bool get_hrtf() const override { return get_preferred_3d_panner() == g_audio_phonon_hrtf_panner && get_preferred_3d_attenuator() == g_audio_phonon_attenuator; }
 	bool set_shape(CScriptHandle new_shape) override {
 		// A type no shape is made from leaves the old shape in place.
 		int ot = new_shape.GetTypeId() ^ asTYPEID_OBJHANDLE;
@@ -3495,13 +3497,13 @@ public:
 	sound_shape* get_shape_object() const override { return shape; }
 	void set_reverb3d(reverb3d* verb) override { get_spatializer()->set_reverb3d(verb); }
 	void set_reverb3d_at(reverb3d* verb, audio_spatializer_reverb3d_placement placement) override { get_spatializer()->set_reverb3d(verb, placement); }
-	reverb3d* get_reverb3d() const override { return get_spatializer()->get_reverb3d(); }
+	reverb3d* get_reverb3d() const override { audio_spatializer* made = made_spatializer(); return made? made->get_reverb3d() : nullptr; }
 	reverb3d* get_reverb3d_sent_to() const override { // Read by the loop check of another thread, under the topology lock, which close() clears this under (see get_spatializer()).
 		audio_spatializer* sending = reinterpret_cast<std::atomic<audio_spatializer*>&>(spatializer).load(std::memory_order_acquire);
 		return sending? sending->get_reverb3d() : nullptr;
 	}
-	splitter_node* get_reverb3d_attachment() const override { return get_spatializer()->get_reverb3d_attachment(); }
-	audio_spatializer_reverb3d_placement get_reverb3d_placement() const override { return get_spatializer()->get_reverb3d_placement(); }
+	splitter_node* get_reverb3d_attachment() const override { audio_spatializer* made = made_spatializer(); return made? made->get_reverb3d_attachment() : nullptr; }
+	audio_spatializer_reverb3d_placement get_reverb3d_placement() const override { audio_spatializer* made = made_spatializer(); return made? made->get_reverb3d_placement() : postpan; }
 	audio_node_chain* get_effects_chain() override {
 		if (!effects_chain) {
 			effects_chain = audio_node_chain::create(nullptr, nullptr, get_engine());
@@ -3813,7 +3815,7 @@ public:
 		return snd ? ma_sound_get_positioning(&*snd) : ma_positioning_absolute;
 	}
 	void set_rolloff(float rolloff) override { get_spatializer()->set_rolloff(rolloff); }
-	float get_rolloff() const override { return get_spatializer()->get_rolloff(); }
+	float get_rolloff() const override { audio_spatializer* made = made_spatializer(); return made? made->get_rolloff() : 1.0f; }
 	void set_min_gain(float gain) override {
 		if (snd && finite_values({gain}))
 			min_gain = gain;
@@ -3871,7 +3873,7 @@ public:
 		return snd ? ma_sound_get_doppler_factor(&*snd) : NAN;
 	}
 	void set_directional_attenuation_factor(float factor) override { get_spatializer()->set_directional_attenuation_factor(factor); }
-	float get_directional_attenuation_factor() const override { return get_spatializer()->get_directional_attenuation_factor(); }
+	float get_directional_attenuation_factor() const override { audio_spatializer* made = made_spatializer(); return made? made->get_directional_attenuation_factor() : 1.0f; }
 	void set_fade(float start_volume, float end_volume, ma_uint64 length) override {
 		if (!snd)
 			return;
