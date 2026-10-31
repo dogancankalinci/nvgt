@@ -259,6 +259,11 @@ void datastream::add_child(datastream* child) {
 	std::lock_guard<std::recursive_mutex> lock(children_mutex);
 	children.push_back(child);
 }
+void datastream::opened_on_too(datastream* other) {
+	other->add_child(this); // Not under this one's children_mutex, which a close of the other takes after its own when it closes this one.
+	std::lock_guard<std::recursive_mutex> lock(children_mutex);
+	also_on.push_back(other);
+}
 void datastream::remove_child(datastream* child) {
 	std::lock_guard<std::recursive_mutex> lock(children_mutex);
 	auto it = std::find(children.begin(), children.end(), child);
@@ -268,6 +273,12 @@ bool datastream::close(bool close_all) {
 	if (no_close)
 		return false; // The stream was marked unclosable.
 	if (ds) ds->remove_child(this);
+	std::vector<datastream*> through;
+	{
+		std::lock_guard<std::recursive_mutex> lock(children_mutex);
+		through.swap(also_on);
+	}
+	for (datastream* other : through) other->remove_child(this);
 	// The streams opened on this one read and write through its streams, which go now: they're closed first, rather than left to use them once deleted, which reading or writing one did. They're closed under the lock that one closing by itself on another thread waits for in remove_child(), so it can't go away meanwhile.
 	{
 		std::lock_guard<std::recursive_mutex> lock(children_mutex);
@@ -820,6 +831,7 @@ datastream* duplicating_stream_add(datastream* ds, datastream* ds_connect) {
 	std::vector<datastream*>* streams = ds->user ? (std::vector<datastream*>*)ds->user : new std::vector<datastream*>;
 	streams->push_back(ds_connect);
 	ios->addStream(*ostr);
+	ds->opened_on_too(ds_connect); // It writes to that stream from now on, which closing that stream deleted under it.
 	if (!ds->user) {
 		ds->user = streams;
 		ds->set_close_callback(duplicating_stream_close);

@@ -119,6 +119,7 @@ class datastream : public Poco::RefCountedObject {
 	std::recursive_mutex use_mutex; // Held while the streams are deleted, and by hold_open().
 	std::recursive_mutex children_mutex;
 	std::vector<datastream*> children; // The open streams opened on this one, whose streams read or write through its own: see close(). Not references, as each holds this one; each removes itself when it closes.
+	std::vector<datastream*> also_on; // Streams this one reads or writes through besides the one it was opened on (see opened_on_too()), under children_mutex.
 	void add_child(datastream* child);
 	void remove_child(datastream* child);
 public:
@@ -196,6 +197,8 @@ public:
 	inline unsigned long long available() {
 		return r ? r->available() : -1;
 	}
+	// Marks this stream as reading or writing through another's stream as well as the one it was opened on, as a duplicating stream does through each stream added to it: closing that other one closes this one first, as for a stream opened on it (see close()). The caller keeps that one alive while this one uses it.
+	void opened_on_too(datastream* other);
 	// For code reading or writing the streams on a thread of its own, as the audio thread does for a sound's decoder or encoder: while it's held, close() waits rather than delete the streams under that code. The streams are looked up after taking it, as they're gone once closed.
 	std::unique_lock<std::recursive_mutex> hold_open() {
 		return std::unique_lock<std::recursive_mutex>(use_mutex);
