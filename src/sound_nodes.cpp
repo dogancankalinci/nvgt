@@ -115,7 +115,8 @@ static bool biquad_in_range(double b0, double b1, double b2, double a0, double a
 // The second-order sections MiniAudio makes a low-, high- or band-pass filter of, a first-order one being stable at any frequency.
 enum class pass_filter { low, high, band };
 static bool sections_in_range(pass_filter kind, double frequency, int order, ma_uint32 sample_rate) {
-	if (order < 1 || order > MA_MAX_FILTER_ORDER) return true; // MiniAudio refuses it itself.
+	if (order < 1) return node_value_in_range(false); // MiniAudio makes a filter of no sections then, which filters nothing.
+	if (order > MA_MAX_FILTER_ORDER) return true; // MiniAudio refuses it itself.
 	double w = 2 * filter_pi * frequency / sample_rate, s = std::sin(w), c = std::cos(w);
 	for (int i = 0; i < order / 2; i++) {
 		double q = 0.707107;
