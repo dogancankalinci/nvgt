@@ -2289,7 +2289,8 @@ public:
 			return false;
 		}
 		if (get_active()) close();
-		unique_lock<mutex> lock(write_mtx);
+		unique_lock<mutex> lock = lock_writes();
+		if (!lock || get_active()) return (g_soundsystem_last_error = MA_BUSY) == MA_SUCCESS; // The close above couldn't wait on an audio thread either.
 		if (!open_impl(filename, nullptr, sample_rate, channels, flags)) return false; // The encoders create the file anew, replacing one there, once their arguments check out; deleting it first lost it to an open that then failed.
 		drop_pulled();
 		return true;
@@ -2307,7 +2308,12 @@ public:
 			return false;
 		}
 		if (get_active()) close();
-		unique_lock<mutex> lock(write_mtx);
+		unique_lock<mutex> lock = lock_writes();
+		if (!lock || get_active()) {
+			g_soundsystem_last_error = MA_BUSY;
+			ds->release();
+			return false;
+		}
 		bool opened;
 		try {
 			opened = open_impl("", ds, sample_rate, channels, flags);
@@ -2346,7 +2352,8 @@ public:
 		return false;
 	}
 	bool close() override {
-		unique_lock<mutex> lock(write_mtx);
+		unique_lock<mutex> lock = lock_writes();
+		if (!lock) return false;
 		if (dc && get_active()) drain_converter();
 		if (!close_impl()) return false;
 		if (dc) {
@@ -2362,7 +2369,8 @@ public:
 	unsigned long long get_frames_written() const override { return frames_written; }
 	// Takes frames in the engine's format, as process() is given them when the encoder is a node, and returns how many of those it wrote, which is what frames_written counts.
 	unsigned int write(const float* frames_in, unsigned int frame_count) override {
-		unique_lock<mutex> lock(write_mtx);
+		unique_lock<mutex> lock = lock_writes();
+		if (!lock) return 0;
 		return write_locked(frames_in, frame_count);
 	}
 	// write(), with write_mtx held.
@@ -2398,13 +2406,21 @@ public:
 		if (!frames || !engine_channels) return 0;
 		return write((float*)frames->ptr, frames->size / engine_channels);
 	}
+	// write_mtx for the script's calls, which from an audio thread, as a processing callback recording the engine's output makes them, is only tried for, as process() does: they waited there for a script thread's open, close, write or drain, which can write a file. MA_BUSY when it can't be had then.
+	unique_lock<mutex> lock_writes() {
+		if (!audio_engine_impl::on_audio_thread()) return unique_lock<mutex>(write_mtx);
+		unique_lock<mutex> lock(write_mtx, try_to_lock);
+		if (!lock.owns_lock()) g_soundsystem_last_error = MA_BUSY;
+		return lock;
+	}
 	// On the audio thread, which mustn't wait while a script thread opens, closes or writes to the encoder under write_mtx; that block isn't encoded then, and the audio goes on through this node either way.
 	void process(const float** frames_in, unsigned int* frame_count_in, float** frames_out, unsigned int* frame_count_out) override {
 		unique_lock<mutex> lock(write_mtx, try_to_lock);
 		if (lock.owns_lock()) write_locked(*frames_in, *frame_count_in);
 	}
 	string read() override {
-		unique_lock<mutex> lock(write_mtx);
+		unique_lock<mutex> lock = lock_writes();
+		if (!lock) return "";
 		if (!pull_stream) return "";
 		if (!streamable_pulling && get_active()) return "";
 		stringstream* pull_stringstream = dynamic_cast<stringstream*>(pull_stream->stream());
