@@ -33,7 +33,7 @@ public:
 	 * First, define a std::istream that works with your custom data source. This is the hard part. It involves defining a new streambuf that can read and seek your custom data source (Poco's BasicBufferedStreamBuf class takes a lot of the pain out of this; see chacha_istreambuf in crypto.cpp, which the encryption filter in sound_service.cpp uses, or pack.cpp for examples). Then, define a std::istream which wraps your streambuf.
 	 * Finally, define your protocol class.
 	 * The only method that must be defined is open_uri. It must return a pointer to a std::istream if the provided uri make sense for your custom data protocol, or nullptr otherwise.
-	 * The sound system will take ownership of the returned pointer and delete it when the script is done with the sound source it represents.
+	 * The sound system will take ownership of the returned pointer and delete it when it no longer reads it: once a loaded sound has been decoded, or a streamed one is closed.
 	 * It is recommended that your protocols be stateless singletons, meaning your protocol class should feature a single instance as a private static property and a static method to fetch a pointer to it as follows:
 	 * private:
 	 * static my_protocol instance;
@@ -50,7 +50,7 @@ public:
 	 * Instances of this class provide a means of transforming data before delivering it to the sound system.
 	 * The most common use case for this is decryption.
 	 * How to implement:
-	 * First, define a new streambuf that will receive a std::istream, read data from it, perform your desired transformation, and finally output the transformed data. This is the hard part. Poco's BasicBufferedStreamBuf class can take a lot of the pain out of this. See encryption_filter.cpp for an example.
+	 * First, define a new streambuf that will receive a std::istream, read data from it, perform your desired transformation, and finally output the transformed data. This is the hard part. Poco's BasicBufferedStreamBuf class can take a lot of the pain out of this. See chacha_istreambuf in crypto.cpp, which encryption_filter in sound_service.cpp wraps, for an example.
 	 * Next, define a new std::istream which wraps your streambuf.
 	 * Finally define your filter class.
 	 * The only method which must be implemented is wrap. This method should receive a std::istream as input, and should return a pointer to your new stream if the data is able to be transformed, or nullptr otherwise.
