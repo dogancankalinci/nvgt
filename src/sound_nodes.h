@@ -23,6 +23,9 @@
 #include <mutex>
 #include "sound.h"
 
+// The loudest gain a volume sets, +100 dB: louder, a few gains in a row took samples past what a float holds, to infinity and then NaN, which a filter after them kept for good, as with a volume that isn't finite.
+constexpr float max_volume_gain = 100000.0f;
+
 // miniaudio's node graph is lock-free for the audio thread that reads it, but its attach/detach mutations assume a single writer. Script threads create and destroy sounds and mixers concurrently, each of which attaches to and detaches from the engine endpoint, so the mutations are serialised here. Recursive because a chain's set_endpoint attaches through its last node.
 extern std::recursive_mutex g_node_graph_mutex;
 // A group of an engine through which a node of another sample rate goes into one of its nodes, resampled from that rate to the engine's (see audio_node_impl::attach_output_bus()). Made unattached, of the given channels in and out, under the graph lock, as it is let go of.
@@ -193,7 +196,7 @@ public:
 	}
 	bool set_output_bus_volume(unsigned int bus, float volume) {
 		if (!node) return false;
-		if (!std::isfinite(volume)) { // A NaN or infinite volume made every sample the bus fed NaN.
+		if (!std::isfinite(volume) || std::fabs(volume) > max_volume_gain) { // A NaN or infinite volume made every sample the bus fed NaN, as one past max_volume_gain could.
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
