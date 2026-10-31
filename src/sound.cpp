@@ -979,7 +979,11 @@ public:
 		return (g_soundsystem_last_error = ma_engine_set_volume(&*engine, volume)) == MA_SUCCESS;
 	}
 	float get_volume() const override { return engine ? ma_engine_get_volume(&*engine) : 0; }
-	bool set_gain(float db) override { return engine && finite_values({db}) && playable_volumes({ma_volume_db_to_linear(db)})? (g_soundsystem_last_error = ma_engine_set_gain_db(&*engine, db)) == MA_SUCCESS : false; }
+	bool set_gain(float db) override {
+		if (!engine || !finite_values({db})) return false;
+		if (db < -100) db = -100; // As it reads back (see get_gain()), as sounds' volumes are taken: lower, a loop fading the gain down to below it never ended.
+		return playable_volumes({ma_volume_db_to_linear(db)})? (g_soundsystem_last_error = ma_engine_set_gain_db(&*engine, db)) == MA_SUCCESS : false;
+	}
 	float get_gain() const override { return engine ? std::max(-100.0f, ma_engine_get_gain_db(&*engine)) : 0; } // No lower than -100 dB, as volumes read (see readable_db()): a silent engine read -inf, which nothing could be set from.
 	unsigned int get_listener_count() const override { return engine ? ma_engine_get_listener_count(&*engine) : 0; }
 	int find_closest_listener(float x, float y, float z) const override { return engine ? ma_engine_find_closest_listener(&*engine, x, y, z) : -1; }
