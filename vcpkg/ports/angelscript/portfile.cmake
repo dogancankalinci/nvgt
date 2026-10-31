@@ -117,6 +117,7 @@ vcpkg_from_github(
         fix-copy-from-handle-reference.patch
         fix-shared-enum-underlying-type.patch
         fix-shared-class-declaration-check.patch
+        fix-virtual-functor-return-in-memory.patch
 )
 
 vcpkg_cmake_configure(

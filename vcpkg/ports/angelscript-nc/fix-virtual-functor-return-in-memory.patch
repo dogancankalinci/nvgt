@@ -1,0 +1,20 @@
+--- a/sdk/angelscript/source/as_callfunc.cpp
++++ b/sdk/angelscript/source/as_callfunc.cpp
+@@ -477,9 +477,16 @@
+ #ifdef AS_NO_THISCALL_FUNCTOR_METHOD
+ 					internal->callConv == ICC_VIRTUAL_THISCALL) &&
+ #else
++					// ALTERED: also a virtual functor method (asCALL_THISCALL_OBJFIRST or OBJLAST naming a virtual method), which
++					// is called as a method and returns a class as one does. It was left out, so on a target where a method
++					// returns a smaller class in memory than the size checked above (armv7: a class of 2 dwords) the class was
++					// taken from the return registers while the method wrote it through the hidden pointer it took as its first
++					// argument: every argument, the this pointer and the object reached the method shifted by one.
+ 					internal->callConv == ICC_VIRTUAL_THISCALL ||
+ 					internal->callConv == ICC_THISCALL_OBJFIRST ||
+-					internal->callConv == ICC_THISCALL_OBJLAST) &&
++					internal->callConv == ICC_THISCALL_OBJLAST ||
++					internal->callConv == ICC_VIRTUAL_THISCALL_OBJFIRST ||
++					internal->callConv == ICC_VIRTUAL_THISCALL_OBJLAST) &&
+ #endif
+ 					func->returnType.GetSizeInMemoryDWords() >= THISCALL_RETURN_SIMPLE_IN_MEMORY_MIN_SIZE)
+ 				{
