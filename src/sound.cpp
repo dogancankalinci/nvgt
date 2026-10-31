@@ -1054,6 +1054,7 @@ protected:
 	// Whether this source's own node is in the graph, whose audio thread then reads the source.
 	bool node_attached() const {
 		if (!node) return false;
+		std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); // As attachments change under it.
 		for (audio_node *n : output_connections) if (n) return true;
 		return false;
 	}
@@ -1131,17 +1132,18 @@ protected:
 				auto it = g_data_sources_map.find(src->pDataSource);
 				if (it != g_data_sources_map.end() && it->second == this) g_data_sources_map.erase(it);
 			}
-			if (node) {
+			std::vector<audio_node*> attached;
+			{
 				std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex);
-				ma_data_source_node_uninit(&*src, nullptr);
-				drop_rate_bridges();
+				if (node) {
+					ma_data_source_node_uninit(&*src, nullptr);
+					drop_rate_bridges();
+				}
+				attached.swap(output_connections); // Under the graph lock, as attachments are changed and followed under it (see audio_node_impl::reaches_node()); what they held is let go of after it, as it can be the last reference.
 			}
 			node = nullptr;
 			// Uninitializing the node took it off the graph, so what it was attached to is no longer held either; a node made for a source opened later starts unattached.
-			for (audio_node *&n : output_connections) {
-				if (n) n->release();
-				n = nullptr;
-			}
+			for (audio_node* n : attached) if (n) n->release();
 			src.reset();
 		}
 		if (src_cur) let_go(src_cur);
