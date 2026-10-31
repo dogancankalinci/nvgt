@@ -1150,9 +1150,9 @@ public:
 	mixer *new_mixer() override { return ::new_mixer(this); }
 	sound *new_sound() override {
 		sound *s = ::new_sound(this);
-		if (s && this == g_audio_engine) { // The default engine's sounds go on sound_default_mixer, as those of sound() do; play() moves them to a mixer it is given.
+		if (s && this == default_engine_pointer()) { // The default engine's sounds go on sound_default_mixer, as those of sound() do; play() moves them to a mixer it is given.
 			if (mixer* mix = acquire_default_mixer()) {
-				s->set_mixer(mix);
+				if (mix->get_engine() == this) s->set_mixer(mix); // Not one of another engine, whose refusal left an error behind a sound made fine.
 				mix->release();
 			}
 		}
@@ -5505,8 +5505,8 @@ sound *new_global_sound_unmixed() {
 sound *script_new_global_sound();
 sound *new_global_sound() {
 	sound* s = new_global_sound_unmixed();
-	if (mixer* mix = s? acquire_default_mixer() : nullptr) { // Refused for a sound_default_mixer of an engine other than the default one, which leaves the sound on the default engine's endpoint.
-		s->set_mixer(mix);
+	if (mixer* mix = s? acquire_default_mixer() : nullptr) { // Not a sound_default_mixer of an engine other than the default one, which leaves the sound on the default engine's endpoint, as set_mixer() refusing it did, but without an error left behind a sound made fine.
+		if (mix->get_engine() == s->get_engine()) s->set_mixer(mix);
 		mix->release();
 	}
 	return s;
