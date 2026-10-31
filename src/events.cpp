@@ -28,7 +28,17 @@ static asITypeInfo* listener_weakref_type(asIScriptModule* mod, asITypeInfo* ot)
 	return mod->GetTypeInfoByDecl(Poco::format("weakref<%s::%s>", ot->GetNamespace()? std::string(ot->GetNamespace()) : "", std::string(ot->GetName())).c_str());
 }
 
-engine_event_listener::engine_event_listener(asIScriptObject* obj, const engine_event* parent) : obj(std::make_shared<CScriptWeakRef>(obj, listener_weakref_type(obj->GetObjectType()->GetModule(), obj->GetObjectType()))), func(nullptr), is_object(true) {
+// The weak reference a listener object is held through. Its type is looked up in the class's module, which can't see weakref<T>
+// when its access mask leaves out the subsystem weakref is registered under (a script_module given set_access_mask() without
+// NVGT_SUBSYSTEM_GENERAL, which can still see the events): the CScriptWeakRef was made with no type, which it dereferenced (a
+// crash). Such an object is refused, as one without the callback method is.
+static std::shared_ptr<CScriptWeakRef> listener_weakref(asIScriptObject* obj) {
+	asITypeInfo* ot = obj->GetObjectType();
+	asITypeInfo* weak_type = listener_weakref_type(ot? ot->GetModule() : nullptr, ot);
+	if (!weak_type) throw std::runtime_error(Poco::format("engine_event_listener instanciation for %s failed, weakref<%s> is not available to its module", std::string(ot? ot->GetName() : "unknown"), std::string(ot? ot->GetName() : "unknown")));
+	return std::make_shared<CScriptWeakRef>(obj, weak_type);
+}
+engine_event_listener::engine_event_listener(asIScriptObject* obj, const engine_event* parent) : obj(listener_weakref(obj)), func(nullptr), is_object(true) {
 	asITypeInfo* ot = obj->GetObjectType();
 	{
 		// The declarations are parsed in the class's module, which a build on another thread may be changing: under the build lock, as listener_weakref_type's lookup.
