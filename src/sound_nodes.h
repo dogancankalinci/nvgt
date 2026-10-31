@@ -203,7 +203,11 @@ public:
 		return (g_soundsystem_last_error = ma_node_set_output_bus_volume(node, bus, volume)) == MA_SUCCESS;
 	}
 	float get_output_bus_volume(unsigned int bus) { return node ? ma_node_get_output_bus_volume(node, bus) : 0; }
-	bool set_state(ma_node_state state) { return node ? (g_soundsystem_last_error = ma_node_set_state(node, state)) == MA_SUCCESS : false; }
+	bool set_state(ma_node_state state) {
+		if (!node) return false;
+		if (state != ma_node_state_started && state != ma_node_state_stopped) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // As set_state_time() refuses it: MiniAudio kept any value, which it then took as started.
+		return (g_soundsystem_last_error = ma_node_set_state(node, state)) == MA_SUCCESS;
+	}
 	ma_node_state get_state() { return node ? ma_node_get_state(node) : ma_node_state_stopped; }
 	bool set_state_time(ma_node_state state, unsigned long long time) { return node ? (g_soundsystem_last_error = ma_node_set_state_time(node, state, time)) == MA_SUCCESS : false; }
 	unsigned long long get_state_time(ma_node_state state) { return node ? ma_node_get_state_time(node, state) : 0; } // As MiniAudio gives for no node, rather than a state, which read as frame 1.

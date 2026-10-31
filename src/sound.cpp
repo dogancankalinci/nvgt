@@ -5307,6 +5307,7 @@ public:
 		return audio_ring_buffer_impl::write(frames_in, frame_count);
 	}
 	bool set_state(ma_node_state state) override {
+		if (state != ma_node_state_started && state != ma_node_state_stopped) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // Not kept, as by other nodes.
 		std::unique_lock<std::mutex> lock = lock_device();
 		if (!lock) return false;
 		if (state == ma_node_state_started && !capture_device) { // Nothing to record from, as after set_device() could open no device.
