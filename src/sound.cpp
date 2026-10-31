@@ -2342,6 +2342,8 @@ class audio_wav_encoder_impl : public audio_encoder_impl, public virtual audio_w
 		std::streamoff base = 0;
 		std::string header; // What the encoder writes while it opens, held until then: see open_impl().
 		bool holding_header = false;
+		std::streamoff at = 0, end = 0; // Where the encoder writes and how far it wrote, from base.
+		bool moved = false; // Whether it sought back, after which close_impl() puts the stream back at the end.
 	} output;
 	// A WAV's header gives the RIFF and data chunk sizes, which the encoder writes as nothing at first and over that when it closes, by seeking back to them. A stream that can't seek, such as an encrypting, encoding or compressing one, kept the first ones, so that its WAV read as holding no audio. They are written as 0xFFFFFFFF instead, a length unknown, as a WAV streamed out is written, which readers take as running to the file's end; closing writes the real ones over them where it can.
 	static void mark_sizes_unknown(std::string& header) {
@@ -2372,6 +2374,8 @@ class audio_wav_encoder_impl : public audio_encoder_impl, public virtual audio_w
 		stream->write((const char *)pBufferIn, bytesToWrite);
 		if (!stream->good()) return MA_ERROR;
 		*pBytesWritten = bytesToWrite;
+		out->at += bytesToWrite;
+		out->end = std::max(out->end, out->at);
 		return MA_SUCCESS;
 	}
 	static ma_result stream_seek(ma_encoder *pEncoder, ma_int64 offset, ma_seek_origin origin) {
@@ -2383,7 +2387,11 @@ class audio_wav_encoder_impl : public audio_encoder_impl, public virtual audio_w
 		if (!stream) return MA_ERROR;
 		std::ios_base::iostate was = stream->rdstate();
 		stream->seekp(out->base + offset);
-		if (stream->good()) return MA_SUCCESS;
+		if (stream->good()) {
+			out->at = offset;
+			out->moved = true;
+			return MA_SUCCESS;
+		}
 		stream->clear(was); // A stream that can't seek is left as good as it was, for what the script writes to it after the encoder.
 		return MA_ERROR;
 	}
@@ -2401,6 +2409,7 @@ protected:
 		}
 		encoder = make_unique<ma_encoder>();
 		ma_encoder_config cfg = ma_encoder_config_init(ma_encoding_format_wav, target_format, channels, sample_rate);
+		output = stream_output();
 		if (ds && ds->can_write()) {
 			output.ds = ds;
 			std::streampos start = ds->get_ostr()->tellp();
@@ -2446,6 +2455,16 @@ protected:
 		if (!encoder) return false;
 		ma_encoder_uninit(&*encoder);
 		encoder.reset();
+		// Closing wrote the sizes into the header, which left a stream that can seek inside the file, where what the script wrote to it next overwrote the audio: it's put back at the end.
+		if (output.ds && output.moved) {
+			auto held_open = output.ds->hold_open();
+			if (std::ostream* stream = output.ds->get_ostr()) {
+				std::ios_base::iostate was = stream->rdstate();
+				stream->seekp(output.base + output.end);
+				if (!stream->good()) stream->clear(was);
+			}
+		}
+		output = stream_output();
 		return true;
 	}
 public:
