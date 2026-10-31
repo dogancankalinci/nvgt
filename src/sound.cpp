@@ -421,9 +421,18 @@ static CScriptArray *empty_device_list() {
 	static CScriptArray *empty = CScriptArray::Create(get_array_type("array<string>"));
 	return empty;
 }
+// The types the sound system's script calls make, kept once looked up: get_array_type() can wait for the build lock when a type isn't in its cache, which on an audio thread, as in a processing callback, held up the audio, and could wait for a thread destroying the engine while that waited for the callback (see data_callback()). Looked up on a script thread when a processing callback is set, so that its calls find them.
+static std::atomic<asITypeInfo*> g_float_array_type{nullptr}, g_float_buffer_type{nullptr};
+static asITypeInfo* kept_type(std::atomic<asITypeInfo*>& kept, const char* decl) {
+	asITypeInfo* type = kept.load(std::memory_order_acquire);
+	if (!type && (type = get_array_type(decl))) kept.store(type, std::memory_order_release);
+	return type;
+}
+static asITypeInfo* float_array_type() { return kept_type(g_float_array_type, "array<float>"); }
 // Each with a reference of the caller's own, taken under the lock, as a list taken anew on another thread lets go of the one before.
+// On an audio thread, as in a processing callback, the lists as last taken, without listing the devices there, which held up the audio for milliseconds.
 CScriptArray *get_sound_input_devices() {
-	if (!refresh_audio_devices() && !g_sound_script_input_devices) {
+	if ((on_an_audio_thread() || !refresh_audio_devices()) && !g_sound_script_input_devices) {
 		empty_device_list()->AddRef();
 		return empty_device_list();
 	}
@@ -432,7 +441,7 @@ CScriptArray *get_sound_input_devices() {
 	return g_sound_script_input_devices;
 }
 CScriptArray *get_sound_output_devices() {
-	if (!refresh_audio_devices() && !g_sound_script_output_devices) {
+	if ((on_an_audio_thread() || !refresh_audio_devices()) && !g_sound_script_output_devices) {
 		empty_device_list()->AddRef();
 		return empty_device_list();
 	}
@@ -886,15 +895,15 @@ public:
 			return nullptr;
 		if ((flags & NO_DEVICE) == 0) { // Its device reads it on its own thread, and MiniAudio's engine can't be read from two at once.
 			g_soundsystem_last_error = MA_INVALID_OPERATION;
-			return CScriptArray::Create(get_array_type("array<float>"));
+			return CScriptArray::Create(float_array_type());
 		}
 		if (output_attached()) { // Mixed into another engine, whose audio thread reads it there.
 			g_soundsystem_last_error = MA_INVALID_OPERATION;
-			return CScriptArray::Create(get_array_type("array<float>"));
+			return CScriptArray::Create(float_array_type());
 		}
 		unsigned int channels = ma_engine_get_channels(&*engine);
 		if (frame_count > 0xFFFFFFFF / channels) throw runtime_error("too many frames requested");
-		CScriptArray *result = CScriptArray::Create(get_array_type("array<float>"), frame_count * channels);
+		CScriptArray *result = CScriptArray::Create(float_array_type(), frame_count * channels);
 		asIScriptContext* ctx = asGetActiveContext();
 		if (ctx && ctx->GetState() == asEXECUTION_EXCEPTION) {
 			result->Release();
@@ -925,14 +934,18 @@ public:
 	void set_processing_callback(asIScriptFunction* cb) override {
 		asIScriptFunction *old;
 		asITypeInfo *buffer_type = nullptr;
-		if (cb && on_audio_thread()) { // As from a processing callback: not looked up there, which can wait for the build lock (see data_callback()), but the one this engine has, from its callback set on a script thread.
-			std::lock_guard<std::mutex> lock(callback_mutex);
-			buffer_type = script_data_buffer_type;
+		if (cb && on_audio_thread()) { // As from a processing callback: not looked up there, which can wait for the build lock (see data_callback()), but the one kept when a callback was set on a script thread, as the one now running was.
+			buffer_type = g_float_buffer_type.load(std::memory_order_acquire);
 			if (!buffer_type) {
 				g_soundsystem_last_error = MA_INVALID_OPERATION;
+				cb->Release(); // The script handed its reference over: refused, it was kept for good, and with it a delegate's object, an engine it held included.
 				return;
 			}
-		} else if (cb) buffer_type = get_array_type("memory_buffer<float>"); // See data_callback().
+		} else if (cb) {
+			buffer_type = kept_type(g_float_buffer_type, "memory_buffer<float>"); // See data_callback().
+			float_array_type(); // And the others the callback's calls make, see kept_type().
+			empty_device_list();
+		}
 		{
 			std::lock_guard<std::mutex> lock(callback_mutex);
 			old = script_data_callback.exchange(cb);
@@ -1344,7 +1357,7 @@ public:
 		unsigned int channels = get_channels(); // Asked once, before the read: asking reads the source's format, which sets the error the read or a refusal to read set.
 		if (!frame_count && ready_to_read()) frame_count = get_advised_read_frame_count(); // Counted once what was to be dropped is gone, which an advised count leaves out.
 		if (channels && frame_count > 0xFFFFFFFF / channels) throw runtime_error("too many frames requested");
-		CScriptArray* array = CScriptArray::Create(get_array_type("array<float>"), frame_count * channels);
+		CScriptArray* array = CScriptArray::Create(float_array_type(), frame_count * channels);
 		asIScriptContext* ctx = asGetActiveContext();
 		if (ctx && ctx->GetState() == asEXECUTION_EXCEPTION) {
 			array->Release();
