@@ -1,0 +1,168 @@
+--- a/sdk/angelscript/source/as_callfunc.cpp
++++ b/sdk/angelscript/source/as_callfunc.cpp
+@@ -241,6 +241,79 @@
+ 	return false;
+ }
+ 
++// ALTERED: the same check for a variadic function, whose arguments follow a count of them (PrepareObjectRefArgs leaves
++// objectRefArgs empty for it): a null reference to an object reached the function as an argument of the variadic
++// parameter or of a fixed one. args points at the first value after the object pointer.
++bool HasNullVariadicObjectRefArg(asCScriptFunction *descr, asDWORD *args)
++{
++	int offset = 0;
++	if( descr->DoesReturnOnStack() )
++		offset += AS_PTR_SIZE;
++	const asUINT argCount = args[offset];
++	offset += 1;
++	for( asUINT a = 0; a < argCount; a++ )
++	{
++		const asUINT n = a < descr->parameterTypes.GetLength() ? a : descr->parameterTypes.GetLength() - 1;
++		asCDataType &dt = descr->parameterTypes[n];
++		if( dt.IsReference() && dt.IsObject() && !dt.IsObjectHandle() && dt.GetTokenType() != ttQuestion &&
++			*(asPWORD*)&args[offset] == 0 )
++			return true;
++		offset += dt.GetSizeOnStackDWords();
++	}
++	return false;
++}
++
++// ALTERED: cleans up the arguments of the variadic parameter after a call of a variadic generic function, by the rules
++// PrepareSystemFunctionGeneric applies to a parameter (see there). args points at the first argument, after the return
++// pointer and the count, and argCount is the count (the fixed arguments included).
++void CleanVariadicArgsOfGenericCall(asCScriptEngine *engine, asCScriptFunction *descr, asDWORD *args, asUINT argCount)
++{
++	const asUINT last = descr->parameterTypes.GetLength() - 1;
++	asCDataType &dt = descr->parameterTypes[last];
++	if( !(dt.IsObject() || dt.IsFuncdef()) || dt.IsReference() )
++		return;
++
++	asSSystemFunctionInterface *sysFunc = descr->sysFuncIntf;
++	const bool autoHandle = sysFunc->paramAutoHandles.GetLength() > last && sysFunc->paramAutoHandles[last];
++	int offset = 0;
++	for( asUINT n = 0; n < last; n++ )
++		offset += descr->parameterTypes[n].GetSizeOnStackDWords();
++	const int size = dt.GetSizeOnStackDWords();
++
++	for( asUINT a = last; a < argCount; a++, offset += size )
++	{
++		void **addr = (void**)&args[offset];
++		if( dt.IsFuncdef() )
++		{
++			if( engine->ep.genericCallMode == 0 || autoHandle )
++			{
++				if( *addr )
++					reinterpret_cast<asCScriptFunction*>(*addr)->Release();
++				*addr = 0;
++			}
++		}
++		else if( dt.GetTypeInfo()->flags & asOBJ_REF )
++		{
++			if( !dt.IsObjectHandle() || engine->ep.genericCallMode == 0 || autoHandle )
++			{
++				asSTypeBehaviour *beh = &CastToObjectType(dt.GetTypeInfo())->beh;
++				asASSERT( (dt.GetTypeInfo()->flags & asOBJ_NOCOUNT) || beh->release );
++				if( *addr && beh->release )
++					engine->CallObjectMethod(*addr, beh->release);
++				*addr = 0;
++			}
++		}
++		else if( *addr )
++		{
++			asSTypeBehaviour *beh = &CastToObjectType(dt.GetTypeInfo())->beh;
++			if( beh->destruct )
++				engine->CallObjectMethod(*addr, beh->destruct);
++			engine->CallFree(*addr);
++			*addr = 0;
++		}
++	}
++}
++
+ // ALTERED: CallSystemFunction and CallGeneric returned without touching the arguments when the object pointer of a method
+ // was null, but the arguments the caller pushed belong to the called function: the reference held by a handle argument and
+ // the copy of an object passed by value were never released or freed, as neither the compiled script nor the exception
+@@ -248,16 +321,24 @@
+ // cleared, so the arguments are consumed whether the function is called or not.
+ void CleanArgsOfUnmadeCall(asCContext *context, asCScriptFunction *descr, asDWORD *args)
+ {
+-	// The arguments of a variadic function follow a count of them, which this doesn't walk
+-	if( descr->IsVariadic() )
+-		return;
+-
+ 	asCScriptEngine *engine = context->m_engine;
+ 	int offset = 0;
+ 	if( descr->DoesReturnOnStack() )
+ 		offset += AS_PTR_SIZE;
+-	for( asUINT n = 0; n < descr->parameterTypes.GetLength(); n++ )
++
++	// ALTERED: the arguments of a variadic function follow a count of them (all of them, the fixed ones too), and every
++	// argument after the fixed ones is of the type of the last parameter, see asCContext::CallGeneric. They weren't walked:
++	// each handle and object by value passed to a variadic method called on a null object was never released or freed.
++	asUINT argCount = descr->parameterTypes.GetLength();
++	if( descr->IsVariadic() )
+ 	{
++		argCount = args[offset];
++		offset += 1;
++	}
++
++	for( asUINT a = 0; a < argCount; a++ )
++	{
++		const asUINT n = a < descr->parameterTypes.GetLength() ? a : descr->parameterTypes.GetLength() - 1;
+ 		asCDataType &dt = descr->parameterTypes[n];
+ 		if( (dt.IsObject() || dt.IsFuncdef()) && !dt.IsReference() )
+ 		{
+@@ -304,6 +385,13 @@
+ 	{
+ 		asCDataType &dt = func->parameterTypes[n];
+ 
++		// ALTERED: the variadic parameter stands for any number of arguments, 0 included; they are cleaned up one by one
++		// after the call, see CleanVariadicArgsOfGenericCall. It had one entry here, at the place of its first argument:
++		// a call with no variadic argument released, destroyed or freed whatever the stack held there (a crash), and
++		// every variadic argument after the first was leaked.
++		if( func->IsVariadic() && n == func->parameterTypes.GetLength() - 1 )
++			break;
++
+ 		if( (dt.IsObject() || dt.IsFuncdef()) && !dt.IsReference() )
+ 		{
+ 			if (dt.IsFuncdef())
+--- a/sdk/angelscript/source/as_callfunc.h
++++ b/sdk/angelscript/source/as_callfunc.h
+@@ -70,6 +70,13 @@
+ // args points at the first value after the object pointer, as for CleanArgsOfUnmadeCall.
+ bool HasNullObjectRefArg(asSSystemFunctionInterface *sysFunc, asDWORD *args);
+ 
++// ALTERED: the same for a variadic function (see as_callfunc.cpp)
++bool HasNullVariadicObjectRefArg(asCScriptFunction *descr, asDWORD *args);
++
++// ALTERED: cleans up the variadic arguments after a call of a variadic generic function (see as_callfunc.cpp). args points
++// at the first argument, after the return pointer and the count of arguments.
++void CleanVariadicArgsOfGenericCall(asCScriptEngine *engine, asCScriptFunction *descr, asDWORD *args, asUINT argCount);
++
+ inline asPWORD FuncPtrToUInt(asFUNCTION_t func)
+ {
+ 	// A little trickery as the C++ standard doesn't allow direct
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -6496,8 +6496,10 @@
+ 		args += AS_PTR_SIZE;
+ 	}
+ 
+-	// ALTERED: a null reference to an object is refused, see PrepareObjectRefArgs in as_callfunc.cpp
+-	if( sysFunc->objectRefArgs.GetLength() && HasNullObjectRefArg(sysFunc, args) )
++	// ALTERED: a null reference to an object is refused, see PrepareObjectRefArgs in as_callfunc.cpp, for a variadic
++	// function too
++	if( (sysFunc->objectRefArgs.GetLength() && HasNullObjectRefArg(sysFunc, args)) ||
++		(descr->IsVariadic() && HasNullVariadicObjectRefArg(descr, args)) )
+ 	{
+ 		SetInternalException(TXT_NULL_POINTER_ACCESS);
+ 		CleanArgsOfUnmadeCall(this, descr, args);
+@@ -6617,6 +6619,10 @@
+ 		}
+ 	}
+ 
++	// ALTERED: the arguments of the variadic parameter, see PrepareSystemFunctionGeneric
++	if( descr->IsVariadic() )
++		CleanVariadicArgsOfGenericCall(m_engine, descr, args, varArgCount);
++
+ 	// Return how much should be popped from the stack
+ 	return popSize;
+ }

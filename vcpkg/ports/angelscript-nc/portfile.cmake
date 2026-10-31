@@ -122,6 +122,7 @@ vcpkg_from_github(
         fix-catch-position-after-line-cue-removal.patch
         fix-shared-class-child-funcdef-check.patch
         fix-pod-copy-size.patch
+        fix-variadic-generic-arg-cleanup.patch
 )
 
 vcpkg_cmake_configure(
