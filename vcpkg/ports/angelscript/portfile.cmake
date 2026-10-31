@@ -119,6 +119,7 @@ vcpkg_from_github(
         fix-shared-class-declaration-check.patch
         fix-virtual-functor-return-in-memory.patch
         fix-catch-position-after-line-cue-removal.patch
+        fix-shared-class-child-funcdef-check.patch
 )
 
 vcpkg_cmake_configure(

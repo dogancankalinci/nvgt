@@ -1,0 +1,26 @@
+--- a/sdk/angelscript/source/as_restore.cpp
++++ b/sdk/angelscript/source/as_restore.cpp
+@@ -376,8 +376,22 @@
+ 				}
+ 			}
+ 
++			// ALTERED: a child funcdef of a shared class that exists already (another module declared it) must be one of that
++			// class's own, found above; the builder never adds one to such a class. One with another signature was added to the
++			// existing class, which then had two child funcdefs of one name: the builder resolves the name to the first, the
++			// loader (ReadTypeInfo) to the last, so the bytecode of a module built against the class failed to load while this
++			// module was loaded ("The bytecode is invalid": its C::F was taken for this module's). It is a mismatch with the
++			// existing declaration of the class, as a member or method that differs is (see ReadObjectProperty).
++			if (funcDef && fdt->parentClass && existingShared.MoveTo(0, fdt->parentClass))
++			{
++				asCString str;
++				str.Format(TXT_SHARED_s_DOESNT_MATCH_ORIGINAL_s, fdt->parentClass->GetName(), fdt->parentClass->GetModule() ? fdt->parentClass->GetModule()->GetName() : "");
++				engine->WriteMessage("", 0, 0, asMSGTYPE_ERROR, str.AddressOf());
++				Error(TXT_INVALID_BYTECODE_d);
++				fdt->parentClass = 0; // never added to the existing class
++			}
+ 			// Add the funcdef to the parentClass if this is a child funcdef
+-			if (funcDef && fdt->parentClass)
++			else if (funcDef && fdt->parentClass)
+ 				fdt->parentClass->childFuncDefs.PushLast(fdt);
+ 
+ 			// Check if an external shared funcdef was really found
