@@ -5289,15 +5289,22 @@ reactphysics3d::Vector3 sound_get_listener_position(unsigned int listener_index 
 	if (!engine) return reactphysics3d::Vector3(0, 0, 0);
 	return engine->get_listener_position(listener_index);
 }
+// True only when the position was set: MiniAudio ignores a listener it doesn't have, and the engine a position that isn't finite.
+static bool listener_position_settable(audio_engine* engine, unsigned int listener_index, float x, float y, float z) {
+	if (!finite_values({x, y, z})) return false;
+	if (listener_index < engine->get_listener_count()) return true;
+	g_soundsystem_last_error = MA_INVALID_ARGS;
+	return false;
+}
 bool sound_set_listener_position(float x, float y, float z, unsigned int listener_index = 0) {
 	default_engine_ref engine;
-	if (!engine) return false;
+	if (!engine || !listener_position_settable(engine.engine, listener_index, x, y, z)) return false;
 	engine->set_listener_position(listener_index, x, y, z);
 	return true;
 }
 bool sound_set_listener_position_vector(const reactphysics3d::Vector3& position, unsigned int listener_index = 0) {
 	default_engine_ref engine;
-	if (!engine) return false;
+	if (!engine || !listener_position_settable(engine.engine, listener_index, position.x, position.y, position.z)) return false;
 	engine->set_listener_position_vector(listener_index, position);
 	return true;
 }
