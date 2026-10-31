@@ -1,0 +1,55 @@
+--- a/sdk/angelscript/source/as_restore.cpp
++++ b/sdk/angelscript/source/as_restore.cpp
+@@ -1893,7 +1893,10 @@ void asCReader::ReadTypeDeclaration(asCTypeInfo *type, int phase, bool *isExtern
+ 				{
+ 					// Find the real function in the object, and update the savedFunctions array
+ 					asCScriptFunction *realFunc = engine->GetScriptFunction(ot->beh.destruct);
+-					if( (realFunc == 0 && func == 0) || realFunc->IsSignatureEqual(func) )
++					// ALTERED: a destructor on only one side is a mismatch. ReadFunction gives 0 for a class without one (and for one
++					// it couldn't match), and IsSignatureEqual was then called with a null pointer, or on one, when the bytecode's
++					// declaration of the class had no destructor and the existing class had one
++					if( (realFunc == 0 && func == 0) || (realFunc && func && realFunc->IsSignatureEqual(func)) )
+ 					{
+ 						// If the function is not the last, then the substitution has already occurred before
+ 						if( func && savedFunctions[savedFunctions.GetLength()-1] == func )
+@@ -2434,9 +2437,37 @@ void asCReader::ReadObjectProperty(asCObjectType *ot)
+ 	bool isProtected = (flags & 2) ? true : false;
+ 	bool isInherited = (flags & 4) ? true : false;
+ 
+-	// TODO: shared: If the type is shared and pre-existing, we should just
+-	//               validate that the loaded methods match the original
+-	if( !existingShared.MoveTo(0, ot) )
++	// ALTERED: a shared class that exists already (another module declared it) keeps its own members, and the bytecode's
++	// member must be one of them, as asCBuilder requires of a script declaring the class again: the same name, type and
++	// access. It wasn't checked, and the loaded code finds members by name only (ReadUsedObjectProps), so bytecode declaring
++	// the class with a member of another type was loaded and its code used the existing class's member as that type.
++	if( existingShared.MoveTo(0, ot) )
++	{
++		bool found = false;
++		for( asUINT p = 0; p < ot->properties.GetLength(); p++ )
++		{
++			asCObjectProperty *prop = ot->properties[p];
++			if( prop->isPrivate == isPrivate &&
++				prop->isProtected == isProtected &&
++				prop->name == name &&
++				prop->type.IsEqualExceptRef(dt) )
++			{
++				found = true;
++				break;
++			}
++		}
++		if( !found )
++		{
++			if( !error )
++			{
++				asCString str;
++				str.Format(TXT_SHARED_s_DOESNT_MATCH_ORIGINAL_s, ot->GetName(), ot->GetModule() ? ot->GetModule()->GetName() : "");
++				engine->WriteMessage("", 0, 0, asMSGTYPE_ERROR, str.AddressOf());
++			}
++			Error(TXT_INVALID_BYTECODE_d);
++		}
++	}
++	else
+ 	{
+ 		// ALTERED: the class is laid out again here, and its members are addressed by 16-bit offsets (FindObjectPropOffset).
+ 		// The compiler refuses a class with a member past byte 32767 (asCBuilder::AddPropertyToClass), but the layout here
