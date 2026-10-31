@@ -11,6 +11,7 @@
 #endif
 
 #include <string.h> /* For memset(). */
+#include <limits.h> /* NVGT: for LONG_MAX. */
 #include <assert.h>
 
 static ma_result ma_libvorbis_ds_read(ma_data_source* pDataSource, void* pFramesOut, ma_uint64 frameCount, ma_uint64* pFramesRead)
@@ -91,6 +92,13 @@ static int ma_libvorbis_vf_callback__seek(void* pUserData, ogg_int64_t offset, i
             return -1;
         }
         seekable = pVorbis->onSeek(pVorbis->pReadSeekTellUserData, 0, ma_seek_origin_end) == MA_SUCCESS;
+        if (seekable) {
+            /* NVGT: libvorbisfile finds the end through the tell callback, whose long holds no more than 2 GiB on Windows and on 32-bit systems. A stream ending past that, whose end was cut down to a wrong one, is answered as one that can't seek: it plays from start to end. */
+            ma_int64 end;
+            if (pVorbis->onTell(pVorbis->pReadSeekTellUserData, &end) != MA_SUCCESS || end > LONG_MAX) {
+                seekable = MA_FALSE;
+            }
+        }
         if (pVorbis->onSeek(pVorbis->pReadSeekTellUserData, cursor, ma_seek_origin_start) != MA_SUCCESS) {
             return -1;
         }
@@ -123,8 +131,8 @@ static long ma_libvorbis_vf_callback__tell(void* pUserData)
         return -1; /* NVGT: as the seek callback and the Opus backend's tell check theirs; -1 is libvorbisfile's "can't tell". */
     }
     result = pVorbis->onTell(pVorbis->pReadSeekTellUserData, &cursor);
-    if (result != MA_SUCCESS) {
-        return -1;
+    if (result != MA_SUCCESS || cursor > LONG_MAX) {
+        return -1; /* NVGT: rather than a position cut down to a wrong one. */
     }
 
     return (long)cursor;
