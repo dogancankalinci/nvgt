@@ -1,0 +1,97 @@
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -1285,7 +1285,8 @@
+ 				{
+ 					// For scoped typed we must move the reference from the local
+ 					// variable rather than copy it as there is no AddRef behaviour
+-					ctx.bc.InstrSHORT_DW(asBC_COPY, AS_PTR_SIZE, asTYPEID_OBJHANDLE | engine->GetTypeIdFromDataType(type));
++					// ALTERED: the size of the reference in bytes (asBC_COPY copies a number of bytes, see asCContext::ExecuteNext)
++					ctx.bc.InstrSHORT_DW(asBC_COPY, AS_PTR_SIZE*4, asTYPEID_OBJHANDLE | engine->GetTypeIdFromDataType(type));
+ 
+ 					// Clear the local variable so the reference isn't released
+ 					ctx.bc.InstrSHORT(asBC_ClrVPtr, (short)ctx.type.stackOffset);
+@@ -3491,7 +3492,8 @@
+ 								{
+ 									// For scoped typed we must move the reference from the local
+ 									// variable rather than copy it as there is no AddRef behaviour
+-									ctx.bc.InstrSHORT_DW(asBC_COPY, AS_PTR_SIZE, asTYPEID_OBJHANDLE | engine->GetTypeIdFromDataType(type));
++									// ALTERED: the size of the reference in bytes (asBC_COPY copies a number of bytes, see asCContext::ExecuteNext)
++									ctx.bc.InstrSHORT_DW(asBC_COPY, AS_PTR_SIZE*4, asTYPEID_OBJHANDLE | engine->GetTypeIdFromDataType(type));
+ 
+ 									// Clear the local variable so the reference isn't released
+ 									ctx.bc.InstrSHORT(asBC_ClrVPtr, (short)ctx.type.stackOffset);
+@@ -3682,7 +3684,8 @@
+ 		{
+ 			// For scoped typed we must move the reference from the local
+ 			// variable rather than copy it as there is no AddRef behaviour
+-			bc->InstrSHORT_DW(asBC_COPY, AS_PTR_SIZE, asTYPEID_OBJHANDLE | engine->GetTypeIdFromDataType(type));
++			// ALTERED: the size of the reference in bytes (asBC_COPY copies a number of bytes, see asCContext::ExecuteNext)
++			bc->InstrSHORT_DW(asBC_COPY, AS_PTR_SIZE*4, asTYPEID_OBJHANDLE | engine->GetTypeIdFromDataType(type));
+ 
+ 			// Clear the local variable so the reference isn't released
+ 			bc->InstrSHORT(asBC_ClrVPtr, (short)rexpr->type.stackOffset);
+@@ -7229,7 +7232,10 @@
+ 		else
+ 		{
+ 			// Default copy operator
++			// ALTERED: asBC_COPY's argument is the number of bytes to copy (see asBC_COPY in asCContext::ExecuteNext), at
++			// most 65535: a larger POD type has no default copy. The number of dwords, up to 65535 (262140 bytes), was given.
+ 			if( lvalue->dataType.GetSizeInMemoryDWords() == 0 ||
++				lvalue->dataType.GetSizeInMemoryBytes() > 0xFFFF ||
+ 				!(lvalue->dataType.GetTypeInfo()->flags & asOBJ_POD) )
+ 			{
+ 				asCString msg;
+@@ -7240,7 +7246,7 @@
+ 
+ 			// Copy larger data types from a reference
+ 			// TODO: runtime optimize: COPY should pop both arguments and store the reference in the register.
+-			bc->InstrSHORT_DW(asBC_COPY, (short)lvalue->dataType.GetSizeInMemoryDWords(), engine->GetTypeIdFromDataType(lvalue->dataType));
++			bc->InstrSHORT_DW(asBC_COPY, (short)lvalue->dataType.GetSizeInMemoryBytes(), engine->GetTypeIdFromDataType(lvalue->dataType));
+ 		}
+ 	}
+ 	else
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -3102,7 +3102,13 @@
+ 				SetInternalException(TXT_NULL_POINTER_ACCESS);
+ 				return;
+ 			}
+-			memcpy(d, s, asBC_WORDARG0(l_bc)*4);
++			// ALTERED: the argument is the number of bytes to copy, the size of the type (the compiler and the loader set it,
++			// see asCCompiler::PerformAssignment and asCReader::TranslateFunction). It was the number of dwords, so a POD type
++			// whose size isn't a multiple of 4 (an 8 or 16 bit atomic, a std::atomic_flag outside MSVC, a struct of three
++			// shorts) was copied with up to 3 bytes past its end, read from the source and written over what follows the
++			// destination: the next members of a script class (they are packed after an inline POD member) or of a C++ object
++			// holding a registered property, the next bytes of a registered global property.
++			memcpy(d, s, asBC_WORDARG0(l_bc));
+ 
+ 			// replace the pointer on the stack with the lvalue
+ 			*(asPWORD**)l_sp = (asPWORD*)d;
+--- a/sdk/angelscript/source/as_restore.cpp
++++ b/sdk/angelscript/source/as_restore.cpp
+@@ -3240,20 +3240,22 @@
+ 			// COPY is used to copy POD types that don't have the opAssign method. It is
+ 			// also used to copy references to scoped types during variable initializations.
+ 			// Update the number of dwords to copy as it may be different on the target platform
++			// ALTERED: the number of bytes, see asBC_COPY in asCContext::ExecuteNext; a type larger than 65535 bytes has
++			// no default copy (asCCompiler::PerformAssignment)
+ 			if( (*tid) & asTYPEID_OBJHANDLE )
+ 			{
+ 				// It is the actual reference that is being copied, not the object itself
+-				asBC_SWORDARG0(&bc[n]) = AS_PTR_SIZE;
++				asBC_WORDARG0(&bc[n]) = AS_PTR_SIZE*4;
+ 			}
+ 			else
+ 			{
+ 				asCDataType dt = engine->GetDataTypeFromTypeId(*tid);
+-				if( !dt.IsValid() )
++				if( !dt.IsValid() || dt.GetSizeInMemoryBytes() <= 0 || dt.GetSizeInMemoryBytes() > 0xFFFF )
+ 				{
+ 					Error(TXT_INVALID_BYTECODE_d);
+ 				}
+ 				else
+-					asBC_SWORDARG0(&bc[n]) = (short)dt.GetSizeInMemoryDWords();
++					asBC_WORDARG0(&bc[n]) = (asWORD)dt.GetSizeInMemoryBytes();
+ 			}
+ 		}
+ 		else if( c == asBC_RET )

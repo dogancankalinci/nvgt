@@ -121,6 +121,7 @@ vcpkg_from_github(
         fix-virtual-functor-return-in-memory.patch
         fix-catch-position-after-line-cue-removal.patch
         fix-shared-class-child-funcdef-check.patch
+        fix-pod-copy-size.patch
 )
 
 vcpkg_cmake_configure(
