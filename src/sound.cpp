@@ -1208,6 +1208,13 @@ protected:
 	}
 	// One script thread may be reading from or closing this object while another opens it (a shared decoder handle, or a wrapper destroyed by its owner mid-read). The members below are unique_ptrs that get reset on close, so those paths must not interleave. Recursive because open() re-enters close(), and set_ma_data_source() re-enters reset().
 	mutable std::recursive_mutex source_mutex;
+	// source_mutex for a script's call, which on an audio thread, as from a processing callback, is only tried for: a script thread holds it through a decoder's open, its file, pack or network reads included, and through the first count of a length, which held that audio up meanwhile. MA_BUSY when it can't be had then, as for an encoder's calls (see audio_encoder_impl::lock_writes()).
+	std::unique_lock<std::recursive_mutex> lock_source() const {
+		if (!on_an_audio_thread()) return std::unique_lock<std::recursive_mutex>(source_mutex);
+		std::unique_lock<std::recursive_mutex> lock(source_mutex, std::try_to_lock);
+		if (!lock.owns_lock()) g_soundsystem_last_error = MA_BUSY;
+		return lock;
+	}
 	bool set_ma_data_source(ma_data_source* new_src) {
 		std::lock_guard<std::recursive_mutex> guard(source_mutex);
 		reset();
@@ -1349,8 +1356,8 @@ public:
 	}
 	// Reads 32-bit float samples into buffer, as read_script() makes them.
 	unsigned long long read(void* buffer, unsigned long long frame_count) override {
-		std::lock_guard<std::recursive_mutex> guard(source_mutex);
-		if (!ready_to_read()) return 0;
+		auto guard = lock_source();
+		if (!guard || !ready_to_read()) return 0;
 		if (!frame_count) frame_count = get_advised_read_frame_count();
 		if (!(frame_count = frames_to_take(frame_count))) return 0;
 		ma_format format = ma_format_f32;
@@ -1369,7 +1376,8 @@ public:
 		return frames_read;
 	}
 	CScriptArray* read_script(unsigned long long frame_count) override {
-		std::lock_guard<std::recursive_mutex> guard(source_mutex);
+		auto guard = lock_source();
+		if (!guard) return CScriptArray::Create(float_array_type());
 		unsigned int channels = get_channels(); // Asked once, before the read: asking reads the source's format, which sets the error the read or a refusal to read set.
 		if (!frame_count && ready_to_read()) frame_count = get_advised_read_frame_count(); // Counted once what was to be dropped is gone, which an advised count leaves out.
 		if (channels && frame_count > 0xFFFFFFFF / channels) throw runtime_error("too many frames requested");
@@ -2108,7 +2116,8 @@ public:
 		if (!output_format_in_range(sample_rate, channels)) return false;
 		// The pack's copy made first, which throws for a pack open for writing: the decoder open before stays open, as for other refusals, rather than closed by a call that then threw.
 		std::shared_ptr<const pack_interface> pack = pack_file && pack_file->get_is_active()? std::shared_ptr<const pack_interface>(pack_file->make_immutable()) : nullptr;
-		std::lock_guard<std::recursive_mutex> guard(source_mutex);
+		auto guard = lock_source();
+		if (!guard) return false;
 		std::string triplet = g_sound_service->prepare_triplet(filename, pack? g_pack_protocol_slot : sound_service::fs_protocol_slot, pack, 0, nullptr); // Without a pack, from disk, as sound.load() reads, rather than from the default protocol, which can be a pack.
 		if (triplet.empty()) { // A name the sound service can't make one of, such as one that isn't valid UTF-8, refused as load() refuses it rather than failing to open as MA_ERROR, and before the decoder open is closed, as other refusals are.
 			g_soundsystem_last_error = MA_INVALID_ARGS;
@@ -2129,7 +2138,11 @@ public:
 		return g_soundsystem_last_error == MA_SUCCESS;
 	}
 	virtual bool open_stream(datastream* ds, unsigned int sample_rate = 0, unsigned int channels = 0) override {
-		std::lock_guard<std::recursive_mutex> guard(source_mutex);
+		auto guard = lock_source();
+		if (!guard) {
+			if (ds) ds->release();
+			return false;
+		}
 		if (!ds || !ds->get_istr()) g_soundsystem_last_error = MA_INVALID_ARGS; // Nothing to read, which said nothing.
 		if (!ds || !ds->get_istr() || !output_format_in_range(sample_rate, channels) || decoder && !close()) {
 			if (ds) ds->release();
@@ -2171,7 +2184,8 @@ public:
 		return g_soundsystem_last_error == MA_SUCCESS;
 	}
 	virtual bool close() override {
-		std::lock_guard<std::recursive_mutex> guard(source_mutex);
+		auto guard = lock_source();
+		if (!guard) return false;
 		if (users) { // A sound plays it, or another source chains to it, both reading its decoder directly. open() closes first, so it refuses too.
 			g_soundsystem_last_error = MA_INVALID_OPERATION;
 			return false;
@@ -2194,7 +2208,8 @@ public:
 	virtual unsigned int get_channels() const override { return decoder? decoder->outputChannels : 0; }
 	void prepare_length() override { get_length_frames(); }
 	unsigned long long get_length_frames() const override {
-		std::lock_guard<std::recursive_mutex> guard(source_mutex);
+		auto guard = lock_source();
+		if (!guard) return 0;
 		ma_data_source* source = get_ma_data_source();
 		if (!decoder || !source) return 0;
 		long long known = length_frames; // The whole decoder's, whatever its range.
