@@ -474,9 +474,17 @@ static bool sound_relative_position(const ma_sound* sound, double relative[3]) {
 	};
 	double axis_z[3] = {forward.x, forward.y, forward.z};
 	normalize(axis_z);
+	if (axis_z[0] == 0 && axis_z[1] == 0 && axis_z[2] == 0) axis_z[2] = -1; // A direction of no length, as MiniAudio's listener starts, -z, rather than no forward axis at all.
 	double axis_x[3] = {axis_z[1] * up.z - axis_z[2] * up.y, axis_z[2] * up.x - axis_z[0] * up.z, axis_z[0] * up.y - axis_z[1] * up.x};
 	normalize(axis_x);
-	if (axis_x[0] == 0 && axis_x[1] == 0 && axis_x[2] == 0) axis_x[0] = 1; // Looking along the world's up, as MiniAudio falls back.
+	if (axis_x[0] == 0 && axis_x[1] == 0 && axis_x[2] == 0) { // Looking along the world's up, or a world up of no length: across forward from x, or from y when forward lies along x, where MiniAudio's fallback of x itself left a sound's offset along two axes uncounted.
+		double across[3] = {0, 0, 0};
+		across[std::fabs(axis_z[0]) < 0.9? 0 : 1] = 1;
+		axis_x[0] = axis_z[1] * across[2] - axis_z[2] * across[1];
+		axis_x[1] = axis_z[2] * across[0] - axis_z[0] * across[2];
+		axis_x[2] = axis_z[0] * across[1] - axis_z[1] * across[0];
+		normalize(axis_x);
+	}
 	double axis_y[3] = {axis_x[1] * axis_z[2] - axis_x[2] * axis_z[1], axis_x[2] * axis_z[0] - axis_x[0] * axis_z[2], axis_x[0] * axis_z[1] - axis_x[1] * axis_z[0]};
 	if (listener->config.handedness == ma_handedness_left) for (double& component : axis_x) component = -component;
 	double offset[3] = {(double)position.x - listener_position.x, (double)position.y - listener_position.y, (double)position.z - listener_position.z};
@@ -969,12 +977,18 @@ public:
 		place_shaped_mixers(this);
 	}
 	reactphysics3d::Vector3 get_listener_position(unsigned int index) const override { return engine ? ma_vec3_to_rp_vec3(ma_engine_listener_get_position(&*engine, index)) : reactphysics3d::Vector3(); }
+	// A direction or world up of no length, which left the listener without a forward or up axis: every sound's place relative to it lost two of its axes, so that sounds anywhere along them were heard at the listener. MA_INVALID_ARGS, as for values that aren't finite.
+	static bool has_length(float x, float y, float z) {
+		if (x != 0 || y != 0 || z != 0) return true;
+		g_soundsystem_last_error = MA_INVALID_ARGS;
+		return false;
+	}
 	void set_listener_direction(unsigned int index, float x, float y, float z) override {
-		if (has_listener(index) && finite_values({x, y, z}))
+		if (has_listener(index) && finite_values({x, y, z}) && has_length(x, y, z))
 			ma_engine_listener_set_direction(&*engine, index, x, y, z);
 	}
 	void set_listener_direction_vector(unsigned int index, const reactphysics3d::Vector3 &direction) override {
-		if (has_listener(index) && finite_values({direction.x, direction.y, direction.z}))
+		if (has_listener(index) && finite_values({direction.x, direction.y, direction.z}) && has_length(direction.x, direction.y, direction.z))
 			ma_engine_listener_set_direction(&*engine, index, direction.x, direction.y, direction.z);
 	}
 	reactphysics3d::Vector3 get_listener_direction(unsigned int index) const override { return engine ? ma_vec3_to_rp_vec3(ma_engine_listener_get_direction(&*engine, index)) : reactphysics3d::Vector3(); }
@@ -1006,11 +1020,11 @@ public:
 		if (outer_gain) *outer_gain = listening? listener_cones[index].outer_gain.load() : 0;
 	}
 	void set_listener_world_up(unsigned int index, float x, float y, float z) override {
-		if (has_listener(index) && finite_values({x, y, z}))
+		if (has_listener(index) && finite_values({x, y, z}) && has_length(x, y, z))
 			ma_engine_listener_set_world_up(&*engine, index, x, y, z);
 	}
 	void set_listener_world_up_vector(unsigned int index, const reactphysics3d::Vector3 &world_up) override {
-		if (has_listener(index) && finite_values({world_up.x, world_up.y, world_up.z}))
+		if (has_listener(index) && finite_values({world_up.x, world_up.y, world_up.z}) && has_length(world_up.x, world_up.y, world_up.z))
 			ma_engine_listener_set_world_up(&*engine, index, world_up.x, world_up.y, world_up.z);
 	}
 	reactphysics3d::Vector3 get_listener_world_up(unsigned int index) const override { return engine ? ma_vec3_to_rp_vec3(ma_engine_listener_get_world_up(&*engine, index)) : reactphysics3d::Vector3(); }
