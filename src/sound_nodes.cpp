@@ -209,7 +209,7 @@ public:
 	bool detach_all_output_buses() override { return detach_output_bus(0); }
 	bool add_node(audio_node* node, audio_node* after, unsigned int input_bus_index) override {
 		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
-		if (!node) return false;
+		if (!node) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // As every refusal here says why; these said nothing.
 		if (node == static_cast<audio_node*>(this) || node == endpoint || index_of(node) != -1) { // The chain itself, its endpoint or a node already in it, which would loop the chain.
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
@@ -217,7 +217,7 @@ public:
 		unsigned int new_idx = 0;
 		if (after) {
 			new_idx = index_of(after);
-			if (new_idx == -1) return false;
+			if (new_idx == -1) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS;
 			else new_idx += 1; // Be sure to insert after this position rather than before.
 		}
 		audio_node* prev = new_idx? nodes[new_idx -1] : nullptr;
@@ -240,15 +240,15 @@ public:
 	}
 	bool add_node_at(audio_node* node, int after, unsigned int input_bus_index) override {
 		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
-		if (after < -1 || after >= int(nodes.size())) return false;
+		if (after < -1 || after >= int(nodes.size())) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS;
 		audio_node* insert_after = after > -1? nodes[after] : nullptr;
 		return add_node(node, insert_after, input_bus_index);
 	}
 	bool remove_node(audio_node* node) override {
 		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
-		if (!node) return false;
+		if (!node) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS;
 		auto it = find(nodes.begin(), nodes.end(), node);
-		if (it == nodes.end()) return false;
+		if (it == nodes.end()) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS;
 		audio_node* prev = (*it) != nodes.front()? *(it -1) : nullptr;
 		audio_node* next = (*it) != nodes.back()? *(it + 1) : endpoint;
 		size_t index = it - nodes.begin();
@@ -267,7 +267,7 @@ public:
 	}
 	bool remove_node_at(unsigned int index) override {
 		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
-		if (index >= nodes.size()) return false;
+		if (index >= nodes.size()) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS;
 		return remove_node(nodes[index]);
 	}
 	bool clear(bool detach_nodes) override {

@@ -2173,7 +2173,7 @@ public:
 		}
 		reset();
 		length_frames = -1;
-		if (!decoder) return false;
+		if (!decoder) return (g_soundsystem_last_error = MA_INVALID_OPERATION) == MA_SUCCESS; // Nothing open to close, which said nothing.
 		if (datastream_ref) {
 			datastream_ref->release();
 			datastream_ref = nullptr;
@@ -4685,7 +4685,7 @@ public:
 		return stream_pcm(buffer->ptr, buffer->size / nchannels, format, sample_rate, channels, buffer_size);
 	}
 	bool open(audio_data_source* ds) override {
-		if (!ds) return false;
+		if (!ds) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS;
 		// A sound's own source is freed by that sound when it closes, as this one does to open it, and one another sound or chain reads would be read from two places.
 		if (!ds->get_active() || audio_data_source_impl::is_sound_owned(ds) || audio_data_source_impl::is_used(ds)) {
 			g_soundsystem_last_error = ds->get_active()? MA_INVALID_OPERATION : MA_INVALID_ARGS;
