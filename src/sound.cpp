@@ -976,7 +976,7 @@ public:
 	bool set_volume(float volume) override { return engine && playable_volumes({volume})? (g_soundsystem_last_error = ma_engine_set_volume(&*engine, volume)) == MA_SUCCESS : false; }
 	float get_volume() const override { return engine ? ma_engine_get_volume(&*engine) : 0; }
 	bool set_gain(float db) override { return engine && finite_values({db}) && playable_volumes({ma_volume_db_to_linear(db)})? (g_soundsystem_last_error = ma_engine_set_gain_db(&*engine, db)) == MA_SUCCESS : false; }
-	float get_gain() const override { return engine ? ma_engine_get_gain_db(&*engine) : 0; }
+	float get_gain() const override { return engine ? std::max(-100.0f, ma_engine_get_gain_db(&*engine)) : 0; } // No lower than -100 dB, as volumes read (see readable_db()): a silent engine read -inf, which nothing could be set from.
 	unsigned int get_listener_count() const override { return engine ? ma_engine_get_listener_count(&*engine) : 0; }
 	int find_closest_listener(float x, float y, float z) const override { return engine ? ma_engine_find_closest_listener(&*engine, x, y, z) : -1; }
 	int find_closest_listener_vector(const reactphysics3d::Vector3 &position) const override { return engine ? ma_engine_find_closest_listener(&*engine, position.x, position.y, position.z) : -1; }
