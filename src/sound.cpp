@@ -265,9 +265,9 @@ bool init_sound_context() {
 	#endif
 	ma_context_config cfg = ma_context_config_init();
 	cfg.coreaudio.sessionCategory = ma_ios_session_category_play_and_record;
+	// Bluetooth output through A2DP, and not allow_bluetooth's hands-free profile as well: with both, iOS routes a device that has both to hands-free, its call-quality mono, for everything played, recording or not. A microphone then records from the device's own.
 	cfg.coreaudio.sessionCategoryOptions =
 		ma_ios_session_category_option_default_to_speaker |
-		ma_ios_session_category_option_allow_bluetooth |
 		ma_ios_session_category_option_allow_bluetooth_a2dp |
 		ma_ios_session_category_option_allow_air_play |
 		ma_ios_session_category_option_mix_with_others;
