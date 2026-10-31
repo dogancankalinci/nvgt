@@ -3494,8 +3494,8 @@ public:
 	// Decibels to the linear volumes MiniAudio fades between, on an engine with PERCENTAGE_ATTRIBUTES; FLT_MAX starts from the current volume.
 	void fade_volumes_to_linear(float &start_volume, float &end_volume) const {
 		if (!(get_engine()->get_flags() & audio_engine::PERCENTAGE_ATTRIBUTES)) return;
-		start_volume = start_volume == FLT_MAX ? -1 : ma_volume_db_to_linear(start_volume);
-		end_volume = ma_volume_db_to_linear(end_volume);
+		start_volume = start_volume == FLT_MAX ? -1 : ma_volume_db_to_linear(start_volume < -100? -100 : start_volume); // No lower than -100 dB, as volumes are set and read.
+		end_volume = ma_volume_db_to_linear(end_volume < -100? -100 : end_volume);
 	}
 	// MiniAudio keeps a sound or group stopped once its scheduled stop has come, and its fade where the stop left it, until both are cleared, so starting it clears them then. With pending, a stop still to come is cleared too, as one pause_fade() scheduled. The fade is cleared only when that stop set it, so a fade the script set since, such as one to fade back in, is kept.
 	void clear_stop_for_restart(bool pending = false) {
@@ -3579,7 +3579,9 @@ public:
 	audio_engine *get_engine() const override { return engine; }
 	bool stop() override { return snd ? (g_soundsystem_last_error = ma_sound_stop(&*snd)) == MA_SUCCESS : false; }
 	void set_volume(float volume) override {
-		float linear = get_engine()->get_flags() & audio_engine::PERCENTAGE_ATTRIBUTES? ma_volume_db_to_linear(volume) : volume;
+		const bool db = get_engine()->get_flags() & audio_engine::PERCENTAGE_ATTRIBUTES;
+		if (db && volume < -100) volume = -100; // As it reads back (see readable_db()) and as sound_master_volume takes it: below, a volume set read back louder than it was set, so that a loop fading down to a lower one never ended.
+		float linear = db? ma_volume_db_to_linear(volume) : volume;
 		if (snd && finite_values({volume, linear}))
 			ma_sound_set_volume(&*snd, linear);
 	}
