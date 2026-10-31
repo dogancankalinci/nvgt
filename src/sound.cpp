@@ -1087,14 +1087,17 @@ public:
 	bool get_listener_enabled(unsigned int index) const override { return engine && ma_engine_listener_is_enabled(&*engine, index); }
 	sound* play(const string& path, const reactphysics3d::Vector3& position, float volume, float pan, float pitch, mixer* mix, const pack_interface* pack_file, bool autoplay) override {
 		garbage_collect_inline_sounds();
+		if (mix && mix->get_engine() != this) { // Another engine's mixer, which set_mixer() refuses: the sound played on the default mixer instead, returned as if placed as asked. Refused before anything loads.
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return nullptr;
+		}
 		sound* snd = new_sound();
 		if (!snd) return nullptr;
 		try { // A load can throw, as for a pack open for writing: the sound is let go of, rather than left holding its engine, and the default mixer, for good.
-			if (!snd->load(path, pack_file)) {
+			if (!snd->load(path, pack_file) || mix && !snd->set_mixer(mix)) {
 				snd->release();
 				return nullptr;
 			}
-			if (mix) snd->set_mixer(mix);
 			if (position.x != FLT_MAX || position.y != FLT_MAX || position.z != FLT_MAX) snd->set_position_3d_vector(position);
 			// As for the position, FLT_MAX leaves the sound's own default, which is right whether or not the engine takes these as percentages and decibels.
 			if (volume != FLT_MAX) snd->set_volume(volume);
