@@ -3834,14 +3834,14 @@ public:
 	void set_rolloff(float rolloff) override { get_spatializer()->set_rolloff(rolloff); }
 	float get_rolloff() const override { audio_spatializer* made = made_spatializer(); return made? made->get_rolloff() : 1.0f; }
 	void set_min_gain(float gain) override {
-		if (snd && finite_values({gain}))
+		if (snd && playable_volumes({gain})) // The attenuators raise the volume to it, so no louder than a volume.
 			min_gain = gain;
 	}
 	float get_min_gain() const override {
 		return snd ? min_gain.load() : NAN;
 	}
 	void set_max_gain(float gain) override {
-		if (snd && finite_values({gain}))
+		if (snd && playable_volumes({gain}))
 			max_gain = gain;
 	}
 	float get_max_gain() const override {

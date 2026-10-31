@@ -82,6 +82,17 @@ static bool finite_node_values(std::initializer_list<double> values) {
 	}
 	return true;
 }
+// Gains a node applies to its samples: finite, and no louder than max_volume_gain, as volumes are (see playable_volumes() in sound.cpp). MA_INVALID_ARGS otherwise.
+static bool playable_node_gains(std::initializer_list<double> gains) {
+	if (!finite_node_values(gains)) return false;
+	for (double gain : gains) {
+		if (std::fabs(gain) > max_volume_gain) {
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return false;
+		}
+	}
+	return true;
+}
 // Settings MiniAudio's filters and verblib take without a word but can't work with: a cutoff or center frequency at or past half the sample rate, a q of 0 or less or a gain beyond 100 dB either way made a filter's output NaN, which its state kept after a good value came back, and a delay's decay or a reverb's room size or damping past 1 made the output grow without bound. A frequency, gain or such a value out of range is taken as the nearest usable one (see clamped_gain() and usable_frequency()); a q of 0 or less, a frequency of 0 or less and settings no frequency makes stable are refused with MA_INVALID_ARGS, the node keeping what it had.
 static bool node_value_in_range(bool in_range) {
 	if (!in_range) g_soundsystem_last_error = MA_INVALID_ARGS;
@@ -707,9 +718,9 @@ class delay_node_impl : public audio_node_impl, public virtual delay_node {
 			ma_delay_node_uninit(&*dn, nullptr);
 		}
 	}
-	void set_wet(float wet) override { if (finite_node_values({wet})) ma_delay_node_set_wet(&*dn, wet); }
+	void set_wet(float wet) override { if (playable_node_gains({wet})) ma_delay_node_set_wet(&*dn, wet); }
 	float get_wet() const override { return ma_delay_node_get_wet(&*dn); }
-	void set_dry(float dry) override { if (finite_node_values({dry})) ma_delay_node_set_dry(&*dn, dry); }
+	void set_dry(float dry) override { if (playable_node_gains({dry})) ma_delay_node_set_dry(&*dn, dry); }
 	float get_dry() const override { return ma_delay_node_get_dry(&*dn); }
 	void set_decay(float decay) override { if (finite_node_values({decay})) ma_delay_node_set_decay(&*dn, clamped_unit(decay)); }
 	float get_decay() const override { return ma_delay_node_get_decay(&*dn); }
@@ -734,13 +745,13 @@ class freeverb_node_impl : public audio_node_impl, public virtual freeverb_node 
 	float get_room_size() const override { return rn? verblib_get_room_size(&rn->reverb) : -1; }
 	void set_damping(float damping) override { if (rn && finite_node_values({damping})) verblib_set_damping(&rn->reverb, clamped_unit(damping)); }
 	float get_damping() const override { return rn? verblib_get_damping(&rn->reverb) : -1; }
-	void set_width(float width) override { if (rn && finite_node_values({width})) verblib_set_width(&rn->reverb, width); }
+	void set_width(float width) override { if (rn && playable_node_gains({width})) verblib_set_width(&rn->reverb, width); } // Each a gain on the samples, as the wet and dry levels are.
 	float get_width() const override { return rn? verblib_get_width(&rn->reverb) : -1; }
-	void set_wet(float wet) override { if (rn && finite_node_values({wet})) verblib_set_wet(&rn->reverb, wet); }
+	void set_wet(float wet) override { if (rn && playable_node_gains({wet})) verblib_set_wet(&rn->reverb, wet); }
 	float get_wet() const override { return rn? verblib_get_wet(&rn->reverb) : -1; }
-	void set_dry(float dry) override { if (rn && finite_node_values({dry})) verblib_set_dry(&rn->reverb, dry); }
+	void set_dry(float dry) override { if (rn && playable_node_gains({dry})) verblib_set_dry(&rn->reverb, dry); }
 	float get_dry() const override { return rn? verblib_get_dry(&rn->reverb) : -1; }
-	void set_input_width(float width) override { if (rn && finite_node_values({width})) verblib_set_input_width(&rn->reverb, width); }
+	void set_input_width(float width) override { if (rn && playable_node_gains({width})) verblib_set_input_width(&rn->reverb, width); }
 	float get_input_width() const override { return rn? verblib_get_input_width(&rn->reverb) : -1; }
 	void set_frozen(bool frozen) override { if (rn) verblib_set_mode(&rn->reverb, frozen? 1 : 0); }
 	bool get_frozen() const override { return rn? verblib_get_mode(&rn->reverb) >= 0.5 : false; }
@@ -903,9 +914,9 @@ public:
 	}
 	mixer* get_mixer() const override { return output_mixer; }
 	// Not a value that isn't finite, as for other nodes: the volume read NaN or infinite, and the send, which refuses such a volume, stopped following the distance.
-	void set_min_volume(float value) override { if (finite_node_values({value, ma_volume_db_to_linear(value)})) min_volume = value; } // Nor one whose linear volume isn't, from about 770 dB, as other decibel settings.
+	void set_min_volume(float value) override { if (finite_node_values({value}) && playable_node_gains({ma_volume_db_to_linear(value)})) min_volume = value; } // Nor one louder than +100 dB, whose send the reverb's attachment refuses, as other volumes.
 	float get_min_volume() const override { return min_volume; }
-	void set_max_volume(float value) override { if (finite_node_values({value, ma_volume_db_to_linear(value)})) max_volume = value; }
+	void set_max_volume(float value) override { if (finite_node_values({value}) && playable_node_gains({ma_volume_db_to_linear(value)})) max_volume = value; }
 	float get_max_volume() const override { return max_volume; }
 	void set_max_volume_distance(float value) override { if (finite_node_values({value})) max_volume_distance = value; }
 	float get_max_volume_distance() const override { return max_volume_distance; }
@@ -1218,7 +1229,7 @@ private:
 	float reverb_send_volume(reverb3d* verb) const {
 		float volume = verb->get_volume_at(spatialization_params.listener_distance);
 		if (attenuator && reverb_placement != postattenuate) volume *= clamp_volume(spatialization_params.cone_volume, spatialization_params.min_volume, spatialization_params.max_volume);
-		return volume;
+		return std::min(volume, max_volume_gain); // As the attachment's bus volume takes it, which refused a louder send, so that the send stopped following the distance.
 	}
 	bool set_fallback_panner() {
 		rewire_scope scope(*this);
