@@ -870,8 +870,11 @@ public:
 		ma_device_stop(old_dev);
 		uninit_device(old_dev);
 		if ((g_soundsystem_last_error = ma_device_init(&g_sound_context, &cfg, old_dev)) == MA_SUCCESS) {
-			device_follows_default = device == -1;
-			return !started || (g_soundsystem_last_error = ma_engine_start(&*engine)) == MA_SUCCESS; // An engine that was never started, or that the script stopped, stays stopped on the new device.
+			if (!started || (g_soundsystem_last_error = ma_engine_start(&*engine)) == MA_SUCCESS) { // An engine that was never started, or that the script stopped, stays stopped on the new device.
+				device_follows_default = device == -1;
+				return true;
+			}
+			uninit_device(old_dev); // Opened but couldn't start, as a busy device or an AAudio one can: taken as one that couldn't be opened, rather than left in use silent while it read back as the device asked for.
 		}
 		// The device asked for couldn't be opened: the one in use before is opened again, so that assigning it changes nothing, or failing that the system's default, so as not to leave the engine without a device. The error reported stays that of the device asked for.
 		ma_result error = g_soundsystem_last_error;
