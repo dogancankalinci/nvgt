@@ -1893,6 +1893,7 @@ class audio_decoder_impl : public audio_data_source_impl, public virtual audio_d
 		ma_int64 target = -1;
 		if (origin == ma_seek_origin_start) target = offset;
 		else if (origin == ma_seek_origin_current) target = static_cast<ma_int64>(sc->pos) + offset;
+		if (origin != ma_seek_origin_end && target < 0) return MA_INVALID_ARGS; // Before the start, which the stream would otherwise be sought by from where it really is, the window's end, landing inside the data.
 		// Only answer from the window while it still mirrors the stream, otherwise a rewind to 0 after a real seek would wrongly report success without moving the stream.
 		if (sc->mirrors_stream() && target >= 0 && static_cast<size_t>(target) <= sc->window.size()) {
 			sc->pos = static_cast<size_t>(target); // inside the window, so no real seek is needed
