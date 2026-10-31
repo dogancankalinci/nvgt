@@ -455,15 +455,21 @@ unsigned int datastream::write(const std::string& data) {
 	if (!can_write())
 		return 0;
 	std::streamsize pos = _ostr->tellp();
+	// What was written, counted from where the stream was, for bgt backwards compatibility. A stream that can't tell where it is, as a duplicating, encoding or encrypting one, gave -1 both times, so that writing to one read as writing nothing: it wrote all of it unless it failed, and an exception says nothing of how much.
+	auto written = [&](bool thrown) -> unsigned int {
+		std::streamsize now = _ostr->tellp();
+		if (pos >= 0 && now >= 0) return now > pos? (unsigned int)(now - pos) : 0;
+		return thrown || !_ostr->good()? 0 : (unsigned int)data.size();
+	};
 	try {
 		w->writeRaw(data);
 		if (r && w && sync_rw_cursors)
 			_istr->seekg(_ostr->tellp()); // Make sure that read and write pointers are in sync.
 	} catch (std::exception) {
-		return long(_ostr->tellp()) - pos;
+		return written(true);
 	}
 	if (autoflush) flush();
-	return long(_ostr->tellp()) - pos; // This is the only function with the extra tellp operations, for bgt backwards compatibility.
+	return written(false);
 }
 template <typename T>
 datastream& datastream::read(T& value) {
