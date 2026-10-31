@@ -19,8 +19,8 @@ jobs:
           - { os: macos-26, prefix: macosdev-, path: macosdev }
           - { os: macos-26, prefix: iosdev-, path: iosdev }
           - { os: macos-26, prefix: vcpkg-binaries-mac-, path: vcpkg-binaries }
-          - { os: macos-14, prefix: droidev-, path: droidev }
-          - { os: macos-14, prefix: vcpkg-binaries-android-, path: vcpkg-binaries }
+          - { os: macos-26, prefix: droidev-, path: droidev }
+          - { os: macos-26, prefix: vcpkg-binaries-android-, path: vcpkg-binaries }
           - { os: ubuntu-22.04, prefix: lindev-, path: lindev }
           - { os: ubuntu-22.04, prefix: vcpkg-binaries-linux-, path: vcpkg-binaries }
     steps:

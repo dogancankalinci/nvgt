@@ -229,7 +229,7 @@ jobs:
         path: 'release'
 
   android_build:
-    runs-on: macos-14
+    runs-on: macos-26
     needs: generate_config
     env:
       # Single source of truth: consumed by setup-ndk below and baked into the droidev
@@ -529,7 +529,7 @@ jobs:
         path: 'install/nvgt_${{env.nvgt_version}}.exe'
 
   mac_package:
-    runs-on: macos-14
+    runs-on: macos-26
     needs: ["android_build", "linux_build", "mac_build", "windows_build"]
     steps:
     - uses: actions/checkout@v5
