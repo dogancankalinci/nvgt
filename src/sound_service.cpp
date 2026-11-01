@@ -337,6 +337,7 @@ public:
 		// For now just return the raw source if the filter rejects it.
 		// Todo: decide how we want to handle filter rejection. Should it pass through? reject the source outright? Make this configurable globally at the sound service level? Or let filters handle it case by case via directive?
 		if (filtered == nullptr) {
+			source->clear(); // The filter's probe may have read past the end of a short file, which leaves seekg() doing nothing.
 			source->seekg(0);
 			return source;
 		}
