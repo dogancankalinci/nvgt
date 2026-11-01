@@ -93,6 +93,14 @@ static ma_result read_open_failure(const char* uri) {
 	} catch (const std::exception&) {
 		return MA_ERROR;
 	}
+	// Without Windows' error boxes, as SDL opens files: a drive without media showed the modal "no disk" box, which held the loading thread, a load job's or one holding the cache's lock, until someone dismissed it.
+	struct quiet_errors {
+		DWORD previous = 0;
+		const BOOL set = SetThreadErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX, &previous);
+		~quiet_errors() {
+			if (set) SetThreadErrorMode(previous, nullptr);
+		}
+	} quiet;
 	const DWORD attributes = GetFileAttributesW(wide.c_str());
 	if (attributes == INVALID_FILE_ATTRIBUTES) return system_error_result(int(GetLastError()));
 	if (attributes & FILE_ATTRIBUTE_DIRECTORY) return MA_IS_DIRECTORY;
