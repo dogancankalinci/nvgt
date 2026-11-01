@@ -169,6 +169,34 @@ static void ma_libvorbis_opened(ma_libvorbis* pVorbis)
     }
 }
 
+/*
+frames * to / from, the frames at one sample rate counted at another, and the sum of two counts, without overflowing in
+between and the most 64 bits hold for more: a bogus granule position gives a link of up to 2^63 frames, whose product
+with a sample rate wrapped to a small, wrong length.
+*/
+static ma_uint64 ma_libvorbis_rescale(ma_uint64 frames, ma_uint64 to, ma_uint64 from)
+{
+    ma_uint64 whole;
+    ma_uint64 part;
+
+    if (to == from || from == 0) {
+        return frames;
+    }
+
+    if (to != 0 && frames / from > ~(ma_uint64)0 / to) {
+        return ~(ma_uint64)0;
+    }
+
+    whole = frames / from * to;
+    part  = frames % from * to / from;  /* Sample rates are below 2^32, so this fits. */
+    return (whole > ~(ma_uint64)0 - part) ? ~(ma_uint64)0 : whole + part;
+}
+
+static ma_uint64 ma_libvorbis_add(ma_uint64 a, ma_uint64 b)
+{
+    return (a > ~(ma_uint64)0 - b) ? ~(ma_uint64)0 : a + b;
+}
+
 /* The library's frame index of one the decoder reads: libvorbisfile counts each logical stream at its own sample rate, while the decoder reads every one at the first's. */
 static ogg_int64_t ma_libvorbis_library_frame(ma_libvorbis* pVorbis, ma_uint64 frameIndex)
 {
@@ -191,14 +219,18 @@ static ogg_int64_t ma_libvorbis_library_frame(ma_libvorbis* pVorbis, ma_uint64 f
             break;
         }
 
-        frames = ((ma_uint32)pInfo->rate == pVorbis->sampleRate) ? (ma_uint64)libraryFrames : (ma_uint64)libraryFrames * pVorbis->sampleRate / (ma_uint64)pInfo->rate;
-        if (frameIndex < start + frames || link == links - 1) {
-            ma_uint64 within = frameIndex - start;
-            return libraryStart + (ogg_int64_t)(((ma_uint32)pInfo->rate == pVorbis->sampleRate) ? within : within * (ma_uint64)pInfo->rate / pVorbis->sampleRate);
+        frames = ma_libvorbis_rescale((ma_uint64)libraryFrames, pVorbis->sampleRate, (ma_uint64)pInfo->rate);
+        if (frameIndex < ma_libvorbis_add(start, frames) || link == links - 1) {
+            ma_uint64 within = ma_libvorbis_rescale(frameIndex - start, (ma_uint64)pInfo->rate, pVorbis->sampleRate);
+            ma_uint64 at = ma_libvorbis_add((ma_uint64)libraryStart, within);
+            return (ogg_int64_t)(at > (ma_uint64)0x7FFFFFFFFFFFFFFF ? (ma_uint64)0x7FFFFFFFFFFFFFFF : at);  /* A frame past what libvorbisfile counts, which it refuses to seek to. */
         }
 
-        start += frames;
-        libraryStart += libraryFrames;
+        start = ma_libvorbis_add(start, frames);
+        libraryStart = (ogg_int64_t)ma_libvorbis_add((ma_uint64)libraryStart, (ma_uint64)libraryFrames);
+        if ((ma_uint64)libraryStart > (ma_uint64)0x7FFFFFFFFFFFFFFF) {
+            libraryStart = (ogg_int64_t)0x7FFFFFFFFFFFFFFF;
+        }
     }
 
     return (ogg_int64_t)frameIndex;
@@ -724,7 +756,7 @@ MA_API ma_result ma_libvorbis_get_length_in_pcm_frames(ma_libvorbis* pVorbis, ma
                     return MA_SUCCESS;  /* Unknown, as before. */
                 }
 
-                length += ((ma_uint32)pInfo->rate == pVorbis->sampleRate) ? (ma_uint64)libraryFrames : (ma_uint64)libraryFrames * pVorbis->sampleRate / (ma_uint64)pInfo->rate;
+                length = ma_libvorbis_add(length, ma_libvorbis_rescale((ma_uint64)libraryFrames, pVorbis->sampleRate, (ma_uint64)pInfo->rate));
             }
 
             *pLength = length;
