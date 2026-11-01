@@ -4440,7 +4440,7 @@ public:
 	}
 	inline void release() override {
 		if (asAtomicDec(refcount) < 1) {
-			if (!should_autoclose || !started_to_play()) delete this; // Kept while due to start too, its start scheduled ahead: get_playing() reads false until then, and the sound was freed unplayed.
+			if (!should_autoclose || !still_to_play()) delete this; // Kept while due to start too, its start scheduled ahead: get_playing() reads false until then, and the sound was freed unplayed.
 			else {
 				should_autoclose = false;
 				duplicate();
@@ -4991,6 +4991,12 @@ public:
 	bool started_to_play() {
 		if (!snd || ma_node_get_state(&*snd) != ma_node_state_started) return false;
 		return ma_node_get_state_time(&*snd, ma_node_state_stopped) > heard_until();
+	}
+	// Whether an autoclosed sound the script let go of has anything left to play: started_to_play(), but not for a sound playing a queue, which never ends as it pads every read with silence, so that it was kept, mixed every block, for good. A stream_pcm() sound, which nothing can feed once let go of, is done once its queue is empty; one playing a ring buffer or microphone it opened, which goes on as long as that is written to, isn't kept.
+	bool still_to_play() {
+		if (!started_to_play()) return false;
+		if (pcm_stream) return pcm_stream->readable() > 0;
+		return !(datasource_opened && audio_data_source_impl::live_queue(datasource));
 	}
 	bool play(bool reset_loop_state = true) override {
 		let_go_of_decoded_wav();
