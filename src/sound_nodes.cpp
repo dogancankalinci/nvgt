@@ -82,11 +82,11 @@ static bool finite_node_values(std::initializer_list<double> values) {
 	}
 	return true;
 }
-// Gains a node applies to its samples: finite, and no louder than max_volume_gain, as volumes are (see playable_volumes() in sound.cpp). MA_INVALID_ARGS otherwise.
-static bool playable_node_gains(std::initializer_list<double> gains) {
+// Gains a node applies to its samples: finite, and no louder than max_volume_gain, as volumes are (see playable_volumes() in sound.cpp), and, as they are, not negative, which inverted the signal, unless negative means something, as a reverb's width swapping its channels. MA_INVALID_ARGS otherwise.
+static bool playable_node_gains(std::initializer_list<double> gains, bool negative_too = false) {
 	if (!finite_node_values(gains)) return false;
 	for (double gain : gains) {
-		if (std::fabs(gain) > max_volume_gain) {
+		if (std::fabs(gain) > max_volume_gain || gain < 0 && !negative_too) {
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
@@ -752,13 +752,13 @@ class freeverb_node_impl : public audio_node_impl, public virtual freeverb_node 
 	float get_room_size() const override { return rn? verblib_get_room_size(&rn->reverb) : -1; }
 	void set_damping(float damping) override { if (rn && finite_node_values({damping})) verblib_set_damping(&rn->reverb, clamped_unit(damping)); }
 	float get_damping() const override { return rn? verblib_get_damping(&rn->reverb) : -1; }
-	void set_width(float width) override { if (rn && playable_node_gains({width})) verblib_set_width(&rn->reverb, width); } // Each a gain on the samples, as the wet and dry levels are.
+	void set_width(float width) override { if (rn && playable_node_gains({width}, true)) verblib_set_width(&rn->reverb, width); } // Each a gain on the samples, as the wet and dry levels are.
 	float get_width() const override { return rn? verblib_get_width(&rn->reverb) : -1; }
 	void set_wet(float wet) override { if (rn && playable_node_gains({wet})) verblib_set_wet(&rn->reverb, wet); }
 	float get_wet() const override { return rn? verblib_get_wet(&rn->reverb) : -1; }
 	void set_dry(float dry) override { if (rn && playable_node_gains({dry})) verblib_set_dry(&rn->reverb, dry); }
 	float get_dry() const override { return rn? verblib_get_dry(&rn->reverb) : -1; }
-	void set_input_width(float width) override { if (rn && playable_node_gains({width})) verblib_set_input_width(&rn->reverb, width); }
+	void set_input_width(float width) override { if (rn && playable_node_gains({width}, true)) verblib_set_input_width(&rn->reverb, width); }
 	float get_input_width() const override { return rn? verblib_get_input_width(&rn->reverb) : -1; }
 	void set_frozen(bool frozen) override { if (rn) verblib_set_mode(&rn->reverb, frozen? 1 : 0); }
 	bool get_frozen() const override { return rn? verblib_get_mode(&rn->reverb) >= 0.5 : false; }
