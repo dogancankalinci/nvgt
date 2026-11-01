@@ -454,6 +454,11 @@ static asITypeInfo* kept_type(std::atomic<asITypeInfo*>& kept, const char* decl)
 	return type;
 }
 static asITypeInfo* float_array_type() { return kept_type(g_float_array_type, "array<float>"); }
+// The error for an array the add-on couldn't make, which it says with a script exception rather than throwing: one too large, below the limit the reads refuse with throw_refusal(), or no memory for it.
+static ma_result array_refusal(asIScriptContext* ctx) {
+	const char* why = ctx->GetExceptionString();
+	return why && strcmp(why, "Out of memory") == 0? MA_OUT_OF_MEMORY : MA_INVALID_ARGS;
+}
 // Each with a reference of the caller's own, taken under the lock, as a list taken anew on another thread lets go of the one before.
 // On an audio thread, as in a processing callback, the lists as last taken, without listing the devices there, which held up the audio for milliseconds.
 CScriptArray *get_sound_input_devices() {
@@ -943,7 +948,8 @@ public:
 		CScriptArray *result = CScriptArray::Create(float_array_type(), frame_count * channels);
 		asIScriptContext* ctx = asGetActiveContext();
 		if (ctx && ctx->GetState() == asEXECUTION_EXCEPTION) {
-			result->Release();
+			g_soundsystem_last_error = array_refusal(ctx);
+			if (result) result->Release(); // None, with no memory for the array itself.
 			return nullptr;
 		}
 		const bool endpoint_runs = endpoint_runs_for(frame_count);
@@ -1435,7 +1441,8 @@ public:
 		CScriptArray* array = CScriptArray::Create(float_array_type(), frame_count * channels);
 		asIScriptContext* ctx = asGetActiveContext();
 		if (ctx && ctx->GetState() == asEXECUTION_EXCEPTION) {
-			array->Release();
+			g_soundsystem_last_error = array_refusal(ctx);
+			if (array) array->Release(); // As above.
 			return nullptr;
 		}
 		if (!frame_count) return array;

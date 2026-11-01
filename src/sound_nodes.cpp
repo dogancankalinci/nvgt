@@ -1035,7 +1035,7 @@ bool reverb3d_reaches(reverb3d* verb, const std::function<bool(mixer*)>& is_targ
 	return (into && mixer_reaches(into, is_target)) || (through_mixer && mixer_reaches(through_mixer, is_target));
 }
 reverb3d* reverb3d::create(audio_node* reverb, mixer* destination, audio_engine* e) {
-	if (!e) throw std::runtime_error("no audio engine available");
+	if (!e) throw_refusal(MA_INVALID_ARGS, "no audio engine available");
 	if (destination && destination->get_engine() != e) throw_refusal(MA_INVALID_ARGS, "the destination mixer belongs to another audio engine");
 	if (reverb && reverb->get_engine() != e) throw_refusal(MA_INVALID_ARGS, "the reverb belongs to another audio engine");
 	audio_node* target = destination? static_cast<audio_node*>(destination) : e->get_endpoint();
