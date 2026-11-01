@@ -2370,6 +2370,15 @@ static std::unique_ptr<std::ostream> open_encoder_file(const string& filename) {
 	}
 	return file;
 }
+// Whether a file of this name is on disk, where the encoders write it, as Poco opens it: FileExists() also finds, on Android, a file packaged in the APK, which an encoder doesn't replace, so that an open without ENCODER_OVERWRITE was refused for it.
+static bool file_on_disk(const string& filename) {
+	try {
+		Poco::File file(filename);
+		return file.exists() && !file.isDirectory();
+	} catch (const std::exception&) {
+		return false;
+	}
+}
 class audio_encoder_impl : public effect_node_impl, public virtual audio_encoder {
 	unique_ptr<ma_data_converter> dc;
 	// The format write_impl() takes, converted to from float once any change of channels or rate is done, in float: MiniAudio's converter mixes channels in its output format when that is s16, and its mixing down to one channel there divides a signed sum by an unsigned count, so every negative sample of 3, 5, 6 or 7 channels came out as a wrong, large value.
@@ -2469,7 +2478,7 @@ public:
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
-		if (!(flags & ENCODER_OVERWRITE) && FileExists(filename)) { // The encoders would replace it. Refused before the encoder open is closed, as the other arguments are.
+		if (!(flags & ENCODER_OVERWRITE) && file_on_disk(filename)) { // The encoders would replace it. Refused before the encoder open is closed, as the other arguments are.
 			g_soundsystem_last_error = MA_ALREADY_EXISTS;
 			return false;
 		}
