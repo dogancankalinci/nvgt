@@ -2350,6 +2350,7 @@ protected:
 public:
 	audio_encoder_impl(audio_engine* e, bool streamable_pulling = true) : effect_node_impl(e, 0, 0, 1, 1, MA_NODE_FLAG_PASSTHROUGH), output_stream(nullptr), pull_stream(nullptr), streamable_pulling(streamable_pulling), sample_rate(0), channels(0), frames_written(0) {}
 	~audio_encoder_impl() {
+		last_error_kept kept; // As the subclasses' destructors keep it: this close() reports success, which letting go of an encoder then read as.
 		destroy_node(); // Off the graph before anything process() uses goes; the subclasses' destructors do so first.
 		close();
 		if (pull_stream) pull_stream->release();
