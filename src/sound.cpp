@@ -26,6 +26,7 @@
 #include <cstring>
 #include <initializer_list>
 #include <vector>
+#include <Poco/Exception.h>
 #include <Poco/FileStream.h>
 #include <Poco/Format.h>
 #include <Poco/MemoryStream.h>
@@ -2495,6 +2496,7 @@ public:
 		if (!frames_in || !frame_count || !get_active()) return 0;
 		if (!dc) {
 			unsigned int frames = write_converted(frames_in, frame_count);
+			if (frames < frame_count && close_result == MA_SUCCESS) close_result = g_soundsystem_last_error != MA_SUCCESS? g_soundsystem_last_error : MA_IO_ERROR; // Frames lost, which close() reports: in the graph, the audio thread's error says it to no one.
 			frames_written += frames;
 			return frames;
 		}
@@ -2505,7 +2507,10 @@ public:
 			ma_uint64 frame_count_in = frame_count - total_processed, frame_count_out = dc_bufsize;
 			if (ma_data_converter_process_pcm_frames(&*dc, ma_offset_pcm_frames_ptr_f32((float*)frames_in, total_processed, dc->channelsIn), &frame_count_in, &dc_buffer[0], &frame_count_out) != MA_SUCCESS) break;
 			if (!frame_count_in && !frame_count_out) break;
-			if (frame_count_out && write_converted(dc_buffer.data(), frame_count_out) < frame_count_out) break; // The encoder failed; these frames didn't make it.
+			if (frame_count_out && write_converted(dc_buffer.data(), frame_count_out) < frame_count_out) { // The encoder failed; these frames didn't make it.
+				if (close_result == MA_SUCCESS) close_result = g_soundsystem_last_error != MA_SUCCESS? g_soundsystem_last_error : MA_IO_ERROR; // As above.
+				break;
+			}
 			frames_converted += frame_count_out;
 			total_processed += frame_count_in;
 			frames_written += frame_count_in;
@@ -2562,6 +2567,7 @@ class audio_wav_encoder_impl : public audio_encoder_impl, public virtual audio_w
 	struct stream_output {
 		datastream *ds = nullptr;
 		std::streamoff base = 0;
+		std::unique_ptr<std::ostream> file; // A file the encoder writes to, opened by NVGT rather than by MiniAudio, whose file writes, the sizes and padding closing writes included, went unchecked: see open_impl().
 		std::string header; // What the encoder writes while it opens, held until then: see open_impl().
 		bool holding_header = false;
 		bool failed = false; // A write the stream refused, which close() reports: a seek it refuses is expected of a stream that can't seek (see mark_sizes_unknown()), not a failure.
@@ -2590,9 +2596,13 @@ class audio_wav_encoder_impl : public audio_encoder_impl, public virtual audio_w
 			*pBytesWritten = bytesToWrite;
 			return MA_SUCCESS;
 		}
-		if (!out->ds) return MA_ERROR;
-		auto held_open = out->ds->hold_open(); // On the audio thread too, while the script can close the datastream.
-		std::ostream *stream = out->ds->get_ostr();
+		std::unique_lock<std::recursive_mutex> held_open;
+		std::ostream *stream = out->file.get();
+		if (!stream) {
+			if (!out->ds) return MA_ERROR;
+			held_open = out->ds->hold_open(); // On the audio thread too, while the script can close the datastream.
+			stream = out->ds->get_ostr();
+		}
 		if (!stream) return MA_ERROR;
 		stream->write((const char *)pBufferIn, bytesToWrite);
 		if (!stream->good()) {
@@ -2607,9 +2617,14 @@ class audio_wav_encoder_impl : public audio_encoder_impl, public virtual audio_w
 	static ma_result stream_seek(ma_encoder *pEncoder, ma_int64 offset, ma_seek_origin origin) {
 		if (origin != ma_seek_origin_start) return MA_NOT_IMPLEMENTED;
 		stream_output *out = static_cast<stream_output *>(pEncoder->pUserData);
-		if (!out->ds || out->holding_header) return MA_ERROR;
-		auto held_open = out->ds->hold_open();
-		std::ostream *stream = out->ds->get_ostr();
+		if (out->holding_header) return MA_ERROR;
+		std::unique_lock<std::recursive_mutex> held_open;
+		std::ostream *stream = out->file.get();
+		if (!stream) {
+			if (!out->ds) return MA_ERROR;
+			held_open = out->ds->hold_open();
+			stream = out->ds->get_ostr();
+		}
 		if (!stream) return MA_ERROR;
 		std::ios_base::iostate was = stream->rdstate();
 		stream->seekp(out->base + offset);
@@ -2636,10 +2651,32 @@ protected:
 		encoder = make_unique<ma_encoder>();
 		ma_encoder_config cfg = ma_encoder_config_init(ma_encoding_format_wav, target_format, channels, sample_rate);
 		output = stream_output();
-		if (ds && ds->can_write()) {
-			output.ds = ds;
-			std::streampos start = ds->get_ostr()->tellp();
-			output.base = start == std::streampos(-1)? 0 : std::streamoff(start);
+		if (!(ds && ds->can_write()) && !filename.empty()) {
+			// A file, opened by NVGT and written through the same callbacks as a datastream rather than by MiniAudio's file output, which reported none of its writes, the sizes and padding written at close included, so that a full disk read as a WAV written in full. Poco opens the UTF-8 name as given on every platform, as MiniAudio needed its wide open for on Windows.
+			try {
+				output.file = std::make_unique<Poco::FileOutputStream>(filename, std::ios::out | std::ios::trunc | std::ios::binary);
+			} catch (const Poco::FileAccessDeniedException&) {
+				g_soundsystem_last_error = MA_ACCESS_DENIED;
+			} catch (const Poco::FileNotFoundException&) {
+				g_soundsystem_last_error = MA_DOES_NOT_EXIST;
+			} catch (const Poco::PathNotFoundException&) {
+				g_soundsystem_last_error = MA_DOES_NOT_EXIST;
+			} catch (const std::exception&) {
+				g_soundsystem_last_error = MA_ERROR;
+			}
+			if (!output.file || !output.file->good()) {
+				if (output.file) g_soundsystem_last_error = MA_ERROR;
+				encoder.reset();
+				output = stream_output();
+				return false;
+			}
+		}
+		if (output.file || ds && ds->can_write()) {
+			if (!output.file) {
+				output.ds = ds;
+				std::streampos start = ds->get_ostr()->tellp();
+				output.base = start == std::streampos(-1)? 0 : std::streamoff(start);
+			}
 			output.header.clear();
 			output.holding_header = true;
 			g_soundsystem_last_error = ma_encoder_init(stream_write, stream_seek, &output, &cfg, &*encoder);
@@ -2651,16 +2688,6 @@ protected:
 			}
 			output.header = std::string();
 		}
-		else if (!filename.empty()) {
-#ifdef _WIN32
-			// MiniAudio opens a narrow path in the ANSI code page, which named a file other than the UTF-8 one the script gave, and the overwrite check looked at.
-			std::wstring wide_filename;
-			Poco::UnicodeConverter::toUTF16(filename, wide_filename);
-			g_soundsystem_last_error = ma_encoder_init_file_w(wide_filename.c_str(), &cfg, &*encoder);
-#else
-			g_soundsystem_last_error = ma_encoder_init_file(filename.c_str(), &cfg, &*encoder);
-#endif
-		}
 		else { // The opens refuse this before closing anything.
 			encoder.reset();
 			g_soundsystem_last_error = MA_INVALID_ARGS;
@@ -2668,6 +2695,7 @@ protected:
 		}
 		if (g_soundsystem_last_error != MA_SUCCESS) {
 			encoder.reset();
+			output = stream_output(); // The file too, closed: one that couldn't be encoded into is left empty, as MiniAudio's open left it.
 			return false;
 		}
 		return postsetup(sample_rate, channels, target_format);
@@ -2682,6 +2710,11 @@ protected:
 		if (!encoder) return false;
 		ma_encoder_uninit(&*encoder);
 		encoder.reset();
+		if (output.file) { // Written out and closed here, which can fail too, as on a full disk.
+			output.file->flush();
+			if (!output.file->good()) output.failed = true;
+			output.file.reset();
+		}
 		if (output.failed) close_result = MA_IO_ERROR; // A write the output refused, as of the sizes or the padding closing writes, which MiniAudio doesn't report.
 		// Closing wrote the sizes into the header, which left a stream that can seek inside the file, where what the script wrote to it next overwrote the audio: it's put back at the end.
 		if (output.ds && output.moved) {
