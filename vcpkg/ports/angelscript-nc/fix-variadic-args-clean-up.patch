@@ -1,0 +1,25 @@
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -5956,8 +5956,21 @@
+ 		offset += AS_PTR_SIZE;
+ 	if( func->DoesReturnOnStack() )
+ 		offset += AS_PTR_SIZE;
+-	for( asUINT n = 0; n < func->parameterTypes.GetLength(); n++ )
++	// ALTERED: the arguments of a variadic function (a funcdef the application registered with "...", called through a null
++	// handle) follow a count of them (all of them, the fixed ones too), and every argument after the fixed ones is of the
++	// type of the last parameter, see CleanArgsOfUnmadeCall in as_callfunc.cpp. They were walked by the parameter list: the
++	// count was taken for the first argument (a string's destructor was called on the address 2, a crash), the variadic
++	// arguments after the first were never released or freed, and the stack pointer was restored short of them.
++	const asUINT paramCount = func->parameterTypes.GetLength();
++	asUINT argCount = paramCount;
++	if( func->IsVariadic() && paramCount > 0 )
+ 	{
++		argCount = m_regs.stackPointer[offset];
++		offset += 1;
++	}
++	for( asUINT a = 0; a < argCount; a++ )
++	{
++		const asUINT n = (a < paramCount) ? a : paramCount - 1;
+ 		if( (func->parameterTypes[n].IsObject() || func->parameterTypes[n].IsFuncdef()) && !func->parameterTypes[n].IsReference() )
+ 		{
+ 			// TODO: cleanup: This logic is repeated twice in CleanStackFrame too. Should create a common function to share the code

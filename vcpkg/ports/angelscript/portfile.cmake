@@ -126,6 +126,7 @@ vcpkg_from_github(
         fix-align8-value-type-layout.patch
         fix-align8-temporaries.patch
         fix-args-on-stack-walk.patch
+        fix-variadic-args-clean-up.patch
 )
 
 vcpkg_cmake_configure(
