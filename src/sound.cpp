@@ -5454,10 +5454,10 @@ public:
 		return 0;
 	}
 };
-// Whether an autoclosed sound is kept: playing, or due to start (see sound_impl::started_to_play()).
+// Whether an autoclosed sound is kept: playing, or due to start, with something left to play (see sound_impl::still_to_play()), as release() keeps it: a stream_pcm() sound let go of with frames queued was kept by every collection after, its queue padding its reads with silence once empty, mixed every block for good.
 static bool sound_due_to_play(sound* s) {
 	sound_impl* impl = dynamic_cast<sound_impl*>(s);
-	return impl? impl->started_to_play() : s->get_playing();
+	return impl? impl->still_to_play() : s->get_playing();
 }
 
 class microphone_impl : public audio_ring_buffer_impl, public virtual microphone {
