@@ -1,0 +1,32 @@
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -7056,8 +7056,15 @@
+ 		calledFunc = m_currentFunction;
+ 	else if( stackLevel > 1 )
+ 	{
+-		asPWORD *s = m_callStack.AddressOf() + (GetCallstackSize() - stackLevel - 2) * CALLSTACK_FRAME_SIZE;
+-		calledFunc = (asCScriptFunction*)s[1];
++		// ALTERED: the function called from this level is the one at the level below it (stackLevel - 1), whose frame is
++		// the next one up in m_callStack (level L is at GetCallstackSize() - L - 1). The frame two up was taken, that of the
++		// function that called this level's (the level above): its arguments were subtracted instead, and for the outermost
++		// level (main() under two script calls) the frame before the start of m_callStack was read (a crash). When the level
++		// below is the marker of a nested call (PushState: no frame pointer, the registered function that made the call),
++		// this level's frame was pushed with the program pointer still on the instruction making that call, whose
++		// arguments are still on the stack: nothing has been taken off by a call yet.
++		asPWORD *s = m_callStack.AddressOf() + (GetCallstackSize() - stackLevel) * CALLSTACK_FRAME_SIZE;
++		calledFunc = s[0] ? (asCScriptFunction*)s[1] : 0;
+ 	}
+ 	// ALTERED: see ArgsOfCalledFunction; a called function's values larger than what is on the stack is an error. The walk
+ 	// starts after the call that took them, so its offsets (and the variadic count it reads from the stack) are counted
+@@ -7239,8 +7246,9 @@
+ 		calledFunc = m_currentFunction;
+ 	else if (stackLevel > 1)
+ 	{
+-		asPWORD* s = m_callStack.AddressOf() + (GetCallstackSize() - stackLevel - 2) * CALLSTACK_FRAME_SIZE;
+-		calledFunc = (asCScriptFunction*)s[1];
++		// ALTERED: the level below, unless it is a nested call's marker, see GetArgsOnStackCount
++		asPWORD* s = m_callStack.AddressOf() + (GetCallstackSize() - stackLevel) * CALLSTACK_FRAME_SIZE;
++		calledFunc = s[0] ? (asCScriptFunction*)s[1] : 0;
+ 	}
+ 	// ALTERED: see ArgsOfCalledFunction
+ 	if (calledFunc)
