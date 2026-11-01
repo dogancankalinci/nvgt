@@ -1788,7 +1788,7 @@ public:
 			queue->wrote(chunk);
 			total += chunk;
 		}
-		if (total == frame_count) g_soundsystem_last_error = MA_SUCCESS; // All of it queued, as a call that succeeded reads.
+		g_soundsystem_last_error = total == frame_count? MA_SUCCESS : MA_BUSY; // All of it queued, as a call that succeeded reads, or not all of it, the ring full, as stream_pcm() reports.
 		return total;
 	}
 	unsigned int write_script_array(CScriptArray *frames) override {
