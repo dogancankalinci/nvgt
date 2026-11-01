@@ -194,8 +194,7 @@ public:
 			return false;
 		}
 		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
-		set_endpoint(node, input_bus_index);
-		return endpoint == node;
+		return put_endpoint(node, input_bus_index); // Whether it attached: one refused keeps the endpoint, which can be that same node.
 	}
 	bool detach_output_bus(unsigned int bus_index) override {
 		if (bus_index != 0) {
@@ -285,12 +284,14 @@ public:
 	// The chain holds a reference of its own to the endpoint. The attachment to it, whichever node it is from, holds another, but every insert, removal or clear rewires that attachment, which let go of the endpoint's only reference before the endpoint was attached to again, and a script can detach a node of the chain through the audio_node API.
 	// Under the chain's lock only, which keeps the detach and attach together. The graph lock is taken by each of them, after the lock of any chain they go into, such as a spatializer at the end of this one: taking it here first, as before, was the opposite order to a global panner change, which locks a spatializer and then the graph, and the two deadlocked.
 	// A new endpoint is attached in place of the old one, so an attach MiniAudio refuses, as to another channel count or a missing input bus, leaves the old one attached, as it leaves any other node's attachment: detaching the old one first left the chain, and any chain it is the last node of, leading nowhere.
-	void set_endpoint(audio_node* node, unsigned int input_bus_index) override {
+	void set_endpoint(audio_node* node, unsigned int input_bus_index) override { put_endpoint(node, input_bus_index); }
+	// set_endpoint(), telling whether it attached the node or detached the chain.
+	bool put_endpoint(audio_node* node, unsigned int input_bus_index) {
 		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		audio_node *old = endpoint;
 		if (node) {
 			bool attached = !nodes.empty()? last()->attach_output_bus(0, node, input_bus_index) : audio_node_impl::attach_output_bus(0, node, input_bus_index);
-			if (!attached) return; // get_endpoint() tells the attach failed.
+			if (!attached) return false; // get_endpoint() tells the attach failed.
 			endpoint = node;
 			endpoint->duplicate();
 			endpoint_input_bus_index = input_bus_index;
