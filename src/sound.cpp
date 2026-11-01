@@ -316,7 +316,12 @@ bool init_sound_context() {
 	delay_aaudio_stream_closes(&g_sound_context);
 	lock_aaudio_error_callbacks(&g_sound_context);
 	#endif
-	g_sound_service = sound_service::make();
+	try {
+		g_sound_service = sound_service::make();
+	} catch (const std::exception&) { // Out of memory: it throws rather than returning null, which left the context made, and the next call made it again over the one there.
+		g_sound_service = nullptr;
+		g_soundsystem_last_error = MA_OUT_OF_MEMORY;
+	}
 	if (g_sound_service == nullptr) {
 		ma_context_uninit(&g_sound_context);
 		return false;
