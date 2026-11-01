@@ -176,10 +176,12 @@ static bool finite_values(std::initializer_list<float> values) {
 	}
 	return true;
 }
-// Frames in milliseconds, exactly while frames * 1000 fits in 64 bits and through a double past that, where MiniAudio's multiplication overflowed.
+// Frames in milliseconds, exactly, and the most 64 bits hold for more: MiniAudio's frames * 1000 overflowed past 2^64 / 1000 frames, and the double this took there was off by hundreds of milliseconds, and converted out of its range near 2^64.
 static unsigned long long milliseconds_of_frames(ma_uint64 frames, ma_uint32 sample_rate) {
 	if (!sample_rate) return 0;
-	return frames <= ~(ma_uint64)0 / 1000? frames * 1000 / sample_rate : (unsigned long long)((double)frames / sample_rate * 1000);
+	const ma_uint64 seconds = frames / sample_rate, rest = frames % sample_rate * 1000 / sample_rate; // The rest below 1000.
+	if (seconds > (~(ma_uint64)0 - rest) / 1000) return ~(ma_uint64)0;
+	return seconds * 1000 + rest;
 }
 // Linear volumes a sound, mixer, engine or fade can be set to: finite, not negative, and no louder than max_volume_gain. MA_INVALID_ARGS otherwise. A negative one inverted the sound on an engine without PERCENTAGE_ATTRIBUTES, as engines refuse one.
 static bool playable_volumes(std::initializer_list<float> linear_volumes) {
