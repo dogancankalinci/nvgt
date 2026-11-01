@@ -133,6 +133,16 @@ class sound_service_impl : public sound_service {
 			sdl_file_input_stream* stream;
 			try {
 				stream = new sdl_file_input_stream(uri);
+#ifdef _WIN32
+				// A device, such as CON, which "con.ogg" in any folder names too on Windows 10: SDL checks for one only on other platforms, and a load then waited on console input, on the script's thread or a load job's, for good. Refused as SDL refuses one there.
+				if (HANDLE handle = (HANDLE)SDL_GetPointerProperty(SDL_GetIOProperties(stream->nativeHandle()), SDL_PROP_IOSTREAM_WINDOWS_HANDLE_POINTER, nullptr)) {
+					if (GetFileType(handle) == FILE_TYPE_CHAR) {
+						delete stream;
+						t_open_error = MA_INVALID_ARGS; // As a device on other platforms (see read_open_failure()), not INVALID_FILE (see onOpen).
+						return NULL;
+					}
+				}
+#endif
 				return stream;
 			} catch (std::exception &) {
 				t_open_error = read_open_failure(uri); // Why, for the load to report: MiniAudio's VFS open had only MA_ERROR, "Unknown error", even for the most common failure, a file that isn't there.
