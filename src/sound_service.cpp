@@ -54,12 +54,12 @@ struct sound_service_vfs {
 		return MA_ERROR; \
 	}
 
+// Why a protocol couldn't open what it was asked for, for the VFS open to report, on the thread that opens it.
+static thread_local ma_result t_open_error = MA_ERROR;
 class sound_service_impl : public sound_service {
 	/**
 	 * Default protocol which loads files directly from the file system.
 	 */
-	// Why a protocol couldn't open what it was asked for, for the VFS open to report, on the thread that opens it.
-	inline static thread_local ma_result t_open_error = MA_ERROR;
 	class fs_protocol : public sound_service::protocol {
 		static const fs_protocol instance;
 
@@ -497,6 +497,7 @@ std::istream *pack_protocol::open_uri(const char *uri, const directive_t directi
 	if (obj == nullptr)
 		return nullptr;
 	std::istream *item = obj->get_file(uri);
+	if (!item && obj->get_is_active()) t_open_error = MA_DOES_NOT_EXIST; // A name the open pack doesn't hold, for the load to report as the file protocol reports a missing file.
 	return item;
 }
 // What tells the pack's contents apart: an NVGT pack's identity, which its name alone, as given to open(), didn't for a pack of that name in another directory or rewritten since, nor for two packs embedded in one file; a plugin's pack's name, and for one that gives none, a suffix no other load gets, so its loads share no buffer with any other.
