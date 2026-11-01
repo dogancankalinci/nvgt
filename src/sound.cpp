@@ -5921,8 +5921,10 @@ void set_sound_master_volume(float db) {
 	default_engine_ref engine;
 	if (!engine)
 		return;
-	if (!(db <= 0 && db >= -100)) // NaN fails both, and is ignored as other values out of range are.
+	if (!(db <= 0 && db >= -100)) { // NaN fails both, and is ignored as other values out of range are, with the error other volumes refused set, rather than an earlier call's.
+		g_soundsystem_last_error = MA_INVALID_ARGS;
 		return;
+	}
 	ma_engine_set_volume(engine->get_ma_engine(), ma_volume_db_to_linear(db));
 }
 float get_sound_master_volume() {
