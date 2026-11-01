@@ -1374,6 +1374,10 @@ public:
 		}
 	}
 	void set_reverb3d(reverb3d* new_reverb, audio_spatializer_reverb3d_placement placement = postpan) override {
+		if (placement != prepan && placement != postpan && placement != postattenuate) { // Another took the attachment out of the chain and never put it back, keeping the reverb3d silent.
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return;
+		}
 		if (new_reverb && new_reverb->get_engine() != get_engine()) { // Another engine's audio thread reads that reverb3d, which two threads can't read at once.
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return;

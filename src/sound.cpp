@@ -3910,6 +3910,10 @@ public:
 		return snd ? (get_engine()->get_flags() & audio_engine::PERCENTAGE_ATTRIBUTES ? pan_linear_to_db(ma_sound_get_pan(&*snd)) : ma_sound_get_pan(&*snd)) : NAN;
 	}
 	void set_pan_mode(ma_pan_mode mode) override {
+		if (mode != ma_pan_mode_balance && mode != ma_pan_mode_pan) { // Kept and read back otherwise.
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return;
+		}
 		if (snd)
 			ma_sound_set_pan_mode(&*snd, mode);
 	}
@@ -4033,6 +4037,10 @@ public:
 		return res;
 	}
 	void set_positioning(ma_positioning positioning) override {
+		if (positioning != ma_positioning_absolute && positioning != ma_positioning_relative) { // As set_pan_mode().
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return;
+		}
 		if (!snd) return;
 		ma_sound_set_positioning(&*snd, positioning);
 		place_in_shape(); // A shape's point is found in the space the positioning gives.
