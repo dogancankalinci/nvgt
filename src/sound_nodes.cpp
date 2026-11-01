@@ -356,14 +356,14 @@ bool phonon_init() {
 	engine->release();
 	IPLContextSettings phonon_context_settings{};
 	phonon_context_settings.version = STEAMAUDIO_VERSION;
-	if (iplContextCreate(&phonon_context_settings, &g_phonon_context) != IPL_STATUS_SUCCESS) return false;
+	if (iplContextCreate(&phonon_context_settings, &g_phonon_context) != IPL_STATUS_SUCCESS) return (g_soundsystem_last_error = MA_ERROR) == MA_SUCCESS; // Which said nothing, as the HRTF's failure below didn't.
 	IPLHRTFSettings phonon_hrtf_settings{};
 	phonon_hrtf_settings.type = IPL_HRTFTYPE_DEFAULT;
 	phonon_hrtf_settings.volume = 1.0;
 	if (iplHRTFCreate(g_phonon_context, &g_phonon_audio_settings, &phonon_hrtf_settings, &g_phonon_hrtf) != IPL_STATUS_SUCCESS) {
 		iplContextRelease(&g_phonon_context);
 		g_phonon_context = nullptr;
-		return false;
+		return (g_soundsystem_last_error = MA_FORMAT_NOT_SUPPORTED) == MA_SUCCESS; // Its HRTF works at some rates only, as 44100 and 48000 Hz, and not at others, as 16000 or 96000: the default engine's is then one it can't take.
 	}
 	return true;
 }
