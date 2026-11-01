@@ -13,7 +13,9 @@
 
 #include "sound_service.h"
 #include "xplatform.h" // NVGT_MOBILE
+#include <Poco/Exception.h>
 #include <Poco/File.h>
+#include <Poco/FileStream.h>
 #include <Poco/URIStreamOpener.h>
 #include <vector>
 #include <cassert>
@@ -56,6 +58,18 @@ struct sound_service_vfs {
 
 // Why a protocol couldn't open what it was asked for, for the VFS open to report, on the thread that opens it.
 static thread_local ma_result t_open_error = MA_ERROR;
+// Why a file couldn't be opened to read, as the encoders tell for the files they write: SDL, which opens it, keeps no errno, so that every failure but a missing file read "Unknown error". It's opened again through Poco, whose exception carries the error; a directory is told first, as POSIX opens one to read.
+static ma_result read_open_failure(const char* uri) {
+	try {
+		Poco::File file(uri);
+		if (!file.exists()) return MA_DOES_NOT_EXIST;
+		if (file.isDirectory()) return MA_IS_DIRECTORY;
+		Poco::FileInputStream probe(uri);
+	} catch (const Poco::Exception& e) {
+		return file_open_result(e);
+	} catch (const std::exception&) {}
+	return MA_ERROR;
+}
 class sound_service_impl : public sound_service {
 	/**
 	 * Default protocol which loads files directly from the file system.
@@ -73,10 +87,7 @@ class sound_service_impl : public sound_service {
 				stream = new sdl_file_input_stream(uri);
 				return stream;
 			} catch (std::exception &) {
-				// Why, for the load to report: MiniAudio's VFS open had only MA_ERROR, "Unknown error", for the most common failure, a file that isn't there.
-				bool exists = true;
-				try { exists = Poco::File(uri).exists(); } catch (std::exception &) {}
-				t_open_error = exists? MA_ERROR : MA_DOES_NOT_EXIST;
+				t_open_error = read_open_failure(uri); // Why, for the load to report: MiniAudio's VFS open had only MA_ERROR, "Unknown error", even for the most common failure, a file that isn't there.
 				return NULL;
 			}
 		}

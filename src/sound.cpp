@@ -2321,8 +2321,8 @@ public:
 	}
 };
 audio_decoder* audio_decoder::create(audio_engine* e) { return new audio_decoder_impl(e); }
-// The result for a file an encoder couldn't open, from the error Poco's exception carries, errno or Windows' own: one result for every failure said nothing of why, where MiniAudio's file open had told.
-static ma_result file_open_result(const Poco::Exception& e) {
+// The result for a file an encoder, or a load, couldn't open, from the error Poco's exception carries, errno or Windows' own: one result for every failure said nothing of why, where MiniAudio's file open had told.
+ma_result file_open_result(const Poco::Exception& e) {
 	switch (e.code()) {
 #ifdef _WIN32
 		case ERROR_FILE_NOT_FOUND: case ERROR_PATH_NOT_FOUND: case ERROR_BAD_NETPATH: case ERROR_INVALID_DRIVE: case ERROR_CANT_RESOLVE_FILENAME: return MA_DOES_NOT_EXIST;
