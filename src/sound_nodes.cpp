@@ -779,6 +779,26 @@ static audio_node* reverb_destination(audio_node* verb) {
 	if (auto impl = dynamic_cast<audio_node_impl*>(verb)) return impl->acquire_output_destination(0);
 	return nullptr;
 }
+// How many reverb3ds use a node as their reverb.
+static int reverb_users_of(audio_node* verb) {
+	std::lock_guard<std::mutex> lock(g_reverb_users_mutex);
+	auto it = g_reverb_users.find(verb);
+	return it == g_reverb_users.end()? 0 : it->second.users;
+}
+// Where a reverb node goes now: the mixer a mixer goes into or the engine's endpoint, or what a node is attached to. For comparing only: no reference is kept.
+static audio_node* reverb_goes_into(audio_node* verb) {
+	if (mixer* m = dynamic_cast<mixer*>(verb)) {
+		mixer* parent = m->get_mixer();
+		return parent? static_cast<audio_node*>(parent) : m->get_engine()->get_endpoint();
+	}
+	audio_node* into = reverb_destination(verb);
+	if (into) into->release();
+	return into;
+}
+// A node has one output: one other reverb3ds use goes into their destination, which a reverb3d sending it elsewhere took from them, their mixers reading none of it, nor getting it back once that reverb3d went. Whether a reverb3d going into target, counted own_uses times among the node's users, can send verb there.
+static bool reverb_free_for(audio_node* verb, audio_node* target, int own_uses) {
+	return reverb_users_of(verb) <= own_uses || reverb_goes_into(verb) == target;
+}
 // A reverb3d lets go of its reverb. The last of them takes a node that isn't a mixer off its destination under the node's send lock, the count's entry kept until then, so that a reverb3d taking the node up meanwhile counts itself into that entry and sends under the same lock, after, rather than being cut off. A let-go finding the entry gone or made anew has nothing to take off: the one before took the node off, or a new user sends it now. A mixer keeps its parent, as a mixer of the script's.
 static void reverb_let_go(audio_node* verb) {
 	std::shared_ptr<std::recursive_mutex> send;
@@ -867,6 +887,10 @@ public:
 			return;
 		}
 		std::lock_guard<std::recursive_mutex> topology(g_audio_topology_mutex);
+		if (verb && !reverb_free_for(verb, output_mixer? static_cast<audio_node*>(output_mixer) : get_engine()->get_endpoint(), 0)) { // Used by other reverb3ds going elsewhere (see reverb_free_for()).
+			g_soundsystem_last_error = MA_INVALID_OPERATION;
+			return;
+		}
 		mixer* verb_mixer = verb? dynamic_cast<mixer*>(verb) : nullptr;
 		// Not a mixer that sends to this reverb3d, or goes into one that does (see mixer_reaches()): this feeds the mixer, which would feed it back.
 		if (verb_mixer && mixer_reaches(verb_mixer, [this](mixer* m) { return m->get_reverb3d_sent_to() == static_cast<reverb3d*>(this); })) {
@@ -904,6 +928,10 @@ public:
 			// Attached to the new destination before the old one goes, which attaching replaces: one the reverb can't go into, or without an input, as a sound, for a reverb3d that has no reverb yet, is refused, staying where it was, rather than left going nowhere while mixer read the sound.
 			audio_node* target = mix? static_cast<audio_node*>(mix) : get_engine()->get_endpoint();
 			if (reverb? !reverb_fits(reverb, target, ma_node_get_output_channels(get_ma_node(), 0)) : ma_node_get_input_bus_count(target->get_ma_node()) == 0) {
+				g_soundsystem_last_error = MA_INVALID_OPERATION;
+				return;
+			}
+			if (reverb && !reverb_free_for(reverb, target, 1)) { // Its reverb, which other reverb3ds use too, goes into theirs (see reverb_free_for()).
 				g_soundsystem_last_error = MA_INVALID_OPERATION;
 				return;
 			}
@@ -1002,7 +1030,14 @@ reverb3d* reverb3d::create(audio_node* reverb, mixer* destination, audio_engine*
 	if (mixer* verb_mixer = reverb? dynamic_cast<mixer*>(reverb) : nullptr) {
 		if (destination && mixer_reaches(destination, [verb_mixer](mixer* m) { return m == verb_mixer; })) throw std::runtime_error("the destination goes into the reverb mixer");
 	}
+	if (destination && reverb && !reverb_free_for(reverb, destination, 0)) throw std::runtime_error("the reverb goes into another destination for another reverb3d already");
 	if (destination) return new reverb3d_impl(e, reverb, destination);
+	// Without a destination, a reverb other reverb3ds use goes on where they send it, rather than into a mixer of this one's own that took it from them (see reverb_free_for()).
+	if (reverb && reverb_users_of(reverb) > 0) {
+		audio_node* into = reverb_goes_into(reverb);
+		if (mixer* theirs = dynamic_cast<mixer*>(into)) return new reverb3d_impl(e, reverb, theirs);
+		if (into == e->get_endpoint()) return new reverb3d_impl(e, reverb, nullptr);
+	}
 	mixer *own = new_mixer(e);
 	try {
 		reverb3d *result = new reverb3d_impl(e, reverb, own);
