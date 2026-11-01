@@ -1524,6 +1524,9 @@ public:
 	}
 	// A queue that something else fills as it is read, as a ring buffer or microphone, rather than a source with a start.
 	virtual bool is_live_queue() const { return false; }
+	virtual bool can_seek_source() const { return false; } // A decoder on a file or datastream that can seek.
+	static bool seekable_source(audio_data_source* ds) { auto impl = dynamic_cast<audio_data_source_impl*>(ds); return impl && impl->can_seek_source(); }
+	static bool live_queue(audio_data_source* ds) { auto impl = dynamic_cast<audio_data_source_impl*>(ds); return impl && impl->is_live_queue(); }
 	// A source chained to this one is read into buffers sized for this one's format and channel count, by the audio thread and by read(), and is played at this one's sample rate, so it must match in all three.
 	// Nor a live queue: moving on to the next source seeks it to its start, which a queue has none of, and a queue pads every read with silence, which a script reading the chain would get as frames read.
 	bool can_chain(audio_data_source* other) const {
@@ -1974,6 +1977,7 @@ class audio_decoder_impl : public audio_data_source_impl, public virtual audio_d
 	mutable std::atomic<long long> length_frames{-1}; // -2 once known to be unknowable without consuming a stream that can't seek.
 	// Whether the stream decoded can seek, which a file can. Counting the length of one that can't, as a live stream, by reading it to its end consumed it, as it couldn't seek back; so its length is asked for only within what the stream_cursor kept, which a format that knows it from a header answers, and is otherwise unknown.
 	bool seekable = true;
+	bool can_seek_source() const override { return decoder && seekable; } // See sound_impl::rewinds_without_length().
 	datastream* datastream_ref; // If the user opens a datastream, we must maintain a reference to it encase the user drops their handle.
 	// Rewind window so a datastream that can't seek (a live socket) can still be probed and decoded; answers rewinds from memory instead of the stream until the window outgrows CAP or a real seek moves the stream.
 	struct stream_cursor {
@@ -5044,7 +5048,7 @@ public:
 		paused = fade_paused = false;
 		call_off_restart(); // A play() just before, at the sound's end, isn't made after it.
 		if (!mixer_impl::stop()) return false;
-		if (!chain && get_length_in_frames() == 0) return (g_soundsystem_last_error = MA_SUCCESS) == MA_SUCCESS; // A stream without a length, such as PCM or a URL, has no start to go back to; a chain always has (see seek_in_frames()). Stopped, rather than with the length's MA_NOT_IMPLEMENTED left behind.
+		if (!chain && get_length_in_frames() == 0 && !rewinds_without_length()) return (g_soundsystem_last_error = MA_SUCCESS) == MA_SUCCESS; // A stream without a length, such as PCM or a URL, has no start to go back to; a chain always has (see seek_in_frames()). Stopped, rather than with the length's MA_NOT_IMPLEMENTED left behind.
 		return seek(0);
 	}
 	// A stream_pcm() sound too, whose queue play() resumes, as after pause_fade(): refused, it read as not paused while pause_fade() paused it.
@@ -5215,10 +5219,19 @@ public:
 	bool get_at_end() override {
 		return snd ? at_end_seen(&*snd) : false;
 	}
+	// Whether the sound's source can go back to its start though its length isn't known, as a stream of a FLAC file without its total, or an audio_decoder of one, can: a seek to 0 and stop()'s rewind were refused for it as for a source that can't, a URL's, a PCM stream's or a queue's, so that play() after stop() went on from where it stopped.
+	bool rewinds_without_length() const {
+		if (!snd || pcm_stream) return false;
+		if (datasource_opened) return datasource && audio_data_source_impl::seekable_source(datasource);
+		held_sound* h = held(&*snd);
+		if (!h->stream) return false;
+		held_file* file = file_held(h->stream->decoder.pBackend);
+		return file && file->can_seek;
+	}
 	bool seek(unsigned long long position) override { return get_engine()->get_flags() & audio_engine::DURATIONS_IN_FRAMES? seek_in_frames(position) : seek_in_milliseconds(position); }
 	bool seek_in_frames(unsigned long long position) override {
 		unsigned long long length = get_length_in_frames();
-		if (!length && !(chain && !position)) { // A chain of unknown length can still be sought to its start, which its view always finds.
+		if (!length && !(chain && !position) && !(position == 0 && rewinds_without_length())) { // A chain of unknown length can still be sought to its start, which its view always finds, as can a source of unknown length that can seek.
 			g_soundsystem_last_error = MA_INVALID_OPERATION; // A stream without a length, which left no error.
 			return false;
 		}
