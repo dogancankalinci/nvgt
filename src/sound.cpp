@@ -4089,6 +4089,11 @@ public:
 	void set_direction(float x, float y, float z) override {
 		if (!snd || !finite_values({x, y, z}))
 			return;
+		const float squared = x * x + y * y + z * z;
+		if (!(squared > 0 && std::isfinite(squared))) { // No direction, which put the sound at its cone's outer gain wherever the listener was: refused as a listener's is.
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return;
+		}
 		return ma_sound_set_direction(&*snd, x, y, z);
 	}
 	void set_direction_vector(const reactphysics3d::Vector3& direction) override { set_direction(direction.x, direction.y, direction.z); }
