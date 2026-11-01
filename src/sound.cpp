@@ -595,6 +595,12 @@ ma_result wav_seek_proc(ma_encoder *pEncoder, ma_int64 offset, ma_seek_origin or
 unordered_set<sound*> g_inlined_sounds;
 mutex g_inlined_sounds_mutex;
 static bool sound_due_to_play(sound* s); // After sound_impl.
+// A pack's read-only copy, for a load or the default pack, given back with release() as pack_interface is counted, rather than deleted: a plugin's make_immutable() may hand over a reference to a pack that is read-only already, which deleting freed under its other holders.
+static std::shared_ptr<const pack_interface> immutable_pack(const pack_interface* pack) {
+	const pack_interface* copy = pack->make_immutable();
+	if (!copy) return nullptr;
+	return std::shared_ptr<const pack_interface>(copy, [](const pack_interface* p) { p->release(); });
+}
 void garbage_collect_inline_sounds() {
 	vector<sound*> finished;
 	{
@@ -2174,7 +2180,7 @@ public:
 	virtual bool open(const std::string& filename, const pack_interface* pack_file, unsigned int sample_rate, unsigned int channels) override {
 		if (!output_format_in_range(sample_rate, channels)) return false;
 		// The pack's copy made first, which throws for a pack open for writing: the decoder open before stays open, as for other refusals, rather than closed by a call that then threw.
-		std::shared_ptr<const pack_interface> pack = pack_file && pack_file->get_is_active()? std::shared_ptr<const pack_interface>(pack_file->make_immutable()) : nullptr;
+		std::shared_ptr<const pack_interface> pack = pack_file && pack_file->get_is_active()? immutable_pack(pack_file) : nullptr;
 		auto guard = lock_source();
 		if (!guard) return false;
 		std::string triplet = g_sound_service->prepare_triplet(filename, pack? g_pack_protocol_slot : sound_service::fs_protocol_slot, pack, 0, nullptr); // Without a pack, from disk, as sound.load() reads, rather than from the default protocol, which can be a pack.
@@ -4826,10 +4832,10 @@ public:
 		return g_soundsystem_last_error == MA_SUCCESS;
 	}
 	bool load(const string &filename, const pack_interface* pack_file) override {
-		return load_special(filename, pack_file && pack_file->get_is_active()? g_pack_protocol_slot : sound_service::fs_protocol_slot, pack_file && pack_file->get_is_active()? std::shared_ptr < const pack_interface > (pack_file->make_immutable()) : nullptr, 0, nullptr, MA_SOUND_FLAG_DECODE | MA_SOUND_FLAG_ASYNC);
+		return load_special(filename, pack_file && pack_file->get_is_active()? g_pack_protocol_slot : sound_service::fs_protocol_slot, pack_file && pack_file->get_is_active()? immutable_pack(pack_file) : nullptr, 0, nullptr, MA_SOUND_FLAG_DECODE | MA_SOUND_FLAG_ASYNC);
 	}
 	bool stream(const std::string &filename, const pack_interface* pack_file) override {
-		return load_special(filename, pack_file && pack_file->get_is_active()? g_pack_protocol_slot : sound_service::fs_protocol_slot, pack_file && pack_file->get_is_active()? std::shared_ptr < const pack_interface > (pack_file->make_immutable()) : nullptr, 0, nullptr, MA_SOUND_FLAG_STREAM);
+		return load_special(filename, pack_file && pack_file->get_is_active()? g_pack_protocol_slot : sound_service::fs_protocol_slot, pack_file && pack_file->get_is_active()? immutable_pack(pack_file) : nullptr, 0, nullptr, MA_SOUND_FLAG_STREAM);
 	}
 	bool stream_url(const std::string &url) override {
 		return load_special(url, g_netstream_protocol_slot, nullptr, 0, nullptr, MA_SOUND_FLAG_STREAM | MA_SOUND_FLAG_UNKNOWN_LENGTH);
@@ -5864,7 +5870,7 @@ void set_sound_default_storage(pack_interface *obj) {
 		g_sound_service->set_protocol_directive(g_pack_protocol_slot, nullptr);
 		return;
 	}
-	g_sound_service->set_protocol_directive(g_pack_protocol_slot, std::shared_ptr < const pack_interface > (obj->make_immutable()));
+	g_sound_service->set_protocol_directive(g_pack_protocol_slot, immutable_pack(obj));
 	g_sound_service->set_default_protocol(g_pack_protocol_slot);
 }
 const pack_interface *get_sound_default_storage() {
