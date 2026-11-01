@@ -4770,6 +4770,7 @@ public:
 		ma_format format = ma_format_from_angelscript_type(buffer->GetElementTypeId());
 		if (pcm_stream) {
 			if (format != ma_pcm_rb_get_format(&pcm_stream->rb)) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // Not the sample type the stream was started with.
+			if (sample_rate && sample_rate != ma_pcm_rb_get_sample_rate(&pcm_stream->rb) || channels && channels != ma_pcm_rb_get_channels(&pcm_stream->rb)) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // Nor another rate or channel count, which were ignored, the data read in the first call's layout; 0 keeps the stream's.
 			format = ma_format_unknown;
 		}
 		int nchannels = pcm_stream? ma_pcm_rb_get_channels(&pcm_stream->rb) : channels? channels : get_engine()->get_channels();
@@ -4781,6 +4782,7 @@ public:
 		ma_format format = ma_format_from_angelscript_type(buffer->subtypeid);
 		if (pcm_stream) {
 			if (format != ma_pcm_rb_get_format(&pcm_stream->rb)) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS;
+			if (sample_rate && sample_rate != ma_pcm_rb_get_sample_rate(&pcm_stream->rb) || channels && channels != ma_pcm_rb_get_channels(&pcm_stream->rb)) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS;
 			format = ma_format_unknown;
 		}
 		int nchannels = pcm_stream? ma_pcm_rb_get_channels(&pcm_stream->rb) : channels? channels : get_engine()->get_channels();
