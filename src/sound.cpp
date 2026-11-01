@@ -5557,7 +5557,7 @@ public:
 	unsigned long long get_length_in_milliseconds() override {
 		if (snd && chain) {
 			ma_uint32 sample_rate = 0;
-			return ma_data_source_get_data_format(chain->head, nullptr, nullptr, &sample_rate, nullptr, 0) == MA_SUCCESS && sample_rate? chain_length_frames() * 1000 / sample_rate : 0;
+			return ma_data_source_get_data_format(chain->head, nullptr, nullptr, &sample_rate, nullptr, 0) == MA_SUCCESS && sample_rate? milliseconds_of_frames(chain_length_frames(), sample_rate) : 0; // Not past 2^64 / 1000 frames, as everywhere else.
 		}
 		if (snd && datasource_opened && datasource) { // As get_length_in_frames(), counted exactly as below rather than through the source's float milliseconds.
 			ma_uint32 sample_rate = 0;
