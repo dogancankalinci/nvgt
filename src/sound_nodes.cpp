@@ -1175,6 +1175,8 @@ void set_audio_attenuator_enabled(int id, bool enabled) {
 	}
 }
 
+bool audio_panner_exists(int id) { return g_audio_panners.find(id) != g_audio_panners.end(); }
+bool audio_attenuator_exists(int id) { return g_audio_attenuators.find(id) != g_audio_attenuators.end(); }
 bool get_audio_panner_enabled(int id) {
 	auto it = g_audio_panners.find(id);
 	return it != g_audio_panners.end() && it->second.enabled;

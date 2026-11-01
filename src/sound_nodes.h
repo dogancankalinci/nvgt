@@ -492,6 +492,8 @@ void sound_set_default_3d_attenuator(int attenuator_id);
 int sound_get_default_3d_attenuator();
 void set_audio_panner_enabled(int id, bool enabled);
 void set_audio_attenuator_enabled(int id, bool enabled);
+bool audio_panner_exists(int id);
+bool audio_attenuator_exists(int id);
 bool get_audio_panner_enabled(int id);
 bool get_audio_attenuator_enabled(int id);
 bool sound_set_spatialization(int panner, int attenuator, bool disable_previous = false, bool set_default = true);

@@ -3653,10 +3653,18 @@ public:
 	}
 	mixer *get_mixer() const override { return parent_mixer; }
 	void set_3d_panner(int panner_id) override {
+		if (!audio_panner_exists(panner_id)) { // Refused before a spatializer is made for it, which the refusal left in the chain.
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return;
+		}
 		get_spatializer()->set_panner_by_id(panner_id);
 	}
 	int get_3d_panner() const override { audio_spatializer* made = made_spatializer(); return made? made->get_current_panner_id() : -1; }
 	void set_3d_attenuator(int attenuator_id) override {
+		if (!audio_attenuator_exists(attenuator_id)) {
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return;
+		}
 		get_spatializer()->set_attenuator_by_id(attenuator_id);
 	}
 	int get_3d_attenuator() const override { audio_spatializer* made = made_spatializer(); return made? made->get_current_attenuator_id() : -1; }
