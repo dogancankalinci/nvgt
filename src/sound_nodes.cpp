@@ -1261,14 +1261,14 @@ bool sound_set_spatialization(int panner, int attenuator, bool disable_previous,
 		if (!panner_it->second.enabled) set_audio_panner_enabled(panner, true);
 		if (set_default) sound_set_default_3d_panner(panner);
 		panner_success = true;
-		if (panner != prev_panner && disable_previous) set_audio_panner_enabled(prev_panner, false);
+		if (panner != prev_panner && disable_previous && set_default) set_audio_panner_enabled(prev_panner, false); // Only one this replaced as the default: kept the default, a disabled one left newly positioned sounds on whichever enabled component came first.
 	}
 	auto attenuator_it = g_audio_attenuators.find(attenuator);
 	if (attenuator_it != g_audio_attenuators.end()) {
 		if (!attenuator_it->second.enabled) set_audio_attenuator_enabled(attenuator, true);
 		if (set_default) sound_set_default_3d_attenuator(attenuator);
 		attenuator_success = true;
-		if (attenuator != prev_attenuator && disable_previous) set_audio_attenuator_enabled(prev_attenuator, false);
+		if (attenuator != prev_attenuator && disable_previous && set_default) set_audio_attenuator_enabled(prev_attenuator, false); // As above.
 	}
 	if (panner_success && attenuator_success) g_soundsystem_last_error = MA_SUCCESS; // As a call that succeeded reads.
 	return panner_success && attenuator_success;
