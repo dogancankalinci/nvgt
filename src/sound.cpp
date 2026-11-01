@@ -4262,7 +4262,8 @@ public:
 		return snd ? milliseconds_of_frames(ma_sound_get_time_in_pcm_frames(&*snd), ma_engine_get_sample_rate(ma_sound_get_engine(&*snd))) : 0ULL; // As the engine's, see milliseconds_of_frames().
 	}
 	bool get_playing() const override {
-		return snd ? ma_sound_is_playing(&*snd) : false;
+		if (!snd || !ma_sound_is_playing(&*snd)) return false;
+		return ma_node_get_state_time(&*snd, ma_node_state_stopped) > ma_engine_get_time_in_pcm_frames(ma_sound_get_engine(&*snd)); // Not at the frame of a stop, which isn't played: MiniAudio counts a stop as come only past it, so that playing read true, and paused false, for a block after the sound's last frame, on an engine without a device until it was read again.
 	}
 };
 // MiniAudio's resource manager takes a buffer whose synchronous load failed out of its cache without the cache's own lock, which its asynchronous loads take for that. Every buffer is therefore loaded asynchronously, except by load_special()'s retry without flags, which loads synchronously as only that leaves the cached file it unregisters reliably. That retry and its unregister hold this exclusively; every other making and freeing of a source in the cache holds it shared, so those wait only for such a retry and not for one another's loading. Streams don't use the cache.
@@ -5018,7 +5019,7 @@ public:
 	}
 	// Not once it played to its end, as one does while pause_fade() fades it out, as its page says a sound that isn't playing doesn't read as paused: play() then starts it from its start rather than resuming it.
 	bool get_paused() override {
-		return snd ? !ma_sound_is_playing(&*snd) && paused && !at_end_seen(&*snd) : false;
+		return snd ? !get_playing() && paused && !at_end_seen(&*snd) : false; // As playing reads, at a stop's frame too.
 	}
 	// Playing, or started and due to play, its start scheduled ahead with set_start_time(), which ma_sound_is_playing() reads as stopped until then: not a sound stopped, played to its end or never started, nor one whose scheduled stop has come, which MiniAudio leaves started (see clear_stop_for_restart()).
 	bool started_to_play() {
