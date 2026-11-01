@@ -4962,7 +4962,7 @@ public:
 		return started_or_undone(mixer_impl::play(reset_loop_state), looping);
 	}
 	bool play_looped() override {
-		if (pcm_stream) return (g_soundsystem_last_error = MA_INVALID_OPERATION) == MA_SUCCESS; // Fed by stream_pcm(), it has no end to loop from, as play_wait() says.
+		if (pcm_stream || datasource_opened && audio_data_source_impl::live_queue(datasource)) return (g_soundsystem_last_error = MA_INVALID_OPERATION) == MA_SUCCESS; // Fed by stream_pcm(), or a ring buffer or microphone it opened, it has no end to loop from, as play_wait() says.
 		let_go_of_decoded_wav();
 		if (fade_paused && snd) clear_stop_for_restart(true);
 		paused = fade_paused = false;
@@ -5035,7 +5035,7 @@ public:
 			g_soundsystem_last_error = MA_INVALID_OPERATION;
 			return false;
 		}
-		if (pcm_stream) // Fed by stream_pcm(), it has no end to wait for.
+		if (pcm_stream || datasource_opened && audio_data_source_impl::live_queue(datasource)) // Fed by stream_pcm(), or a ring buffer or microphone it opened, it has no end to wait for, and play_wait() waited for good.
 			return (g_soundsystem_last_error = MA_INVALID_OPERATION) == MA_SUCCESS;
 		if (!play())
 			return false;
