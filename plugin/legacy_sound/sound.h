@@ -23,6 +23,7 @@
 #include <Poco/Event.h>
 #include <Poco/Mutex.h>
 #include <thread.h>
+#define verblib_max_sample_rate_multiplier 9 // As dep/ma_reverb_node.h sets it, so that struct verblib is the same everywhere in a program the sound core is built into.
 #include <verblib.h>
 #include "pack.h"
 
