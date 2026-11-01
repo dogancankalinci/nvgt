@@ -61,10 +61,11 @@ enum class value_tag : unsigned char {
 };
 
 static thread_local int g_serialize_depth = 0;
+static const int g_serialize_max_depth = 128;
 class serialize_depth_guard {
 public:
 	bool exceeded;
-	serialize_depth_guard() : exceeded(++g_serialize_depth > 128) {}
+	serialize_depth_guard() : exceeded(++g_serialize_depth > g_serialize_max_depth) {}
 	~serialize_depth_guard() { g_serialize_depth--; }
 };
 // The dictionaries, arrays and script objects being written, outermost first. One met again further down (a dictionary holding a handle to itself, say) is dropped like a value nested too deeply: it was written again, down to the depth limit, once for every handle to it at each level, so two of them doubled the work with each of the 128 levels and serialize() never returned.
@@ -75,6 +76,8 @@ public:
 	~serialize_path_guard() { g_serialize_path.pop_back(); }
 };
 static bool being_serialized(const void* obj) { return std::find(g_serialize_path.begin(), g_serialize_path.end(), obj) != g_serialize_path.end(); }
+// A type declaration nesting more than 8 template arguments and array brackets together (array<int[]> nests two), see type_by_decl().
+static bool decl_too_deep(const std::string& decl) { return std::count(decl.begin(), decl.end(), '<') + std::count(decl.begin(), decl.end(), '[') > 8; }
 
 // Runs a registered/script function (which must return an object handle) through a pooled context. Only needed for the script_object contract below, everything else we can talk to directly in c++.
 static void* invoke(asIScriptFunction* func, void* obj, void* arg = nullptr) {
@@ -235,8 +238,10 @@ static bool write_value(Poco::BinaryWriter& w, const void* ref, int type_id) {
 		return true;
 	}
 	if (!strcmp(name, "array")) {
+		std::string elem_decl = g_ScriptEngine->GetTypeDeclaration(ti->GetSubTypeId(0), false);
+		if (decl_too_deep("array<" + elem_decl + ">")) return false; // It couldn't be read back, see type_by_decl().
 		w << (unsigned char)value_tag::array;
-		w << std::string(g_ScriptEngine->GetTypeDeclaration(ti->GetSubTypeId(0), false));
+		w << elem_decl;
 		w << is_null;
 		return is_null ? true : write_array_body(w, (CScriptArray*)obj);
 	}
@@ -282,7 +287,9 @@ using value_setter = std::function<void(void*, int)>;
 
 static CScriptDictionary* read_dictionary_body(Poco::BinaryReader& r, asIScriptModule* mod);
 // A type looked up in the module by its declaration: the lookup starts in the module's default namespace, which ExecuteString sets for the time of a build on another thread (a default value of script_function.call() or async<T>), and a declaration naming an array type that doesn't exist yet makes it, so it is done under the build lock (see GetScriptBuildMutex).
+// The declaration comes from the data, and the time AngelScript takes to look up a declaration doubles with each template argument nested in it: an array value whose element declaration was nested 22 deep (164 bytes) took 20 seconds in an ASan build, and one nested 100 deep (a 700-byte input) never finished. The int[][] form, which serialize() itself writes for an array of arrays, costs less per level but makes an array type for each: one nested 10000 deep (20 KB) took 1.2 seconds and left 430 MB of types in the engine. A declaration nesting more than 8 of the two together isn't looked up, and the value is read and dropped as for a type that doesn't exist; serialize() drops an array of such a type, as it does a value nested too deeply.
 static asITypeInfo* type_by_decl(asIScriptModule* mod, const std::string& decl) {
+	if (decl_too_deep(decl)) return nullptr;
 	std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex());
 	return mod->GetTypeInfoByDecl(decl.c_str());
 }
