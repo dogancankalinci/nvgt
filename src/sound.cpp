@@ -1096,7 +1096,7 @@ public:
 		std::atomic<float> inner{6.283185f}, outer{6.283185f}, outer_gain{0};
 	} listener_cones[MA_ENGINE_MAX_LISTENERS];
 	void set_listener_cone(unsigned int index, float inner_radians, float outer_radians, float outer_gain) override {
-		if (has_listener(index) && finite_values({inner_radians, outer_radians, outer_gain})) {
+		if (has_listener(index) && finite_values({inner_radians, outer_radians}) && playable_volumes({outer_gain})) { // As a sound's cone's gain (6568163b).
 			listener_cones[index].inner = inner_radians;
 			listener_cones[index].outer = outer_radians;
 			listener_cones[index].outer_gain = outer_gain;
