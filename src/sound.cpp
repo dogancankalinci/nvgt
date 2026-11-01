@@ -2531,7 +2531,7 @@ public:
 		unique_lock<mutex> lock = lock_writes();
 		if (!lock) return "";
 		if (!pull_stream) return (g_soundsystem_last_error = MA_INVALID_OPERATION), ""; // No pull session, which said nothing.
-		if (!streamable_pulling && get_active()) return "";
+		if (!streamable_pulling && get_active()) return (g_soundsystem_last_error = MA_INVALID_OPERATION), ""; // A WAV's output comes once it closes, its header written then.
 		stringstream* pull_stringstream = dynamic_cast<stringstream*>(pull_stream->stream());
 		if (!pull_stringstream) return "";
 		string data = pull_stringstream->str();
@@ -4190,7 +4190,7 @@ public:
 	}
 	// In the unit get_time() reads, milliseconds unless the engine counts durations in frames.
 	bool set_time(unsigned long long time) override {
-		if (!snd) return false;
+		if (!snd) return nothing_loaded();
 		if (!(get_engine()->get_flags() & audio_engine::DURATIONS_IN_FRAMES)) {
 			ma_uint32 rate = ma_engine_get_sample_rate(ma_sound_get_engine(&*snd));
 			if (!frames_fit(time, rate)) return false;

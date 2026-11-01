@@ -197,7 +197,7 @@ public:
 		return true;
 	}
 	bool set_output_bus_volume(unsigned int bus, float volume) {
-		if (!node) return false;
+		if (!node) return (g_soundsystem_last_error = MA_INVALID_OPERATION) == MA_SUCCESS; // A node gone, which said nothing, as attach_output_bus() says.
 		if (!std::isfinite(volume) || std::fabs(volume) > max_volume_gain || volume < 0) { // A NaN or infinite volume made every sample the bus fed NaN, as one past max_volume_gain could; MiniAudio takes a negative one as 0, which then read back as 0 though it was set.
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
@@ -206,17 +206,17 @@ public:
 	}
 	float get_output_bus_volume(unsigned int bus) { return node ? ma_node_get_output_bus_volume(node, bus) : 0; }
 	bool set_state(ma_node_state state) {
-		if (!node) return false;
+		if (!node) return (g_soundsystem_last_error = MA_INVALID_OPERATION) == MA_SUCCESS;
 		if (state != ma_node_state_started && state != ma_node_state_stopped) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // As set_state_time() refuses it: MiniAudio kept any value, which it then took as started.
 		return (g_soundsystem_last_error = ma_node_set_state(node, state)) == MA_SUCCESS;
 	}
 	ma_node_state get_state() { return node ? ma_node_get_state(node) : ma_node_state_stopped; }
-	bool set_state_time(ma_node_state state, unsigned long long time) { return node ? (g_soundsystem_last_error = ma_node_set_state_time(node, state, time)) == MA_SUCCESS : false; }
+	bool set_state_time(ma_node_state state, unsigned long long time) { return node ? (g_soundsystem_last_error = ma_node_set_state_time(node, state, time)) == MA_SUCCESS : (g_soundsystem_last_error = MA_INVALID_OPERATION) == MA_SUCCESS; }
 	unsigned long long get_state_time(ma_node_state state) { return node ? ma_node_get_state_time(node, state) : 0; } // As MiniAudio gives for no node, rather than a state, which read as frame 1.
 	ma_node_state get_state_by_time(unsigned long long global_time) { return node ? ma_node_get_state_by_time(node, global_time) : ma_node_state_stopped; }
 	ma_node_state get_state_by_time_range(unsigned long long global_time_begin, unsigned long long global_time_end) { return node ? ma_node_get_state_by_time_range(node, global_time_begin, global_time_end) : ma_node_state_stopped; }
 	unsigned long long get_time() const { return node ? ma_node_get_time(node) : 0; }
-	bool set_time(unsigned long long local_time) { return node ? (g_soundsystem_last_error = ma_node_set_time(node, local_time)) == MA_SUCCESS : false; }
+	bool set_time(unsigned long long local_time) { return node ? (g_soundsystem_last_error = ma_node_set_time(node, local_time)) == MA_SUCCESS : (g_soundsystem_last_error = MA_INVALID_OPERATION) == MA_SUCCESS; }
 };
 typedef struct {
 	ma_node_base base;
