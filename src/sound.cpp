@@ -1154,12 +1154,14 @@ public:
 				snd->release();
 				return nullptr;
 			}
+			g_soundsystem_last_error = MA_SUCCESS; // For the setters, void, which set it only to refuse.
 			if (position.x != FLT_MAX || position.y != FLT_MAX || position.z != FLT_MAX) snd->set_position_3d_vector(position);
 			// As for the position, FLT_MAX leaves the sound's own default, which is right whether or not the engine takes these as percentages and decibels.
 			if (volume != FLT_MAX) snd->set_volume(volume);
 			if (pan != FLT_MAX) snd->set_pan(pan);
 			if (pitch != FLT_MAX) snd->set_pitch(pitch);
-			if (autoplay) snd->play();
+			const ma_result refused = g_soundsystem_last_error; // An argument a setter refused, kept should the sound then play: play() set success over it, so that the refusal read as nothing.
+			if (autoplay && snd->play() && refused != MA_SUCCESS) g_soundsystem_last_error = refused;
 		} catch (...) {
 			snd->release();
 			throw;
