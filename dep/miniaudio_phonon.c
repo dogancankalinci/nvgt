@@ -128,6 +128,7 @@ MA_API ma_result ma_phonon_binaural_node_init(ma_node_graph* pNodeGraph, const m
 	pBinauralNode->iplContext	   = pConfig->iplContext;
 
 	pBinauralNode->spatial_blend_max_distance = 4.0;
+	pBinauralNode->direction_distance = 0;
 
 	memset(&iplBinauralEffectSettings, 0, sizeof(IPLBinauralEffectSettings));
 	iplBinauralEffectSettings.hrtf = pConfig->iplHRTF;
@@ -195,6 +196,7 @@ MA_API ma_result ma_phonon_binaural_node_set_direction(ma_phonon_binaural_node* 
 	pBinauralNode->iplEffectParams.direction.x = x;
 	pBinauralNode->iplEffectParams.direction.y = y;
 	pBinauralNode->iplEffectParams.direction.z = z;
+	pBinauralNode->direction_distance = distance;
 	pBinauralNode->iplEffectParams.spatialBlend = pBinauralNode->spatial_blend_max_distance > 0? distance / pBinauralNode->spatial_blend_max_distance : 1.0f;
 	if (pBinauralNode->iplEffectParams.spatialBlend > 1.0) pBinauralNode->iplEffectParams.spatialBlend = 1.0;
 	return MA_SUCCESS;
@@ -206,6 +208,9 @@ MA_API ma_result ma_phonon_binaural_node_set_spatial_blend_max_distance(ma_phono
 		return MA_INVALID_ARGS;
 	}
 	pBinauralNode->spatial_blend_max_distance = max_distance;
+	/* NVGT: taking effect now, rather than only at the next direction set. */
+	pBinauralNode->iplEffectParams.spatialBlend = max_distance > 0? pBinauralNode->direction_distance / max_distance : 1.0f;
+	if (pBinauralNode->iplEffectParams.spatialBlend > 1.0) pBinauralNode->iplEffectParams.spatialBlend = 1.0;
 	return MA_SUCCESS;
 }
 

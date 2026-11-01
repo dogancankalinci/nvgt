@@ -28,6 +28,7 @@ typedef struct
     IPLBinauralEffect iplEffect;
     IPLBinauralEffectParams iplEffectParams;
     float spatial_blend_max_distance;
+    float direction_distance; /* NVGT: the distance given with the last direction, which the spatial blend is worked out from again when its maximum distance changes. */
     
     float* ppBuffersIn[2];      /* Each buffer is an offset of _pHeap. */
     float* ppBuffersOut[2];     /* Each buffer is an offset of _pHeap. */
