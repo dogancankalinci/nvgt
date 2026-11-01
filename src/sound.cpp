@@ -2612,11 +2612,14 @@ class audio_wav_encoder_impl : public audio_encoder_impl, public virtual audio_w
 		std::unique_lock<std::recursive_mutex> held_open;
 		std::ostream *stream = out->file.get();
 		if (!stream) {
-			if (!out->ds) return MA_ERROR;
+			if (!out->ds) return (out->failed = true), MA_ERROR;
 			held_open = out->ds->hold_open(); // On the audio thread too, while the script can close the datastream.
 			stream = out->ds->get_ostr();
 		}
-		if (!stream) return MA_ERROR;
+		if (!stream) { // The datastream, closed by the script: what was to be written is lost, the sizes and padding closing writes too, which close() reported as written.
+			out->failed = true;
+			return MA_ERROR;
+		}
 		stream->write((const char *)pBufferIn, bytesToWrite);
 		if (!stream->good()) {
 			out->failed = true;
@@ -2627,6 +2630,18 @@ class audio_wav_encoder_impl : public audio_encoder_impl, public virtual audio_w
 		out->end = std::max(out->end, out->at);
 		return MA_SUCCESS;
 	}
+	// seekp(), unlike write() and flush(), lets an exception the stream's buffer throws through on libstdc++ and libc++: Poco's file streams, a script's file datastream's too, write out what they hold before they seek, and throw for a write that fails, as on a full disk. It left the encoder's uninit half done, and a destructor that closes the encoder, by terminating. Taken as the stream failing, which it did.
+	static bool seek_output(std::ostream* stream, std::streamoff to) {
+		try {
+			stream->seekp(to);
+			return true;
+		} catch (...) {
+			try {
+				stream->setstate(std::ios::badbit);
+			} catch (...) {}
+			return false;
+		}
+	}
 	static ma_result stream_seek(ma_encoder *pEncoder, ma_int64 offset, ma_seek_origin origin) {
 		if (origin != ma_seek_origin_start) return MA_NOT_IMPLEMENTED;
 		stream_output *out = static_cast<stream_output *>(pEncoder->pUserData);
@@ -2634,13 +2649,16 @@ class audio_wav_encoder_impl : public audio_encoder_impl, public virtual audio_w
 		std::unique_lock<std::recursive_mutex> held_open;
 		std::ostream *stream = out->file.get();
 		if (!stream) {
-			if (!out->ds) return MA_ERROR;
+			if (!out->ds) return (out->failed = true), MA_ERROR;
 			held_open = out->ds->hold_open();
 			stream = out->ds->get_ostr();
 		}
-		if (!stream) return MA_ERROR;
+		if (!stream) return (out->failed = true), MA_ERROR; // As for a write.
 		std::ios_base::iostate was = stream->rdstate();
-		stream->seekp(out->base + offset);
+		if (!seek_output(stream, out->base + offset)) {
+			out->failed = true;
+			return MA_ERROR;
+		}
 		if (stream->good()) {
 			out->at = offset;
 			out->moved = true;
@@ -2687,7 +2705,15 @@ protected:
 		if (output.file || ds && ds->can_write()) {
 			if (!output.file) {
 				output.ds = ds;
-				std::streampos start = ds->get_ostr()->tellp();
+				std::streampos start;
+				try {
+					start = ds->get_ostr()->tellp(); // As seekp() can, see seek_output(): the stream couldn't write out what the script wrote to it.
+				} catch (...) {
+					g_soundsystem_last_error = MA_IO_ERROR;
+					encoder.reset();
+					output = stream_output();
+					return false;
+				}
 				output.base = start == std::streampos(-1)? 0 : std::streamoff(start);
 			}
 			output.header.clear();
@@ -2734,8 +2760,9 @@ protected:
 			auto held_open = output.ds->hold_open();
 			if (std::ostream* stream = output.ds->get_ostr()) {
 				std::ios_base::iostate was = stream->rdstate();
-				stream->seekp(output.base + output.end);
-				if (!stream->good()) stream->clear(was);
+				if (!seek_output(stream, output.base + output.end)) {
+					if (close_result == MA_SUCCESS) close_result = MA_IO_ERROR;
+				} else if (!stream->good()) stream->clear(was);
 			}
 		}
 		output = stream_output();
