@@ -5659,7 +5659,13 @@ void set_sound_default_engine(audio_engine* engine) {
 	}
 	audio_engine *old;
 	{
-		std::lock_guard<std::recursive_mutex> lock(g_soundsystem_init_mutex); // Not while init_sound() builds the default engine on another thread.
+		std::unique_lock<std::recursive_mutex> lock(g_soundsystem_init_mutex, std::defer_lock); // Not while init_sound() builds the default engine on another thread, which an audio thread doesn't wait for (see init_sound()).
+		if (!on_an_audio_thread()) lock.lock();
+		else if (!lock.try_lock()) {
+			engine->release();
+			g_soundsystem_last_error = MA_BUSY;
+			return;
+		}
 		if (g_soundsystem_shut_down.test()) { // Which a script thread still running at shutdown could otherwise mark ready again.
 			engine->release();
 			throw runtime_error("the sound system has shut down");
