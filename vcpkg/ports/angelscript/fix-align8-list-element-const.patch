@@ -1,0 +1,17 @@
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -4426,10 +4426,12 @@
+ 			// without a default constructor keeps the assignment in place, where the buffer has zeroed it (a temporary's
+ 			// memory would hold whatever the allocator left), as its opAssign could read the object first. The
+ 			// temporary is made before the value's code (an expression, or an init list for a type with a list
+-			// constructor), so it is chosen outside the variables that code uses.
++			// constructor), so it is chosen outside the variables that code uses. An element of a const type keeps the
++			// assignment in place too: it can't be assigned (the compiler reports it), and the temporary must not make that
++			// assignable (array<const atomic_int64> a = {5} compiled through it, while array<const int> doesn't).
+ 			int alignedTemp = 0;
+ 			asCDataType alignedType;
+-			if( !dt.IsPrimitive() && !dt.IsObjectHandle() && !dt.IsNullHandle() &&
++			if( !dt.IsPrimitive() && !dt.IsObjectHandle() && !dt.IsNullHandle() && !dt.IsReadOnly() &&
+ 				dt.GetTypeInfo() && (dt.GetTypeInfo()->flags & asOBJ_VALUE) && (dt.GetTypeInfo()->flags & asOBJ_POD) &&
+ 				(dt.GetTypeInfo()->flags & asOBJ_APP_CLASS_ALIGN8) && !(dt.GetTypeInfo()->flags & asOBJ_ASHANDLE) &&
+ 				dt.GetBehaviour() && dt.GetBehaviour()->construct &&

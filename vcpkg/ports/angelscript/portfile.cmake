@@ -131,6 +131,7 @@ vcpkg_from_github(
         fix-args-on-stack-running-calls.patch
         fix-list-element-destroy.patch
         fix-align8-list-element-assign.patch
+        fix-align8-list-element-const.patch
 )
 
 vcpkg_cmake_configure(
