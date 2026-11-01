@@ -1452,7 +1452,10 @@ public:
 		if (!src || in_use()) return refused_now(), 0;
 		ma_uint32 sample_rate = 0;
 		if ((g_soundsystem_last_error = ma_data_source_get_data_format(src->pDataSource, nullptr, nullptr, &sample_rate, nullptr, 0)) != MA_SUCCESS || !sample_rate) return 0;
-		if (!(ms > 0 && ms <= FLT_MAX)) return 0; // Nothing to skip, or NaN or infinite, whose frame count no integer holds.
+		if (!(ms > 0 && ms <= FLT_MAX)) { // Nothing to skip, or NaN or infinite, whose frame count no integer holds: those refused as seek_milliseconds() refuses them, rather than skipping nothing with success.
+			if (!(ms <= 0)) g_soundsystem_last_error = MA_INVALID_ARGS;
+			return 0;
+		}
 		drop_pending_frames();
 		double frames = (double)ms / 1000 * sample_rate;
 		return skip_by_reading(frames_to_take(frames < 9e18? (unsigned long long)frames : 9000000000000000000ULL)) * 1000.0f / sample_rate;
