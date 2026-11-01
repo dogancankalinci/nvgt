@@ -1055,14 +1055,15 @@ public:
 		g_soundsystem_last_error = MA_INVALID_ARGS;
 		return false;
 	}
+	// Shaped sounds are placed anew only after a move that was made, rather than taking their locks for one refused.
 	void set_listener_position(unsigned int index, float x, float y, float z) override {
-		if (has_listener(index) && finite_values({x, y, z}))
-			ma_engine_listener_set_position(&*engine, index, x, y, z);
+		if (!has_listener(index) || !finite_values({x, y, z})) return;
+		ma_engine_listener_set_position(&*engine, index, x, y, z);
 		place_shaped_mixers(this);
 	}
 	void set_listener_position_vector(unsigned int index, const reactphysics3d::Vector3 &position) override {
-		if (has_listener(index) && finite_values({position.x, position.y, position.z}))
-			ma_engine_listener_set_position(&*engine, index, position.x, position.y, position.z);
+		if (!has_listener(index) || !finite_values({position.x, position.y, position.z})) return;
+		ma_engine_listener_set_position(&*engine, index, position.x, position.y, position.z);
 		place_shaped_mixers(this);
 	}
 	reactphysics3d::Vector3 get_listener_position(unsigned int index) const override { return engine ? ma_vec3_to_rp_vec3(ma_engine_listener_get_position(&*engine, index)) : reactphysics3d::Vector3(); }
