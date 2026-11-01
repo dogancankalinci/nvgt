@@ -610,7 +610,7 @@ static bool sound_due_to_play(sound* s); // After sound_impl.
 // A pack's read-only copy, for a load or the default pack, given back with release() as pack_interface is counted, rather than deleted: a plugin's make_immutable() may hand over a reference to a pack that is read-only already, which deleting freed under its other holders.
 static std::shared_ptr<const pack_interface> immutable_pack(const pack_interface* pack) {
 	const pack_interface* copy = pack->make_immutable();
-	if (!copy) return nullptr;
+	if (!copy) throw_refusal(MA_INVALID_ARGS, "the pack gave no read-only copy"); // Refused, as a pack open for writing is: a null copy loaded from sound_default_pack's, or from disk for a decoder, and as the default pack failed every load.
 	return std::shared_ptr<const pack_interface>(copy, [](const pack_interface* p) { p->release(); });
 }
 void garbage_collect_inline_sounds() {
