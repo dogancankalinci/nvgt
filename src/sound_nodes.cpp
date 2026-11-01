@@ -969,11 +969,10 @@ public:
 	void set_volume_curve(float value) override { if (finite_node_values({value})) volume_curve = value; }
 	float get_volume_curve() const override { return volume_curve; }
 	float get_volume_at(float distance) const override {
-		if (distance > max_audible_distance) distance = max_audible_distance;
-		// The loudest send no farther than the audible distance: with that below max_volume_distance, every sound past it took the clamp above into the in-range branch, sent louder the farther it was.
-		const float loudest_at = max_volume_distance < max_audible_distance? max_volume_distance : max_audible_distance;
 		float v;
-		if (distance < loudest_at || distance <= max_volume_distance && max_volume_distance <= max_audible_distance) v = max_volume_distance > 0? range_convert(distance, 0, max_volume_distance, min_volume, max_volume) : max_volume; // A range of no width would divide by zero; its one point is max_volume_distance itself.
+		// Past the audible distance, the quietest send, told from the distance as given: clamped to the audible distance first, a sound past it took the loudest range whenever that reached so far, as with max_volume_distance at or past the audible distance, sent the loudest at every distance.
+		if (!(distance <= max_audible_distance)) v = -60;
+		else if (distance <= max_volume_distance) v = max_volume_distance > 0? range_convert(distance, 0, max_volume_distance, min_volume, max_volume) : max_volume; // A range of no width would divide by zero; its one point is max_volume_distance itself.
 		else {
 			v = range_convert(distance, max_volume_distance, max_audible_distance, 1, 0);
 			// A curve of 0 or less, or 1 or more, takes the curve's own limit there, which the formula would reach dividing by zero: the loudest short of the audible distance, or the quietest past the loudest's distance. They gave max_volume or min_volume at every distance past max_volume_distance instead, the audible distance's -60 dB never reached, so that a sound far beyond it was still sent at about full level.
