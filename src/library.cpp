@@ -152,8 +152,26 @@ poco_shared<Poco::Dynamic::Var>* library_function::invoke(asIScriptGeneric* gen,
 				case asTYPEID_FLOAT: dv = *(float*)addr; is_float = true; break;
 				case asTYPEID_DOUBLE: dv = *(double*)addr; is_float = true; break;
 				default: {
-					int size = g_ScriptEngine->GetSizeOfPrimitiveType(tid);
-					iv = size == 1? *(int8_t*)addr : size == 2? *(int16_t*)addr : size == 8? *(int64_t*)addr : *(int32_t*)addr;
+					// An int, or an enum, which is read as its underlying type: enum E : uint8 is one unsigned byte. Read as a signed
+					// value of its size, an enum value of 200 with a uint8 underlying type arrived as -56, and one of 0x80000000 with a
+					// uint underlying type as a negative number for an int64 or double parameter.
+					int underlying = tid;
+					asITypeInfo* ti = g_ScriptEngine->GetTypeInfoById(tid);
+					if (ti && (ti->GetFlags() & asOBJ_ENUM)) underlying = ti->GetUnderlyingTypeId();
+					switch (underlying) {
+						case asTYPEID_INT8: iv = *(int8_t*)addr; break;
+						case asTYPEID_UINT8: iv = *(uint8_t*)addr; break;
+						case asTYPEID_INT16: iv = *(int16_t*)addr; break;
+						case asTYPEID_UINT16: iv = *(uint16_t*)addr; break;
+						case asTYPEID_UINT32: iv = *(uint32_t*)addr; break;
+						case asTYPEID_INT64: iv = *(int64_t*)addr; break;
+						case asTYPEID_UINT64: iv = *(int64_t*)addr; is_u64 = true; break;
+						default: {
+							int size = g_ScriptEngine->GetSizeOfPrimitiveType(tid);
+							iv = size == 1? *(int8_t*)addr : size == 2? *(int16_t*)addr : size == 8? *(int64_t*)addr : *(int32_t*)addr;
+							break;
+						}
+					}
 					break;
 				}
 			}
