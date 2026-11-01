@@ -1103,7 +1103,7 @@ static std::atomic<int> g_default_3d_attenuator{-1};
 std::recursive_mutex g_node_graph_mutex;
 class audio_spatializer_impl;
 static std::unordered_set<audio_spatializer_impl*> g_tracked_spatializers;
-static std::mutex g_tracked_spatializers_mutex; // every mixer/sound constructs a spatializer on whatever script thread creates it, while sound_set_spatialization iterates the set from another
+static std::mutex g_tracked_spatializers_mutex; // a mixer or sound makes its spatializer, when first needed, on whatever script thread that is, while sound_set_spatialization iterates the set from another
 static std::mutex g_spatializer_sweep_mutex; // One panner or attenuator change at a time rewires the spatializers, so that two don't reach each in different orders.
 // The spatializers a panner or attenuator change took a reference to, let go of as it goes out of scope. Declared before the change's lock, so after that lock, as letting go of a last reference can run a teardown ending in script code that makes such a change again; and on an exception, as a component that can't be made throws, rather than kept for good with their engines.
 struct swept_spatializers {

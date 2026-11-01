@@ -5521,13 +5521,13 @@ mixer *new_global_mixer() {
 	if (!engine) throw runtime_error("no audio engine available");
 	return new mixer_impl(engine.engine);
 }
-// A sound on the default engine that isn't attached to sound_default_mixer, which the script can pause or turn down, but plays straight to the engine's endpoint, as speech does.
+// A sound on the default engine that isn't attached to sound_default_mixer, which the script can pause or turn down, but plays straight to the engine's endpoint, as speech made for the sound system's own playback does.
 sound *new_global_sound_unmixed() {
 	default_engine_ref engine;
 	if (!engine) return nullptr; // The sound system couldn't start.
 	return new sound_impl(engine.engine);
 }
-// The script's sound factory, which throws when the sound system can't start, as a mixer's does and sound_system_available says, rather than giving null, which failed later as a null pointer. Speech and the tone synth, which check for null, use new_global_sound().
+// The script's sound factory, which throws when the sound system can't start, as a mixer's does and sound_system_available says, rather than giving null, which failed later as a null pointer. Speech and the tone synth, which check for null, use new_global_sound() and new_global_sound_unmixed().
 sound *script_new_global_sound();
 sound *new_global_sound() {
 	sound* s = new_global_sound_unmixed();
