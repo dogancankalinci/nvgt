@@ -421,7 +421,10 @@ class splitter_node_impl : public audio_node_impl, public virtual splitter_node 
 	unique_ptr<ma_splitter_node> sn;
 	public:
 	splitter_node_impl(audio_engine* e, int channels) : sn(make_unique<ma_splitter_node>()), audio_node_impl(nullptr, e) {
-		if (channels < 1 || channels > MA_MAX_CHANNELS) throw std::runtime_error("invalid channel count"); // A node's channel count is kept in 8 bits.
+		if (channels < 1 || channels > MA_MAX_CHANNELS) { // A node's channel count is kept in 8 bits.
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			throw std::runtime_error("invalid channel count");
+		}
 		ma_splitter_node_config cfg = ma_splitter_node_config_init(channels);
 		if ((g_soundsystem_last_error = ma_splitter_node_init(ma_engine_get_node_graph(get_engine()->get_ma_engine()), &cfg, nullptr, &*sn)) != MA_SUCCESS) throw std::runtime_error("ma_splitter_node was not initialized");
 		node = (ma_node_base*)&*sn;
@@ -709,7 +712,10 @@ class delay_node_impl : public audio_node_impl, public virtual delay_node {
 	public:
 	delay_node_impl(unsigned int delay_in_frames, float decay, audio_engine* e) : dn(make_unique<ma_delay_node>()), audio_node_impl(nullptr, e) {
 		// MiniAudio takes neither a delay of 0, by which it divides while processing, nor one whose buffer size overflows 32 bits, which it then allocates too small and overruns.
-		if (delay_in_frames == 0 || uint64_t(delay_in_frames) * get_engine()->get_channels() * sizeof(float) > UINT32_MAX) throw std::invalid_argument("delay out of range");
+		if (delay_in_frames == 0 || uint64_t(delay_in_frames) * get_engine()->get_channels() * sizeof(float) > UINT32_MAX) {
+			g_soundsystem_last_error = MA_INVALID_ARGS; // As the filters' constructors say it.
+			throw std::invalid_argument("delay out of range");
+		}
 		if (!finite_node_values({decay})) throw std::invalid_argument("decay out of range");
 		decay = clamped_unit(decay);
 		ma_delay_node_config cfg = ma_delay_node_config_init(get_engine()->get_channels(), get_engine()->get_sample_rate(), delay_in_frames, decay);
