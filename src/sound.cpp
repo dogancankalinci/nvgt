@@ -5013,6 +5013,7 @@ public:
 	}
 	bool open(audio_data_source* ds) override {
 		if (!ds) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS;
+		if (snd && datasource_opened && ds == datasource) close_to_reload(); // The source it plays, which is_used() below counts this sound as reading: closed and opened anew, as open() does with another source, rather than refused.
 		// A sound's own source is freed by that sound when it closes, as this one does to open it, and one another sound or chain reads would be read from two places.
 		if (!ds->get_active() || audio_data_source_impl::is_sound_owned(ds) || audio_data_source_impl::is_used(ds)) {
 			g_soundsystem_last_error = ds->get_active()? MA_INVALID_OPERATION : MA_INVALID_ARGS;
