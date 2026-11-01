@@ -4828,6 +4828,8 @@ public:
 			// Only for the decoder's own failures, which come after the file was read and cached: a file that couldn't be read, such as an empty one, leaves no entry, and MiniAudio's unregister of a name it doesn't find returns without unlocking its cache, hanging every later load.
 			if (g_soundsystem_last_error == MA_INVALID_FILE || g_soundsystem_last_error == MA_NO_BACKEND)
 				ma_resource_manager_unregister_file(ma_engine_get_resource_manager(get_engine()->get_ma_engine()), triplet.c_str());
+			// The decoders' error stands for a retry that failed too: reading the file in whole fails for its own reasons, as at the end of an empty file or for a device without a size, so that one file read one error from load() and another from stream() and audio_decoder.open().
+			if (g_soundsystem_last_error != MA_SUCCESS) g_soundsystem_last_error = MA_INVALID_FILE;
 		}
 
 		// A stream fills two pages, of about a second each, before it is made, its decoder not yet looping, and MiniAudio's page fill ends after meeting a looping decoder's end twice with nothing read between; a stream wholly read into its pages so went silent where it looped, at its first loop and, under half a page, every second one. Such a source, its decoder at its end once the pages are filled, is loaded as a buffer instead, which loops seamlessly in no more memory; one of unknown length isn't, as loading it again would read it from its start again.
