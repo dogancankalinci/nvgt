@@ -244,8 +244,19 @@ public:
 		audio_node* insert_after = after > -1? nodes[after] : nullptr;
 		return add_node(node, insert_after, input_bus_index);
 	}
+	// The removed nodes are let go of once the chain's lock is: the last reference to a node, such as a reverb3d's mixer, can take the send lock of the reverb node its sends go to, which a reverb3d's set_reverb() holds while it takes that node's chain lock, should the reverb node be this chain.
 	bool remove_node(audio_node* node) override {
-		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		audio_node* removed = nullptr;
+		bool success;
+		{
+			std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+			success = take_out(node, removed);
+		}
+		if (removed) removed->release();
+		return success;
+	}
+	// Takes a node out of the chain under its lock, handing its reference back to let go of after (see remove_node()).
+	bool take_out(audio_node* node, audio_node*& removed) {
 		if (!node) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS;
 		auto it = find(nodes.begin(), nodes.end(), node);
 		if (it == nodes.end()) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS;
@@ -261,25 +272,34 @@ public:
 		}
 		nodes.erase(it);
 		input_buses.erase(input_buses.begin() + index);
-		bool success = node->detach_output_bus(0);
-		node->release();
-		return success;
+		removed = node;
+		return node->detach_output_bus(0);
 	}
 	bool remove_node_at(unsigned int index) override {
-		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
-		if (index >= nodes.size()) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS;
-		return remove_node(nodes[index]);
+		audio_node* removed = nullptr;
+		bool success;
+		{
+			std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+			if (index >= nodes.size()) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS;
+			success = take_out(nodes[index], removed);
+		}
+		if (removed) removed->release(); // As remove_node().
+		return success;
 	}
 	bool clear(bool detach_nodes) override {
-		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
-		bool success = audio_node_impl::detach_output_bus(0);
-		for (audio_node* node : nodes) {
-			if (success && detach_nodes) success = node->detach_output_bus(0);
-			node->release();
+		std::vector<audio_node*> removed;
+		bool success;
+		{
+			std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+			success = audio_node_impl::detach_output_bus(0);
+			for (audio_node* node : nodes) {
+				if (success && detach_nodes) success = node->detach_output_bus(0);
+			}
+			if (success && endpoint) success = audio_node_impl::attach_output_bus(0, endpoint, endpoint_input_bus_index);
+			removed.swap(nodes);
+			input_buses.clear();
 		}
-		if (success && endpoint) success = audio_node_impl::attach_output_bus(0, endpoint, endpoint_input_bus_index);
-		nodes.clear();
-		input_buses.clear();
+		for (audio_node* node : removed) node->release(); // As remove_node().
 		return success;
 	}
 	// The chain holds a reference of its own to the endpoint. The attachment to it, whichever node it is from, holds another, but every insert, removal or clear rewires that attachment, which let go of the endpoint's only reference before the endpoint was attached to again, and a script can detach a node of the chain through the audio_node API.
