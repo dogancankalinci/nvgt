@@ -176,6 +176,13 @@ poco_shared<Poco::Dynamic::Var>* library_function::invoke(asIScriptGeneric* gen,
 				}
 			}
 			ffi_value& v = values[i];
+			// A bool parameter gets the truth of the value, as C converts to bool: as a uint8 it got the value's low byte, so 256
+			// arrived as false and 0.5 (converted to an integer first) too.
+			if (arg_type_strings[i] == "bool") {
+				v.u8 = (is_float? dv != 0 : iv != 0)? 1 : 0;
+				arg_ptrs.push_back(&v);
+				continue;
+			}
 			switch (arg_types[i]->type) {
 				case FFI_TYPE_FLOAT: v.f = is_float? (float)dv : is_u64? (float)(uint64_t)iv : (float)iv; break;
 				case FFI_TYPE_DOUBLE: v.d = is_float? dv : is_u64? (double)(uint64_t)iv : (double)iv; break;
