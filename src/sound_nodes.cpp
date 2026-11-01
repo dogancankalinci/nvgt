@@ -203,7 +203,8 @@ public:
 		}
 		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		set_endpoint(nullptr, 0);
-		return endpoint == nullptr;
+		if (endpoint) return false;
+		return (g_soundsystem_last_error = MA_SUCCESS) == MA_SUCCESS; // Detached, or with nothing to detach, as a call that succeeded reads.
 	}
 	bool detach_all_output_buses() override { return detach_output_bus(0); }
 	bool add_node(audio_node* node, audio_node* after, unsigned int input_bus_index) override {
@@ -1241,6 +1242,7 @@ bool sound_set_spatialization(int panner, int attenuator, bool disable_previous,
 		attenuator_success = true;
 		if (attenuator != prev_attenuator && disable_previous) set_audio_attenuator_enabled(prev_attenuator, false);
 	}
+	if (panner_success && attenuator_success) g_soundsystem_last_error = MA_SUCCESS; // As a call that succeeded reads.
 	return panner_success && attenuator_success;
 }
 

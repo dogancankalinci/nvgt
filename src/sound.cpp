@@ -1001,7 +1001,7 @@ public:
 	int get_sample_rate() const override { return engine ? ma_engine_get_sample_rate(&*engine) : 0; }
 	bool start() override {
 		if (!engine) return false;
-		if (processing == this) return true; // Its device runs, this being its callback; waiting for device_mutex here could be for set_device() on another thread, which waits for this callback to return.
+		if (processing == this) return (g_soundsystem_last_error = MA_SUCCESS) == MA_SUCCESS; // Its device runs, this being its callback; waiting for device_mutex here could be for set_device() on another thread, which waits for this callback to return.
 		if (processing) { // Another engine's callback: starting a device waits for its thread to start, holding that engine's audio up meanwhile, as stop() and set_device() are refused there for.
 			g_soundsystem_last_error = MA_INVALID_OPERATION;
 			return false;
@@ -3712,7 +3712,7 @@ public:
 				unique_lock<mutex> lock(spatialization_params_mutex);
 				ma_sound_set_position(&*snd, position.x, position.y, position.z);
 			}
-			return true;
+			return (g_soundsystem_last_error = MA_SUCCESS) == MA_SUCCESS; // As a call that succeeded reads, rather than an earlier refusal.
 		}
 		sound_shape* new_shape_obj = g_sound_shape_setup_callbacks[ot](this, &new_shape);
 		if (!new_shape_obj) {
@@ -3727,6 +3727,7 @@ public:
 		}
 		shape_handle = new_shape;
 		track_shape(true);
+		g_soundsystem_last_error = MA_SUCCESS;
 		if (snd && get_spatialization_enabled()) set_position_3d(position.x, position.y, position.z); // Applied now rather than at the next set_position_3d(), for a sound already placed, which set_position_3d() would otherwise make spatialized.
 		return true;
 	}
@@ -4778,7 +4779,7 @@ public:
 			frames_written += frames_requested;
 			size_in_frames -= frames_requested;
 		}
-		return true;
+		return (g_soundsystem_last_error = MA_SUCCESS) == MA_SUCCESS; // An empty chunk too, which wrote nothing to say so.
 	}
 	bool stream_pcm_script_array(CScriptArray *buffer, unsigned int sample_rate, unsigned int channels, unsigned int buffer_size) override {
 		if (!buffer)
@@ -5461,7 +5462,7 @@ public:
 		}
 		std::lock_guard<std::mutex> lock(device_mutex);
 		// Without a device open, as after one failed to, or with one the backend stopped while the microphone is meant to record, it is opened anew.
-		if (capture_device && (!wants_recording || ma_device_is_started(&*capture_device)) && (device == -1? follows_default : !follows_default && ma_device_id_equal(&requested_id, &device_id))) return true;
+		if (capture_device && (!wants_recording || ma_device_is_started(&*capture_device)) && (device == -1? follows_default : !follows_default && ma_device_id_equal(&requested_id, &device_id))) return (g_soundsystem_last_error = MA_SUCCESS) == MA_SUCCESS;
 		const bool had_device = capture_device != nullptr;
 		if (had_device) {
 			ma_device_stop(&*capture_device);
@@ -5641,7 +5642,7 @@ reactphysics3d::Vector3 sound_get_listener_position(unsigned int listener_index 
 // True only when the position was set: MiniAudio ignores a listener it doesn't have, and the engine a position that isn't finite.
 static bool listener_position_settable(audio_engine* engine, unsigned int listener_index, float x, float y, float z) {
 	if (!finite_values({x, y, z})) return false;
-	if (listener_index < engine->get_listener_count()) return true;
+	if (listener_index < engine->get_listener_count()) return (g_soundsystem_last_error = MA_SUCCESS) == MA_SUCCESS; // Set next, which says nothing, as a call that succeeded reads.
 	g_soundsystem_last_error = MA_INVALID_ARGS;
 	return false;
 }
