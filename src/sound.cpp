@@ -27,6 +27,7 @@
 #include <initializer_list>
 #include <vector>
 #include <Poco/Exception.h>
+#include <Poco/File.h>
 #include <Poco/FileStream.h>
 #include <Poco/Format.h>
 #include <Poco/MemoryStream.h>
@@ -2303,6 +2304,72 @@ public:
 	}
 };
 audio_decoder* audio_decoder::create(audio_engine* e) { return new audio_decoder_impl(e); }
+// The result for a file an encoder couldn't open, from the error Poco's exception carries, errno or Windows' own: one result for every failure said nothing of why, where MiniAudio's file open had told.
+static ma_result file_open_result(const Poco::Exception& e) {
+	switch (e.code()) {
+#ifdef _WIN32
+		case ERROR_FILE_NOT_FOUND: case ERROR_PATH_NOT_FOUND: case ERROR_BAD_NETPATH: case ERROR_INVALID_DRIVE: case ERROR_CANT_RESOLVE_FILENAME: return MA_DOES_NOT_EXIST;
+		case ERROR_ACCESS_DENIED: case ERROR_SHARING_VIOLATION: case ERROR_LOCK_VIOLATION: case ERROR_FILE_READ_ONLY: case ERROR_WRITE_PROTECT: return MA_ACCESS_DENIED; // A file another program holds open too, as the C runtime's open gave.
+		case ERROR_FILE_EXISTS: case ERROR_ALREADY_EXISTS: return MA_ALREADY_EXISTS;
+		case ERROR_INVALID_NAME: case ERROR_BAD_PATHNAME: case ERROR_DIRECTORY: return MA_INVALID_ARGS;
+		case ERROR_FILENAME_EXCED_RANGE: return MA_PATH_TOO_LONG;
+		case ERROR_DISK_FULL: case ERROR_HANDLE_DISK_FULL: return MA_NO_SPACE;
+		case ERROR_TOO_MANY_OPEN_FILES: return MA_TOO_MANY_OPEN_FILES;
+		case ERROR_NOT_ENOUGH_MEMORY: case ERROR_OUTOFMEMORY: return MA_OUT_OF_MEMORY;
+		case ERROR_NOT_READY: return MA_UNAVAILABLE;
+#else
+		case ENOENT: return MA_DOES_NOT_EXIST;
+		case EACCES: case EPERM: case EROFS: return MA_ACCESS_DENIED;
+		case EEXIST: return MA_ALREADY_EXISTS;
+		case ENOTDIR: return MA_NOT_DIRECTORY;
+		case EISDIR: return MA_IS_DIRECTORY;
+		case EINVAL: return MA_INVALID_ARGS;
+		case ENAMETOOLONG: return MA_PATH_TOO_LONG;
+		case ENFILE: case EMFILE: return MA_TOO_MANY_OPEN_FILES;
+		case ENOSPC: return MA_NO_SPACE;
+#ifdef EDQUOT
+		case EDQUOT: return MA_NO_SPACE;
+#endif
+		case EBUSY: return MA_BUSY;
+#ifdef ETXTBSY
+		case ETXTBSY: return MA_BUSY;
+#endif
+#ifdef ELOOP
+		case ELOOP: return MA_TOO_MANY_LINKS;
+#endif
+		case EIO: return MA_IO_ERROR;
+		case ENOMEM: return MA_OUT_OF_MEMORY;
+		case EFBIG: return MA_TOO_BIG;
+#endif
+		default: return MA_ERROR;
+	}
+}
+// Opens a file an encoder writes, through Poco, which takes the UTF-8 name on every platform and, unlike MiniAudio's and libopusenc's own file output, lets the encoder see every write fail; SOUNDSYSTEM_LAST_ERROR says why it couldn't.
+static std::unique_ptr<std::ostream> open_encoder_file(const string& filename) {
+	std::unique_ptr<std::ostream> file;
+	try {
+		file = std::make_unique<Poco::FileOutputStream>(filename, std::ios::out | std::ios::trunc | std::ios::binary);
+	} catch (const Poco::Exception& e) {
+		g_soundsystem_last_error = file_open_result(e);
+		if (g_soundsystem_last_error != MA_IS_DIRECTORY) { // Told on every platform, as POSIX's open tells it: Windows gives a directory's name access denied, and with a separator after it, path not found.
+			try {
+				if (Poco::File(filename).isDirectory()) g_soundsystem_last_error = MA_IS_DIRECTORY;
+			} catch (const std::exception&) {}
+		}
+		return nullptr;
+	} catch (const std::bad_alloc&) {
+		g_soundsystem_last_error = MA_OUT_OF_MEMORY;
+		return nullptr;
+	} catch (const std::exception&) {
+		g_soundsystem_last_error = MA_ERROR;
+		return nullptr;
+	}
+	if (!file->good()) {
+		g_soundsystem_last_error = MA_ERROR;
+		return nullptr;
+	}
+	return file;
+}
 class audio_encoder_impl : public effect_node_impl, public virtual audio_encoder {
 	unique_ptr<ma_data_converter> dc;
 	// The format write_impl() takes, converted to from float once any change of channels or rate is done, in float: MiniAudio's converter mixes channels in its output format when that is s16, and its mixing down to one channel there divides a signed sum by an unsigned count, so every negative sample of 3, 5, 6 or 7 channels came out as a wrong, large value.
@@ -2684,19 +2751,7 @@ protected:
 		output = stream_output();
 		if (!(ds && ds->can_write()) && !filename.empty()) {
 			// A file, opened by NVGT and written through the same callbacks as a datastream rather than by MiniAudio's file output, which reported none of its writes, the sizes and padding written at close included, so that a full disk read as a WAV written in full. Poco opens the UTF-8 name as given on every platform, as MiniAudio needed its wide open for on Windows.
-			try {
-				output.file = std::make_unique<Poco::FileOutputStream>(filename, std::ios::out | std::ios::trunc | std::ios::binary);
-			} catch (const Poco::FileAccessDeniedException&) {
-				g_soundsystem_last_error = MA_ACCESS_DENIED;
-			} catch (const Poco::FileNotFoundException&) {
-				g_soundsystem_last_error = MA_DOES_NOT_EXIST;
-			} catch (const Poco::PathNotFoundException&) {
-				g_soundsystem_last_error = MA_DOES_NOT_EXIST;
-			} catch (const std::exception&) {
-				g_soundsystem_last_error = MA_ERROR;
-			}
-			if (!output.file || !output.file->good()) {
-				if (output.file) g_soundsystem_last_error = MA_ERROR;
+			if (!(output.file = open_encoder_file(filename))) {
 				encoder.reset();
 				output = stream_output();
 				return false;
@@ -2798,6 +2853,13 @@ class audio_opus_encoder_impl : public audio_encoder_impl, public virtual audio_
 		return ostr->good()? 0 : 1;
 	}
 	static int close_callback(void* user_data) { return 0; }
+	std::unique_ptr<std::ostream> file; // A file the encoder writes to, opened by NVGT as the WAV encoder's is (see open_encoder_file()).
+	static int file_write_callback(void* user_data, const unsigned char* ptr, opus_int32 len) {
+		std::ostream* out = static_cast<audio_opus_encoder_impl*>(user_data)->file.get();
+		if (!out) return 1;
+		out->write((const char*)ptr, len);
+		return out->good()? 0 : 1;
+	}
 protected:
 	unsigned int max_output_channels() const override { return 2; } // Mapping family 0, which open_impl() asks libopusenc for, takes mono and stereo only.
 	bool open_impl(const string& filename, datastream* ds, unsigned int sample_rate, unsigned int channels, unsigned int flags) override {
@@ -2810,7 +2872,18 @@ protected:
 		if (ds && ds->can_write()) {
 			OpusEncCallbacks callbacks = {write_callback, close_callback};
 			encoder = ope_encoder_create_callbacks(&callbacks, ds, comments, sample_rate, channels, 0, &error);
-		} else if (!filename.empty()) encoder = ope_encoder_create_file(filename.c_str(), comments, sample_rate, channels, 0, &error);
+		} else if (!filename.empty()) {
+			// The file opened by NVGT, which tells why it couldn't be, where libopusenc's own open read "Unknown error" for every failure, and sees its writes fail, the last ones at close too. Opened once the encoder is made, as libopusenc's open did, so that arguments it refuses leave a file there untouched.
+			OpusEncCallbacks callbacks = {file_write_callback, close_callback};
+			encoder = ope_encoder_create_callbacks(&callbacks, this, comments, sample_rate, channels, 0, &error);
+			if (encoder && !(file = open_encoder_file(filename))) {
+				ope_encoder_destroy(encoder);
+				encoder = nullptr;
+				ope_comments_destroy(comments);
+				comments = nullptr;
+				return false;
+			}
+		}
 		if (!encoder) {
 			// close_impl() only runs its cleanup for an open encoder, so the comments made above would never be freed.
 			ope_comments_destroy(comments);
@@ -2840,11 +2913,18 @@ protected:
 		const int drained = ope_encoder_drain(encoder); // What's left written out, which a failing output loses: told, as close() reports it, rather than claimed done.
 		ope_encoder_destroy(encoder);
 		encoder = nullptr;
+		bool file_failed = false;
+		if (file) { // Written out and closed here, which can fail too, as for the WAV encoder.
+			file->flush();
+			file_failed = !file->good();
+			file.reset();
+		}
 		if (comments) {
 			ope_comments_destroy(comments);
 			comments = nullptr;
 		}
 		if (drained != OPE_OK) close_result = drained == OPE_WRITE_FAIL? MA_IO_ERROR : MA_ERROR;
+		else if (file_failed && close_result == MA_SUCCESS) close_result = MA_IO_ERROR;
 		return true;
 	}
 public:
