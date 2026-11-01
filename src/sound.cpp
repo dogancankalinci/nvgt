@@ -1013,9 +1013,9 @@ public:
 	}
 	int get_channels() const override { return engine ? ma_engine_get_channels(&*engine) : 0; }
 	int get_sample_rate() const override { return engine ? ma_engine_get_sample_rate(&*engine) : 0; }
-	// The engine's node is read only by an engine it is mixed into: on one that isn't, its state changed nothing while it read back as set, the engine playing on. Refused there; start() and stop() are what start and stop it.
+	// The engine's node is read only by an engine it is mixed into: on one that isn't, its state changed nothing while it read back as set, the engine playing on. Refused there, but for started, which it reads as again, stopped while it was mixed in; start() and stop() are what start and stop it.
 	bool set_state(ma_node_state state) override {
-		if (!output_attached()) return (g_soundsystem_last_error = MA_INVALID_OPERATION) == MA_SUCCESS;
+		if (!output_attached() && state != ma_node_state_started) return (g_soundsystem_last_error = MA_INVALID_OPERATION) == MA_SUCCESS;
 		return audio_node_impl::set_state(state);
 	}
 	bool set_state_time(ma_node_state state, unsigned long long time) override {
