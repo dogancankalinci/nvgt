@@ -129,6 +129,7 @@ vcpkg_from_github(
         fix-variadic-args-clean-up.patch
         fix-args-on-stack-level.patch
         fix-args-on-stack-running-calls.patch
+        fix-list-element-destroy.patch
 )
 
 vcpkg_cmake_configure(
