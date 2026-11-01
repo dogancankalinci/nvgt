@@ -4804,7 +4804,8 @@ public:
 		}
 		// For the time being, give it one more try without any flags if we got -10 (MA_INVALID_FILE) because MA's support for loading mp3 is limited.
 		// Not for a source of unknown length, such as a URL: loading without flags reads the source in whole, which needs its size, so it only opened the source again to fail with an error in place of the decoder's.
-		if (g_soundsystem_last_error == MA_INVALID_FILE && !(ma_flags & MA_SOUND_FLAG_UNKNOWN_LENGTH)) {
+		// Nor for a stream, which the same decoders read from the same source: it read a file the script meant to stream, which can be gigabytes, in whole into memory, under the cache's lock that every other load waits for, to fail as it had.
+		if (g_soundsystem_last_error == MA_INVALID_FILE && !(ma_flags & (MA_SOUND_FLAG_UNKNOWN_LENGTH | MA_SOUND_FLAG_STREAM))) {
 			// Synchronously: an asynchronous load leaves the cached file below only at times, and unregistering a name MiniAudio doesn't find hangs every later load. Under the cache's lock throughout, with the unregister: another thread's load of that name in between found the cached file, failed on it too and kept it cached for good.
 			std::lock_guard<std::shared_mutex> tree_lock(g_resource_tree_mutex);
 			tree_held = true;
