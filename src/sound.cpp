@@ -874,7 +874,7 @@ public:
 		bool old_open = old_dev && ma_device_get_state(old_dev) != ma_device_state_uninitialized;
 		if (!old_dev) return false;
 		// Nothing to change: the default asked for while following it, or a device asked for that is open as that device, and running if the engine is. A device open as the default follows the system's default, even while it is the device asked for by its index, so that one is opened anew as the device itself; and one the backend stopped, as after a reroute that failed, is opened anew too, which asking for it again is a script's way to recover.
-		if (old_open && (!started || ma_device_is_started(old_dev)) && (device == -1? device_follows_default : !device_follows_default && ma_device_id_equal(&old_dev->playback.id, &requested_id))) return true;
+		if (old_open && (!started || ma_device_is_started(old_dev)) && (device == -1? device_follows_default : !device_follows_default && ma_device_id_equal(&old_dev->playback.id, &requested_id))) return (g_soundsystem_last_error = MA_SUCCESS) == MA_SUCCESS;
 		ma_engine_stop(&*engine);
 		// As the constructor opens the device, with the engine's own format, which stays the same whichever device it is on and is still known after a device couldn't be opened.
 		ma_device_config cfg = ma_device_config_init(ma_device_type_playback);
@@ -1010,7 +1010,7 @@ public:
 		ma_device* device = ma_engine_get_device(&*engine);
 		if (device && ma_device_get_state(device) == ma_device_state_uninitialized) { // As stop(): with no device open, the start is kept for the next one, which opened stopped.
 			started = true;
-			return true;
+			return (g_soundsystem_last_error = MA_SUCCESS) == MA_SUCCESS;
 		}
 		if ((g_soundsystem_last_error = ma_engine_start(&*engine)) != MA_SUCCESS) return false;
 		started = true;
@@ -1027,7 +1027,7 @@ public:
 		ma_device* device = ma_engine_get_device(&*engine);
 		if (device && ma_device_get_state(device) == ma_device_state_uninitialized) { // Left without one by a set_device() that couldn't open any: nothing runs to stop, and the stop is kept for the next device opened, which started the device the script had stopped.
 			started = false;
-			return true;
+			return (g_soundsystem_last_error = MA_SUCCESS) == MA_SUCCESS;
 		}
 		if ((g_soundsystem_last_error = ma_engine_stop(&*engine)) != MA_SUCCESS) return false;
 		started = false;
@@ -2734,6 +2734,7 @@ protected:
 		ope_encoder_ctl(encoder, OPUS_SET_VBR(vbr ? 1 : 0));
 		ope_encoder_ctl(encoder, OPUS_SET_VBR_CONSTRAINT(cvbr ? 1 : 0));
 		ope_encoder_ctl(encoder, OPUS_SET_DTX(dtx ? 1 : 0));
+		g_soundsystem_last_error = MA_SUCCESS; // Opened, rather than reading as an earlier call's refusal, which the WAV encoder's open sets over.
 		return postsetup(sample_rate, channels, ma_format_f32);
 	}
 	unsigned int write_impl(const void* buffer, unsigned int frame_count) override {
@@ -2769,6 +2770,8 @@ public:
 		if (!lock) return false;
 		if (encoder && ope_encoder_ctl(encoder, OPUS_SET_BITRATE(new_bitrate)) != OPE_OK) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // Refused by libopusenc.
 		bitrate = new_bitrate;
+		g_soundsystem_last_error = MA_SUCCESS; // As the error is these setters' only result, void to the script.
+		g_soundsystem_last_error = MA_SUCCESS;
 		return true;
 	}
 	int get_complexity() const override { return complexity; }
@@ -2778,6 +2781,7 @@ public:
 		if (!lock) return false;
 		if (encoder && ope_encoder_ctl(encoder, OPUS_SET_COMPLEXITY(new_complexity)) != OPE_OK) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // Refused by libopusenc.
 		complexity = new_complexity;
+		g_soundsystem_last_error = MA_SUCCESS;
 		return true;
 	}
 	int get_signal_type() const override { return signal_type; }
@@ -2787,6 +2791,7 @@ public:
 		if (!lock) return false;
 		if (encoder && ope_encoder_ctl(encoder, OPUS_SET_SIGNAL(new_signal_type)) != OPE_OK) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // Refused by libopusenc.
 		signal_type = new_signal_type;
+		g_soundsystem_last_error = MA_SUCCESS;
 		return true;
 	}
 	int get_application() const override { return application; }
@@ -2796,6 +2801,7 @@ public:
 		if (!lock) return false;
 		if (encoder && ope_encoder_ctl(encoder, OPUS_SET_APPLICATION(new_application)) != OPE_OK) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // Refused by libopusenc.
 		application = new_application;
+		g_soundsystem_last_error = MA_SUCCESS;
 		return true;
 	}
 	int get_packet_loss_percent() const override { return packet_loss_percent; }
@@ -2805,6 +2811,7 @@ public:
 		if (!lock) return false;
 		if (encoder && ope_encoder_ctl(encoder, OPUS_SET_PACKET_LOSS_PERC(percent)) != OPE_OK) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // Refused by libopusenc.
 		packet_loss_percent = percent;
+		g_soundsystem_last_error = MA_SUCCESS;
 		return true;
 	}
 	bool get_vbr() const override { return vbr; }
@@ -2813,6 +2820,7 @@ public:
 		if (!lock) return false;
 		if (encoder && ope_encoder_ctl(encoder, OPUS_SET_VBR(enabled ? 1 : 0)) != OPE_OK) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // Refused by libopusenc.
 		vbr = enabled;
+		g_soundsystem_last_error = MA_SUCCESS;
 		return true;
 	}
 	bool get_cvbr() const override { return cvbr; }
@@ -2821,6 +2829,7 @@ public:
 		if (!lock) return false;
 		if (encoder && ope_encoder_ctl(encoder, OPUS_SET_VBR_CONSTRAINT(enabled ? 1 : 0)) != OPE_OK) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // Refused by libopusenc.
 		cvbr = enabled;
+		g_soundsystem_last_error = MA_SUCCESS;
 		return true;
 	}
 	bool get_dtx() const override { return dtx; }
@@ -2829,6 +2838,7 @@ public:
 		if (!lock) return false;
 		if (encoder && ope_encoder_ctl(encoder, OPUS_SET_DTX(enabled ? 1 : 0)) != OPE_OK) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // Refused by libopusenc.
 		dtx = enabled;
+		g_soundsystem_last_error = MA_SUCCESS;
 		return true;
 	}
 };
@@ -3620,7 +3630,7 @@ public:
 		{
 			std::lock_guard<std::recursive_mutex> topology(g_audio_topology_mutex);
 			if (mix == parent_mixer)
-				return true; // Already where it was asked to go.
+				return (g_soundsystem_last_error = MA_SUCCESS) == MA_SUCCESS; // Already where it was asked to go.
 			// Not into itself, nor into a mixer that already goes into this one, through parents or a reverb3d's send: that loop never reaches the engine, and its references to each other keep it all alive.
 			if (mix && mixer_reaches(mix, [this](mixer* m) { return m == static_cast<mixer*>(this); })) {
 				g_soundsystem_last_error = MA_INVALID_ARGS;
@@ -4905,6 +4915,7 @@ public:
 		loaded_filename.clear();
 		load_completed.clear();
 		paused = fade_paused = fade_from_stop = should_autoclose = false;
+		g_soundsystem_last_error = MA_SUCCESS; // Closed, rather than reading as an earlier call's refusal.
 		return true;
 	}
 	void set_autoclose(bool enabled) override { should_autoclose = enabled; }
