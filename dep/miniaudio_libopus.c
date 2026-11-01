@@ -235,6 +235,7 @@ MA_API ma_result ma_libopus_init_file(const char* pFilePath, const ma_decoding_b
 
         pOpus->of = op_open_file(pFilePath, &libopusResult);
         if (pOpus->of == NULL) {
+            ma_data_source_uninit(&pOpus->ds); /* NVGT: as ma_libopus_init() and the Vorbis backend do. */
             return MA_INVALID_FILE;
         }
         ma_libopus_opened(pOpus);
