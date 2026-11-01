@@ -2320,6 +2320,7 @@ protected:
 		return write_impl(converted.data(), frame_count);
 	}
 	virtual bool close_impl() { return true; } // override in subclasses, free any encoder state.
+	ma_result close_result = MA_SUCCESS; // Set by a close_impl() whose encoder couldn't write out what it had left, which close() then reports, having closed all the same.
 	bool postsetup(unsigned int target_sample_rate, unsigned int target_channels, ma_format target_format = ma_format_f32) {
 		// Encoder subclasses should usually return from open overrides by calling this funcction.
 		if (get_active()) return false;
@@ -2460,7 +2461,10 @@ public:
 		if (output_stream && output_stream != pull_stream) output_stream->release();
 		output_stream = nullptr;
 		frames_written = frames_converted = sample_rate = channels = 0;
-		return true;
+		// Closed, rather than reading as an earlier call's refusal, unless writing out what was left failed (see close_result).
+		g_soundsystem_last_error = close_result;
+		close_result = MA_SUCCESS;
+		return g_soundsystem_last_error == MA_SUCCESS;
 	}
 	bool get_active() const override { return sample_rate && channels; }
 	unsigned long long get_frames_written() const override { return frames_written; }
@@ -2653,6 +2657,7 @@ protected:
 	unsigned int write_impl(const void* buffer, unsigned int size) override {
 		ma_uint64 frames_written;
 		if (!encoder || (g_soundsystem_last_error = ma_encoder_write_pcm_frames(&*encoder, buffer, size, &frames_written)) != MA_SUCCESS) return 0;
+		if (frames_written < size) g_soundsystem_last_error = MA_IO_ERROR; // MiniAudio gives success for a write its output took less of, as a stream that failed.
 		return frames_written;
 	}
 	bool close_impl() override {
@@ -2734,17 +2739,19 @@ protected:
 	unsigned int write_impl(const void* buffer, unsigned int frame_count) override {
 		if (!encoder) return 0;
 		int result = ope_encoder_write_float(encoder, (const float*)buffer, frame_count);
+		if (result != OPE_OK) g_soundsystem_last_error = result == OPE_WRITE_FAIL? MA_IO_ERROR : MA_ERROR; // Said nothing of why.
 		return (result == OPE_OK) ? frame_count : 0;
 	}
 	bool close_impl() override {
 		if (!encoder) return false;
-		ope_encoder_drain(encoder);
+		const int drained = ope_encoder_drain(encoder); // What's left written out, which a failing output loses: told, as close() reports it, rather than claimed done.
 		ope_encoder_destroy(encoder);
 		encoder = nullptr;
 		if (comments) {
 			ope_comments_destroy(comments);
 			comments = nullptr;
 		}
+		if (drained != OPE_OK) close_result = drained == OPE_WRITE_FAIL? MA_IO_ERROR : MA_ERROR;
 		return true;
 	}
 public:

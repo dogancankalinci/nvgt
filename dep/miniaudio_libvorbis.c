@@ -11,6 +11,7 @@
 #endif
 
 #include <string.h> /* For memset(). */
+#include <errno.h> /* NVGT: for EIO, see ma_libvorbis_vf_callback__read(). */
 #include <limits.h> /* NVGT: for LONG_MAX. */
 #include <assert.h>
 
@@ -68,6 +69,8 @@ static size_t ma_libvorbis_vf_callback__read(void* pBufferOut, size_t size, size
     result = pVorbis->onRead(pVorbis->pReadSeekTellUserData, pBufferOut, bytesToRead, &bytesRead);
     if (result != MA_SUCCESS) {
         /* Not entirely sure what to return here. What if an error occurs, but some data was read and bytesRead is > 0? */
+        /* NVGT: a read error, as of a datastream closed under the decoder, is told to libvorbisfile through errno, which it clears before each read and takes, with nothing read, as OV_EREAD rather than the stream's end, as the Opus backend tells opusfile: a script's own read of the decoder is told the error then (see held_decoder_read() in src/sound.cpp), where it read as the end. */
+        if (result != MA_AT_END) errno = EIO;
         return 0;
     }
 
