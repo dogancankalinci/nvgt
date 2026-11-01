@@ -22,6 +22,8 @@ static ma_uint64 frames_after_resampling(ma_uint32 rate_out, ma_uint32 rate_in, 
         return 0;
     if (rate_out == rate_in)
         return frame_count_in;
+    if (frame_count_in > ~(ma_uint64)0 / rate_out)
+        return ~(ma_uint64)0; // The most 64 bits hold, rather than a product that wrapped.
     ma_uint64 frame_count_out = (frame_count_in * rate_out) / rate_in;
     ma_uint64 preliminary_from_frac = (frame_count_out * (rate_in / rate_out)) / rate_out;
     ma_uint64 preliminary = (frame_count_out * (rate_in % rate_out)) + preliminary_from_frac;

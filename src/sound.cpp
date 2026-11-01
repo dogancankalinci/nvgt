@@ -1924,6 +1924,9 @@ static ma_result held_decoder_read(ma_data_source* source, void* frames_out, ma_
 // One a file that can't seek refuses, of a decoder that can't read on, as to its loop's start, to a chain's link's start or to that of a source linked to itself, finishes the decoder: it gives nothing until a seek its file makes, and the seek reports success, so that MiniAudio's loop, which ends once a pass gives nothing twice, ends there, as a chain does, rather than taking the error for no end, playing silence for good, and so that no end is given from a seek, which MiniAudio asserts against once frames were read. A finished decoder not looping, sought again without having given anything, as in a ring of links that all finished, gives the error, which ends MiniAudio's move through them. A script's call is told the error (see script_seek).
 static ma_result held_decoder_seek(ma_data_source* source, ma_uint64 frame) {
 	ma_decoder* decoder = (ma_decoder*)source;
+	// A frame whose product with the file's rate is past 64 bits, which MiniAudio's and the resampler's counts of it in the file wrapped, the seek reported as made to an earlier frame: refused, as past a length, possible only for a decoder that doesn't know its length.
+	ma_uint32 backend_rate = 0;
+	if (ma_data_source_get_data_format(decoder->pBackend, nullptr, nullptr, &backend_rate, nullptr, 0) == MA_SUCCESS && backend_rate && backend_rate != decoder->outputSampleRate && frame > ~(ma_uint64)0 / backend_rate) return MA_INVALID_ARGS;
 	held_file* file = file_held(decoder->pBackend);
 	ma_result result;
 	if (!file) { // A file without a seek of its own, which MiniAudio's seek handles.
