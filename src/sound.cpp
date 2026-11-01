@@ -666,6 +666,8 @@ public:
 		g_soundsystem_last_error = MA_INVALID_OPERATION;
 		return false;
 	}
+	// Its time is the engine's: set as the engine's, which also has the sounds forget the blocks they saw under way, as setting the node's alone didn't, so that a stop could be taken as come, or a fade placed, by a block the time was set back from.
+	bool set_time(unsigned long long local_time) override { return engine->set_time_in_frames(local_time); }
 };
 // Miniaudio objects must be allocated on the heap as nvgt's API introduces the concept of an uninitialized sound, which a stack based system would make more difficult to implement.
 class audio_engine_impl final : public audio_node_impl, public virtual audio_engine {
