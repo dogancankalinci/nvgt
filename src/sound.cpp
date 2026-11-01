@@ -1230,6 +1230,8 @@ protected:
 		if (previous) let_go(previous); // Not under held_mutex: letting go can free that source, whose own links are then handed over.
 	}
 	// One script thread may be reading from or closing this object while another opens it (a shared decoder handle, or a wrapper destroyed by its owner mid-read). The members below are unique_ptrs that get reset on close, so those paths must not interleave. Recursive because open() re-enters close(), and set_ma_data_source() re-enters reset().
+	// A call refused on a source that's gone, as after its sound closed, or that is read elsewhere (see in_use()), with MA_INVALID_OPERATION: it said nothing.
+	static bool refused_now() { return (g_soundsystem_last_error = MA_INVALID_OPERATION) == MA_SUCCESS; }
 	mutable std::recursive_mutex source_mutex;
 	// source_mutex for a script's call, which on an audio thread, as from a processing callback, is only tried for: a script thread holds it through a decoder's open, its file, pack or network reads included, and through the first count of a length, which held that audio up meanwhile. MA_BUSY when it can't be had then, as for an encoder's calls (see audio_encoder_impl::lock_writes()).
 	std::unique_lock<std::recursive_mutex> lock_source() const {
@@ -1365,7 +1367,8 @@ public:
 	virtual unsigned long long frames_to_take(unsigned long long frame_count) { return frame_count; }
 	// Under source_mutex: takes the source's own node off the graph, so that this thread is the only reader, and drops what it is to drop. False when the source can't be read here now.
 	bool ready_to_read() {
-		if (!src || in_use(false) || node && !detach_all_output_buses()) return false; // A source in another format was never made a node.
+		if (!src || in_use(false)) return refused_now(); // Nothing to read, or read elsewhere, which said nothing.
+		if (node && !detach_all_output_buses()) return false; // A source in another format was never made a node.
 		drop_pending_frames();
 		return true;
 	}
@@ -1439,12 +1442,12 @@ public:
 		return skipped;
 	}
 	unsigned long long skip_frames(unsigned long long frame_count) override {
-		if (!src || in_use()) return 0;
+		if (!src || in_use()) return refused_now(), 0;
 		drop_pending_frames(); // As read() does: the script is the only reader here.
 		return skip_by_reading(frames_to_take(frame_count));
 	}
 	float skip_milliseconds(float ms) override {
-		if (!src || in_use()) return 0;
+		if (!src || in_use()) return refused_now(), 0;
 		ma_uint32 sample_rate = 0;
 		if ((g_soundsystem_last_error = ma_data_source_get_data_format(src->pDataSource, nullptr, nullptr, &sample_rate, nullptr, 0)) != MA_SUCCESS || !sample_rate) return 0;
 		if (!(ms > 0 && ms <= FLT_MAX)) return 0; // Nothing to skip, or NaN or infinite, whose frame count no integer holds.
@@ -1453,7 +1456,7 @@ public:
 		return skip_by_reading(frames_to_take(frames < 9e18? (unsigned long long)frames : 9000000000000000000ULL)) * 1000.0f / sample_rate;
 	}
 	bool seek_frames(unsigned long long frame_index) override {
-		if (!src || in_use()) return false;
+		if (!src || in_use()) return refused_now();
 		unsigned long long length = get_length_frames(); // 0 when unknown, as for a ring buffer or a stream that can't seek.
 		if (length && frame_index > length) { // As sound.seek(): MiniAudio's decoders take such a seek and then read nothing.
 			g_soundsystem_last_error = MA_INVALID_ARGS;
@@ -1462,7 +1465,7 @@ public:
 		return (g_soundsystem_last_error = seek_or_keep_place(src->pDataSource, frame_index)) == MA_SUCCESS;
 	}
 	bool seek_milliseconds(float ms) override {
-		if (!src || in_use()) return false;
+		if (!src || in_use()) return refused_now();
 		if (!(ms >= 0 && ms <= FLT_MAX)) { // Negative, infinite or not a number: MiniAudio turns it into a frame index near 2^64, or one no integer holds.
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
@@ -1504,15 +1507,15 @@ public:
 		if (!src || (g_soundsystem_last_error = ma_data_source_get_data_format(src->pDataSource, nullptr, nullptr, &sample_rate, nullptr, 0)) != MA_SUCCESS || !sample_rate) return 0;
 		return get_length_frames() * 1000.0f / sample_rate; // As counted within the range.
 	}
-	bool set_looping(bool looping) override { return src && !in_use()? (g_soundsystem_last_error = ma_data_source_set_looping(src->pDataSource, looping)) == MA_SUCCESS : false; }
+	bool set_looping(bool looping) override { return src && !in_use()? (g_soundsystem_last_error = ma_data_source_set_looping(src->pDataSource, looping)) == MA_SUCCESS : refused_now(); }
 	bool get_looping() const override { return src? ma_data_source_is_looping(src->pDataSource) : false; }
-	bool set_range(unsigned long long start_frame, unsigned long long end_frame) override { return src && !in_use()? (g_soundsystem_last_error = ma_data_source_set_range_in_pcm_frames(src->pDataSource, start_frame, end_frame)) == MA_SUCCESS : false; }
+	bool set_range(unsigned long long start_frame, unsigned long long end_frame) override { return src && !in_use()? (g_soundsystem_last_error = ma_data_source_set_range_in_pcm_frames(src->pDataSource, start_frame, end_frame)) == MA_SUCCESS : refused_now(); }
 	// Without a source, 0 for both, as AngelScript leaves &out values unset.
 	void get_range(unsigned long long* start_frame, unsigned long long* end_frame) const override {
 		*start_frame = *end_frame = 0;
 		if (src) ma_data_source_get_range_in_pcm_frames(src->pDataSource, start_frame, end_frame);
 	}
-	bool set_loop_point(unsigned long long start_frame, unsigned long long end_frame) override { return src && !in_use()? (g_soundsystem_last_error = ma_data_source_set_loop_point_in_pcm_frames(src->pDataSource, start_frame, end_frame)) == MA_SUCCESS : false; }
+	bool set_loop_point(unsigned long long start_frame, unsigned long long end_frame) override { return src && !in_use()? (g_soundsystem_last_error = ma_data_source_set_loop_point_in_pcm_frames(src->pDataSource, start_frame, end_frame)) == MA_SUCCESS : refused_now(); }
 	void get_loop_point(unsigned long long* start_frame, unsigned long long* end_frame) const override {
 		*start_frame = *end_frame = 0;
 		if (src) ma_data_source_get_loop_point_in_pcm_frames(src->pDataSource, start_frame, end_frame);
@@ -1530,7 +1533,7 @@ public:
 		return format == their_format && channels == their_channels && sample_rate == their_sample_rate;
 	}
 	bool set_current(audio_data_source* new_current) override {
-		if (!src || in_use()) return false;
+		if (!src || in_use()) return refused_now();
 		bool self = new_current == static_cast<audio_data_source*>(this); // Back to this head, as a chain is rewound in MiniAudio. Nothing needs holding for that, and a reference to itself would keep this alive and in use for good.
 		if (new_current && !self && is_live_queue()) { // Nor a head, as for can_chain(): a queue never ends, so it never moves on, and its reads are capped at what it has queued, not what another source holds.
 			g_soundsystem_last_error = MA_INVALID_ARGS;
@@ -1560,7 +1563,7 @@ public:
 	// The source MiniAudio is on, which reading moves along the chain past one set_current() gave.
 	audio_data_source* get_current() const override { return src? audio_data_source_get(ma_data_source_get_current(src->pDataSource), get_engine()) : nullptr; }
 	bool set_next(audio_data_source* new_next) override {
-		if (!src || in_use()) return false;
+		if (!src || in_use()) return refused_now();
 		bool self = new_next == static_cast<audio_data_source*>(this); // Looping this source on itself; as for set_current(), without a reference to itself.
 		if (new_next && !self && is_live_queue()) { // As set_current() refuses.
 			g_soundsystem_last_error = MA_INVALID_ARGS;
@@ -1750,11 +1753,13 @@ public:
 		return total;
 	}
 	unsigned int write_script_array(CScriptArray *frames) override {
+		if (!frames) g_soundsystem_last_error = MA_INVALID_ARGS; // Nothing to write, which said nothing.
 		if (!frames || !get_channels()) return 0;
 		return write((float*)frames->GetBuffer(), frames->GetSize() / get_channels());
 	}
 	unsigned int write_script_memory_buffer(script_memory_buffer* frames) override {
-		if (!frames || !get_channels()) return false;
+		if (!frames) g_soundsystem_last_error = MA_INVALID_ARGS;
+		if (!frames || !get_channels()) return 0;
 		return write((float*)frames->ptr, frames->size / get_channels());
 	}
 	unsigned int get_available_read() const override { return rb? queue->readable() : 0; }
@@ -2465,6 +2470,8 @@ public:
 	}
 	// write(), with write_mtx held.
 	unsigned int write_locked(const float* frames_in, unsigned int frame_count) {
+		if (!frames_in) g_soundsystem_last_error = MA_INVALID_ARGS;
+		else if (!get_active()) g_soundsystem_last_error = MA_INVALID_OPERATION; // Nothing open to write to, which said nothing.
 		if (!frames_in || !frame_count || !get_active()) return 0;
 		if (!dc) {
 			unsigned int frames = write_converted(frames_in, frame_count);
@@ -2488,11 +2495,13 @@ public:
 	// The engine's channel count makes a frame of the script's samples, as write() takes them.
 	unsigned int write_script_array(CScriptArray *frames) override {
 		unsigned int engine_channels = get_engine()->get_channels();
+		if (!frames) g_soundsystem_last_error = MA_INVALID_ARGS; // As a ring buffer's write() says.
 		if (!frames || !engine_channels) return 0;
 		return write((float*)frames->GetBuffer(), frames->GetSize() / engine_channels);
 	}
 	unsigned int write_script_memory_buffer(script_memory_buffer* frames) override {
 		unsigned int engine_channels = get_engine()->get_channels();
+		if (!frames) g_soundsystem_last_error = MA_INVALID_ARGS;
 		if (!frames || !engine_channels) return 0;
 		return write((float*)frames->ptr, frames->size / engine_channels);
 	}
@@ -2511,7 +2520,7 @@ public:
 	string read() override {
 		unique_lock<mutex> lock = lock_writes();
 		if (!lock) return "";
-		if (!pull_stream) return "";
+		if (!pull_stream) return (g_soundsystem_last_error = MA_INVALID_OPERATION), ""; // No pull session, which said nothing.
 		if (!streamable_pulling && get_active()) return "";
 		stringstream* pull_stringstream = dynamic_cast<stringstream*>(pull_stream->stream());
 		if (!pull_stringstream) return "";
@@ -3643,7 +3652,7 @@ public:
 	bool set_shape(CScriptHandle new_shape) override {
 		// A type no shape is made from leaves the old shape in place.
 		int ot = new_shape.GetTypeId() ^ asTYPEID_OBJHANDLE;
-		if (new_shape.GetRef() && !g_sound_shape_setup_callbacks.contains(ot)) return false;
+		if (new_shape.GetRef() && !g_sound_shape_setup_callbacks.contains(ot)) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // Said nothing, as the setup giving none below didn't.
 		// The position the script set, kept with the old shape; MiniAudio's is the one the shape moved to its edge.
 		reactphysics3d::Vector3 position = get_position_3d();
 		// release old shape, swapped out under the lock the audio thread reads the shape under, through get_spatialization_parameters().
@@ -3667,7 +3676,7 @@ public:
 		sound_shape* new_shape_obj = g_sound_shape_setup_callbacks[ot](this, &new_shape);
 		if (!new_shape_obj) {
 			track_shape(false);
-			return false;
+			return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS;
 		}
 		new_shape_obj->set_position(position);
 		{
@@ -3834,9 +3843,11 @@ public:
 		if (fade_from_stop && !drop_deferred_fade()) set_fade_now(0, 1, 0); // As ma_sound_reset_fade() sets it.
 		fade_from_stop = false;
 	}
+	// A call on a sound with nothing loaded, refused with MA_INVALID_OPERATION, as a decoder's or encoder's with nothing open: it said nothing.
+	static bool nothing_loaded() { return (g_soundsystem_last_error = MA_INVALID_OPERATION) == MA_SUCCESS; }
 	bool play(bool reset_loop_state = true) override {
 		if (snd == nullptr)
-			return false;
+			return nothing_loaded();
 		if (reset_loop_state)
 			ma_sound_set_looping(&*snd, MA_FALSE);
 		clear_stop_for_restart();
@@ -3845,7 +3856,7 @@ public:
 	}
 	bool play_looped() override {
 		if (snd == nullptr)
-			return false;
+			return nothing_loaded();
 		ma_sound_set_looping(&*snd, true);
 		clear_stop_for_restart();
 		script_seek told; // As in play().
@@ -3853,7 +3864,7 @@ public:
 	}
 	ma_sound *get_ma_sound() const override { return &*snd; }
 	audio_engine *get_engine() const override { return engine; }
-	bool stop() override { return snd ? (g_soundsystem_last_error = ma_sound_stop(&*snd)) == MA_SUCCESS : false; }
+	bool stop() override { return snd ? (g_soundsystem_last_error = ma_sound_stop(&*snd)) == MA_SUCCESS : nothing_loaded(); }
 	void set_volume(float volume) override {
 		if (!snd || !finite_values({volume})) return;
 		const bool db = get_engine()->get_flags() & audio_engine::PERCENTAGE_ATTRIBUTES;
@@ -4630,7 +4641,7 @@ public:
 	}
 	bool load_pcm_script_array(CScriptArray *buffer, int samplerate, int channels) override {
 		if (!buffer)
-			return false;
+			return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // As sound.open(null) says, which this didn't.
 		ma_format format = ma_format_from_angelscript_type(buffer->GetElementTypeId());
 		if (format == ma_format_unknown || !pcm_format_in_range(samplerate, channels)) return false;
 		return load_pcm(buffer->GetBuffer(), buffer->GetSize() * buffer->GetElementSize(), format, samplerate, channels);
@@ -4716,7 +4727,7 @@ public:
 	}
 	bool stream_pcm_script_array(CScriptArray *buffer, unsigned int sample_rate, unsigned int channels, unsigned int buffer_size) override {
 		if (!buffer)
-			return false;
+			return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS;
 		ma_format format = ma_format_from_angelscript_type(buffer->GetElementTypeId());
 		if (pcm_stream) {
 			if (format != ma_pcm_rb_get_format(&pcm_stream->rb)) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // Not the sample type the stream was started with.
@@ -4796,7 +4807,7 @@ public:
 		} else let_go_of_load_state();
 		if (!snd) {
 			if (!source) std::string().swap(pcm_buffer); // A load_pcm() that failed, with no source left to decode it.
-			return false;
+			return nothing_loaded();
 		}
 		if (spatializer) {
 			// Not under this sound's lock, which no chain's lock is taken inside: forgetting the mixer takes the spatializer's, and taking it out of the chain rewires the chains around it, and each of these, like letting go of the spatializer itself, can let go of the last reference to a mixer, such as one a reverb3d made or one the script pointed a chain at. A mixer's destructor takes g_shaped_mixers_mutex, which a listener's move holds while it waits for this sound's lock.
@@ -5027,7 +5038,7 @@ public:
 				paused = true;
 			return g_soundsystem_last_error == MA_SUCCESS;
 		}
-		return false;
+		return nothing_loaded();
 	}
 	bool pause_fade(unsigned long long length) override {
 		return (get_engine()->get_flags() & audio_engine::DURATIONS_IN_FRAMES) ? pause_fade_in_frames(length) : pause_fade_in_milliseconds(length);
@@ -5040,10 +5051,11 @@ public:
 			paused = fade_paused = true; // As pause() does, so play() resumes it.
 			return (g_soundsystem_last_error = MA_SUCCESS) == MA_SUCCESS;
 		}
-		return false;
+		return nothing_loaded();
 	}
 	bool pause_fade_in_milliseconds(unsigned long long frames) override {
-		if (snd && frames_fit(frames, ma_engine_get_sample_rate(ma_sound_get_engine(&*snd)))) {
+		if (!snd) return nothing_loaded();
+		if (frames_fit(frames, ma_engine_get_sample_rate(ma_sound_get_engine(&*snd)))) {
 			if (!started_to_play()) return (g_soundsystem_last_error = MA_SUCCESS) == MA_SUCCESS; // As above.
 			if (drop_deferred_fade()) fade_from_stop = false;
 			stop_fade_set(schedule_pause_fade(frames * ma_engine_get_sample_rate(ma_sound_get_engine(&*snd)) / 1000)); // As MiniAudio counts the fade's frames.
@@ -5204,7 +5216,8 @@ public:
 	}
 	bool seek_in_milliseconds(unsigned long long offset) override {
 		ma_uint32 sample_rate = 0; // The sound's own, which its frames count in; the engine's differs for a file at another rate, and is 0 for an engine without a device.
-		if (!snd || ma_sound_get_data_format(&*snd, nullptr, nullptr, &sample_rate, nullptr, 0) != MA_SUCCESS || !sample_rate || !frames_fit(offset, sample_rate)) return false;
+		if (!snd) return nothing_loaded();
+		if (ma_sound_get_data_format(&*snd, nullptr, nullptr, &sample_rate, nullptr, 0) != MA_SUCCESS || !sample_rate || !frames_fit(offset, sample_rate)) return false;
 		return seek_in_frames((offset * sample_rate) / 1000);
 	}
 	unsigned long long get_position() override {

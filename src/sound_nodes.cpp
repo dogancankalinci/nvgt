@@ -301,6 +301,7 @@ public:
 			endpoint = nullptr;
 		}
 		if (old) old->release(); // Last, as it can be the node just attached again.
+		return true;
 	}
 	audio_node* get_endpoint() const override {
 		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);

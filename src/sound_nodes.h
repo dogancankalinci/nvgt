@@ -121,7 +121,7 @@ public:
 		return false;
 	}
 	bool attach_output_bus(unsigned int output_bus, audio_node *destination, unsigned int destination_input_bus) {
-		if (!node) return false;
+		if (!node) return (g_soundsystem_last_error = MA_INVALID_OPERATION) == MA_SUCCESS; // A node gone, as a closed sound's, which said nothing.
 		if (!destination) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // As a chain's refusal says, which said nothing here.
 		unsigned int from = output_sample_rate(), to = destination->get_engine()? (unsigned int)destination->get_engine()->get_sample_rate() : 0; // Before the graph lock, so that no lock a subclass may read its rate under is taken inside it.
 		audio_node *previous = nullptr;
@@ -167,7 +167,7 @@ public:
 		return true;
 	}
 	bool detach_output_bus(unsigned int bus) {
-		if (!node) return false;
+		if (!node) return (g_soundsystem_last_error = MA_INVALID_OPERATION) == MA_SUCCESS;
 		audio_node *previous = nullptr;
 		{
 			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); 
@@ -182,7 +182,7 @@ public:
 		return true;
 	}
 	bool detach_all_output_buses() {
-		if (!node) return false;
+		if (!node) return (g_soundsystem_last_error = MA_INVALID_OPERATION) == MA_SUCCESS;
 		std::vector<audio_node*> previous;
 		{
 			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); 
