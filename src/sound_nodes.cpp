@@ -1435,6 +1435,10 @@ public:
 		parameters_valid = false;
 	}
 	void set_panner_by_id(int panner_id) override {
+		if (g_audio_panners.find(panner_id) == g_audio_panners.end()) { // An id no panner has, refused as set_sound_default_3d_panner() refuses it: it was kept as the one preferred, read back, while another played.
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return;
+		}
 		rewire_scope scope(*this);
 		preferred_panner_id = panner_id;
 		spatializer_component_node* new_panner = create_audio_panner(panner_id, this, get_engine());
@@ -1447,6 +1451,10 @@ public:
 		}
 	}
 	void set_attenuator_by_id(int attenuator_id) override {
+		if (g_audio_attenuators.find(attenuator_id) == g_audio_attenuators.end()) { // As set_panner_by_id().
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return;
+		}
 		rewire_scope scope(*this);
 		preferred_attenuator_id = attenuator_id;
 		spatializer_component_node* new_attenuator = create_audio_attenuator(attenuator_id, this, get_engine());
