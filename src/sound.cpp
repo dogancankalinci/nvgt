@@ -6024,13 +6024,13 @@ template < class T > inline void RegisterSoundsystemAudioNode(asIScriptEngine *e
 	engine->RegisterObjectMethod(type.c_str(), "bool detach_output_bus(uint bus)", asFUNCTION((virtual_call < T, &T::detach_output_bus, bool, unsigned int >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "bool detach_all_output_buses()", asFUNCTION((virtual_call < T, &T::detach_all_output_buses, bool >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "bool set_output_bus_volume(uint bus, float volume)", asFUNCTION((virtual_call < T, &T::set_output_bus_volume, bool, unsigned int, float >)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "float get_output_bus_volume(uint bus)", asFUNCTION((virtual_call < T, &T::get_output_bus_volume, float, unsigned int >)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "float get_output_bus_volume(uint bus) const", asFUNCTION((virtual_call < T, &T::get_output_bus_volume, float, unsigned int >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "bool set_state(audio_node_state state)", asFUNCTION((virtual_call < T, &T::set_state, bool, ma_node_state >)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "audio_node_state get_state()", asFUNCTION((virtual_call < T, &T::get_state, ma_node_state >)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "audio_node_state get_state() const", asFUNCTION((virtual_call < T, &T::get_state, ma_node_state >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "bool set_state_time(audio_node_state state, uint64 time)", asFUNCTION((virtual_call < T, &T::set_state_time, bool, ma_node_state, unsigned long long >)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "uint64 get_state_time(audio_node_state state)", asFUNCTION((virtual_call < T, &T::get_state_time, unsigned long long, ma_node_state >)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "audio_node_state get_state_by_time(uint64 global_time)", asFUNCTION((virtual_call < T, &T::get_state_by_time, ma_node_state, unsigned long long >)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "audio_node_state get_state_by_time_range(uint64 global_time_begin, uint64 global_time_end)", asFUNCTION((virtual_call < T, &T::get_state_by_time_range, ma_node_state, unsigned long long, unsigned long long >)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "uint64 get_state_time(audio_node_state state) const", asFUNCTION((virtual_call < T, &T::get_state_time, unsigned long long, ma_node_state >)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "audio_node_state get_state_by_time(uint64 global_time) const", asFUNCTION((virtual_call < T, &T::get_state_by_time, ma_node_state, unsigned long long >)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "audio_node_state get_state_by_time_range(uint64 global_time_begin, uint64 global_time_end) const", asFUNCTION((virtual_call < T, &T::get_state_by_time_range, ma_node_state, unsigned long long, unsigned long long >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "uint64 get_time() const", asFUNCTION((virtual_call < T, &T::get_time, unsigned long long >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "bool set_time(uint64 local_time)", asFUNCTION((virtual_call < T, &T::set_time, bool, unsigned long long >)), asCALL_CDECL_OBJFIRST);
 	if constexpr (!std::is_same < T, audio_node >::value) {
@@ -6265,7 +6265,7 @@ template<class T> void RegisterSoundsystemMixer(asIScriptEngine *engine, const s
 	engine->RegisterObjectMethod(type.c_str(), "void set_max_distance(float distance) property", asFUNCTION((virtual_call < T, &T::set_max_distance, void, float >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "float get_max_distance() const property", asFUNCTION((virtual_call < T, &T::get_max_distance, float >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "void set_cone(float inner_radians, float outer_radians, float outer_gain)", asFUNCTION((virtual_call < T, &T::set_cone, void, float, float, float >)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "void get_cone(float &out inner_radians, float &out outer_radians, float &out outer_gain)", asFUNCTION((virtual_call < T, &T::get_cone, void, float *, float *, float * >)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "void get_cone(float &out inner_radians, float &out outer_radians, float &out outer_gain) const", asFUNCTION((virtual_call < T, &T::get_cone, void, float *, float *, float * >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "void set_doppler_factor(float factor) property", asFUNCTION((virtual_call < T, &T::set_doppler_factor, void, float >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "float get_doppler_factor() const property", asFUNCTION((virtual_call < T, &T::get_doppler_factor, float >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "void set_directional_attenuation_factor(float factor) property", asFUNCTION((virtual_call < T, &T::set_directional_attenuation_factor, void, float >)), asCALL_CDECL_OBJFIRST);
@@ -6570,14 +6570,14 @@ void RegisterSoundsystem(asIScriptEngine *engine) {
 	engine->RegisterObjectMethod("sound", "bool seek(const uint64 position)", asFUNCTION((virtual_call < sound, &sound::seek, bool, unsigned long long >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("sound", "bool seek_in_frames(const uint64 position)", asFUNCTION((virtual_call < sound, &sound::seek_in_frames, bool, unsigned long long >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("sound", "bool seek_in_milliseconds(const uint64 position)", asFUNCTION((virtual_call < sound, &sound::seek_in_milliseconds, bool, unsigned long long >)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("sound", "uint64 get_position() property", asFUNCTION((virtual_call < sound, &sound::get_position, unsigned long long >)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("sound", "uint64 get_position() const property", asFUNCTION((virtual_call < sound, &sound::get_position, unsigned long long >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("sound", "uint64 get_position_in_frames() const property", asFUNCTION((virtual_call < sound, &sound::get_position_in_frames, unsigned long long >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("sound", "uint64 get_position_in_milliseconds() const property", asFUNCTION((virtual_call < sound, &sound::get_position_in_milliseconds, unsigned long long >)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("sound", "uint64 get_length() property", asFUNCTION((virtual_call < sound, &sound::get_length, unsigned long long >)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("sound", "uint64 get_length() const property", asFUNCTION((virtual_call < sound, &sound::get_length, unsigned long long >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("sound", "uint64 get_length_in_frames( ) const property", asFUNCTION((virtual_call < sound, &sound::get_length_in_frames, unsigned long long >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("sound", "uint64 get_length_in_ms() const property", asFUNCTION((virtual_call < sound, &sound::get_length_in_milliseconds, unsigned long long >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("sound", "uint64 get_length_in_milliseconds() const property", asFUNCTION((virtual_call < sound, &sound::get_length_in_milliseconds, unsigned long long >)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("sound", "bool get_data_format(audio_format&out format, uint32&out channels, uint32&out sample_rate)", asFUNCTION((virtual_call < sound, &sound::get_data_format, bool, ma_format *, unsigned int *, unsigned int * >)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("sound", "bool get_data_format(audio_format&out format, uint32&out channels, uint32&out sample_rate) const", asFUNCTION((virtual_call < sound, &sound::get_data_format, bool, ma_format *, unsigned int *, unsigned int * >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("sound", "double get_pitch_lower_limit() const property", asFUNCTION((virtual_call < sound, &sound::get_pitch_lower_limit, double >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterGlobalFunction("const string[]@ get_sound_input_devices() property", asFUNCTION(get_sound_input_devices), asCALL_CDECL);
 	engine->RegisterGlobalFunction("const string[]@ get_sound_output_devices() property", asFUNCTION(get_sound_output_devices), asCALL_CDECL);
