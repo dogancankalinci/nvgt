@@ -1791,7 +1791,13 @@ public:
 		sourcePos = {distance, 0, 0};
 		listenerPos = {0, 0, 0};
 		iplEffectParams.distanceAttenuation = params.listener_distance <= (params.max_distance > params.min_distance? params.max_distance : params.min_distance)? volume_with_cones(iplDistanceAttenuationCalculate(g_phonon_context, sourcePos, listenerPos, &distanceModel), params) : volume_with_cones(0, params);
-		iplAirAbsorptionCalculate(g_phonon_context, sourcePos, listenerPos, &airAbsorptionModel, iplEffectParams.airAbsorption);
+		{
+			// At no farther than max_distance, past which the distance attenuates no more, rather than darkening on for good, and to silence where the basic attenuator holds min_gain.
+			const float farthest = params.max_distance > params.min_distance? params.max_distance : params.min_distance, at = params.listener_distance < farthest? params.listener_distance : farthest;
+			float absorbed = (params.min_distance > 0? (at > params.min_distance? at - params.min_distance : 0) : at) * params.rolloff;
+			if (!std::isfinite(absorbed)) absorbed = std::isnan(absorbed)? 0 : std::numeric_limits<float>::max();
+			iplAirAbsorptionCalculate(g_phonon_context, IPLVector3{absorbed, 0, 0}, listenerPos, &airAbsorptionModel, iplEffectParams.airAbsorption);
+		}
 		while (totalFramesProcessed < totalFramesToProcess) {
 			ma_uint32 framesToProcessThisIteration = totalFramesToProcess - totalFramesProcessed;
 			if (framesToProcessThisIteration > (ma_uint32)g_phonon_audio_settings.frameSize) framesToProcessThisIteration = (ma_uint32)g_phonon_audio_settings.frameSize;
