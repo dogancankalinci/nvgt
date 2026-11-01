@@ -7,7 +7,7 @@ Seeks to a particular point in the sound.
 * uint64 position: the point to seek to, in milliseconds, or in frames when the sound's engine was made with AUDIO_ENGINE_DURATIONS_IN_FRAMES.
 
 ## Returns:
-bool: true if the seeking was successful, false otherwise, as for a stream without a length.
+bool: true if the seeking was successful, false otherwise, as for a seek past the start of a stream without a length, or any seek of one whose source can't seek, as a URL's.
 
 ## Remarks:
 A sound at its end makes the seek when it is played again; one whose source can't go back to its start can't be played again (see play_looped()), and the seek is dropped when play() or play_looped() fails, its position reading the end again.
