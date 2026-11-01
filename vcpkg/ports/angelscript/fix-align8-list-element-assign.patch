@@ -1,0 +1,79 @@
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -4415,6 +4415,36 @@
+ 				}
+ 			}
+ 
++			// ALTERED: an element of a POD value type flagged asOBJ_APP_CLASS_ALIGN8 is given its value in a temporary of its
++			// type, which is on the heap (see AllocateVariable) where the allocator aligns it, and then copied into the list
++			// buffer byte for byte. The buffer's layout, which the list factories read, has the elements right after the
++			// 4-byte count and packed by their size, so an 8-byte element was at an address that was 4 mod 8, and the
++			// assignment called its opAssign there: for NVGT's atomic_int64, atomic_uint64 and atomic_double that is an atomic
++			// store (opAssign(int64), or opImplConv and opAssign for an element made from another atomic), which faulted on
++			// ARMv7 and ARMv8.0 (SIGBUS: array<atomic_int64> a = {5}) and was a split lock on x86. The element itself is still
++			// constructed in place by its default constructor (a plain store), and a POD type's copy is a memcpy. A type
++			// without a default constructor keeps the assignment in place, where the buffer has zeroed it (a temporary's
++			// memory would hold whatever the allocator left), as its opAssign could read the object first. The
++			// temporary is made before the value's code (an expression, or an init list for a type with a list
++			// constructor), so it is chosen outside the variables that code uses.
++			int alignedTemp = 0;
++			asCDataType alignedType;
++			if( !dt.IsPrimitive() && !dt.IsObjectHandle() && !dt.IsNullHandle() &&
++				dt.GetTypeInfo() && (dt.GetTypeInfo()->flags & asOBJ_VALUE) && (dt.GetTypeInfo()->flags & asOBJ_POD) &&
++				(dt.GetTypeInfo()->flags & asOBJ_APP_CLASS_ALIGN8) && !(dt.GetTypeInfo()->flags & asOBJ_ASHANDLE) &&
++				dt.GetBehaviour() && dt.GetBehaviour()->construct &&
++				dt.GetSizeInMemoryBytes() > 0 && dt.GetSizeInMemoryBytes() <= 0xFFFF )
++			{
++				alignedType = dt;
++				alignedType.MakeReference(false);
++				alignedType.MakeReadOnly(false);
++				alignedTemp = AllocateVariableNotIn(alignedType, true, false, &rctx);
++				asCByteCode tmpBC(engine);
++				CallDefaultConstructor(alignedType, alignedTemp, IsVariableOnHeap(alignedTemp), &tmpBC, valueNode);
++				tmpBC.AddCode(&rctx.bc);
++				rctx.bc.AddCode(&tmpBC);
++			}
++
+ 			// Determine size of the element
+ 			if( dt.IsPrimitive() || (!dt.IsNullHandle() && (dt.GetTypeInfo()->flags & asOBJ_VALUE)) )
+ 				size = dt.GetSizeInMemoryBytes();
+@@ -4494,6 +4524,39 @@
+ 				asASSERT( rctx.bc.GetLastInstr() == asBC_PshNull );
+ 				asASSERT( reinterpret_cast<asSListPatternDataTypeNode*>(patternNode)->dataType.GetTokenType() == ttQuestion );
+ 			}
++			else if( alignedTemp )
++			{
++				// ALTERED: assigned to the aligned temporary, then copied into the element, see alignedTemp above. The
++				// temporary isn't marked as one for the assignment, so it isn't freed before the copy.
++				asCExprContext tlctx(engine);
++				tlctx.bc.InstrSHORT(asBC_PSF, (short)alignedTemp);
++				tlctx.type.SetVariable(alignedType, alignedTemp, false);
++				tlctx.type.isLValue = true;
++				if( IsVariableOnHeap(alignedTemp) )
++					tlctx.type.dataType.MakeReference(true);
++
++				asCExprContext ctx(engine);
++				DoAssignment(&ctx, &tlctx, &rctx, valueNode, valueNode, ttAssignment, valueNode);
++
++				if( !ctx.type.dataType.IsPrimitive() )
++					ctx.bc.Instr(asBC_PopPtr);
++
++				// Release temporary variables used by expression
++				ReleaseTemporaryVariable(ctx.type, &ctx.bc);
++
++				// The temporary's bytes into the element
++				ctx.bc.InstrSHORT(asBC_PSF, (short)alignedTemp);
++				if( IsVariableOnHeap(alignedTemp) )
++					ctx.bc.Instr(asBC_RDSPtr);
++				ctx.bc.InstrSHORT_DW(asBC_PshListElmnt, bufferVar, bufferSize);
++				ctx.bc.InstrSHORT_DW(asBC_COPY, (short)alignedType.GetSizeInMemoryBytes(), engine->GetTypeIdFromDataType(alignedType));
++				ctx.bc.Instr(asBC_PopPtr);
++				ReleaseTemporaryVariable(alignedTemp, &ctx.bc);
++
++				ProcessDeferredParams(&ctx);
++
++				bcInit.AddCode(&ctx.bc);
++			}
+ 			else
+ 			{
+ 				asCExprContext ctx(engine);
