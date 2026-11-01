@@ -1157,6 +1157,7 @@ void set_audio_panner_enabled(int id, bool enabled) {
 	swept_spatializers swept;
 	std::lock_guard<std::mutex> sweep(g_spatializer_sweep_mutex);
 	auto it = g_audio_panners.find(id);
+	if (it == g_audio_panners.end()) g_soundsystem_last_error = MA_INVALID_ARGS; // As set_sound_default_3d_panner() refuses it, which said nothing here.
 	if (it != g_audio_panners.end()) {
 		bool was_enabled = it->second.enabled;
 		it->second.enabled = enabled;
@@ -1168,6 +1169,7 @@ void set_audio_attenuator_enabled(int id, bool enabled) {
 	swept_spatializers swept;
 	std::lock_guard<std::mutex> sweep(g_spatializer_sweep_mutex);
 	auto it = g_audio_attenuators.find(id);
+	if (it == g_audio_attenuators.end()) g_soundsystem_last_error = MA_INVALID_ARGS;
 	if (it != g_audio_attenuators.end()) {
 		bool was_enabled = it->second.enabled;
 		it->second.enabled = enabled;
