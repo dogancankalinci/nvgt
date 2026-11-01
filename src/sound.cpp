@@ -2335,8 +2335,9 @@ audio_decoder* audio_decoder::create(audio_engine* e) { return new audio_decoder
 ma_result system_error_result(int code) {
 	switch (code) {
 #ifdef _WIN32
-		case ERROR_FILE_NOT_FOUND: case ERROR_PATH_NOT_FOUND: case ERROR_BAD_NETPATH: case ERROR_INVALID_DRIVE: case ERROR_CANT_RESOLVE_FILENAME: return MA_DOES_NOT_EXIST;
-		case ERROR_ACCESS_DENIED: case ERROR_SHARING_VIOLATION: case ERROR_LOCK_VIOLATION: case ERROR_FILE_READ_ONLY: case ERROR_WRITE_PROTECT: return MA_ACCESS_DENIED; // A file another program holds open too, as the C runtime's open gave.
+		case ERROR_FILE_NOT_FOUND: case ERROR_PATH_NOT_FOUND: case ERROR_BAD_NETPATH: case ERROR_BAD_NET_NAME: case ERROR_INVALID_DRIVE: return MA_DOES_NOT_EXIST; // A share that isn't there too.
+		case ERROR_ACCESS_DENIED: case ERROR_NETWORK_ACCESS_DENIED: case ERROR_SHARING_VIOLATION: case ERROR_LOCK_VIOLATION: case ERROR_FILE_READ_ONLY: case ERROR_WRITE_PROTECT: return MA_ACCESS_DENIED; // A file another program holds open too, as the C runtime's open gave.
+		case ERROR_CANT_RESOLVE_FILENAME: return MA_TOO_MANY_LINKS; // Links that lead round in a loop, as POSIX's ELOOP.
 		case ERROR_FILE_EXISTS: case ERROR_ALREADY_EXISTS: return MA_ALREADY_EXISTS;
 		case ERROR_INVALID_NAME: case ERROR_BAD_PATHNAME: case ERROR_DIRECTORY: return MA_INVALID_ARGS;
 		case ERROR_FILENAME_EXCED_RANGE: return MA_PATH_TOO_LONG;
