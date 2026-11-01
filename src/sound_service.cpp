@@ -111,6 +111,7 @@ static ma_result read_open_failure(const char* uri) {
 	struct stat st;
 	if (stat(path.c_str(), &st) != 0) return system_error_result(errno); // A directory the process may not search reads as access denied rather than missing.
 	if (S_ISDIR(st.st_mode)) return MA_IS_DIRECTORY;
+	if (!S_ISREG(st.st_mode) && !S_ISFIFO(st.st_mode)) return MA_INVALID_FILE; // A device or socket, which SDL refuses once it opens it.
 	const int file = open(path.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC); // Not waiting for a writer to a FIFO.
 	if (file < 0) return system_error_result(errno);
 	close(file);
