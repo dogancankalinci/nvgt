@@ -1,0 +1,134 @@
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -6266,7 +6266,12 @@
+ 	dt.MakeReference(false);
+ 	dt.MakeReadOnly(false);
+ 
+-	int offset = AllocateVariable(dt, true, forceOnHeap);
++	// ALTERED: not a variable the expression uses. CompileInitAsCopy constructs the temporary before the expression's code when
++	// the type has no copy constructor (a POD type, one with only opAssign), and a temporary of the same type that the
++	// expression made and let go of could be given the same variable: on the heap it was allocated a second time (the first
++	// object leaked) and then freed by the expression before the copy into it, which raised a null pointer exception; on the
++	// stack the temporary was constructed over and destroyed before being assigned to.
++	int offset = AllocateVariableNotIn(dt, true, forceOnHeap, ctx);
+ 
+ 	// Objects stored on the stack are not considered references
+ 	dt.MakeReference(IsVariableOnHeap(offset) || dt.IsObjectHandle());
+@@ -6768,7 +6773,7 @@
+ 	return var;
+ }
+ 
+-int asCCompiler::AllocateVariable(const asCDataType &type, bool isTemporary, bool forceOnHeap, bool asReference)
++int asCCompiler::AllocateVariable(const asCDataType &type, bool isTemporary, bool forceOnHeap, bool asReference, bool forceOnStack)
+ {
+ 	asCDataType t(type);
+ 	t.MakeReference(asReference);
+@@ -6789,15 +6794,16 @@
+ 		// Primitives and value types (unless overridden) are allocated on the stack
+ 		isOnHeap = false;
+ 
+-		// ALTERED: a declared variable of a value type flagged asOBJ_APP_CLASS_ALIGN8 (its C++ type may need 8-byte alignment)
+-		// is allocated on the heap, where the allocator aligns it. Stack variables are aligned to 4 bytes only, as the frames
+-		// are, so such an object (an 8-byte std::atomic, which NVGT registers as atomic_int64, atomic_uint64 and atomic_double)
+-		// was at an address that was 4 mod 8 after any 4-byte local: its atomic operations faulted on ARMv8.0 and ARMv7
+-		// (SIGBUS) and were split locks on x86. Temporaries stay on the stack: the compiler reuses a temporary's slot for
+-		// another one of the same type and placement while the first is still in use in some expressions (a heap temporary
+-		// for a copy made by a call's result and one for an argument passed by value got the same variable), which a stack
+-		// temporary and the heap copy of a by-value argument never share.
+-		if( !isTemporary && !t.IsPrimitive() && (t.GetTypeInfo()->GetFlags() & asOBJ_APP_CLASS_ALIGN8) )
++		// ALTERED: a variable of a value type flagged asOBJ_APP_CLASS_ALIGN8 (its C++ type may need 8-byte alignment) is
++		// allocated on the heap, where the allocator aligns it. Stack variables are aligned to 4 bytes only, as the frames are,
++		// so such an object (an 8-byte std::atomic, which NVGT registers as atomic_int64, atomic_uint64 and atomic_double) was
++		// at an address that was 4 mod 8 after any 4-byte local: its atomic operations faulted on ARMv8.0 and ARMv7 (SIGBUS)
++		// and were split locks on x86. This includes the temporaries (a construct call, the copy given for an &in parameter,
++		// the variable given for an &out one, a condition's result), except the location a function returns such a value
++		// into (forceOnStack, as the calling convention passes its address), which PerformFunctionCall then copies to the
++		// heap. A temporary is chosen outside the variables of the expression it is made for where it is constructed before
++		// that expression's code (see PrepareTemporaryVariable).
++		if( !forceOnStack && !t.IsPrimitive() && (t.GetTypeInfo()->GetFlags() & asOBJ_APP_CLASS_ALIGN8) )
+ 			isOnHeap = true;
+ 	}
+ 
+@@ -8681,7 +8687,7 @@
+ 				if( f->DoesReturnOnStack() )
+ 				{
+ 					useVariable = true;
+-					stackOffset = AllocateVariable(f->returnType, true);
++					stackOffset = AllocateVariable(f->returnType, true, false, false, true); // ALTERED: on the stack, see AllocateVariable
+ 
+ 					// Push the pointer to the pre-allocated space for the return value
+ 					ctx->bc.InstrSHORT(asBC_PSF, short(stackOffset));
+@@ -16130,6 +16136,14 @@
+ 	asCByteCode objBC(engine);
+ 	objBC.AddCode(&ctx->bc);
+ 
++	// ALTERED: a value type's constructor called for an object on the heap (CompileConstructCall, for a type flagged
++	// asOBJ_APP_CLASS_ALIGN8) is given the variable's address that the code so far pushes (asBC_VAR) under its arguments,
++	// where asBC_ALLOC takes it (GETREF below turns the entry under the arguments into the address). Put after the
++	// arguments, as an object pointer is, the entry the constructor's first argument took was turned into an address and the
++	// variable's index was passed as the argument: a crash, or the object allocated into a wrong variable.
++	if( onHeap && descr->name == "$beh0" && descr->objectType && !(descr->objectType->flags & asOBJ_REF) )
++		ctx->bc.AddCode(&objBC);
++
+ 	int r = PrepareFunctionCall(funcId, &ctx->bc, args);
+ 	if (r < 0)
+ 		return r;
+@@ -16203,7 +16217,7 @@
+ 		asASSERT(!useVariable);
+ 
+ 		useVariable = true;
+-		stackOffset = AllocateVariable(descr->returnType, true);
++		stackOffset = AllocateVariable(descr->returnType, true, false, false, true); // ALTERED: on the stack, see AllocateVariable
+ 		ctx->bc.InstrSHORT(asBC_PSF, short(stackOffset));
+ 	}
+ 
+@@ -18185,7 +18199,7 @@
+ 		if (descr->DoesReturnOnStack() && !useVariable)
+ 		{
+ 			useVariable = true;
+-			varOffset = AllocateVariable(descr->returnType, true);
++			varOffset = AllocateVariable(descr->returnType, true, false, false, true); // ALTERED: on the stack, see AllocateVariable
+ 
+ 			// Push the pointer to the pre-allocated space for the return value
+ 			ctx->bc.InstrSHORT(asBC_PSF, short(varOffset));
+@@ -18366,6 +18380,29 @@
+ 				ProcessDeferredParams(ctx);
+ 
+ 			ctx->bc.InstrSHORT(asBC_PSF, (short)returnOffset);
++
++			// ALTERED: a value of a type flagged asOBJ_APP_CLASS_ALIGN8 returned into a temporary on the stack (which is aligned
++			// to 4 bytes only, see AllocateVariable) is copied into a temporary on the heap, where the allocator aligns it, so
++			// that the methods the expression goes on to call get an aligned object. Only a type that can be copied this way
++			// (a POD type or one with a copy constructor) is moved; a variable the caller chose stays as it is. The call of a
++			// property accessor is made with the accessor still recorded in the expression (ProcessPropertyGetAccessor clears
++			// it once the call is compiled): it is put aside for the copy, which would otherwise take the expression for the
++			// accessor and call it again, without end.
++			if (descr->DoesReturnOnStack() && descr->returnType.GetTypeInfo() &&
++				(descr->returnType.GetTypeInfo()->flags & asOBJ_APP_CLASS_ALIGN8) &&
++				((descr->returnType.GetTypeInfo()->flags & asOBJ_POD) || CastToObjectType(descr->returnType.GetTypeInfo())->beh.copyconstruct) &&
++				tempVariables.Exists(returnOffset))
++			{
++				int propertyGet = ctx->property_get, propertySet = ctx->property_set;
++				asCExprContext *propertyArg = ctx->property_arg;
++				ctx->property_get = 0;
++				ctx->property_set = 0;
++				ctx->property_arg = 0;
++				PrepareTemporaryVariable(ctx->exprNode, ctx, true, true);
++				ctx->property_get = propertyGet;
++				ctx->property_set = propertySet;
++				ctx->property_arg = propertyArg;
++			}
+ 		}
+ 		else if (descr->returnType.IsReference())
+ 		{
+--- a/sdk/angelscript/source/as_compiler.h
++++ b/sdk/angelscript/source/as_compiler.h
+@@ -453,7 +453,7 @@
+ 	asCArray<int> breakLabels;
+ 	asCArray<int> continueLabels;
+ 
+-	int AllocateVariable(const asCDataType &type, bool isTemporary, bool forceOnHeap = false, bool asReference = false);
++	int AllocateVariable(const asCDataType &type, bool isTemporary, bool forceOnHeap = false, bool asReference = false, bool forceOnStack = false); // ALTERED: forceOnStack, see AllocateVariable
+ 	int AllocateVariableNotIn(const asCDataType &type, bool isTemporary, bool forceOnHeap, asCExprContext *ctx);
+ 	int GetVariableOffset(int varIndex);
+ 	int GetVariableSlot(int varOffset);

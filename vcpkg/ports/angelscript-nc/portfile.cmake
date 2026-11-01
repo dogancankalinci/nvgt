@@ -125,6 +125,7 @@ vcpkg_from_github(
         fix-variadic-generic-arg-cleanup.patch
         fix-variadic-script-declaration.patch
         fix-align8-value-type-layout.patch
+        fix-align8-temporaries.patch
 )
 
 vcpkg_cmake_configure(
