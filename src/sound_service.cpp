@@ -508,7 +508,10 @@ std::istream *pack_protocol::open_uri(const char *uri, const directive_t directi
 	if (obj == nullptr)
 		return nullptr;
 	std::istream *item = obj->get_file(uri);
-	if (!item && obj->get_is_active()) t_open_error = MA_DOES_NOT_EXIST; // A name the open pack doesn't hold, for the load to report as the file protocol reports a missing file.
+	if (!item) { // A name an NVGT pack doesn't hold, for the load to report as the file protocol reports a missing file; not one it holds whose file couldn't be opened again, nor whatever a plugin's pack, which can't be asked, failed for.
+		const pack* nvgt_pack = dynamic_cast<const pack*>(obj.get());
+		if (nvgt_pack && nvgt_pack->get_is_active() && !nvgt_pack->file_exists(uri)) t_open_error = MA_DOES_NOT_EXIST;
+	}
 	return item;
 }
 // What tells the pack's contents apart: an NVGT pack's identity, which its name alone, as given to open(), didn't for a pack of that name in another directory or rewritten since, nor for two packs embedded in one file; a plugin's pack's name, and for one that gives none, a suffix no other load gets, so its loads share no buffer with any other.

@@ -364,7 +364,7 @@ bool pack::add_memory(const std::string& internal_name, const std::string& data)
 	Poco::MemoryInputStream ms(&data[0], data.size());
 	return write->put(ms, internal_name);
 }
-bool pack::file_exists(const std::string& filename) {
+bool pack::file_exists(const std::string& filename) const {
 	if (open_mode == OPEN_READ)
 		return read->exists(filename);
 	if (open_mode == OPEN_WRITE)

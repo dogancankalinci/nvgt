@@ -60,7 +60,7 @@ public:
 	bool add_file(const std::string& filename, const std::string& internal_name);
 	bool add_stream(const std::string& internal_name, datastream* ds);
 	bool add_memory(const std::string& internal_name, const std::string& data);
-	bool file_exists(const std::string& filename);
+	bool file_exists(const std::string& filename) const;
 	int64_t get_file_size(const std::string& filename);
 	// Gets a raw istream that points to the requested file. This is not the version that's given to script.
 	std::istream* get_file(const std::string& filename) const override;
