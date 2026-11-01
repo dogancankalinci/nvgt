@@ -402,6 +402,12 @@ bool refresh_audio_devices() {
 	audio_device_lists lists;
 	lists.input_names = CScriptArray::Create(get_array_type("array<string>"));
 	lists.output_names = CScriptArray::Create(get_array_type("array<string>"));
+	if (!lists.input_names || !lists.output_names) { // No memory for them: the enumeration added to a null array, and a null one kept was handed out.
+		if (lists.input_names) lists.input_names->Release();
+		if (lists.output_names) lists.output_names->Release();
+		g_soundsystem_last_error = MA_OUT_OF_MEMORY;
+		return false;
+	}
 	ma_result result = ma_context_enumerate_devices(&g_sound_context, ma_device_enum_callback, &lists);
 	if (result == MA_SUCCESS) { // Otherwise the lists taken before stay.
 		std::lock_guard<std::mutex> lock(g_devices_mutex);
