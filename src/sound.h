@@ -14,6 +14,8 @@
 
 #define NOMINMAX
 #include <miniaudio.h>
+#include <stdexcept>
+#include <string>
 #include <reactphysics3d/mathematics/Vector3.h>
 #include "sound_service.h"
 
@@ -45,6 +47,11 @@ struct last_error_kept {
 	ma_result was = g_soundsystem_last_error;
 	~last_error_kept() { g_soundsystem_last_error = was; }
 };
+// Sets SOUNDSYSTEM_LAST_ERROR before a constructor or factory refuses by throwing, so that a script reading it after catching sees why rather than an earlier call's error.
+[[noreturn]] inline void throw_refusal(ma_result error, const std::string& message) {
+	g_soundsystem_last_error = error;
+	throw std::runtime_error(message);
+}
 // Add support for a new audio format by plugging in a ma_decoding_backend_vtable.
 bool add_decoder(ma_decoding_backend_vtable *vtable);
 bool init_sound();

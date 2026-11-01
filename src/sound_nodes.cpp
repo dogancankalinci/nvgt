@@ -393,7 +393,7 @@ class phonon_binaural_node_impl : public audio_node_impl, public virtual phonon_
 	unique_ptr<ma_phonon_binaural_node> bn;
 	public:
 		phonon_binaural_node_impl(audio_engine* e, int channels, int sample_rate, int frame_size = 0) : bn(make_unique<ma_phonon_binaural_node>()), audio_node_impl(nullptr, e) {
-			if (!e) throw std::invalid_argument("no engine provided");
+			if (!e) throw_refusal(MA_INVALID_ARGS, "no engine provided");
 			if (!phonon_init()) throw std::runtime_error("Steam Audio was not initialized");
 			// The HRTF's own settings, whatever sample_rate and frame_size say: Steam Audio applied the HRTF, made for blocks of SOUNDSYSTEM_FRAMESIZE frames, at the frame size given, which past it made the output wrong, then garbage at many times full scale, and at 65536 crashed; the sample rate changed nothing.
 			(void)sample_rate;
@@ -1037,16 +1037,16 @@ bool reverb3d_reaches(reverb3d* verb, const std::function<bool(mixer*)>& is_targ
 }
 reverb3d* reverb3d::create(audio_node* reverb, mixer* destination, audio_engine* e) {
 	if (!e) throw std::runtime_error("no audio engine available");
-	if (destination && destination->get_engine() != e) throw std::runtime_error("the destination mixer belongs to another audio engine");
-	if (reverb && reverb->get_engine() != e) throw std::runtime_error("the reverb belongs to another audio engine");
+	if (destination && destination->get_engine() != e) throw_refusal(MA_INVALID_ARGS, "the destination mixer belongs to another audio engine");
+	if (reverb && reverb->get_engine() != e) throw_refusal(MA_INVALID_ARGS, "the reverb belongs to another audio engine");
 	audio_node* target = destination? static_cast<audio_node*>(destination) : e->get_endpoint();
-	if (reverb? !reverb_fits(reverb, target, e->get_channels()) : ma_node_get_input_bus_count(target->get_ma_node()) == 0) throw std::runtime_error("the destination takes no input from the reverb"); // A sound given as a mixer, or a reverb of another channel count: the reverb would go nowhere, as reverb3d.mixer and reverb3d.reverb refuse them.
+	if (reverb? !reverb_fits(reverb, target, e->get_channels()) : ma_node_get_input_bus_count(target->get_ma_node()) == 0) throw_refusal(MA_INVALID_OPERATION, "the destination takes no input from the reverb"); // A sound given as a mixer, or a reverb of another channel count: the reverb would go nowhere, as reverb3d.mixer and reverb3d.reverb refuse them.
 	std::lock_guard<std::recursive_mutex> topology(g_audio_topology_mutex);
 	// A mixer given as the reverb goes into the destination as a mixer, which a destination going into that mixer would loop: refused, as reverb3d.reverb refuses it, rather than made with the reverb going where the mixer went before.
 	if (mixer* verb_mixer = reverb? dynamic_cast<mixer*>(reverb) : nullptr) {
-		if (destination && mixer_reaches(destination, [verb_mixer](mixer* m) { return m == verb_mixer; })) throw std::runtime_error("the destination goes into the reverb mixer");
+		if (destination && mixer_reaches(destination, [verb_mixer](mixer* m) { return m == verb_mixer; })) throw_refusal(MA_INVALID_ARGS, "the destination goes into the reverb mixer");
 	}
-	if (destination && reverb && !reverb_free_for(reverb, destination, 0)) throw std::runtime_error("the reverb goes into another destination for another reverb3d already");
+	if (destination && reverb && !reverb_free_for(reverb, destination, 0)) throw_refusal(MA_INVALID_OPERATION, "the reverb goes into another destination for another reverb3d already");
 	if (destination) return new reverb3d_impl(e, reverb, destination);
 	// Without a destination, a reverb other reverb3ds use goes on where they send it, rather than into a mixer of this one's own that took it from them (see reverb_free_for()).
 	if (reverb && reverb_users_of(reverb) > 0) {

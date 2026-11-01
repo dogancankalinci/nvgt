@@ -728,12 +728,12 @@ public:
 	bool meant_to_run() const { return started; } // Started, by the constructor or start(), and not stopped since.
 	engine_flags flags;
 	audio_engine_impl(int flags, int sample_rate, int channels) : audio_node_impl(nullptr, this), engine(nullptr), resource_manager(nullptr), script_data_callback(nullptr), engine_endpoint(nullptr), flags(static_cast<engine_flags>(flags)) {
-		if (channels > MA_MAX_CHANNELS) throw runtime_error(Poco::format("exceeded maximum channel count of %d", MA_MAX_CHANNELS));
+		if (channels > MA_MAX_CHANNELS) throw_refusal(MA_INVALID_ARGS, Poco::format("exceeded maximum channel count of %d", MA_MAX_CHANNELS));
 		if (sample_rate < 0) sample_rate = 0; // As 0, the device's own rate or the default without a device, rather than a rate of over four billion, which a negative one became in MiniAudio's unsigned fields.
-		if (sample_rate > ma_standard_sample_rate_max) throw runtime_error(Poco::format("exceeded maximum sample rate of %d", int(ma_standard_sample_rate_max))); // At a higher one, the highest MiniAudio has a name for, a device's every period needed many times the frames it plays resampled, more than the audio thread could keep up with.
-		if (sample_rate && sample_rate < int(min_sample_rate)) throw runtime_error(Poco::format("below minimum sample rate of %d", int(min_sample_rate))); // Below it, the resource manager's pages held no frames, and every sound loaded or streamed on the engine played silence while its load succeeded.
+		if (sample_rate > ma_standard_sample_rate_max) throw_refusal(MA_INVALID_ARGS, Poco::format("exceeded maximum sample rate of %d", int(ma_standard_sample_rate_max))); // At a higher one, the highest MiniAudio has a name for, a device's every period needed many times the frames it plays resampled, more than the audio thread could keep up with.
+		if (sample_rate && sample_rate < int(min_sample_rate)) throw_refusal(MA_INVALID_ARGS, Poco::format("below minimum sample rate of %d", int(min_sample_rate))); // Below it, the resource manager's pages held no frames, and every sound loaded or streamed on the engine played silence while its load succeeded.
 		if (!init_sound_context()) throw runtime_error(Poco::format("failed to initialize sound context %d", int(g_soundsystem_last_error)));
-		if (!(flags & NO_DEVICE) && processing) throw runtime_error("an engine with a device can't be made on an audio thread"); // As in a processing callback: opening and starting its device held that audio up, as starting or changing a device there is refused for.
+		if (!(flags & NO_DEVICE) && processing) throw_refusal(MA_INVALID_OPERATION, "an engine with a device can't be made on an audio thread"); // As in a processing callback: opening and starting its device held that audio up, as starting or changing a device there is refused for.
 		engine = std::make_unique<ma_engine>();
 		// We need a self-managed device because at least on Windows, we can't meet low-latency requirements without specific configurations.
 		if ((flags & NO_DEVICE) == 0) {
@@ -932,7 +932,7 @@ public:
 			return CScriptArray::Create(float_array_type());
 		}
 		unsigned int channels = ma_engine_get_channels(&*engine);
-		if (frame_count > 0xFFFFFFFF / channels) throw runtime_error("too many frames requested");
+		if (frame_count > 0xFFFFFFFF / channels) throw_refusal(MA_INVALID_ARGS, "too many frames requested");
 		CScriptArray *result = CScriptArray::Create(float_array_type(), frame_count * channels);
 		asIScriptContext* ctx = asGetActiveContext();
 		if (ctx && ctx->GetState() == asEXECUTION_EXCEPTION) {
@@ -1422,7 +1422,7 @@ public:
 		if (!guard) return CScriptArray::Create(float_array_type());
 		unsigned int channels = get_channels(); // Asked once, before the read: asking reads the source's format, which sets the error the read or a refusal to read set.
 		if (!frame_count && ready_to_read()) frame_count = get_advised_read_frame_count(); // Counted once what was to be dropped is gone, which an advised count leaves out.
-		if (channels && frame_count > 0xFFFFFFFF / channels) throw runtime_error("too many frames requested");
+		if (channels && frame_count > 0xFFFFFFFF / channels) throw_refusal(MA_INVALID_ARGS, "too many frames requested");
 		CScriptArray* array = CScriptArray::Create(float_array_type(), frame_count * channels);
 		asIScriptContext* ctx = asGetActiveContext();
 		if (ctx && ctx->GetState() == asEXECUTION_EXCEPTION) {
@@ -5498,7 +5498,7 @@ public:
 	}
 	// An index out of range opens the default device, as -1 does, and reads as -1 then.
 	microphone_impl(audio_engine* e, int device) : audio_ring_buffer_impl(e->get_channels(), 8192, e) {
-		if (audio_engine_impl::on_audio_thread()) throw std::runtime_error("a microphone can't be made on an audio thread"); // As an engine with a device: opening and starting a capture device there held that audio up, as set_device() and set_state() are refused for.
+		if (audio_engine_impl::on_audio_thread()) throw_refusal(MA_INVALID_OPERATION, "a microphone can't be made on an audio thread"); // As an engine with a device: opening and starting a capture device there held that audio up, as set_device() and set_state() are refused for.
 		follows_default = !(device >= 0 && audio_device_id(ma_device_type_capture, device, device_id));
 		if (!open_capture(follows_default? nullptr : &device_id)) throw std::runtime_error("failed to initialize capture device");
 		if ((g_soundsystem_last_error = ma_device_start(&*capture_device)) != MA_SUCCESS) audio_node_impl::set_state(ma_node_state_stopped);
