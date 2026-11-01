@@ -3973,7 +3973,9 @@ public:
 		const ma_spatializer_listener* l = &e->listeners[listener];
 		double position[3], facing[3];
 		if (!sound_relative_position(&*snd, position, facing)) return 1;
-		ma_vec3f direction{(float)facing[0], (float)facing[1], (float)facing[2]}; // The sound's, relative to the listener, in the frame of its position.
+		// The sound's direction, relative to the listener, in the frame of its position, of unit length: angular_gain() compares a dot product with the cone's angles, so that a direction set longer or shorter than 1 widened or narrowed the cone, as in MiniAudio's own spatializer, which NVGT's attenuators stand in for.
+		const double facing_length = sqrt(facing[0] * facing[0] + facing[1] * facing[1] + facing[2] * facing[2]), unit = facing_length > 0? facing_length : 1;
+		ma_vec3f direction{(float)(facing[0] / unit), (float)(facing[1] / unit), (float)(facing[2] / unit)};
 		double distance = sqrt(position[0] * position[0] + position[1] * position[1] + position[2] * position[2]);
 		if (!(distance > 0.001)) return 1; // As MiniAudio, which has no direction to the listener then.
 		ma_vec3f to_sound{(float)(position[0] / distance), (float)(position[1] / distance), (float)(position[2] / distance)}, from_sound{-to_sound.x, -to_sound.y, -to_sound.z};
