@@ -5013,7 +5013,8 @@ public:
 		paused = fade_paused = false;
 		call_off_restart(); // A play() just before, at the sound's end, isn't made after it.
 		if (!mixer_impl::stop()) return false;
-		return !chain && get_length_in_frames() == 0 || seek(0); // A stream without a length, such as PCM or a URL, has no start to go back to; a chain always has (see seek_in_frames()).
+		if (!chain && get_length_in_frames() == 0) return (g_soundsystem_last_error = MA_SUCCESS) == MA_SUCCESS; // A stream without a length, such as PCM or a URL, has no start to go back to; a chain always has (see seek_in_frames()). Stopped, rather than with the length's MA_NOT_IMPLEMENTED left behind.
+		return seek(0);
 	}
 	// A stream_pcm() sound too, whose queue play() resumes, as after pause_fade(): refused, it read as not paused while pause_fade() paused it.
 	// Only a sound playing or due to start is made paused: one stopped, finished or never started read as paused, and play() then resumed what stop() had ended, a stream_pcm() sound's queue included, where it starts such a sound again.
