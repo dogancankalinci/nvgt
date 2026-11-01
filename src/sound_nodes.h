@@ -61,6 +61,7 @@ public:
 		if (engine && !is_engine()) this->engine->duplicate();
 	}
 	~audio_node_impl() {
+		last_error_kept kept;
 		{
 			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex);
 			drop_rate_bridges();

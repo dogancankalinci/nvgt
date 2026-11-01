@@ -849,6 +849,7 @@ public:
 		return verb->attach_output_bus(0, destination? static_cast<audio_node*>(destination) : get_engine()->get_endpoint(), 0);
 	}
 	~reverb3d_impl() {
+		last_error_kept kept;
 		if (reverb) {
 			reverb_let_go(reverb); // A node the script keeps no longer goes on into the destination, which kept a reverb3d's own mixer alive and processed with it.
 			reverb->release();
@@ -1288,6 +1289,7 @@ public:
 		{ std::lock_guard<std::mutex> lock(g_tracked_spatializers_mutex); g_tracked_spatializers.insert(this); }
 	}
 	~audio_spatializer_impl() {
+		last_error_kept kept;
 		// Out of the set first, which a global panner or attenuator change takes its references from: it takes none once the last one went (see duplicate_if_alive()), so none is rewiring this one as its node goes, nor reaches it once it is out.
 		{ std::lock_guard<std::mutex> lock(g_tracked_spatializers_mutex); g_tracked_spatializers.erase(this); }
 		// A component the script kept goes on without this spatializer: off the graph first, which waits for the audio thread to stop processing it, then without its pointer back here, so it passes audio through if used again.

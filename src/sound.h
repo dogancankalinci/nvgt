@@ -40,6 +40,11 @@ enum audio_spatializer_reverb3d_placement {
 
 extern audio_engine *g_audio_engine;
 extern thread_local ma_result g_soundsystem_last_error; // Per thread, like errno: the audio device thread and other script threads must not overwrite a result before the thread that produced it reads it back.
+// Keeps SOUNDSYSTEM_LAST_ERROR as it was through a destructor, whose closes, stops and detaches set it: letting go of an object read as the result of the script's last call, an error the script had yet to read replaced, or one made up.
+struct last_error_kept {
+	ma_result was = g_soundsystem_last_error;
+	~last_error_kept() { g_soundsystem_last_error = was; }
+};
 // Add support for a new audio format by plugging in a ma_decoding_backend_vtable.
 bool add_decoder(ma_decoding_backend_vtable *vtable);
 bool init_sound();

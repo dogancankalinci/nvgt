@@ -1295,7 +1295,10 @@ protected:
 	}
 public:
 	audio_data_source_impl(audio_engine* e, ma_data_source* initial_src = nullptr) : audio_node_impl(nullptr, e), src_cur(nullptr), src_next(nullptr), src(nullptr) { if (initial_src) set_ma_data_source(initial_src); }
-	~audio_data_source_impl() { reset(); }
+	~audio_data_source_impl() {
+		last_error_kept kept;
+		reset();
+	}
 	static void add_user(audio_data_source* ds) {
 		if (auto impl = dynamic_cast<audio_data_source_impl*>(ds)) impl->users++;
 	}
@@ -2128,7 +2131,10 @@ class audio_decoder_impl : public audio_data_source_impl, public virtual audio_d
 	}
 public:
 	audio_decoder_impl(audio_engine* e) : audio_data_source_impl(e, nullptr), decoder(nullptr), datastream_ref(nullptr) {}
-	~audio_decoder_impl() { close(); }
+	~audio_decoder_impl() {
+		last_error_kept kept;
+		close();
+	}
 	// A sample rate below min_sample_rate or above the highest MiniAudio names, 0 aside, which keeps the file's: at a few hertz the decoder resampled down to it, so a source read at the engine's rate decoded many thousands of frames for each it gave, slower than the audio played, and above the highest it resampled up to it, as slowly, as many frames for each. And a channel count past MA_MAX_CHANNELS, which MiniAudio refused only once the decoder open had been closed.
 	static bool output_format_in_range(unsigned int sample_rate, unsigned int channels) {
 		if ((!sample_rate || (sample_rate >= min_sample_rate && sample_rate <= ma_standard_sample_rate_max)) && channels <= MA_MAX_CHANNELS) return true;
@@ -2657,6 +2663,7 @@ protected:
 public:
 	audio_wav_encoder_impl(audio_engine* e) : audio_encoder_impl(e, false), encoder(nullptr) {}
 	~audio_wav_encoder_impl() {
+		last_error_kept kept;
 		destroy_node(); // An encoder in the graph has its process() called by the audio thread until then.
 		close();
 	}
@@ -2732,6 +2739,7 @@ protected:
 public:
 	audio_opus_encoder_impl(audio_engine* e) : audio_encoder_impl(e), encoder(nullptr), comments(nullptr), bitrate(128000), complexity(10), signal_type(OPUS_AUTO), application(OPUS_APPLICATION_AUDIO), packet_loss_percent(0), vbr(true), cvbr(false), dtx(false) {}
 	~audio_opus_encoder_impl() {
+		last_error_kept kept;
 		destroy_node();
 		close();
 	}
@@ -3553,6 +3561,7 @@ public:
 		play();
 	}
 	~mixer_impl() {
+		last_error_kept kept;
 		track_shape(false);
 		stop();
 		unique_lock<mutex> lock(spatialization_params_mutex);
@@ -4351,6 +4360,7 @@ public:
 		garbage_collect_inline_sounds(); // Autoclosed sounds that finished are freed whenever sounds are made or loaded, which scripts do all the time, not only by engine.play().
 	}
 	~sound_impl() {
+		last_error_kept kept;
 		track_shape(false);
 		close();
 	}
