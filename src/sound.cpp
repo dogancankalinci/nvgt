@@ -1772,6 +1772,7 @@ public:
 			queue->wrote(chunk);
 			total += chunk;
 		}
+		if (total == frame_count) g_soundsystem_last_error = MA_SUCCESS; // All of it queued, as a call that succeeded reads.
 		return total;
 	}
 	unsigned int write_script_array(CScriptArray *frames) override {
@@ -2496,7 +2497,9 @@ public:
 	unsigned int write(const float* frames_in, unsigned int frame_count) override {
 		unique_lock<mutex> lock = lock_writes();
 		if (!lock) return 0;
-		return write_locked(frames_in, frame_count);
+		unsigned int taken = write_locked(frames_in, frame_count);
+		if (frames_in && get_active() && taken == frame_count) g_soundsystem_last_error = MA_SUCCESS; // All of it written, an empty write too, as a call that succeeded reads.
+		return taken;
 	}
 	// write(), with write_mtx held.
 	unsigned int write_locked(const float* frames_in, unsigned int frame_count) {
@@ -2564,6 +2567,7 @@ public:
 			pull_stream->release();
 			pull_stream = nullptr;
 		}
+		g_soundsystem_last_error = MA_SUCCESS; // Read, rather than reading as an earlier call's refusal.
 		return data;
 	}
 	string get_format() const override { return ""; }
