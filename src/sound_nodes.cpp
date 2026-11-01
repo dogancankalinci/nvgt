@@ -735,6 +735,10 @@ class freeverb_node_impl : public audio_node_impl, public virtual freeverb_node 
 	public:
 	freeverb_node_impl(audio_engine* e) : rn(make_unique<ma_reverb_node>()), audio_node_impl(nullptr, e) {
 		ma_reverb_node_config cfg = ma_reverb_node_config_init(get_engine()->get_channels(), get_engine()->get_sample_rate());
+		if (cfg.channels < 1 || cfg.channels > 2 || cfg.sampleRate < 22050 || cfg.sampleRate > 44100 * verblib_max_sample_rate_multiplier) { // What verblib reverbs, which failed with nothing said of why.
+			g_soundsystem_last_error = MA_FORMAT_NOT_SUPPORTED;
+			throw std::runtime_error("a freeverb works on engines of 1 or 2 channels at 22050 to 396900 Hz");
+		}
 		if ((g_soundsystem_last_error = ma_reverb_node_init(ma_engine_get_node_graph(get_engine()->get_ma_engine()), &cfg, nullptr, &*rn)) != MA_SUCCESS) throw std::runtime_error("ma_reverb_node was not initialized");
 		node = (ma_node_base*)&*rn;
 	}

@@ -3,6 +3,8 @@
 #define miniaudio_reverb_node_h
 
 #include "miniaudio.h"
+/* NVGT: verblib's buffers for rates up to 44100 times this, 396900 Hz, past the 384000 engines go to: at its default of 4 a freeverb couldn't be made on an engine past 176400 Hz, as one of a 192 kHz device. Set here, before verblib.h, so that every file sizing the reverb node agrees. */
+#define verblib_max_sample_rate_multiplier 9
 #include "verblib.h"
 
 #ifdef __cplusplus
