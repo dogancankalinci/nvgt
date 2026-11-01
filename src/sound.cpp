@@ -4512,7 +4512,7 @@ public:
 	bool load_source(const std::string &filename, const size_t protocol_slot, directive_t protocol_directive, const size_t filter_slot, directive_t filter_directive, ma_uint32 ma_flags, bool whole_in_pages) {
 		garbage_collect_inline_sounds();
 		if (snd)
-			close();
+			close_to_reload();
 		// Made here and handed to snd only once it loaded, under the lock the audio thread reads snd under, so the audio thread never reads a sound half made or freed after a failed load.
 		held_sound_ptr made(new held_sound());
 		// The sound service converts our file name into a "tripplet" which includes information about the origin an asset is expected to come from. This guarantees that we don't mistake assets from different origins as the same just because they have the same name.
@@ -4660,7 +4660,7 @@ public:
 	bool load_string(const std::string &data) override { return load_memory(data.data(), data.size()); }
 	bool load_string_async(const std::string &data) override {
 		// Same as load_pcm, but without the setup. A loaded sound is closed first, since closing empties pcm_buffer, which the directive points into.
-		if (snd) close();
+		if (snd) close_to_reload();
 		pcm_buffer = data;
 		if (load_special(":quickstring", g_memory_protocol_slot, memory_protocol::directive(&pcm_buffer[0], pcm_buffer.size()), sound_service::null_filter_slot, nullptr, MA_SOUND_FLAG_DECODE | MA_SOUND_FLAG_ASYNC)) return true;
 		std::string().swap(pcm_buffer); // Not kept for a load that failed, until the sound loaded again or went.
@@ -4671,7 +4671,7 @@ public:
 	}
 	bool load_pcm(void *buffer, unsigned int size, ma_format format, int samplerate, int channels) override {
 		if (snd)
-			close();
+			close_to_reload();
 		pcm_buffer.clear();
 		// At least for now, the strat here is just to write the PCM to wav and then load it the normal way.
 		// Should optimization become necessary (this does result in a couple of copies), a protocol could be written that simulates its input having a RIFF header on it.
@@ -4717,7 +4717,7 @@ public:
 				g_soundsystem_last_error = MA_INVALID_ARGS;
 				return false;
 			}
-			if (snd) close();
+			if (snd) close_to_reload();
 			if (!sample_rate) sample_rate = get_engine()->get_sample_rate();
 			pcm_stream = make_unique<pcm_queue>();
 			if ((g_soundsystem_last_error = pcm_stream->init(format, channels, buffer_size)) != MA_SUCCESS) {
@@ -4813,7 +4813,7 @@ public:
 			ds->release();
 			return false;
 		}
-		if (snd) close();
+		if (snd) close_to_reload();
 		audio_data_source_impl::prepare_length_of(ds); // Before the sound reads it.
 		held_sound_ptr made(new held_sound()); // As load_special() makes a sound.
 		if ((g_soundsystem_last_error = ma_sound_init_from_data_source(get_engine()->get_ma_engine(), float_source(chain_source(ds->get_ma_data_source(), get_engine(), chain), view), MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT, nullptr, &*made)) != MA_SUCCESS) {
@@ -4956,6 +4956,12 @@ public:
 		paused = fade_paused = fade_from_stop = should_autoclose = false;
 		g_soundsystem_last_error = MA_SUCCESS; // Closed, rather than reading as an earlier call's refusal.
 		return true;
+	}
+	// close() before a load, play or open puts something new in the sound: keeping autoclose, which a script's own close() clears, so that a sound set to autoclose before it loaded again wasn't freed the moment the script let go of it.
+	void close_to_reload() {
+		const bool autoclose = should_autoclose;
+		close();
+		should_autoclose = autoclose;
 	}
 	void set_autoclose(bool enabled) override { should_autoclose = enabled; }
 	bool get_autoclose() const override { return should_autoclose; }
