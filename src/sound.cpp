@@ -179,11 +179,11 @@ static unsigned long long milliseconds_of_frames(ma_uint64 frames, ma_uint32 sam
 	if (!sample_rate) return 0;
 	return frames <= ~(ma_uint64)0 / 1000? frames * 1000 / sample_rate : (unsigned long long)((double)frames / sample_rate * 1000);
 }
-// Linear volumes a sound, mixer, engine or fade can be set to: finite, and no louder than max_volume_gain. MA_INVALID_ARGS otherwise.
+// Linear volumes a sound, mixer, engine or fade can be set to: finite, not negative, and no louder than max_volume_gain. MA_INVALID_ARGS otherwise. A negative one inverted the sound on an engine without PERCENTAGE_ATTRIBUTES, as engines refuse one.
 static bool playable_volumes(std::initializer_list<float> linear_volumes) {
 	if (!finite_values(linear_volumes)) return false;
 	for (float volume : linear_volumes) {
-		if (std::fabs(volume) > max_volume_gain) {
+		if (volume < 0 || volume > max_volume_gain) {
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
@@ -196,6 +196,8 @@ struct script_read {
 	script_read() { t_script_read = true; }
 	~script_read() { t_script_read = was; }
 };
+// A fade's volumes as playable_volumes() takes them, a start below 0 being MiniAudio's "from the volume it is at" (see fade_volumes_to_linear()).
+static bool playable_fade(float start_volume, float end_volume) { return finite_values({start_volume, end_volume}) && (start_volume < 0 || playable_volumes({start_volume})) && playable_volumes({end_volume}); }
 static unordered_map<ma_data_source*, audio_data_source*> g_data_sources_map; // Only allow one audio_data_source wrapper per ma_data_source, should never be populated enough to be a performance hit.
 static std::mutex g_data_sources_map_mutex; // Every decoder open/close inserts into or erases from this map, from whichever script thread does it; an unlocked unordered_map rehashing under a concurrent erase corrupts the heap.
 static std::unique_ptr<sound_service> g_sound_service;
@@ -4048,7 +4050,7 @@ public:
 		return snd ? ma_sound_get_max_distance(&*snd) : NAN;
 	}
 	void set_cone(float inner_radians, float outer_radians, float outer_gain) override {
-		if (snd && finite_values({inner_radians, outer_radians, outer_gain})) {
+		if (snd && finite_values({inner_radians, outer_radians}) && playable_volumes({outer_gain})) { // A gain as volumes are, no louder and not negative, which the attenuators apply.
 			cone_inner = inner_radians;
 			cone_outer = outer_radians;
 			cone_outer_gain = outer_gain;
@@ -4089,7 +4091,7 @@ public:
 		if (!snd)
 			return;
 		fade_volumes_to_linear(start_volume, end_volume);
-		if (!playable_volumes({start_volume, end_volume})) return;
+		if (!playable_fade(start_volume, end_volume)) return;
 		drop_deferred_fade(); // A fade set now replaces one scheduled ahead, as in MiniAudio's only fader.
 		fade_from_stop = false;
 		set_fade_now(start_volume, end_volume, std::min<ma_uint64>(frames, UINT_MAX)); // MiniAudio's own limit, under its ~0 for no fade, which lost a fade that long.
@@ -4098,7 +4100,7 @@ public:
 		if (!snd)
 			return;
 		fade_volumes_to_linear(start_volume, end_volume);
-		if (!playable_volumes({start_volume, end_volume}) || !frames_fit(milliseconds, ma_engine_get_sample_rate(ma_sound_get_engine(&*snd)))) return;
+		if (!playable_fade(start_volume, end_volume) || !frames_fit(milliseconds, ma_engine_get_sample_rate(ma_sound_get_engine(&*snd)))) return;
 		drop_deferred_fade();
 		fade_from_stop = false;
 		set_fade_now(start_volume, end_volume, milliseconds * snd->engineNode.fader.config.sampleRate / 1000); // As ma_sound_set_fade_in_milliseconds() converts it.
@@ -5071,7 +5073,7 @@ public:
 	void set_timed_fade_in_frames(float start_volume, float end_volume, unsigned long long frames, unsigned long long absolute_time_in_frames) override {
 		if (!snd) return;
 		fade_volumes_to_linear(start_volume, end_volume);
-		if (!playable_volumes({start_volume, end_volume})) return;
+		if (!playable_fade(start_volume, end_volume)) return;
 		reset_stop_fade(); // It replaces a stop's fade, as in MiniAudio's only fader.
 		if (absolute_time_in_frames == ~(ma_uint64)0) return set_timed_fade_now(start_volume, end_volume, frames);
 		defer_fade(start_volume, end_volume, frames, absolute_time_in_frames);
@@ -5084,7 +5086,7 @@ public:
 	void set_timed_fade_in_milliseconds(float start_volume, float end_volume, unsigned long long frames, unsigned long long absolute_time_in_frames) override {
 		if (!snd) return;
 		fade_volumes_to_linear(start_volume, end_volume);
-		if (!playable_volumes({start_volume, end_volume})) return;
+		if (!playable_fade(start_volume, end_volume)) return;
 		ma_uint32 rate = ma_engine_get_sample_rate(ma_sound_get_engine(&*snd));
 		const bool now = absolute_time_in_frames == ~(ma_uint64)0; // Now, as in frames, rather than refused for its size.
 		if (!frames_fit(frames, rate) || !now && !frames_fit(absolute_time_in_frames, rate)) return;
