@@ -1,0 +1,106 @@
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -6997,14 +6997,39 @@
+ static asUINT ArgsOfCalledFunction(asCScriptFunction *func, asDWORD *progPointer, asCScriptFunction *calledFunc)
+ {
+ 	asUINT space = calledFunc->GetSpaceNeededForArguments() + (calledFunc->DoesReturnOnStack() ? AS_PTR_SIZE : 0) + (calledFunc->GetObjectType() ? AS_PTR_SIZE : 0);
+-	const asUINT allocSize = asBCTypeSize[asBCInfo[asBC_ALLOC].type];
+-	const asUINT pos = asUINT(progPointer - func->scriptData->byteCode.AddressOf());
+-	if( pos >= allocSize && *(asBYTE*)&func->scriptData->byteCode[pos - allocSize] == asBC_ALLOC &&
+-		func->GetCalledFunction(pos - allocSize) == calledFunc )
++	// ALTERED: the instruction that made the call is the one that ends at the position, found by going through the code
++	// from its start: the dword a fixed size back (asBC_ALLOC's) could be inside another instruction, whose argument (a
++	// constructor's function id whose low byte equals asBC_ALLOC) was read as the instruction, and a call made by asBC_CALL
++	// was taken for an asBC_ALLOC (its variable's address counted: asERROR at the caller's level)
++	const asDWORD *bc = func->scriptData->byteCode.AddressOf();
++	const asUINT pos = asUINT(progPointer - bc);
++	asUINT at = 0, prev = 0;
++	while( at < pos && at < func->scriptData->byteCode.GetLength() )
++	{
++		prev = at;
++		at += asBCTypeSize[asBCInfo[*(asBYTE*)&bc[at]].type];
++	}
++	if( at == pos && pos > 0 && *(asBYTE*)&bc[prev] == asBC_ALLOC && func->GetCalledFunction(prev) == calledFunc )
+ 		space += AS_PTR_SIZE;
+ 	return space;
+ }
+ 
++// ALTERED: whether a call to the function takes an object pointer from the stack above its arguments. A registered function
++// takes one as CallSystemFunction and CallGeneric pop it: by its calling convention, not by its object type (a template
++// instance's factory has the instance type as its object type but is a global function, and a method registered with
++// asCALL_THISCALL_ASGLOBAL is called on its auxiliary object).
++static bool TakesObjectPointer(asCScriptFunction *f)
++{
++	if( f->funcType != asFUNC_SYSTEM || f->sysFuncIntf == 0 )
++		return f->objectType != 0;
++	const internalCallConv cc = f->sysFuncIntf->callConv;
++	if( cc == ICC_GENERIC_METHOD || cc == ICC_GENERIC_METHOD_RETURNINMEM )
++		return true;
++	if( cc < ICC_THISCALL || cc == ICC_GENERIC_FUNC || cc == ICC_GENERIC_FUNC_RETURNINMEM )
++		return false;
++	return cc >= ICC_THISCALL_OBJLAST || f->sysFuncIntf->auxiliary == 0;
++}
++
+ // interface
+ int asCContext::GetArgsOnStackCount(asUINT stackLevel)
+ {
+@@ -7047,6 +7072,16 @@
+ 	// asCScriptFunction::variableSpace give this value
+ 	// If the stack pointer is higher than that, then there are data pushed on the stack
+ 	asUINT stackPos = asDWORD(sf - sp) - func->scriptData->variableSpace;
++
++	// ALTERED: a template type's factory or constructor stub (GenerateFactoryStubForTemplateObjectInstance: no variables,
++	// the object type pushed, then asBC_CALLSYS) hands its own parameters (and a value type's object pointer) to the
++	// registered function in place, right above its frame: while that function runs (the position is on the asBC_CALLSYS)
++	// they are values of the call, which the walk found short (asERROR) when an element's constructor or copy run by the
++	// factory looked at the stack.
++	if( func->dontCleanUpOnException && func->scriptData->variableSpace == 0 &&
++		*(asBYTE*)progPointer == asBC_CALLSYS )
++		stackPos += func->GetSpaceNeededForArguments() + (func->objectType ? AS_PTR_SIZE : 0);
++
+ 	if (stackPos == 0)
+ 		return 0;
+ 
+@@ -7111,6 +7146,18 @@
+ 			bc != asBC_ALLOC && bc != asBC_CALLBND && bc != asBC_CallPtr )
+ 		{
+ 			if( asBCInfo[bc].stackInc == 0xFFFF ) { even = false; break; } // asBC_RET or another without a fixed change
++			// ALTERED: an unconditional jump is followed. The two branches of a condition (c ? a : b) leave the stack the
++			// same where they join, and the first ends with a jump over the second: walked straight through, both branches'
++			// values were counted (an object operand of the condition pushed twice), and the walk didn't come out even. A
++			// conditional jump falls through, which is one of the paths the code can take. Expressions don't loop: a jump
++			// backwards ends the walk (asERROR).
++			if( bc == asBC_JMP )
++			{
++				const int jump = asBC_INTARG(&bcBase[n]);
++				if( jump < 0 ) { even = false; break; }
++				n += asBCTypeSize[asBCInfo[bc].type] + asUINT(jump);
++				continue;
++			}
+ 			if( bc == asBC_PshC4 )
+ 			{
+ 				pshC4.PushLast(net);
+@@ -7125,15 +7172,21 @@
+ 		if( bc != asBC_ALLOC || asBC_INTARG(&bcBase[n + AS_PTR_SIZE]) != 0 )
+ 			called = func->GetCalledFunction(n);
+ 		if( called == 0 && bc != asBC_ALLOC ) { even = false; break; }
++		const asUINT callPos = n;
+ 		n += asBCTypeSize[asBCInfo[bc].type];
+ 
+ 		// The call's values, in the order they are pushed
+ 		const bool objFirst = bc == asBC_ALLOC;
+-		const bool objLast = !objFirst && called->objectType && bc != asBC_CallPtr && bc != asBC_CALLBND;
++		const bool objLast = !objFirst && bc != asBC_CallPtr && bc != asBC_CALLBND && TakesObjectPointer(called); // ALTERED: see TakesObjectPointer
+ 		const bool retOnStack = called && called->DoesReturnOnStack();
+ 		const asUINT paramCount = called ? called->parameterTypes.GetLength() : 0;
+ 		const bool isVariadic = called && called->IsVariadic() && paramCount > 0;
+-		const int tail = (objLast ? AS_PTR_SIZE : 0) + (retOnStack ? AS_PTR_SIZE : 0); // pushed after the count
++		// ALTERED: a walk that starts at an asBC_ALLOC of a registered type is made from inside its constructor (the
++		// position stays on the instruction until the constructor returns): the VM pushed the new object's memory above the
++		// constructor's arguments for it, which the walk took for values of a later call (asERROR). A script class's
++		// constructor runs in a frame of its own, after the position has moved past the instruction.
++		const bool allocObject = objFirst && callPos == m_argsOnStackCacheProgPos && called && called->funcType == asFUNC_SYSTEM && TakesObjectPointer(called);
++		const int tail = (objLast || allocObject ? AS_PTR_SIZE : 0) + (retOnStack ? AS_PTR_SIZE : 0); // pushed after the count
+ 		asUINT argCount = paramCount;
+ 		if( isVariadic )
+ 		{
