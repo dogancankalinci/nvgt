@@ -2305,7 +2305,7 @@ class audio_encoder_impl : public effect_node_impl, public virtual audio_encoder
 			}
 			idle = 0;
 			frames_converted += frame_count_out;
-			write_converted(buffer.data(), frame_count_out);
+			if (write_converted(buffer.data(), frame_count_out) < frame_count_out) close_result = MA_IO_ERROR; // What was left not written out, which close() reports.
 		}
 	}
 protected:
@@ -2340,6 +2340,7 @@ protected:
 				// Not close(), which takes write_mtx; the open call that got here holds it.
 				dc.reset();
 				close_impl();
+				close_result = MA_SUCCESS; // Not the next session's: only close() reports it.
 				sample_rate = channels = 0;
 				return false;
 			}
@@ -2436,7 +2437,8 @@ public:
 	}
 	bool open_pull(unsigned int sample_rate, unsigned int channels, unsigned int flags) override {
 		if (!output_in_range(sample_rate, channels, open_flags(flags))) return false;
-		if (get_active() && !close()) return false; // As on an audio thread while a script thread holds the encoder's lock (MA_BUSY): the session open stays, writing to its stream, which letting go of the pulled stream below freed under it, and a later close() let go of again.
+		if (get_active()) close();
+		if (get_active()) return false; // Still open, as on an audio thread while a script thread holds the encoder's lock (MA_BUSY): the session stays, writing to its stream, which letting go of the pulled stream below freed under it, and a later close() let go of again. Told by whether it closed, not by close()'s result, which is false for a session closed whose last output failed.
 		// What an earlier pull session left for read() is let go of only once this one is open, and kept when the open is refused.
 		datastream* earlier = pull_stream;
 		pull_stream = new datastream(new stringstream());
@@ -2555,6 +2557,7 @@ class audio_wav_encoder_impl : public audio_encoder_impl, public virtual audio_w
 		std::streamoff base = 0;
 		std::string header; // What the encoder writes while it opens, held until then: see open_impl().
 		bool holding_header = false;
+		bool failed = false; // A write the stream refused, which close() reports: a seek it refuses is expected of a stream that can't seek (see mark_sizes_unknown()), not a failure.
 		std::streamoff at = 0, end = 0; // Where the encoder writes and how far it wrote, from base.
 		bool moved = false; // Whether it sought back, after which close_impl() puts the stream back at the end.
 	} output;
@@ -2585,7 +2588,10 @@ class audio_wav_encoder_impl : public audio_encoder_impl, public virtual audio_w
 		std::ostream *stream = out->ds->get_ostr();
 		if (!stream) return MA_ERROR;
 		stream->write((const char *)pBufferIn, bytesToWrite);
-		if (!stream->good()) return MA_ERROR;
+		if (!stream->good()) {
+			out->failed = true;
+			return MA_ERROR;
+		}
 		*pBytesWritten = bytesToWrite;
 		out->at += bytesToWrite;
 		out->end = std::max(out->end, out->at);
@@ -2669,6 +2675,7 @@ protected:
 		if (!encoder) return false;
 		ma_encoder_uninit(&*encoder);
 		encoder.reset();
+		if (output.failed) close_result = MA_IO_ERROR; // A write the output refused, as of the sizes or the padding closing writes, which MiniAudio doesn't report.
 		// Closing wrote the sizes into the header, which left a stream that can seek inside the file, where what the script wrote to it next overwrote the audio: it's put back at the end.
 		if (output.ds && output.moved) {
 			auto held_open = output.ds->hold_open();
@@ -2776,7 +2783,6 @@ public:
 		if (encoder && ope_encoder_ctl(encoder, OPUS_SET_BITRATE(new_bitrate)) != OPE_OK) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // Refused by libopusenc.
 		bitrate = new_bitrate;
 		g_soundsystem_last_error = MA_SUCCESS; // As the error is these setters' only result, void to the script.
-		g_soundsystem_last_error = MA_SUCCESS;
 		return true;
 	}
 	int get_complexity() const override { return complexity; }
