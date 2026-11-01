@@ -15,9 +15,8 @@
 #include <mutex>
 #include <miniaudio.h>
 
-namespace Poco { class Exception; }
-// The result for a file that couldn't be opened, from the error Poco's exception carries (see sound.cpp).
-ma_result file_open_result(const Poco::Exception& e);
+// The result for a file that couldn't be opened, from the system's error, errno or GetLastError() on Windows (see sound.cpp).
+ma_result system_error_result(int code);
 typedef std::shared_ptr<const void> directive_t;
 struct sound_service_vfs;
 struct vfs_args {

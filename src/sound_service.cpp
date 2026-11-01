@@ -13,9 +13,17 @@
 
 #include "sound_service.h"
 #include "xplatform.h" // NVGT_MOBILE
-#include <Poco/Exception.h>
-#include <Poco/File.h>
-#include <Poco/FileStream.h>
+#include <Poco/UnicodeConverter.h>
+#include <SDL3/SDL_filesystem.h>
+#include <SDL3/SDL_system.h>
+#ifdef _WIN32
+#include <Poco/UnWindows.h>
+#else
+#include <cerrno>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 #include <Poco/URIStreamOpener.h>
 #include <vector>
 #include <cassert>
@@ -58,17 +66,48 @@ struct sound_service_vfs {
 
 // Why a protocol couldn't open what it was asked for, for the VFS open to report, on the thread that opens it.
 static thread_local ma_result t_open_error = MA_ERROR;
-// Why a file couldn't be opened to read, as the encoders tell for the files they write: SDL, which opens it, keeps no errno, so that every failure but a missing file read "Unknown error". It's opened again through Poco, whose exception carries the error; a directory is told first, as POSIX opens one to read.
+// Why a file couldn't be opened to read, as the encoders tell for the files they write: SDL, which opens it, keeps no errno, so that every failure but a missing file read "Unknown error". It's opened again as SDL opens it, where SDL looked for it, for the system's error; a directory is told first, as POSIX opens one to read. Opened through Poco instead, which shares writing, a file another program was writing opened there, and read as unknown again.
 static ma_result read_open_failure(const char* uri) {
+	std::string path = uri;
+	if (path.empty()) return MA_INVALID_ARGS;
+#if defined(__ANDROID__)
+	// SDL looks for a relative name in the app's internal storage, then among its packaged assets, which can't be asked why: not in the current directory, which is the root there.
+	if (path[0] != '/') {
+		if (path.compare(0, 10, "content://") == 0) return MA_ERROR;
+		const char* internal = SDL_GetAndroidInternalStoragePath();
+		if (!internal) return MA_DOES_NOT_EXIST;
+		path = std::string(internal) + "/" + path;
+	}
+#elif defined(__APPLE__)
+	// SDL opens a name from the app's resources should it be there, and as given otherwise.
+	if (const char* resources = SDL_GetBasePath()) {
+		std::string bundled = std::string(resources) + path;
+		struct stat st;
+		if (stat(bundled.c_str(), &st) == 0) path = bundled;
+	}
+#endif
+#ifdef _WIN32
+	std::wstring wide;
 	try {
-		Poco::File file(uri);
-		if (!file.exists()) return MA_DOES_NOT_EXIST;
-		if (file.isDirectory()) return MA_IS_DIRECTORY;
-		Poco::FileInputStream probe(uri);
-	} catch (const Poco::Exception& e) {
-		return file_open_result(e);
-	} catch (const std::exception&) {}
-	return MA_ERROR;
+		Poco::UnicodeConverter::toUTF16(path, wide);
+	} catch (const std::exception&) {
+		return MA_ERROR;
+	}
+	const DWORD attributes = GetFileAttributesW(wide.c_str());
+	if (attributes == INVALID_FILE_ATTRIBUTES) return system_error_result(int(GetLastError()));
+	if (attributes & FILE_ATTRIBUTE_DIRECTORY) return MA_IS_DIRECTORY;
+	HANDLE file = CreateFileW(wide.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr); // SDL's access and sharing: a file another program writes, which SDL shares no writing with, reads as access denied.
+	if (file == INVALID_HANDLE_VALUE) return system_error_result(int(GetLastError()));
+	CloseHandle(file);
+#else
+	struct stat st;
+	if (stat(path.c_str(), &st) != 0) return system_error_result(errno); // A directory the process may not search reads as access denied rather than missing.
+	if (S_ISDIR(st.st_mode)) return MA_IS_DIRECTORY;
+	const int file = open(path.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC); // Not waiting for a writer to a FIFO.
+	if (file < 0) return system_error_result(errno);
+	close(file);
+#endif
+	return MA_ERROR; // It opens now: what stopped SDL is gone, or wasn't the file.
 }
 class sound_service_impl : public sound_service {
 	/**
@@ -265,6 +304,8 @@ public:
 	}
 	std::string prepare_triplet(const std::string &name, const size_t protocol_slot, const directive_t protocol_directive, const size_t filter_slot, directive_t filter_directive, bool own_entry, unsigned salt) {
 		if (protocol_slot >= protocols.size())
+			return "";
+		if (name.empty()) // No name, which the file protocol took as the current directory, refused as one that isn't valid UTF-8 is.
 			return "";
 		if (!is_valid_utf8(name) || name.find('\x1e') != std::string::npos) // Nor the separator itself, so that every triplet stands for one name, slot and suffix.
 			return "";

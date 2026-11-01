@@ -2321,9 +2321,9 @@ public:
 	}
 };
 audio_decoder* audio_decoder::create(audio_engine* e) { return new audio_decoder_impl(e); }
-// The result for a file an encoder, or a load, couldn't open, from the error Poco's exception carries, errno or Windows' own: one result for every failure said nothing of why, where MiniAudio's file open had told.
-ma_result file_open_result(const Poco::Exception& e) {
-	switch (e.code()) {
+// The result for a file that couldn't be opened, from the system's error, errno or Windows' own: one result for every failure said nothing of why, where MiniAudio's file open had told.
+ma_result system_error_result(int code) {
+	switch (code) {
 #ifdef _WIN32
 		case ERROR_FILE_NOT_FOUND: case ERROR_PATH_NOT_FOUND: case ERROR_BAD_NETPATH: case ERROR_INVALID_DRIVE: case ERROR_CANT_RESOLVE_FILENAME: return MA_DOES_NOT_EXIST;
 		case ERROR_ACCESS_DENIED: case ERROR_SHARING_VIOLATION: case ERROR_LOCK_VIOLATION: case ERROR_FILE_READ_ONLY: case ERROR_WRITE_PROTECT: return MA_ACCESS_DENIED; // A file another program holds open too, as the C runtime's open gave.
@@ -2361,6 +2361,8 @@ ma_result file_open_result(const Poco::Exception& e) {
 		default: return MA_ERROR;
 	}
 }
+// The same from Poco's exception for a file an encoder couldn't open, which carries the system's error.
+static ma_result file_open_result(const Poco::Exception& e) { return system_error_result(e.code()); }
 // Opens a file an encoder writes, through Poco, which takes the UTF-8 name on every platform and, unlike MiniAudio's and libopusenc's own file output, lets the encoder see every write fail; SOUNDSYSTEM_LAST_ERROR says why it couldn't.
 static std::unique_ptr<std::ostream> open_encoder_file(const string& filename) {
 	std::unique_ptr<std::ostream> file;
