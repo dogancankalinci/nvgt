@@ -13,6 +13,7 @@
 
 #include "sound_service.h"
 #include "xplatform.h" // NVGT_MOBILE
+#include <Poco/File.h>
 #include <Poco/URIStreamOpener.h>
 #include <vector>
 #include <cassert>
@@ -57,6 +58,8 @@ class sound_service_impl : public sound_service {
 	/**
 	 * Default protocol which loads files directly from the file system.
 	 */
+	// Why a protocol couldn't open what it was asked for, for the VFS open to report, on the thread that opens it.
+	inline static thread_local ma_result t_open_error = MA_ERROR;
 	class fs_protocol : public sound_service::protocol {
 		static const fs_protocol instance;
 
@@ -70,7 +73,11 @@ class sound_service_impl : public sound_service {
 				stream = new sdl_file_input_stream(uri);
 				return stream;
 			} catch (std::exception &) {
-				return NULL; // Likely out of memory.
+				// Why, for the load to report: MiniAudio's VFS open had only MA_ERROR, "Unknown error", for the most common failure, a file that isn't there.
+				bool exists = true;
+				try { exists = Poco::File(uri).exists(); } catch (std::exception &) {}
+				t_open_error = exists? MA_ERROR : MA_DOES_NOT_EXIST;
+				return NULL;
 			}
 		}
 		virtual const std::string get_suffix(const directive_t &directive) const {
@@ -334,9 +341,10 @@ private:
 
 	static ma_result onOpen(ma_vfs *pVFS, const char *pFilePath, ma_uint32 openMode, ma_vfs_file *pFile) {
 		vfs_cast(pVFS);
+		t_open_error = MA_ERROR;
 		std::istream *file = vfs->service->open_triplet(pFilePath);
 		if (file == NULL) {
-			return MA_ERROR; // Not found, not permitted, etc.
+			return t_open_error; // Not found, as the file protocol tells, or not permitted, etc.
 		}
 		*pFile = file;
 
