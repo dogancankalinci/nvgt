@@ -1149,8 +1149,9 @@ public:
 	}
 	reactphysics3d::Vector3 get_listener_world_up(unsigned int index) const override { return engine ? ma_vec3_to_rp_vec3(ma_engine_listener_get_world_up(&*engine, index)) : reactphysics3d::Vector3(); }
 	void set_listener_enabled(unsigned int index, bool enabled) override {
-		if (has_listener(index))
-			ma_engine_listener_set_enabled(&*engine, index, enabled);
+		if (!has_listener(index)) return;
+		ma_engine_listener_set_enabled(&*engine, index, enabled);
+		place_shaped_mixers(this); // Sounds that follow the closest enabled listener can follow another now.
 	}
 	bool get_listener_enabled(unsigned int index) const override { return engine && ma_engine_listener_is_enabled(&*engine, index); }
 	sound* play(const string& path, const reactphysics3d::Vector3& position, float volume, float pan, float pitch, mixer* mix, const pack_interface* pack_file, bool autoplay) override {
@@ -4172,7 +4173,11 @@ public:
 		if (!snd) return;
 		if (index == MA_LISTENER_INDEX_CLOSEST) reinterpret_cast<std::atomic<ma_uint32>*>(&snd->engineNode.pinnedListenerIndex)->store(index, std::memory_order_release); // As MiniAudio stores it.
 		else if (index < ma_engine_get_listener_count(ma_sound_get_engine(&*snd))) ma_sound_set_pinned_listener_index(&*snd, index);
-		else g_soundsystem_last_error = MA_INVALID_ARGS;
+		else {
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return;
+		}
+		place_in_shape(); // In its shape as the listener it follows now hears it, rather than as the last one did until a listener moved.
 	}
 	unsigned int get_pinned_listener() const override {
 		return snd ? ma_sound_get_pinned_listener_index(&*snd) : 0;
