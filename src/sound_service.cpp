@@ -111,7 +111,7 @@ static ma_result read_open_failure(const char* uri) {
 	struct stat st;
 	if (stat(path.c_str(), &st) != 0) return system_error_result(errno); // A directory the process may not search reads as access denied rather than missing.
 	if (S_ISDIR(st.st_mode)) return MA_IS_DIRECTORY;
-	if (!S_ISREG(st.st_mode) && !S_ISFIFO(st.st_mode)) return MA_INVALID_FILE; // A device or socket, which SDL refuses once it opens it.
+	if (!S_ISREG(st.st_mode) && !S_ISFIFO(st.st_mode)) return MA_INVALID_ARGS; // A device or socket, which SDL refuses once it opens it: a name that isn't of a file, and not INVALID_FILE (see onOpen).
 	const int file = open(path.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC); // Not waiting for a writer to a FIFO.
 	if (file < 0) return system_error_result(errno);
 	close(file);
@@ -406,7 +406,8 @@ private:
 		t_open_error = MA_ERROR;
 		std::istream *file = vfs->service->open_triplet(pFilePath);
 		if (file == NULL) {
-			return t_open_error; // Not found, as the file protocol tells, or not permitted, etc.
+			// Not found, as the file protocol tells, or not permitted, etc. Never as a decoder's failure, INVALID_FILE or NO_BACKEND: a load takes those as said of a file it read, retries it without flags and unregisters the name from MiniAudio's cache, which for a name never read in returns without unlocking that cache, so that every later load hung.
+			return t_open_error == MA_INVALID_FILE || t_open_error == MA_NO_BACKEND? MA_ERROR : t_open_error;
 		}
 		*pFile = file;
 
