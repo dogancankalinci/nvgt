@@ -1,0 +1,180 @@
+diff --git a/sdk/angelscript/source/as_gc.cpp b/sdk/angelscript/source/as_gc.cpp
+index e86d95f..28034cb 100644
+--- a/sdk/angelscript/source/as_gc.cpp
++++ b/sdk/angelscript/source/as_gc.cpp
+@@ -51,6 +51,8 @@ asCGarbageCollector::asCGarbageCollector()
+ 	detectState     = clearCounters_init;
+ 	destroyNewState = destroyGarbage_init;
+ 	destroyOldState = destroyGarbage_init;
++	destroyNewBackward = false;
++	destroyOldBackward = false;
+ 	numDestroyed    = 0;
+ 	numNewDestroyed = 0;
+ 	numDetected     = 0;
+@@ -190,6 +192,7 @@ int asCGarbageCollector::GarbageCollect(asDWORD flags, asUINT iterations)
+ 			{
+ 				// Move all new objects to the old list, so we guarantee that all is detected
+ 				MoveAllObjectsToOldList();
++				SortOldObjects();
+ 				detectState  = clearCounters_init;
+ 			}
+ 			if( doDestroy )
+@@ -348,6 +351,24 @@ void asCGarbageCollector::MoveObjectToOldList(int idx)
+ 	LEAVECRITICALSECTION(gcCritical);
+ }
+ 
++// ALTERED: the swaps that take objects out of the lists leave them in no order, so that a chain went back and forth over the list, and
++// a full cycle needed a pass for every other object of it whichever way the passes went (see NextToDestroy). A full cycle goes through
++// every object anyway, and starts with them in the order they were made.
++int asCGarbageCollector::CompareSeqNbr(const void *a, const void *b)
++{
++	asUINT seqA = ((const asSObjTypePair*)a)->seqNbr, seqB = ((const asSObjTypePair*)b)->seqNbr;
++	return seqA < seqB ? -1 : (seqA > seqB ? 1 : 0);
++}
++
++void asCGarbageCollector::SortOldObjects()
++{
++	// Only the collector changes the old list, but take the lock as for every other use of it
++	ENTERCRITICALSECTION(gcCritical);
++	if( gcOldObjects.GetLength() > 1 )
++		qsort(gcOldObjects.AddressOf(), gcOldObjects.GetLength(), sizeof(asSObjTypePair), CompareSeqNbr);
++	LEAVECRITICALSECTION(gcCritical);
++}
++
+ void asCGarbageCollector::MoveAllObjectsToOldList()
+ {
+ 	// We need to protect this update with a critical section as
+@@ -358,6 +379,21 @@ void asCGarbageCollector::MoveAllObjectsToOldList()
+ 	LEAVECRITICALSECTION(gcCritical);
+ }
+ 
++// ALTERED: an object that goes in a pass can leave another with only the collector's reference, which is found by the next pass. Going
++// over the list the same way each time, a linked list took a pass for each of its objects when it was made so that the end of the list
++// is what goes first (a full cycle took 12 seconds for 32000 objects and four times that for twice as many). Passes now take turns going
++// each way, so that such a chain goes in one pass, whichever way it was made.
++static bool NextToDestroy(asUINT &idx, bool backward, asUINT length)
++{
++	if( !backward )
++		return ++idx < length;
++	if( idx == 0 )
++		return false;
++	if( idx > length )
++		idx = length;
++	return --idx < length;
++}
++
+ int asCGarbageCollector::DestroyNewGarbage()
+ {
+ 	// This function will only be called within the critical section gcCollecting
+@@ -379,7 +415,8 @@ int asCGarbageCollector::DestroyNewGarbage()
+ 			seqAtSweepStart[1] = seqAtSweepStart[2];
+ 			seqAtSweepStart[2] = numAdded;
+ 
+-			destroyNewIdx = (asUINT)-1;
++			// ALTERED: see NextToDestroy
++			destroyNewIdx = destroyNewBackward ? gcNewObjects.GetLength() : (asUINT)-1;
+ 			destroyNewState = destroyGarbage_loop;
+ 		}
+ 		break;
+@@ -394,7 +431,7 @@ int asCGarbageCollector::DestroyNewGarbage()
+ 			// Destroy all objects that have refCount == 1. If any objects are
+ 			// destroyed, go over the list again, because it may have made more
+ 			// objects reach refCount == 1.
+-			if( ++destroyNewIdx < gcNewObjects.GetLength() )
++			if( NextToDestroy(destroyNewIdx, destroyNewBackward, gcNewObjects.GetLength()) )
+ 			{
+ 				asSObjTypePair gcObj = GetNewObjectAtIdx(destroyNewIdx);
+ 				if( engine->CallObjectMethodRetInt(gcObj.obj, gcObj.type->beh.gcGetRefCount) == 1 )
+@@ -424,7 +461,7 @@ int asCGarbageCollector::DestroyNewGarbage()
+ 						numDestroyed++;
+ 						numNewDestroyed++;
+ 						RemoveNewObjectAtIdx(destroyNewIdx);
+-						destroyNewIdx--;
++						if( !destroyNewBackward ) destroyNewIdx--;
+ 					}
+ 					else
+ 					{
+@@ -443,7 +480,7 @@ int asCGarbageCollector::DestroyNewGarbage()
+ 					// We've already verified this object multiple times. It is likely
+ 					// to live for quite a long time so we'll move it to the list if old objects
+ 					MoveObjectToOldList(destroyNewIdx);
+-					destroyNewIdx--;
++					if( !destroyNewBackward ) destroyNewIdx--;
+ 				}
+ 
+ 				// Allow the application to work a little
+@@ -455,6 +492,7 @@ int asCGarbageCollector::DestroyNewGarbage()
+ 				{
+ 					// Restart the cycle
+ 					destroyNewState = destroyGarbage_init;
++					destroyNewBackward = !destroyNewBackward;
+ 				}
+ 				else
+ 				{
+@@ -531,7 +569,8 @@ int asCGarbageCollector::DestroyOldGarbage()
+ 			if( gcOldObjects.GetLength() == 0 )
+ 				return 0;
+ 
+-			destroyOldIdx = (asUINT)-1;
++			// ALTERED: see NextToDestroy
++			destroyOldIdx = destroyOldBackward ? gcOldObjects.GetLength() : (asUINT)-1;
+ 			destroyOldState = destroyGarbage_loop;
+ 		}
+ 		break;
+@@ -546,7 +585,7 @@ int asCGarbageCollector::DestroyOldGarbage()
+ 			// Destroy all objects that have refCount == 1. If any objects are
+ 			// destroyed, go over the list again, because it may have made more
+ 			// objects reach refCount == 1.
+-			if( ++destroyOldIdx < gcOldObjects.GetLength() )
++			if( NextToDestroy(destroyOldIdx, destroyOldBackward, gcOldObjects.GetLength()) )
+ 			{
+ 				asSObjTypePair gcObj = GetOldObjectAtIdx(destroyOldIdx);
+ 
+@@ -564,7 +603,7 @@ int asCGarbageCollector::DestroyOldGarbage()
+ 					// Just remove the object, as we will not bother to destroy it
+ 					numDestroyed++;
+ 					RemoveOldObjectAtIdx(destroyOldIdx);
+-					destroyOldIdx--;
++					if( !destroyOldBackward ) destroyOldIdx--;
+ 				}
+ 				else if( engine->CallObjectMethodRetInt(gcObj.obj, gcObj.type->beh.gcGetRefCount) == 1 )
+ 				{
+@@ -592,7 +631,7 @@ int asCGarbageCollector::DestroyOldGarbage()
+ 					{
+ 						numDestroyed++;
+ 						RemoveOldObjectAtIdx(destroyOldIdx);
+-						destroyOldIdx--;
++						if( !destroyOldBackward ) destroyOldIdx--;
+ 					}
+ 					else
+ 					{
+@@ -613,6 +652,7 @@ int asCGarbageCollector::DestroyOldGarbage()
+ 				{
+ 					// Restart the cycle
+ 					destroyOldState = destroyGarbage_init;
++					destroyOldBackward = !destroyOldBackward;
+ 				}
+ 				else
+ 				{
+diff --git a/sdk/angelscript/source/as_gc.h b/sdk/angelscript/source/as_gc.h
+index 15448f9..c7f0133 100644
+--- a/sdk/angelscript/source/as_gc.h
++++ b/sdk/angelscript/source/as_gc.h
+@@ -113,6 +113,8 @@ protected:
+ 	void           RemoveOldObjectAtIdx(int idx);
+ 	void           MoveObjectToOldList(int idx);
+ 	void           MoveAllObjectsToOldList();
++	void           SortOldObjects();
++	static int     CompareSeqNbr(const void *a, const void *b);
+ 
+ 	// Holds all the objects known by the garbage collector
+ 	asCArray<asSObjTypePair>           gcNewObjects;
+@@ -130,6 +132,8 @@ protected:
+ 	egcDestroyState                    destroyOldState;
+ 	asUINT                             destroyNewIdx;
+ 	asUINT                             destroyOldIdx;
++	bool                               destroyNewBackward;
++	bool                               destroyOldBackward;
+ 	asUINT                             numDestroyed;
+ 	asUINT                             numNewDestroyed;
+ 	egcDetectState                     detectState;
