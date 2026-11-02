@@ -13,10 +13,12 @@
 #include <cmath>
 #include <initializer_list>
 #include <memory>
+#include <shared_mutex>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 #include <angelscript.h>
 #include <reactphysics3d/reactphysics3d.h>
@@ -137,12 +139,64 @@ static void check_transform(const Transform& transform) {
 	if (!transform.getPosition().isFinite() || !rotation.isFinite() || !std::isfinite(rotation.lengthSquare())) throw runtime_error("transform is not finite");
 }
 
-// A script's handles to these objects aren't counted, and reactphysics3d only asserts what it is given (no check in a release build), so what was destroyed already, or belongs to another world, was used as it stood (access violations). What exists is noted here, so that what can be refused is: destroying something twice, using a destroyed shape or mesh, and destroying a mesh a shape is using. The methods of a destroyed object remain out of reach, as a handle doesn't know.
+// A script's handles to these objects aren't counted, and reactphysics3d only asserts what it is given (no check in a release build), so what was destroyed already, or belongs to another world, was used as it stood (access violations). What exists is noted here, so that what can be refused is: destroying something twice, using a destroyed object, and destroying a mesh a shape is using.
 static std::unordered_map<const Body*, PhysicsWorld*> g_physics_bodies;
 static std::unordered_map<const Joint*, PhysicsWorld*> g_physics_joints;
 static std::unordered_map<const CollisionShape*, const void*> g_physics_shapes; // With the mesh or height field a shape uses, if any.
 static std::unordered_set<const void*> g_physics_meshes;
 static std::unordered_set<const DefaultLogger*> g_physics_loggers;
+// Everything a script can hold a handle to, for as long as it exists. A method of a destroyed object used freed memory (physics_world_destroy(w); w.update(0.016); is an access violation), and a handle can't be cleared from here, so every method of these types is registered through live<> below, which refuses a handle to what is gone. Memory reused for a new object of the same kind makes an old handle a handle to that object, which is safe. The lock is there because the check runs on every thread that uses physics, including threads each using a world of their own.
+static std::shared_mutex g_physics_live_mutex;
+static std::unordered_set<const void*> g_physics_live;
+static void live_add(const void* object) {
+	std::unique_lock lock(g_physics_live_mutex);
+	g_physics_live.insert(object);
+}
+static void live_remove(const void* object) {
+	std::unique_lock lock(g_physics_live_mutex);
+	g_physics_live.erase(object);
+}
+static bool is_live(const void* object) {
+	std::shared_lock lock(g_physics_live_mutex);
+	return g_physics_live.count(object) > 0;
+}
+static void check_live(const void* object) {
+	if (!is_live(object)) throw runtime_error("this physics object was destroyed");
+}
+// live<type of a method or function>::call<it> takes the object first and has the signature of what it wraps otherwise, so that its registration is only a change of calling convention. A function's first parameter is the object.
+template <class F> struct live;
+template <class C, class R, class... A> struct live<R (C::*)(A...)> {
+	template <R (C::*method)(A...)> static R call(C* object, A... args) {
+		check_live(object);
+		return (object->*method)(std::forward<A>(args)...);
+	}
+};
+template <class C, class R, class... A> struct live<R (C::*)(A...) const> {
+	template <R (C::*method)(A...) const> static R call(const C* object, A... args) {
+		check_live(object);
+		return (object->*method)(std::forward<A>(args)...);
+	}
+};
+template <class C, class R, class... A> struct live<R (*)(C*, A...)> {
+	template <R (*function)(C*, A...)> static R call(C* object, A... args) {
+		check_live(object);
+		return function(object, std::forward<A>(args)...);
+	}
+};
+template <class C, class R, class... A> struct live<R (*)(C&, A...)> {
+	template <R (*function)(C&, A...)> static R call(C& object, A... args) {
+		check_live(&object);
+		return function(object, std::forward<A>(args)...);
+	}
+};
+#define asLIVE(c, m) asFUNCTION((live<decltype(&c::m)>::template call<&c::m>))
+#define asLIVEPR(c, m, p, r) asFUNCTION((live<r (c::*) p>::template call<static_cast<r (c::*) p>(&c::m)>))
+#define asLIVEF(f) asFUNCTION((live<decltype(&f)>::template call<&f>))
+// What a world's methods are given as well. An object of another world names entities and broad phase nodes the world doesn't have.
+static void check_in_world(const PhysicsWorld& world, const Body* body) {
+	auto found = g_physics_bodies.find(body);
+	if (found == g_physics_bodies.end() || found->second != &world) throw runtime_error("body isn't a body of this world; it may have been destroyed already");
+}
 
 void simple_void_callback(asIScriptFunction* callback, const void* data) {
 	physics_callback_scope in_callback;
@@ -244,6 +298,7 @@ void world_raycast(PhysicsWorld& world, const Ray& ray, asIScriptFunction* callb
 
 void world_test_overlap_body(PhysicsWorld& world, Body* body, asIScriptFunction* callback) {
 	if (!body) { if (callback) callback->Release(); throw runtime_error("body cannot be null"); }
+	try { check_in_world(world, body); } catch (...) { if (callback) callback->Release(); throw; }
 	overlap_callback cb(callback);
 	world.testOverlap(body, cb);
 	if (callback) callback->Release();
@@ -257,6 +312,7 @@ void world_test_overlap(PhysicsWorld& world, asIScriptFunction* callback) {
 
 void world_test_collision_bodies(PhysicsWorld& world, Body* body1, Body* body2, asIScriptFunction* callback) {
 	if (!body1 || !body2) { if (callback) callback->Release(); throw runtime_error("body cannot be null"); }
+	try { check_in_world(world, body1); check_in_world(world, body2); } catch (...) { if (callback) callback->Release(); throw; }
 	collision_callback cb(callback);
 	world.testCollision(body1, body2, cb);
 	if (callback) callback->Release();
@@ -264,6 +320,7 @@ void world_test_collision_bodies(PhysicsWorld& world, Body* body1, Body* body2, 
 
 void world_test_collision_body(PhysicsWorld& world, Body* body, asIScriptFunction* callback) {
 	if (!body) { if (callback) callback->Release(); throw runtime_error("body cannot be null"); }
+	try { check_in_world(world, body); } catch (...) { if (callback) callback->Release(); throw; }
 	collision_callback cb(callback);
 	world.testCollision(body, cb);
 	if (callback) callback->Release();
@@ -277,6 +334,8 @@ void world_test_collision(PhysicsWorld& world, asIScriptFunction* callback) {
 
 bool world_test_overlap_bodies(PhysicsWorld& world, Body* body1, Body* body2) {
 	if (!body1 || !body2) throw runtime_error("body cannot be null");
+	check_in_world(world, body1);
+	check_in_world(world, body2);
 	return world.testOverlap(body1, body2);
 }
 
@@ -287,6 +346,8 @@ static RigidBody* world_get_rigid_body(PhysicsWorld* world, uint32 index) {
 }
 AABB world_get_aabb(PhysicsWorld& world, const Collider* collider) {
 	if (!collider) throw runtime_error("collider cannot be null");
+	check_live(collider);
+	check_in_world(world, collider->getBody());
 	return world.getWorldAABB(collider);
 }
 
@@ -294,14 +355,18 @@ template <class T> Collider* body_add_collider(T& body, CollisionShape* shape, c
 	if (!shape) throw runtime_error("collision shape cannot be null");
 	if (!g_physics_shapes.count(shape)) throw runtime_error("collision shape was destroyed");
 	check_transform(transform);
-	return body.addCollider(shape, transform);
+	Collider* collider = body.addCollider(shape, transform);
+	if (collider) live_add(collider);
+	return collider;
 }
 
 // The method took a collider by &in, which a script can't give for a type that can't be copied: no script calling it compiled. A collider of another body was left to reactphysics3d, which removes it from that body's lists regardless.
 template <class T> void body_remove_collider(T& body, Collider* collider) {
 	if (!collider) throw runtime_error("collider cannot be null");
+	check_live(collider);
 	if (collider->getBody() != &body) throw runtime_error("collider belongs to another body");
 	check_not_in_physics_callback("a collider");
+	live_remove(collider);
 	body.removeCollider(collider);
 }
 
@@ -318,7 +383,10 @@ void collider_set_local_to_body_transform(Collider& collider, const Transform& t
 RigidBody* world_create_rigid_body(PhysicsWorld& world, const Transform& transform) {
 	check_transform(transform);
 	RigidBody* body = world.createRigidBody(transform);
-	if (body) g_physics_bodies[body] = &world;
+	if (body) {
+		g_physics_bodies[body] = &world;
+		live_add(body);
+	}
 	return body;
 }
 
@@ -360,7 +428,10 @@ Joint* world_create_joint(PhysicsWorld& world, const JointInfo& info) {
 		}
 		default: throw runtime_error("unknown joint type");
 	}
-	if (joint) g_physics_joints[joint] = &world;
+	if (joint) {
+		g_physics_joints[joint] = &world;
+		live_add(joint);
+	}
 	return joint;
 }
 
@@ -399,7 +470,10 @@ void world_set_callbacks(PhysicsWorld* world, asIScriptFunction* on_contact, asI
 static std::unordered_set<PhysicsWorld*> g_physics_worlds;
 PhysicsWorld* world_create(const PhysicsWorld::WorldSettings& settings) {
 	PhysicsWorld* world = g_physics.createPhysicsWorld(settings);
-	if (world) g_physics_worlds.insert(world);
+	if (world) {
+		g_physics_worlds.insert(world);
+		live_add(world);
+	}
 	return world;
 }
 static bool shape_in_use(const CollisionShape* shape) {
@@ -423,24 +497,34 @@ void world_destroy_joint(PhysicsWorld* world, Joint* joint) {
 	auto found = g_physics_joints.find(joint);
 	if (found == g_physics_joints.end() || found->second != world) throw runtime_error("joint isn't a joint of this world; it may have been destroyed already, or with one of its bodies");
 	g_physics_joints.erase(found);
+	live_remove(joint);
 	world->destroyJoint(joint);
 }
 
 void body_cleanup_user_data(Body* body);
+// What goes with a body: its user data, and the colliders, which script handles can name.
+static void body_forget(Body* body) {
+	body_cleanup_user_data(body);
+	live_remove(body);
+	for (uint32 c = 0; c < body->getNbColliders(); c++) live_remove(body->getCollider(c));
+}
 void world_destroy(PhysicsWorld* world) {
 	if (!world || !g_physics_worlds.count(world)) return;
 	check_not_in_physics_callback("a world");
 	world_destroy_listener(world);
 	// Destroying the world destroys its bodies, and the user data of each (an any the body holds a reference to) was never let go of.
 	for (uint32 b = 0; b < world->getNbRigidBodies(); b++) {
-		body_cleanup_user_data(world->getRigidBody(b));
+		body_forget(world->getRigidBody(b));
 		g_physics_bodies.erase(world->getRigidBody(b));
 	}
 	for (auto joint = g_physics_joints.begin(); joint != g_physics_joints.end();) {
-		if (joint->second == world) joint = g_physics_joints.erase(joint);
-		else ++joint;
+		if (joint->second == world) {
+			live_remove(joint->first);
+			joint = g_physics_joints.erase(joint);
+		} else ++joint;
 	}
 	g_physics_worlds.erase(world);
+	live_remove(world);
 	g_physics.destroyPhysicsWorld(world);
 }
 
@@ -449,6 +533,7 @@ void sphere_shape_destroy(SphereShape* shape) {
 	if (!shape) return;
 	check_shape_destroyable(shape);
 	g_physics_shapes.erase(shape);
+	live_remove(shape);
 	g_physics.destroySphereShape(shape);
 }
 
@@ -456,6 +541,7 @@ void box_shape_destroy(BoxShape* shape) {
 	if (!shape) return;
 	check_shape_destroyable(shape);
 	g_physics_shapes.erase(shape);
+	live_remove(shape);
 	g_physics.destroyBoxShape(shape);
 }
 
@@ -463,6 +549,7 @@ void capsule_shape_destroy(CapsuleShape* shape) {
 	if (!shape) return;
 	check_shape_destroyable(shape);
 	g_physics_shapes.erase(shape);
+	live_remove(shape);
 	g_physics.destroyCapsuleShape(shape);
 }
 
@@ -470,6 +557,7 @@ void convex_mesh_shape_destroy(ConvexMeshShape* shape) {
 	if (!shape) return;
 	check_shape_destroyable(shape);
 	g_physics_shapes.erase(shape);
+	live_remove(shape);
 	g_physics.destroyConvexMeshShape(shape);
 }
 
@@ -477,6 +565,7 @@ void height_field_shape_destroy(HeightFieldShape* shape) {
 	if (!shape) return;
 	check_shape_destroyable(shape);
 	g_physics_shapes.erase(shape);
+	live_remove(shape);
 	g_physics.destroyHeightFieldShape(shape);
 }
 
@@ -484,6 +573,7 @@ void concave_mesh_shape_destroy(ConcaveMeshShape* shape) {
 	if (!shape) return;
 	check_shape_destroyable(shape);
 	g_physics_shapes.erase(shape);
+	live_remove(shape);
 	g_physics.destroyConcaveMeshShape(shape);
 }
 
@@ -493,6 +583,7 @@ static bool mesh_can_be_destroyed(const void* mesh) {
 	for (const auto& shape : g_physics_shapes)
 		if (shape.second == mesh) throw runtime_error("a collision shape is still using this mesh; destroy the shape first");
 	g_physics_meshes.erase(mesh);
+	live_remove(mesh);
 	return true;
 }
 
@@ -528,40 +619,47 @@ void convex_mesh_shape_set_scale(ConvexMeshShape& shape, const Vector3& scale) {
 SphereShape* sphere_shape_create(float radius) {
 	SphereShape* shape = g_physics.createSphereShape(radius);
 	g_physics_shapes[shape] = nullptr;
+	live_add(shape);
 	return shape;
 }
 BoxShape* box_shape_create(const Vector3& half_extents) {
 	BoxShape* shape = g_physics.createBoxShape(half_extents);
 	g_physics_shapes[shape] = nullptr;
+	live_add(shape);
 	return shape;
 }
 CapsuleShape* capsule_shape_create(float radius, float height) {
 	CapsuleShape* shape = g_physics.createCapsuleShape(radius, height);
 	g_physics_shapes[shape] = nullptr;
+	live_add(shape);
 	return shape;
 }
 ConvexMeshShape* convex_mesh_shape_create(ConvexMesh* mesh, const Vector3& scaling) {
 	check_scaling(scaling);
 	ConvexMeshShape* shape = g_physics.createConvexMeshShape(live_mesh(mesh), scaling);
 	g_physics_shapes[shape] = mesh;
+	live_add(shape);
 	return shape;
 }
 ConcaveMeshShape* concave_mesh_shape_create(TriangleMesh* mesh, const Vector3& scaling) {
 	check_scaling(scaling);
 	ConcaveMeshShape* shape = g_physics.createConcaveMeshShape(live_mesh(mesh), scaling);
 	g_physics_shapes[shape] = mesh;
+	live_add(shape);
 	return shape;
 }
 HeightFieldShape* height_field_shape_create(HeightField* height_field, const Vector3& scaling) {
 	check_scaling(scaling);
 	HeightFieldShape* shape = g_physics.createHeightFieldShape(live_mesh(height_field), scaling);
 	g_physics_shapes[shape] = height_field;
+	live_add(shape);
 	return shape;
 }
 
 // A second destroy freed the logger again, and one still set as the current logger was written to by every world created after.
 static void default_logger_destroy(DefaultLogger* logger) {
 	if (!logger || !g_physics_loggers.erase(logger)) return;
+	live_remove(logger);
 	if (PhysicsCommon::getLogger() == logger) PhysicsCommon::setLogger(nullptr);
 	g_physics.destroyDefaultLogger(logger);
 }
@@ -937,7 +1035,10 @@ TriangleMesh* create_triangle_mesh_from_managed(ManagedTriangleData* managedArra
 	TriangleMesh* mesh = g_physics.createTriangleMesh(*managedArray->array, messages);
 	// TODO: Handle messages (warnings/errors)
 	// Expose them to user?
-	if (mesh) g_physics_meshes.insert(mesh);
+	if (mesh) {
+		g_physics_meshes.insert(mesh);
+		live_add(mesh);
+	}
 	return mesh;
 }
 
@@ -949,7 +1050,10 @@ ConvexMesh* create_convex_mesh_from_managed_vertex_array(ManagedVertexData* mana
 	ConvexMesh* mesh = g_physics.createConvexMesh(*managedArray->array, messages);
 	// TODO: Handle messages (warnings/errors)
 	// Expose them to user?
-	if (mesh) g_physics_meshes.insert(mesh);
+	if (mesh) {
+		g_physics_meshes.insert(mesh);
+		live_add(mesh);
+	}
 	return mesh;
 }
 
@@ -961,7 +1065,10 @@ ConvexMesh* create_convex_mesh_from_polygon_data(ManagedPolygonData* managedArra
 	ConvexMesh* mesh = g_physics.createConvexMesh(*managedArray->array, messages);
 	// TODO: Handle messages (warnings/errors)
 	// Expose them to user?
-	if (mesh) g_physics_meshes.insert(mesh);
+	if (mesh) {
+		g_physics_meshes.insert(mesh);
+		live_add(mesh);
+	}
 	return mesh;
 }
 
@@ -1086,11 +1193,13 @@ void world_destroy_rigid_body(PhysicsWorld* world, RigidBody* body) {
 	auto found = g_physics_bodies.find(body);
 	if (found == g_physics_bodies.end() || found->second != world) throw runtime_error("body isn't a body of this world; it may have been destroyed already");
 	g_physics_bodies.erase(found);
-	body_cleanup_user_data(body);
+	body_forget(body);
 	// Destroying a body destroys its joints.
 	for (auto joint = g_physics_joints.begin(); joint != g_physics_joints.end();) {
-		if (joint->first->getBody1() == body || joint->first->getBody2() == body) joint = g_physics_joints.erase(joint);
-		else ++joint;
+		if (joint->first->getBody1() == body || joint->first->getBody2() == body) {
+			live_remove(joint->first);
+			joint = g_physics_joints.erase(joint);
+		} else ++joint;
 	}
 	world->destroyRigidBody(body);
 }
@@ -1105,7 +1214,10 @@ static uint32 height_field_size(int nbGridColumns, int nbGridRows, CScriptArray*
 }
 
 static HeightField* register_height_field(HeightField* heightField) {
-	if (heightField) g_physics_meshes.insert(heightField);
+	if (heightField) {
+		g_physics_meshes.insert(heightField);
+		live_add(heightField);
+	}
 	return heightField;
 }
 
@@ -1144,7 +1256,10 @@ HeightField* create_height_field_double(int nbGridColumns, int nbGridRows, CScri
 
 DefaultLogger* create_default_logger() {
 	DefaultLogger* logger = g_physics.createDefaultLogger();
-	if (logger) g_physics_loggers.insert(logger);
+	if (logger) {
+		g_physics_loggers.insert(logger);
+		live_add(logger);
+	}
 	return logger;
 }
 
@@ -1158,6 +1273,7 @@ Logger* get_current_logger() {
 }
 
 void set_current_logger(Logger* logger) {
+	if (logger) check_live(logger);
 	PhysicsCommon::setLogger(logger);
 }
 
@@ -1193,16 +1309,16 @@ void RegisterCollisionShape(asIScriptEngine* engine, const string& type) {
 	engine->RegisterObjectType(type.c_str(), 0, asOBJ_REF);
 	engine->RegisterObjectBehaviour(type.c_str(), asBEHAVE_ADDREF, "void f()", asFUNCTION(no_refcount), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectBehaviour(type.c_str(), asBEHAVE_RELEASE, "void f()", asFUNCTION(no_refcount), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "physics_shape_name get_name() const property", asMETHOD(T, getName), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "physics_shape_type get_type() const property", asMETHOD(T, getType), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "bool get_is_convex() const property", asMETHOD(T, isConvex), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "bool get_is_polyhedron() const property", asMETHOD(T, isPolyhedron), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "aabb get_local_bounds() const", asMETHOD(T, getLocalBounds), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "int get_id() const property", asMETHOD(T, getId), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "vector get_local_inertia_tensor(float mass) const", asMETHOD(T, getLocalInertiaTensor), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "float get_volume() const property", asMETHOD(T, getVolume), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "aabb compute_transformed_aabb(const physics_transform&in transform) const", asMETHOD(T, computeTransformedAABB), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "string opImplConv() const", asMETHOD(T, to_string), asCALL_THISCALL);
+	engine->RegisterObjectMethod(type.c_str(), "physics_shape_name get_name() const property", asLIVE(T, getName), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "physics_shape_type get_type() const property", asLIVE(T, getType), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "bool get_is_convex() const property", asLIVE(T, isConvex), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "bool get_is_polyhedron() const property", asLIVE(T, isPolyhedron), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "aabb get_local_bounds() const", asLIVE(T, getLocalBounds), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "int get_id() const property", asLIVE(T, getId), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "vector get_local_inertia_tensor(float mass) const", asLIVE(T, getLocalInertiaTensor), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "float get_volume() const property", asLIVE(T, getVolume), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "aabb compute_transformed_aabb(const physics_transform&in transform) const", asLIVE(T, computeTransformedAABB), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "string opImplConv() const", asLIVE(T, to_string), asCALL_CDECL_OBJFIRST);
 }
 
 // reactphysics3d checks none of these indices in a release build (Vector3::operator[] not at all, the others only assert): an index
@@ -1245,62 +1361,62 @@ template <class T>
 void RegisterPhysicsBody(asIScriptEngine* engine, const string& type) {
 	engine->RegisterObjectBehaviour(type.c_str(), asBEHAVE_ADDREF, "void f()", asFUNCTION(no_refcount), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectBehaviour(type.c_str(), asBEHAVE_RELEASE, "void f()", asFUNCTION(no_refcount), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "physics_entity get_entity() const property", asMETHOD(T, getEntity), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "bool get_is_active() const property", asMETHOD(T, isActive), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "void set_is_active(bool is_active) property", asMETHOD(T, setIsActive), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "const physics_transform& get_transform() const property", asMETHOD(T, getTransform), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "void set_transform(const physics_transform&in transform) property", asFUNCTION(body_set_transform<T>), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "physics_entity get_entity() const property", asLIVE(T, getEntity), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "bool get_is_active() const property", asLIVE(T, isActive), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "void set_is_active(bool is_active) property", asLIVE(T, setIsActive), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "const physics_transform& get_transform() const property", asLIVE(T, getTransform), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "void set_transform(const physics_transform&in transform) property", asLIVEF(body_set_transform<T>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(
 	    type.c_str(),
 	    "physics_collider@ add_collider(physics_collision_shape@ shape, const physics_transform&in transform)",
-	    asFUNCTION(body_add_collider<T>),
+	    asLIVEF(body_add_collider<T>),
 	    asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "void remove_collider(physics_collider@ collider)", asFUNCTION(body_remove_collider<T>), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "bool test_point_inside(const vector&in point) const", asMETHOD(T, testPointInside), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "bool raycast(const ray& point, raycast_info& raycast_info) const", asMETHOD(T, raycast), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "bool test_aabb_overlap(const aabb&in world_aabb) const", asMETHOD(T, testAABBOverlap), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "aabb get_aabb() const property", asMETHOD(T, getAABB), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "const physics_collider& get_collider(uint index) const", asFUNCTION(body_get_collider_const<T>), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "physics_collider& get_collider(uint index)", asFUNCTION(body_get_collider<T>), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "uint get_nb_colliders() const property", asMETHOD(T, getNbColliders), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "vector get_world_point(const vector&in local_point) const", asMETHOD(T, getWorldPoint), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "vector get_world_vector(const vector&in local_vector) const", asMETHOD(T, getWorldVector), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "vector get_local_point(const vector&in world_point) const", asMETHOD(T, getLocalPoint), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "vector get_local_vector(const vector&in world_vector) const", asMETHOD(T, getLocalVector), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "bool get_is_debug_enabled() const property", asMETHOD(T, isDebugEnabled), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "void set_debug_enabled(bool enabled) property", asMETHOD(T, setIsDebugEnabled), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "void set_user_data(any@ userData)", asFUNCTION(body_set_user_data), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "any@ get_user_data() const", asFUNCTION(body_get_user_data), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "void remove_collider(physics_collider@ collider)", asLIVEF(body_remove_collider<T>), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "bool test_point_inside(const vector&in point) const", asLIVE(T, testPointInside), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "bool raycast(const ray& point, raycast_info& raycast_info) const", asLIVE(T, raycast), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "bool test_aabb_overlap(const aabb&in world_aabb) const", asLIVE(T, testAABBOverlap), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "aabb get_aabb() const property", asLIVE(T, getAABB), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "const physics_collider& get_collider(uint index) const", asLIVEF(body_get_collider_const<T>), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "physics_collider& get_collider(uint index)", asLIVEF(body_get_collider<T>), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "uint get_nb_colliders() const property", asLIVE(T, getNbColliders), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "vector get_world_point(const vector&in local_point) const", asLIVE(T, getWorldPoint), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "vector get_world_vector(const vector&in local_vector) const", asLIVE(T, getWorldVector), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "vector get_local_point(const vector&in world_point) const", asLIVE(T, getLocalPoint), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "vector get_local_vector(const vector&in world_vector) const", asLIVE(T, getLocalVector), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "bool get_is_debug_enabled() const property", asLIVE(T, isDebugEnabled), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "void set_debug_enabled(bool enabled) property", asLIVE(T, setIsDebugEnabled), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "void set_user_data(any@ userData)", asLIVEF(body_set_user_data), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "any@ get_user_data() const", asLIVEF(body_get_user_data), asCALL_CDECL_OBJFIRST);
 }
 
 template <class T>
 void RegisterConvexShape(asIScriptEngine* engine, const string& type) {
 	RegisterCollisionShape<T>(engine, type);
-	engine->RegisterObjectMethod(type.c_str(), "float get_margin() const property", asMETHOD(T, getMargin), asCALL_THISCALL);
+	engine->RegisterObjectMethod(type.c_str(), "float get_margin() const property", asLIVE(T, getMargin), asCALL_CDECL_OBJFIRST);
 }
 
 template <class T>
 void RegisterConvexPolyhedronShape(asIScriptEngine* engine, const string& type) {
 	RegisterConvexShape<T>(engine, type);
-	engine->RegisterObjectMethod(type.c_str(), "uint get_nb_faces() const property", asMETHOD(T, getNbFaces), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "const physics_half_edge_structure_face& get_face(uint face_index)", asFUNCTION(polyhedron_get_face<T>), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "uint get_nb_vertices() const property", asMETHOD(T, getNbVertices), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "const physics_half_edge_structure_vertex& get_vertex(uint vertex_index)", asFUNCTION(polyhedron_get_vertex<T>), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "const vector get_vertex_position(uint vertex_index)", asFUNCTION(polyhedron_get_vertex_position<T>), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "const vector get_face_normal(uint vertex_index)", asFUNCTION(polyhedron_get_face_normal<T>), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "uint get_nb_half_edges() const property", asMETHOD(T, getNbHalfEdges), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "const physics_half_edge_structure_edge& get_half_edge(uint edge_index) const", asFUNCTION(polyhedron_get_half_edge<T>), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "vector get_centroid() const property", asMETHOD(T, getCentroid), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "uint find_most_anti_parallel_face(const vector&in direction) const", asMETHOD(T, findMostAntiParallelFace), asCALL_THISCALL);
+	engine->RegisterObjectMethod(type.c_str(), "uint get_nb_faces() const property", asLIVE(T, getNbFaces), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "const physics_half_edge_structure_face& get_face(uint face_index)", asLIVEF(polyhedron_get_face<T>), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "uint get_nb_vertices() const property", asLIVE(T, getNbVertices), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "const physics_half_edge_structure_vertex& get_vertex(uint vertex_index)", asLIVEF(polyhedron_get_vertex<T>), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "const vector get_vertex_position(uint vertex_index)", asLIVEF(polyhedron_get_vertex_position<T>), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "const vector get_face_normal(uint vertex_index)", asLIVEF(polyhedron_get_face_normal<T>), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "uint get_nb_half_edges() const property", asLIVE(T, getNbHalfEdges), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "const physics_half_edge_structure_edge& get_half_edge(uint edge_index) const", asLIVEF(polyhedron_get_half_edge<T>), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "vector get_centroid() const property", asLIVE(T, getCentroid), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "uint find_most_anti_parallel_face(const vector&in direction) const", asLIVE(T, findMostAntiParallelFace), asCALL_CDECL_OBJFIRST);
 }
 
 template <class T>
 void RegisterConcaveShape(asIScriptEngine* engine, const string& type) {
 	RegisterCollisionShape<T>(engine, type);
-	engine->RegisterObjectMethod(type.c_str(), "physics_triangle_raycast_side get_raycast_test_type() const property", asMETHOD(ConcaveShape, getRaycastTestType), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "void set_raycast_test_type(physics_triangle_raycast_side side) property", asMETHOD(ConcaveShape, setRaycastTestType), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "vector get_scale() const property", asFUNCTION(concave_shape_get_scale<T>), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "void set_scale(const vector &in scale) property", asFUNCTION(concave_shape_set_scale), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "physics_triangle_raycast_side get_raycast_test_type() const property", asLIVE(ConcaveShape, getRaycastTestType), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "void set_raycast_test_type(physics_triangle_raycast_side side) property", asLIVE(ConcaveShape, setRaycastTestType), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "vector get_scale() const property", asLIVEF(concave_shape_get_scale<T>), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "void set_scale(const vector &in scale) property", asLIVEF(concave_shape_set_scale), asCALL_CDECL_OBJFIRST);
 }
 
 void RegisterEnumsAndConstants(asIScriptEngine* engine) {
@@ -1564,62 +1680,62 @@ void RegisterPhysicsEntities(asIScriptEngine* engine) {
 	engine->RegisterObjectType("physics_collider", 0, asOBJ_REF);
 	engine->RegisterObjectBehaviour("physics_collider", asBEHAVE_ADDREF, "void f()", asFUNCTION(no_refcount), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectBehaviour("physics_collider", asBEHAVE_RELEASE, "void f()", asFUNCTION(no_refcount), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_collider", "physics_entity get_entity() const property", asMETHOD(Collider, getEntity), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_collider", "physics_collision_shape@ get_collision_shape() property", asMETHODPR(Collider, getCollisionShape, (), CollisionShape*), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_collider", "const physics_collision_shape@ get_collision_shape() const property", asMETHODPR(Collider, getCollisionShape, () const, const CollisionShape*), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_collider", "physics_body@ get_body() const property", asMETHOD(Collider, getBody), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_collider", "const physics_transform& get_local_to_body_transform() const property", asMETHOD(Collider, getLocalToBodyTransform), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_collider", "void set_local_to_body_transform(const physics_transform&in transform) property", asFUNCTION(collider_set_local_to_body_transform), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_collider", "const physics_transform get_local_to_world_transform() const", asMETHOD(Collider, getLocalToWorldTransform), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_collider", "const aabb get_world_aabb() const property", asMETHOD(Collider, getWorldAABB), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_collider", "bool test_aabb_overlap(const aabb&in world_aabb) const", asMETHOD(Collider, testAABBOverlap), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_collider", "bool test_point_inside(const vector&in world_point)", asMETHOD(Collider, testPointInside), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_collider", "bool raycast(const ray&in ray, raycast_info& raycast_info)", asMETHOD(Collider, raycast), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_collider", "uint16 get_collide_with_mask() const property", asMETHOD(Collider, getCollideWithMaskBits), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_collider", "void set_collide_with_mask(uint16 bits) property", asMETHOD(Collider, setCollideWithMaskBits), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_collider", "uint16 get_collision_category() const property", asMETHOD(Collider, getCollisionCategoryBits), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_collider", "void set_collision_category(uint16 bits) property", asMETHOD(Collider, setCollisionCategoryBits), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_collider", "int get_broad_phase_id() const property", asMETHOD(Collider, getBroadPhaseId), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_collider", "physics_material& get_material() property", asMETHOD(Collider, getMaterial), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_collider", "void set_material(const physics_material& material) property", asMETHOD(Collider, setMaterial), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_collider", "bool get_is_trigger() const property", asMETHOD(Collider, getIsTrigger), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_collider", "void set_is_trigger(bool is_trigger) property", asMETHOD(Collider, setIsTrigger), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_collider", "bool get_is_simulation_collider() const property", asMETHOD(Collider, getIsSimulationCollider), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_collider", "void set_is_simulation_collider(bool is_simulation_collider) property", asMETHOD(Collider, setIsSimulationCollider), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_collider", "bool get_is_world_query_collider() const property", asMETHOD(Collider, getIsWorldQueryCollider), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_collider", "void set_is_world_query_collider(bool is_world_query_collider) property", asMETHOD(Collider, setIsWorldQueryCollider), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_collider", "physics_entity get_entity() const property", asLIVE(Collider, getEntity), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_collider", "physics_collision_shape@ get_collision_shape() property", asLIVEPR(Collider, getCollisionShape, (), CollisionShape*), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_collider", "const physics_collision_shape@ get_collision_shape() const property", asLIVEPR(Collider, getCollisionShape, () const, const CollisionShape*), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_collider", "physics_body@ get_body() const property", asLIVE(Collider, getBody), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_collider", "const physics_transform& get_local_to_body_transform() const property", asLIVE(Collider, getLocalToBodyTransform), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_collider", "void set_local_to_body_transform(const physics_transform&in transform) property", asLIVEF(collider_set_local_to_body_transform), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_collider", "const physics_transform get_local_to_world_transform() const", asLIVE(Collider, getLocalToWorldTransform), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_collider", "const aabb get_world_aabb() const property", asLIVE(Collider, getWorldAABB), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_collider", "bool test_aabb_overlap(const aabb&in world_aabb) const", asLIVE(Collider, testAABBOverlap), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_collider", "bool test_point_inside(const vector&in world_point)", asLIVE(Collider, testPointInside), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_collider", "bool raycast(const ray&in ray, raycast_info& raycast_info)", asLIVE(Collider, raycast), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_collider", "uint16 get_collide_with_mask() const property", asLIVE(Collider, getCollideWithMaskBits), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_collider", "void set_collide_with_mask(uint16 bits) property", asLIVE(Collider, setCollideWithMaskBits), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_collider", "uint16 get_collision_category() const property", asLIVE(Collider, getCollisionCategoryBits), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_collider", "void set_collision_category(uint16 bits) property", asLIVE(Collider, setCollisionCategoryBits), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_collider", "int get_broad_phase_id() const property", asLIVE(Collider, getBroadPhaseId), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_collider", "physics_material& get_material() property", asLIVE(Collider, getMaterial), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_collider", "void set_material(const physics_material& material) property", asLIVE(Collider, setMaterial), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_collider", "bool get_is_trigger() const property", asLIVE(Collider, getIsTrigger), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_collider", "void set_is_trigger(bool is_trigger) property", asLIVE(Collider, setIsTrigger), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_collider", "bool get_is_simulation_collider() const property", asLIVE(Collider, getIsSimulationCollider), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_collider", "void set_is_simulation_collider(bool is_simulation_collider) property", asLIVE(Collider, setIsSimulationCollider), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_collider", "bool get_is_world_query_collider() const property", asLIVE(Collider, getIsWorldQueryCollider), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_collider", "void set_is_world_query_collider(bool is_world_query_collider) property", asLIVE(Collider, setIsWorldQueryCollider), asCALL_CDECL_OBJFIRST);
 }
 
 void RegisterPhysicsBodies(asIScriptEngine* engine) {
 	RegisterPhysicsBody<Body>(engine, "physics_body");
 	RegisterPhysicsBody<RigidBody>(engine, "physics_rigid_body");
-	engine->RegisterObjectMethod("physics_rigid_body", "float get_mass() const property", asMETHOD(RigidBody, getMass), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_rigid_body", "void set_mass(float mass) property", asMETHOD(RigidBody, setMass), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_rigid_body", "vector get_linear_velocity() const property", asMETHOD(RigidBody, getLinearVelocity), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_rigid_body", "void set_linear_velocity(const vector&in linear_velocity) property", asMETHOD(RigidBody, setLinearVelocity), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_rigid_body", "vector get_angular_velocity() const property", asMETHOD(RigidBody, getAngularVelocity), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_rigid_body", "void set_angular_velocity(const vector&in angular_velocity) property", asMETHOD(RigidBody, setAngularVelocity), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_rigid_body", "const vector& get_local_inertia_tensor() const property", asMETHOD(RigidBody, getLocalInertiaTensor), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_rigid_body", "void set_local_inertia_tensor(const vector&in local_inertia_tensor) property", asMETHOD(RigidBody, setLocalInertiaTensor), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_rigid_body", "const vector& get_local_center_of_mass() const property", asMETHOD(RigidBody, getLocalCenterOfMass), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_rigid_body", "void set_local_center_of_mass(const vector&in local_center_of_mass) property", asMETHOD(RigidBody, setLocalCenterOfMass), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_rigid_body", "void update_local_center_of_mass_from_colliders()", asMETHOD(RigidBody, updateLocalCenterOfMassFromColliders), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_rigid_body", "void update_local_inertia_tensor_from_colliders()", asMETHOD(RigidBody, updateLocalInertiaTensorFromColliders), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_rigid_body", "void update_mass_from_colliders()", asMETHOD(RigidBody, updateMassFromColliders), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_rigid_body", "void update_mass_properties_from_colliders()", asMETHOD(RigidBody, updateMassPropertiesFromColliders), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_rigid_body", "physics_body_type get_type() const property", asMETHOD(RigidBody, getType), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_rigid_body", "void set_type(physics_body_type type) property", asFUNCTION(rigid_body_set_type), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_rigid_body", "bool get_is_gravity_enabled() const property", asMETHOD(RigidBody, isGravityEnabled), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_rigid_body", "void set_is_gravity_enabled(bool enabled) property", asMETHOD(RigidBody, enableGravity), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_rigid_body", "void set_is_sleeping(bool enabled)", asMETHOD(RigidBody, setIsSleeping), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_rigid_body", "float get_linear_damping() const property", asMETHOD(RigidBody, getLinearDamping), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_rigid_body", "void set_linear_damping(float linear_damping) property", asMETHOD(RigidBody, setLinearDamping), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_rigid_body", "float get_angular_damping() const property", asMETHOD(RigidBody, getAngularDamping), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_rigid_body", "void set_angular_damping(float angular_damping) property", asMETHOD(RigidBody, setAngularDamping), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_rigid_body", "const vector& get_linear_lock_axis_factor() const property", asMETHOD(RigidBody, getLinearLockAxisFactor), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_rigid_body", "void set_linear_lock_axis_factor(const vector&in linear_lock_axis_factor) property", asMETHOD(RigidBody, setLinearLockAxisFactor), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_rigid_body", "const vector& get_angular_lock_axis_factor() const property", asMETHOD(RigidBody, getAngularLockAxisFactor), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_rigid_body", "void set_angular_lock_axis_factor(const vector&in angular_lock_axis_factor) property", asMETHOD(RigidBody, setAngularLockAxisFactor), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_rigid_body", "float get_mass() const property", asLIVE(RigidBody, getMass), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_rigid_body", "void set_mass(float mass) property", asLIVE(RigidBody, setMass), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_rigid_body", "vector get_linear_velocity() const property", asLIVE(RigidBody, getLinearVelocity), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_rigid_body", "void set_linear_velocity(const vector&in linear_velocity) property", asLIVE(RigidBody, setLinearVelocity), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_rigid_body", "vector get_angular_velocity() const property", asLIVE(RigidBody, getAngularVelocity), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_rigid_body", "void set_angular_velocity(const vector&in angular_velocity) property", asLIVE(RigidBody, setAngularVelocity), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_rigid_body", "const vector& get_local_inertia_tensor() const property", asLIVE(RigidBody, getLocalInertiaTensor), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_rigid_body", "void set_local_inertia_tensor(const vector&in local_inertia_tensor) property", asLIVE(RigidBody, setLocalInertiaTensor), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_rigid_body", "const vector& get_local_center_of_mass() const property", asLIVE(RigidBody, getLocalCenterOfMass), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_rigid_body", "void set_local_center_of_mass(const vector&in local_center_of_mass) property", asLIVE(RigidBody, setLocalCenterOfMass), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_rigid_body", "void update_local_center_of_mass_from_colliders()", asLIVE(RigidBody, updateLocalCenterOfMassFromColliders), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_rigid_body", "void update_local_inertia_tensor_from_colliders()", asLIVE(RigidBody, updateLocalInertiaTensorFromColliders), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_rigid_body", "void update_mass_from_colliders()", asLIVE(RigidBody, updateMassFromColliders), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_rigid_body", "void update_mass_properties_from_colliders()", asLIVE(RigidBody, updateMassPropertiesFromColliders), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_rigid_body", "physics_body_type get_type() const property", asLIVE(RigidBody, getType), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_rigid_body", "void set_type(physics_body_type type) property", asLIVEF(rigid_body_set_type), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_rigid_body", "bool get_is_gravity_enabled() const property", asLIVE(RigidBody, isGravityEnabled), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_rigid_body", "void set_is_gravity_enabled(bool enabled) property", asLIVE(RigidBody, enableGravity), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_rigid_body", "void set_is_sleeping(bool enabled)", asLIVE(RigidBody, setIsSleeping), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_rigid_body", "float get_linear_damping() const property", asLIVE(RigidBody, getLinearDamping), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_rigid_body", "void set_linear_damping(float linear_damping) property", asLIVE(RigidBody, setLinearDamping), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_rigid_body", "float get_angular_damping() const property", asLIVE(RigidBody, getAngularDamping), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_rigid_body", "void set_angular_damping(float angular_damping) property", asLIVE(RigidBody, setAngularDamping), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_rigid_body", "const vector& get_linear_lock_axis_factor() const property", asLIVE(RigidBody, getLinearLockAxisFactor), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_rigid_body", "void set_linear_lock_axis_factor(const vector&in linear_lock_axis_factor) property", asLIVE(RigidBody, setLinearLockAxisFactor), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_rigid_body", "const vector& get_angular_lock_axis_factor() const property", asLIVE(RigidBody, getAngularLockAxisFactor), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_rigid_body", "void set_angular_lock_axis_factor(const vector&in angular_lock_axis_factor) property", asLIVE(RigidBody, setAngularLockAxisFactor), asCALL_CDECL_OBJFIRST);
 }
 
 void RegisterCollisionShapes(asIScriptEngine* engine) {
@@ -1627,28 +1743,28 @@ void RegisterCollisionShapes(asIScriptEngine* engine) {
 	// Forward declare types to be registered later
 	engine->RegisterObjectType("physics_height_field", 0, asOBJ_REF);
 	RegisterConvexShape<SphereShape>(engine, "physics_sphere_shape");
-	engine->RegisterObjectMethod("physics_sphere_shape", "float get_radius() const property", asMETHOD(SphereShape, getRadius), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_sphere_shape", "void set_radius(float radius) property", asMETHOD(SphereShape, setRadius), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_sphere_shape", "string opImplConv()", asMETHOD(SphereShape, to_string), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_sphere_shape", "float get_radius() const property", asLIVE(SphereShape, getRadius), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_sphere_shape", "void set_radius(float radius) property", asLIVE(SphereShape, setRadius), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_sphere_shape", "string opImplConv()", asLIVE(SphereShape, to_string), asCALL_CDECL_OBJFIRST);
 	RegisterConvexPolyhedronShape<BoxShape>(engine, "physics_box_shape");
-	engine->RegisterObjectMethod("physics_box_shape", "vector& get_half_extents() const property", asMETHOD(BoxShape, getHalfExtents), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_box_shape", "void set_half_extents(const vector&in half_extents) property", asMETHOD(BoxShape, setHalfExtents), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_box_shape", "vector& get_half_extents() const property", asLIVE(BoxShape, getHalfExtents), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_box_shape", "void set_half_extents(const vector&in half_extents) property", asLIVE(BoxShape, setHalfExtents), asCALL_CDECL_OBJFIRST);
 	RegisterConvexShape<CapsuleShape>(engine, "physics_capsule_shape");
-	engine->RegisterObjectMethod("physics_capsule_shape", "float get_radius() const property", asMETHOD(CapsuleShape, getRadius), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_capsule_shape", "void set_radius(float radius) property", asMETHOD(CapsuleShape, setRadius), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_capsule_shape", "float get_height() const property", asMETHOD(CapsuleShape, getHeight), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_capsule_shape", "void set_height(float height) property", asMETHOD(CapsuleShape, setHeight), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_capsule_shape", "string opImplConv()", asMETHOD(CapsuleShape, to_string), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_capsule_shape", "float get_radius() const property", asLIVE(CapsuleShape, getRadius), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_capsule_shape", "void set_radius(float radius) property", asLIVE(CapsuleShape, setRadius), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_capsule_shape", "float get_height() const property", asLIVE(CapsuleShape, getHeight), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_capsule_shape", "void set_height(float height) property", asLIVE(CapsuleShape, setHeight), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_capsule_shape", "string opImplConv()", asLIVE(CapsuleShape, to_string), asCALL_CDECL_OBJFIRST);
 	RegisterConvexPolyhedronShape<TriangleShape>(engine, "physics_triangle_shape");
-	engine->RegisterObjectMethod("physics_triangle_shape", "physics_triangle_raycast_side get_raycast_test_type() const property", asMETHOD(TriangleShape, getRaycastTestType), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_triangle_shape", "void set_raycast_test_type(physics_triangle_raycast_side test_type) property", asMETHOD(TriangleShape, setRaycastTestType), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_triangle_shape", "physics_triangle_raycast_side get_raycast_test_type() const property", asLIVE(TriangleShape, getRaycastTestType), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_triangle_shape", "void set_raycast_test_type(physics_triangle_raycast_side test_type) property", asLIVE(TriangleShape, setRaycastTestType), asCALL_CDECL_OBJFIRST);
 	engine->RegisterGlobalFunction("void physics_triangle_shape_compute_smooth_triangle_mesh_contact(const physics_collision_shape &in shape1, const physics_collision_shape &in shape2, vector & local_contact_point_shape1, vector & local_contact_point_shape2, const physics_transform &in shape1_to_world, const physics_transform &in shape2_to_world, float penitration_depth, vector & out_smooth_vertex_normal)", asFUNCTION(TriangleShape::computeSmoothTriangleMeshContact), asCALL_CDECL);
 	RegisterConvexPolyhedronShape<ConvexMeshShape>(engine, "physics_convex_mesh_shape");
-	engine->RegisterObjectMethod("physics_convex_mesh_shape", "vector& get_scale() const property", asMETHOD(ConvexMeshShape, getScale), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_convex_mesh_shape", "void set_scale(vector& scale) const property", asFUNCTION(convex_mesh_shape_set_scale), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_convex_mesh_shape", "vector& get_scale() const property", asLIVE(ConvexMeshShape, getScale), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_convex_mesh_shape", "void set_scale(vector& scale) const property", asLIVEF(convex_mesh_shape_set_scale), asCALL_CDECL_OBJFIRST);
 	RegisterConcaveShape<HeightFieldShape>(engine, "physics_height_field_shape");
-	engine->RegisterObjectMethod("physics_height_field_shape", "physics_height_field@ get_height_field() const property", asMETHOD(HeightFieldShape, getHeightField), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_height_field_shape", "vector get_vertex_at(uint x, uint y) const", asFUNCTION(height_field_shape_get_vertex_at), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_height_field_shape", "physics_height_field@ get_height_field() const property", asLIVE(HeightFieldShape, getHeightField), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_height_field_shape", "vector get_vertex_at(uint x, uint y) const", asLIVEF(height_field_shape_get_vertex_at), asCALL_CDECL_OBJFIRST);
 }
 
 void RegisterHalfEdgeStructure(asIScriptEngine* engine) {
@@ -1750,22 +1866,22 @@ void RegisterTriangleMeshAndConcaveShape(asIScriptEngine* engine) {
 	engine->RegisterObjectType("physics_triangle_mesh", 0, asOBJ_REF);
 	engine->RegisterObjectBehaviour("physics_triangle_mesh", asBEHAVE_ADDREF, "void f()", asFUNCTION(no_refcount), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectBehaviour("physics_triangle_mesh", asBEHAVE_RELEASE, "void f()", asFUNCTION(no_refcount), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_triangle_mesh", "uint get_nb_vertices() const property", asMETHOD(TriangleMesh, getNbVertices), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_triangle_mesh", "uint get_nb_triangles() const property", asMETHOD(TriangleMesh, getNbTriangles), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_triangle_mesh", "const aabb& get_bounds() const property", asMETHOD(TriangleMesh, getBounds), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_triangle_mesh", "void get_triangle_vertices_indices(uint triangle_index, uint&out v1_index, uint&out v2_index, uint&out v3_index) const", asFUNCTION(triangle_mesh_get_triangle_vertices_indices), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_triangle_mesh", "void get_triangle_vertices(uint triangle_index, vector&out v1, vector&out v2, vector&out v3) const", asFUNCTION(triangle_mesh_get_triangle_vertices), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_triangle_mesh", "void get_triangle_vertices_normals(uint triangle_index, vector&out n1, vector&out n2, vector&out n3) const", asFUNCTION(triangle_mesh_get_triangle_vertices_normals), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_triangle_mesh", "const vector& get_vertex(uint vertex_index) const", asMETHOD(TriangleMesh, getVertex), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_triangle_mesh", "const vector& get_vertex_normal(uint vertex_index) const", asMETHOD(TriangleMesh, getVertexNormal), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_triangle_mesh", "uint get_nb_vertices() const property", asLIVE(TriangleMesh, getNbVertices), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_triangle_mesh", "uint get_nb_triangles() const property", asLIVE(TriangleMesh, getNbTriangles), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_triangle_mesh", "const aabb& get_bounds() const property", asLIVE(TriangleMesh, getBounds), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_triangle_mesh", "void get_triangle_vertices_indices(uint triangle_index, uint&out v1_index, uint&out v2_index, uint&out v3_index) const", asLIVEF(triangle_mesh_get_triangle_vertices_indices), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_triangle_mesh", "void get_triangle_vertices(uint triangle_index, vector&out v1, vector&out v2, vector&out v3) const", asLIVEF(triangle_mesh_get_triangle_vertices), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_triangle_mesh", "void get_triangle_vertices_normals(uint triangle_index, vector&out n1, vector&out n2, vector&out n3) const", asLIVEF(triangle_mesh_get_triangle_vertices_normals), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_triangle_mesh", "const vector& get_vertex(uint vertex_index) const", asLIVE(TriangleMesh, getVertex), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_triangle_mesh", "const vector& get_vertex_normal(uint vertex_index) const", asLIVE(TriangleMesh, getVertexNormal), asCALL_CDECL_OBJFIRST);
 	RegisterConcaveShape<ConcaveMeshShape>(engine, "physics_concave_mesh_shape");
-	engine->RegisterObjectMethod("physics_concave_mesh_shape", "uint get_nb_vertices() const property", asMETHOD(ConcaveMeshShape, getNbVertices), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_concave_mesh_shape", "uint get_nb_triangles() const property", asMETHOD(ConcaveMeshShape, getNbTriangles), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_concave_mesh_shape", "void get_triangle_vertices_indices(uint triangle_index, uint&out v1_index, uint&out v2_index, uint&out v3_index) const", asFUNCTION(concave_mesh_shape_get_triangle_vertices_indices), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_concave_mesh_shape", "void get_triangle_vertices(uint triangle_index, vector&out v1, vector&out v2, vector&out v3) const", asFUNCTION(concave_mesh_shape_get_triangle_vertices), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_concave_mesh_shape", "void get_triangle_vertices_normals(uint triangle_index, vector&out n1, vector&out n2, vector&out n3) const", asFUNCTION(concave_mesh_shape_get_triangle_vertices_normals), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_concave_mesh_shape", "vector get_vertex(uint vertex_index) const", asMETHOD(ConcaveMeshShape, getVertex), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_concave_mesh_shape", "const vector& get_vertex_normal(uint vertex_index) const", asMETHOD(ConcaveMeshShape, getVertexNormal), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_concave_mesh_shape", "uint get_nb_vertices() const property", asLIVE(ConcaveMeshShape, getNbVertices), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_concave_mesh_shape", "uint get_nb_triangles() const property", asLIVE(ConcaveMeshShape, getNbTriangles), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_concave_mesh_shape", "void get_triangle_vertices_indices(uint triangle_index, uint&out v1_index, uint&out v2_index, uint&out v3_index) const", asLIVEF(concave_mesh_shape_get_triangle_vertices_indices), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_concave_mesh_shape", "void get_triangle_vertices(uint triangle_index, vector&out v1, vector&out v2, vector&out v3) const", asLIVEF(concave_mesh_shape_get_triangle_vertices), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_concave_mesh_shape", "void get_triangle_vertices_normals(uint triangle_index, vector&out n1, vector&out n2, vector&out n3) const", asLIVEF(concave_mesh_shape_get_triangle_vertices_normals), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_concave_mesh_shape", "vector get_vertex(uint vertex_index) const", asLIVE(ConcaveMeshShape, getVertex), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_concave_mesh_shape", "const vector& get_vertex_normal(uint vertex_index) const", asLIVE(ConcaveMeshShape, getVertexNormal), asCALL_CDECL_OBJFIRST);
 }
 
 void RegisterPhysicsWorldAndCallbacks(asIScriptEngine* engine) {
@@ -1825,41 +1941,41 @@ void RegisterPhysicsWorldAndCallbacks(asIScriptEngine* engine) {
 	engine->RegisterObjectBehaviour("physics_world", asBEHAVE_FACTORY, "physics_world@ w(const physics_world_settings&in world_settings)", asFUNCTION(world_create), asCALL_CDECL);
 	engine->RegisterObjectBehaviour("physics_world", asBEHAVE_ADDREF, "void f()", asFUNCTION(no_refcount), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectBehaviour("physics_world", asBEHAVE_RELEASE, "void f()", asFUNCTION(no_refcount), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_world", "bool test_overlap(physics_body@ body1, physics_body@ body2)", asFUNCTION(world_test_overlap_bodies), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_world", "void raycast(const ray&in ray, physics_raycast_callback@ callback, uint16 category_mask = 0xffff)", asFUNCTION(world_raycast), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_world", "void test_overlap(physics_body@ body, physics_overlap_callback@ callback)", asFUNCTION(world_test_overlap_body), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_world", "void test_overlap(physics_overlap_callback@ callback)", asFUNCTION(world_test_overlap), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_world", "void test_collision(physics_body@ body1, physics_body@ body2, physics_collision_callback@ callback)", asFUNCTION(world_test_collision_bodies), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_world", "void test_collision(physics_body@ body, physics_collision_callback@ callback)", asFUNCTION(world_test_collision_body), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_world", "void test_collision(physics_collision_callback@ callback)", asFUNCTION(world_test_collision), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_world", "aabb get_world_aabb(const physics_collider@ collider) const", asFUNCTION(world_get_aabb), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_world", "const string& get_name() const property", asMETHOD(PhysicsWorld, getName), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_world", "void update(float time_step)", asMETHOD(PhysicsWorld, update), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_world", "uint16 get_nb_iterations_velocity_solver() const property", asMETHOD(PhysicsWorld, getNbIterationsVelocitySolver), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_world", "void set_nb_iterations_velocity_solver(uint16 iterations) property", asMETHOD(PhysicsWorld, setNbIterationsVelocitySolver), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_world", "uint16 get_nb_iterations_position_solver() const property", asMETHOD(PhysicsWorld, getNbIterationsPositionSolver), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_world", "void set_nb_iterations_position_solver(uint16 iterations) property", asFUNCTION(world_set_nb_iterations_position_solver), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_world", "void set_contacts_position_correction_technique(physics_contact_position_correction_technique technique) property", asMETHOD(PhysicsWorld, setContactsPositionCorrectionTechnique), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_world", "physics_rigid_body@ create_rigid_body(const physics_transform&in transform)", asFUNCTION(world_create_rigid_body), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_world", "void destroy_rigid_body(physics_rigid_body& body)", asFUNCTION(world_destroy_rigid_body), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_world", "physics_joint@ create_joint(const physics_joint_info&in joint_info)", asFUNCTION(world_create_joint), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_world", "void destroy_joint(physics_joint& joint)", asFUNCTION(world_destroy_joint), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_world", "vector get_gravity() const property", asMETHOD(PhysicsWorld, getGravity), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_world", "void set_gravity(const vector&in gravity) property", asMETHOD(PhysicsWorld, setGravity), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_world", "bool get_is_gravity_enabled() const property", asMETHOD(PhysicsWorld, isGravityEnabled), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_world", "void set_is_gravity_enabled(bool enabled) property", asMETHOD(PhysicsWorld, setIsGravityEnabled), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_world", "bool get_is_sleeping_enabled() const property", asMETHOD(PhysicsWorld, isSleepingEnabled), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_world", "void set_is_sleeping_enabled(bool enabled) property", asMETHOD(PhysicsWorld, enableSleeping), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_world", "float get_sleep_linear_velocity() const property", asMETHOD(PhysicsWorld, getSleepLinearVelocity), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_world", "void set_sleep_linear_velocity(float sleep_linear_velocity) property", asMETHOD(PhysicsWorld, setSleepLinearVelocity), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_world", "float get_sleep_angular_velocity() const property", asMETHOD(PhysicsWorld, getSleepAngularVelocity), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_world", "void set_sleep_angular_velocity(float sleep_angular_velocity) property", asMETHOD(PhysicsWorld, setSleepAngularVelocity), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_world", "float get_time_before_sleep() const property", asMETHOD(PhysicsWorld, getTimeBeforeSleep), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_world", "void set_time_before_sleep(float time_before_sleep) property", asMETHOD(PhysicsWorld, setTimeBeforeSleep), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_world", "void set_callbacks(physics_collision_callback@ collision_callback, physics_overlap_callback@ trigger_callback)", asFUNCTION(world_set_callbacks), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_world", "uint get_nb_rigid_bodies() const property", asMETHOD(PhysicsWorld, getNbRigidBodies), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_world", "const physics_rigid_body& get_rigid_body(uint index) const", asFUNCTION(world_get_rigid_body), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_world", "physics_rigid_body& get_rigid_body(uint index)", asFUNCTION(world_get_rigid_body), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "bool test_overlap(physics_body@ body1, physics_body@ body2)", asLIVEF(world_test_overlap_bodies), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "void raycast(const ray&in ray, physics_raycast_callback@ callback, uint16 category_mask = 0xffff)", asLIVEF(world_raycast), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "void test_overlap(physics_body@ body, physics_overlap_callback@ callback)", asLIVEF(world_test_overlap_body), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "void test_overlap(physics_overlap_callback@ callback)", asLIVEF(world_test_overlap), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "void test_collision(physics_body@ body1, physics_body@ body2, physics_collision_callback@ callback)", asLIVEF(world_test_collision_bodies), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "void test_collision(physics_body@ body, physics_collision_callback@ callback)", asLIVEF(world_test_collision_body), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "void test_collision(physics_collision_callback@ callback)", asLIVEF(world_test_collision), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "aabb get_world_aabb(const physics_collider@ collider) const", asLIVEF(world_get_aabb), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "const string& get_name() const property", asLIVE(PhysicsWorld, getName), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "void update(float time_step)", asLIVE(PhysicsWorld, update), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "uint16 get_nb_iterations_velocity_solver() const property", asLIVE(PhysicsWorld, getNbIterationsVelocitySolver), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "void set_nb_iterations_velocity_solver(uint16 iterations) property", asLIVE(PhysicsWorld, setNbIterationsVelocitySolver), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "uint16 get_nb_iterations_position_solver() const property", asLIVE(PhysicsWorld, getNbIterationsPositionSolver), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "void set_nb_iterations_position_solver(uint16 iterations) property", asLIVEF(world_set_nb_iterations_position_solver), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "void set_contacts_position_correction_technique(physics_contact_position_correction_technique technique) property", asLIVE(PhysicsWorld, setContactsPositionCorrectionTechnique), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "physics_rigid_body@ create_rigid_body(const physics_transform&in transform)", asLIVEF(world_create_rigid_body), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "void destroy_rigid_body(physics_rigid_body& body)", asLIVEF(world_destroy_rigid_body), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "physics_joint@ create_joint(const physics_joint_info&in joint_info)", asLIVEF(world_create_joint), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "void destroy_joint(physics_joint& joint)", asLIVEF(world_destroy_joint), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "vector get_gravity() const property", asLIVE(PhysicsWorld, getGravity), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "void set_gravity(const vector&in gravity) property", asLIVE(PhysicsWorld, setGravity), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "bool get_is_gravity_enabled() const property", asLIVE(PhysicsWorld, isGravityEnabled), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "void set_is_gravity_enabled(bool enabled) property", asLIVE(PhysicsWorld, setIsGravityEnabled), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "bool get_is_sleeping_enabled() const property", asLIVE(PhysicsWorld, isSleepingEnabled), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "void set_is_sleeping_enabled(bool enabled) property", asLIVE(PhysicsWorld, enableSleeping), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "float get_sleep_linear_velocity() const property", asLIVE(PhysicsWorld, getSleepLinearVelocity), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "void set_sleep_linear_velocity(float sleep_linear_velocity) property", asLIVE(PhysicsWorld, setSleepLinearVelocity), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "float get_sleep_angular_velocity() const property", asLIVE(PhysicsWorld, getSleepAngularVelocity), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "void set_sleep_angular_velocity(float sleep_angular_velocity) property", asLIVE(PhysicsWorld, setSleepAngularVelocity), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "float get_time_before_sleep() const property", asLIVE(PhysicsWorld, getTimeBeforeSleep), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "void set_time_before_sleep(float time_before_sleep) property", asLIVE(PhysicsWorld, setTimeBeforeSleep), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "void set_callbacks(physics_collision_callback@ collision_callback, physics_overlap_callback@ trigger_callback)", asLIVEF(world_set_callbacks), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "uint get_nb_rigid_bodies() const property", asLIVE(PhysicsWorld, getNbRigidBodies), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "const physics_rigid_body& get_rigid_body(uint index) const", asLIVEF(world_get_rigid_body), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "physics_rigid_body& get_rigid_body(uint index)", asLIVEF(world_get_rigid_body), asCALL_CDECL_OBJFIRST);
 }
 
 void RegisterJointTypes(asIScriptEngine* engine) {
@@ -1879,14 +1995,14 @@ void RegisterJointTypes(asIScriptEngine* engine) {
 	engine->RegisterObjectType("physics_joint", 0, asOBJ_REF);
 	engine->RegisterObjectBehaviour("physics_joint", asBEHAVE_ADDREF, "void f()", asFUNCTION(no_refcount), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectBehaviour("physics_joint", asBEHAVE_RELEASE, "void f()", asFUNCTION(no_refcount), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_joint", "physics_rigid_body@ get_body1() const property", asMETHOD(Joint, getBody1), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_joint", "physics_rigid_body@ get_body2() const property", asMETHOD(Joint, getBody2), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_joint", "physics_joint_type get_type() const property", asMETHOD(Joint, getType), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_joint", "vector get_reaction_force(float time_step) const", asMETHOD(Joint, getReactionForce), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_joint", "vector get_reaction_torque(float time_step) const", asMETHOD(Joint, getReactionTorque), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_joint", "bool get_is_collision_enabled() const property", asMETHOD(Joint, isCollisionEnabled), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_joint", "physics_entity get_entity() const property", asMETHOD(Joint, getEntity), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_joint", "string opImplConv()", asMETHOD(Joint, to_string), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_joint", "physics_rigid_body@ get_body1() const property", asLIVE(Joint, getBody1), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_joint", "physics_rigid_body@ get_body2() const property", asLIVE(Joint, getBody2), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_joint", "physics_joint_type get_type() const property", asLIVE(Joint, getType), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_joint", "vector get_reaction_force(float time_step) const", asLIVE(Joint, getReactionForce), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_joint", "vector get_reaction_torque(float time_step) const", asLIVE(Joint, getReactionTorque), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_joint", "bool get_is_collision_enabled() const property", asLIVE(Joint, isCollisionEnabled), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_joint", "physics_entity get_entity() const property", asLIVE(Joint, getEntity), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_joint", "string opImplConv()", asLIVE(Joint, to_string), asCALL_CDECL_OBJFIRST);
 }
 
 void RegisterHeightFieldAndMeshTypes(asIScriptEngine* engine) {
@@ -1897,28 +2013,28 @@ void RegisterHeightFieldAndMeshTypes(asIScriptEngine* engine) {
 	engine->RegisterObjectType("physics_height_field", 0, asOBJ_REF);
 	engine->RegisterObjectBehaviour("physics_height_field", asBEHAVE_ADDREF, "void f()", asFUNCTION(no_refcount), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectBehaviour("physics_height_field", asBEHAVE_RELEASE, "void f()", asFUNCTION(no_refcount), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_height_field", "uint get_nb_rows() const property", asMETHOD(HeightField, getNbRows), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_height_field", "uint get_nb_columns() const property", asMETHOD(HeightField, getNbColumns), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_height_field", "float get_min_height() const property", asMETHOD(HeightField, getMinHeight), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_height_field", "float get_max_height() const property", asMETHOD(HeightField, getMaxHeight), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_height_field", "float get_integer_height_scale() const property", asMETHOD(HeightField, getIntegerHeightScale), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_height_field", "vector get_vertex_at(uint x, uint y) const", asMETHOD(HeightField, getVertexAt), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_height_field", "float get_height_at(uint x, uint y) const", asMETHOD(HeightField, getHeightAt), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_height_field", "physics_height_data_type get_height_data_type() const property", asMETHOD(HeightField, getHeightDataType), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_height_field", "aabb& get_bounds() const property", asMETHOD(HeightField, getBounds), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_height_field", "string opImplConv() const", asMETHOD(HeightField, to_string), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_height_field", "uint get_nb_rows() const property", asLIVE(HeightField, getNbRows), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_height_field", "uint get_nb_columns() const property", asLIVE(HeightField, getNbColumns), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_height_field", "float get_min_height() const property", asLIVE(HeightField, getMinHeight), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_height_field", "float get_max_height() const property", asLIVE(HeightField, getMaxHeight), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_height_field", "float get_integer_height_scale() const property", asLIVE(HeightField, getIntegerHeightScale), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_height_field", "vector get_vertex_at(uint x, uint y) const", asLIVE(HeightField, getVertexAt), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_height_field", "float get_height_at(uint x, uint y) const", asLIVE(HeightField, getHeightAt), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_height_field", "physics_height_data_type get_height_data_type() const property", asLIVE(HeightField, getHeightDataType), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_height_field", "aabb& get_bounds() const property", asLIVE(HeightField, getBounds), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_height_field", "string opImplConv() const", asLIVE(HeightField, to_string), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectType("physics_convex_mesh", 0, asOBJ_REF);
 	engine->RegisterObjectBehaviour("physics_convex_mesh", asBEHAVE_ADDREF, "void f()", asFUNCTION(no_refcount), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectBehaviour("physics_convex_mesh", asBEHAVE_RELEASE, "void f()", asFUNCTION(no_refcount), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_convex_mesh", "uint get_nb_vertices() const property", asMETHOD(ConvexMesh, getNbVertices), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_convex_mesh", "const vector& get_vertex(uint index) const", asMETHOD(ConvexMesh, getVertex), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_convex_mesh", "uint get_nb_faces() const property", asMETHOD(ConvexMesh, getNbFaces), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_convex_mesh", "const vector& get_face_normal(uint index) const", asMETHOD(ConvexMesh, getFaceNormal), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_convex_mesh", "const physics_half_edge_structure& get_half_edge_structure() const property", asMETHOD(ConvexMesh, getHalfEdgeStructure), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_convex_mesh", "const vector& get_centroid() const property", asMETHOD(ConvexMesh, getCentroid), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_convex_mesh", "const aabb& get_bounds() const property", asMETHOD(ConvexMesh, getBounds), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_convex_mesh", "float get_volume() const property", asMETHOD(ConvexMesh, getVolume), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_convex_mesh", "vector get_local_inertia_tensor(float mass, vector scale) const", asMETHOD(ConvexMesh, getLocalInertiaTensor), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_convex_mesh", "uint get_nb_vertices() const property", asLIVE(ConvexMesh, getNbVertices), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_convex_mesh", "const vector& get_vertex(uint index) const", asLIVE(ConvexMesh, getVertex), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_convex_mesh", "uint get_nb_faces() const property", asLIVE(ConvexMesh, getNbFaces), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_convex_mesh", "const vector& get_face_normal(uint index) const", asLIVE(ConvexMesh, getFaceNormal), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_convex_mesh", "const physics_half_edge_structure& get_half_edge_structure() const property", asLIVE(ConvexMesh, getHalfEdgeStructure), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_convex_mesh", "const vector& get_centroid() const property", asLIVE(ConvexMesh, getCentroid), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_convex_mesh", "const aabb& get_bounds() const property", asLIVE(ConvexMesh, getBounds), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_convex_mesh", "float get_volume() const property", asLIVE(ConvexMesh, getVolume), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_convex_mesh", "vector get_local_inertia_tensor(float mass, vector scale) const", asLIVE(ConvexMesh, getLocalInertiaTensor), asCALL_CDECL_OBJFIRST);
 }
 
 void RegisterPhysicsCommonFactories(asIScriptEngine* engine) {
@@ -1973,10 +2089,10 @@ void RegisterBodyConversions(asIScriptEngine* engine) {
 
 void RegisterLoggerClasses(asIScriptEngine* engine) {
 	engine->RegisterObjectType("physics_logger", 0, asOBJ_REF | asOBJ_NOCOUNT);
-	engine->RegisterObjectMethod("physics_logger", "void log(physics_logger_level level, const string&in worldName, physics_logger_category category, const string&in message)", asFUNCTION(logger_log_simple), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_logger", "void log(physics_logger_level level, const string&in worldName, physics_logger_category category, const string&in message)", asLIVEF(logger_log_simple), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectType("physics_default_logger", 0, asOBJ_REF | asOBJ_NOCOUNT);
-	engine->RegisterObjectMethod("physics_default_logger", "void add_file_destination(const string&in filePath, uint logLevelFlag, physics_logger_format format)", asFUNCTION(default_logger_add_file_destination), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_default_logger", "void remove_all_destinations()", asFUNCTION(default_logger_remove_all_destinations), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_default_logger", "void add_file_destination(const string&in filePath, uint logLevelFlag, physics_logger_format format)", asLIVEF(default_logger_add_file_destination), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_default_logger", "void remove_all_destinations()", asLIVEF(default_logger_remove_all_destinations), asCALL_CDECL_OBJFIRST);
 	engine->RegisterGlobalFunction("physics_default_logger@ physics_default_logger_create()", asFUNCTION(create_default_logger), asCALL_CDECL);
 	engine->RegisterGlobalFunction("void physics_default_logger_destroy(physics_default_logger@ logger)", asFUNCTION(default_logger_destroy), asCALL_CDECL);
 	engine->RegisterGlobalFunction("physics_logger@ physics_logger_get_current()", asFUNCTION(get_current_logger), asCALL_CDECL);
