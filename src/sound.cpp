@@ -1861,6 +1861,13 @@ audio_ring_buffer* audio_ring_buffer::create(unsigned int channels, unsigned int
 static ma_data_source_vtable g_held_decoder_vtable;
 static ma_result (*g_ma_decoder_read)(ma_data_source*, void*, ma_uint64, ma_uint64*) = nullptr;
 static ma_result (*g_ma_decoder_seek)(ma_data_source*, ma_uint64) = nullptr;
+static ma_result (*g_ma_decoder_get_data_format)(ma_data_source*, ma_format*, ma_uint32*, ma_uint32*, ma_channel*, size_t) = nullptr;
+// MiniAudio gives its converter's input map for a decoder's output, while the frames it gives are in the default map it converted them to. A sound mixing a stream or decoder with more channels than its engine took Vorbis-ordered frames' map for frames already reordered, playing 5.1's right front in both speakers, and its centre on the right alone.
+static ma_result held_decoder_get_data_format(ma_data_source* source, ma_format* format, ma_uint32* channels, ma_uint32* sample_rate, ma_channel* channel_map, size_t channel_map_capacity) {
+	ma_result result = g_ma_decoder_get_data_format(source, format, channels, sample_rate, nullptr, 0);
+	if (channel_map) ma_channel_map_init_standard(ma_standard_channel_map_default, channel_map, channel_map_capacity, ((ma_decoder*)source)->outputChannels);
+	return result;
+}
 static constexpr ma_uint64 converter_chunk_bytes = 4096; // MiniAudio's MA_DATA_CONVERTER_STACK_BUFFER_SIZE, which its header doesn't give.
 // MiniAudio skips a decoder's seek, the converter's reset with it, when the file's cursor is already where the frame maps to, which a resampler reading ahead leaves it at for one frame some tens of frames on, so that the read went on from where it was; a stream, which seeks its decoder with MiniAudio's own function on its job thread, then played on from earlier in its file and stopped short of its end. That cursor is read for nothing else, so a decoder's file is given functions of its own, which for a source that can seek give a cursor no frame maps to, and the decoder always seeks; the file's own cursor is kept for counting the resampling (see file_cursor()). Not for a source that can't seek, as a URL, which refuses every seek, even to where it is, which MiniAudio's skip made nothing of; a decoder of one, read to its end, can't seek back to its start or its loop's, which MiniAudio took for no end, so that a sound looping it or a chain played silence for good; it ends there instead (see held_decoder_seek()).
 // A file whose header gives more frames than it holds, as a truncated FLAC or MP3, ended its decoder early, so that a looping stream wrapped its position at that length and its file before it, and refused a seek past what it holds though within that length, after which the decoder read on from where it was while a stream's position read the frame sought. Such a file now gives silence from its end, or from the frame of a seek it refused until it makes one, to the decoder's length, as a sound loaded whole plays the part of such a file that isn't there.
@@ -2087,8 +2094,10 @@ static void hold_decoder(ma_decoder* decoder, bool can_seek, ma_uint64 length = 
 		g_held_decoder_vtable = *decoder->ds.vtable;
 		g_ma_decoder_read = g_held_decoder_vtable.onRead;
 		g_ma_decoder_seek = g_held_decoder_vtable.onSeek;
+		g_ma_decoder_get_data_format = g_held_decoder_vtable.onGetDataFormat;
 		g_held_decoder_vtable.onRead = held_decoder_read;
 		g_held_decoder_vtable.onSeek = held_decoder_seek;
+		g_held_decoder_vtable.onGetDataFormat = held_decoder_get_data_format;
 	});
 	decoder->ds.vtable = &g_held_decoder_vtable;
 	if (!decoder->pBackend || !((ma_data_source_base*)decoder->pBackend)->vtable->onSeek) return;
@@ -3693,12 +3702,13 @@ static ma_result float_view_get_length(ma_data_source* source, ma_uint64* length
 static ma_result float_view_set_looping(ma_data_source* source, ma_bool32 looping) { return ma_data_source_set_looping(((float_view*)source)->inner, looping); } // A stream loops seamlessly only when it loops itself.
 static ma_data_source_vtable g_float_view_vtable = {float_view_read, float_view_seek, float_view_get_data_format, float_view_get_cursor, float_view_get_length, float_view_set_looping, 0};
 // The source a sound reads: the one given if it is in float with no more channels than its engine, or else a float_view of it made in view. MiniAudio's sound mixes down in its simple mode, which drops every channel past the engine's: a 5.1 file on a stereo engine lost its centre and surrounds, and a 3-channel source its third. MiniAudio's weights for it leave an LFE out.
-static ma_data_source* float_source(ma_data_source* source, unique_ptr<float_view>& view, ma_uint32 engine_channels) {
+static ma_data_source* float_source(ma_data_source* source, unique_ptr<float_view>& view, ma_uint32 engine_channels, bool default_map = false) {
 	view.reset();
 	ma_format format = ma_format_unknown;
 	ma_uint32 channels = 0;
 	ma_channel channel_map[MA_MAX_CHANNELS];
 	if (ma_data_source_get_data_format(source, &format, &channels, nullptr, channel_map, MA_MAX_CHANNELS) != MA_SUCCESS || format == ma_format_unknown || !channels) return source;
+	if (default_map) ma_channel_map_init_standard(ma_standard_channel_map_default, channel_map, MA_MAX_CHANNELS, channels); // A stream, whose decoder isn't held yet, and gives its input's map for its output's (see held_decoder_get_data_format()).
 	const bool mixing = engine_channels && channels > engine_channels;
 	if (format == ma_format_f32 && !mixing) return source;
 	view = make_unique<float_view>();
@@ -4960,7 +4970,7 @@ public:
 				ma_sound_config cfg = ma_sound_config_init();
 				// Not attached to the endpoint by MiniAudio, as postload() attaches it to its chain; so making it changes no node's lists and needs no graph lock.
 				cfg.flags = flags | MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT;
-				cfg.pDataSource = float_source(decode_front(&*made_source, made_front), made_view, engine->get_channels());
+				cfg.pDataSource = float_source(decode_front(&*made_source, made_front), made_view, engine->get_channels(), (flags & MA_SOUND_FLAG_STREAM) != 0);
 				if ((g_soundsystem_last_error = ma_sound_init_ex(engine->get_ma_engine(), &cfg, &*made)) != MA_SUCCESS) discard_source(made_source, tree_held);
 				else if (wait_for_load) {
 					{
