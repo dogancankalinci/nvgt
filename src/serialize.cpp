@@ -179,7 +179,10 @@ static bool write_script_object(Poco::BinaryWriter& w, void* obj, asITypeInfo* t
 	asIScriptFunction* opcast = find_dictionary_opcast(ti);
 	if (!factory || !opcast) return false;
 	w << (unsigned char)value_tag::script_object;
-	w << std::string(ti->GetName());
+	// With its namespace, which GetTypeInfoByName() takes: a class in a namespace was written by its name alone, not found when read back, and its objects lost.
+	std::string class_name = ti->GetName();
+	if (ti->GetNamespace() && *ti->GetNamespace()) class_name = std::string(ti->GetNamespace()) + "::" + class_name;
+	w << class_name;
 	w << is_null;
 	if (is_null) return true;
 	// The object is held while its opCast runs, as that can take it out of the dictionary or array holding it, which freed it in the middle of the call.
