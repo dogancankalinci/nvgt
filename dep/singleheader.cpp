@@ -27,6 +27,7 @@
 #include "bl_number_to_words.h"
 #define DBGTOOLS_IMPLEMENTATION
 #include "dbgtools.h"
+#define MA_USE_QUAD_MICROSOFT_CHANNEL_MAP // Four channels are quad, as FLAC's specification says, a WAV without a mask means and Vorbis and Opus order them, rather than MiniAudio's default of left, right, centre and back centre, which took the third to the centre and lost the fourth.
 #define MINIAUDIO_IMPLEMENTATION
 #include <miniaudio.h>
 // Seeks a file a decoder reads, given its data source's own vtable, for what MiniAudio's FLAC and MP3 decoders get wrong; here, where their structures are known. See held_file in sound.cpp.
