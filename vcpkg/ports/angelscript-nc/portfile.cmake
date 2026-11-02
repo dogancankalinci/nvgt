@@ -142,6 +142,7 @@ vcpkg_from_github(
         fix-imported-function-index.patch
         fix-script-code-copy-terminator.patch
         fix-collector-chain-passes.patch
+        fix-nesting-stack-overflow.patch
 )
 
 vcpkg_cmake_configure(

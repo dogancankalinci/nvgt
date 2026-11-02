@@ -1,0 +1,190 @@
+diff --git a/sdk/angelscript/source/as_compiler.cpp b/sdk/angelscript/source/as_compiler.cpp
+index ea54d12..6bef72a 100644
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -4700,6 +4700,14 @@ int asCCompiler::CompileInitListElement(asSListPatternNode *&patternNode, asCScr
+ 
+ void asCCompiler::CompileStatement(asCScriptNode *statement, bool *hasReturn, asCByteCode *bc)
+ {
++	// ALTERED: see asIsStackNearlyFull
++	if( asIsStackNearlyFull() )
++	{
++		Error(TXT_CODE_NESTED_TOO_DEEPLY, statement);
++		*hasReturn = false;
++		return;
++	}
++
+ 	// Don't clear the hasReturn flag if this is an empty statement
+ 	// to avoid false errors of 'not all paths return'
+ 	if( statement->nodeType != snExpressionStatement || statement->firstChild )
+@@ -10656,6 +10664,14 @@ int asCCompiler::CompileAssignment(asCScriptNode *expr, asCExprContext *ctx)
+ {
+ 	asASSERT(expr->nodeType == snAssignment);
+ 
++	// ALTERED: see asIsStackNearlyFull
++	if( asIsStackNearlyFull() )
++	{
++		Error(TXT_CODE_NESTED_TOO_DEEPLY, expr);
++		ctx->type.SetDummy();
++		return -1;
++	}
++
+ 	asCScriptNode *lexpr = expr->firstChild;
+ 	if( lexpr->next )
+ 	{
+diff --git a/sdk/angelscript/source/as_parser.cpp b/sdk/angelscript/source/as_parser.cpp
+index 388d3ec..ed0126f 100644
+--- a/sdk/angelscript/source/as_parser.cpp
++++ b/sdk/angelscript/source/as_parser.cpp
+@@ -55,6 +55,16 @@
+ #include "as_texts.h"
+ #include "as_debug.h"
+ 
++// ALTERED: see asIsStackNearlyFull
++#if defined(_WIN32)
++#ifndef WIN32_LEAN_AND_MEAN
++#define WIN32_LEAN_AND_MEAN
++#endif
++#include <windows.h>
++#elif defined(__linux__) || defined(__APPLE__)
++#include <pthread.h>
++#endif
++
+ #ifdef _MSC_VER
+ #pragma warning(disable:4702) // unreachable code
+ #endif
+@@ -1074,6 +1084,61 @@ void asCParser::RewindTo(const sToken *token)
+ 	sourcePos = token->pos;
+ }
+ 
++// ALTERED: the parser and the compiler recurse for each level of nesting, a few KB of native stack for each, and nothing limited it: source
++// a script compiles at run time could end the program with a stack overflow, which nothing can catch (300 nested constructor calls, 1000
++// parentheses or 2 KB of source on Windows' 1 MB stack). The limit is what the stack has left and not a number of levels, so that code
++// that compiled on a given thread goes on compiling, a chain of else if with thousands of branches on a thread with the stack for it.
++bool asIsStackNearlyFull()
++{
++	const size_t reserve = 128 * 1024; // Room for what a compilation does at the deepest level, and for reporting the error.
++
++#if defined(_WIN32) || defined(__linux__) || defined(__APPLE__)
++	static thread_local char *stackEnd = 0; // The lowest address of this thread's stack.
++	if( stackEnd == 0 )
++	{
++#if defined(_WIN32)
++		MEMORY_BASIC_INFORMATION info;
++		if( VirtualQuery(&info, &info, sizeof(info)) )
++			stackEnd = (char*)info.AllocationBase;
++#elif defined(__APPLE__)
++		pthread_t self = pthread_self();
++		stackEnd = (char*)pthread_get_stackaddr_np(self) - pthread_get_stacksize_np(self);
++#else
++		pthread_attr_t attr;
++		void *address = 0;
++		size_t size = 0;
++		if( pthread_getattr_np(pthread_self(), &attr) == 0 )
++		{
++			if( pthread_attr_getstack(&attr, &address, &size) == 0 )
++				stackEnd = (char*)address;
++			pthread_attr_destroy(&attr);
++		}
++#endif
++		if( stackEnd == 0 ) stackEnd = (char*)1; // Not known: this asks only once, and nothing is refused.
++	}
++	if( stackEnd == (char*)1 ) return false;
++#if defined(__GNUC__) || defined(__clang__)
++	char *here = (char*)__builtin_frame_address(0);
++#else
++	char marker;
++	char *here = &marker;
++#endif
++	return here < stackEnd + reserve;
++#else
++	return false;
++#endif
++}
++
++bool asCParser::CheckStack()
++{
++	if( isSyntaxError ) return true;
++	if( !asIsStackNearlyFull() ) return false;
++	sToken t;
++	GetToken(&t);
++	Error(TXT_CODE_NESTED_TOO_DEEPLY, &t);
++	return true;
++}
++
+ void asCParser::Error(const asCString &text, sToken *token)
+ {
+ 	RewindTo(token);
+@@ -2136,6 +2201,9 @@ asCScriptNode *asCParser::ParseAssignment()
+ 	asCScriptNode *node = CreateNode(snAssignment);
+ 	if( node == 0 ) return 0;
+ 
++	// ALTERED: see asIsStackNearlyFull
++	if( CheckStack() ) return node;
++
+ 	node->AddChildLast(ParseCondition());
+ 	if( isSyntaxError ) return node;
+ 
+@@ -2743,6 +2811,9 @@ asCScriptNode *asCParser::ParseNamespace()
+ 	asCScriptNode *node = CreateNode(snNamespace);
+ 	if( node == 0 ) return 0;
+ 
++	// ALTERED: see asIsStackNearlyFull
++	if( CheckStack() ) return node;
++
+ 	sToken t1;
+ 
+ 	GetToken(&t1);
+@@ -4058,6 +4129,9 @@ asCScriptNode *asCParser::ParseInitList()
+ 	asCScriptNode *node = CreateNode(snInitList);
+ 	if( node == 0 ) return 0;
+ 
++	// ALTERED: see asIsStackNearlyFull
++	if( CheckStack() ) return node;
++
+ 	sToken t1;
+ 
+ 	GetToken(&t1);
+@@ -4257,6 +4331,9 @@ asCScriptNode *asCParser::ParseStatement()
+ 	GetToken(&t1);
+ 	RewindTo(&t1);
+ 
++	// ALTERED: see asIsStackNearlyFull
++	if( CheckStack() ) return CreateNode(snUndefined);
++
+ 	if (t1.type == ttIf)
+ 		return ParseIf();
+ 	else if (t1.type == ttFor)
+diff --git a/sdk/angelscript/source/as_parser.h b/sdk/angelscript/source/as_parser.h
+index 0e1571e..86c7a44 100644
+--- a/sdk/angelscript/source/as_parser.h
++++ b/sdk/angelscript/source/as_parser.h
+@@ -47,6 +47,8 @@
+ 
+ BEGIN_AS_NAMESPACE
+ 
++bool asIsStackNearlyFull(); // ALTERED: see as_parser.cpp
++
+ class asCParser
+ {
+ public:
+@@ -75,6 +77,7 @@ protected:
+ 	void GetToken(sToken *token);
+ 	void RewindTo(const sToken *token);
+ 	void SetPos(size_t pos);
++	bool CheckStack(); // ALTERED: see asIsStackNearlyFull
+ 	void Error(const asCString &text, sToken *token);
+ 	void Warning(const asCString &text, sToken *token);
+ 	void Info(const asCString &text, sToken *token);
+diff --git a/sdk/angelscript/source/as_texts.h b/sdk/angelscript/source/as_texts.h
+index d76a039..9f7818f 100644
+--- a/sdk/angelscript/source/as_texts.h
++++ b/sdk/angelscript/source/as_texts.h
+@@ -194,6 +194,7 @@
+ #define TXT_MULTIPLE_MATCHING_SIGNATURES_TO_s       "Multiple matching signatures to '%s'"
+ #define TXT_MULTIPLE_PROP_GET_ACCESSOR_FOR_s        "Found multiple get accessors for property '%s'"
+ #define TXT_MULTIPLE_PROP_SET_ACCESSOR_FOR_s        "Found multiple set accessors for property '%s'"
++#define TXT_CODE_NESTED_TOO_DEEPLY                  "Code is nested too deeply"
+ #define TXT_MULTILINE_STRINGS_NOT_ALLOWED           "Multiline strings are not allowed in this application"
+ #define TXT_MUST_BE_OBJECT                          "Only objects have constructors"
+ #define TXT_MUST_RETURN_VALUE                       "Must return a value"
