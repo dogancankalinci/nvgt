@@ -183,6 +183,8 @@ static unsigned long long milliseconds_of_frames(ma_uint64 frames, ma_uint32 sam
 	if (seconds > (~(ma_uint64)0 - rest) / 1000) return ~(ma_uint64)0;
 	return seconds * 1000 + rest;
 }
+// Milliseconds in frames, rounded up, within 64 bits once frames_fit() said so. milliseconds_of_frames() rounds down, so that a position or time read and set back stays where it was: both rounding down, each round walked a millisecond back at any rate that isn't a multiple of 1000. It stays within a length, itself rounded down in milliseconds.
+static ma_uint64 frames_of_milliseconds(ma_uint64 milliseconds, ma_uint32 sample_rate) { return milliseconds / 1000 * sample_rate + (milliseconds % 1000 * sample_rate + 999) / 1000; }
 // Linear volumes a sound, mixer, engine or fade can be set to: finite, not negative, and no louder than max_volume_gain. MA_INVALID_ARGS otherwise. A negative one inverted the sound on an engine without PERCENTAGE_ATTRIBUTES, as engines refuse one.
 static bool playable_volumes(std::initializer_list<float> linear_volumes) {
 	if (!finite_values(linear_volumes)) return false;
@@ -1022,7 +1024,7 @@ public:
 	}
 	unsigned long long get_time_in_milliseconds() const override { return engine ? milliseconds_of_frames(ma_engine_get_time_in_pcm_frames(&*engine), ma_engine_get_sample_rate(&*engine)) : 0; } // MiniAudio multiplies the frames by 1000 in 64 bits, which overflowed past 2^64 / 1000 frames.
 	bool set_time_in_milliseconds(unsigned long long time) override {
-		if (!engine || !frames_fit(time, ma_engine_get_sample_rate(&*engine)) || (g_soundsystem_last_error = ma_engine_set_time_in_milliseconds(&*engine, time)) != MA_SUCCESS) return false;
+		if (!engine || !frames_fit(time, ma_engine_get_sample_rate(&*engine)) || (g_soundsystem_last_error = ma_engine_set_time_in_pcm_frames(&*engine, frames_of_milliseconds(time, ma_engine_get_sample_rate(&*engine)))) != MA_SUCCESS) return false;
 		time_sets->fetch_add(1);
 		return true;
 	}
@@ -4452,7 +4454,7 @@ public:
 		if (!(get_engine()->get_flags() & audio_engine::DURATIONS_IN_FRAMES)) {
 			ma_uint32 rate = ma_engine_get_sample_rate(ma_sound_get_engine(&*snd));
 			if (!frames_fit(time, rate)) return false;
-			time = time * rate / 1000;
+			time = frames_of_milliseconds(time, rate);
 		}
 		return (g_soundsystem_last_error = ma_node_set_time(&*snd, time)) == MA_SUCCESS;
 	}
@@ -5551,7 +5553,7 @@ public:
 		ma_uint32 sample_rate = 0; // The sound's own, which its frames count in; the engine's differs for a file at another rate, and is 0 for an engine without a device.
 		if (!snd) return nothing_loaded();
 		if (ma_sound_get_data_format(&*snd, nullptr, nullptr, &sample_rate, nullptr, 0) != MA_SUCCESS || !sample_rate || !frames_fit(offset, sample_rate)) return false;
-		return seek_in_frames((offset * sample_rate) / 1000);
+		return seek_in_frames(frames_of_milliseconds(offset, sample_rate));
 	}
 	unsigned long long get_position() override {
 		if (!snd) return 0;
