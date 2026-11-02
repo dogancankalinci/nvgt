@@ -92,6 +92,17 @@ int get_frame_size(float x, float y, float z) {
 	return total_frame_sizes - 1;
 }
 
+// An area is put in every frame it touches. A coordinate that is infinite, NaN or past what an int holds (reframe() walks them in ints) walked the frames without end, adding to the map until memory ran out or the heap was corrupted, and an area across much of that range took as long: such an area is refused. 16 million frames are about 10^14 square units with the largest frames.
+static void check_map_area(float minx, float maxx, float miny, float maxy, float minz, float maxz) {
+	bool fits = true;
+	for (float v : {minx, maxx, miny, maxy, minz, maxz}) fits = fits && std::isfinite(v) && std::fabs(v) <= 1000000000.0f;
+	if (fits) {
+		double size = frame_sizes[get_frame_size(maxx - minx, maxy - miny, maxz - minz)];
+		fits = (std::max(double(maxx) - minx, 0.0) / size + 2) * (std::max(double(maxy) - miny, 0.0) / size + 2) * (std::max(double(maxz) - minz, 0.0) / size + 2) <= 16777216.0;
+	}
+	if (!fits) throw std::invalid_argument("coordinate_map area out of range");
+}
+
 static bool map_area_sort(map_area* a1, map_area* a2) {
 	return a1 == NULL || a2 == NULL || a1->priority < a2->priority;
 }
@@ -174,6 +185,7 @@ void map_area::reframe() {
 	framed = true;
 }
 void map_area::set(float minx, float maxx, float miny, float maxy, float minz, float maxz, float rotation) {
+	check_map_area(minx, maxx, miny, maxy, minz, maxz);
 	bool was_framed = framed;
 	unframe();
 	this->minx = minx;
@@ -317,6 +329,12 @@ map_frame* coordinate_map::get_frame(int x, int y, int z, int size, bool create)
 	return it->second;
 }
 map_area* coordinate_map::add_area(float minx, float maxx, float miny, float maxy, float minz, float maxz, float rotation, CScriptAny* primary_data, const std::string& data1, const std::string& data2, const std::string& data3, int priority, asINT64 flags) {
+	try {
+		check_map_area(minx, maxx, miny, maxy, minz, maxz);
+	} catch (...) {
+		if (primary_data) primary_data->Release(); // The area was to own it.
+		throw;
+	}
 	map_area* a = new map_area(this, minx, maxx, miny, maxy, minz, maxz, rotation, primary_data, data1, data2, data3, priority, flags);
 	areas.insert(a);
 	return a;
