@@ -5671,7 +5671,7 @@ public:
 		if (!snd || pcm_stream) return false;
 		if (datasource_opened) return datasource && audio_data_source_impl::seekable_source(datasource);
 		held_sound* h = held(&*snd);
-		if (!h->stream) return false;
+		if (!h->stream) return source != nullptr; // A buffer, whose first page is being decoded, or that was opened on a source of no length.
 		held_file* file = file_held(h->stream->decoder.pBackend);
 		return file && file->can_seek;
 	}
