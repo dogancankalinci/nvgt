@@ -1582,6 +1582,7 @@ public:
 	bool get_looping() const override { return src? ma_data_source_is_looping(src->pDataSource) : false; }
 	bool set_range(unsigned long long start_frame, unsigned long long end_frame) override {
 		if (!src || in_use()) return refused_now();
+		if (end_frame < start_frame) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // As MiniAudio refuses it, before the seek below moves the source.
 		// MiniAudio ignores its seek into the new range failing: a start past the end of a source of unknown length reported as set, reading on outside it. So it's made first, for a source that says a seek is past its end.
 		ma_uint64 begin = 0, cursor = 0;
 		ma_data_source_get_range_in_pcm_frames(src->pDataSource, &begin, nullptr);
