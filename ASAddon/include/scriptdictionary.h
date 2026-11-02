@@ -149,6 +149,9 @@ public:
 	// Returns the number of key/value pairs in the dictionary
 	asUINT GetSize() const;
 
+	// How many keys are in the same hash bucket as this one
+	asUINT GetKeysInBucket(const dictKey_t &key) const;
+
 	// Deletes the key
 	bool Delete(const dictKey_t &key);
 

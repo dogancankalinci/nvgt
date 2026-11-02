@@ -492,6 +492,10 @@ static void read_value(Poco::BinaryReader& r, asIScriptModule* mod, const value_
 		default: throw std::runtime_error("corrupt serialized data");
 	}
 }
+// std::hash isn't seeded, so keys can be worked out to share a hash table bucket, and every key added then compares itself with all those before it: a million short keys, 10 MB of data, would take hours. A good hash doesn't put this many keys in one bucket in any real dictionary.
+static void check_key_bucket(CScriptDictionary* dict, const std::string& key) {
+	if (dict->GetKeysInBucket(key) > 256) throw std::runtime_error("corrupt serialized data");
+}
 static CScriptDictionary* read_dictionary_body(Poco::BinaryReader& r, asIScriptModule* mod) {
 	std::unique_ptr<CScriptDictionary, void(*)(CScriptDictionary*)> dict(CScriptDictionary::Create(g_ScriptEngine), [](CScriptDictionary* d) { d->Release(); });
 	Poco::UInt32 count = 0;
@@ -514,6 +518,7 @@ static CScriptDictionary* read_dictionary_body(Poco::BinaryReader& r, asIScriptM
 				default: dict->Set(key, v, t); break;
 			}
 		});
+		check_key_bucket(dict.get(), key);
 	}
 	return dict.release();
 }
@@ -586,6 +591,7 @@ static CScriptDictionary* deserialize_legacy(const std::string& input) {
 			pos += len;
 			dict->Set(key, &val, string_type_id());
 		}
+		if (dict->GetKeysInBucket(key) > 256) break;
 	}
 	return dict;
 }

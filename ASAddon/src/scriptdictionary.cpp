@@ -553,6 +553,17 @@ bool CScriptDictionary::IsEmpty() const
 	return false;
 }
 
+asUINT CScriptDictionary::GetKeysInBucket(const dictKey_t &key) const
+{
+#if AS_CAN_USE_CPP11
+	// An empty table can have no buckets at all, and bucket() needs one
+	if( dict.bucket_count() == 0 ) return 0;
+	return asUINT(dict.bucket_size(dict.bucket(key)));
+#else
+	return 1;
+#endif
+}
+
 asUINT CScriptDictionary::GetSize() const
 {
 	return asUINT(dict.size());
