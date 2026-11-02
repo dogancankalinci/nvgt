@@ -467,12 +467,20 @@ static CScriptDictionary* read_dictionary_body(Poco::BinaryReader& r, asIScriptM
 	}
 	return dict.release();
 }
+// The array grows as its elements are read. It was resized to its count first, which check_left() bounds by the bytes left, but those bytes can be an array claiming them all again: nested as deep as the data may go, every level made its elements before the next was read, so 69 KB of array<string> nested 128 deep took 490 MB. An element is made only once the data has reached it now, and each takes at least a byte of it.
 static void read_array_body(Poco::BinaryReader& r, asIScriptModule* mod, CScriptArray* arr) {
 	Poco::UInt32 count = 0;
 	r >> count;
 	check_left(r, count);
-	if (arr) arr->Resize(count);
+	Poco::UInt64 room = 0;
 	for (Poco::UInt32 i = 0; i < count; i++) {
+		if (arr) {
+			if (i == room) {
+				room = std::min<Poco::UInt64>(count, std::max<Poco::UInt64>(16, room * 2));
+				arr->Reserve(asUINT(room));
+			}
+			arr->Resize(i + 1);
+		}
 		read_value(r, mod, [&](void* v, int t) {
 			if (!arr) return;
 			int elem_type = arr->GetElementTypeId();
