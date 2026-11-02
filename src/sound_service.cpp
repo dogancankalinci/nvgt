@@ -13,6 +13,8 @@
 
 #include "sound_service.h"
 #include "xplatform.h" // NVGT_MOBILE
+#include <Poco/Exception.h>
+#include <Poco/Net/NetException.h>
 #include <Poco/UnicodeConverter.h>
 #include <SDL3/SDL_filesystem.h>
 #include <SDL3/SDL_system.h>
@@ -599,6 +601,18 @@ const sound_service::protocol *pack_protocol::get_instance() {
 }
 
 // internet stream sound service protocol, combining Poco::UriStreamOpener with our prebuffer_istream.
+// Why a URL couldn't be opened, where every failure read "Unknown error".
+static ma_result url_open_failure(const Poco::Exception& e) {
+	if (dynamic_cast<const Poco::Net::ConnectionRefusedException*>(&e)) return MA_CONNECTION_REFUSED;
+	if (dynamic_cast<const Poco::Net::DNSException*>(&e)) return MA_NO_HOST;
+	if (dynamic_cast<const Poco::TimeoutException*>(&e)) return MA_TIMEOUT;
+	if (dynamic_cast<const Poco::UnknownURISchemeException*>(&e)) return MA_PROTOCOL_NOT_SUPPORTED;
+	if (dynamic_cast<const Poco::Net::HTTPException*>(&e)) { // By the reason, which is what Poco keeps of the response.
+		if (e.message().find("Not Found") != std::string::npos || e.message().find("Gone") != std::string::npos) return MA_DOES_NOT_EXIST;
+		if (e.message().find("Forbidden") != std::string::npos || e.message().find("Unauthorized") != std::string::npos) return MA_ACCESS_DENIED;
+	}
+	return MA_ERROR;
+}
 std::istream *netstream_protocol::open_uri(const char *uri, const directive_t directive) const {
 	try {
 		std::istream *stream = Poco::URIStreamOpener::defaultOpener().open(uri);
@@ -609,7 +623,9 @@ std::istream *netstream_protocol::open_uri(const char *uri, const directive_t di
 			delete stream;
 			throw;
 		}
-	} catch(std::exception&) {} // Again figure out how to let user see exception details.
+	} catch (const Poco::Exception& e) {
+		t_open_error = url_open_failure(e);
+	} catch (std::exception&) {} // Again figure out how to let user see exception details.
 	return nullptr;
 }
 const std::string netstream_protocol::get_suffix(const directive_t &directive) const { return "URI"; }
