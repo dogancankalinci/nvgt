@@ -297,6 +297,14 @@ template <class T> Collider* body_add_collider(T& body, CollisionShape* shape, c
 	return body.addCollider(shape, transform);
 }
 
+// The method took a collider by &in, which a script can't give for a type that can't be copied: no script calling it compiled. A collider of another body was left to reactphysics3d, which removes it from that body's lists regardless.
+template <class T> void body_remove_collider(T& body, Collider* collider) {
+	if (!collider) throw runtime_error("collider cannot be null");
+	if (collider->getBody() != &body) throw runtime_error("collider belongs to another body");
+	check_not_in_physics_callback("a collider");
+	body.removeCollider(collider);
+}
+
 template <class T> void body_set_transform(T& body, const Transform& transform) {
 	check_transform(transform);
 	body.setTransform(transform);
@@ -1247,7 +1255,7 @@ void RegisterPhysicsBody(asIScriptEngine* engine, const string& type) {
 	    "physics_collider@ add_collider(physics_collision_shape@ shape, const physics_transform&in transform)",
 	    asFUNCTION(body_add_collider<T>),
 	    asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "void remove_collider(physics_collider&in collider)", asMETHOD(T, removeCollider), asCALL_THISCALL);
+	engine->RegisterObjectMethod(type.c_str(), "void remove_collider(physics_collider@ collider)", asFUNCTION(body_remove_collider<T>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "bool test_point_inside(const vector&in point) const", asMETHOD(T, testPointInside), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "bool raycast(const ray& point, raycast_info& raycast_info) const", asMETHOD(T, raycast), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "bool test_aabb_overlap(const aabb&in world_aabb) const", asMETHOD(T, testAABBOverlap), asCALL_THISCALL);
@@ -1573,7 +1581,7 @@ void RegisterPhysicsEntities(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("physics_collider", "void set_collision_category(uint16 bits) property", asMETHOD(Collider, setCollisionCategoryBits), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_collider", "int get_broad_phase_id() const property", asMETHOD(Collider, getBroadPhaseId), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_collider", "physics_material& get_material() property", asMETHOD(Collider, getMaterial), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_collider", "void set_material(const physics_material&in material) property", asMETHOD(Collider, setMaterial), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_collider", "void set_material(const physics_material& material) property", asMETHOD(Collider, setMaterial), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_collider", "bool get_is_trigger() const property", asMETHOD(Collider, getIsTrigger), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_collider", "void set_is_trigger(bool is_trigger) property", asMETHOD(Collider, setIsTrigger), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_collider", "bool get_is_simulation_collider() const property", asMETHOD(Collider, getIsSimulationCollider), asCALL_THISCALL);
