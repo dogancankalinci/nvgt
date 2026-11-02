@@ -1883,6 +1883,12 @@ static ma_result cursor_no_frame_maps_to(ma_data_source* source, ma_uint64* curs
 	*cursor = ~(ma_uint64)0;
 	return MA_SUCCESS;
 }
+// Whether a decoder's file claims more frames than its bytes can hold, 16384 a byte where the sparsest format, silence in FLAC or Opus, makes about 3000: a damaged or crafted count in a header. Asked of the file's own count, as a decoder's at another rate can wrap to a small one. A file whose size can't be told, as a stream's, isn't known to.
+static bool file_length_impossible(ma_decoder* decoder) {
+	ma_uint64 frames = 0;
+	ma_file_info info{};
+	return ma_data_source_get_length_in_pcm_frames(decoder->pBackend, &frames) == MA_SUCCESS && decoder->data.vfs.pVFS && ma_vfs_info(decoder->data.vfs.pVFS, decoder->data.vfs.file, &info) == MA_SUCCESS && info.sizeInBytes && frames / 16384 > info.sizeInBytes;
+}
 // In singleheader.cpp, where MiniAudio's decoders can be reached.
 ma_result nvgt_file_seek(const ma_data_source_vtable* vtable, ma_data_source* file, ma_uint64 frame, ma_bool32 can_seek);
 ma_uint64 nvgt_file_delay(const ma_data_source_vtable* vtable, ma_data_source* file);
@@ -2402,6 +2408,7 @@ public:
 			return within_range(0); // As every later ask, which the -2 above answers: the first read 0 for a range with an end.
 		}
 		if (g_soundsystem_last_error == MA_SUCCESS) {
+			if (file_length_impossible(&*decoder)) length = 0; // As for a stream, unknown, ending where the file does.
 			length_frames = length;
 			set_held_length(&*decoder, length);
 		}
@@ -4840,10 +4847,7 @@ public:
 		if (ma_decoder_init_vfs(g_sound_service->get_vfs(), triplet.c_str(), &cfg, &decoder) != MA_SUCCESS) return 0;
 		ma_uint32 rate = decoder.outputSampleRate;
 		if (length_impossible) {
-			// More frames than the file's bytes can hold, 16384 a byte where the sparsest format, silence in FLAC or Opus, makes about 3000: a damaged or crafted count in a header, which MiniAudio would allocate and fill with silence before decoding a frame, 10 GB for an 8 KB MP3.
-			ma_uint64 frames = 0;
-			ma_file_info info{};
-			*length_impossible = ma_decoder_get_length_in_pcm_frames(&decoder, &frames) == MA_SUCCESS && ma_vfs_info(decoder.data.vfs.pVFS, decoder.data.vfs.file, &info) == MA_SUCCESS && info.sizeInBytes && frames / 16384 > info.sizeInBytes;
+			*length_impossible = file_length_impossible(&decoder); // Which MiniAudio would allocate and fill with silence before decoding a frame, 10 GB for an 8 KB MP3.
 		}
 		ma_decoder_uninit(&decoder);
 		return rate;
@@ -4980,6 +4984,7 @@ public:
 		if (g_soundsystem_last_error == MA_SUCCESS) {
 			if (made_source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM) {
 				held(&*made)->stream = &made_source->backend.stream;
+				if (file_length_impossible(&made_source->backend.stream.decoder)) made_source->backend.stream.totalLengthInPCMFrames = 0; // Unknown, ending where the file does, as load() does: taken as its length, the stream played silence up to it, for practical purposes for good.
 				// The stream's job thread fills its pages through its decoder's data source functions, and seeks the decoder, so that NVGT's (see hold_decoder()) make the read at its end that gave nothing once more, count the resampling from where a seek left it and, for a source that can seek, keep the seek from being skipped and give silence for what the file lacks of its length. Given here, before the sound first reads the stream, which no job touches until then.
 				hold_decoder(&made_source->backend.stream.decoder, !(ma_flags & MA_SOUND_FLAG_UNKNOWN_LENGTH), made_source->backend.stream.totalLengthInPCMFrames); // A URL's source can't seek.
 			}
