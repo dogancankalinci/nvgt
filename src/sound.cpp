@@ -3692,7 +3692,7 @@ static ma_result float_view_get_cursor(ma_data_source* source, ma_uint64* cursor
 static ma_result float_view_get_length(ma_data_source* source, ma_uint64* length) { return ma_data_source_get_length_in_pcm_frames(((float_view*)source)->inner, length); }
 static ma_result float_view_set_looping(ma_data_source* source, ma_bool32 looping) { return ma_data_source_set_looping(((float_view*)source)->inner, looping); } // A stream loops seamlessly only when it loops itself.
 static ma_data_source_vtable g_float_view_vtable = {float_view_read, float_view_seek, float_view_get_data_format, float_view_get_cursor, float_view_get_length, float_view_set_looping, 0};
-// The source a sound reads: the one given if it is in float with no more channels than its engine, or else a float_view of it made in view. MiniAudio's sound mixes down in its simple mode, which drops every channel past the engine's: a 5.1 file on a stereo engine lost its centre, LFE and surrounds, and a 3-channel source its third.
+// The source a sound reads: the one given if it is in float with no more channels than its engine, or else a float_view of it made in view. MiniAudio's sound mixes down in its simple mode, which drops every channel past the engine's: a 5.1 file on a stereo engine lost its centre and surrounds, and a 3-channel source its third. MiniAudio's weights for it leave an LFE out.
 static ma_data_source* float_source(ma_data_source* source, unique_ptr<float_view>& view, ma_uint32 engine_channels) {
 	view.reset();
 	ma_format format = ma_format_unknown;

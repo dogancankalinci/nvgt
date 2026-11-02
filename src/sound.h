@@ -99,7 +99,7 @@ public:
 		DURATIONS_IN_FRAMES = 1,  // If set, all durations possible will expect a value in PCM frames rather than milliseconds unless explicitly specified.
 		NO_AUTO_START = 2,        // if set, audio_engine::start must be called after initialization.
 		NO_DEVICE = 4,            // If set, audio_engine::read() must be used to receive raw audio samples from the engine instead.
-		NO_CLIP = 8, // If set, disables miniaudio's sample clipping.
+		NO_CLIP = 8, // If set, disables miniaudio's sample clipping, which only a device does: an engine without one reads unclipped either way.
 		PERCENTAGE_ATTRIBUTES = 16 // If this is set, attributes for sounds will be in percentages such as 100 instead of decimals such as 1.0, ecentially a multiplication by 100 for backwards compatibility or preference. This also causes sound.volume to work in db.
 	};
 	virtual ~audio_engine() = default;

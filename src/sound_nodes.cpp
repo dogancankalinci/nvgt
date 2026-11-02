@@ -815,7 +815,7 @@ class freeverb_node_impl : public audio_node_impl, public virtual freeverb_node 
 		}
 	}
 	void set_room_size(float size) override { if (rn && finite_node_values({size})) verblib_set_room_size(&rn->reverb, clamped_unit(size)); }
-	float get_room_size() const override { return rn? verblib_get_room_size(&rn->reverb) : -1; }
+	float get_room_size() const override { return rn? clamped_unit(verblib_get_room_size(&rn->reverb)) : -1; } // verblib's scale can read just past 1.
 	void set_damping(float damping) override { if (rn && finite_node_values({damping})) verblib_set_damping(&rn->reverb, clamped_unit(damping)); }
 	float get_damping() const override { return rn? verblib_get_damping(&rn->reverb) : -1; }
 	// The gain the wet level and width make together as verblib multiplies them, which each alone kept to the limit passed by far.
