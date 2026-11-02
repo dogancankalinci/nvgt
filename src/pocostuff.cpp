@@ -268,8 +268,10 @@ template<typename T> poco_shared<Dynamic::Var>* poco_var_assign_shared(poco_shar
 	var->ptr->operator=(val->shared);
 	return var;
 }
+static void check_var_json(const Dynamic::Var& value);
 // Poco 1.14 refuses to turn a negative integer into a floating point value whose mantissa is shorter than the integer type, such as any negative int64 into a double or a negative int into a float, as "Lost precision": it measures the value by its unsigned bit pattern rather than its magnitude. This converts such values itself, refusing only those whose magnitude really doesn't fit, as later Poco versions do, and leaves every other conversion to Poco. The operators below compute convert<T>() op value exactly as Poco's own operators do, but through this function.
 template<typename T> T poco_var_convert(const Dynamic::Var& var) {
+	check_var_json(var);
 	if constexpr(std::is_floating_point<T>::value) {
 		if (var.isInteger() && var.isSigned()) {
 			Int64 value = var.convert<Int64>();
@@ -311,6 +313,8 @@ poco_shared<Dynamic::Var>* poco_var_dec(poco_shared<Dynamic::Var>* var) {
 	return var;
 }
 int poco_var_cmp(poco_shared<Dynamic::Var>* var, const poco_shared<Dynamic::Var>& other) {
+	check_var_json(*var->ptr);
+	check_var_json(*other.ptr);
 	if ((*var->ptr) < *(other.ptr)) return -1;
 	else if ((*var->ptr) > *(other.ptr)) return 1;
 	else return 0;
@@ -358,13 +362,13 @@ template<typename T> T poco_var_mod(poco_shared<Dynamic::Var>* var, const T& val
 }
 // Special opAssign, opAdd and opAddAssign operator overloads for string, so one can do "str"+var etc.
 std::string poco_var_add_string(std::string* var, const poco_shared<Dynamic::Var>& val) {
-	return (*var) + val.ptr->convert<std::string>();
+	return (*var) + poco_var_convert<std::string>(*val.ptr);
 }
 std::string& poco_var_assign_string(std::string* var, const poco_shared<Dynamic::Var>& val) {
-	return (*var) = val.ptr->convert<std::string>();
+	return (*var) = poco_var_convert<std::string>(*val.ptr);
 }
 std::string& poco_var_add_assign_string(std::string* var, const poco_shared<Dynamic::Var>& val) {
-	return (*var) += val.ptr->convert<std::string>();
+	return (*var) += poco_var_convert<std::string>(*val.ptr);
 }
 
 // Poco encapsolates json parsing in an object. If this turns out to be too slow, use tls/global objects or something.
@@ -448,6 +452,11 @@ static void check_json_value(const Dynamic::Var& value, std::vector<const void*>
 		JSON::Array::Ptr array = value.extract<JSON::Array::Ptr>();
 		if (array) check_json_array(*array, path);
 	}
+}
+// A var holding a json value turns into text through Poco's stringify as well: `string s = v;`, a comparison, a string added to it.
+static void check_var_json(const Dynamic::Var& value) {
+	std::vector<const void*> path;
+	check_json_value(value, path);
 }
 // We make a custom json_object class for a couple reasons, mostly so that we can build in poco's json querying as well as other more easily wrapped functions. We'll do very similar for arrays below, I'm not even remotely good enough at this c++ templating thing to avoid this duplicated code and I don't want to meld it all into one class.
 poco_json_object::poco_json_object(JSON::Object::Ptr o) : poco_shared<JSON::Object>(std::move(o)) {}
