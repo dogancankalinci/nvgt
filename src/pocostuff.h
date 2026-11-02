@@ -17,12 +17,19 @@
 #include <Poco/JSON/Array.h>
 #include <Poco/JSON/Object.h>
 
+// Let go of what a json value holds alone without recursion, see pocostuff.cpp. Called as the last script reference to the value goes.
+void json_unchain(Poco::JSON::Object::Ptr& value);
+void json_unchain(Poco::JSON::Array::Ptr& value);
+void json_unchain(Poco::SharedPtr<Poco::Dynamic::Var>& value);
+template <class T> void json_unchain(Poco::SharedPtr<T>&) {}
+
 // I wonder if this is gonna be one of those things I'll look back at in a year and lament the fact that I couldn't have found a better way before spending the same amount of time then that I'm about to spend now finding a better way to wrap Poco's shared pointers in a simplistic enough way for real use. These SharedPtr's literally have reference counting that we can't use because the pointers' reference counter is private, and I'm not sure I can use Angelscript's composition features directly either because raw access to the underlying pointer is also private! Maybe I can specify my own reference counter when constructing these pointers (not sure I could count on that for all pointers being received), I could mess with Angelscript scoped reference types (not sure how the user could choose between assigning a new reference or value to a variable), and I could try using angelscripts opHndlAssign thing but based on the docs I would need to do more research to answer questions about that as well! So we're left with this, a duplicate reference counter and a duplicate copy of any raw pointer assigned just so that the user gets to type @my_var=handle vs. my_var=variable to deepcopy.
 template <class T> class poco_shared : public Poco::RefCountedObject {
 public:
 	Poco::SharedPtr<T> shared;
 	T* ptr;
 	poco_shared(Poco::SharedPtr<T> shared) : shared(shared), ptr(shared.get()) {}
+	~poco_shared() { json_unchain(shared); }
 };
 
 class datastream;

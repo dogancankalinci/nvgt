@@ -394,6 +394,48 @@ static void check_json_array(const JSON::Array& array, std::vector<const void*>&
 	for (const auto& entry : array) check_json_value(entry, path);
 	path.pop_back();
 }
+// Poco's destructors free what a json value holds by recursion, a few native stack frames for each level. A script makes a chain with set() in a loop, and 20000 levels overflowed the stack when the last handle went, which ends the program with no exception to catch. What only this value holds is taken out of it here, with a list of its own instead of the stack, so that Poco's destructors have nothing left to recurse into.
+template <class node> static void json_take_apart(Poco::SharedPtr<node>& value, std::vector<Dynamic::Var>& pending) {
+	if (!value || value.referenceCount() > 1) return; // Something else still uses it, and what it holds.
+	for (const auto& entry : *value) {
+		const Dynamic::Var* held;
+		if constexpr(std::is_same<node, JSON::Object>::value) held = &entry.second;
+		else held = &entry;
+		if (held->type() == typeid(JSON::Object::Ptr) || held->type() == typeid(JSON::Array::Ptr)) pending.push_back(*held);
+	}
+	value->clear();
+}
+static void json_take_apart_pending(std::vector<Dynamic::Var>& pending) {
+	while (!pending.empty()) {
+		Dynamic::Var value = pending.back();
+		pending.pop_back();
+		if (value.type() == typeid(JSON::Object::Ptr)) {
+			JSON::Object::Ptr object = value.extract<JSON::Object::Ptr>();
+			value.clear();
+			json_take_apart(object, pending);
+		} else {
+			JSON::Array::Ptr array = value.extract<JSON::Array::Ptr>();
+			value.clear();
+			json_take_apart(array, pending);
+		}
+	}
+}
+void json_unchain(JSON::Object::Ptr& value) {
+	std::vector<Dynamic::Var> pending;
+	json_take_apart(value, pending);
+	json_take_apart_pending(pending);
+}
+void json_unchain(JSON::Array::Ptr& value) {
+	std::vector<Dynamic::Var> pending;
+	json_take_apart(value, pending);
+	json_take_apart_pending(pending);
+}
+void json_unchain(SharedPtr<Dynamic::Var>& value) {
+	if (!value || value.referenceCount() > 1 || (value->type() != typeid(JSON::Object::Ptr) && value->type() != typeid(JSON::Array::Ptr))) return;
+	std::vector<Dynamic::Var> pending{*value};
+	value->clear();
+	json_take_apart_pending(pending);
+}
 // An indent or a step of billions of spaces took as long to write as it takes to run out of memory, with nothing a script could do about it.
 static void check_json_indent(unsigned int indent, int step) {
 	if (indent > 1024 || step > 1024) throw InvalidArgumentException("json indent out of range");
