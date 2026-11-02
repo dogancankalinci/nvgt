@@ -3565,17 +3565,32 @@ struct float_view {
 	ma_data_source* inner;
 	ma_format format;
 	ma_uint32 channels;
-	~float_view() { ma_data_source_uninit(&base); } // Only views made in full are kept.
+	ma_uint32 channels_out; // What it gives: channels, or its engine's when the source has more, mixed down with mixer.
+	bool mixing = false;
+	ma_channel_converter mixer;
+	~float_view() { // Only views made in full are kept.
+		if (mixing) ma_channel_converter_uninit(&mixer, nullptr);
+		ma_data_source_uninit(&base);
+	}
 };
 static ma_result float_view_read(ma_data_source* source, void* frames_out, ma_uint64 frame_count, ma_uint64* frames_read) {
 	float_view* view = (float_view*)source;
-	ma_uint8 temp[4096];
+	alignas(16) ma_uint8 temp[4096];
+	float wide[4096]; // temp in float, for mixer.
 	ma_uint64 capacity = sizeof(temp) / ma_get_bytes_per_frame(view->format, view->channels), total = 0;
 	ma_result result = MA_SUCCESS;
 	while (total < frame_count) {
 		ma_uint64 wanted = std::min(capacity, frame_count - total), got = 0;
 		result = ma_data_source_read_pcm_frames(view->inner, temp, wanted, &got);
-		if (frames_out) ma_convert_pcm_frames_format((float*)frames_out + total * view->channels, ma_format_f32, temp, view->format, got, view->channels, ma_dither_mode_none); // None for a read that skips, as MiniAudio allows.
+		if (frames_out) { // None for a read that skips, as MiniAudio allows.
+			float* out = (float*)frames_out + total * view->channels_out;
+			if (!view->mixing) ma_convert_pcm_frames_format(out, ma_format_f32, temp, view->format, got, view->channels, ma_dither_mode_none);
+			else if (view->format == ma_format_f32) ma_channel_converter_process_pcm_frames(&view->mixer, out, temp, got);
+			else {
+				ma_convert_pcm_frames_format(wide, ma_format_f32, temp, view->format, got, view->channels, ma_dither_mode_none);
+				ma_channel_converter_process_pcm_frames(&view->mixer, out, wide, got);
+			}
+		}
 		total += got;
 		if (result != MA_SUCCESS || got < wanted) break;
 	}
@@ -3584,20 +3599,28 @@ static ma_result float_view_read(ma_data_source* source, void* frames_out, ma_ui
 }
 static ma_result float_view_seek(ma_data_source* source, ma_uint64 frame) { return ma_data_source_seek_to_pcm_frame(((float_view*)source)->inner, frame); }
 static ma_result float_view_get_data_format(ma_data_source* source, ma_format* format, ma_uint32* channels, ma_uint32* sample_rate, ma_channel* channel_map, size_t channel_map_capacity) {
-	ma_result result = ma_data_source_get_data_format(((float_view*)source)->inner, nullptr, channels, sample_rate, channel_map, channel_map_capacity);
+	float_view* view = (float_view*)source;
+	ma_result result = ma_data_source_get_data_format(view->inner, nullptr, channels, sample_rate, channel_map, channel_map_capacity);
 	if (format) *format = ma_format_f32;
+	if (view->mixing) {
+		if (channels) *channels = view->channels_out;
+		if (channel_map) ma_channel_map_init_standard(ma_standard_channel_map_default, channel_map, channel_map_capacity, view->channels_out);
+	}
 	return result;
 }
 static ma_result float_view_get_cursor(ma_data_source* source, ma_uint64* cursor) { return ma_data_source_get_cursor_in_pcm_frames(((float_view*)source)->inner, cursor); }
 static ma_result float_view_get_length(ma_data_source* source, ma_uint64* length) { return ma_data_source_get_length_in_pcm_frames(((float_view*)source)->inner, length); }
 static ma_result float_view_set_looping(ma_data_source* source, ma_bool32 looping) { return ma_data_source_set_looping(((float_view*)source)->inner, looping); } // A stream loops seamlessly only when it loops itself.
 static ma_data_source_vtable g_float_view_vtable = {float_view_read, float_view_seek, float_view_get_data_format, float_view_get_cursor, float_view_get_length, float_view_set_looping, 0};
-// The source a sound reads: the one given if it is in float, or else a float_view of it made in view.
-static ma_data_source* float_source(ma_data_source* source, unique_ptr<float_view>& view) {
+// The source a sound reads: the one given if it is in float with no more channels than its engine, or else a float_view of it made in view. MiniAudio's sound mixes down in its simple mode, which drops every channel past the engine's: a 5.1 file on a stereo engine lost its centre, LFE and surrounds, and a 3-channel source its third.
+static ma_data_source* float_source(ma_data_source* source, unique_ptr<float_view>& view, ma_uint32 engine_channels) {
 	view.reset();
 	ma_format format = ma_format_unknown;
 	ma_uint32 channels = 0;
-	if (ma_data_source_get_data_format(source, &format, &channels, nullptr, nullptr, 0) != MA_SUCCESS || format == ma_format_f32 || format == ma_format_unknown || !channels) return source;
+	ma_channel channel_map[MA_MAX_CHANNELS];
+	if (ma_data_source_get_data_format(source, &format, &channels, nullptr, channel_map, MA_MAX_CHANNELS) != MA_SUCCESS || format == ma_format_unknown || !channels) return source;
+	const bool mixing = engine_channels && channels > engine_channels;
+	if (format == ma_format_f32 && !mixing) return source;
 	view = make_unique<float_view>();
 	ma_data_source_config cfg = ma_data_source_config_init();
 	cfg.vtable = &g_float_view_vtable;
@@ -3608,6 +3631,20 @@ static ma_data_source* float_source(ma_data_source* source, unique_ptr<float_vie
 	view->inner = source;
 	view->format = format;
 	view->channels = channels;
+	view->channels_out = channels;
+	if (mixing) {
+		ma_channel map_out[MA_MAX_CHANNELS];
+		ma_channel_map_init_standard(ma_standard_channel_map_default, map_out, MA_MAX_CHANNELS, engine_channels);
+		if (ma_channel_map_is_blank(channel_map, channels)) ma_channel_map_init_standard(ma_standard_channel_map_default, channel_map, MA_MAX_CHANNELS, channels); // One that names none, as raw PCM.
+		ma_channel_converter_config mixer_cfg = ma_channel_converter_config_init(ma_format_f32, channels, channel_map, engine_channels, map_out, ma_channel_mix_mode_rectangular);
+		if (ma_channel_converter_init(&mixer_cfg, nullptr, &view->mixer) == MA_SUCCESS) {
+			view->mixing = true;
+			view->channels_out = engine_channels;
+		} else if (format == ma_format_f32) { // As MiniAudio would have played it.
+			view.reset();
+			return source;
+		}
+	}
 	return &view->base;
 }
 // A chain of sources a sound plays, from the one its head was on when the sound opened it, read as one source: its length is the chain's, its cursor the place in the whole chain, a seek moves the head onto the source the frame falls in, and its end is the chain's, so MiniAudio loops the whole chain and plays it again from its start once it ended. MiniAudio's own seek, restart and looping reached only the head's own source, while the head read on from wherever the chain had got to: a seek to 0 read 0 and played on in the second source, and a looped chain looped its first source. The links can't change while a sound plays the head, so they are taken once.
@@ -4838,7 +4875,7 @@ public:
 				ma_sound_config cfg = ma_sound_config_init();
 				// Not attached to the endpoint by MiniAudio, as postload() attaches it to its chain; so making it changes no node's lists and needs no graph lock.
 				cfg.flags = flags | MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT;
-				cfg.pDataSource = float_source(decode_front(&*made_source, made_front), made_view);
+				cfg.pDataSource = float_source(decode_front(&*made_source, made_front), made_view, engine->get_channels());
 				if ((g_soundsystem_last_error = ma_sound_init_ex(engine->get_ma_engine(), &cfg, &*made)) != MA_SUCCESS) discard_source(made_source, tree_held);
 				else if (wait_for_load) {
 					{
@@ -4998,7 +5035,7 @@ public:
 			ma_pcm_rb_set_sample_rate(&pcm_stream->rb, sample_rate);
 			// As load_special() makes a sound: not attached by MiniAudio, so without the graph lock, and handed to snd once made.
 			held_sound_ptr made(new held_sound());
-			if ((g_soundsystem_last_error = ma_sound_init_from_data_source(get_engine()->get_ma_engine(), float_source(&pcm_stream->base, view), MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT, nullptr, &*made)) != MA_SUCCESS) {
+			if ((g_soundsystem_last_error = ma_sound_init_from_data_source(get_engine()->get_ma_engine(), float_source(&pcm_stream->base, view, get_engine()->get_channels()), MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT, nullptr, &*made)) != MA_SUCCESS) {
 				view.reset();
 				pcm_stream->uninit();
 				pcm_stream.reset();
@@ -5090,7 +5127,7 @@ public:
 		audio_data_source_impl::prepare_length_of(ds); // Before the sound reads it.
 		const ma_bool32 looped = ma_data_source_is_looping(ds->get_ma_data_source()); // Before chain_source() sets it aside.
 		held_sound_ptr made(new held_sound()); // As load_special() makes a sound.
-		if ((g_soundsystem_last_error = ma_sound_init_from_data_source(get_engine()->get_ma_engine(), float_source(chain_source(ds->get_ma_data_source(), get_engine(), chain), view), MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT, nullptr, &*made)) != MA_SUCCESS) {
+		if ((g_soundsystem_last_error = ma_sound_init_from_data_source(get_engine()->get_ma_engine(), float_source(chain_source(ds->get_ma_data_source(), get_engine(), chain), view, get_engine()->get_channels()), MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT, nullptr, &*made)) != MA_SUCCESS) {
 			view.reset();
 			chain.reset();
 			ma_data_source_set_looping(ds->get_ma_data_source(), looped);
