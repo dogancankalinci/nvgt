@@ -139,6 +139,7 @@ static void check_transform(const Transform& transform) {
 
 // A script's handles to these objects aren't counted, and reactphysics3d only asserts what it is given (no check in a release build), so what was destroyed already, or belongs to another world, was used as it stood (access violations). What exists is noted here, so that what can be refused is: destroying something twice, using a destroyed shape or mesh, and destroying a mesh a shape is using. The methods of a destroyed object remain out of reach, as a handle doesn't know.
 static std::unordered_map<const Body*, PhysicsWorld*> g_physics_bodies;
+static std::unordered_map<const Joint*, PhysicsWorld*> g_physics_joints;
 static std::unordered_map<const CollisionShape*, const void*> g_physics_shapes; // With the mesh or height field a shape uses, if any.
 static std::unordered_set<const void*> g_physics_meshes;
 static std::unordered_set<const DefaultLogger*> g_physics_loggers;
@@ -313,6 +314,48 @@ RigidBody* world_create_rigid_body(PhysicsWorld& world, const Transform& transfo
 	return body;
 }
 
+// PhysicsWorld::createJoint() casts what it is given to the class for its type (BallAndSocketJointInfo and the others) and reads their anchor point and axis from it, which the base class a script has doesn't hold: they were read from past the end of the script's object. A null body or one of another world was used as it stood, and a joint of a body with itself is singular. There is no way for a script to give an anchor or an axis, so the joint is anchored half way between the bodies and its axis is the world's y axis.
+Joint* world_create_joint(PhysicsWorld& world, const JointInfo& info) {
+	for (RigidBody* body : {info.body1, info.body2}) {
+		auto found = g_physics_bodies.find(body);
+		if (found == g_physics_bodies.end() || found->second != &world) throw runtime_error("a joint needs two bodies of this world");
+	}
+	if (info.body1 == info.body2) throw runtime_error("a joint needs two different bodies");
+	const Vector3 anchor = (info.body1->getTransform().getPosition() + info.body2->getTransform().getPosition()) * decimal(0.5);
+	const Vector3 axis(0, 1, 0);
+	Joint* joint = nullptr;
+	auto create = [&](JointInfo& full) {
+		full.positionCorrectionTechnique = info.positionCorrectionTechnique;
+		full.isCollisionEnabled = info.isCollisionEnabled;
+		joint = world.createJoint(full);
+	};
+	switch (info.type) {
+		case JointType::BALLSOCKETJOINT: {
+			BallAndSocketJointInfo full(info.body1, info.body2, anchor);
+			create(full);
+			break;
+		}
+		case JointType::SLIDERJOINT: {
+			SliderJointInfo full(info.body1, info.body2, anchor, axis);
+			create(full);
+			break;
+		}
+		case JointType::HINGEJOINT: {
+			HingeJointInfo full(info.body1, info.body2, anchor, axis);
+			create(full);
+			break;
+		}
+		case JointType::FIXEDJOINT: {
+			FixedJointInfo full(info.body1, info.body2, anchor);
+			create(full);
+			break;
+		}
+		default: throw runtime_error("unknown joint type");
+	}
+	if (joint) g_physics_joints[joint] = &world;
+	return joint;
+}
+
 // RigidBody::setType disables a body's components while it is static, and checkForDisabledOverlappingPairs then disables
 // its overlapping pairs with other disabled bodies such as a static floor. Leaving STATIC is meant to undo that through
 // setIsSleeping(false), but a static body is never marked as sleeping, so that call returns at once and never reaches
@@ -369,6 +412,9 @@ static void check_shape_destroyable(const CollisionShape* shape) {
 void world_destroy_joint(PhysicsWorld* world, Joint* joint) {
 	if (!joint) throw runtime_error("joint cannot be null");
 	check_not_in_physics_callback("a joint");
+	auto found = g_physics_joints.find(joint);
+	if (found == g_physics_joints.end() || found->second != world) throw runtime_error("joint isn't a joint of this world; it may have been destroyed already, or with one of its bodies");
+	g_physics_joints.erase(found);
 	world->destroyJoint(joint);
 }
 
@@ -381,6 +427,10 @@ void world_destroy(PhysicsWorld* world) {
 	for (uint32 b = 0; b < world->getNbRigidBodies(); b++) {
 		body_cleanup_user_data(world->getRigidBody(b));
 		g_physics_bodies.erase(world->getRigidBody(b));
+	}
+	for (auto joint = g_physics_joints.begin(); joint != g_physics_joints.end();) {
+		if (joint->second == world) joint = g_physics_joints.erase(joint);
+		else ++joint;
 	}
 	g_physics_worlds.erase(world);
 	g_physics.destroyPhysicsWorld(world);
@@ -1029,6 +1079,11 @@ void world_destroy_rigid_body(PhysicsWorld* world, RigidBody* body) {
 	if (found == g_physics_bodies.end() || found->second != world) throw runtime_error("body isn't a body of this world; it may have been destroyed already");
 	g_physics_bodies.erase(found);
 	body_cleanup_user_data(body);
+	// Destroying a body destroys its joints.
+	for (auto joint = g_physics_joints.begin(); joint != g_physics_joints.end();) {
+		if (joint->first->getBody1() == body || joint->first->getBody2() == body) joint = g_physics_joints.erase(joint);
+		else ++joint;
+	}
 	world->destroyRigidBody(body);
 }
 
@@ -1779,7 +1834,7 @@ void RegisterPhysicsWorldAndCallbacks(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("physics_world", "void set_contacts_position_correction_technique(physics_contact_position_correction_technique technique) property", asMETHOD(PhysicsWorld, setContactsPositionCorrectionTechnique), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_world", "physics_rigid_body@ create_rigid_body(const physics_transform&in transform)", asFUNCTION(world_create_rigid_body), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_world", "void destroy_rigid_body(physics_rigid_body& body)", asFUNCTION(world_destroy_rigid_body), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_world", "physics_joint@ create_joint(const physics_joint_info&in joint_info)", asMETHOD(PhysicsWorld, createJoint), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_world", "physics_joint@ create_joint(const physics_joint_info&in joint_info)", asFUNCTION(world_create_joint), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_world", "void destroy_joint(physics_joint& joint)", asFUNCTION(world_destroy_joint), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_world", "vector get_gravity() const property", asMETHOD(PhysicsWorld, getGravity), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_world", "void set_gravity(const vector&in gravity) property", asMETHOD(PhysicsWorld, setGravity), asCALL_THISCALL);
