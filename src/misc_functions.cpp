@@ -460,7 +460,11 @@ const void* script_memory_buffer::at(size_t index) const {
 void* script_memory_buffer::at(size_t index) { return const_cast<void*>(const_cast<const script_memory_buffer*>(this)->at(index)); }
 CScriptArray* script_memory_buffer::to_array() const {
 	if (!fits()) throw std::out_of_range("memory buffer address or size out of range on this platform");
-	CScriptArray* array = CScriptArray::Create(get_array_type(Poco::format("array<%s>", std::string(g_ScriptEngine->GetTypeDeclaration(subtypeid, false)))), size);
+	// The array type is the one this template instance's conversion returns. It was looked up by name on the engine, which sees no type of a module: for a script enum the lookup failed and the array was made with no type (a crash at `E[]@ a = buffer;`). And a type found by name was cached with no reference: array<uint16>, which nothing registered names, went when the module that used it was discarded, and the next conversion used the freed type.
+	asIScriptFunction* conversion = subtype->GetMethodByName("opImplConv");
+	asITypeInfo* array_type = conversion ? g_ScriptEngine->GetTypeInfoById(conversion->GetReturnTypeId()) : nullptr;
+	if (!array_type) return nullptr;
+	CScriptArray* array = CScriptArray::Create(array_type, size);
 	if (!array) return nullptr;
 	std::memcpy(array->GetBuffer(), ptr, size * g_ScriptEngine->GetSizeOfPrimitiveType(subtypeid));
 	return array;
