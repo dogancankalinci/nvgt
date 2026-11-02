@@ -589,6 +589,7 @@ CScriptArray::CScriptArray(asITypeInfo *ti, void *buf)
 	if( (ti->GetSubTypeId() & asTYPEID_MASK_OBJECT) == 0 )
 	{
 		CreateBuffer(&buffer, length);
+		if( !buffer ) return; // ALTERED: see the constructor below
 
 		// Copy the values of the primitive type into the internal buffer
 		if( length > 0 )
@@ -597,6 +598,7 @@ CScriptArray::CScriptArray(asITypeInfo *ti, void *buf)
 	else if( ti->GetSubTypeId() & asTYPEID_OBJHANDLE )
 	{
 		CreateBuffer(&buffer, length);
+		if( !buffer ) return; // ALTERED: see the constructor below
 
 		// Copy the handles into the internal buffer
 		if( length > 0 )
@@ -633,6 +635,7 @@ CScriptArray::CScriptArray(asITypeInfo *ti, void *buf)
 		//       of the copy constructor as the engine will just discard the objects in the
 		//       buffer afterwards.
 		CreateBuffer(&buffer, length);
+		if( !buffer ) return; // ALTERED: see the constructor below
 
 		// For value types we need to call the opAssign for each individual object
 		for( asUINT n = 0; n < length; n++ )
@@ -676,6 +679,8 @@ CScriptArray::CScriptArray(asUINT length, asITypeInfo *ti)
 	}
 
 	CreateBuffer(&buffer, length);
+	// ALTERED: out of memory, see the constructor below
+	if( !buffer ) return;
 
 	// Notify the GC of the successful creation
 	if( objType->GetFlags() & asOBJ_GC )
@@ -730,6 +735,10 @@ CScriptArray::CScriptArray(asUINT length, void *defVal, asITypeInfo *ti)
 	}
 
 	CreateBuffer(&buffer, length);
+	// ALTERED: when the buffer couldn't be allocated the script has its exception, and there is nothing to initialize: GetSize() below
+	// read the size from the null buffer (array<int>(536870912, 7) with 2 GB not to be had), and the collector was told of an array
+	// EnumReferences() can't walk.
+	if( !buffer ) return;
 
 	// Notify the GC of the successful creation
 	if( objType->GetFlags() & asOBJ_GC )
