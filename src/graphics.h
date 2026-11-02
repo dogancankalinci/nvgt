@@ -177,7 +177,7 @@ public:
 	bool set_draw_color(unsigned int r, unsigned int g, unsigned int b, unsigned int a) { return SDL_SetRenderDrawColor(_renderer, (Uint8)r, (Uint8)g, (Uint8)b, (Uint8)a); }
 	bool set_scale(float sx, float sy) { return SDL_SetRenderScale(_renderer, sx, sy); }
 	bool set_vsync(int vsync) { return SDL_SetRenderVSync(_renderer, vsync); }
-	bool flush() { return SDL_FlushRenderer(_renderer); }
+	bool flush() { return _renderer && SDL_FlushRenderer(_renderer); } // Without a window there is no renderer, and unlike the other calls SDL_FlushRenderer() doesn't check for that.
 	bool set_color_scale(float scale) { return SDL_SetRenderColorScale(_renderer, scale); }
 	bool set_draw_blend_mode(unsigned int mode) { return SDL_SetRenderDrawBlendMode(_renderer, (SDL_BlendMode)mode); }
 	bool viewport_set() const { return SDL_RenderViewportSet(_renderer); }
