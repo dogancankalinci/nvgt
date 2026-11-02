@@ -2562,7 +2562,11 @@ protected:
 	unsigned int write_converted(const void* frames, unsigned int frame_count) {
 		if (output_format == ma_format_f32) return write_impl(frames, frame_count);
 		converted.resize((size_t)frame_count * ma_get_bytes_per_frame(output_format, channels)); // Kept, so that an encoder in the graph doesn't allocate on the audio thread every block.
-		ma_pcm_convert(converted.data(), output_format, frames, ma_format_f32, (ma_uint64)frame_count * channels, ma_dither_mode_none);
+		if (output_format == ma_format_u8) { // To the nearest step: MiniAudio's conversion cuts down, half a step low, which wrote silence as 0x7F.
+			const float* in = static_cast<const float*>(frames);
+			ma_uint8* out = reinterpret_cast<ma_uint8*>(converted.data());
+			for (size_t sample = 0, samples = (size_t)frame_count * channels; sample < samples; sample++) out[sample] = (ma_uint8)((std::clamp(in[sample], -1.0f, 1.0f) + 1) * 127.5f + 0.5f);
+		} else ma_pcm_convert(converted.data(), output_format, frames, ma_format_f32, (ma_uint64)frame_count * channels, ma_dither_mode_none);
 		return write_impl(converted.data(), frame_count);
 	}
 	virtual bool close_impl() { return true; } // override in subclasses, free any encoder state.
