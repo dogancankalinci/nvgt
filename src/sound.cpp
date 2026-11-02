@@ -2002,6 +2002,11 @@ static ma_result held_decoder_seek(ma_data_source* source, ma_uint64 frame) {
 	const bool there = !file->can_seek && file_cursor(decoder->pBackend, &cursor) && cursor == file_frame;
 	if (file->can_seek) file_cursor(decoder->pBackend, &before);
 	result = there? MA_SUCCESS : ma_data_source_seek_to_pcm_frame(decoder->pBackend, file_frame);
+	// MiniAudio's count of the frame in the file, and the resampler's, add 1 at a rate that divides the file's, which took a decoder's own length past the file's, refused by the formats that don't clamp it: Vorbis, Opus and MP3.
+	if (!there && file_rate != decoder->outputSampleRate && (result != MA_SUCCESS || file->refused.load() != MA_SUCCESS)) {
+		ma_uint64 file_length = 0;
+		if (ma_data_source_get_length_in_pcm_frames(decoder->pBackend, &file_length) == MA_SUCCESS && file_length && file_frame > file_length) result = ma_data_source_seek_to_pcm_frame(decoder->pBackend, file_length);
+	}
 	if (result == MA_SUCCESS && t_script_seek && file->refused.load() != MA_SUCCESS) {
 		const ma_result refused = (ma_result)file->refused.exchange(MA_SUCCESS);
 		put_file_back(decoder->pBackend, before);
