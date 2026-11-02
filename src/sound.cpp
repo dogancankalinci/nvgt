@@ -22,6 +22,7 @@
 #include <condition_variable>
 #include <mutex>
 #include <shared_mutex>
+#include <climits>
 #include <cmath>
 #include <cstring>
 #include <initializer_list>
@@ -187,6 +188,12 @@ static unsigned long long milliseconds_of_frames(ma_uint64 frames, ma_uint32 sam
 static ma_uint64 frames_of_milliseconds(ma_uint64 milliseconds, ma_uint32 sample_rate) { return milliseconds / 1000 * sample_rate + (milliseconds % 1000 * sample_rate + 999) / 1000; }
 // Two counts of frames added, the most 64 bits hold for more: a bogus granule position gives a file up to 2^63 frames, which wrapped a chain's length and offsets.
 static ma_uint64 saturated_sum(ma_uint64 a, ma_uint64 b) { return a > ~(ma_uint64)0 - b? ~(ma_uint64)0 : a + b; }
+// Whether a count fits the 32 bits functions taking one count in, refusing with MA_TOO_BIG one that doesn't: cut to 32 bits, only what was left of it was taken, reported as all of it.
+static bool count_fits(unsigned long long count) {
+	if (count <= UINT_MAX) return true;
+	g_soundsystem_last_error = MA_TOO_BIG;
+	return false;
+}
 // Linear volumes a sound, mixer, engine or fade can be set to: finite, not negative, and no louder than max_volume_gain. MA_INVALID_ARGS otherwise. A negative one inverted the sound on an engine without PERCENTAGE_ATTRIBUTES, as engines refuse one.
 static bool playable_volumes(std::initializer_list<float> linear_volumes) {
 	if (!finite_values(linear_volumes)) return false;
@@ -1828,7 +1835,7 @@ public:
 	}
 	unsigned int write_script_memory_buffer(script_memory_buffer* frames) override {
 		if (!frames) g_soundsystem_last_error = MA_INVALID_ARGS;
-		if (!frames || !get_channels()) return 0;
+		if (!frames || !get_channels() || !count_fits(frames->size / get_channels())) return 0;
 		return write((float*)frames->ptr, frames->size / get_channels());
 	}
 	unsigned int get_available_read() const override { return rb? queue->readable() : 0; }
@@ -2686,7 +2693,7 @@ public:
 	unsigned int write_script_memory_buffer(script_memory_buffer* frames) override {
 		unsigned int engine_channels = get_engine()->get_channels();
 		if (!frames) g_soundsystem_last_error = MA_INVALID_ARGS;
-		if (!frames || !engine_channels) return 0;
+		if (!frames || !engine_channels || !count_fits(frames->size / engine_channels)) return 0;
 		return write((float*)frames->ptr, frames->size / engine_channels);
 	}
 	// write_mtx for the script's calls, which from an audio thread, as a processing callback recording the engine's output makes them, is only tried for, as process() does: they waited there for a script thread's open, close, write or drain, which can write a file. MA_BUSY when it can't be had then.
@@ -4913,7 +4920,7 @@ public:
 	bool stream_url(const std::string &url) override {
 		return load_special(url, g_netstream_protocol_slot, nullptr, 0, nullptr, MA_SOUND_FLAG_STREAM | MA_SOUND_FLAG_UNKNOWN_LENGTH);
 	}
-	bool load_string(const std::string &data) override { return load_memory(data.data(), data.size()); }
+	bool load_string(const std::string &data) override { return count_fits(data.size()) && load_memory(data.data(), data.size()); }
 	bool load_string_async(const std::string &data) override {
 		// Same as load_pcm, but without the setup. A loaded sound is closed first, since closing empties pcm_buffer, which the directive points into.
 		if (snd) close_to_reload();
@@ -4963,6 +4970,7 @@ public:
 			return false;
 		ma_format format = ma_format_from_angelscript_type(buffer->subtypeid);
 		if (format == ma_format_unknown || !pcm_format_in_range(samplerate, channels)) return false;
+		if (!count_fits((unsigned long long)buffer->size * buffer->get_element_size())) return false;
 		return load_pcm(buffer->ptr, buffer->size * buffer->get_element_size(), format, samplerate, channels);
 	}
 	bool stream_pcm(const void* data, unsigned int size_in_frames, ma_format format, unsigned int sample_rate, unsigned int channels, unsigned int buffer_size) override {
@@ -5059,6 +5067,7 @@ public:
 			format = ma_format_unknown;
 		}
 		int nchannels = pcm_stream? ma_pcm_rb_get_channels(&pcm_stream->rb) : channels? channels : get_engine()->get_channels();
+		if (!count_fits(buffer->size / nchannels)) return false;
 		return stream_pcm(buffer->ptr, buffer->size / nchannels, format, sample_rate, channels, buffer_size);
 	}
 	bool open(audio_data_source* ds) override {
