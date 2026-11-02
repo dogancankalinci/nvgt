@@ -1937,6 +1937,16 @@ static ma_result held_decoder_read(ma_data_source* source, void* frames_out, ma_
 		}
 		file->finished.store(false); // Its loop or range changed since, as by a script that turned its looping off, so that it reads on.
 	}
+	// A header's length below the data ends a decoder there, as it does a load and a stream, rather than its position running on past its length.
+	const ma_uint64 known_length = file? file->length.load() : 0;
+	if (known_length) {
+		if (decoder->readPointerInPCMFrames >= known_length) {
+			file->ended.store(true);
+			if (frames_read) *frames_read = 0;
+			return MA_AT_END;
+		}
+		frame_count = std::min(frame_count, known_length - decoder->readPointerInPCMFrames);
+	}
 	const ma_uint32 frame_size = ma_get_bytes_per_frame(decoder->outputFormat, decoder->outputChannels);
 	ma_uint64 total = 0;
 	ma_result result = MA_AT_END;
