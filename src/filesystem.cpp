@@ -293,10 +293,22 @@ static void asset_glob(const string& pattern, set<string>& files, int options) {
 }
 #endif
 
+// Poco's Glob tries every place each * can end at, so that the time it takes grows with the power of their number and the length of a name: 4 of them in one component took 355 ms on a name of 120 characters, and 6 didn't end in minutes. A pattern from data can ask for that. A component with more than 5 is handled as a pattern that isn't valid, which matches nothing.
+static bool glob_pattern_too_wild(const string& pattern) {
+	int stars = 0;
+	char last = 0;
+	for (char c : pattern) {
+		if (c == '/' || c == '\\') stars = 0;
+		else if (c == '*' && last != '*' && ++stars > 5) return true;
+		last = c;
+	}
+	return false;
+}
 CScriptArray* script_glob(const string& pattern, int options) {
 	// Expected to have been called from a script.
 	CScriptArray* array = CScriptArray::Create(get_array_type("array<string>"));
 	set<string> files;
+	if (glob_pattern_too_wild(pattern)) return array;
 	try {
 		Glob::glob(pattern, files, options);
 	} catch(Exception&) {}
