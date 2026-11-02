@@ -264,6 +264,11 @@ bool world_test_overlap_bodies(PhysicsWorld& world, Body* body1, Body* body2) {
 	return world.testOverlap(body1, body2);
 }
 
+// An index past the bodies read from outside reactphysics3d's list (a crash).
+static RigidBody* world_get_rigid_body(PhysicsWorld* world, uint32 index) {
+	if (index >= world->getNbRigidBodies()) throw out_of_range("rigid body index out of range");
+	return world->getRigidBody(index);
+}
 AABB world_get_aabb(PhysicsWorld& world, const Collider* collider) {
 	if (!collider) throw runtime_error("collider cannot be null");
 	return world.getWorldAABB(collider);
@@ -1628,8 +1633,8 @@ void RegisterPhysicsWorldAndCallbacks(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("physics_world", "void set_time_before_sleep(float time_before_sleep) property", asMETHOD(PhysicsWorld, setTimeBeforeSleep), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_world", "void set_callbacks(physics_collision_callback@ collision_callback, physics_overlap_callback@ trigger_callback)", asFUNCTION(world_set_callbacks), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_world", "uint get_nb_rigid_bodies() const property", asMETHOD(PhysicsWorld, getNbRigidBodies), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_world", "const physics_rigid_body& get_rigid_body(uint index) const", asMETHODPR(PhysicsWorld, getRigidBody, (uint32) const, const RigidBody*), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_world", "physics_rigid_body& get_rigid_body(uint index)", asMETHODPR(PhysicsWorld, getRigidBody, (uint32), RigidBody*), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_world", "const physics_rigid_body& get_rigid_body(uint index) const", asFUNCTION(world_get_rigid_body), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "physics_rigid_body& get_rigid_body(uint index)", asFUNCTION(world_get_rigid_body), asCALL_CDECL_OBJFIRST);
 }
 
 void RegisterJointTypes(asIScriptEngine* engine) {
