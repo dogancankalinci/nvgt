@@ -5123,7 +5123,7 @@ public:
 				continue;
 			}
 			waiting = false;
-			memcpy(buffer_ptr, input + (frames_written * frame_size), frames_requested * frame_size);
+			memcpy(buffer_ptr, input + (size_t)frames_written * frame_size, frames_requested * frame_size); // In 64 bits: a call waiting on through more than 4 GiB wrapped back into what it had written.
 			if ((g_soundsystem_last_error = ma_pcm_rb_commit_write(&pcm_stream->rb, frames_requested)) != MA_SUCCESS) return false;
 			pcm_stream->wrote(frames_requested);
 			frames_written += frames_requested;
@@ -5141,6 +5141,7 @@ public:
 			format = ma_format_unknown;
 		}
 		int nchannels = pcm_stream? ma_pcm_rb_get_channels(&pcm_stream->rb) : channels? channels : get_engine()->get_channels();
+		if (buffer->GetSize() && buffer->GetSize() < (asUINT)nchannels) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // Less than a frame, which queued nothing while reporting true.
 		return stream_pcm(buffer->GetBuffer(), buffer->GetSize() / nchannels, format, sample_rate, channels, buffer_size);
 	}
 	bool stream_pcm_script_memory_buffer(script_memory_buffer* buffer, unsigned int sample_rate, unsigned int channels, unsigned int buffer_size) override {
@@ -5154,6 +5155,7 @@ public:
 		}
 		int nchannels = pcm_stream? ma_pcm_rb_get_channels(&pcm_stream->rb) : channels? channels : get_engine()->get_channels();
 		if (!count_fits(buffer->size / nchannels)) return false;
+		if (buffer->size && buffer->size < (size_t)nchannels) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // As for an array.
 		return stream_pcm(buffer->ptr, buffer->size / nchannels, format, sample_rate, channels, buffer_size);
 	}
 	bool open(audio_data_source* ds) override {
