@@ -4797,7 +4797,7 @@ public:
 		if (claim != g_buffer_names.end() && claim->second.name == name && !--claim->second.users) g_buffer_names.erase(claim);
 	}
 	// A source's own sample rate, from its header read by a decoder of its own through the sound service, or 0 when none could read it.
-	static ma_uint32 native_sample_rate(const std::string& triplet) {
+	static ma_uint32 native_sample_rate(const std::string& triplet, bool* length_impossible = nullptr) {
 		ma_decoder_config cfg = ma_decoder_config_init(ma_format_unknown, 0, 0); // No conversion, so the decoder's output is the source's own format.
 		if (!g_decoders.empty()) {
 			cfg.ppCustomBackendVTables = &g_decoders[0];
@@ -4806,6 +4806,12 @@ public:
 		ma_decoder decoder;
 		if (ma_decoder_init_vfs(g_sound_service->get_vfs(), triplet.c_str(), &cfg, &decoder) != MA_SUCCESS) return 0;
 		ma_uint32 rate = decoder.outputSampleRate;
+		if (length_impossible) {
+			// More frames than the file's bytes can hold, 16384 a byte where the sparsest format, silence in FLAC or Opus, makes about 3000: a damaged or crafted count in a header, which MiniAudio would allocate and fill with silence before decoding a frame, 10 GB for an 8 KB MP3.
+			ma_uint64 frames = 0;
+			ma_file_info info{};
+			*length_impossible = ma_decoder_get_length_in_pcm_frames(&decoder, &frames) == MA_SUCCESS && ma_vfs_info(decoder.data.vfs.pVFS, decoder.data.vfs.file, &info) == MA_SUCCESS && info.sizeInBytes && frames / 16384 > info.sizeInBytes;
+		}
 		ma_decoder_uninit(&decoder);
 		return rate;
 	}
@@ -4835,13 +4841,15 @@ public:
 		ma_uint32 decoded_rate = manager->config.decodedSampleRate;
 		bool buffered = (ma_flags & MA_SOUND_FLAG_DECODE) && !(ma_flags & MA_SOUND_FLAG_STREAM), streamed = (ma_flags & MA_SOUND_FLAG_STREAM) != 0;
 		if (!whole_in_pages && !(ma_flags & MA_SOUND_FLAG_UNKNOWN_LENGTH) && (buffered? !resource_cached(manager, triplet) : streamed && !decoded_rate)) {
-			ma_uint32 own_rate = native_sample_rate(triplet);
+			bool length_impossible = false;
+			ma_uint32 own_rate = native_sample_rate(triplet, buffered? &length_impossible : nullptr);
 			if (own_rate && own_rate < min_sample_rate) {
 				let_go_of_buffer_name(manager, triplet);
 				g_sound_service->cleanup_triplet(triplet);
 				g_soundsystem_last_error = MA_FORMAT_NOT_SUPPORTED;
 				return false;
 			}
+			if (length_impossible) ma_flags |= MA_SOUND_FLAG_UNKNOWN_LENGTH; // Decoded in pages as far as the file really goes, rather than into a buffer of that length.
 		}
 		// A buffer MiniAudio would load synchronously, as for load_memory(), is loaded asynchronously and waited for: see g_resource_tree_mutex.
 		bool wait_for_load = !(ma_flags & (MA_SOUND_FLAG_ASYNC | MA_SOUND_FLAG_STREAM));
