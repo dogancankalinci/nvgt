@@ -218,8 +218,8 @@ static ma_result ma_ogg_link_frames_take(ma_ogg_link_frames* pLink, ma_format fo
             ma_channel channelMapIn[MA_MAX_CHANNELS];
             ma_channel channelMapOut[MA_MAX_CHANNELS];
             ma_data_converter_config config = ma_data_converter_config_init(ma_format_f32, ma_format_f32, pLink->channels, channels, pLink->sampleRate, sampleRate);
-            ma_channel_map_init_standard(ma_standard_channel_map_vorbis, channelMapIn, MA_MAX_CHANNELS, pLink->channels);
-            ma_channel_map_init_standard(ma_standard_channel_map_vorbis, channelMapOut, MA_MAX_CHANNELS, channels);
+            ma_ogg_channel_map(channelMapIn, MA_MAX_CHANNELS, pLink->channels);
+            ma_ogg_channel_map(channelMapOut, MA_MAX_CHANNELS, channels);
             config.pChannelMapIn = channelMapIn;
             config.pChannelMapOut = channelMapOut;
 
