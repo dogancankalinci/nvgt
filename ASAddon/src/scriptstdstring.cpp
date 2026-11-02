@@ -678,8 +678,10 @@ static string formatFloat(double value, const string &options, asUINT width, asU
 	else if( expLarge ) fmt += "E";
 	else fmt += "f";
 
+	// ALTERED: room for the largest double written in full, 309 digits. With 50, a value from about 1e50 up didn't fit: sprintf_s
+	// ends the program when it doesn't fit (format_float(1e300) in MSVC builds), and snprintf cut the digits off.
 	string buf;
-	buf.resize(size_t(width)+precision+50);
+	buf.resize(size_t(width)+precision+350);
 #if _MSC_VER >= 1400 && !defined(__S3E__)
 	// MSVC 8.0 / 2005 or newer
 	sprintf_s(&buf[0], buf.size(), fmt.c_str(), width, precision, value);
