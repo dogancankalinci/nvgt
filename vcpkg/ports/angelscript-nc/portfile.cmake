@@ -136,6 +136,7 @@ vcpkg_from_github(
         fix-bound-function-of-discarded-module.patch
         fix-compiled-function-module-lifetime.patch
         fix-discard-module-twice.patch
+        fix-import-holds-called-module.patch
 )
 
 vcpkg_cmake_configure(

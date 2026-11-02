@@ -1,0 +1,87 @@
+--- a/sdk/angelscript/source/as_context.h
++++ b/sdk/angelscript/source/as_context.h
+@@ -174,6 +174,8 @@
+ 
+ 	int  PushCallState();
+ 	void PopCallState();
++	void HoldImportedFunction(asCScriptFunction *func); // ALTERED: see m_importHolds
++	void ReleaseImportHolds();
+ 	void CallScriptFunction(asCScriptFunction *func);
+ 	void CallInterfaceMethod(asCScriptFunction *func);
+ 	void PrepareScriptFunction();
+@@ -234,6 +236,14 @@
+ 	asUINT             m_exceptionFrameCallStack;
+ 	asUINT             m_exceptionFramePos;
+ 
++	// ALTERED: the functions of other modules this context is running because an imported function was called, each with an
++	// external reference until its frame is gone (callStackLength is the length of the call stack before that frame). Nothing
++	// else keeps such a function's module: the context holds its initial function, a binding only holds an internal
++	// reference, and a script discarding or rebuilding that module from inside it (or on another thread, or while the context is
++	// suspended in it) had the bytecode being run freed.
++	struct SImportHold { asCScriptFunction *func; asUINT callStackLength; };
++	asCArray<SImportHold> m_importHolds;
++
+ 	// The last prepared function, and some cached values related to it
+ 	asCScriptFunction *m_initialFunction;
+ 	int                m_returnValueSize;
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -901,6 +901,10 @@
+ 
+ 	asASSERT( m_needToCleanupArgs == false );
+ 
++	// ALTERED: a call that failed before it pushed its frame has left its hold behind, see m_importHolds
++	if( m_importHolds.GetLength() )
++		ReleaseImportHolds();
++
+ 	// Release the returned object (if any)
+ 	CleanReturnObject();
+ 
+@@ -2102,6 +2106,31 @@
+ 
+ 	// Here we reduce the length, so we can use the faster SetLengtNoAllocate.
+ 	m_callStack.SetLengthNoAllocate(newLength); 
++
++	// ALTERED: see m_importHolds
++	if( m_importHolds.GetLength() )
++		ReleaseImportHolds();
++}
++
++// ALTERED: see m_importHolds
++void asCContext::HoldImportedFunction(asCScriptFunction *func)
++{
++	if( func->module != 0 && func->module == m_currentFunction->module )
++		return;
++
++	SImportHold hold = { func, m_callStack.GetLength() };
++	func->AddRef();
++	m_importHolds.PushLast(hold);
++}
++
++void asCContext::ReleaseImportHolds()
++{
++	while( m_importHolds.GetLength() && m_importHolds[m_importHolds.GetLength() - 1].callStackLength >= m_callStack.GetLength() )
++	{
++		asCScriptFunction *func = m_importHolds[m_importHolds.GetLength() - 1].func;
++		m_importHolds.SetLength(m_importHolds.GetLength() - 1);
++		func->Release();
++	}
+ }
+ 
+ // interface
+@@ -3343,6 +3372,7 @@
+ 				asCScriptFunction *func = m_engine->GetScriptFunction(funcId);
+ 				if( func->funcType == asFUNC_SCRIPT )
+ 				{
++					HoldImportedFunction(func); // ALTERED: see m_importHolds
+ 					m_regs.programPointer += 2;
+ 					CallScriptFunction(func);
+ 				}
+@@ -4750,6 +4780,7 @@
+ 					}
+ 					else if (funcId > 0)
+ 					{
++						HoldImportedFunction(m_engine->scriptFunctions[funcId]); // ALTERED: see m_importHolds
+ 						m_regs.programPointer += 2;
+ 						CallScriptFunction(m_engine->scriptFunctions[funcId]);
+ 					}
