@@ -351,7 +351,7 @@ bool init_sound() {
 		return false;
 	}
 	if (g_soundsystem_ready.test()) return true; // another thread finished initializing while we waited for the lock
-	if (g_soundsystem_shut_down.test()) throw runtime_error("the sound system has shut down");
+	if (g_soundsystem_shut_down.test()) throw_refusal(MA_INVALID_OPERATION, "the sound system has shut down");
 	if (g_soundsystem_starting) return true; // re-entrant call from the setup, on this very thread; the engine is not assigned yet but everything it needs already is
 	if (!init_sound_context()) return false;
 	// An engine that can't be built, as on a machine without an output device, throws here, and again on each later call, which tries anew, rather than letting later calls report the system ready with g_audio_engine null.
@@ -617,7 +617,13 @@ mutex g_inlined_sounds_mutex;
 static bool sound_due_to_play(sound* s); // After sound_impl.
 // A pack's read-only copy, for a load or the default pack, given back with release() as pack_interface is counted, rather than deleted: a plugin's make_immutable() may hand over a reference to a pack that is read-only already, which deleting freed under its other holders.
 static std::shared_ptr<const pack_interface> immutable_pack(const pack_interface* pack) {
-	const pack_interface* copy = pack->make_immutable();
+	const pack_interface* copy;
+	try {
+		copy = pack->make_immutable();
+	} catch (...) { // As a pack open for writing throws, so that the script reading the error after catching doesn't see an earlier call's.
+		g_soundsystem_last_error = MA_INVALID_ARGS;
+		throw;
+	}
 	if (!copy) throw_refusal(MA_INVALID_ARGS, "the pack gave no read-only copy"); // Refused, as a pack open for writing is: a null copy loaded from sound_default_pack's, or from disk for a decoder, and as the default pack failed every load.
 	return std::shared_ptr<const pack_interface>(copy, [](const pack_interface* p) { p->release(); });
 }
@@ -5987,10 +5993,10 @@ bool get_sound_system_available() {
 	}
 }
 void set_sound_default_engine(audio_engine* engine) {
-	if (!engine) throw runtime_error("a default audio engine must exist");
+	if (!engine) throw_refusal(MA_INVALID_ARGS, "a default audio engine must exist");
 	if (!g_soundsystem_initialized.test()) {
 		engine->release(); // The script's reference, given to this function.
-		throw runtime_error("soundsystem not initialized");
+		throw_refusal(MA_INVALID_OPERATION, "soundsystem not initialized");
 	}
 	audio_engine *old;
 	{
@@ -6003,7 +6009,7 @@ void set_sound_default_engine(audio_engine* engine) {
 		}
 		if (g_soundsystem_shut_down.test()) { // Which a script thread still running at shutdown could otherwise mark ready again.
 			engine->release();
-			throw runtime_error("the sound system has shut down");
+			throw_refusal(MA_INVALID_OPERATION, "the sound system has shut down");
 		}
 		{
 			std::lock_guard<std::mutex> pointer_lock(g_audio_engine_mutex);
