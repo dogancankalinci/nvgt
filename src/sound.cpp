@@ -1952,6 +1952,13 @@ static ma_result held_decoder_read(ma_data_source* source, void* frames_out, ma_
 }
 // A decoder's file is sought here rather than by MiniAudio's seek, which resets the converter even when the file refuses the seek, dropping the input the resampler held, so that a script's decoder whose seek failed didn't read on from where it was. A file that can't seek isn't sought to where its cursor already is, as MiniAudio skips such a seek (see held_file), the converter then reset and the read point placed when the decoder isn't there.
 // One a file that can't seek refuses, of a decoder that can't read on, as to its loop's start, to a chain's link's start or to that of a source linked to itself, finishes the decoder: it gives nothing until a seek its file makes, and the seek reports success, so that MiniAudio's loop, which ends once a pass gives nothing twice, ends there, as a chain does, rather than taking the error for no end, playing silence for good, and so that no end is given from a seek, which MiniAudio asserts against once frames were read. A finished decoder not looping, sought again without having given anything, as in a ring of links that all finished, gives the error, which ends MiniAudio's move through them. A script's call is told the error (see script_seek).
+static ma_uint64 read_file_on(ma_data_source* backend, ma_uint64 frames);
+// Puts a file back at a frame after a seek that failed having moved it, as dr_mp3's, which reads a truncated file to its end before failing: the decoder reads on from where it was, as a refused seek leaves any other.
+static void put_file_back(ma_data_source* backend, ma_uint64 before) {
+	ma_uint64 cursor = 0;
+	if (!file_cursor(backend, &cursor) || cursor == before) return;
+	if (ma_data_source_seek_to_pcm_frame(backend, 0) == MA_SUCCESS) read_file_on(backend, before);
+}
 static ma_uint64 read_file_on(ma_data_source* backend, ma_uint64 frames) {
 	ma_uint64 done = 0;
 	while (done < frames) {
@@ -1967,7 +1974,7 @@ static ma_result read_on_to_frame(ma_data_source* backend, ma_uint64 cursor, ma_
 	ma_uint64 length = 0;
 	if (ma_data_source_get_length_in_pcm_frames(backend, &length) != MA_SUCCESS || length) return MA_SUCCESS;
 	if (read_file_on(backend, frame - cursor) == frame - cursor) return MA_SUCCESS;
-	if (ma_data_source_seek_to_pcm_frame(backend, 0) == MA_SUCCESS) read_file_on(backend, before);
+	put_file_back(backend, before);
 	return MA_INVALID_ARGS;
 }
 static ma_result held_decoder_seek(ma_data_source* source, ma_uint64 frame) {
@@ -1992,7 +1999,11 @@ static ma_result held_decoder_seek(ma_data_source* source, ma_uint64 frame) {
 	const bool there = !file->can_seek && file_cursor(decoder->pBackend, &cursor) && cursor == file_frame;
 	if (file->can_seek) file_cursor(decoder->pBackend, &before);
 	result = there? MA_SUCCESS : ma_data_source_seek_to_pcm_frame(decoder->pBackend, file_frame);
-	if (result == MA_SUCCESS && t_script_seek && file->refused.load() != MA_SUCCESS) return (ma_result)file->refused.exchange(MA_SUCCESS); // Refused by a file that can seek, which a script is told, the decoder reading on from where it was rather than giving silence from the frame (see held_file_seek()).
+	if (result == MA_SUCCESS && t_script_seek && file->refused.load() != MA_SUCCESS) {
+		const ma_result refused = (ma_result)file->refused.exchange(MA_SUCCESS);
+		put_file_back(decoder->pBackend, before);
+		return refused;
+	} // Refused by a file that can seek, which a script is told, the decoder reading on from where it was rather than giving silence from the frame (see held_file_seek()).
 	if (result == MA_SUCCESS && file->can_seek && file_cursor(decoder->pBackend, &cursor) && cursor < file_frame && (result = read_on_to_frame(decoder->pBackend, cursor, file_frame, before)) != MA_SUCCESS) return result;
 	if (result == MA_SUCCESS) {
 		if (!there || decoder->readPointerInPCMFrames != frame) {
@@ -2003,6 +2014,7 @@ static ma_result held_decoder_seek(ma_data_source* source, ma_uint64 frame) {
 		file->ended.store(false);
 		return result;
 	}
+	if (file->can_seek) put_file_back(decoder->pBackend, before);
 	if (file->can_seek || t_script_seek || !at_its_end(decoder, file)) return result;
 	if (file->finished.load() && !ma_data_source_is_looping(source)) return result;
 	file->finished.store(true);
