@@ -441,6 +441,27 @@ MA_API ma_result ma_libopus_read_pcm_frames(ma_libopus* pOpus, void* pFramesOut,
     #endif
 }
 
+#if !defined(MA_NO_LIBOPUS)
+/* Reads frames on and drops them, by what libopusfile gives whatever the stream's channels. Whether it got that far. */
+static ma_bool32 ma_libopus_read_on(OggOpusFile* of, ogg_int64_t frameCount)
+{
+    float dropped[255 * 8];
+
+    while (frameCount > 0) {
+        int channels = op_channel_count(of, -1);
+        int room = (int)(sizeof(dropped) / sizeof(dropped[0])) / channels;
+        int framesRead = op_read_float(of, dropped, ((frameCount < room) ? (int)frameCount : room) * channels, NULL);
+        if (framesRead <= 0) {
+            return MA_FALSE;
+        }
+
+        frameCount -= framesRead;
+    }
+
+    return MA_TRUE;
+}
+#endif
+
 MA_API ma_result ma_libopus_seek_to_pcm_frame(ma_libopus* pOpus, ma_uint64 frameIndex)
 {
     if (pOpus == NULL) {
@@ -454,11 +475,19 @@ MA_API ma_result ma_libopus_seek_to_pcm_frame(ma_libopus* pOpus, ma_uint64 frame
         known length allows: the last frame is sought and read past instead. A multistream frame is at most 255 channels.
         */
         ogg_int64_t total = op_pcm_total((OggOpusFile*)pOpus->of, -1);
+        ogg_int64_t at = op_pcm_tell((OggOpusFile*)pOpus->of);
         int libopusResult;
-        if (total > 0 && frameIndex == (ma_uint64)total) {
-            float lastFrame[255];
+
+        /*
+        libopusfile's seek a short way forward, under 90 ms, keeps what's left of the packet it decoded, which a read that took
+        less than a packet leaves, so that those frames played as what was sought to. Read on rather than seek, to 120 ms, its
+        longest packet, which needs no pre-roll either.
+        */
+        if (at >= 0 && (ogg_int64_t)frameIndex > at && (ogg_int64_t)frameIndex - at <= 5760 && ma_libopus_read_on((OggOpusFile*)pOpus->of, (ogg_int64_t)frameIndex - at)) {
+            libopusResult = 0;
+        } else if (total > 0 && frameIndex == (ma_uint64)total) {
             libopusResult = op_pcm_seek((OggOpusFile*)pOpus->of, total - 1);
-            if (libopusResult == 0 && op_read_float((OggOpusFile*)pOpus->of, lastFrame, 255, NULL) < 0) {
+            if (libopusResult == 0 && !ma_libopus_read_on((OggOpusFile*)pOpus->of, 1)) {
                 libopusResult = OP_EREAD;
             }
         } else {
