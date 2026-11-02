@@ -185,6 +185,8 @@ static unsigned long long milliseconds_of_frames(ma_uint64 frames, ma_uint32 sam
 }
 // Milliseconds in frames, rounded up, within 64 bits once frames_fit() said so. milliseconds_of_frames() rounds down, so that a position or time read and set back stays where it was: both rounding down, each round walked a millisecond back at any rate that isn't a multiple of 1000. It stays within a length, itself rounded down in milliseconds.
 static ma_uint64 frames_of_milliseconds(ma_uint64 milliseconds, ma_uint32 sample_rate) { return milliseconds / 1000 * sample_rate + (milliseconds % 1000 * sample_rate + 999) / 1000; }
+// Two counts of frames added, the most 64 bits hold for more: a bogus granule position gives a file up to 2^63 frames, which wrapped a chain's length and offsets.
+static ma_uint64 saturated_sum(ma_uint64 a, ma_uint64 b) { return a > ~(ma_uint64)0 - b? ~(ma_uint64)0 : a + b; }
 // Linear volumes a sound, mixer, engine or fade can be set to: finite, not negative, and no louder than max_volume_gain. MA_INVALID_ARGS otherwise. A negative one inverted the sound on an engine without PERCENTAGE_ATTRIBUTES, as engines refuse one.
 static bool playable_volumes(std::initializer_list<float> linear_volumes) {
 	if (!finite_values(linear_volumes)) return false;
@@ -3649,7 +3651,7 @@ static ma_result chain_view_seek(ma_data_source* source, ma_uint64 frame) {
 	chain_view* view = (chain_view*)source;
 	size_t index = 0;
 	ma_uint64 offset = 0;
-	for (ma_uint64 length; index + 1 < view->links.size() && (length = view->length_of(index).load(std::memory_order_relaxed)) != chain_view::unknown && frame >= offset + length; index++) offset += length; // The source the frame falls in, past empty ones, or the last.
+	for (ma_uint64 length; index + 1 < view->links.size() && (length = view->length_of(index).load(std::memory_order_relaxed)) != chain_view::unknown && frame - offset >= length; index++) offset += length; // The source the frame falls in, past empty ones, or the last.
 	// A chain read to its end, as when its loop or play() starts it again, whose links from the one sought can't all play again, as one that played through a source that can't seek: exhausted, which ends it where it is, rather than playing for good only the links that can; a script's call is told the error. Not by putting the head on no source, which MiniAudio reads as the head itself when it has no next of its own, and which would undo a head's set_current().
 	if (view->read_through) {
 		for (size_t later = index; later < view->links.size(); later++) {
@@ -3678,18 +3680,18 @@ static ma_result chain_view_get_cursor(ma_data_source* source, ma_uint64* cursor
 		if (view->links[index].first == current) {
 			ma_uint64 within = 0;
 			ma_result result = ma_data_source_get_cursor_in_pcm_frames(current, &within);
-			*cursor = offset + within;
+			*cursor = saturated_sum(offset, within);
 			return result;
 		}
 		ma_uint64 length = view->length_of(index).load(std::memory_order_relaxed);
-		if (length != chain_view::unknown) offset += length; // One not yet known is ahead of the current source, which passing it learns.
+		if (length != chain_view::unknown) offset = saturated_sum(offset, length); // One not yet known is ahead of the current source, which passing it learns.
 	}
 	// On no source: past the one it was last on, the last once an empty pass ended the chain, or at the start before it was on one, rather than past every source.
 	offset = 0;
 	size_t last = view->last_on.load(std::memory_order_relaxed);
 	for (size_t index = 0; last != ~(size_t)0 && index <= last && index < view->links.size(); index++) {
 		ma_uint64 length = view->length_of(index).load(std::memory_order_relaxed);
-		if (length != chain_view::unknown) offset += length;
+		if (length != chain_view::unknown) offset = saturated_sum(offset, length);
 	}
 	*cursor = offset;
 	return MA_SUCCESS;
@@ -3704,7 +3706,7 @@ static ma_result chain_view_get_length(ma_data_source* source, ma_uint64* length
 			*length = 0;
 			return MA_NOT_IMPLEMENTED;
 		}
-		*length += link_length;
+		*length = saturated_sum(*length, link_length);
 	}
 	return MA_SUCCESS;
 }
