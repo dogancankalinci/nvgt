@@ -11,6 +11,8 @@
  */
 
 #include <cmath>
+#include <initializer_list>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -553,6 +555,7 @@ struct ManagedTriangleData {
 	std::vector<float> normals;
 	TriangleVertexArray* array;
 	bool hasNormals;
+	int ref_count = 1;
 
 	ManagedTriangleData() : array(nullptr), hasNormals(false) {}
 	~ManagedTriangleData() { delete array; }
@@ -563,6 +566,7 @@ struct ManagedPolygonData {
 	std::vector<uint32> indices;
 	std::vector<PolygonVertexArray::PolygonFace> faces;
 	PolygonVertexArray* array;
+	int ref_count = 1;
 
 	ManagedPolygonData() : array(nullptr) {}
 	~ManagedPolygonData() { delete array; }
@@ -571,12 +575,42 @@ struct ManagedPolygonData {
 struct ManagedVertexData {
 	std::vector<float> vertices;
 	VertexArray* array;
+	int ref_count = 1;
 
 	ManagedVertexData() : array(nullptr) {}
 	~ManagedVertexData() { delete array; }
 };
 
+// These objects were never freed: they had neither a reference count nor a destroy function, so each one made kept its copy of the vertices until the program ended. A mesh copies what it needs, so they can go with the last handle. The functions making a mesh are given a reference.
+template <class T> void managed_data_add_ref(T* data) { asAtomicInc(data->ref_count); }
+template <class T> void managed_data_release(T* data) {
+	if (asAtomicDec(data->ref_count) < 1) delete data;
+}
+template <class T> struct managed_data_hold {
+	T* data;
+	~managed_data_hold() { if (data) managed_data_release(data); }
+};
+
+static void release_arrays(std::initializer_list<CScriptArray*> arrays) {
+	for (CScriptArray* array : arrays)
+		if (array) array->Release();
+}
+
+// Null arrays were read as they stood, a mesh of nothing went past the arrays reactphysics3d made for it, and a polygon's vertex index was used to read the vertices unchecked (access violations).
+static void check_vertex_indices(const std::vector<uint32>& indices, size_t nbVertices) {
+	for (uint32 index : indices)
+		if (index >= nbVertices) throw out_of_range("vertex index " + std::to_string(index) + " out of range, there are " + std::to_string(nbVertices) + " vertices");
+}
+
 ManagedTriangleData* create_triangle_data(CScriptArray* verticesArray, CScriptArray* indicesArray) {
+	if (!verticesArray || !indicesArray) {
+		release_arrays({verticesArray, indicesArray});
+		throw std::runtime_error("Vertices and indices arrays cannot be null");
+	}
+	if (!verticesArray->GetSize() || !indicesArray->GetSize()) {
+		release_arrays({verticesArray, indicesArray});
+		throw std::runtime_error("A triangle mesh needs vertices and indices");
+	}
 	if (verticesArray->GetSize() % 3 != 0) {
 		verticesArray->Release(); indicesArray->Release();
 		throw std::runtime_error("Vertices array size must be multiple of 3 (x,y,z components)");
@@ -585,7 +619,7 @@ ManagedTriangleData* create_triangle_data(CScriptArray* verticesArray, CScriptAr
 		verticesArray->Release(); indicesArray->Release();
 		throw std::runtime_error("Indices array size must be multiple of 3 (triangle indices)");
 	}
-	auto* managed = new ManagedTriangleData();
+	auto managed = std::make_unique<ManagedTriangleData>();
 	managed->vertices.resize(verticesArray->GetSize());
 	for (uint32 i = 0; i < verticesArray->GetSize(); i++)
 		managed->vertices[i] = *(float*)verticesArray->At(i);
@@ -596,6 +630,7 @@ ManagedTriangleData* create_triangle_data(CScriptArray* verticesArray, CScriptAr
 	indicesArray->Release();
 	uint32 nbVertices = managed->vertices.size() / 3;
 	uint32 nbTriangles = managed->indices.size() / 3;
+	check_vertex_indices(managed->indices, nbVertices);
 	managed->array = new TriangleVertexArray(
 	    nbVertices,
 	    managed->vertices.data(),
@@ -605,10 +640,18 @@ ManagedTriangleData* create_triangle_data(CScriptArray* verticesArray, CScriptAr
 	    3 * sizeof(uint32),
 	    TriangleVertexArray::VertexDataType::VERTEX_FLOAT_TYPE,
 	    TriangleVertexArray::IndexDataType::INDEX_INTEGER_TYPE);
-	return managed;
+	return managed.release();
 }
 
 ManagedTriangleData* create_triangle_data_with_normals(CScriptArray* verticesArray, CScriptArray* normalsArray, CScriptArray* indicesArray) {
+	if (!verticesArray || !normalsArray || !indicesArray) {
+		release_arrays({verticesArray, normalsArray, indicesArray});
+		throw std::runtime_error("Vertices, normals and indices arrays cannot be null");
+	}
+	if (!verticesArray->GetSize() || !indicesArray->GetSize()) {
+		release_arrays({verticesArray, normalsArray, indicesArray});
+		throw std::runtime_error("A triangle mesh needs vertices and indices");
+	}
 	if (verticesArray->GetSize() % 3 != 0 || normalsArray->GetSize() % 3 != 0) {
 		verticesArray->Release(); normalsArray->Release(); indicesArray->Release();
 		throw std::runtime_error("Vertices and normals arrays size must be multiple of 3 (x,y,z components)");
@@ -621,7 +664,7 @@ ManagedTriangleData* create_triangle_data_with_normals(CScriptArray* verticesArr
 		verticesArray->Release(); normalsArray->Release(); indicesArray->Release();
 		throw std::runtime_error("Indices array size must be multiple of 3 (triangle indices)");
 	}
-	auto* managed = new ManagedTriangleData();
+	auto managed = std::make_unique<ManagedTriangleData>();
 	managed->hasNormals = true;
 	managed->vertices.resize(verticesArray->GetSize());
 	for (uint32 i = 0; i < verticesArray->GetSize(); i++)
@@ -637,6 +680,7 @@ ManagedTriangleData* create_triangle_data_with_normals(CScriptArray* verticesArr
 	indicesArray->Release();
 	uint32 nbVertices = managed->vertices.size() / 3;
 	uint32 nbTriangles = managed->indices.size() / 3;
+	check_vertex_indices(managed->indices, nbVertices);
 	managed->array = new TriangleVertexArray(
 	    nbVertices,
 	    managed->vertices.data(),
@@ -649,10 +693,11 @@ ManagedTriangleData* create_triangle_data_with_normals(CScriptArray* verticesArr
 	    TriangleVertexArray::VertexDataType::VERTEX_FLOAT_TYPE,
 	    TriangleVertexArray::NormalDataType::NORMAL_FLOAT_TYPE,
 	    TriangleVertexArray::IndexDataType::INDEX_INTEGER_TYPE);
-	return managed;
+	return managed.release();
 }
 
 ManagedVertexData* create_vertex_data(CScriptArray* verticesArray) {
+	if (!verticesArray) throw std::runtime_error("Vertices array cannot be null");
 	if (verticesArray->GetSize() % 3 != 0) {
 		verticesArray->Release();
 		throw std::runtime_error("Vertices array size must be multiple of 3 (x,y,z components)");
@@ -672,11 +717,19 @@ ManagedVertexData* create_vertex_data(CScriptArray* verticesArray) {
 }
 
 ManagedPolygonData* create_polygon_data(CScriptArray* verticesArray, CScriptArray* facesArray) {
+	if (!verticesArray || !facesArray) {
+		release_arrays({verticesArray, facesArray});
+		throw std::runtime_error("Vertices and faces arrays cannot be null");
+	}
+	if (!verticesArray->GetSize() || !facesArray->GetSize()) {
+		release_arrays({verticesArray, facesArray});
+		throw std::runtime_error("A polygon mesh needs vertices and faces");
+	}
 	if (verticesArray->GetSize() % 3 != 0) {
 		verticesArray->Release(); facesArray->Release();
 		throw std::runtime_error("Vertices array size must be multiple of 3 (x,y,z components)");
 	}
-	auto* managed = new ManagedPolygonData();
+	auto managed = std::make_unique<ManagedPolygonData>();
 	managed->vertices.resize(verticesArray->GetSize());
 	for (uint32 i = 0; i < verticesArray->GetSize(); i++)
 		managed->vertices[i] = *(float*)verticesArray->At(i);
@@ -716,6 +769,7 @@ ManagedPolygonData* create_polygon_data(CScriptArray* verticesArray, CScriptArra
 	facesArray->Release();
 	uint32 nbVertices = managed->vertices.size() / 3;
 	uint32 nbFaces = managed->faces.size();
+	check_vertex_indices(managed->indices, nbVertices);
 	managed->array = new PolygonVertexArray(
 	    nbVertices,
 	    managed->vertices.data(),
@@ -726,7 +780,7 @@ ManagedPolygonData* create_polygon_data(CScriptArray* verticesArray, CScriptArra
 	    managed->faces.data(),
 	    PolygonVertexArray::VertexDataType::VERTEX_FLOAT_TYPE,
 	    PolygonVertexArray::IndexDataType::INDEX_INTEGER_TYPE);
-	return managed;
+	return managed.release();
 }
 
 void triangle_vertex_array_get_triangle_vertices_indices(const TriangleVertexArray& array, uint32 triangleIndex, uint32& outV1Index, uint32& outV2Index, uint32& outV3Index) {
@@ -765,6 +819,7 @@ void concave_mesh_shape_get_triangle_vertices_normals(const ConcaveMeshShape& sh
 }
 
 TriangleMesh* create_triangle_mesh_from_managed(ManagedTriangleData* managedArray) {
+	managed_data_hold<ManagedTriangleData> hold{managedArray};
 	if (!managedArray || !managedArray->array)
 		throw std::runtime_error("Invalid managed triangle data");
 	std::vector<Message> messages;
@@ -775,6 +830,7 @@ TriangleMesh* create_triangle_mesh_from_managed(ManagedTriangleData* managedArra
 }
 
 ConvexMesh* create_convex_mesh_from_managed_vertex_array(ManagedVertexData* managedArray) {
+	managed_data_hold<ManagedVertexData> hold{managedArray};
 	if (!managedArray || !managedArray->array)
 		throw std::runtime_error("Invalid managed vertex data");
 	std::vector<Message> messages;
@@ -785,6 +841,7 @@ ConvexMesh* create_convex_mesh_from_managed_vertex_array(ManagedVertexData* mana
 }
 
 ConvexMesh* create_convex_mesh_from_polygon_data(ManagedPolygonData* managedArray) {
+	managed_data_hold<ManagedPolygonData> hold{managedArray};
 	if (!managedArray || !managedArray->array)
 		throw std::runtime_error("Invalid managed polygon data");
 	std::vector<Message> messages;
@@ -916,13 +973,18 @@ void world_destroy_rigid_body(PhysicsWorld* world, RigidBody* body) {
 	world->destroyRigidBody(body);
 }
 
+// The size was counted in an int, which overflows (65536 by 65536 is 0, which an empty array matches), and reactphysics3d only asserts a grid of at least 2 by 2, reading past the heights for less.
+static uint32 height_field_size(int nbGridColumns, int nbGridRows, CScriptArray* heightData) {
+	const long long size = (long long)nbGridColumns * nbGridRows;
+	if (nbGridColumns >= 2 && nbGridRows >= 2 && size == (long long)heightData->GetSize()) return (uint32)size;
+	const std::string have = std::to_string(heightData->GetSize());
+	heightData->Release();
+	throw std::runtime_error("Height data array size (" + have + ") must match grid dimensions (" + std::to_string(nbGridColumns) + " by " + std::to_string(nbGridRows) + ", at least 2 by 2)");
+}
+
 HeightField* create_height_field_float(int nbGridColumns, int nbGridRows, CScriptArray* heightData, decimal integerHeightScale) {
 	if (!heightData) throw std::runtime_error("Height data array cannot be null");
-	uint32 expectedSize = nbGridColumns * nbGridRows;
-	if (heightData->GetSize() != expectedSize) {
-		heightData->Release();
-		throw std::runtime_error("Height data array size (" + std::to_string(heightData->GetSize()) + ") must match grid dimensions (" + std::to_string(expectedSize) + ")");
-	}
+	uint32 expectedSize = height_field_size(nbGridColumns, nbGridRows, heightData);
 	std::vector<float> heightBuffer(expectedSize);
 	for (uint32 i = 0; i < expectedSize; i++)
 		heightBuffer[i] = *(float*)heightData->At(i);
@@ -933,11 +995,7 @@ HeightField* create_height_field_float(int nbGridColumns, int nbGridRows, CScrip
 
 HeightField* create_height_field_int(int nbGridColumns, int nbGridRows, CScriptArray* heightData, decimal integerHeightScale) {
 	if (!heightData) throw std::runtime_error("Height data array cannot be null");
-	uint32 expectedSize = nbGridColumns * nbGridRows;
-	if (heightData->GetSize() != expectedSize) {
-		heightData->Release();
-		throw std::runtime_error("Height data array size (" + std::to_string(heightData->GetSize()) + ") must match grid dimensions (" + std::to_string(expectedSize) + ")");
-	}
+	uint32 expectedSize = height_field_size(nbGridColumns, nbGridRows, heightData);
 	std::vector<int> heightBuffer(expectedSize);
 	for (uint32 i = 0; i < expectedSize; i++)
 		heightBuffer[i] = *(int*)heightData->At(i);
@@ -948,11 +1006,7 @@ HeightField* create_height_field_int(int nbGridColumns, int nbGridRows, CScriptA
 
 HeightField* create_height_field_double(int nbGridColumns, int nbGridRows, CScriptArray* heightData, decimal integerHeightScale) {
 	if (!heightData) throw std::runtime_error("Height data array cannot be null");
-	uint32 expectedSize = nbGridColumns * nbGridRows;
-	if (heightData->GetSize() != expectedSize) {
-		heightData->Release();
-		throw std::runtime_error("Height data array size (" + std::to_string(heightData->GetSize()) + ") must match grid dimensions (" + std::to_string(expectedSize) + ")");
-	}
+	uint32 expectedSize = height_field_size(nbGridColumns, nbGridRows, heightData);
 	std::vector<double> heightBuffer(expectedSize);
 	for (uint32 i = 0; i < expectedSize; i++)
 		heightBuffer[i] = *(double*)heightData->At(i);
@@ -1514,12 +1568,12 @@ void RegisterVertexArrays(asIScriptEngine* engine) {
 	engine->RegisterObjectType("physics_triangle_data", 0, asOBJ_REF);
 	engine->RegisterObjectBehaviour("physics_triangle_data", asBEHAVE_FACTORY, "physics_triangle_data@ f(float[]@ vertices, uint[]@ indices)", asFUNCTION(create_triangle_data), asCALL_CDECL);
 	engine->RegisterObjectBehaviour("physics_triangle_data", asBEHAVE_FACTORY, "physics_triangle_data@ f(float[]@ vertices, float[]@ normals, uint[]@ indices)", asFUNCTION(create_triangle_data_with_normals), asCALL_CDECL);
-	engine->RegisterObjectBehaviour("physics_triangle_data", asBEHAVE_ADDREF, "void f()", asFUNCTION(no_refcount), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectBehaviour("physics_triangle_data", asBEHAVE_RELEASE, "void f()", asFUNCTION(no_refcount), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectBehaviour("physics_triangle_data", asBEHAVE_ADDREF, "void f()", asFUNCTION(managed_data_add_ref<ManagedTriangleData>), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectBehaviour("physics_triangle_data", asBEHAVE_RELEASE, "void f()", asFUNCTION(managed_data_release<ManagedTriangleData>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectType("physics_vertex_data", 0, asOBJ_REF);
 	engine->RegisterObjectBehaviour("physics_vertex_data", asBEHAVE_FACTORY, "physics_vertex_data@ f(float[]@ vertices)", asFUNCTION(create_vertex_data), asCALL_CDECL);
-	engine->RegisterObjectBehaviour("physics_vertex_data", asBEHAVE_ADDREF, "void f()", asFUNCTION(no_refcount), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectBehaviour("physics_vertex_data", asBEHAVE_RELEASE, "void f()", asFUNCTION(no_refcount), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectBehaviour("physics_vertex_data", asBEHAVE_ADDREF, "void f()", asFUNCTION(managed_data_add_ref<ManagedVertexData>), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectBehaviour("physics_vertex_data", asBEHAVE_RELEASE, "void f()", asFUNCTION(managed_data_release<ManagedVertexData>), asCALL_CDECL_OBJFIRST);
 	// Register the actual TriangleVertexArray (read-only, created by managed wrapper)
 	engine->RegisterObjectType("physics_triangle_vertex_array", 0, asOBJ_REF | asOBJ_NOHANDLE);
 	engine->RegisterObjectMethod("physics_triangle_vertex_array", "physics_triangle_vertex_data_type get_vertex_data_type() const property", asMETHOD(TriangleVertexArray, getVertexDataType), asCALL_THISCALL);
@@ -1554,8 +1608,8 @@ void RegisterVertexArrays(asIScriptEngine* engine) {
 	// Register managed polygon data wrapper
 	engine->RegisterObjectType("physics_polygon_data", 0, asOBJ_REF);
 	engine->RegisterObjectBehaviour("physics_polygon_data", asBEHAVE_FACTORY, "physics_polygon_data@ f(float[]@ vertices, array<array<uint>>@ faces)", asFUNCTION(create_polygon_data), asCALL_CDECL);
-	engine->RegisterObjectBehaviour("physics_polygon_data", asBEHAVE_ADDREF, "void f()", asFUNCTION(no_refcount), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectBehaviour("physics_polygon_data", asBEHAVE_RELEASE, "void f()", asFUNCTION(no_refcount), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectBehaviour("physics_polygon_data", asBEHAVE_ADDREF, "void f()", asFUNCTION(managed_data_add_ref<ManagedPolygonData>), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectBehaviour("physics_polygon_data", asBEHAVE_RELEASE, "void f()", asFUNCTION(managed_data_release<ManagedPolygonData>), asCALL_CDECL_OBJFIRST);
 	// Register the actual PolygonVertexArray (read-only, created by managed wrapper)
 	engine->RegisterObjectType("physics_polygon_vertex_array", 0, asOBJ_REF | asOBJ_NOHANDLE);
 	engine->RegisterObjectMethod("physics_polygon_vertex_array", "physics_polygon_vertex_data_type get_vertex_data_type() const property", asMETHOD(PolygonVertexArray, getVertexDataType), asCALL_THISCALL);
