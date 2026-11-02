@@ -1,0 +1,14 @@
+--- a/sdk/angelscript/source/as_module.cpp
++++ b/sdk/angelscript/source/as_module.cpp
+@@ -1434,6 +1434,11 @@
+ // internal
+ asCScriptFunction *asCModule::GetImportedFunction(int index) const
+ {
++	// ALTERED: GetImportedFunctionDeclaration takes the index from the application, and every caller checks for a null result.
++	// One past the module's imports was read from outside the list (a crash, also on a module without imports).
++	if( asUINT(index) >= m_bindInformations.GetLength() || m_bindInformations[index] == 0 )
++		return 0;
++
+ 	return m_bindInformations[index]->importedFunctionSignature;
+ }
+ 
