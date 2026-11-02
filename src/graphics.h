@@ -104,7 +104,7 @@ public:
 	bool get_dpi(int& hdpi, int& vdpi) const;
 	void set_style(unsigned int style) { if (!_font) return; TTF_SetFontStyle(_font, (TTF_FontStyleFlags)style); }
 	unsigned int get_style() const { if (!_font) return 0; return TTF_GetFontStyle(_font); }
-	bool set_outline(int outline) { if (!_font) return false; return TTF_SetFontOutline(_font, outline); }
+	bool set_outline(int outline) { if (!_font || outline > 65535) return false; return TTF_SetFontOutline(_font, outline); } // SDL_ttf doubles it in an int: 2147483647 gave a crash at the next render.
 	int get_outline() const { if (!_font) return 0; return TTF_GetFontOutline(_font); }
 	int get_faces_count() const { if (!_font) return 0; return TTF_GetNumFontFaces(_font); }
 	bool set_sdf(bool enabled) { if (!_font) return false; return TTF_SetFontSDF(_font, enabled); }
