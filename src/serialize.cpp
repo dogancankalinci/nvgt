@@ -20,6 +20,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <vector>
 #include <angelscript.h>
 #include <Poco/BinaryReader.h>
@@ -76,8 +77,8 @@ public:
 	~serialize_path_guard() { g_serialize_path.pop_back(); }
 };
 static bool being_serialized(const void* obj) { return std::find(g_serialize_path.begin(), g_serialize_path.end(), obj) != g_serialize_path.end(); }
-// A type declaration nesting more than 8 template arguments and array brackets together (array<int[]> nests two), see type_by_decl().
-static bool decl_too_deep(const std::string& decl) { return std::count(decl.begin(), decl.end(), '<') + std::count(decl.begin(), decl.end(), '[') > 8; }
+// A type declaration nesting more than 8 template arguments and array brackets together (array<int[]> nests two), or longer than any real one, see type_by_decl().
+static bool decl_too_deep(const std::string& decl) { return decl.size() > 2048 || std::count(decl.begin(), decl.end(), '<') + std::count(decl.begin(), decl.end(), '[') > 8; }
 
 // Runs a registered/script function (which must return an object handle) through a pooled context. Only needed for the script_object contract below, everything else we can talk to directly in c++.
 static void* invoke(asIScriptFunction* func, void* obj, void* arg = nullptr) {
@@ -288,10 +289,27 @@ using value_setter = std::function<void(void*, int)>;
 static CScriptDictionary* read_dictionary_body(Poco::BinaryReader& r, asIScriptModule* mod);
 // A type looked up in the module by its declaration: the lookup starts in the module's default namespace, which ExecuteString sets for the time of a build on another thread (a default value of script_function.call() or async<T>), and a declaration naming an array type that doesn't exist yet makes it, so it is done under the build lock (see GetScriptBuildMutex).
 // The declaration comes from the data, and the time AngelScript takes to look up a declaration doubles with each template argument nested in it: an array value whose element declaration was nested 22 deep (164 bytes) took 20 seconds in an ASan build, and one nested 100 deep (a 700-byte input) never finished. The int[][] form, which serialize() itself writes for an array of arrays, costs less per level but makes an array type for each: one nested 10000 deep (20 KB) took 1.2 seconds and left 430 MB of types in the engine. A declaration nesting more than 8 of the two together isn't looked up, and the value is read and dropped as for a type that doesn't exist; serialize() drops an array of such a type, as it does a value nested too deeply.
+// And each array type a declaration names is made once and kept by the engine, about 43 KB of it, whoever asked: the nesting limit leaves enough combinations of types (grid<int[]>, string[][], ...) that 2560 different declarations in 106 KB of data left 254 MB in the engine, and more data of other declarations would go on. Different declarations are looked up in a run of the program only while they name 1024 template arguments and array brackets together, each at most a type, far more than a program stores (44 MB at worst); one past that is treated as a type that doesn't exist. Those looked up before go on working. Guarded by the build lock.
+static std::unordered_set<std::string>& array_decls_seen() {
+	static auto* seen = new std::unordered_set<std::string>; // Never destroyed: a script thread can still be deserializing as the program ends.
+	return *seen;
+}
+static size_t g_array_decl_levels = 0;
+static const size_t g_max_array_decl_levels = 1024;
 static asITypeInfo* type_by_decl(asIScriptModule* mod, const std::string& decl) {
 	if (decl_too_deep(decl)) return nullptr;
 	std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex());
-	return mod->GetTypeInfoByDecl(decl.c_str());
+	size_t levels = std::count(decl.begin(), decl.end(), '<') + std::count(decl.begin(), decl.end(), '[');
+	bool new_array_decl = levels > 0 && !array_decls_seen().count(decl);
+	if (new_array_decl && g_array_decl_levels + levels > g_max_array_decl_levels) return nullptr;
+	// The add-ons' message for a type that can't be an element (array<T> of a class without a default constructor) went to the program's messages, kept for good, for every such value in the data.
+	CScriptMessageSink no_messages(nullptr, nullptr);
+	asITypeInfo* ti = mod->GetTypeInfoByDecl(decl.c_str());
+	if (ti && new_array_decl) {
+		array_decls_seen().insert(decl);
+		g_array_decl_levels += levels;
+	}
+	return ti;
 }
 static void read_array_body(Poco::BinaryReader& r, asIScriptModule* mod, CScriptArray* arr);
 // The data can come from anywhere (over the network, say), so every size and count read from it is checked against what is left of it before anything is made from it: Poco's string read reserves the whole size it reads first, and a corrupt or hostile size made it allocate up to 4 GB, as an array was resized to a count of up to 4 billion elements. Every element, entry or byte counted takes at least one byte of the data.
