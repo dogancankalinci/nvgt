@@ -64,6 +64,16 @@ ma_result nvgt_file_seek(const ma_data_source_vtable* vtable, ma_data_source* fi
 }
 // The frames a file's own cursor counts that it never gives (see above).
 ma_uint64 nvgt_file_delay(const ma_data_source_vtable* vtable, ma_data_source* file) { return vtable == &g_ma_mp3_ds_vtable? ((ma_mp3*)file)->dr.delayInPCMFrames : 0; }
+// dr_mp3 skips the frame of a LAME or Xing header by setting its stream cursor to that frame's end, forgetting what it had read past it, so that its clamp at the audio's end, which keeps it out of an ID3v1 tag, let the tag through, and the last MPEG frame, not followed by another, became silence. Put right as an MP3 opens, on every route to it through MiniAudio's table of its backend.
+static ma_result nvgt_mp3_backend_init(void* user_data, ma_read_proc on_read, ma_seek_proc on_seek, ma_tell_proc on_tell, void* read_user_data, const ma_decoding_backend_config* config, const ma_allocation_callbacks* allocation_callbacks, ma_data_source** backend) {
+	ma_result result = ma_decoding_backend_init__mp3(user_data, on_read, on_seek, on_tell, read_user_data, config, allocation_callbacks, backend);
+	if (result == MA_SUCCESS) {
+		ma_dr_mp3* mp3 = &((ma_mp3*)*backend)->dr;
+		if (mp3->streamCursor == mp3->streamStartOffset) mp3->streamCursor += mp3->dataSize; // What's left of what it read, after a header's frame only: any other read moves the cursor past the start.
+	}
+	return result;
+}
+static const bool nvgt_mp3_backend_installed = (g_ma_decoding_backend_vtable_mp3.onInit = nvgt_mp3_backend_init, true);
 #define RND_IMPLEMENTATION
 #include "rnd.h"
 #define SPEECH_IMPLEMENTATION
