@@ -8,6 +8,7 @@
 		This property is read only. To change it, call `set_sound_default_3d_attenuator()`.
 		The default is `audio_attenuator_basic`. `audio_attenuator_phonon` uses Steam Audio's distance attenuation instead. Calling `set_sound_global_hrtf(true)` sets this property to `audio_attenuator_phonon` and also enables that attenuator.
 		An id that no attenuator has is refused, leaving the default as it was, with SOUNDSYSTEM_LAST_ERROR set to AUDIO_ERROR_STATE_INVALID_ARGS.
+		`audio_attenuator_phonon` starts disabled, as it needs Steam Audio. It reads back as set here, but sounds use `audio_attenuator_basic` instead until `set_sound_global_hrtf(true)` or `set_sound_3d_attenuator_enabled()` enables it.
 		The default only affects sounds that start being positioned after it changes. It is used when a sound hasn't been given an attenuator of its own.
 */
 
