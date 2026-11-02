@@ -20,6 +20,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include <angelscript.h>
@@ -76,6 +77,21 @@ public:
 	serialize_path_guard(const void* obj) { g_serialize_path.push_back(obj); }
 	~serialize_path_guard() { g_serialize_path.pop_back(); }
 };
+// The format has no way to say that a value is the one written before, so what a dictionary, array or object reached through two handles holds is written twice, which is what those handles mean here, but it means that dictionaries holding two handles to the next one, 30 levels of them, took a thousand million times the work and the room of one level (22 levels already took 24 seconds and 113 MB). What serialize() writes again is counted in bytes, and past this many a value met again is dropped, like a value nested too deeply. Anything written only once is never dropped.
+static const size_t g_serialize_max_repeated_bytes = 256 * 1024 * 1024;
+struct serialize_repeats {
+	std::unordered_map<const void*, size_t> written; // Size of what each object made when it was written.
+	size_t repeated = 0;
+	bool repeating = false; // Inside a value being written again.
+};
+static thread_local serialize_repeats* g_serialize_repeats = nullptr;
+class serialize_repeats_scope {
+	serialize_repeats repeats;
+	serialize_repeats* outer;
+public:
+	serialize_repeats_scope() : outer(g_serialize_repeats) { g_serialize_repeats = &repeats; }
+	~serialize_repeats_scope() { g_serialize_repeats = outer; }
+};
 static bool being_serialized(const void* obj) { return std::find(g_serialize_path.begin(), g_serialize_path.end(), obj) != g_serialize_path.end(); }
 // A type declaration nesting more than 8 template arguments and array brackets together (array<int[]> nests two), or longer than any real one, see type_by_decl().
 static bool decl_too_deep(const std::string& decl) { return decl.size() > 2048 || std::count(decl.begin(), decl.end(), '<') + std::count(decl.begin(), decl.end(), '[') > 8; }
@@ -130,10 +146,23 @@ static asIScriptFunction* find_dictionary_opcast(asITypeInfo* ti) {
 
 static bool write_value(Poco::BinaryWriter& w, const void* ref, int type_id);
 static bool try_write_value(const void* ref, int type_id, std::string& out) {
+	const void* handle_target = g_serialize_repeats && (type_id & asTYPEID_OBJHANDLE) ? *(void* const*)ref : nullptr;
+	bool repeating = false;
+	if (handle_target && !g_serialize_repeats->repeating) { // What a repeat holds is part of the bytes it was counted for.
+		auto found = g_serialize_repeats->written.find(handle_target);
+		if (found != g_serialize_repeats->written.end()) {
+			g_serialize_repeats->repeated += found->second;
+			if (g_serialize_repeats->repeated > g_serialize_max_repeated_bytes) return false;
+			repeating = g_serialize_repeats->repeating = true;
+		}
+	}
 	std::ostringstream ss;
 	Poco::BinaryWriter w(ss);
-	if (!write_value(w, ref, type_id)) return false;
+	bool written = write_value(w, ref, type_id);
+	if (repeating) g_serialize_repeats->repeating = false;
+	if (!written) return false;
 	out = ss.str();
+	if (handle_target) g_serialize_repeats->written[handle_target] = out.size();
 	return true;
 }
 // A dictionary's contents are just however many (key, serialized value) pairs made it through try_write_value; keys whose value can't be serialized are silently dropped.
@@ -566,6 +595,7 @@ static const char CURRENT_HEADER[8] = {'\x0e', '\x16', '\x07', '\x04', 0, 0, 0, 
 
 std::string serialize(CScriptDictionary& dict) {
 	if (dict.GetSize() < 1) return "";
+	serialize_repeats_scope repeats;
 	std::ostringstream ss;
 	ss.write(CURRENT_HEADER, sizeof(CURRENT_HEADER));
 	Poco::BinaryWriter w(ss);
