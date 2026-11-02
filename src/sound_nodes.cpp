@@ -501,6 +501,7 @@ struct held_hpf_node {
 };
 static void held_hpf_process(ma_node* node, const float** frames_in, ma_uint32* frame_count_in, float** frames_out, ma_uint32* frame_count_out) {
 	held_hpf_node* held = (held_hpf_node*)node;
+	if (held->hpf.hpf.hpf1Count) held->hpf.hpf.pHPF1[0].a.f32 = 1; // Here too, as a retune on the script's thread writes MiniAudio's value before putting this back.
 	ma_hpf_process_pcm_frames(&held->hpf.hpf, frames_out[0], frames_in[0], *frame_count_out);
 	if (!held->hpf.hpf.hpf1Count) return;
 	const float gain = held->gain.load(std::memory_order_relaxed), pole = held->pole.load(std::memory_order_relaxed);
