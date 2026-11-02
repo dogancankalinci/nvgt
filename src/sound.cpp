@@ -3592,7 +3592,18 @@ static ma_result decode_front_read(ma_data_source* source, void* frames_out, ma_
 	ma_result result = ma_data_source_read_pcm_frames((ma_data_source*)view->inner, frames_out, frame_count, frames_read);
 	return held_back && result == MA_SUCCESS? MA_BUSY : result;
 }
-static ma_result decode_front_seek(ma_data_source* source, ma_uint64 frame) { return ma_data_source_seek_to_pcm_frame((ma_data_source*)((decode_front_view*)source)->inner, frame); }
+static ma_result decode_front_seek(ma_data_source* source, ma_uint64 frame) {
+	ma_data_source* inner = (ma_data_source*)((decode_front_view*)source)->inner;
+	ma_result result = ma_data_source_seek_to_pcm_frame(inner, frame);
+	// MiniAudio's paged buffer refuses a seek to its very end, whose check reads past its last page: the last frame is sought and read past. Nothing is told of the failure, so that the sound played on from where it was.
+	ma_uint64 length = 0;
+	if (result == MA_BAD_SEEK && frame && ma_data_source_get_length_in_pcm_frames(inner, &length) == MA_SUCCESS && frame == length && (result = ma_data_source_seek_to_pcm_frame(inner, frame - 1)) == MA_SUCCESS) {
+		ma_uint8 last_frame[MA_MAX_CHANNELS * 8];
+		ma_uint64 got = 0;
+		result = ma_data_source_read_pcm_frames(inner, last_frame, 1, &got);
+	}
+	return result;
+}
 static ma_result decode_front_get_data_format(ma_data_source* source, ma_format* format, ma_uint32* channels, ma_uint32* sample_rate, ma_channel* channel_map, size_t channel_map_capacity) { return ma_data_source_get_data_format((ma_data_source*)((decode_front_view*)source)->inner, format, channels, sample_rate, channel_map, channel_map_capacity); }
 static ma_result decode_front_get_cursor(ma_data_source* source, ma_uint64* cursor) { return ma_data_source_get_cursor_in_pcm_frames((ma_data_source*)((decode_front_view*)source)->inner, cursor); }
 static ma_result decode_front_get_length(ma_data_source* source, ma_uint64* length) { return ma_data_source_get_length_in_pcm_frames((ma_data_source*)((decode_front_view*)source)->inner, length); }
