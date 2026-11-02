@@ -4634,6 +4634,7 @@ class sound_impl final : public mixer_impl, public virtual sound {
 	bool should_autoclose; // If this is true, the release method defers sound destruction until playback has complete.
 	mutable audio_data_source* datasource; // Avoid the need to keep looking up the pointer to the c++ ma_data_source wrapper associated with this sound.
 	bool datasource_opened = false; // datasource is one open() was given and plays, rather than a wrapper of the sound's own source.
+	bool source_looped = false; // Whether that source looped on its own before the sound took it, given back at close(): MiniAudio's sound sets it, as play() and play_looped() do, so that a decoder a script had looping lost that, and one a sound played looped read on endlessly once let go of.
 	void adopt_sound(held_sound_ptr made) {
 		hold_rate_of(&*made, get_engine()); // Before it is attached, by postload().
 		unique_lock<mutex> lock(spatialization_params_mutex);
@@ -5061,14 +5062,17 @@ public:
 		}
 		if (snd) close_to_reload();
 		audio_data_source_impl::prepare_length_of(ds); // Before the sound reads it.
+		const ma_bool32 looped = ma_data_source_is_looping(ds->get_ma_data_source()); // Before chain_source() sets it aside.
 		held_sound_ptr made(new held_sound()); // As load_special() makes a sound.
 		if ((g_soundsystem_last_error = ma_sound_init_from_data_source(get_engine()->get_ma_engine(), float_source(chain_source(ds->get_ma_data_source(), get_engine(), chain), view), MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT, nullptr, &*made)) != MA_SUCCESS) {
 			view.reset();
 			chain.reset();
+			ma_data_source_set_looping(ds->get_ma_data_source(), looped);
 			ds->release();
 			return false;
 		}
 		adopt_sound(std::move(made));
+		source_looped = looped;
 		datasource = ds;
 		datasource_opened = true;
 		audio_data_source_impl::add_user(ds); // So it can't be closed while this sound reads it.
@@ -5188,7 +5192,10 @@ public:
 		}
 		closing.reset();
 		if (datasource) {
-			if (datasource_opened) audio_data_source_impl::remove_user(datasource);
+			if (datasource_opened) {
+				ma_data_source_set_looping(datasource->get_ma_data_source(), source_looped);
+				audio_data_source_impl::remove_user(datasource);
+			}
 			datasource->release();
 			datasource = nullptr;
 		}
