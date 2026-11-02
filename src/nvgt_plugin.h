@@ -229,7 +229,7 @@ class pack_interface {
 	void release() const { if (asAtomicDec(refcount) < 1) delete this; }
 	// A read-only pack the sound system loads from, with a reference the caller owns and gives back with release(): a new copy, or this pack, with duplicate() called, should it be read-only already.
 	virtual const pack_interface* make_immutable() const = 0;
-	// The pack a read-only one was made from, with duplicate() called for the caller, who gives it back with release(), or null: sound_default_pack hands it to the script, which releases it.
+	// The pack a read-only one was made from, with duplicate() called for the caller, who gives it back with release(), or null for one made from nothing, as a pack read-only already: sound_default_pack hands it, or the read-only pack itself for null, to the script, which releases it.
 	virtual const pack_interface* get_mutable() const = 0;
 	virtual std::istream* get_file(const std::string& filename) const { return nullptr; }
 	virtual bool get_is_active() const { return false; }

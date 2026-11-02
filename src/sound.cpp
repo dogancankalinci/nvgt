@@ -5956,7 +5956,9 @@ const pack_interface *get_sound_default_storage() {
 		return nullptr;
 	std::shared_ptr < const pack_interface > obj = std::static_pointer_cast < const pack_interface>(g_sound_service->get_protocol_directive(g_pack_protocol_slot));
 	if (!obj) return nullptr;
-	return obj->get_mutable();
+	if (const pack_interface* made_from = obj->get_mutable()) return made_from;
+	obj->duplicate(); // A plugin's pack that was read-only already, which is its own make_immutable() and was made from nothing: null here read as no default pack, so that load()'s default argument went to disk with the pack set.
+	return obj.get();
 }
 int get_soundsystem_last_error() { return g_soundsystem_last_error; }
 string get_soundsystem_last_error_text() {
