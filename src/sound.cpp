@@ -1541,12 +1541,15 @@ public:
 		}
 		ma_uint32 sample_rate = 0;
 		if ((g_soundsystem_last_error = ma_data_source_get_data_format(src->pDataSource, nullptr, nullptr, &sample_rate, nullptr, 0)) != MA_SUCCESS || !sample_rate) return false;
-		double frames = (double)ms / 1000 * sample_rate; // As MiniAudio's seek to a second counts it, in double so that a huge time can't overflow.
+		double frames = (double)ms / 1000 * sample_rate + 0.5; // To the nearest frame, in double so that a huge time can't overflow: cut down, as MiniAudio's seek to a second counts it, a cursor read in milliseconds and sought back walked backward.
 		if (frames >= 9e18) {
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
-		return seek_frames((unsigned long long)frames);
+		unsigned long long frame = (unsigned long long)frames;
+		const unsigned long long length = get_length_frames();
+		if (length && frame > length && get_length_milliseconds() >= ms) frame = length; // The length as get_length_milliseconds() gives it, whose float can round up past it, which was refused.
+		return seek_frames(frame);
 	}
 	unsigned long long get_cursor_frames() const override {
 		ma_uint64 cursor;
