@@ -2131,6 +2131,8 @@ class audio_decoder_impl : public audio_data_source_impl, public virtual audio_d
 	// Rewind window so a datastream that can't seek (a live socket) can still be probed and decoded; answers rewinds from memory instead of the stream until the window outgrows CAP or a real seek moves the stream.
 	struct stream_cursor {
 		static const size_t CAP = 256 * 1024;
+		static const size_t OPEN_CAP = 16 * 1024 * 1024; // While the decoder opens, whose probing has to come back from wherever a format's header sends it: past 256 KB, an AIFF's chunks and a long ID3 tag couldn't be opened at all.
+		bool opening = true;
 		datastream* ds = nullptr;
 		std::string window;      // every byte served so far, until CAP
 		size_t pos = 0;          // logical read position, which is where the decoder believes it is
@@ -2180,9 +2182,9 @@ class audio_decoder_impl : public audio_data_source_impl, public virtual audio_d
 			size_t got = static_cast<size_t>(stream->gcount());
 			// Keeps every byte read so far so the window's end tracks the stream's real position; once full it can never answer a seek again, so it's freed immediately rather than held for the rest of the decoder's life.
 			if (sc->mirrors_stream() && got) {
-				size_t room = stream_cursor::CAP - sc->window.size();
-				sc->window.append(out, std::min(room, got));
-				if (sc->window.size() >= stream_cursor::CAP) {
+				const size_t cap = sc->opening? stream_cursor::OPEN_CAP : stream_cursor::CAP;
+				if (sc->window.size() < cap) sc->window.append(out, std::min(cap - sc->window.size(), got));
+				if (sc->window.size() >= cap) {
 					sc->window_full = true;
 					std::string().swap(sc->window);
 				}
@@ -2375,6 +2377,7 @@ public:
 			cursor.reset();
 			ds->release();
 		} else {
+			cursor->opening = false;
 			datastream_ref = ds;
 			hold_decoder(&*decoder, seekable);
 			set_ma_data_source((ma_data_source*)&*decoder);
