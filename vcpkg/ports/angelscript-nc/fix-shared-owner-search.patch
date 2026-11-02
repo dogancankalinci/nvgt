@@ -1,0 +1,97 @@
+--- a/sdk/angelscript/source/as_scriptengine.cpp
++++ b/sdk/angelscript/source/as_scriptengine.cpp
+@@ -1112,28 +1112,36 @@
+ 
+ 	// ALTERED: the list of modules is read under engineRWLock, as GetModule adds to it on other threads (a module being
+ 	// made while a discarded one is deleted, see DeleteDiscardedModules); nothing below takes the lock
++	// ALTERED: the discarded modules are looked through too. One still held (a function of it kept by a handle, an object of it)
++	// goes on running what it has, but only the modules that weren't discarded were asked: the last of those letting go of
++	// a shared class, or of a template instance such as array<int>, destroyed it under the discarded module's functions
++	// (a null pointer dereference when they next made one).
+ 	ACQUIRESHARED(engineRWLock);
+-	for( asUINT n = 0; n < scriptModules.GetLength(); n++ )
++	for( int list = 0; list < 2 && in_type->module == in_mod; list++ )
+ 	{
+-		// TODO: optimize: If the modules already stored the shared types separately, this would be quicker
+-		int foundIdx = -1;
+-		asCModule *mod = scriptModules[n];
+-		if( mod == in_type->module ) continue;
+-		if( in_type->flags & asOBJ_ENUM )
+-			foundIdx = mod->m_enumTypes.IndexOf(CastToEnumType(in_type));
+-		else if (in_type->flags & asOBJ_TYPEDEF)
+-			foundIdx = mod->m_typeDefs.IndexOf(CastToTypedefType(in_type));
+-		else if (in_type->flags & asOBJ_FUNCDEF)
+-			foundIdx = mod->m_funcDefs.IndexOf(CastToFuncdefType(in_type));
+-		else if (in_type->flags & asOBJ_TEMPLATE)
+-			foundIdx = mod->m_templateInstances.IndexOf(CastToObjectType(in_type));
+-		else
+-			foundIdx = mod->m_classTypes.IndexOf(CastToObjectType(in_type));
+-
+-		if( foundIdx >= 0 )
++		asCArray<asCModule*> &modules = list == 0 ? scriptModules : discardedModules;
++		for( asUINT n = 0; n < modules.GetLength(); n++ )
+ 		{
+-			in_type->module = mod;
+-			break;
++			// TODO: optimize: If the modules already stored the shared types separately, this would be quicker
++			int foundIdx = -1;
++			asCModule *mod = modules[n];
++			if( mod == in_type->module ) continue;
++			if( in_type->flags & asOBJ_ENUM )
++				foundIdx = mod->m_enumTypes.IndexOf(CastToEnumType(in_type));
++			else if (in_type->flags & asOBJ_TYPEDEF)
++				foundIdx = mod->m_typeDefs.IndexOf(CastToTypedefType(in_type));
++			else if (in_type->flags & asOBJ_FUNCDEF)
++				foundIdx = mod->m_funcDefs.IndexOf(CastToFuncdefType(in_type));
++			else if (in_type->flags & asOBJ_TEMPLATE)
++				foundIdx = mod->m_templateInstances.IndexOf(CastToObjectType(in_type));
++			else
++				foundIdx = mod->m_classTypes.IndexOf(CastToObjectType(in_type));
++
++			if( foundIdx >= 0 )
++			{
++				in_type->module = mod;
++				break;
++			}
+ 		}
+ 	}
+ 
+@@ -1174,19 +1182,28 @@
+ 
+ 	// ALTERED: the list of modules is read under engineRWLock, as GetModule adds to it on other threads (a module being
+ 	// made while a discarded one is deleted, see DeleteDiscardedModules); nothing below takes the lock
++	// ALTERED: only when the function didn't move with its class above. Asked anyway, a module being rebuilt, which is still in
++	// the list (it is taken out of it only when discarded), found the method or factory it was letting go of in its own list
++	// and took it back: the function was destroyed, and the class that had moved to another module was left with a constructor
++	// that had no bytecode (a null pointer dereference on making one, or on saving that module's bytecode). The discarded
++	// modules are looked through too, see FindNewOwnerForSharedType.
+ 	ACQUIRESHARED(engineRWLock);
+-	for( asUINT n = 0; n < scriptModules.GetLength(); n++ )
++	for( int list = 0; list < 2 && in_func->module == in_mod; list++ )
+ 	{
+-		// TODO: optimize: If the modules already stored the shared types separately, this would be quicker
+-		int foundIdx = -1;
+-		asCModule *mod = scriptModules[n];
+-		if( mod == in_func->module ) continue;
+-		foundIdx = mod->m_scriptFunctions.IndexOf(in_func);
+-
+-		if( foundIdx >= 0 )
++		asCArray<asCModule*> &modules = list == 0 ? scriptModules : discardedModules;
++		for( asUINT n = 0; n < modules.GetLength(); n++ )
+ 		{
+-			in_func->module = mod;
+-			break;
++			// TODO: optimize: If the modules already stored the shared types separately, this would be quicker
++			int foundIdx = -1;
++			asCModule *mod = modules[n];
++			if( mod == in_mod ) continue;
++			foundIdx = mod->m_scriptFunctions.IndexOf(in_func);
++
++			if( foundIdx >= 0 )
++			{
++				in_func->module = mod;
++				break;
++			}
+ 		}
+ 	}
+ 
