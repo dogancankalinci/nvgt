@@ -156,6 +156,7 @@ static void live_remove(const void* object) {
 	std::unique_lock lock(g_physics_live_mutex);
 	g_physics_live.erase(object);
 }
+static void collider_forget(const Collider* collider);
 static bool is_live(const void* object) {
 	std::shared_lock lock(g_physics_live_mutex);
 	return g_physics_live.count(object) > 0;
@@ -366,7 +367,7 @@ template <class T> void body_remove_collider(T& body, Collider* collider) {
 	check_live(collider);
 	if (collider->getBody() != &body) throw runtime_error("collider belongs to another body");
 	check_not_in_physics_callback("a collider");
-	live_remove(collider);
+	collider_forget(collider);
 	body.removeCollider(collider);
 }
 
@@ -506,7 +507,7 @@ void body_cleanup_user_data(Body* body);
 static void body_forget(Body* body) {
 	body_cleanup_user_data(body);
 	live_remove(body);
-	for (uint32 c = 0; c < body->getNbColliders(); c++) live_remove(body->getCollider(c));
+	for (uint32 c = 0; c < body->getNbColliders(); c++) collider_forget(body->getCollider(c));
 }
 void world_destroy(PhysicsWorld* world) {
 	if (!world || !g_physics_worlds.count(world)) return;
@@ -654,6 +655,52 @@ HeightFieldShape* height_field_shape_create(HeightField* height_field, const Vec
 	g_physics_shapes[shape] = height_field;
 	live_add(shape);
 	return shape;
+}
+
+// A collider's material is an element of one of its world's component arrays, which moves as colliders are added and removed and is reallocated as it grows, so a handle to the Material itself was left pointing at freed memory, or at another collider's material, by adding a collider. The script's physics_material names the collider instead, and reads its material where it then is.
+struct script_material {
+	int ref_count;
+	Collider* collider;
+	script_material(Collider* collider) : ref_count(1), collider(collider) {}
+	void add_ref() { asAtomicInc(ref_count); }
+	void release() {
+		if (asAtomicDec(ref_count) < 1) delete this;
+	}
+	Material& get() const {
+		if (!collider) throw runtime_error("this physics object was destroyed");
+		return collider->getMaterial();
+	}
+};
+static std::unordered_map<const Collider*, script_material*> g_physics_materials;
+static script_material& collider_get_material(Collider& collider) {
+	std::unique_lock lock(g_physics_live_mutex);
+	script_material*& material = g_physics_materials[&collider];
+	if (!material) material = new script_material(&collider); // The map's reference. The script's handles add their own.
+	return *material;
+}
+static void collider_set_material(Collider& collider, const script_material& material) { collider.setMaterial(material.get()); }
+template <class F> struct material_call;
+template <class R, class... A> struct material_call<R (Material::*)(A...)> {
+	template <R (Material::*method)(A...)> static R call(script_material* material, A... args) { return (material->get().*method)(std::forward<A>(args)...); }
+};
+template <class R, class... A> struct material_call<R (Material::*)(A...) const> {
+	template <R (Material::*method)(A...) const> static R call(const script_material* material, A... args) { return (material->get().*method)(std::forward<A>(args)...); }
+};
+#define asMATERIAL(m) asFUNCTION((material_call<decltype(&Material::m)>::template call<&Material::m>))
+
+static void collider_forget(const Collider* collider) {
+	live_remove(collider);
+	script_material* material = nullptr;
+	{
+		std::unique_lock lock(g_physics_live_mutex);
+		auto found = g_physics_materials.find(collider);
+		if (found != g_physics_materials.end()) {
+			material = found->second;
+			g_physics_materials.erase(found);
+			material->collider = nullptr;
+		}
+	}
+	if (material) material->release();
 }
 
 // A second destroy freed the logger again, and one still set as the current logger was written to by every world created after.
@@ -1667,16 +1714,16 @@ void RegisterPhysicsEntities(asIScriptEngine* engine) {
 	engine->RegisterObjectType("physics_rigid_body", 0, asOBJ_REF);
 	engine->RegisterObjectType("physics_collision_shape", 0, asOBJ_REF);
 	engine->RegisterObjectType("physics_material", 0, asOBJ_REF);
-	engine->RegisterObjectBehaviour("physics_material", asBEHAVE_ADDREF, "void f()", asFUNCTION(no_refcount), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectBehaviour("physics_material", asBEHAVE_RELEASE, "void f()", asFUNCTION(no_refcount), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_material", "float get_bounciness() const property", asMETHOD(Material, getBounciness), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_material", "void set_bounciness(float bounciness) property", asMETHOD(Material, setBounciness), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_material", "float get_friction_coefficient() const property", asMETHOD(Material, getFrictionCoefficient), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_material", "void set_friction_coefficient(float friction_coefficient) property", asMETHOD(Material, setFrictionCoefficient), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_material", "float get_friction_coefficient_sqrt() const property", asMETHOD(Material, getFrictionCoefficientSqrt), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_material", "float get_mass_density() const property", asMETHOD(Material, getMassDensity), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_material", "void set_mass_density(float mass_density) property", asMETHOD(Material, setMassDensity), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_material", "string opImplConv()", asMETHOD(Material, to_string), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour("physics_material", asBEHAVE_ADDREF, "void f()", asMETHOD(script_material, add_ref), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour("physics_material", asBEHAVE_RELEASE, "void f()", asMETHOD(script_material, release), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_material", "float get_bounciness() const property", asMATERIAL(getBounciness), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_material", "void set_bounciness(float bounciness) property", asMATERIAL(setBounciness), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_material", "float get_friction_coefficient() const property", asMATERIAL(getFrictionCoefficient), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_material", "void set_friction_coefficient(float friction_coefficient) property", asMATERIAL(setFrictionCoefficient), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_material", "float get_friction_coefficient_sqrt() const property", asMATERIAL(getFrictionCoefficientSqrt), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_material", "float get_mass_density() const property", asMATERIAL(getMassDensity), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_material", "void set_mass_density(float mass_density) property", asMATERIAL(setMassDensity), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_material", "string opImplConv()", asMATERIAL(to_string), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectType("physics_collider", 0, asOBJ_REF);
 	engine->RegisterObjectBehaviour("physics_collider", asBEHAVE_ADDREF, "void f()", asFUNCTION(no_refcount), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectBehaviour("physics_collider", asBEHAVE_RELEASE, "void f()", asFUNCTION(no_refcount), asCALL_CDECL_OBJFIRST);
@@ -1696,8 +1743,8 @@ void RegisterPhysicsEntities(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("physics_collider", "uint16 get_collision_category() const property", asLIVE(Collider, getCollisionCategoryBits), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_collider", "void set_collision_category(uint16 bits) property", asLIVE(Collider, setCollisionCategoryBits), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_collider", "int get_broad_phase_id() const property", asLIVE(Collider, getBroadPhaseId), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_collider", "physics_material& get_material() property", asLIVE(Collider, getMaterial), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_collider", "void set_material(const physics_material& material) property", asLIVE(Collider, setMaterial), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_collider", "physics_material& get_material() property", asLIVEF(collider_get_material), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_collider", "void set_material(const physics_material& material) property", asLIVEF(collider_set_material), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_collider", "bool get_is_trigger() const property", asLIVE(Collider, getIsTrigger), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_collider", "void set_is_trigger(bool is_trigger) property", asLIVE(Collider, setIsTrigger), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_collider", "bool get_is_simulation_collider() const property", asLIVE(Collider, getIsSimulationCollider), asCALL_CDECL_OBJFIRST);
