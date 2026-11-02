@@ -465,6 +465,12 @@ Joint* world_create_joint(PhysicsWorld& world, const JointInfo& info) {
 // and contact processing a few steps later works on inconsistent state and faults. Both functions are private to
 // RigidBody; putting the body to sleep and waking it runs exactly them, and costs nothing else here because a static
 // body's velocities are already zero and setType has just cleared its forces.
+// A step can leave a body with a position that isn't finite whatever a script gave it (a concave shape on a body that moves has no volume to make an inertia from), and the next step read and wrote outside of the broad phase's tree with it, as for a transform set to that, see check_transform().
+void world_update(PhysicsWorld& world, decimal time_step) {
+	for (uint32 b = 0; b < world.getNbRigidBodies(); b++) check_transform(world.getRigidBody(b)->getTransform());
+	world.update(time_step);
+}
+
 void rigid_body_set_type(RigidBody& body, BodyType type) {
 	const BodyType old_type = body.getType();
 	body.setType(type);
@@ -875,6 +881,11 @@ static void release_arrays(std::initializer_list<CScriptArray*> arrays) {
 }
 
 // Null arrays were read as they stood, a mesh of nothing went past the arrays reactphysics3d made for it, and a polygon's vertex index was used to read the vertices unchecked (access violations).
+// A value that isn't finite in a mesh or a height field reached the broad phase the same way as a transform that isn't, see check_transform().
+template <class T> static void check_finite_values(const std::vector<T>& values) {
+	for (T value : values)
+		if (!std::isfinite(value)) throw runtime_error("mesh data is not finite");
+}
 static void check_vertex_indices(const std::vector<uint32>& indices, size_t nbVertices) {
 	for (uint32 index : indices)
 		if (index >= nbVertices) throw out_of_range("vertex index " + std::to_string(index) + " out of range, there are " + std::to_string(nbVertices) + " vertices");
@@ -908,6 +919,7 @@ ManagedTriangleData* create_triangle_data(CScriptArray* verticesArray, CScriptAr
 	indicesArray->Release();
 	uint32 nbVertices = managed->vertices.size() / 3;
 	uint32 nbTriangles = managed->indices.size() / 3;
+	check_finite_values(managed->vertices);
 	check_vertex_indices(managed->indices, nbVertices);
 	managed->array = new TriangleVertexArray(
 	    nbVertices,
@@ -958,6 +970,8 @@ ManagedTriangleData* create_triangle_data_with_normals(CScriptArray* verticesArr
 	indicesArray->Release();
 	uint32 nbVertices = managed->vertices.size() / 3;
 	uint32 nbTriangles = managed->indices.size() / 3;
+	check_finite_values(managed->vertices);
+	check_finite_values(managed->normals);
 	check_vertex_indices(managed->indices, nbVertices);
 	managed->array = new TriangleVertexArray(
 	    nbVertices,
@@ -985,6 +999,9 @@ ManagedVertexData* create_vertex_data(CScriptArray* verticesArray) {
 	for (uint32 i = 0; i < verticesArray->GetSize(); i++)
 		managed->vertices[i] = *(float*)verticesArray->At(i);
 	verticesArray->Release();
+	std::unique_ptr<ManagedVertexData> hold(managed);
+	check_finite_values(managed->vertices);
+	hold.release();
 	uint32 nbVertices = managed->vertices.size() / 3;
 	managed->array = new VertexArray(
 	    managed->vertices.data(),
@@ -1047,6 +1064,7 @@ ManagedPolygonData* create_polygon_data(CScriptArray* verticesArray, CScriptArra
 	facesArray->Release();
 	uint32 nbVertices = managed->vertices.size() / 3;
 	uint32 nbFaces = managed->faces.size();
+	check_finite_values(managed->vertices);
 	check_vertex_indices(managed->indices, nbVertices);
 	managed->array = new PolygonVertexArray(
 	    nbVertices,
@@ -1298,6 +1316,7 @@ HeightField* create_height_field_float(int nbGridColumns, int nbGridRows, CScrip
 		heightBuffer[i] = *(float*)heightData->At(i);
 	heightData->Release();
 	std::vector<Message> messages;
+	check_finite_values(heightBuffer);
 	return register_height_field(g_physics.createHeightField(nbGridColumns, nbGridRows, heightBuffer.data(), HeightField::HeightDataType::HEIGHT_FLOAT_TYPE, messages, integerHeightScale));
 }
 
@@ -1320,6 +1339,7 @@ HeightField* create_height_field_double(int nbGridColumns, int nbGridRows, CScri
 		heightBuffer[i] = *(double*)heightData->At(i);
 	heightData->Release();
 	std::vector<Message> messages;
+	check_finite_values(heightBuffer);
 	return register_height_field(g_physics.createHeightField(nbGridColumns, nbGridRows, heightBuffer.data(), HeightField::HeightDataType::HEIGHT_DOUBLE_TYPE, messages, integerHeightScale));
 }
 
@@ -1363,6 +1383,8 @@ std::string logger_get_level_name(int level) {
 
 // DefaultLogger destination wrappers
 void default_logger_add_file_destination(DefaultLogger* logger, const std::string& filePath, uint32_t logLevelFlag, int format) {
+	// A format reactphysics3d doesn't have gives a destination with no formatter, and the first message then used a null pointer.
+	if (format != static_cast<int>(DefaultLogger::Format::Text) && format != static_cast<int>(DefaultLogger::Format::HTML)) throw runtime_error("unknown logger format");
 	if (logger)
 		logger->addFileDestination(filePath, logLevelFlag, static_cast<DefaultLogger::Format>(format));
 }
@@ -2019,7 +2041,7 @@ void RegisterPhysicsWorldAndCallbacks(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("physics_world", "void test_collision(physics_collision_callback@ callback)", asLIVEF(world_test_collision), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_world", "aabb get_world_aabb(const physics_collider@ collider) const", asLIVEF(world_get_aabb), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_world", "const string& get_name() const property", asLIVE(PhysicsWorld, getName), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_world", "void update(float time_step)", asLIVE(PhysicsWorld, update), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "void update(float time_step)", asLIVEF(world_update), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_world", "uint16 get_nb_iterations_velocity_solver() const property", asLIVE(PhysicsWorld, getNbIterationsVelocitySolver), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_world", "void set_nb_iterations_velocity_solver(uint16 iterations) property", asLIVE(PhysicsWorld, setNbIterationsVelocitySolver), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_world", "uint16 get_nb_iterations_position_solver() const property", asLIVE(PhysicsWorld, getNbIterationsPositionSolver), asCALL_CDECL_OBJFIRST);
