@@ -157,6 +157,14 @@ CScriptHandle &CScriptHandle::Assign(void *ref, int typeId)
 		ref  = r->m_ref;
 		type = r->m_type;
 	}
+	// ALTERED: an object of a type without a reference count can't be held: ReleaseScriptObject destroys and frees a value object
+	// (or a scoped one), which here was the script's own, a temporary or a variable (ref("a") corrupted the heap).
+	else if( type && (type->GetFlags() & (asOBJ_VALUE | asOBJ_SCOPED)) )
+	{
+		Set(0, 0);
+		ctx->SetException("A ref can't hold a value type");
+		return *this;
+	}
 
 	Set(ref, type);
 
