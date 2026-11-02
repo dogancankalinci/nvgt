@@ -193,7 +193,6 @@ public:
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
-		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		return put_endpoint(node, input_bus_index); // Whether it attached: one refused keeps the endpoint, which can be that same node.
 	}
 	bool detach_output_bus(unsigned int bus_index) override {
@@ -201,9 +200,8 @@ public:
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
-		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		set_endpoint(nullptr, 0);
-		if (endpoint) return false;
+		if (get_endpoint()) return false;
 		return (g_soundsystem_last_error = MA_SUCCESS) == MA_SUCCESS; // Detached, or with nothing to detach, as a call that succeeded reads.
 	}
 	bool detach_all_output_buses() override { return detach_output_bus(0); }
@@ -308,20 +306,23 @@ public:
 	void set_endpoint(audio_node* node, unsigned int input_bus_index) override { put_endpoint(node, input_bus_index); }
 	// set_endpoint(), telling whether it attached the node or detached the chain.
 	bool put_endpoint(audio_node* node, unsigned int input_bus_index) {
-		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
-		audio_node *old = endpoint;
-		if (node) {
-			bool attached = !nodes.empty()? last()->attach_output_bus(0, node, input_bus_index) : audio_node_impl::attach_output_bus(0, node, input_bus_index);
-			if (!attached) return false; // get_endpoint() tells the attach failed.
-			endpoint = node;
-			endpoint->duplicate();
-			endpoint_input_bus_index = input_bus_index;
-		} else if (old) {
-			if (!nodes.empty()) last()->detach_output_bus(0);
-			else audio_node_impl::detach_output_bus(0);
-			endpoint = nullptr;
+		audio_node *old;
+		{
+			std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+			old = endpoint;
+			if (node) {
+				bool attached = !nodes.empty()? last()->attach_output_bus(0, node, input_bus_index) : audio_node_impl::attach_output_bus(0, node, input_bus_index);
+				if (!attached) return false; // get_endpoint() tells the attach failed.
+				endpoint = node;
+				endpoint->duplicate();
+				endpoint_input_bus_index = input_bus_index;
+			} else if (old) {
+				if (!nodes.empty()) last()->detach_output_bus(0);
+				else audio_node_impl::detach_output_bus(0);
+				endpoint = nullptr;
+			}
 		}
-		if (old) old->release(); // Last, as it can be the node just attached again.
+		if (old) old->release(); // Last, as it can be the node just attached again, and after the chain's lock, as remove_node() lets go of a node.
 		return true;
 	}
 	audio_node* get_endpoint() const override {
