@@ -1,0 +1,19 @@
+--- a/sdk/angelscript/source/as_module.cpp
++++ b/sdk/angelscript/source/as_module.cpp
+@@ -115,8 +115,14 @@
+ 	ACQUIREEXCLUSIVE(engine->engineRWLock);
+ 	if( engine->lastModule == this )
+ 		engine->lastModule = 0;
+-	engine->scriptModules.RemoveValue(this);
+-	engine->discardedModules.PushLast(this);
++	// ALTERED: once. A second Discard (a destructor run by the CallExit above discarding the same module, a registered
++	// function reached from it, an application keeping the pointer) put the module in the list twice: deleting it
++	// took one entry out, and the other was read as a module after it was freed.
++	if( engine->scriptModules.Exists(this) )
++	{
++		engine->scriptModules.RemoveValue(this);
++		engine->discardedModules.PushLast(this);
++	}
+ 	RELEASEEXCLUSIVE(engine->engineRWLock);
+ 
+ 	// Allow the engine to go over the list of discarded modules to see what can be cleaned up at this moment.

@@ -134,6 +134,7 @@ vcpkg_from_github(
         fix-align8-list-element-const.patch
         fix-bound-function-of-discarded-module.patch
         fix-compiled-function-module-lifetime.patch
+        fix-discard-module-twice.patch
 )
 
 vcpkg_cmake_configure(
