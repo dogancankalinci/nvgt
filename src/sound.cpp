@@ -1871,13 +1871,16 @@ static ma_result cursor_no_frame_maps_to(ma_data_source* source, ma_uint64* curs
 	*cursor = ~(ma_uint64)0;
 	return MA_SUCCESS;
 }
+// In singleheader.cpp, where MiniAudio's decoders can be reached.
+ma_result nvgt_file_seek(const ma_data_source_vtable* vtable, ma_data_source* file, ma_uint64 frame, ma_bool32 can_seek);
+ma_uint64 nvgt_file_delay(const ma_data_source_vtable* vtable, ma_data_source* file);
 static held_file* file_held(ma_data_source* backend) {
 	const ma_data_source_vtable* vtable = backend? ((ma_data_source_base*)backend)->vtable : nullptr;
 	return vtable && vtable->onSeek == held_file_seek? const_cast<held_file*>(reinterpret_cast<const held_file*>(vtable)) : nullptr;
 }
 static ma_result held_file_seek(ma_data_source* backend, ma_uint64 frame) {
 	held_file* file = file_held(backend);
-	ma_result result = file->original->onSeek(backend, frame);
+	ma_result result = nvgt_file_seek(file->original, backend, frame, file->can_seek);
 	if (result == MA_SUCCESS || !file->can_seek || !file->length.load()) {
 		file->refused.store(MA_SUCCESS);
 		return result;

@@ -29,6 +29,17 @@
 #include "dbgtools.h"
 #define MINIAUDIO_IMPLEMENTATION
 #include <miniaudio.h>
+// Seeks a file a decoder reads, given its data source's own vtable, for what MiniAudio's FLAC and MP3 decoders get wrong; here, where their structures are known. See held_file in sound.cpp.
+ma_result nvgt_file_seek(const ma_data_source_vtable* vtable, ma_data_source* file, ma_uint64 frame, ma_bool32 can_seek) {
+	if (vtable == &g_ma_flac_ds_vtable && ((ma_flac*)file)->dr) {
+		ma_dr_flac* flac = ((ma_flac*)file)->dr;
+		const ma_uint64 at = flac->currentPCMFrame;
+		const ma_uint32 remaining = flac->currentFLACFrame.pcmFramesRemaining;
+		// dr_flac takes a frame behind it within the block it last decoded as still decoded, which a block that failed to decode, as at a file's truncated end, left with no samples: reading them crashed. A block with nothing left to give is taken as spent, which sends the seek through the file.
+		if (frame < at && !remaining) flac->currentFLACFrame.header.blockSizeInPCMFrames = 0;
+	}
+	return vtable->onSeek(file, frame);
+}
 #define RND_IMPLEMENTATION
 #include "rnd.h"
 #define SPEECH_IMPLEMENTATION
