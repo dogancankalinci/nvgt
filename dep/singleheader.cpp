@@ -70,6 +70,26 @@ static ma_result nvgt_mp3_backend_init(void* user_data, ma_read_proc on_read, ma
 	if (result == MA_SUCCESS) {
 		ma_dr_mp3* mp3 = &((ma_mp3*)*backend)->dr;
 		if (mp3->streamCursor == mp3->streamStartOffset) mp3->streamCursor += mp3->dataSize; // What's left of what it read, after a header's frame only: any other read moves the cursor past the start.
+		// An APE tag: dr_mp3 reads its size from reserved bytes, which are 0, so that it trims the 32-byte footer alone, leaving the tag in the audio, whose last frame then wasn't followed by another and became silence. The file is read as it was left; where the footer is, as it was trimmed, is where its audio ends without the rest of the tag.
+		ma_int64 at = 0;
+		if (mp3->streamLength != MA_UINT64_MAX && mp3->streamLength > mp3->streamStartOffset && on_tell && on_tell(read_user_data, &at) == MA_SUCCESS && on_seek(read_user_data, (ma_int64)mp3->streamLength, ma_seek_origin_start) == MA_SUCCESS) {
+			ma_uint8 footer[32];
+			size_t got = 0;
+			if (on_read(read_user_data, footer, sizeof(footer), &got) == MA_SUCCESS && got == sizeof(footer) && memcmp(footer, "APETAGEX", 8) == 0) {
+				const ma_uint64 size = (ma_uint64)footer[12] | (ma_uint64)footer[13] << 8 | (ma_uint64)footer[14] << 16 | (ma_uint64)footer[15] << 24; // With the footer.
+				const ma_uint64 tag = size + (footer[23] & 0x80? 32 : 0), tag_end = mp3->streamLength + 32; // With a header too, flagged in the top bit.
+				if (tag < tag_end - mp3->streamStartOffset) {
+					mp3->streamLength = tag_end - tag;
+					// What it read of the tag already, all of it for a file that fits its first read.
+					const ma_uint64 past = mp3->streamCursor > mp3->streamLength? mp3->streamCursor - mp3->streamLength : 0;
+					if (past && past <= mp3->dataSize) {
+						mp3->dataSize -= (size_t)past;
+						mp3->streamCursor = mp3->streamLength;
+					}
+				}
+			}
+			on_seek(read_user_data, at, ma_seek_origin_start);
+		}
 	}
 	return result;
 }
