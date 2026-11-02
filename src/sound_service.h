@@ -17,6 +17,16 @@
 
 // The result for a file that couldn't be opened, from the system's error, errno or GetLastError() on Windows (see sound.cpp).
 ma_result system_error_result(int code);
+// While one lives, Windows' critical error and open-file boxes are off for its thread, as SDL has them for its opens: a drive without media otherwise shows a modal "no disk" box, which holds the thread until someone dismisses it. Does nothing on other platforms.
+class quiet_file_errors {
+	unsigned long previous = 0;
+	bool set = false;
+public:
+	quiet_file_errors();
+	~quiet_file_errors();
+	quiet_file_errors(const quiet_file_errors&) = delete;
+	quiet_file_errors& operator=(const quiet_file_errors&) = delete;
+};
 typedef std::shared_ptr<const void> directive_t;
 struct sound_service_vfs;
 struct vfs_args {

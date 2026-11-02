@@ -64,6 +64,19 @@ struct sound_service_vfs {
 		return MA_ERROR; \
 	}
 
+#ifdef _WIN32
+quiet_file_errors::quiet_file_errors() {
+	DWORD was = 0;
+	set = SetThreadErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX, &was);
+	previous = was;
+}
+quiet_file_errors::~quiet_file_errors() {
+	if (set) SetThreadErrorMode(previous, nullptr);
+}
+#else
+quiet_file_errors::quiet_file_errors() {}
+quiet_file_errors::~quiet_file_errors() {}
+#endif
 // Why a protocol couldn't open what it was asked for, for the VFS open to report, on the thread that opens it.
 static thread_local ma_result t_open_error = MA_ERROR;
 // Why a file couldn't be opened to read, as the encoders tell for the files they write: SDL, which opens it, keeps no errno, so that every failure but a missing file read "Unknown error". It's opened again as SDL opens it, where SDL looked for it, for the system's error; a directory is told first, as POSIX opens one to read. Opened through Poco instead, which shares writing, a file another program was writing opened there, and read as unknown again.
@@ -93,14 +106,7 @@ static ma_result read_open_failure(const char* uri) {
 	} catch (const std::exception&) {
 		return MA_ERROR;
 	}
-	// Without Windows' error boxes, as SDL opens files: a drive without media showed the modal "no disk" box, which held the loading thread, a load job's or one holding the cache's lock, until someone dismissed it.
-	struct quiet_errors {
-		DWORD previous = 0;
-		const BOOL set = SetThreadErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX, &previous);
-		~quiet_errors() {
-			if (set) SetThreadErrorMode(previous, nullptr);
-		}
-	} quiet;
+	quiet_file_errors quiet; // As SDL opens files: the box held the loading thread, a load job's or one holding the cache's lock.
 	const DWORD attributes = GetFileAttributesW(wide.c_str());
 	if (attributes == INVALID_FILE_ATTRIBUTES) return system_error_result(int(GetLastError()));
 	if (attributes & FILE_ATTRIBUTE_DIRECTORY) return MA_IS_DIRECTORY;

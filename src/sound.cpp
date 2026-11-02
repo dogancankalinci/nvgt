@@ -2425,6 +2425,7 @@ static ma_result file_open_result(const Poco::Exception& e) { return system_erro
 // Opens a file an encoder writes, through Poco, which takes the UTF-8 name on every platform and, unlike MiniAudio's and libopusenc's own file output, lets the encoder see every write fail; SOUNDSYSTEM_LAST_ERROR says why it couldn't.
 static std::unique_ptr<std::ostream> open_encoder_file(const string& filename) {
 	std::unique_ptr<std::ostream> file;
+	quiet_file_errors quiet;
 	try {
 		file = std::make_unique<Poco::FileOutputStream>(filename, std::ios::out | std::ios::trunc | std::ios::binary);
 	} catch (const Poco::Exception& e) {
@@ -2450,6 +2451,7 @@ static std::unique_ptr<std::ostream> open_encoder_file(const string& filename) {
 }
 // Whether a file of this name is on disk, where the encoders write it, as Poco opens it: FileExists() also finds, on Android, a file packaged in the APK, which an encoder doesn't replace, so that an open without ENCODER_OVERWRITE was refused for it.
 static bool file_on_disk(const string& filename) {
+	quiet_file_errors quiet;
 	try {
 		Poco::File file(filename);
 		return file.exists() && !file.isDirectory();
