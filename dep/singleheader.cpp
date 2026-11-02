@@ -37,9 +37,16 @@ ma_result nvgt_file_seek(const ma_data_source_vtable* vtable, ma_data_source* fi
 		const ma_uint32 remaining = flac->currentFLACFrame.pcmFramesRemaining;
 		// dr_flac takes a frame behind it within the block it last decoded as still decoded, which a block that failed to decode, as at a file's truncated end, left with no samples: reading them crashed. A block with nothing left to give is taken as spent, which sends the seek through the file.
 		if (frame < at && !remaining) flac->currentFLACFrame.header.blockSizeInPCMFrames = 0;
+	} else if (vtable == &g_ma_mp3_ds_vtable) {
+		// dr_mp3's cursor counts the encoder delay a LAME header gives, which it skips, and its seek forward reads on from that cursor to the frame asked for, landing the delay short, 1105 frames as a rule, reported as made. A seek back, from the start, counts it right.
+		ma_dr_mp3* mp3 = &((ma_mp3*)file)->dr;
+		const ma_uint64 delay = mp3->delayInPCMFrames;
+		if (frame && delay && mp3->currentPCMFrame >= delay && frame <= ~(ma_uint64)0 - delay && frame + delay >= mp3->currentPCMFrame) frame += delay;
 	}
 	return vtable->onSeek(file, frame);
 }
+// The frames a file's own cursor counts that it never gives (see above).
+ma_uint64 nvgt_file_delay(const ma_data_source_vtable* vtable, ma_data_source* file) { return vtable == &g_ma_mp3_ds_vtable? ((ma_mp3*)file)->dr.delayInPCMFrames : 0; }
 #define RND_IMPLEMENTATION
 #include "rnd.h"
 #define SPEECH_IMPLEMENTATION

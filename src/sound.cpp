@@ -1888,11 +1888,13 @@ static ma_result held_file_seek(ma_data_source* backend, ma_uint64 frame) {
 	file->refused.store(result);
 	return MA_SUCCESS; // So that MiniAudio places the decoder's read point at the frame sought, from which held_decoder_read() gives silence.
 }
-// A decoder's file's own cursor.
+// A decoder's file's own cursor, in the frames it gives.
 static bool file_cursor(ma_data_source* backend, ma_uint64* cursor) {
 	held_file* file = file_held(backend);
 	const ma_data_source_vtable* vtable = file? file->original : ((ma_data_source_base*)backend)->vtable;
-	return vtable->onGetCursor && vtable->onGetCursor(backend, cursor) == MA_SUCCESS;
+	if (!vtable->onGetCursor || vtable->onGetCursor(backend, cursor) != MA_SUCCESS) return false;
+	*cursor -= std::min(*cursor, nvgt_file_delay(vtable, backend));
+	return true;
 }
 // Sets the counts of a decoder's WDL resampler to where the decoder is, its file's cursor and its read point.
 static void count_resampling_from_here(ma_decoder* decoder) {
