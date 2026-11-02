@@ -1121,8 +1121,17 @@ public:
 		std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex());
 		return get_mod()->GetFunctionByName(name.c_str());
 	}
+	// A declaration is parsed in time that doubles with each template argument nested in it: 22 levels took 3.5 seconds, and 26 didn't end in 45. A declaration is often data here, and no real one nests this deep.
+	static bool decl_nests_too_deep(const std::string& decl) {
+		int depth = 0;
+		for (char c : decl) {
+			if (c == '<' && ++depth > 12) return true;
+			if (c == '>') depth--;
+		}
+		return false;
+	}
 	asIScriptFunction* get_function_by_decl(const std::string& name) {
-		if (!get_mod()) return NULL;
+		if (!get_mod() || decl_nests_too_deep(name)) return NULL;
 		std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex());
 		return get_mod()->GetFunctionByDecl(name.c_str());
 	}
@@ -1167,6 +1176,7 @@ public:
 	int get_global_index_by_decl(const std::string& decl) {
 		if (!get_mod())
 			return asNO_MODULE;
+		if (decl_nests_too_deep(decl)) return asINVALID_DECLARATION;
 		std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex()); // See get_function_by_name().
 		return get_mod()->GetGlobalVarIndexByDecl(decl.c_str());
 	}
