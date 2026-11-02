@@ -3552,11 +3552,13 @@ static ma_result decode_front_read(ma_data_source* source, void* frames_out, ma_
 	ma_resource_manager_data_buffer_node* node = buffer->pNode;
 	bool held_back = false;
 	// The node's result, which its last page's job sets once its frames are written, rather than the buffer's, set only when the buffer's own job runs again after that.
-	if (node && reinterpret_cast<std::atomic<ma_result>*>(&node->result)->load() == MA_BUSY && reinterpret_cast<std::atomic<ma_resource_manager_data_supply_type>*>(&node->data.type)->load() == ma_resource_manager_data_supply_type_decoded) {
+	const ma_resource_manager_data_supply_type supply = node? reinterpret_cast<std::atomic<ma_resource_manager_data_supply_type>*>(&node->data.type)->load() : ma_resource_manager_data_supply_type_unknown;
+	// Pages too: at what's decoded so far a looping buffer took MiniAudio's end for its loop's and went back to its start, rather than waiting for the rest as load() says.
+	if (node && reinterpret_cast<std::atomic<ma_result>*>(&node->result)->load() == MA_BUSY && (supply == ma_resource_manager_data_supply_type_decoded || supply == ma_resource_manager_data_supply_type_decoded_paged)) {
 		std::atomic<ma_uint32>& pointer = *reinterpret_cast<std::atomic<ma_uint32>*>(&node->executionPointer);
 		ma_uint32 job = pointer.load(std::memory_order_acquire);
 		if (!view->seen || job != view->seen_job) {
-			ma_uint64 frames = reinterpret_cast<std::atomic<ma_uint64>*>(&node->data.backend.decoded.decodedFrameCount)->load(std::memory_order_acquire);
+			ma_uint64 frames = reinterpret_cast<std::atomic<ma_uint64>*>(supply == ma_resource_manager_data_supply_type_decoded? &node->data.backend.decoded.decodedFrameCount : &node->data.backend.decodedPaged.decodedFrameCount)->load(std::memory_order_acquire);
 			// Kept only when the pointer hasn't moved meanwhile, so that the count is from the job it was at or an earlier one: a count the next job stored, before it moved the pointer past itself, would otherwise be taken for one of a job done.
 			if (pointer.load(std::memory_order_acquire) == job) {
 				if (view->seen) view->ready_frames = view->seen_frames; // Written by a job done since.
