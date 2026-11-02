@@ -493,20 +493,55 @@ class low_pass_filter_node_impl : public audio_node_impl, public virtual low_pas
 };
 low_pass_filter_node* low_pass_filter_node::create(double cutoff_frequency, unsigned int order, audio_engine* engine) { return new low_pass_filter_node_impl(cutoff_frequency, order, engine); }
 
+// MiniAudio's first-order high-pass section has its pole on the wrong side, so that it passes DC: an odd order took 2 dB rather than 20 off 100 Hz at a 1 kHz cutoff, order 3 18 dB too little, and dipped in its pass band. Its section is left passing everything, and a Butterworth one, from the bilinear transform as the rest are, runs after the others.
+struct held_hpf_node {
+	ma_hpf_node hpf; // First, as MiniAudio takes this for one.
+	std::atomic<float> gain{1}, pole{0};
+	std::vector<float> last_in, last_out; // A frame each.
+};
+static void held_hpf_process(ma_node* node, const float** frames_in, ma_uint32* frame_count_in, float** frames_out, ma_uint32* frame_count_out) {
+	held_hpf_node* held = (held_hpf_node*)node;
+	ma_hpf_process_pcm_frames(&held->hpf.hpf, frames_out[0], frames_in[0], *frame_count_out);
+	if (!held->hpf.hpf.hpf1Count) return;
+	const float gain = held->gain.load(std::memory_order_relaxed), pole = held->pole.load(std::memory_order_relaxed);
+	const ma_uint32 channels = held->hpf.hpf.channels;
+	float* sample = frames_out[0];
+	for (ma_uint32 frame = 0; frame < *frame_count_out; frame++) {
+		for (ma_uint32 channel = 0; channel < channels; channel++, sample++) {
+			const float in = *sample;
+			*sample = gain * (in - held->last_in[channel]) + pole * held->last_out[channel];
+			held->last_in[channel] = in;
+			held->last_out[channel] = *sample;
+		}
+	}
+}
 class high_pass_filter_node_impl : public audio_node_impl, public virtual high_pass_filter_node {
-	unique_ptr<ma_hpf_node> fn;
+	unique_ptr<held_hpf_node> fn;
 	ma_hpf_node_config cfg;
+	// Once MiniAudio set the filter up, its first-order section passing everything (see held_hpf_node).
+	void tune_first_order() {
+		if (fn->hpf.hpf.hpf1Count) fn->hpf.hpf.pHPF1[0].a.f32 = 1;
+		const double tangent = std::tan(3.14159265358979323846 * cfg.hpf.cutoffFrequency / cfg.hpf.sampleRate);
+		fn->pole.store((float)((1 - tangent) / (1 + tangent)), std::memory_order_relaxed);
+		fn->gain.store((float)(1 / (1 + tangent)), std::memory_order_relaxed);
+	}
 	public:
-	high_pass_filter_node_impl(double cutoff_frequency, int order, audio_engine* e) : fn(make_unique<ma_hpf_node>()), audio_node_impl(nullptr, e) {
+	high_pass_filter_node_impl(double cutoff_frequency, int order, audio_engine* e) : fn(make_unique<held_hpf_node>()), audio_node_impl(nullptr, e) {
 		if (!finite_node_values({cutoff_frequency}) || !(cutoff_frequency = usable_frequency(cutoff_frequency, get_engine()->get_sample_rate(), [&](double f) { return sections_in_range(pass_filter::high, f, order, get_engine()->get_sample_rate()); }))) throw std::invalid_argument("filter setting out of range");
 		cfg = ma_hpf_node_config_init(get_engine()->get_channels(), get_engine()->get_sample_rate(), cutoff_frequency, order);
-		if ((g_soundsystem_last_error = ma_hpf_node_init(ma_engine_get_node_graph(get_engine()->get_ma_engine()), &cfg, nullptr, &*fn)) != MA_SUCCESS) throw std::runtime_error("ma_high_pass_filter_node was not initialized");
-		node = (ma_node_base*)&*fn;
+		fn->last_in.assign(cfg.hpf.channels, 0);
+		fn->last_out.assign(cfg.hpf.channels, 0);
+		if ((g_soundsystem_last_error = ma_hpf_node_init(ma_engine_get_node_graph(get_engine()->get_ma_engine()), &cfg, nullptr, &fn->hpf)) != MA_SUCCESS) throw std::runtime_error("ma_high_pass_filter_node was not initialized");
+		static ma_node_vtable held_vtable = *((ma_node_base*)&fn->hpf)->vtable;
+		held_vtable.onProcess = held_hpf_process;
+		((ma_node_base*)&fn->hpf)->vtable = &held_vtable;
+		tune_first_order();
+		node = (ma_node_base*)&fn->hpf;
 	}
 	~high_pass_filter_node_impl() {
 		if (fn) {
 			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); // Uninitializing detaches it from the nodes it is attached to, the same lists other threads attach to and detach from under this lock.
-			ma_hpf_node_uninit(&*fn, nullptr);
+			ma_hpf_node_uninit(&fn->hpf, nullptr);
 		}
 	}
 	void set_cutoff_frequency(double freq) override {
@@ -514,13 +549,15 @@ class high_pass_filter_node_impl : public audio_node_impl, public virtual high_p
 		if (!(freq = usable_frequency(freq, cfg.hpf.sampleRate, [&](double f) { return sections_in_range(pass_filter::high, f, cfg.hpf.order, cfg.hpf.sampleRate); }))) return;
 		auto previous = cfg.hpf.cutoffFrequency;
 		cfg.hpf.cutoffFrequency = freq;
-		if ((g_soundsystem_last_error = ma_hpf_node_reinit(&cfg.hpf, &*fn)) != MA_SUCCESS) cfg.hpf.cutoffFrequency = previous;
+		if ((g_soundsystem_last_error = ma_hpf_node_reinit(&cfg.hpf, &fn->hpf)) != MA_SUCCESS) cfg.hpf.cutoffFrequency = previous;
+		tune_first_order();
 	}
 	double get_cutoff_frequency() const override { return cfg.hpf.cutoffFrequency; }
 	void set_order(unsigned int order) override {
 		auto previous = cfg.hpf.order;
 		cfg.hpf.order = order;
-		if ((g_soundsystem_last_error = ma_hpf_node_reinit(&cfg.hpf, &*fn)) != MA_SUCCESS) cfg.hpf.order = previous;
+		if ((g_soundsystem_last_error = ma_hpf_node_reinit(&cfg.hpf, &fn->hpf)) != MA_SUCCESS) cfg.hpf.order = previous;
+		tune_first_order();
 	}
 	unsigned int get_order() const override { return cfg.hpf.order; }
 };
