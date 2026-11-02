@@ -12,9 +12,11 @@
  * 3. This notice may not be removed or altered from any source distribution.
 */
 
+#include <algorithm>
 #include <limits>
 #include <sstream>
 #include <string>
+#include <vector>
 #include <angelscript.h>
 #include <obfuscate.h>
 #include <aswrappedcall.h>
@@ -376,6 +378,35 @@ poco_shared<Dynamic::Var>* json_parse_datastream(datastream* input) {
 	JSON::Parser parser;
 	return new poco_shared<Dynamic::Var>(new Dynamic::Var(parser.parse(*istr)));
 }
+// A json object or array can be made to hold itself (o["self"] = o), or hold values nested deeper than the native stack takes, and Poco's stringify followed them until the stack overflowed, which ends the program with no exception to catch. Such a value is refused with an exception first. The parser reads at most 128 levels, and writing takes a few hundred bytes of stack for each, so 256 levels leave what a script's thread has for anything that can be read back.
+static void check_json_value(const Dynamic::Var& value, std::vector<const void*>& path);
+static void check_json_node(const void* node, std::vector<const void*>& path) {
+	if (path.size() >= 256 || std::find(path.begin(), path.end(), node) != path.end()) throw InvalidArgumentException("json value holds itself or is nested too deeply");
+	path.push_back(node);
+}
+static void check_json_object(const JSON::Object& object, std::vector<const void*>& path) {
+	check_json_node(&object, path);
+	for (const auto& entry : object) check_json_value(entry.second, path);
+	path.pop_back();
+}
+static void check_json_array(const JSON::Array& array, std::vector<const void*>& path) {
+	check_json_node(&array, path);
+	for (const auto& entry : array) check_json_value(entry, path);
+	path.pop_back();
+}
+// An indent or a step of billions of spaces took as long to write as it takes to run out of memory, with nothing a script could do about it.
+static void check_json_indent(unsigned int indent, int step) {
+	if (indent > 1024 || step > 1024) throw InvalidArgumentException("json indent out of range");
+}
+static void check_json_value(const Dynamic::Var& value, std::vector<const void*>& path) {
+	if (value.type() == typeid(JSON::Object::Ptr)) {
+		JSON::Object::Ptr object = value.extract<JSON::Object::Ptr>();
+		if (object) check_json_object(*object, path);
+	} else if (value.type() == typeid(JSON::Array::Ptr)) {
+		JSON::Array::Ptr array = value.extract<JSON::Array::Ptr>();
+		if (array) check_json_array(*array, path);
+	}
+}
 // We make a custom json_object class for a couple reasons, mostly so that we can build in poco's json querying as well as other more easily wrapped functions. We'll do very similar for arrays below, I'm not even remotely good enough at this c++ templating thing to avoid this duplicated code and I don't want to meld it all into one class.
 poco_json_object::poco_json_object(JSON::Object::Ptr o) : poco_shared<JSON::Object>(std::move(o)) {}
 poco_json_object::poco_json_object(poco_json_object* other) : poco_shared<Poco::JSON::Object>(new Poco::JSON::Object(*other->ptr)) {}
@@ -424,12 +455,18 @@ bool poco_json_object::is_object(const std::string& key) const {
 	return ptr->isObject(key);
 }
 std::string poco_json_object::stringify(unsigned int indent, int step) const {
+	check_json_indent(indent, step);
+	std::vector<const void*> path;
+	check_json_object(*ptr, path);
 	std::ostringstream ostr;
 	ptr->stringify(ostr, indent, step);
 	return ostr.str();
 }
 void poco_json_object::stringify(datastream* ds, unsigned int indent, int step) const {
 	if (!ds || !ds->get_ostr()) throw InvalidArgumentException("stream not opened for writing");
+	check_json_indent(indent, step);
+	std::vector<const void*> path;
+	check_json_object(*ptr, path);
 	ptr->stringify(*ds->get_ostr(), indent, step);
 }
 CScriptArray* poco_json_object::get_keys() const {
@@ -494,12 +531,18 @@ bool poco_json_array::is_object(unsigned int index) const {
 	return ptr->isObject(index);
 }
 std::string poco_json_array::stringify(unsigned int indent, int step) const {
+	check_json_indent(indent, step);
+	std::vector<const void*> path;
+	check_json_array(*ptr, path);
 	std::ostringstream ostr;
 	ptr->stringify(ostr, indent, step);
 	return ostr.str();
 }
 void poco_json_array::stringify(datastream* ds, unsigned int indent, int step) const {
 	if (!ds || !ds->get_ostr()) throw InvalidArgumentException("stream not opened for writing");
+	check_json_indent(indent, step);
+	std::vector<const void*> path;
+	check_json_array(*ptr, path);
 	ptr->stringify(*ds->get_ostr(), indent, step);
 }
 
