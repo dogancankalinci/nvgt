@@ -533,7 +533,7 @@ MA_API ma_result ma_libopus_get_data_format(ma_libopus* pOpus, ma_format* pForma
         }
 
         if (pChannelMap != NULL) {
-            ma_channel_map_init_standard(ma_standard_channel_map_vorbis, pChannelMap, channelMapCap, channels);
+            ma_ogg_channel_map(pChannelMap, channelMapCap, channels);
         }
 
         return MA_SUCCESS;

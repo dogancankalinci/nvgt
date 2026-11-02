@@ -31,6 +31,28 @@ typedef struct
 
 #include <string.h> /* For memset(). */
 
+/*
+The channel map of an Ogg Vorbis or Opus stream, which a decoder converts to MiniAudio's default for its channels. At 6 that
+default names the rear pair as sides: named so here too, the decoder only reorders them, as it does a WAV's, where as a back
+pair, which that default doesn't have, it blended each with the front of its side, on every path.
+*/
+static void ma_ogg_channel_map(ma_channel* pChannelMap, size_t channelMapCap, ma_uint32 channels)
+{
+    size_t iChannel;
+
+    ma_channel_map_init_standard(ma_standard_channel_map_vorbis, pChannelMap, channelMapCap, channels);
+
+    if (channels == 6) {
+        for (iChannel = 0; iChannel < channelMapCap && iChannel < 6; iChannel += 1) {
+            if (pChannelMap[iChannel] == MA_CHANNEL_BACK_LEFT) {
+                pChannelMap[iChannel] = MA_CHANNEL_SIDE_LEFT;
+            } else if (pChannelMap[iChannel] == MA_CHANNEL_BACK_RIGHT) {
+                pChannelMap[iChannel] = MA_CHANNEL_SIDE_RIGHT;
+            }
+        }
+    }
+}
+
 /* Ogg Vorbis and Opus allow 255 channels, one more than MiniAudio's channel maps and converters hold. */
 static ma_bool32 ma_ogg_link_channels_usable(int channels)
 {

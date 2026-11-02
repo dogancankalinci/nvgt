@@ -676,7 +676,7 @@ MA_API ma_result ma_libvorbis_get_data_format(ma_libvorbis* pVorbis, ma_format* 
         }
 
         if (pChannelMap != NULL) {
-            ma_channel_map_init_standard(ma_standard_channel_map_vorbis, pChannelMap, channelMapCap, pVorbis->channels);
+            ma_ogg_channel_map(pChannelMap, channelMapCap, pVorbis->channels);
         }
 
         return MA_SUCCESS;
