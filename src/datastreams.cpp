@@ -234,8 +234,10 @@ datastream* ds_cerr = nullptr;
 bool datastream::open(std::istream* istr, std::ostream* ostr, const std::string& encoding, int byteorder, datastream* obj) {
 	if (no_close)
 		return false; // This stream cannot be reopened.
+	// Each stream opened on another goes through it by recursion, and is let go of the same way: 10000 streams opened one on the other overflowed the native stack when the last handle went, which ends the program with no exception to catch.
+	int depth = 0;
 	for (datastream* parent = obj; parent; parent = parent->ds) {
-		if (parent == this) return false;
+		if (parent == this || ++depth > 256) return false;
 	}
 	if (r || w)
 		close();
