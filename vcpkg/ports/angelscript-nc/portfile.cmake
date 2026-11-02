@@ -140,6 +140,7 @@ vcpkg_from_github(
         fix-shared-owner-search.patch
         fix-load-shared-function-without-code.patch
         fix-imported-function-index.patch
+        fix-script-code-copy-terminator.patch
 )
 
 vcpkg_cmake_configure(

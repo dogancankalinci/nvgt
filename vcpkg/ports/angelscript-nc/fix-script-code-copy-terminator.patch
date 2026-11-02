@@ -1,0 +1,18 @@
+--- a/sdk/angelscript/source/as_scriptcode.cpp
++++ b/sdk/angelscript/source/as_scriptcode.cpp
+@@ -77,10 +77,14 @@
+ 	{
+ 		codeLength = in_length;
+ 		sharedCode = false;
+-		code = asNEWARRAY(char, in_length);
++		// ALTERED: with a terminating zero, as the code given has when it isn't copied. The parser reads the character at the
++		// position of a token (ParseTemplTypeList at the end of a declaration such as "array<array<int>", which deserialize()
++		// takes from its data, and the default argument text), and the end token's position is the length.
++		code = asNEWARRAY(char, in_length + 1);
+ 		if( code == 0 )
+ 			return asOUT_OF_MEMORY;
+ 		memcpy(code, in_code, in_length);
++		code[in_length] = 0;
+ 	}
+ 	else
+ 	{
