@@ -1011,6 +1011,13 @@ static void report_unhandled_exception(asIScriptContext *ctx) {
 	if (c == 1)
 		ClipboardSetText(exc);
 }
+// Whether the module is still one of the engine's: a script can discard its own (script_get_module("nvgt_game", 0).discard(), or asking for that name with asGM_ALWAYS_CREATE), and it can be deleted any time after that.
+static bool module_is_live(asIScriptEngine *engine, asIScriptModule *mod) {
+	for (asUINT i = 0; i < engine->GetModuleCount(); i++) {
+		if (engine->GetModuleByIndex(i) == mod) return true;
+	}
+	return false;
+}
 // Lets the module go once the script ended or failed to start. Engines can outlive it, and their processing callbacks, which run on audio threads, take contexts from the pool, so they are stopped first; the destructors that discarding runs use pooled contexts too, so the pool is emptied after.
 static void discard_module(asIScriptEngine *engine, asIScriptModule *mod) {
 	garbage_collect_stop_thread(); // Its collections run script destructors, which use the sounds and the rest stopped or freed from here on.
@@ -1022,7 +1029,8 @@ static void discard_module(asIScriptEngine *engine, asIScriptModule *mod) {
 			g_ctxMgr = 0;
 		}
 	}
-	mod->Discard();
+	// A second Discard() of a module the script discarded put it in the engine's list of discarded modules twice, and deleting it left a freed module in the list, read at once by this collection (a crash as the script ended).
+	if (module_is_live(engine, mod)) mod->Discard();
 	engine->GarbageCollect();
 	ScopedLock<Mutex> l(g_ctxPoolMutex);
 	for (asIScriptContext *pooled : g_ctxPool) pooled->Release();
@@ -1109,7 +1117,7 @@ int ExecuteScript(asIScriptEngine *engine, const string &scriptFile) {
 	}
 	// Added to be kept, so the manager leaves giving it back to us however it ended, after exit() too: its AbortAll() aborts but doesn't give back a kept context. It used to, so the context was given back here only when exit() hadn't been called, and while still running if exit() was called by the script, where the pool could hand it out before its execution ended and this read the state of another use. After the debugger's abort it was never given back.
 	g_ctxMgr->DoneWithContext(ctx);
-	asIScriptFunction *outfunc = mod->GetFunctionByDecl("void on_exit()");
+	asIScriptFunction *outfunc = module_is_live(engine, mod) ? mod->GetFunctionByDecl("void on_exit()") : nullptr; // See module_is_live(): a module the script discarded has lost its globals, and may be gone.
 	// Run as main() is, so that sleep() and yield() in it resume rather than leave it suspended for good; the manager gives the context back when it is done, as it is added without being kept.
 	if (outfunc && g_ctxMgr->AddContext(engine, outfunc)) {
 		while (g_ctxMgr->ExecuteScripts())
