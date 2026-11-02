@@ -2004,7 +2004,11 @@ static ma_result held_decoder_seek(ma_data_source* source, ma_uint64 frame) {
 		put_file_back(decoder->pBackend, before);
 		return refused;
 	} // Refused by a file that can seek, which a script is told, the decoder reading on from where it was rather than giving silence from the frame (see held_file_seek()).
-	if (result == MA_SUCCESS && file->can_seek && file_cursor(decoder->pBackend, &cursor) && cursor < file_frame && (result = read_on_to_frame(decoder->pBackend, cursor, file_frame, before)) != MA_SUCCESS) return result;
+	if (result == MA_SUCCESS && file->can_seek && file_cursor(decoder->pBackend, &cursor) && cursor < file_frame && (result = read_on_to_frame(decoder->pBackend, cursor, file_frame, before)) != MA_SUCCESS) {
+		if (t_script_seek) return result;
+		file->finished.store(true); // A loop point past the end of a file that doesn't give its length, which the script can't tell: ended, as a decoder that can't seek back is. MiniAudio takes a seek's failure as a read's, and a looping sound played silence for good, reading the file again each block.
+		return MA_SUCCESS;
+	}
 	if (result == MA_SUCCESS) {
 		if (!there || decoder->readPointerInPCMFrames != frame) {
 			ma_data_converter_reset(&decoder->converter);
