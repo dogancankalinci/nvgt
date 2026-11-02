@@ -1,0 +1,57 @@
+--- a/sdk/angelscript/source/as_restore.cpp
++++ b/sdk/angelscript/source/as_restore.cpp
+@@ -1303,7 +1303,8 @@
+ 	if( func->funcType == asFUNC_SCRIPT )
+ 	{
+ 		// Skip this for external shared entities
+-		if (module->m_externalTypes.IndexOf(func->objectType) >= 0)
++		// ALTERED: a function without a class isn't one, also when an external type wasn't found (null in the list)
++		if (func->objectType && module->m_externalTypes.IndexOf(func->objectType) >= 0)
+ 		{
+ 			// Replace with the real function from the existing entity
+ 			isNew = false;
+@@ -1929,7 +1930,7 @@
+ 						{
+ 							// Destroy the function without releasing any references
+ 							func->id = 0;
+-							func->scriptData->byteCode.SetLength(0);
++							if( func->scriptData ) func->scriptData->byteCode.SetLength(0); // ALTERED: a function read as another kind has none
+ 							func->ReleaseInternal();
+ 						}
+ 						dontTranslate.Insert(realFunc, true);
+@@ -1980,7 +1981,7 @@
+ 							{
+ 								// Destroy the function without releasing any references
+ 								func->id = 0;
+-								func->scriptData->byteCode.SetLength(0);
++								if( func->scriptData ) func->scriptData->byteCode.SetLength(0); // ALTERED: a function read as another kind has none
+ 								func->ReleaseInternal();
+ 							}
+ 						}
+@@ -2037,7 +2038,7 @@
+ 							{
+ 								// Destroy the function without releasing any references
+ 								func->id = 0;
+-								func->scriptData->byteCode.SetLength(0);
++								if( func->scriptData ) func->scriptData->byteCode.SetLength(0); // ALTERED: a function read as another kind has none
+ 								func->ReleaseInternal();
+ 							}
+ 						}
+@@ -2104,7 +2105,7 @@
+ 							LEAVECRITICALSECTION(engine->functionTableLock);
+ 							func->id = 0;
+ 							if( func->scriptData )
+-								func->scriptData->byteCode.SetLength(0);
++								if( func->scriptData ) func->scriptData->byteCode.SetLength(0); // ALTERED: a function read as another kind has none
+ 							func->ReleaseInternal();
+ 						}
+ 					}
+@@ -2175,7 +2176,7 @@
+ 							// Destroy the function without releasing any references
+ 							func->id = 0;
+ 							if( func->scriptData )
+-								func->scriptData->byteCode.SetLength(0);
++								if( func->scriptData ) func->scriptData->byteCode.SetLength(0); // ALTERED: a function read as another kind has none
+ 							func->ReleaseInternal();
+ 						}
+ 					}

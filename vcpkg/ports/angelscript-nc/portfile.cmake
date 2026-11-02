@@ -138,6 +138,7 @@ vcpkg_from_github(
         fix-discard-module-twice.patch
         fix-import-holds-called-module.patch
         fix-shared-owner-search.patch
+        fix-load-shared-function-without-code.patch
 )
 
 vcpkg_cmake_configure(
