@@ -10,6 +10,7 @@
  * 3. This notice may not be removed or altered from any source distribution.
  */
 
+#include <cmath>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -126,6 +127,12 @@ struct physics_callback_scope {
 };
 static void check_not_in_physics_callback(const char* what) {
 	if (g_physics_callback_depth > 0) throw runtime_error(string(what) + " cannot be destroyed from inside a physics callback; defer it until the callback returns");
+}
+
+// reactphysics3d only asserts that a transform is valid (no check in a release build). A position or rotation that isn't finite, or a rotation too large for its length to be, went into the broad phase, and the next update of the world read and wrote outside of its tree (an access violation). A NaN from a script's own calculation is enough.
+static void check_transform(const Transform& transform) {
+	const Quaternion& rotation = transform.getOrientation();
+	if (!transform.getPosition().isFinite() || !rotation.isFinite() || !std::isfinite(rotation.lengthSquare())) throw runtime_error("transform is not finite");
 }
 
 void simple_void_callback(asIScriptFunction* callback, const void* data) {
@@ -276,7 +283,23 @@ AABB world_get_aabb(PhysicsWorld& world, const Collider* collider) {
 
 template <class T> Collider* body_add_collider(T& body, CollisionShape* shape, const Transform& transform) {
 	if (!shape) throw runtime_error("collision shape cannot be null");
+	check_transform(transform);
 	return body.addCollider(shape, transform);
+}
+
+template <class T> void body_set_transform(T& body, const Transform& transform) {
+	check_transform(transform);
+	body.setTransform(transform);
+}
+
+void collider_set_local_to_body_transform(Collider& collider, const Transform& transform) {
+	check_transform(transform);
+	collider.setLocalToBodyTransform(transform);
+}
+
+RigidBody* world_create_rigid_body(PhysicsWorld& world, const Transform& transform) {
+	check_transform(transform);
+	return world.createRigidBody(transform);
 }
 
 // RigidBody::setType disables a body's components while it is static, and checkForDisabledOverlappingPairs then disables
@@ -399,6 +422,31 @@ void triangle_mesh_destroy(TriangleMesh* mesh) {
 void height_field_destroy(HeightField* heightField) {
 	if (!heightField) return;
 	g_physics.destroyHeightField(heightField);
+}
+
+// A scale that isn't finite makes a mesh's bounds what check_transform() refuses.
+static void check_scaling(const Vector3& scaling) {
+	if (!scaling.isFinite()) throw runtime_error("scaling is not finite");
+}
+void concave_shape_set_scale(ConcaveShape& shape, const Vector3& scale) {
+	check_scaling(scale);
+	shape.setScale(scale);
+}
+void convex_mesh_shape_set_scale(ConvexMeshShape& shape, const Vector3& scale) {
+	check_scaling(scale);
+	shape.setScale(scale);
+}
+ConvexMeshShape* convex_mesh_shape_create(ConvexMesh* mesh, const Vector3& scaling) {
+	check_scaling(scaling);
+	return g_physics.createConvexMeshShape(mesh, scaling);
+}
+ConcaveMeshShape* concave_mesh_shape_create(TriangleMesh* mesh, const Vector3& scaling) {
+	check_scaling(scaling);
+	return g_physics.createConcaveMeshShape(mesh, scaling);
+}
+HeightFieldShape* height_field_shape_create(HeightField* height_field, const Vector3& scaling) {
+	check_scaling(scaling);
+	return g_physics.createHeightFieldShape(height_field, scaling);
 }
 
 void default_logger_destroy(DefaultLogger* logger) {
@@ -1024,7 +1072,7 @@ void RegisterPhysicsBody(asIScriptEngine* engine, const string& type) {
 	engine->RegisterObjectMethod(type.c_str(), "bool get_is_active() const property", asMETHOD(T, isActive), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "void set_is_active(bool is_active) property", asMETHOD(T, setIsActive), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "const physics_transform& get_transform() const property", asMETHOD(T, getTransform), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "void set_transform(const physics_transform&in transform) property", asMETHOD(T, setTransform), asCALL_THISCALL);
+	engine->RegisterObjectMethod(type.c_str(), "void set_transform(const physics_transform&in transform) property", asFUNCTION(body_set_transform<T>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(
 	    type.c_str(),
 	    "physics_collider@ add_collider(physics_collision_shape@ shape, const physics_transform&in transform)",
@@ -1075,7 +1123,7 @@ void RegisterConcaveShape(asIScriptEngine* engine, const string& type) {
 	engine->RegisterObjectMethod(type.c_str(), "physics_triangle_raycast_side get_raycast_test_type() const property", asMETHOD(ConcaveShape, getRaycastTestType), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "void set_raycast_test_type(physics_triangle_raycast_side side) property", asMETHOD(ConcaveShape, setRaycastTestType), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "vector get_scale() const property", asFUNCTION(concave_shape_get_scale<T>), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "void set_scale(const vector &in scale) property", asMETHOD(ConcaveShape, setScale), asCALL_THISCALL);
+	engine->RegisterObjectMethod(type.c_str(), "void set_scale(const vector &in scale) property", asFUNCTION(concave_shape_set_scale), asCALL_CDECL_OBJFIRST);
 }
 
 void RegisterEnumsAndConstants(asIScriptEngine* engine) {
@@ -1344,7 +1392,7 @@ void RegisterPhysicsEntities(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("physics_collider", "const physics_collision_shape@ get_collision_shape() const property", asMETHODPR(Collider, getCollisionShape, () const, const CollisionShape*), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_collider", "physics_body@ get_body() const property", asMETHOD(Collider, getBody), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_collider", "const physics_transform& get_local_to_body_transform() const property", asMETHOD(Collider, getLocalToBodyTransform), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_collider", "void set_local_to_body_transform(const physics_transform&in transform) property", asMETHOD(Collider, setLocalToBodyTransform), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_collider", "void set_local_to_body_transform(const physics_transform&in transform) property", asFUNCTION(collider_set_local_to_body_transform), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_collider", "const physics_transform get_local_to_world_transform() const", asMETHOD(Collider, getLocalToWorldTransform), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_collider", "const aabb get_world_aabb() const property", asMETHOD(Collider, getWorldAABB), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_collider", "bool test_aabb_overlap(const aabb&in world_aabb) const", asMETHOD(Collider, testAABBOverlap), asCALL_THISCALL);
@@ -1420,7 +1468,7 @@ void RegisterCollisionShapes(asIScriptEngine* engine) {
 	engine->RegisterGlobalFunction("void physics_triangle_shape_compute_smooth_triangle_mesh_contact(const physics_collision_shape &in shape1, const physics_collision_shape &in shape2, vector & local_contact_point_shape1, vector & local_contact_point_shape2, const physics_transform &in shape1_to_world, const physics_transform &in shape2_to_world, float penitration_depth, vector & out_smooth_vertex_normal)", asFUNCTION(TriangleShape::computeSmoothTriangleMeshContact), asCALL_CDECL);
 	RegisterConvexPolyhedronShape<ConvexMeshShape>(engine, "physics_convex_mesh_shape");
 	engine->RegisterObjectMethod("physics_convex_mesh_shape", "vector& get_scale() const property", asMETHOD(ConvexMeshShape, getScale), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_convex_mesh_shape", "void set_scale(vector& scale) const property", asMETHOD(ConvexMeshShape, setScale), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_convex_mesh_shape", "void set_scale(vector& scale) const property", asFUNCTION(convex_mesh_shape_set_scale), asCALL_CDECL_OBJFIRST);
 	RegisterConcaveShape<HeightFieldShape>(engine, "physics_height_field_shape");
 	engine->RegisterObjectMethod("physics_height_field_shape", "physics_height_field@ get_height_field() const property", asMETHOD(HeightFieldShape, getHeightField), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_height_field_shape", "vector get_vertex_at(uint x, uint y) const", asFUNCTION(height_field_shape_get_vertex_at), asCALL_CDECL_OBJFIRST);
@@ -1615,7 +1663,7 @@ void RegisterPhysicsWorldAndCallbacks(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("physics_world", "uint16 get_nb_iterations_position_solver() const property", asMETHOD(PhysicsWorld, getNbIterationsPositionSolver), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_world", "void set_nb_iterations_position_solver(uint16 iterations) property", asFUNCTION(world_set_nb_iterations_position_solver), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_world", "void set_contacts_position_correction_technique(physics_contact_position_correction_technique technique) property", asMETHOD(PhysicsWorld, setContactsPositionCorrectionTechnique), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_world", "physics_rigid_body@ create_rigid_body(const physics_transform&in transform)", asMETHOD(PhysicsWorld, createRigidBody), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_world", "physics_rigid_body@ create_rigid_body(const physics_transform&in transform)", asFUNCTION(world_create_rigid_body), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_world", "void destroy_rigid_body(physics_rigid_body& body)", asFUNCTION(world_destroy_rigid_body), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_world", "physics_joint@ create_joint(const physics_joint_info&in joint_info)", asMETHOD(PhysicsWorld, createJoint), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_world", "void destroy_joint(physics_joint& joint)", asFUNCTION(world_destroy_joint), asCALL_CDECL_OBJFIRST);
@@ -1698,12 +1746,12 @@ void RegisterHeightFieldAndMeshTypes(asIScriptEngine* engine) {
 
 void RegisterPhysicsCommonFactories(asIScriptEngine* engine) {
 	// Collision Shape Factories
-	engine->RegisterObjectBehaviour("physics_concave_mesh_shape", asBEHAVE_FACTORY, "physics_concave_mesh_shape@ f(physics_triangle_mesh@ triangle_mesh, const vector&in scaling = vector(1,1,1))", asMETHOD(PhysicsCommon, createConcaveMeshShape), asCALL_THISCALL_ASGLOBAL, &g_physics);
+	engine->RegisterObjectBehaviour("physics_concave_mesh_shape", asBEHAVE_FACTORY, "physics_concave_mesh_shape@ f(physics_triangle_mesh@ triangle_mesh, const vector&in scaling = vector(1,1,1))", asFUNCTION(concave_mesh_shape_create), asCALL_CDECL);
 	engine->RegisterObjectBehaviour("physics_sphere_shape", asBEHAVE_FACTORY, "physics_sphere_shape@ f(float radius)", asMETHOD(PhysicsCommon, createSphereShape), asCALL_THISCALL_ASGLOBAL, &g_physics);
 	engine->RegisterObjectBehaviour("physics_box_shape", asBEHAVE_FACTORY, "physics_box_shape@ f(const vector&in half_extents)", asMETHOD(PhysicsCommon, createBoxShape), asCALL_THISCALL_ASGLOBAL, &g_physics);
 	engine->RegisterObjectBehaviour("physics_capsule_shape", asBEHAVE_FACTORY, "physics_capsule_shape@ f(float radius, float height)", asMETHOD(PhysicsCommon, createCapsuleShape), asCALL_THISCALL_ASGLOBAL, &g_physics);
-	engine->RegisterObjectBehaviour("physics_convex_mesh_shape", asBEHAVE_FACTORY, "physics_convex_mesh_shape@ f(physics_convex_mesh@ convex_mesh, const vector&in scaling = vector(1,1,1))", asMETHOD(PhysicsCommon, createConvexMeshShape), asCALL_THISCALL_ASGLOBAL, &g_physics);
-	engine->RegisterObjectBehaviour("physics_height_field_shape", asBEHAVE_FACTORY, "physics_height_field_shape@ f(physics_height_field@ height_field, const vector&in scaling = vector(1,1,1))", asMETHOD(PhysicsCommon, createHeightFieldShape), asCALL_THISCALL_ASGLOBAL, &g_physics);
+	engine->RegisterObjectBehaviour("physics_convex_mesh_shape", asBEHAVE_FACTORY, "physics_convex_mesh_shape@ f(physics_convex_mesh@ convex_mesh, const vector&in scaling = vector(1,1,1))", asFUNCTION(convex_mesh_shape_create), asCALL_CDECL);
+	engine->RegisterObjectBehaviour("physics_height_field_shape", asBEHAVE_FACTORY, "physics_height_field_shape@ f(physics_height_field@ height_field, const vector&in scaling = vector(1,1,1))", asFUNCTION(height_field_shape_create), asCALL_CDECL);
 	engine->RegisterGlobalFunction("physics_triangle_mesh@ physics_triangle_mesh_create(physics_triangle_data@ triangle_data)", asFUNCTION(create_triangle_mesh_from_managed), asCALL_CDECL);
 	engine->RegisterGlobalFunction("physics_convex_mesh@ physics_convex_mesh_create(physics_vertex_data@ vertex_data)", asFUNCTION(create_convex_mesh_from_managed_vertex_array), asCALL_CDECL);
 	engine->RegisterGlobalFunction("physics_convex_mesh@ physics_convex_mesh_create_from_polygon(physics_polygon_data@ polygon_data)", asFUNCTION(create_convex_mesh_from_polygon_data), asCALL_CDECL);
