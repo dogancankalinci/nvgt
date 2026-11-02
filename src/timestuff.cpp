@@ -418,6 +418,14 @@ DateTime* calendar_get_utc(const LocalDateTime* obj) {
 /**
  * Makes sure the values stored within a LocalDateTime or DateTime object are valid, and raises a script exception if not.
 */
+// The month is checked when a date is set, as Poco's conversion to a julian day looks it up in a table of its own and a month far outside it read from outside the table (a crash). Other invalid values can be stored, and verify_date_time refuses them when they're read.
+template <class t> t& date_time_set(t& dt, int year, int month, int day, int hour, int minute, int second, int millisecond, int microsecond) {
+	if (month < 1 || month > 12) {
+		asGetActiveContext()->SetException("Invalid date/time.");
+		return dt;
+	}
+	return dt.assign(year, month, day, hour, minute, second, millisecond, microsecond);
+}
 template <class t> bool verify_date_time(t &dt) {
 	if (!DateTime::isValid(dt.year(), dt.month(), dt.day(), dt.hour(), dt.minute(), dt.second(), dt.millisecond(), dt.microsecond())) {
 		asGetActiveContext()->SetException("Invalid date/time.");
@@ -799,7 +807,7 @@ void RegisterScriptTimestuffCore(asIScriptEngine *engine) {
 	engine->RegisterObjectMethod("datetime", "datetime& opAssign(const datetime&in other)", asMETHODPR(DateTime, operator=, (const DateTime&), DateTime&), asCALL_THISCALL);
 	engine->RegisterObjectMethod("datetime", "datetime& opAssign(const timestamp&in value)", asMETHODPR(DateTime, operator=, (const Timestamp&), DateTime&), asCALL_THISCALL);
 	engine->RegisterObjectMethod("datetime", "datetime& opAssign(double julian_day)", asMETHODPR(DateTime, operator=, (double), DateTime&), asCALL_THISCALL);
-	engine->RegisterObjectMethod("datetime", "datetime& set(int year, int month, int day, int hour = 0, int minute = 0, int second = 0, int millisecond = 0, int microsecond = 0)", asMETHOD(DateTime, assign), asCALL_THISCALL);
+	engine->RegisterObjectMethod("datetime", "datetime& set(int year, int month, int day, int hour = 0, int minute = 0, int second = 0, int millisecond = 0, int microsecond = 0)", asFUNCTION(date_time_set<DateTime>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("datetime", "int get_year() const property", asMETHOD(DateTime, year), asCALL_THISCALL);
 	engine->RegisterObjectMethod("datetime", "int get_yearday() const property", asMETHOD(DateTime, dayOfYear), asCALL_THISCALL);
 	engine->RegisterObjectMethod("datetime", "int get_month() const property", asMETHOD(DateTime, month), asCALL_THISCALL);
@@ -838,7 +846,7 @@ void RegisterScriptTimestuffCore(asIScriptEngine *engine) {
 	engine->RegisterObjectMethod("calendar", "calendar& opAssign(const calendar&in other)", asMETHODPR(LocalDateTime, operator=, (const LocalDateTime&), LocalDateTime&), asCALL_THISCALL);
 	engine->RegisterObjectMethod("calendar", "calendar& opAssign(const timestamp&in value)", asMETHODPR(LocalDateTime, operator=, (const Timestamp&), LocalDateTime&), asCALL_THISCALL);
 	engine->RegisterObjectMethod("calendar", "calendar& opAssign(double julian_day)", asMETHODPR(LocalDateTime, operator=, (double), LocalDateTime&), asCALL_THISCALL);
-	engine->RegisterObjectMethod("calendar", "calendar& set(int year, int month, int day, int hour = 0, int minute = 0, int second = 0, int millisecond = 0, int microsecond = 0)", asMETHODPR(LocalDateTime, assign, (int, int, int, int, int, int, int, int), LocalDateTime&), asCALL_THISCALL);
+	engine->RegisterObjectMethod("calendar", "calendar& set(int year, int month, int day, int hour = 0, int minute = 0, int second = 0, int millisecond = 0, int microsecond = 0)", asFUNCTION(date_time_set<LocalDateTime>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("calendar", "int get_year() const property", asMETHOD(LocalDateTime, year), asCALL_THISCALL);
 	engine->RegisterObjectMethod("calendar", "int get_yearday() const property", asMETHOD(LocalDateTime, dayOfYear), asCALL_THISCALL);
 	engine->RegisterObjectMethod("calendar", "int get_month() const property", asMETHOD(LocalDateTime, month), asCALL_THISCALL);
