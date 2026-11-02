@@ -137,6 +137,12 @@ static void check_transform(const Transform& transform) {
 	if (!transform.getPosition().isFinite() || !rotation.isFinite() || !std::isfinite(rotation.lengthSquare())) throw runtime_error("transform is not finite");
 }
 
+// A script's handles to these objects aren't counted, and reactphysics3d only asserts what it is given (no check in a release build), so what was destroyed already, or belongs to another world, was used as it stood (access violations). What exists is noted here, so that what can be refused is: destroying something twice, using a destroyed shape or mesh, and destroying a mesh a shape is using. The methods of a destroyed object remain out of reach, as a handle doesn't know.
+static std::unordered_map<const Body*, PhysicsWorld*> g_physics_bodies;
+static std::unordered_map<const CollisionShape*, const void*> g_physics_shapes; // With the mesh or height field a shape uses, if any.
+static std::unordered_set<const void*> g_physics_meshes;
+static std::unordered_set<const DefaultLogger*> g_physics_loggers;
+
 void simple_void_callback(asIScriptFunction* callback, const void* data) {
 	physics_callback_scope in_callback;
 	asIScriptContext* ACtx = asGetActiveContext();
@@ -285,6 +291,7 @@ AABB world_get_aabb(PhysicsWorld& world, const Collider* collider) {
 
 template <class T> Collider* body_add_collider(T& body, CollisionShape* shape, const Transform& transform) {
 	if (!shape) throw runtime_error("collision shape cannot be null");
+	if (!g_physics_shapes.count(shape)) throw runtime_error("collision shape was destroyed");
 	check_transform(transform);
 	return body.addCollider(shape, transform);
 }
@@ -301,7 +308,9 @@ void collider_set_local_to_body_transform(Collider& collider, const Transform& t
 
 RigidBody* world_create_rigid_body(PhysicsWorld& world, const Transform& transform) {
 	check_transform(transform);
-	return world.createRigidBody(transform);
+	RigidBody* body = world.createRigidBody(transform);
+	if (body) g_physics_bodies[body] = &world;
+	return body;
 }
 
 // RigidBody::setType disables a body's components while it is static, and checkForDisabledOverlappingPairs then disables
@@ -353,6 +362,7 @@ static bool shape_in_use(const CollisionShape* shape) {
 	return false;
 }
 static void check_shape_destroyable(const CollisionShape* shape) {
+	if (!g_physics_shapes.count(shape)) throw runtime_error("collision shape was destroyed already");
 	if (shape_in_use(shape)) throw runtime_error("collision shape is still attached to a body; remove the collider or destroy the body first");
 }
 
@@ -364,12 +374,14 @@ void world_destroy_joint(PhysicsWorld* world, Joint* joint) {
 
 void body_cleanup_user_data(Body* body);
 void world_destroy(PhysicsWorld* world) {
-	if (!world) return;
+	if (!world || !g_physics_worlds.count(world)) return;
 	check_not_in_physics_callback("a world");
 	world_destroy_listener(world);
 	// Destroying the world destroys its bodies, and the user data of each (an any the body holds a reference to) was never let go of.
-	for (uint32 b = 0; b < world->getNbRigidBodies(); b++)
+	for (uint32 b = 0; b < world->getNbRigidBodies(); b++) {
 		body_cleanup_user_data(world->getRigidBody(b));
+		g_physics_bodies.erase(world->getRigidBody(b));
+	}
 	g_physics_worlds.erase(world);
 	g_physics.destroyPhysicsWorld(world);
 }
@@ -378,54 +390,71 @@ void world_destroy(PhysicsWorld* world) {
 void sphere_shape_destroy(SphereShape* shape) {
 	if (!shape) return;
 	check_shape_destroyable(shape);
+	g_physics_shapes.erase(shape);
 	g_physics.destroySphereShape(shape);
 }
 
 void box_shape_destroy(BoxShape* shape) {
 	if (!shape) return;
 	check_shape_destroyable(shape);
+	g_physics_shapes.erase(shape);
 	g_physics.destroyBoxShape(shape);
 }
 
 void capsule_shape_destroy(CapsuleShape* shape) {
 	if (!shape) return;
 	check_shape_destroyable(shape);
+	g_physics_shapes.erase(shape);
 	g_physics.destroyCapsuleShape(shape);
 }
 
 void convex_mesh_shape_destroy(ConvexMeshShape* shape) {
 	if (!shape) return;
 	check_shape_destroyable(shape);
+	g_physics_shapes.erase(shape);
 	g_physics.destroyConvexMeshShape(shape);
 }
 
 void height_field_shape_destroy(HeightFieldShape* shape) {
 	if (!shape) return;
 	check_shape_destroyable(shape);
+	g_physics_shapes.erase(shape);
 	g_physics.destroyHeightFieldShape(shape);
 }
 
 void concave_mesh_shape_destroy(ConcaveMeshShape* shape) {
 	if (!shape) return;
 	check_shape_destroyable(shape);
+	g_physics_shapes.erase(shape);
 	g_physics.destroyConcaveMeshShape(shape);
 }
 
+// False for a mesh that was destroyed already. A shape keeps a pointer to its mesh, read in every collision test.
+static bool mesh_can_be_destroyed(const void* mesh) {
+	if (!g_physics_meshes.count(mesh)) return false;
+	for (const auto& shape : g_physics_shapes)
+		if (shape.second == mesh) throw runtime_error("a collision shape is still using this mesh; destroy the shape first");
+	g_physics_meshes.erase(mesh);
+	return true;
+}
+
 void convex_mesh_destroy(ConvexMesh* mesh) {
-	if (!mesh) return;
-	g_physics.destroyConvexMesh(mesh);
+	if (mesh && mesh_can_be_destroyed(mesh)) g_physics.destroyConvexMesh(mesh);
 }
 
 void triangle_mesh_destroy(TriangleMesh* mesh) {
-	if (!mesh) return;
-	g_physics.destroyTriangleMesh(mesh);
+	if (mesh && mesh_can_be_destroyed(mesh)) g_physics.destroyTriangleMesh(mesh);
 }
 
 void height_field_destroy(HeightField* heightField) {
-	if (!heightField) return;
-	g_physics.destroyHeightField(heightField);
+	if (heightField && mesh_can_be_destroyed(heightField)) g_physics.destroyHeightField(heightField);
 }
 
+template <class M> static M* live_mesh(M* mesh) {
+	if (!mesh) throw runtime_error("mesh cannot be null");
+	if (!g_physics_meshes.count(mesh)) throw runtime_error("mesh was destroyed");
+	return mesh;
+}
 // A scale that isn't finite makes a mesh's bounds what check_transform() refuses.
 static void check_scaling(const Vector3& scaling) {
 	if (!scaling.isFinite()) throw runtime_error("scaling is not finite");
@@ -438,21 +467,44 @@ void convex_mesh_shape_set_scale(ConvexMeshShape& shape, const Vector3& scale) {
 	check_scaling(scale);
 	shape.setScale(scale);
 }
+SphereShape* sphere_shape_create(float radius) {
+	SphereShape* shape = g_physics.createSphereShape(radius);
+	g_physics_shapes[shape] = nullptr;
+	return shape;
+}
+BoxShape* box_shape_create(const Vector3& half_extents) {
+	BoxShape* shape = g_physics.createBoxShape(half_extents);
+	g_physics_shapes[shape] = nullptr;
+	return shape;
+}
+CapsuleShape* capsule_shape_create(float radius, float height) {
+	CapsuleShape* shape = g_physics.createCapsuleShape(radius, height);
+	g_physics_shapes[shape] = nullptr;
+	return shape;
+}
 ConvexMeshShape* convex_mesh_shape_create(ConvexMesh* mesh, const Vector3& scaling) {
 	check_scaling(scaling);
-	return g_physics.createConvexMeshShape(mesh, scaling);
+	ConvexMeshShape* shape = g_physics.createConvexMeshShape(live_mesh(mesh), scaling);
+	g_physics_shapes[shape] = mesh;
+	return shape;
 }
 ConcaveMeshShape* concave_mesh_shape_create(TriangleMesh* mesh, const Vector3& scaling) {
 	check_scaling(scaling);
-	return g_physics.createConcaveMeshShape(mesh, scaling);
+	ConcaveMeshShape* shape = g_physics.createConcaveMeshShape(live_mesh(mesh), scaling);
+	g_physics_shapes[shape] = mesh;
+	return shape;
 }
 HeightFieldShape* height_field_shape_create(HeightField* height_field, const Vector3& scaling) {
 	check_scaling(scaling);
-	return g_physics.createHeightFieldShape(height_field, scaling);
+	HeightFieldShape* shape = g_physics.createHeightFieldShape(live_mesh(height_field), scaling);
+	g_physics_shapes[shape] = height_field;
+	return shape;
 }
 
-void default_logger_destroy(DefaultLogger* logger) {
-	if (!logger) return;
+// A second destroy freed the logger again, and one still set as the current logger was written to by every world created after.
+static void default_logger_destroy(DefaultLogger* logger) {
+	if (!logger || !g_physics_loggers.erase(logger)) return;
+	if (PhysicsCommon::getLogger() == logger) PhysicsCommon::setLogger(nullptr);
 	g_physics.destroyDefaultLogger(logger);
 }
 
@@ -465,6 +517,7 @@ void default_logger_destroy(DefaultLogger* logger) {
 void physics_shape_destroy(CollisionShape* shape) {
 	if (!shape)
 		return;
+	if (!g_physics_shapes.count(shape)) throw runtime_error("collision shape was destroyed already");
 	// First dispatch on the broad shape type
 	CollisionShapeType shapeType = shape->getType();
 	switch (shapeType) {
@@ -826,6 +879,7 @@ TriangleMesh* create_triangle_mesh_from_managed(ManagedTriangleData* managedArra
 	TriangleMesh* mesh = g_physics.createTriangleMesh(*managedArray->array, messages);
 	// TODO: Handle messages (warnings/errors)
 	// Expose them to user?
+	if (mesh) g_physics_meshes.insert(mesh);
 	return mesh;
 }
 
@@ -837,6 +891,7 @@ ConvexMesh* create_convex_mesh_from_managed_vertex_array(ManagedVertexData* mana
 	ConvexMesh* mesh = g_physics.createConvexMesh(*managedArray->array, messages);
 	// TODO: Handle messages (warnings/errors)
 	// Expose them to user?
+	if (mesh) g_physics_meshes.insert(mesh);
 	return mesh;
 }
 
@@ -848,6 +903,7 @@ ConvexMesh* create_convex_mesh_from_polygon_data(ManagedPolygonData* managedArra
 	ConvexMesh* mesh = g_physics.createConvexMesh(*managedArray->array, messages);
 	// TODO: Handle messages (warnings/errors)
 	// Expose them to user?
+	if (mesh) g_physics_meshes.insert(mesh);
 	return mesh;
 }
 
@@ -969,6 +1025,9 @@ CScriptAny* body_get_user_data(Body* body) {
 void world_destroy_rigid_body(PhysicsWorld* world, RigidBody* body) {
 	if (!body) throw runtime_error("body cannot be null");
 	check_not_in_physics_callback("a body");
+	auto found = g_physics_bodies.find(body);
+	if (found == g_physics_bodies.end() || found->second != world) throw runtime_error("body isn't a body of this world; it may have been destroyed already");
+	g_physics_bodies.erase(found);
 	body_cleanup_user_data(body);
 	world->destroyRigidBody(body);
 }
@@ -982,6 +1041,11 @@ static uint32 height_field_size(int nbGridColumns, int nbGridRows, CScriptArray*
 	throw std::runtime_error("Height data array size (" + have + ") must match grid dimensions (" + std::to_string(nbGridColumns) + " by " + std::to_string(nbGridRows) + ", at least 2 by 2)");
 }
 
+static HeightField* register_height_field(HeightField* heightField) {
+	if (heightField) g_physics_meshes.insert(heightField);
+	return heightField;
+}
+
 HeightField* create_height_field_float(int nbGridColumns, int nbGridRows, CScriptArray* heightData, decimal integerHeightScale) {
 	if (!heightData) throw std::runtime_error("Height data array cannot be null");
 	uint32 expectedSize = height_field_size(nbGridColumns, nbGridRows, heightData);
@@ -990,7 +1054,7 @@ HeightField* create_height_field_float(int nbGridColumns, int nbGridRows, CScrip
 		heightBuffer[i] = *(float*)heightData->At(i);
 	heightData->Release();
 	std::vector<Message> messages;
-	return g_physics.createHeightField(nbGridColumns, nbGridRows, heightBuffer.data(), HeightField::HeightDataType::HEIGHT_FLOAT_TYPE, messages, integerHeightScale);
+	return register_height_field(g_physics.createHeightField(nbGridColumns, nbGridRows, heightBuffer.data(), HeightField::HeightDataType::HEIGHT_FLOAT_TYPE, messages, integerHeightScale));
 }
 
 HeightField* create_height_field_int(int nbGridColumns, int nbGridRows, CScriptArray* heightData, decimal integerHeightScale) {
@@ -1001,7 +1065,7 @@ HeightField* create_height_field_int(int nbGridColumns, int nbGridRows, CScriptA
 		heightBuffer[i] = *(int*)heightData->At(i);
 	heightData->Release();
 	std::vector<Message> messages;
-	return g_physics.createHeightField(nbGridColumns, nbGridRows, heightBuffer.data(), HeightField::HeightDataType::HEIGHT_INT_TYPE, messages, integerHeightScale);
+	return register_height_field(g_physics.createHeightField(nbGridColumns, nbGridRows, heightBuffer.data(), HeightField::HeightDataType::HEIGHT_INT_TYPE, messages, integerHeightScale));
 }
 
 HeightField* create_height_field_double(int nbGridColumns, int nbGridRows, CScriptArray* heightData, decimal integerHeightScale) {
@@ -1012,17 +1076,13 @@ HeightField* create_height_field_double(int nbGridColumns, int nbGridRows, CScri
 		heightBuffer[i] = *(double*)heightData->At(i);
 	heightData->Release();
 	std::vector<Message> messages;
-	HeightField* heightField = g_physics.createHeightField(nbGridColumns, nbGridRows, heightBuffer.data(), HeightField::HeightDataType::HEIGHT_DOUBLE_TYPE, messages, integerHeightScale);
-	return heightField;
+	return register_height_field(g_physics.createHeightField(nbGridColumns, nbGridRows, heightBuffer.data(), HeightField::HeightDataType::HEIGHT_DOUBLE_TYPE, messages, integerHeightScale));
 }
 
 DefaultLogger* create_default_logger() {
-	return g_physics.createDefaultLogger();
-}
-
-void destroy_default_logger(DefaultLogger* logger) {
-	if (logger)
-		g_physics.destroyDefaultLogger(logger);
+	DefaultLogger* logger = g_physics.createDefaultLogger();
+	if (logger) g_physics_loggers.insert(logger);
+	return logger;
 }
 
 Logger* default_logger_to_logger(DefaultLogger* defaultLogger) {
@@ -1801,9 +1861,9 @@ void RegisterHeightFieldAndMeshTypes(asIScriptEngine* engine) {
 void RegisterPhysicsCommonFactories(asIScriptEngine* engine) {
 	// Collision Shape Factories
 	engine->RegisterObjectBehaviour("physics_concave_mesh_shape", asBEHAVE_FACTORY, "physics_concave_mesh_shape@ f(physics_triangle_mesh@ triangle_mesh, const vector&in scaling = vector(1,1,1))", asFUNCTION(concave_mesh_shape_create), asCALL_CDECL);
-	engine->RegisterObjectBehaviour("physics_sphere_shape", asBEHAVE_FACTORY, "physics_sphere_shape@ f(float radius)", asMETHOD(PhysicsCommon, createSphereShape), asCALL_THISCALL_ASGLOBAL, &g_physics);
-	engine->RegisterObjectBehaviour("physics_box_shape", asBEHAVE_FACTORY, "physics_box_shape@ f(const vector&in half_extents)", asMETHOD(PhysicsCommon, createBoxShape), asCALL_THISCALL_ASGLOBAL, &g_physics);
-	engine->RegisterObjectBehaviour("physics_capsule_shape", asBEHAVE_FACTORY, "physics_capsule_shape@ f(float radius, float height)", asMETHOD(PhysicsCommon, createCapsuleShape), asCALL_THISCALL_ASGLOBAL, &g_physics);
+	engine->RegisterObjectBehaviour("physics_sphere_shape", asBEHAVE_FACTORY, "physics_sphere_shape@ f(float radius)", asFUNCTION(sphere_shape_create), asCALL_CDECL);
+	engine->RegisterObjectBehaviour("physics_box_shape", asBEHAVE_FACTORY, "physics_box_shape@ f(const vector&in half_extents)", asFUNCTION(box_shape_create), asCALL_CDECL);
+	engine->RegisterObjectBehaviour("physics_capsule_shape", asBEHAVE_FACTORY, "physics_capsule_shape@ f(float radius, float height)", asFUNCTION(capsule_shape_create), asCALL_CDECL);
 	engine->RegisterObjectBehaviour("physics_convex_mesh_shape", asBEHAVE_FACTORY, "physics_convex_mesh_shape@ f(physics_convex_mesh@ convex_mesh, const vector&in scaling = vector(1,1,1))", asFUNCTION(convex_mesh_shape_create), asCALL_CDECL);
 	engine->RegisterObjectBehaviour("physics_height_field_shape", asBEHAVE_FACTORY, "physics_height_field_shape@ f(physics_height_field@ height_field, const vector&in scaling = vector(1,1,1))", asFUNCTION(height_field_shape_create), asCALL_CDECL);
 	engine->RegisterGlobalFunction("physics_triangle_mesh@ physics_triangle_mesh_create(physics_triangle_data@ triangle_data)", asFUNCTION(create_triangle_mesh_from_managed), asCALL_CDECL);
@@ -1855,7 +1915,7 @@ void RegisterLoggerClasses(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("physics_default_logger", "void add_file_destination(const string&in filePath, uint logLevelFlag, physics_logger_format format)", asFUNCTION(default_logger_add_file_destination), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_default_logger", "void remove_all_destinations()", asFUNCTION(default_logger_remove_all_destinations), asCALL_CDECL_OBJFIRST);
 	engine->RegisterGlobalFunction("physics_default_logger@ physics_default_logger_create()", asFUNCTION(create_default_logger), asCALL_CDECL);
-	engine->RegisterGlobalFunction("void physics_default_logger_destroy(physics_default_logger@ logger)", asFUNCTION(destroy_default_logger), asCALL_CDECL);
+	engine->RegisterGlobalFunction("void physics_default_logger_destroy(physics_default_logger@ logger)", asFUNCTION(default_logger_destroy), asCALL_CDECL);
 	engine->RegisterGlobalFunction("physics_logger@ physics_logger_get_current()", asFUNCTION(get_current_logger), asCALL_CDECL);
 	engine->RegisterGlobalFunction("void physics_logger_set_current(physics_logger@ logger)", asFUNCTION(set_current_logger), asCALL_CDECL);
 	engine->RegisterGlobalFunction("string physics_logger_get_category_name(physics_logger_category category)", asFUNCTION(logger_get_category_name), asCALL_CDECL);
