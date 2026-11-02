@@ -13,6 +13,7 @@
 #define NOMINMAX
 #include <string>
 #include <algorithm>
+#include <limits>
 #include <bit>
 #include <cstdint>
 #include <vector>
@@ -239,7 +240,14 @@ bool run(const std::string& filename, const std::string& cmdline, bool wait_for_
 	Poco::AutoPtr<process> proc(run(args, flags, ""));
 	return proc != nullptr;
 }
+// The parser and the evaluation recurse for each level of parentheses and each operator in a chain, and an expression is often the user's or the data's: 10000 opening parentheses (20 KB) overflowed the stack, which ends the program. A longer or deeper expression gives NaN, as one that doesn't parse does.
 double tinyexpr(const std::string& expr) {
+	int depth = 0, deepest = 0;
+	for (char c : expr) {
+		if (c == '(') deepest = std::max(deepest, ++depth);
+		else if (c == ')') depth--;
+	}
+	if (expr.size() > 4096 || deepest > 256) return std::numeric_limits<double>::quiet_NaN();
 	return te_interp(expr.c_str(), NULL);
 }
 
