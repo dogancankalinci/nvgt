@@ -85,6 +85,8 @@ public:
 // Prebuffered input stream for unseekable sources like internet radio; keeps a rewind window alive up to WINDOW_CAP so ma_decoder_init can probe formats on a socket that cannot itself rewind.
 class prebuffer_istreambuf : public Poco::BasicBufferedStreamBuf<char, std::char_traits<char>> {
 	static const std::size_t WINDOW_CAP = 256 * 1024;
+	static const std::size_t OPEN_CAP = 16 * 1024 * 1024; // until opened(): a decoder's probing has to come back from wherever a format's header sends it, past a long ID3 tag or cover art
+	std::atomic<bool> opening{true};
 	std::istream* source;
 	std::vector<char> window;   // every byte handed out so far, until WINDOW_CAP
 	std::size_t initial_fill;   // pulled up front, both to prime the connection and to seed the window
@@ -96,6 +98,7 @@ public:
 	prebuffer_istreambuf(std::istream& source, std::size_t prebuffer_size = 1024);
 	~prebuffer_istreambuf();
 	void own_source(bool owns);
+	void opened() { opening.store(false, std::memory_order_relaxed); }
 	virtual int readFromDevice(char* buffer, std::streamsize length);
 	virtual std::streampos seekoff(std::streamoff off, std::ios_base::seekdir dir, std::ios_base::openmode which = std::ios_base::in);
 	virtual std::streampos seekpos(std::streampos pos, std::ios_base::openmode which = std::ios_base::in);
@@ -105,6 +108,7 @@ public:
 	prebuffer_istream(std::istream& source, std::size_t prebuffer_size = 16384);
 	~prebuffer_istream();
 	std::istream& own_source(bool owns = true);
+	void opened(); // The decoder reading it has opened, so it needn't keep as much to come back to.
 };
 
 // The base datastream class. This wraps either an iostream or an istream/ostream into a Poco BinaryReader/Writer. This Poco class has functionality extremely similar to Angelscript's scriptfile addon accept that it works on streams, meaning that it can work on much more than files. We also wrap some other basics of std streams.

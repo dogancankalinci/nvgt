@@ -189,9 +189,9 @@ int prebuffer_istreambuf::readFromDevice(char* buffer, std::streamsize length) {
 		std::streamsize got = source->gcount();
 		if (!window_closed && got > 0) {
 			// Keeps every byte read so far so the window's end tracks the source's real position; once it hits WINDOW_CAP it's of no further use, so it's freed immediately rather than held for no reason.
-			std::size_t room = WINDOW_CAP - window.size();
-			window.insert(window.end(), buffer, buffer + std::min(static_cast<std::size_t>(got), room));
-			if (window.size() >= WINDOW_CAP) {
+			const std::size_t cap = opening.load(std::memory_order_relaxed)? OPEN_CAP : WINDOW_CAP;
+			if (window.size() < cap) window.insert(window.end(), buffer, buffer + std::min(static_cast<std::size_t>(got), cap - window.size()));
+			if (window.size() >= cap) {
 				window.clear();
 				window.shrink_to_fit();
 				window_closed = true;
@@ -211,15 +211,35 @@ std::streampos prebuffer_istreambuf::seekoff(std::streamoff off, std::ios_base::
 }
 std::streampos prebuffer_istreambuf::seekpos(std::streampos pos, std::ios_base::openmode which) {
 	std::streamoff target = pos;
-	if (target < 0 || window_closed) return -1;
-	if (window.empty()) fill_window();
-	if (static_cast<std::size_t>(target) > window.size()) return -1; // past what was kept, and the source cannot go back
-	window_pos = static_cast<std::size_t>(target);
-	setg(nullptr, nullptr, nullptr); // drop what the base class had buffered, so it reads through us again
+	if (target < 0) return -1;
+	if (!window_closed && window.empty()) fill_window();
+	if (!window_closed && static_cast<std::size_t>(target) <= window.size()) {
+		window_pos = static_cast<std::size_t>(target);
+		setg(nullptr, nullptr, nullptr); // drop what the base class had buffered, so it reads through us again
+		return pos;
+	}
+	// Past what was kept, which the source can't go back to, but forward is only reading: a tag or a picture past the window was refused, so a file with one couldn't be opened from a URL.
+	const std::streamoff consumed = static_cast<std::streamoff>(window_pos) - (egptr() - gptr());
+	if (target < consumed) return -1;
+	if (target <= static_cast<std::streamoff>(window_pos)) { // Still in what the base class holds.
+		setg(eback(), gptr() + (target - consumed), egptr());
+		return pos;
+	}
+	setg(nullptr, nullptr, nullptr);
+	char dropped[4096];
+	for (std::streamoff left = target - static_cast<std::streamoff>(window_pos); left > 0;) {
+		const int got = readFromDevice(dropped, static_cast<std::streamsize>(std::min<std::streamoff>(left, sizeof(dropped))));
+		if (got <= 0) return -1;
+		left -= got;
+	}
 	return pos;
 }
 prebuffer_istream::prebuffer_istream(std::istream& source, std::size_t prebuffer_size) : basic_istream(new prebuffer_istreambuf(source, prebuffer_size)) {}
 prebuffer_istream::~prebuffer_istream() { delete rdbuf(); }
+void prebuffer_istream::opened() {
+	prebuffer_istreambuf* buf = static_cast<prebuffer_istreambuf*>(rdbuf());
+	if (buf != nullptr) buf->opened();
+}
 std::istream& prebuffer_istream::own_source(bool owns) {
 	prebuffer_istreambuf* buf = static_cast<prebuffer_istreambuf*>(rdbuf());
 	if (buf != nullptr) buf->own_source(owns);
