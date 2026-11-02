@@ -2253,7 +2253,16 @@ class audio_decoder_impl : public audio_data_source_impl, public virtual audio_d
 		stream->seekg(offset, dir);
 		if (stream->fail()) {
 			stream->clear(); // genuinely unseekable and outside what was kept; say so instead of claiming a seek that didn't happen
-			return MA_NOT_IMPLEMENTED;
+			if (target < 0 || static_cast<size_t>(target) <= sc->pos) return MA_NOT_IMPLEMENTED;
+			// Forward, which reading can always do: a WAV's seek, and its skip over a chunk, were refused where FLAC and MP3 read on.
+			char skipped[4096];
+			for (size_t left = static_cast<size_t>(target) - sc->pos; left;) {
+				size_t got = 0;
+				vfs_read(nullptr, f, skipped, std::min(left, sizeof(skipped)), &got);
+				if (!got) return MA_AT_END;
+				left -= got;
+			}
+			return MA_SUCCESS;
 		}
 		// The stream really moved, so the window no longer describes where the decoder is; from here the stream answers for itself. It can never mirror again, so free it rather than just clearing it.
 		std::streamoff at = stream->tellg();
