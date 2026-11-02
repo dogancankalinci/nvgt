@@ -381,6 +381,7 @@ CScriptArray* GetMice() {
 	return GetDevices(SDL_GetMice);
 }
 std::string GetMouseName(unsigned int id) {
+	if (!SDL_WasInit(SDL_INIT_VIDEO)) return ""; // See get_touch_device_name().
 	const char* result = SDL_GetMouseNameForID((SDL_MouseID)id);
 	if (!result)
 		return "";
@@ -833,13 +834,16 @@ CScriptArray* get_touch_devices() {
 	SDL_free(devices);
 	return array;
 }
+// SDL looks an id it doesn't know up on the video device, which is null until the video subsystem starts with the first window or input call: these crashed in a script that had neither, as did get_mouse_name(4294967295).
 std::string get_touch_device_name(uint64_t device_id) {
+	if (!SDL_WasInit(SDL_INIT_VIDEO)) return "";
 	const char* result = SDL_GetTouchDeviceName((SDL_TouchID)device_id);
 	if (!result)
 		return "";
 	return result;
 }
 int get_touch_device_type(uint64_t device_id) {
+	if (!SDL_WasInit(SDL_INIT_VIDEO)) return SDL_TOUCH_DEVICE_INVALID;
 	return SDL_GetTouchDeviceType((SDL_TouchID)device_id);
 }
 CScriptArray* query_touch_device(uint64_t device_id) {
@@ -851,7 +855,7 @@ CScriptArray* query_touch_device(uint64_t device_id) {
 		return nullptr;
 	if (!device_id && g_TouchLastDevice)
 		device_id = g_TouchLastDevice;
-	if (!device_id)
+	if (!device_id || !SDL_WasInit(SDL_INIT_VIDEO))
 		return array;
 	int finger_count;
 	SDL_Finger** fingers = SDL_GetTouchFingers(device_id, &finger_count);
