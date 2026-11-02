@@ -1581,7 +1581,17 @@ public:
 	}
 	bool set_looping(bool looping) override { return src && !in_use()? (g_soundsystem_last_error = ma_data_source_set_looping(src->pDataSource, looping)) == MA_SUCCESS : refused_now(); }
 	bool get_looping() const override { return src? ma_data_source_is_looping(src->pDataSource) : false; }
-	bool set_range(unsigned long long start_frame, unsigned long long end_frame) override { return src && !in_use()? (g_soundsystem_last_error = ma_data_source_set_range_in_pcm_frames(src->pDataSource, start_frame, end_frame)) == MA_SUCCESS : refused_now(); }
+	bool set_range(unsigned long long start_frame, unsigned long long end_frame) override {
+		if (!src || in_use()) return refused_now();
+		// MiniAudio ignores its seek into the new range failing: a start past the end of a source of unknown length reported as set, reading on outside it. So it's made first, for a source that says a seek is past its end.
+		ma_uint64 begin = 0, cursor = 0;
+		ma_data_source_get_range_in_pcm_frames(src->pDataSource, &begin, nullptr);
+		if (start_frame > begin && !get_length_frames() && ma_data_source_get_cursor_in_pcm_frames(src->pDataSource, &cursor) == MA_SUCCESS && begin + cursor < start_frame && seek_or_keep_place(src->pDataSource, start_frame - begin) == MA_INVALID_ARGS) {
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return false;
+		}
+		return (g_soundsystem_last_error = ma_data_source_set_range_in_pcm_frames(src->pDataSource, start_frame, end_frame)) == MA_SUCCESS;
+	}
 	// Without a source, 0 for both, as AngelScript leaves &out values unset.
 	void get_range(unsigned long long* start_frame, unsigned long long* end_frame) const override {
 		*start_frame = *end_frame = 0;
