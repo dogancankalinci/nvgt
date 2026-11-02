@@ -37,6 +37,22 @@ ma_result nvgt_file_seek(const ma_data_source_vtable* vtable, ma_data_source* fi
 		const ma_uint32 remaining = flac->currentFLACFrame.pcmFramesRemaining;
 		// dr_flac takes a frame behind it within the block it last decoded as still decoded, which a block that failed to decode, as at a file's truncated end, left with no samples: reading them crashed. A block with nothing left to give is taken as spent, which sends the seek through the file.
 		if (frame < at && !remaining) flac->currentFLACFrame.header.blockSizeInPCMFrames = 0;
+		// A stream that can't seek: dr_flac's seeks need the file, and when that's refused it carries on from the file's real place as if at its start, reporting a seek made, and clamps to a total it may not have. Forward is reading on, and back is from the first block, while the decoder's window still reaches it.
+		if (!can_seek && frame != at) {
+			const ma_uint32 consumed = flac->currentFLACFrame.header.blockSizeInPCMFrames - remaining;
+			if (frame < at && remaining && consumed > at - frame) { // Within the block, needing no file: as dr_flac does it, which first clamps the frame to a total it may not have.
+				flac->currentFLACFrame.pcmFramesRemaining += (ma_uint32)(at - frame);
+				flac->currentPCMFrame = frame;
+				return MA_SUCCESS;
+			}
+			ma_uint64 from = at;
+			if (frame < at) {
+				if (flac->firstFLACFramePosInBytes > 0x7FFFFFFF || !flac->bs.onSeek(flac->bs.pUserData, (int)flac->firstFLACFramePosInBytes, MA_DR_FLAC_SEEK_SET)) return MA_INVALID_OPERATION; // Before anything changes, so that it reads on from where it was.
+				if (!ma_dr_flac__seek_to_first_frame(flac)) return MA_INVALID_OPERATION;
+				from = 0;
+			}
+			return ma_dr_flac_read_pcm_frames_f32(flac, frame - from, NULL) == frame - from? MA_SUCCESS : MA_INVALID_ARGS;
+		}
 	} else if (vtable == &g_ma_mp3_ds_vtable) {
 		// dr_mp3's cursor counts the encoder delay a LAME header gives, which it skips, and its seek forward reads on from that cursor to the frame asked for, landing the delay short, 1105 frames as a rule, reported as made. A seek back, from the start, counts it right.
 		ma_dr_mp3* mp3 = &((ma_mp3*)file)->dr;
