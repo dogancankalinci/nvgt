@@ -115,6 +115,7 @@ static std::atomic_flag g_soundsystem_shut_down; // uninit_sound() ran: script t
 static std::mutex g_reaps_mutex;
 static std::condition_variable g_reaps_done;
 static std::unordered_map<ma_resource_manager*, int> g_reaps; // Under g_reaps_mutex.
+static int g_network_reaps = 0; // Of those, closing a URL's stream, which can wait out a stalled read, a minute with Poco's timeout. Under g_reaps_mutex.
 // At most this many of a resource manager's at once; close() waits for another itself, so that sounds loaded and let go of faster than they decode don't pile up decodes nobody plays, each holding its whole decoded file and the job threads.
 static constexpr int max_reaps = 2;
 // Takes a place among those of a resource manager, if there is one, or past them for a caller that mustn't wait, as an audio thread: none once uninit_sound() shut the sound system down, the process's exit following.
@@ -127,8 +128,9 @@ static bool reserve_reap(ma_resource_manager* manager, bool past_max = false) {
 	return true;
 }
 // Gives it back, notified under the lock, so that nothing of a thread freeing a source runs once a waiter goes on, as to the process's exit.
-static void end_reap(ma_resource_manager* manager) {
+static void end_reap(ma_resource_manager* manager, bool network = false) {
 	std::lock_guard<std::mutex> lock(g_reaps_mutex);
+	if (network) g_network_reaps--;
 	if (--g_reaps[manager] == 0) g_reaps.erase(manager);
 	g_reaps_done.notify_all();
 }
@@ -136,6 +138,16 @@ static void end_reap(ma_resource_manager* manager) {
 static void wait_for_reaps(ma_resource_manager* manager = nullptr) {
 	std::unique_lock<std::mutex> lock(g_reaps_mutex);
 	g_reaps_done.wait(lock, [manager]() { return manager? !g_reaps.count(manager) : g_reaps.empty(); });
+}
+// As the process exits: all of them, but not for long for those closing a URL's stream, which a stalled read kept from exiting for up to a minute, and which do nothing but wake when it times out.
+static void wait_for_reaps_at_exit() {
+	std::unique_lock<std::mutex> lock(g_reaps_mutex);
+	g_reaps_done.wait(lock, []() {
+		int reaps = 0;
+		for (const auto& manager : g_reaps) reaps += manager.second;
+		return reaps == g_network_reaps;
+	});
+	if (!g_reaps.empty()) g_reaps_done.wait_for(lock, std::chrono::seconds(3), []() { return g_reaps.empty(); });
 }
 // Engines and microphones being destroyed on threads of their own, let go of on an audio thread (see audio_engine_impl::release()), which sound_stop_script_callbacks() waits for, so that none releases a script function or closes a device once the script's module, or SDL, went.
 static std::mutex g_detached_deletes_mutex;
@@ -377,7 +389,7 @@ void uninit_sound() {
 	// Before the garbage collection, which can let go of a script's own engine for the last time, as a finished sound played from it does: once shut down, that engine is left to the process's exit (see audio_engine_impl::release()) rather than destroyed after SDL took down what its device needs.
 	g_soundsystem_shut_down.test_and_set();
 	garbage_collect_inline_sounds();
-	wait_for_reaps(); // Sources a closed sound left still decoding are freed before the process's exit, as closing them did; none are handed over once shut down.
+	wait_for_reaps_at_exit(); // Sources a closed sound left still decoding are freed before the process's exit, as closing them did; none are handed over once shut down.
 	std::lock_guard<std::recursive_mutex> lock(g_soundsystem_init_mutex);
 	g_soundsystem_ready.clear(); // So that init_sound() refuses later calls instead of reporting a ready system whose engine is gone.
 	if (audio_engine* engine = default_engine_pointer()) {
@@ -4735,6 +4747,7 @@ class sound_impl final : public mixer_impl, public virtual sound {
 		std::string pcm_buffer; // The memory a source loaded from memory decodes from.
 		ma_resource_manager *manager = nullptr; // The source's.
 		std::string claimed_name; // Claimed in manager, if not empty.
+		bool network = false; // A URL's stream (see g_network_reaps).
 	};
 	// Frees it once MiniAudio's jobs are done with it, as close() frees a source.
 	static void free_reaped(source_reap &r) {
@@ -4751,20 +4764,21 @@ class sound_impl final : public mixer_impl, public virtual sound {
 	// Frees it on a thread of its own, in a place reserve_reap() gave: freed by close(), it held the script closing, reloading or letting go of a sound just loaded for as long as its file took to decode, 80 ms for 30 seconds of speech, as an interrupting speak let go of. Freed here when no thread can be made.
 	static void reap(unique_ptr<source_reap> r) {
 		ma_resource_manager *manager = r->manager;
+		const bool network = r->network;
 		source_reap *handed = r.release();
 		try {
-			std::thread([handed, manager]() {
+			std::thread([handed, manager, network]() {
 				unique_ptr<source_reap> owned(handed);
 				free_reaped(*owned);
 				owned.reset();
-				end_reap(manager);
+				end_reap(manager, network);
 			}).detach();
 			return;
 		} catch (const std::exception &) {
 			r.reset(handed);
 		}
 		free_reaped(*r);
-		end_reap(manager);
+		end_reap(manager, network);
 	}
 	std::string pcm_buffer;      // When loading from raw PCM (like TTS) we store the intermediate wav data here so we can take advantage of async loading to return quickly. Makes a substantial difference in the responsiveness of TTS calls.
 	std::string claimed_name; // The name the sound's source was loaded under, claimed in claimed_manager until the source is freed, else empty.
@@ -5260,15 +5274,22 @@ public:
 		ma_resource_manager *source_manager = source? (claimed_manager? claimed_manager : ma_engine_get_resource_manager(get_engine()->get_ma_engine())) : nullptr;
 		// On an audio thread, as when a processing callback lets a sound go, which mustn't wait out the rest of a decode, nor a stream's last read, a stalled network read included, a stream too, and past the places reserve_reap() otherwise gives.
 		const bool audio_thread = audio_engine_impl::on_audio_thread();
-		if ((decoding(source.get()) || audio_thread && source && (source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM)) && reserve_reap(source_manager, audio_thread)) {
+		// A URL's stream on any thread: waited for here, a stalled read held close(), a reload and the script behind it for up to a minute.
+		const bool network = source && (source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM) && (source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_UNKNOWN_LENGTH);
+		if ((decoding(source.get()) || network || audio_thread && source && (source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM)) && reserve_reap(source_manager, audio_thread || network)) {
 			reaped = make_unique<source_reap>();
 			reaped->manager = source_manager;
+			reaped->network = network;
+			if (network) {
+				std::lock_guard<std::mutex> lock(g_reaps_mutex);
+				g_network_reaps++;
+			}
 			const char *decoded_from = pcm_buffer.data();
 			reaped->pcm_buffer = std::move(pcm_buffer);
 			if (!reaped->pcm_buffer.empty() && reaped->pcm_buffer.data() != decoded_from) {
 				pcm_buffer = std::move(reaped->pcm_buffer);
 				reaped.reset();
-				end_reap(source_manager);
+				end_reap(source_manager, network);
 			}
 		}
 		if (reaped && load_state) {
