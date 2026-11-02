@@ -10,6 +10,8 @@
  * 3. This notice may not be removed or altered from any source distribution.
  */
 
+#include <atomic>
+#include <algorithm>
 #include <cmath>
 #include <initializer_list>
 #include <memory>
@@ -98,10 +100,6 @@ struct script_contact_point {
 		if (asAtomicDec(ref_count) < 1) delete this;
 	}
 };
-script_contact_point* contact_pair_get_contact_point(const CollisionCallback::ContactPair& pair, uint32 index) {
-	if (index >= pair.getNbContactPoints()) throw out_of_range("contact point index out of range");
-	return new script_contact_point(pair.getContactPoint(index));
-}
 const Vector3& contact_point_get_world_normal(const script_contact_point& point) { return point.world_normal; }
 const Vector3& contact_point_get_local_point_on_collider1(const script_contact_point& point) { return point.local_point_on_collider1; }
 const Vector3& contact_point_get_local_point_on_collider2(const script_contact_point& point) { return point.local_point_on_collider2; }
@@ -124,13 +122,15 @@ AABB aabb_from_triangle(CScriptArray* points) {
 }
 
 // reactphysics3d is iterating its own contact/overlap lists while a callback runs; destroying a body, joint or the world from inside one frees memory that iteration still reads. Track callback depth per thread so the destroy wrappers can refuse instead.
-static thread_local int g_physics_callback_depth = 0;
+// Each callback has a number of its own, so that what it was given can be refused once it returned.
+static thread_local std::vector<asQWORD> g_physics_callback_scopes;
+static std::atomic<asQWORD> g_physics_callback_serial = 0;
 struct physics_callback_scope {
-	physics_callback_scope() { g_physics_callback_depth++; }
-	~physics_callback_scope() { g_physics_callback_depth--; }
+	physics_callback_scope() { g_physics_callback_scopes.push_back(++g_physics_callback_serial); }
+	~physics_callback_scope() { g_physics_callback_scopes.pop_back(); }
 };
 static void check_not_in_physics_callback(const char* what) {
-	if (g_physics_callback_depth > 0) throw runtime_error(string(what) + " cannot be destroyed from inside a physics callback; defer it until the callback returns");
+	if (!g_physics_callback_scopes.empty()) throw runtime_error(string(what) + " cannot be destroyed from inside a physics callback; defer it until the callback returns");
 }
 
 // reactphysics3d only asserts that a transform is valid (no check in a release build). A position or rotation that isn't finite, or a rotation too large for its length to be, went into the broad phase, and the next update of the world read and wrote outside of its tree (an access violation). A NaN from a script's own calculation is enough.
@@ -270,15 +270,37 @@ public:
 	void onOverlap(OverlapCallback::CallbackData& data) override { simple_void_callback(callback, &data); }
 };
 
+// A contact or overlap pair refers into the data of the callback it was read in, and a script can keep a copy of it (in a variable or an any) after that is gone. A script's pair remembers its callback, and every method refuses a pair whose callback has returned.
+template <class P> struct script_physics_pair {
+	P pair;
+	asQWORD scope;
+	script_physics_pair(const P& pair) : pair(pair), scope(g_physics_callback_scopes.empty() ? 0 : g_physics_callback_scopes.back()) {}
+	const P& get() const {
+		if (std::find(g_physics_callback_scopes.begin(), g_physics_callback_scopes.end(), scope) == g_physics_callback_scopes.end()) throw runtime_error("a physics contact or overlap pair can only be used during its callback");
+		return pair;
+	}
+};
+typedef script_physics_pair<CollisionCallback::ContactPair> script_contact_pair;
+typedef script_physics_pair<OverlapCallback::OverlapPair> script_overlap_pair;
+template <class F> struct pair_call;
+template <class P, class R, class... A> struct pair_call<R (P::*)(A...) const> {
+	template <R (P::*method)(A...) const> static R call(const script_physics_pair<P>& pair, A... args) { return (pair.get().*method)(std::forward<A>(args)...); }
+};
+#define asPAIR(c, m) asFUNCTION((pair_call<decltype(&c::m)>::template call<&c::m>))
+script_contact_point* contact_pair_get_contact_point(const script_contact_pair& pair, uint32 index) {
+	if (index >= pair.get().getNbContactPoints()) throw out_of_range("contact point index out of range");
+	return new script_contact_point(pair.get().getContactPoint(index));
+}
+
 // reactphysics3d only asserts the index of a contact or overlap pair (no check in a release build): an index past the last pair read
 // past its pair index arrays (an access violation for get_contact_pair(nb_contact_pairs)).
-CollisionCallback::ContactPair collision_data_get_contact_pair(const CollisionCallback::CallbackData& data, asQWORD index) {
+script_contact_pair collision_data_get_contact_pair(const CollisionCallback::CallbackData& data, asQWORD index) {
 	if (index >= data.getNbContactPairs()) throw out_of_range("contact pair index out of range");
-	return data.getContactPair(index);
+	return script_contact_pair(data.getContactPair(index));
 }
-OverlapCallback::OverlapPair overlap_data_get_overlapping_pair(const OverlapCallback::CallbackData& data, asUINT index) {
+script_overlap_pair overlap_data_get_overlapping_pair(const OverlapCallback::CallbackData& data, asUINT index) {
 	if (index >= data.getNbOverlappingPairs()) throw out_of_range("overlapping pair index out of range");
-	return data.getOverlappingPair(index);
+	return script_overlap_pair(data.getOverlappingPair(index));
 }
 
 class event_listener : public EventListener {
@@ -1938,28 +1960,28 @@ void RegisterPhysicsWorldAndCallbacks(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("physics_contact_point", "const vector& get_world_normal() const property", asFUNCTION(contact_point_get_world_normal), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_contact_point", "const vector& get_local_point_on_collider1() const property", asFUNCTION(contact_point_get_local_point_on_collider1), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_contact_point", "const vector& get_local_point_on_collider2() const property", asFUNCTION(contact_point_get_local_point_on_collider2), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectType("physics_contact_pair", sizeof(CollisionCallback::ContactPair), asOBJ_VALUE | asGetTypeTraits<CollisionCallback::ContactPair>());
-	engine->RegisterObjectBehaviour("physics_contact_pair", asBEHAVE_CONSTRUCT, "void f(const physics_contact_pair&in pair)", asFUNCTION((rp_construct<CollisionCallback::ContactPair, const CollisionCallback::ContactPair&>)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectBehaviour("physics_contact_pair", asBEHAVE_DESTRUCT, "void f()", asFUNCTION(rp_destruct<CollisionCallback::ContactPair>), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_contact_pair", "uint get_nb_contact_points() const property", asMETHOD(CollisionCallback::ContactPair, getNbContactPoints), asCALL_THISCALL);
+	engine->RegisterObjectType("physics_contact_pair", sizeof(script_contact_pair), asOBJ_VALUE | asGetTypeTraits<script_contact_pair>());
+	engine->RegisterObjectBehaviour("physics_contact_pair", asBEHAVE_CONSTRUCT, "void f(const physics_contact_pair&in pair)", asFUNCTION((rp_construct<script_contact_pair, const script_contact_pair&>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectBehaviour("physics_contact_pair", asBEHAVE_DESTRUCT, "void f()", asFUNCTION(rp_destruct<script_contact_pair>), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_contact_pair", "uint get_nb_contact_points() const property", asPAIR(CollisionCallback::ContactPair, getNbContactPoints), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_contact_pair", "physics_contact_point@ get_contact_point(uint index) const", asFUNCTION(contact_pair_get_contact_point), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_contact_pair", "physics_body@ get_body1() const property", asMETHOD(CollisionCallback::ContactPair, getBody1), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_contact_pair", "physics_body@ get_body2() const property", asMETHOD(CollisionCallback::ContactPair, getBody2), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_contact_pair", "physics_collider@ get_collider1() const property", asMETHOD(CollisionCallback::ContactPair, getCollider1), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_contact_pair", "physics_collider@ get_collider2() const property", asMETHOD(CollisionCallback::ContactPair, getCollider2), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_contact_pair", "physics_contact_event_type get_event_type() const property", asMETHOD(CollisionCallback::ContactPair, getEventType), asCALL_THISCALL);
+	engine->RegisterObjectMethod("physics_contact_pair", "physics_body@ get_body1() const property", asPAIR(CollisionCallback::ContactPair, getBody1), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_contact_pair", "physics_body@ get_body2() const property", asPAIR(CollisionCallback::ContactPair, getBody2), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_contact_pair", "physics_collider@ get_collider1() const property", asPAIR(CollisionCallback::ContactPair, getCollider1), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_contact_pair", "physics_collider@ get_collider2() const property", asPAIR(CollisionCallback::ContactPair, getCollider2), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_contact_pair", "physics_contact_event_type get_event_type() const property", asPAIR(CollisionCallback::ContactPair, getEventType), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectType("physics_collision_callback_data", 0, asOBJ_REF | asOBJ_NOHANDLE);
 	engine->RegisterFuncdef("void physics_collision_callback(const physics_collision_callback_data& data)");
 	engine->RegisterObjectMethod("physics_collision_callback_data", "uint get_nb_contact_pairs() const property", asMETHOD(CollisionCallback::CallbackData, getNbContactPairs), asCALL_THISCALL);
 	engine->RegisterObjectMethod("physics_collision_callback_data", "physics_contact_pair get_contact_pair(uint64 index) const", asFUNCTION(collision_data_get_contact_pair), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectType("physics_overlap_pair", sizeof(OverlapCallback::OverlapPair), asOBJ_VALUE | asGetTypeTraits<OverlapCallback::OverlapPair>());
-	engine->RegisterObjectBehaviour("physics_overlap_pair", asBEHAVE_CONSTRUCT, "void f(const physics_overlap_pair&in pair)", asFUNCTION((rp_construct<OverlapCallback::OverlapPair, const OverlapCallback::OverlapPair&>)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectBehaviour("physics_overlap_pair", asBEHAVE_DESTRUCT, "void f()", asFUNCTION(rp_destruct<OverlapCallback::OverlapPair>), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_overlap_pair", "physics_body& get_body1() const property", asMETHOD(OverlapCallback::OverlapPair, getBody1), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_overlap_pair", "physics_body& get_body2() const property", asMETHOD(OverlapCallback::OverlapPair, getBody2), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_overlap_pair", "physics_collider& get_collider1() const property", asMETHOD(OverlapCallback::OverlapPair, getCollider1), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_overlap_pair", "physics_collider& get_collider2() const property", asMETHOD(OverlapCallback::OverlapPair, getCollider2), asCALL_THISCALL);
-	engine->RegisterObjectMethod("physics_overlap_pair", "physics_overlap_event_type get_event_type() const property", asMETHOD(OverlapCallback::OverlapPair, getEventType), asCALL_THISCALL);
+	engine->RegisterObjectType("physics_overlap_pair", sizeof(script_overlap_pair), asOBJ_VALUE | asGetTypeTraits<script_overlap_pair>());
+	engine->RegisterObjectBehaviour("physics_overlap_pair", asBEHAVE_CONSTRUCT, "void f(const physics_overlap_pair&in pair)", asFUNCTION((rp_construct<script_overlap_pair, const script_overlap_pair&>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectBehaviour("physics_overlap_pair", asBEHAVE_DESTRUCT, "void f()", asFUNCTION(rp_destruct<script_overlap_pair>), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_overlap_pair", "physics_body& get_body1() const property", asPAIR(OverlapCallback::OverlapPair, getBody1), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_overlap_pair", "physics_body& get_body2() const property", asPAIR(OverlapCallback::OverlapPair, getBody2), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_overlap_pair", "physics_collider& get_collider1() const property", asPAIR(OverlapCallback::OverlapPair, getCollider1), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_overlap_pair", "physics_collider& get_collider2() const property", asPAIR(OverlapCallback::OverlapPair, getCollider2), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_overlap_pair", "physics_overlap_event_type get_event_type() const property", asPAIR(OverlapCallback::OverlapPair, getEventType), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectType("physics_overlap_callback_data", 0, asOBJ_REF | asOBJ_NOHANDLE);
 	engine->RegisterFuncdef("void physics_overlap_callback(const physics_overlap_callback_data& data)");
 	engine->RegisterObjectMethod("physics_overlap_callback_data", "uint get_nb_overlap_pairs() const property", asMETHOD(OverlapCallback::CallbackData, getNbOverlappingPairs), asCALL_THISCALL);
