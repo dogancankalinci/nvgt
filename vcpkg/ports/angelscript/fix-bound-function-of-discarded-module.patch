@@ -1,0 +1,46 @@
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -1704,6 +1704,15 @@
+ }
+ 
+ // internal
++// ALTERED: whether an imported function can be called through the function it is bound to. A binding holds an internal
++// reference, which keeps the function object but doesn't keep its module: when that module is discarded or rebuilt the
++// function loses its bytecode (asCScriptFunction::DestroyInternal) and stays a script function, and the call followed the
++// missing bytecode (a null pointer dereference). It is an unbound function now, as one never bound is, until it is bound again.
++static inline bool IsBoundFunctionCallable(const asCScriptFunction *func)
++{
++	return func != 0 && (func->funcType != asFUNC_SCRIPT || func->scriptData != 0);
++}
++
+ asCScriptFunction *asCContext::GetRealFunc(asCScriptFunction * currentFunction, void ** _This)
+ {
+ 	if( currentFunction->funcType == asFUNC_VIRTUAL ||
+@@ -1757,7 +1766,7 @@
+ 	else if( currentFunction->funcType == asFUNC_IMPORTED )
+ 	{
+ 		int funcId = m_engine->importedFunctions[currentFunction->id & ~FUNC_IMPORTED]->boundFunctionId;
+-		if( funcId > 0 )
++		if( funcId > 0 && IsBoundFunctionCallable(m_engine->scriptFunctions[funcId]) ) // ALTERED: see IsBoundFunctionCallable
+ 			return m_engine->scriptFunctions[funcId];
+ 		else
+ 			SetInternalException(TXT_UNBOUND_FUNCTION);
+@@ -3319,7 +3328,7 @@
+ 			m_regs.stackFramePointer = l_fp;
+ 
+ 			int funcId = m_engine->importedFunctions[i & ~FUNC_IMPORTED]->boundFunctionId;
+-			if( funcId == -1 )
++			if( funcId == -1 || !IsBoundFunctionCallable(m_engine->GetScriptFunction(funcId)) ) // ALTERED: see IsBoundFunctionCallable
+ 			{
+ 				// Need to update the program pointer for the exception handler
+ 				m_regs.programPointer += 2;
+@@ -4724,6 +4733,9 @@
+ 				else if (func->funcType == asFUNC_IMPORTED)
+ 				{
+ 					int funcId = m_engine->importedFunctions[func->id & ~FUNC_IMPORTED]->boundFunctionId;
++					// ALTERED: see IsBoundFunctionCallable
++					if (funcId > 0 && !IsBoundFunctionCallable(m_engine->scriptFunctions[funcId]))
++						funcId = -1;
+ 					if (funcId > 0 && m_engine->scriptFunctions[funcId]->funcType == asFUNC_SYSTEM)
+ 					{
+ 						// ALTERED: an imported function can be bound to a registered function (asCModule::BindImportedFunction

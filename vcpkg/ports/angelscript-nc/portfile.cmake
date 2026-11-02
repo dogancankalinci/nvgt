@@ -133,6 +133,7 @@ vcpkg_from_github(
         fix-list-element-destroy.patch
         fix-align8-list-element-assign.patch
         fix-align8-list-element-const.patch
+        fix-bound-function-of-discarded-module.patch
 )
 
 vcpkg_cmake_configure(
