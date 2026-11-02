@@ -266,7 +266,7 @@ public:
 			protocols.push_back(std::make_shared<protocol_reg_t>(proto, protocols.size()));
 			slot = protocols.size() - 1;
 			return true;
-		} catch (std::exception e) {
+		} catch (const std::exception&) {
 			return false;
 		}
 	}
@@ -603,7 +603,12 @@ std::istream *netstream_protocol::open_uri(const char *uri, const directive_t di
 	try {
 		std::istream *stream = Poco::URIStreamOpener::defaultOpener().open(uri);
 		if (!stream) return nullptr; // Likely invalid URI. Figure out how to provide info about this to user?
-		return &(new prebuffer_istream(*stream))->own_source();
+		try {
+			return &(new prebuffer_istream(*stream))->own_source();
+		} catch (...) { // Nothing else owns it yet.
+			delete stream;
+			throw;
+		}
 	} catch(std::exception&) {} // Again figure out how to let user see exception details.
 	return nullptr;
 }
