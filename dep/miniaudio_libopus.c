@@ -449,7 +449,22 @@ MA_API ma_result ma_libopus_seek_to_pcm_frame(ma_libopus* pOpus, ma_uint64 frame
 
     #if !defined(MA_NO_LIBOPUS)
     {
-        int libopusResult = op_pcm_seek((OggOpusFile*)pOpus->of, (ogg_int64_t)frameIndex);
+        /*
+        libopusfile refuses a seek to its total, which every other decoder takes, reading nothing from there, as seeking a
+        known length allows: the last frame is sought and read past instead. A multistream frame is at most 255 channels.
+        */
+        ogg_int64_t total = op_pcm_total((OggOpusFile*)pOpus->of, -1);
+        int libopusResult;
+        if (total > 0 && frameIndex == (ma_uint64)total) {
+            float lastFrame[255];
+            libopusResult = op_pcm_seek((OggOpusFile*)pOpus->of, total - 1);
+            if (libopusResult == 0 && op_read_float((OggOpusFile*)pOpus->of, lastFrame, 255, NULL) < 0) {
+                libopusResult = OP_EREAD;
+            }
+        } else {
+            libopusResult = op_pcm_seek((OggOpusFile*)pOpus->of, (ogg_int64_t)frameIndex);
+        }
+
         if (libopusResult != 0) {
             if (libopusResult == OP_ENOSEEK) {
                 return MA_INVALID_OPERATION;    /* Not seekable. */
