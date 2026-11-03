@@ -136,10 +136,11 @@ static bool reserve_reap(ma_resource_manager* manager, bool past_max = false, bo
 // Gives it back, notified under the lock, so that nothing of a thread freeing a source runs once a waiter goes on, as to the process's exit.
 static void end_reap(ma_resource_manager* manager, bool network = false) {
 	std::unique_lock<std::mutex> lock(g_reaps_mutex);
+	ma_resource_manager* orphan = nullptr;
 	if (g_reaps[manager] == 1 && g_orphaned_managers.erase(manager) && !g_soundsystem_shut_down.test()) { // The last reap of an engine already destroyed, which left its resource manager to it; still counted, so that no waiter goes on meanwhile. Once the process exits, it is left to the exit.
+		orphan = manager;
 		lock.unlock();
-		ma_resource_manager_uninit(manager);
-		delete manager;
+		ma_resource_manager_uninit(orphan);
 		lock.lock();
 	}
 	if (network) {
@@ -147,6 +148,7 @@ static void end_reap(ma_resource_manager* manager, bool network = false) {
 		if (--g_network_reaps_of[manager] == 0) g_network_reaps_of.erase(manager);
 	}
 	if (--g_reaps[manager] == 0) g_reaps.erase(manager);
+	delete orphan; // Freed only once it is counted no more: freed before, a manager made meanwhile at its address was taken for it, and left to reaps it never had.
 	g_reaps_done.notify_all();
 }
 // For a resource manager whose engine is being destroyed: waits for its reaps but those closing a URL's stream, and if any of those are left, leaves the manager to the last of them to uninitialize and free, returning true. Waited for, a stalled read held the script destroying its own engine, or letting go of it, for up to a minute.
