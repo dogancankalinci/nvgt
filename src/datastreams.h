@@ -209,6 +209,7 @@ public:
 	}
 	// Marks this stream as reading or writing through another's stream as well as the one it was opened on, as a duplicating stream does through each stream added to it: closing that other one closes this one first, as for a stream opened on it (see close()). The caller keeps that one alive while this one uses it.
 	void opened_on_too(datastream* other);
+	bool can_go_through(const datastream* target); // See datastreams.cpp.
 	// For code reading or writing the streams on a thread of its own, as the audio thread does for a sound's decoder or encoder: while it's held, close() waits rather than delete the streams under that code. The streams are looked up after taking it, as they're gone once closed.
 	std::unique_lock<std::recursive_mutex> hold_open() {
 		return std::unique_lock<std::recursive_mutex>(use_mutex);

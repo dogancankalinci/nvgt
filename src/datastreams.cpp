@@ -42,6 +42,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include "datastreams.h"
 #include "nvgt.h"          // subsystems.
 #include "crypto.h" //Custom asset encryption stream.
@@ -254,11 +255,8 @@ datastream* ds_cerr = nullptr;
 bool datastream::open(std::istream* istr, std::ostream* ostr, const std::string& encoding, int byteorder, datastream* obj) {
 	if (no_close)
 		return false; // This stream cannot be reopened.
-	// Each stream opened on another goes through it by recursion, and is let go of the same way: 10000 streams opened one on the other overflowed the native stack when the last handle went, which ends the program with no exception to catch.
-	int depth = 0;
-	for (datastream* parent = obj; parent; parent = parent->ds) {
-		if (parent == this || ++depth > 256) return false;
-	}
+	// Each stream opened on another goes through it by recursion, and is let go of the same way: 10000 streams opened one on the other overflowed the native stack when the last handle went, which ends the program with no exception to catch. See can_go_through().
+	if (obj && !obj->can_go_through(this)) return false;
 	if (r || w)
 		close();
 	if (!istr && !ostr)
@@ -280,6 +278,53 @@ bool datastream::open(std::istream* istr, std::ostream* ostr, const std::string&
 void datastream::add_child(datastream* child) {
 	std::lock_guard<std::recursive_mutex> lock(children_mutex);
 	children.push_back(child);
+}
+// Whether a stream can be made to read or write through this one: target isn't among the streams this one goes through by any way (else
+// every read or write went round them for ever: a duplicating writer added to itself, or two added to each other, overflowed the native
+// stack at their first write), and no way down through them is longer than 256 streams (each is let go of, closed and written through by
+// recursion: 4000 duplicating writers each added to the next overflowed the stack when the last handle went). The streams one goes
+// through are the one it was opened on and, for a duplicating stream, every stream added to it. Each stream is looked at once.
+bool datastream::can_go_through(const datastream* target) {
+	struct frame {
+		datastream* s;
+		std::vector<datastream*> sources;
+		size_t next;
+		int deepest;
+	};
+	std::unordered_map<datastream*, int> below; // The longest way down from a stream already looked at, in streams.
+	std::vector<frame> stack;
+	auto push = [&](datastream* s) {
+		if (s == target) return false;
+		std::vector<datastream*> sources;
+		{
+			std::lock_guard<std::recursive_mutex> lock(s->children_mutex);
+			sources = s->also_on;
+		}
+		if (s->ds) sources.push_back(s->ds);
+		stack.push_back({s, std::move(sources), 0, 0});
+		return stack.size() <= 256;
+	};
+	if (!push(this)) return false;
+	while (!stack.empty()) {
+		frame& f = stack.back();
+		if (f.next < f.sources.size()) {
+			datastream* s = f.sources[f.next++];
+			auto it = below.find(s);
+			if (it == below.end()) {
+				if (!push(s)) return false;
+			} else {
+				if (stack.size() + it->second > 256) return false;
+				f.deepest = std::max(f.deepest, it->second + 1);
+			}
+			continue;
+		}
+		datastream* s = f.s;
+		int deepest = f.deepest;
+		stack.pop_back();
+		below[s] = deepest;
+		if (!stack.empty()) stack.back().deepest = std::max(stack.back().deepest, deepest + 1);
+	}
+	return true;
 }
 void datastream::opened_on_too(datastream* other) {
 	other->add_child(this); // Not under this one's children_mutex, which a close of the other takes after its own when it closes this one.
@@ -863,6 +908,11 @@ datastream* duplicating_stream_add(datastream* ds, datastream* ds_connect) {
 		ds->release();
 		ds_connect->release();
 		throw InvalidArgumentException(!ios ? "not a duplicating reader or writer" : "non-writer was connected to duplicator");
+	}
+	if (!ds_connect->can_go_through(ds)) {
+		ds->release();
+		ds_connect->release();
+		throw InvalidArgumentException("the stream goes through this duplicator, or through too many streams");
 	}
 	std::vector<datastream*>* streams = ds->user ? (std::vector<datastream*>*)ds->user : new std::vector<datastream*>;
 	streams->push_back(ds_connect);
