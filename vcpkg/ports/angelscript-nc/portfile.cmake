@@ -144,6 +144,7 @@ vcpkg_from_github(
         fix-collector-chain-passes.patch
         fix-nesting-stack-overflow.patch
         fix-collector-chains-across-the-list.patch
+        fix-nesting-reserve-small-stacks.patch
 )
 
 vcpkg_cmake_configure(

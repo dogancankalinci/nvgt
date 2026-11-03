@@ -1,0 +1,46 @@
+--- a/sdk/angelscript/source/as_parser.cpp
++++ b/sdk/angelscript/source/as_parser.cpp
+@@ -1090,19 +1090,24 @@
+ // that compiled on a given thread goes on compiling, a chain of else if with thousands of branches on a thread with the stack for it.
+ bool asIsStackNearlyFull()
+ {
+-	const size_t reserve = 128 * 1024; // Room for what a compilation does at the deepest level, and for reporting the error.
+-
+ #if defined(_WIN32) || defined(__linux__) || defined(__APPLE__)
+ 	static thread_local char *stackEnd = 0; // The lowest address of this thread's stack.
++	// Room for what a compilation does at the deepest level, and for reporting the error: 128 KB, or an eighth of a stack smaller
++	// than 1 MB but never less than 48 KB. A fixed 128 KB refused every compilation on a thread of 128 KB or less (a thread_pool's
++	// stack_size); an eighth alone was too little on arm64, which overflowed below the last check with 16 KB and was safe with 24 KB.
++	static thread_local size_t reserve = 128 * 1024;
+ 	if( stackEnd == 0 )
+ 	{
++		char *stackTop = 0;
+ #if defined(_WIN32)
+ 		MEMORY_BASIC_INFORMATION info;
+ 		if( VirtualQuery(&info, &info, sizeof(info)) )
+ 			stackEnd = (char*)info.AllocationBase;
++		stackTop = (char*)((NT_TIB*)NtCurrentTeb())->StackBase;
+ #elif defined(__APPLE__)
+ 		pthread_t self = pthread_self();
+-		stackEnd = (char*)pthread_get_stackaddr_np(self) - pthread_get_stacksize_np(self);
++		stackTop = (char*)pthread_get_stackaddr_np(self);
++		stackEnd = stackTop - pthread_get_stacksize_np(self);
+ #else
+ 		pthread_attr_t attr;
+ 		void *address = 0;
+@@ -1110,10 +1115,15 @@
+ 		if( pthread_getattr_np(pthread_self(), &attr) == 0 )
+ 		{
+ 			if( pthread_attr_getstack(&attr, &address, &size) == 0 )
++			{
+ 				stackEnd = (char*)address;
++				stackTop = stackEnd + size;
++			}
+ 			pthread_attr_destroy(&attr);
+ 		}
+ #endif
++		if( stackEnd != 0 && stackTop > stackEnd && size_t(stackTop - stackEnd) / 8 < reserve )
++			reserve = size_t(stackTop - stackEnd) / 8 > 48 * 1024 ? size_t(stackTop - stackEnd) / 8 : 48 * 1024;
+ 		if( stackEnd == 0 ) stackEnd = (char*)1; // Not known: this asks only once, and nothing is refused.
+ 	}
+ 	if( stackEnd == (char*)1 ) return false;
