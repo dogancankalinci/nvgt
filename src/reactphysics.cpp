@@ -1144,10 +1144,25 @@ ConvexMesh* create_convex_mesh_from_managed_vertex_array(ManagedVertexData* mana
 	return mesh;
 }
 
+// reactphysics3d links a polygon mesh's edges to their twins through maps that throw for an edge met twice and for an edge without its twin (a C++ exception out of createConvexMesh(), and the mesh it was making never freed), and an edge from a vertex to itself was taken for its own twin. A mesh is used only if it is closed: every edge between two different vertices, each used once in each direction, no face meeting a vertex twice. rp3d's own checks then decide, as for any other mesh.
+static bool polygon_mesh_is_closed(const ManagedPolygonData* data) {
+	std::unordered_set<uint64_t> edges;
+	for (const PolygonVertexArray::PolygonFace& face : data->faces) {
+		std::unordered_set<uint32> seen;
+		for (uint32 i = 0; i < face.nbVertices; i++) {
+			uint32 a = data->indices[face.indexBase + i], b = data->indices[face.indexBase + (i + 1) % face.nbVertices];
+			if (!seen.insert(a).second || !edges.insert(uint64_t(a) << 32 | b).second) return false;
+		}
+	}
+	for (uint64_t e : edges)
+		if (!edges.count(e << 32 | e >> 32)) return false;
+	return true;
+}
 ConvexMesh* create_convex_mesh_from_polygon_data(ManagedPolygonData* managedArray) {
 	managed_data_hold<ManagedPolygonData> hold{managedArray};
 	if (!managedArray || !managedArray->array)
 		throw std::runtime_error("Invalid managed polygon data");
+	if (!polygon_mesh_is_closed(managedArray)) return nullptr;
 	std::vector<Message> messages;
 	ConvexMesh* mesh = g_physics.createConvexMesh(*managedArray->array, messages);
 	// TODO: Handle messages (warnings/errors)
