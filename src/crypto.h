@@ -66,6 +66,7 @@ public:
 	chacha_istreambuf(std::istream &source, const std::string &key);
 	virtual ~chacha_istreambuf();
 	void own_source(bool owns);
+	std::istream *get_source() const { return source; }
 	virtual int readFromDevice(char *buffer, std::streamsize length);
 	virtual std::streampos seekoff(std::streamoff off, std::ios_base::seekdir dir, std::ios_base::openmode which = std::ios_base::in);
 	virtual std::streampos seekpos(std::streampos pos, std::ios_base::openmode which = std::ios_base::in);
@@ -77,6 +78,7 @@ public:
 	chacha_istream(std::istream &source, const std::string &key);
 	virtual ~chacha_istream();
 	virtual std::istream &own_source(bool owns = true);
+	std::istream *get_source() const { return buf.get_source(); } // The stream it decrypts.
 };
 class chacha_ostream : public std::ostream {
 	static std::string generate_nonce();

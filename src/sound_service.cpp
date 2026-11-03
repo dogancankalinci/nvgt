@@ -537,6 +537,10 @@ std::istream *encryption_filter::wrap(std::istream &source, const directive_t di
 		return nullptr;
 	}
 }
+std::istream *encryption_filter::source_of(std::istream *stream) {
+	const chacha_istream *decrypted = dynamic_cast<const chacha_istream *>(stream);
+	return decrypted? decrypted->get_source() : stream;
+}
 encryption_filter encryption_filter::instance;
 
 // Memory buffer sound service protocol implementation

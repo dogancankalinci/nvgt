@@ -5053,7 +5053,9 @@ public:
 				if (file_length_impossible(&made_source->backend.stream.decoder)) made_source->backend.stream.totalLengthInPCMFrames = 0; // Unknown, ending where the file does, as load() does: taken as its length, the stream played silence up to it, for practical purposes for good.
 				// The stream's job thread fills its pages through its decoder's data source functions, and seeks the decoder, so that NVGT's (see hold_decoder()) make the read at its end that gave nothing once more, count the resampling from where a seek left it and, for a source that can seek, keep the seek from being skipped and give silence for what the file lacks of its length. Given here, before the sound first reads the stream, which no job touches until then.
 				hold_decoder(&made_source->backend.stream.decoder, !(ma_flags & MA_SOUND_FLAG_UNKNOWN_LENGTH), made_source->backend.stream.totalLengthInPCMFrames); // A URL's source can't seek.
-				if (auto url_stream = dynamic_cast<prebuffer_istream*>(static_cast<std::istream*>(made_source->backend.stream.decoder.data.vfs.file))) url_stream->opened(); // Open, so that it needn't keep so much to come back to.
+				std::istream* file = static_cast<std::istream*>(made_source->backend.stream.decoder.data.vfs.file);
+				file = encryption_filter::source_of(file); // An encrypted URL's, which otherwise kept up to 16 MiB to come back to for as long as it played.
+				if (auto url_stream = dynamic_cast<prebuffer_istream*>(file)) url_stream->opened(); // Open, so that it needn't keep so much to come back to.
 			}
 			source = std::move(made_source);
 			view = std::move(made_view);

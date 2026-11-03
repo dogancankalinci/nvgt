@@ -138,6 +138,7 @@ public:
 	encryption_filter();
 	virtual std::istream *wrap(std::istream &source, const directive_t directive) const;
 	virtual std::string get_suffix(const directive_t &directive) const;
+	static std::istream *source_of(std::istream *stream); // The stream one this filter wrapped decrypts, or the one given.
 	static encryption_filter instance;
 };
 class memory_protocol : public sound_service::protocol {
