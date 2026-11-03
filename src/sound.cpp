@@ -6258,7 +6258,11 @@ bool sound::pcm_to_wav(const void *buffer, unsigned int size, ma_format format, 
 	if (!frame_size)
 		return false;
 	unsigned int data_size = size - size % frame_size; // Whole frames only.
-	output.resize(44 + data_size + data_size % 2); // RIFF pads an odd number of data bytes with one more.
+	if ((unsigned long long)data_size + data_size % 2 > 0xFFFFFFFFull - 36) { // More than a RIFF chunk's 32-bit size holds, which the sum below wrapped to a few bytes in, failing as a bad file.
+		g_soundsystem_last_error = MA_TOO_BIG;
+		return false;
+	}
+	output.resize(44 + (size_t)data_size + data_size % 2); // RIFF pads an odd number of data bytes with one more.
 	if (write_pcm_as_wav(buffer, data_size, format, samplerate, channels, &output[0], output.size()))
 		return true;
 	output.clear();
