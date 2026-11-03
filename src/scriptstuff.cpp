@@ -21,6 +21,7 @@
 #include <shared_mutex>
 #include <string_view>
 #include <tuple>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 #ifdef _WIN32
@@ -947,6 +948,10 @@ public:
 		for (auto& h : held) g_ScriptEngine->ReleaseScriptObject(h.first, h.second);
 	}
 };
+// See script_module::decl_refused().
+static std::unordered_set<std::string>* g_decl_types_seen = nullptr;
+static size_t g_decl_type_levels = 0;
+static const size_t g_max_decl_type_levels = 1024;
 class script_module {
 	std::string mod_name;
 	asIScriptModule* get_mod() { return g_ScriptEngine->GetModule(mod_name.c_str(), asGM_ONLY_IF_EXISTS); }
@@ -1121,19 +1126,58 @@ public:
 		std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex());
 		return get_mod()->GetFunctionByName(name.c_str());
 	}
-	// A declaration is parsed in time that doubles with each template argument nested in it: 22 levels took 3.5 seconds, and 26 didn't end in 45. A declaration is often data here, and no real one nests this deep.
+	// A declaration is parsed in time that doubles with each template argument nested in it: 22 levels took 3.5 seconds, and 26 didn't end in 45. And every type it names is made in the engine and stays, one per level, array brackets included: three lookups of 1500 [] left 200 MB. A declaration is often data here, and no real one nests this deep.
 	static bool decl_nests_too_deep(const std::string& decl) {
-		int depth = 0;
+		int depth = 0, brackets = 0;
 		for (char c : decl) {
 			if (c == '<' && ++depth > 12) return true;
 			if (c == '>') depth--;
+			if (c == '[') {
+				if (depth + ++brackets > 12) return true;
+			} else if (c != ']' && c != ' ') brackets = 0;
 		}
 		return false;
 	}
+	// The template types a declaration names that no lookup made yet, written as it writes them. Only a lookup that finds nothing can be what made a type, as a function or variable found has its types already.
+	static bool decl_new_types(const std::string& decl, std::vector<std::string>& types, size_t& levels) {
+		std::string type;
+		levels = g_decl_type_levels;
+		for (size_t i = 0; i <= decl.size(); i++) {
+			char c = i < decl.size() ? decl[i] : ',';
+			if (c == ' ' || c == '\t' || c == '\r' || c == '\n') continue;
+			if (c != ',' && c != '(' && c != ')') {
+				type += c;
+				if (type.size() > 2048) return false;
+				continue;
+			}
+			if (type.find_first_of("<[") != std::string::npos && !g_decl_types_seen->count(type)) {
+				levels += std::count(type.begin(), type.end(), '<') + std::count(type.begin(), type.end(), '[');
+				types.push_back(type);
+			}
+			type.clear();
+		}
+		return levels <= g_max_decl_type_levels;
+	}
+	// Different types are the other way to fill the engine from data, each lookup making a few, so what lookups that found nothing have made is limited as deserialize() limits it (see type_by_decl() in serialize.cpp). Both of these need the build lock.
+	static bool decl_refused(const std::string& decl, std::vector<std::string>& types) {
+		if (!g_decl_types_seen) g_decl_types_seen = new std::unordered_set<std::string>; // Never destroyed: a script thread can still be here as the program ends.
+		size_t levels;
+		return decl_nests_too_deep(decl) || !decl_new_types(decl, types, levels);
+	}
+	static void decl_found_nothing(const std::vector<std::string>& types) {
+		for (const std::string& type : types) {
+			g_decl_type_levels += std::count(type.begin(), type.end(), '<') + std::count(type.begin(), type.end(), '[');
+			g_decl_types_seen->insert(type);
+		}
+	}
 	asIScriptFunction* get_function_by_decl(const std::string& name) {
-		if (!get_mod() || decl_nests_too_deep(name)) return NULL;
+		if (!get_mod()) return NULL;
 		std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex());
-		return get_mod()->GetFunctionByDecl(name.c_str());
+		std::vector<std::string> types;
+		if (decl_refused(name, types)) return NULL;
+		asIScriptFunction* func = get_mod()->GetFunctionByDecl(name.c_str());
+		if (!func) decl_found_nothing(types);
+		return func;
 	}
 	const std::string get_imported_function_decl(asDWORD index) {
 		if (!get_mod())
@@ -1146,7 +1190,11 @@ public:
 		if (!get_mod())
 			return asNO_MODULE;
 		std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex()); // The declaration is parsed as get_function_by_decl() parses one (see get_function_by_name()).
-		return get_mod()->GetImportedFunctionIndexByDecl(decl.c_str());
+		std::vector<std::string> types;
+		if (decl_refused(decl, types)) return asINVALID_DECLARATION;
+		int index = get_mod()->GetImportedFunctionIndexByDecl(decl.c_str());
+		if (index < 0) decl_found_nothing(types);
+		return index;
 	}
 	const std::string get_imported_function_module(asDWORD index) {
 		if (!get_mod())
@@ -1176,9 +1224,12 @@ public:
 	int get_global_index_by_decl(const std::string& decl) {
 		if (!get_mod())
 			return asNO_MODULE;
-		if (decl_nests_too_deep(decl)) return asINVALID_DECLARATION;
 		std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex()); // See get_function_by_name().
-		return get_mod()->GetGlobalVarIndexByDecl(decl.c_str());
+		std::vector<std::string> types;
+		if (decl_refused(decl, types)) return asINVALID_DECLARATION;
+		int index = get_mod()->GetGlobalVarIndexByDecl(decl.c_str());
+		if (index < 0) decl_found_nothing(types);
+		return index;
 	}
 	int get_global_index_by_name(const std::string& decl) {
 		if (!get_mod())
