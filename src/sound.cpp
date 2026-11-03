@@ -116,6 +116,8 @@ static std::mutex g_reaps_mutex;
 static std::condition_variable g_reaps_done;
 static std::unordered_map<ma_resource_manager*, int> g_reaps; // Under g_reaps_mutex.
 static int g_network_reaps = 0; // Of those, closing a URL's stream, which can wait out a stalled read, a minute with Poco's timeout. Under g_reaps_mutex.
+static std::unordered_map<ma_resource_manager*, int> g_network_reaps_of; // Those by resource manager. Under g_reaps_mutex.
+static std::unordered_set<ma_resource_manager*> g_orphaned_managers; // Resource managers of engines destroyed while only URL reaps of theirs were left, which the last of those uninitializes and frees (see leave_to_network_reaps()). Under g_reaps_mutex.
 // At most this many of a resource manager's at once; close() waits for another itself, so that sounds loaded and let go of faster than they decode don't pile up decodes nobody plays, each holding its whole decoded file and the job threads.
 static constexpr int max_reaps = 2;
 // Takes a place among those of a resource manager, if there is one, or past them for a caller that mustn't wait, as an audio thread: none once uninit_sound() shut the sound system down, the process's exit following.
@@ -125,20 +127,40 @@ static bool reserve_reap(ma_resource_manager* manager, bool past_max = false, bo
 	auto it = g_reaps.find(manager);
 	if (!past_max && it != g_reaps.end() && it->second >= max_reaps) return false;
 	g_reaps[manager]++;
-	if (network) g_network_reaps++; // With its place, under the one lock: counted after it, the exit's wait could see a reap that wasn't yet counted as a URL's, and wait for it past its bound, as nothing woke it once it was.
+	if (network) { // With its place, under the one lock: counted after it, the exit's wait could see a reap that wasn't yet counted as a URL's, and wait for it past its bound, as nothing woke it once it was.
+		g_network_reaps++;
+		g_network_reaps_of[manager]++;
+	}
 	return true;
 }
 // Gives it back, notified under the lock, so that nothing of a thread freeing a source runs once a waiter goes on, as to the process's exit.
 static void end_reap(ma_resource_manager* manager, bool network = false) {
-	std::lock_guard<std::mutex> lock(g_reaps_mutex);
-	if (network) g_network_reaps--;
+	std::unique_lock<std::mutex> lock(g_reaps_mutex);
+	if (g_reaps[manager] == 1 && g_orphaned_managers.erase(manager) && !g_soundsystem_shut_down.test()) { // The last reap of an engine already destroyed, which left its resource manager to it; still counted, so that no waiter goes on meanwhile. Once the process exits, it is left to the exit.
+		lock.unlock();
+		ma_resource_manager_uninit(manager);
+		delete manager;
+		lock.lock();
+	}
+	if (network) {
+		g_network_reaps--;
+		if (--g_network_reaps_of[manager] == 0) g_network_reaps_of.erase(manager);
+	}
 	if (--g_reaps[manager] == 0) g_reaps.erase(manager);
 	g_reaps_done.notify_all();
 }
-// Waits for those of a resource manager, or for all of them.
-static void wait_for_reaps(ma_resource_manager* manager = nullptr) {
+// For a resource manager whose engine is being destroyed: waits for its reaps but those closing a URL's stream, and if any of those are left, leaves the manager to the last of them to uninitialize and free, returning true. Waited for, a stalled read held the script destroying its own engine, or letting go of it, for up to a minute.
+static bool leave_to_network_reaps(ma_resource_manager* manager) {
 	std::unique_lock<std::mutex> lock(g_reaps_mutex);
-	g_reaps_done.wait(lock, [manager]() { return manager? !g_reaps.count(manager) : g_reaps.empty(); });
+	g_reaps_done.wait(lock, [manager]() {
+		auto reaps = g_reaps.find(manager);
+		if (reaps == g_reaps.end()) return true;
+		auto network = g_network_reaps_of.find(manager);
+		return network != g_network_reaps_of.end() && network->second == reaps->second;
+	});
+	if (!g_reaps.count(manager)) return false;
+	g_orphaned_managers.insert(manager);
+	return true;
 }
 // As the process exits: all of them, but not for long for those closing a URL's stream, which a stalled read kept from exiting for up to a minute, and which do nothing but wake when it times out.
 static void wait_for_reaps_at_exit() {
@@ -884,8 +906,8 @@ public:
 			engine = nullptr;
 		}
 		if (resource_manager) {
-			wait_for_reaps(&*resource_manager); // Its sources a closed sound left decoding, freed through it.
-			ma_resource_manager_uninit(&*resource_manager);
+			if (leave_to_network_reaps(&*resource_manager)) (void)resource_manager.release(); // Its sources a closed sound left decoding are freed through it: waited for, but a URL's stream, which then frees it.
+			else ma_resource_manager_uninit(&*resource_manager);
 		}
 	}
 	// The last reference can go on the engine's own device thread, as the data callback holds one while it calls the script. Destroying the engine stops its device, which from that thread would wait for itself forever, so the engine is destroyed on a thread of its own then, or kept if none can be started.
