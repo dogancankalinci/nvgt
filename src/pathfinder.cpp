@@ -286,7 +286,8 @@ CScriptArray* pathfinder::find(int start_x, int start_y, int start_z, int end_x,
 	solving = false;
 	if (data) data->Release();
 	callback_data = NULL;
-	if (abort || must_reset || result != micropather::MicroPather::SOLVED) {
+	// must_reset alone comes from a search that met the edge of search_range (AdjacentCost): the path it found stays within the range and is kept, and only what MicroPather cached is let go of. A reset() or cancel() from a callback sets abort as well, and that search is dropped.
+	if (abort || result != micropather::MicroPather::SOLVED) {
 		abort = false;
 		total_cost = 0;
 		if (must_reset) reset();
@@ -301,6 +302,7 @@ CScriptArray* pathfinder::find(int start_x, int start_y, int start_z, int end_x,
 		v.setAllValues(x, y, z);
 		array->InsertLast(&v);
 	}
+	if (must_reset) reset(); // After the states were read back: on 32-bit targets they are indices into the table reset() clears.
 	return array;
 }
 CScriptArray* pathfinder::find_legacy(int start_x, int start_y, int parent_x, int parent_y, string user_data) {
