@@ -324,7 +324,10 @@ timer::timer(bool secure) : value(microticks(secure)), accuracy(timer_default_ac
 timer::timer(int64_t initial_value, bool secure) : value(int64_t(microticks(secure)) - initial_value * timer_default_accuracy), accuracy(timer_default_accuracy), paused(false), secure(secure) {}
 timer::timer(int64_t initial_value, uint64_t initial_accuracy, bool secure) : value(int64_t(microticks(secure)) - initial_value * initial_accuracy), accuracy(initial_accuracy), paused(false), secure(secure) {}
 int64_t timer::get_elapsed() const {
-	return int64_t(paused ? value : microticks(secure) - value) / int64_t(accuracy ? accuracy : 1);
+	int64_t elapsed = int64_t(paused ? value : microticks(secure) - value), divisor = int64_t(accuracy ? accuracy : 1);
+	// An accuracy of 2^64 - 1 is -1 here, and the lowest int64 divided by -1 ends the program on x86 (an integer overflow trap): the quotient is the dividend negated, which wraps.
+	if (divisor == -1) return int64_t(0 - uint64_t(elapsed));
+	return elapsed / divisor;
 }
 bool timer::has_elapsed(int64_t value) const {
 	return get_elapsed() >= value;
