@@ -1476,6 +1476,8 @@ public:
 			}
 			return;
 		}
+		splitter_node* attachment = new_reverb? new_reverb->create_attachment() : nullptr; // First: one that can't be made, or throws, leaves the sound its old reverb, which was let go of before it.
+		if (new_reverb && !attachment) return;
 		if (reverb) {
 			release_later(reverb);
 			reverb = nullptr;
@@ -1486,8 +1488,7 @@ public:
 			}
 		}
 		if (new_reverb) {
-			reverb_attachment = new_reverb->create_attachment();
-			if (!reverb_attachment) return;
+			reverb_attachment = attachment;
 			reverb_placement = placement;
 			if (attached_mixer && parameters_valid) reverb_attachment->set_output_bus_volume(1, reverb_send_volume(new_reverb));
 			position_reverb();
