@@ -245,6 +245,15 @@ static ma_result ma_ogg_link_frames_take(ma_ogg_link_frames* pLink, ma_format fo
             if (nvgt_channel_weights(channelMapIn, pLink->channels, channelMapOut, channels, pWeightRows)) {
                 config.channelMixMode = ma_channel_mix_mode_custom_weights;
                 config.ppChannelWeights = pWeightRows;
+
+                /* Named otherwise than mono, which MiniAudio expands or averages itself before it looks at custom weights. */
+                if (channelMapIn[0] == MA_CHANNEL_MONO) {
+                    channelMapIn[0] = MA_CHANNEL_FRONT_CENTER;
+                }
+
+                if (channelMapOut[0] == MA_CHANNEL_MONO) {
+                    channelMapOut[0] = MA_CHANNEL_FRONT_CENTER;
+                }
             }
 
             result = ma_data_converter_init(&config, ma_ogg_link_frames_allocation_callbacks(pLink), &pLink->converter);

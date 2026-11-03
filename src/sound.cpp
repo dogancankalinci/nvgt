@@ -3717,7 +3717,7 @@ static ma_result float_view_get_cursor(ma_data_source* source, ma_uint64* cursor
 static ma_result float_view_get_length(ma_data_source* source, ma_uint64* length) { return ma_data_source_get_length_in_pcm_frames(((float_view*)source)->inner, length); }
 static ma_result float_view_set_looping(ma_data_source* source, ma_bool32 looping) { return ma_data_source_set_looping(((float_view*)source)->inner, looping); } // A stream loops seamlessly only when it loops itself.
 static ma_data_source_vtable g_float_view_vtable = {float_view_read, float_view_seek, float_view_get_data_format, float_view_get_cursor, float_view_get_length, float_view_set_looping, 0};
-// The source a sound reads: the one given if it is in float with its engine's channels in its engine's order, or a single channel, or else a float_view of it made in view, which mixes its channels into the engine's by their places (see nvgt_channel_weights()). MiniAudio's sound mixes in its simple mode, which drops every channel the engine has no place of: a 5.1 file on a stereo engine lost its centre and surrounds, a 3-channel source its third, and a quad one on a 5.1 engine its rear pair. A spatialized sound was mixed by its spatializer otherwise, so that turning spatialization on or off changed the speakers it played in. MiniAudio's weights leave an LFE out. A single channel is the spatializer's to place, and plays from the front pair otherwise (see the engine's monoExpansionMode).
+// The source a sound reads: the one given if it is in float with its engine's channels in its engine's order, or a single channel on a stereo engine, which its panner places, or else a float_view of it made in view, which mixes its channels into the engine's by their places (see nvgt_channel_weights()). MiniAudio's sound mixes in its simple mode, which drops every channel the engine has no place of: a 5.1 file on a stereo engine lost its centre and surrounds, a 3-channel source its third, and a quad one on a 5.1 engine its rear pair. A spatialized sound was mixed by its spatializer otherwise, which copies a single channel into every one, an LFE included, wherever the sound is, so that turning spatialization on or off changed the speakers it played in.
 static ma_data_source* float_source(ma_data_source* source, unique_ptr<float_view>& view, ma_uint32 engine_channels, bool default_map = false) {
 	view.reset();
 	ma_format format = ma_format_unknown;
@@ -3727,7 +3727,7 @@ static ma_data_source* float_source(ma_data_source* source, unique_ptr<float_vie
 	if (default_map || ma_channel_map_is_blank(channel_map, channels)) ma_channel_map_init_standard(ma_standard_channel_map_default, channel_map, MA_MAX_CHANNELS, channels); // A stream, whose decoder isn't held yet, and gives its input's map for its output's (see held_decoder_get_data_format()); or one that names none, as raw PCM.
 	ma_channel map_out[MA_MAX_CHANNELS];
 	if (engine_channels) ma_channel_map_init_standard(ma_standard_channel_map_default, map_out, MA_MAX_CHANNELS, engine_channels);
-	const bool mixing = engine_channels && channels > 1 && (channels != engine_channels || !ma_channel_map_is_equal(channel_map, map_out, channels));
+	const bool mixing = engine_channels && (channels > 1? channels != engine_channels || !ma_channel_map_is_equal(channel_map, map_out, channels) : engine_channels > 2);
 	if (format == ma_format_f32 && !mixing) return source;
 	view = make_unique<float_view>();
 	ma_data_source_config cfg = ma_data_source_config_init();
@@ -3745,9 +3745,12 @@ static ma_data_source* float_source(ma_data_source* source, unique_ptr<float_vie
 		std::vector<float> weights((size_t)channels * engine_channels);
 		std::vector<float*> rows(channels);
 		for (ma_uint32 i = 0; i < channels; i++) rows[i] = &weights[(size_t)i * engine_channels];
-		if (nvgt_channel_weights(channel_map, channels, map_out, engine_channels, rows.data())) { // Not for a mono engine, which MiniAudio mixes into as their average.
+		if (nvgt_channel_weights(channel_map, channels, map_out, engine_channels, rows.data())) {
 			mixer_cfg.mixingMode = ma_channel_mix_mode_custom_weights;
 			mixer_cfg.ppWeights = rows.data();
+			// Named otherwise than mono, which MiniAudio expands or averages itself before it looks at custom weights.
+			if (channel_map[0] == MA_CHANNEL_MONO) channel_map[0] = MA_CHANNEL_FRONT_CENTER;
+			if (map_out[0] == MA_CHANNEL_MONO) map_out[0] = MA_CHANNEL_FRONT_CENTER;
 		}
 		if (ma_channel_converter_init(&mixer_cfg, nullptr, &view->mixer) == MA_SUCCESS) {
 			view->mixing = true;
