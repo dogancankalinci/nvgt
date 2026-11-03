@@ -4,7 +4,7 @@ Queues raw audio for the sound to play, starting a stream of it on the first cal
 `bool sound::stream_pcm(const float[]@ data, uint sample_rate = 0, uint channels = 0, uint buffer_size = 0);`
 
 ## Arguments:
-* const float[]@ data: the samples to queue, interleaved by channel. Arrays of int, int16 and uint8, and memory_buffers of these types, are taken as well. Samples past the last whole frame are dropped, and fewer than one frame is refused with AUDIO_ERROR_STATE_INVALID_ARGS.
+* const float[]@ data: the samples to queue, interleaved by channel. Arrays of int, int16 and uint8, and memory_buffers of these types, are taken as well. Samples past the last whole frame are dropped. A chunk with some samples but less than a whole frame is refused with AUDIO_ERROR_STATE_INVALID_ARGS. An empty one queues nothing and succeeds, except on a first call without a buffer_size, which has nothing to size the queue by and is refused the same way.
 * uint sample_rate = 0: the sample rate of the audio; 0 means the engine's on the first call, and the stream's after it.
 * uint channels = 0: the number of channels of the audio; 0 means the engine's on the first call, and the stream's after it.
 * uint buffer_size = 0: how many frames the stream's queue holds; 0 means twice the frames given. Only the first call's counts, as the queue can't be resized.
