@@ -39,6 +39,8 @@
 #include <SDL3/SDL.h>
 #include <obfuscate.h>
 #include <thread.h>
+#include <algorithm>
+#include <cmath>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -342,8 +344,32 @@ void game_window::draw_circle(float cx, float cy, int radius, unsigned int r, un
 	_renderer->set_draw_color(r, g, b, 255);
 	SDL_Renderer* rend = _renderer->get_renderer();
 	if (!rend) return;
-	int offsetx = 0, offsety = radius, d = radius - 1, status = 0;
 	bool drew = false;
+	// The walk below takes a step per pixel of the radius, each with up to 8 draw calls queued: a radius of 2^31 - 1 never ended, and the queue
+	// grew past the memory there was, and its arithmetic overflowed an int from 2^30. Nothing past 16384 pixels from the origin can be seen at
+	// any usual scale, so a larger circle draws only the rows (and, for an outline, the columns) within that, each from a square root.
+	const double limit = 16384;
+	if (radius > limit) {
+		const double rr = double(radius) * radius;
+		for (double y = std::ceil(std::max(double(cy) - radius, -limit)); y <= std::min(double(cy) + radius, limit); y++) {
+			double dy = y - cy, hw = std::sqrt(std::max(rr - dy * dy, 0.0));
+			if (filled) drew |= SDL_RenderLine(rend, float(cx - hw), float(y), float(cx + hw), float(y));
+			else {
+				drew |= SDL_RenderPoint(rend, float(cx - hw), float(y));
+				drew |= SDL_RenderPoint(rend, float(cx + hw), float(y));
+			}
+		}
+		if (!filled) {
+			for (double x = std::ceil(std::max(double(cx) - radius, -limit)); x <= std::min(double(cx) + radius, limit); x++) {
+				double dx = x - cx, hh = std::sqrt(std::max(rr - dx * dx, 0.0));
+				drew |= SDL_RenderPoint(rend, float(x), float(cy - hh));
+				drew |= SDL_RenderPoint(rend, float(x), float(cy + hh));
+			}
+		}
+		if (drew) _renderer->mark_dirty();
+		return;
+	}
+	int offsetx = 0, offsety = radius, d = radius - 1, status = 0;
 	while (offsety >= offsetx) {
 		if (filled) {
 			drew |= SDL_RenderLine(rend, cx - offsety, cy + offsetx, cx + offsety, cy + offsetx);
