@@ -28,6 +28,7 @@
 #endif
 #include <Poco/URIStreamOpener.h>
 #include <vector>
+#include <cctype>
 #include <cassert>
 #include <miniaudio.h>
 #include "crypto.h"
@@ -611,11 +612,12 @@ static ma_result url_open_failure(const Poco::Exception& e) {
 	if (dynamic_cast<const Poco::Net::DNSException*>(&e)) return MA_NO_HOST;
 	if (dynamic_cast<const Poco::TimeoutException*>(&e)) return MA_TIMEOUT;
 	if (dynamic_cast<const Poco::UnknownURISchemeException*>(&e)) return MA_PROTOCOL_NOT_SUPPORTED;
-	if (dynamic_cast<const Poco::Net::HTTPException*>(&e)) { // By the reason, which is what Poco keeps of the response, at the start of its message, the URL following it: searched for in the whole message, a URL with one of these words in it gave that error for any response.
-		const std::string& message = e.message();
-		auto reason_is = [&message](const std::string& reason) { return message.compare(0, reason.size(), reason) == 0 && (message.size() == reason.size() || message[reason.size()] == ':'); };
-		if (reason_is("Not Found") || reason_is("Gone")) return MA_DOES_NOT_EXIST;
-		if (reason_is("Forbidden") || reason_is("Unauthorized")) return MA_ACCESS_DENIED;
+	if (dynamic_cast<const Poco::Net::HTTPException*>(&e)) { // By the reason, which is what Poco keeps of the response, at the start of its message, the URL following it: searched for in the whole message, a URL with one of these words in it gave that error for any response. In any case and wording, as servers phrase it their own way, "File not found" among them.
+		std::string reason = e.message().substr(0, e.message().find(": "));
+		for (char& c : reason) c = (char)std::tolower((unsigned char)c);
+		auto says = [&reason](const char* words) { return reason.find(words) != std::string::npos; };
+		if (says("not found") || says("gone")) return MA_DOES_NOT_EXIST;
+		if (says("forbidden") || says("unauthorized") || says("denied")) return MA_ACCESS_DENIED;
 	}
 	return MA_ERROR;
 }
