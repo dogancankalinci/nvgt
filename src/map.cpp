@@ -18,15 +18,17 @@
 #include <algorithm>
 #include <obfuscate.h>
 #include <limits>
+#include <tuple>
 #include "scriptstuff.h"
 #include "nvgt_angelscript.h" // get_array_type()
 
 using reactphysics3d::Vector3;
 
 Vector3 rotate(const Vector3& p, const Vector3& o, double theta, bool maintain_z = true) {
-	int angle = (180.0 / M_PI) * theta;
 	Vector3 r;
-	Vector3 cs = Vector3(angle != 90 && angle != 270 ? cos(theta) : 0, angle != 180 ? sin(theta) : 0, 0);
+	// The right angles give exactly 0 here. Comparing the angle in whole degrees also took for 0 the cosine of everything up to 91 degrees and the sine up to 181, and depended on a cast of a value that can be out of an int's range.
+	double c = cos(theta), s = sin(theta);
+	Vector3 cs = Vector3(std::fabs(c) < 1e-6 ? 0 : c, std::fabs(s) < 1e-6 ? 0 : s, 0);
 	r.x = (cs.x * (p.x - o.x)) - (cs.y * (p.y - o.y)) + o.x;
 	r.y = (cs.y * (p.x - o.x)) + (cs.x * (p.y - o.y)) + o.y;
 	if (maintain_z)
@@ -51,7 +53,7 @@ bool polygons_intersect(const std::vector<Vector3>& a, const std::vector<Vector3
 		for (int i1 = 0; i1 < polygon.size(); ++i1) {
 			const int i2 = (i1 + 1) % polygon.size();
 			const double normalx = polygon[i2].y - polygon[i1].y;
-			const double normaly = polygon[i2].x - polygon[i1].x;
+			const double normaly = polygon[i1].x - polygon[i2].x;
 			double minA = (std::numeric_limits<double>::max());
 			double maxA = (std::numeric_limits<double>::lowest());
 			for (int ai = 0; ai < a.size(); ++ai) {
@@ -66,20 +68,19 @@ bool polygons_intersect(const std::vector<Vector3>& a, const std::vector<Vector3
 				if (projected < minB) minB = projected;
 				if (projected > maxB) maxB = projected;
 			}
-			if (maxA < minB || maxB < minA)
+			if (maxA <= minB || maxB <= minA) // Boxes end where the next one starts, see boxes_intersect.
 				return false;
 		}
 	}
 	return true;
 }
+// A box is taken as a map area is: from min up to but not including max + 1, turned by its angle about its center. The corners were each box's min plus or minus its center, which is the box's half size only for a box with one corner at the origin, so boxes far from the origin all looked as if they intersected.
+static std::vector<Vector3> box_corners(float minx, float maxx, float miny, float maxy, float r) {
+	Vector3 c((double(minx) + maxx + 1) / 2, (double(miny) + maxy + 1) / 2, 0), h((double(maxx) + 1 - minx) / 2, (double(maxy) + 1 - miny) / 2, 0), o(0, 0, 0);
+	return {c + rotate(Vector3(-h.x, -h.y, 0), o, r), c + rotate(Vector3(-h.x, h.y, 0), o, r), c + rotate(Vector3(h.x, h.y, 0), o, r), c + rotate(Vector3(h.x, -h.y, 0), o, r)};
+}
 bool boxes_intersect(float minx1, float maxx1, float miny1, float maxy1, float r1, float minx2, float maxx2, float miny2, float maxy2, float r2) {
-	Vector3 c1 = get_center(minx1, maxx1 + 1, miny1, maxy1 + 1, 0, 0);
-	Vector3 c2 = get_center(minx2, maxx2, miny2, maxy2, 0, 0);
-	Vector3 min1 = Vector3(minx1, miny1, 0);
-	Vector3 min2 = Vector3(minx2, miny2, 0);
-	std::vector<Vector3> p1 = {min1 + rotate(Vector3(-c1.x, -c1.y, 0), Vector3(0, 0, 0), r1), min1 + rotate(Vector3(-c1.x, c1.y, 0), Vector3(0, 0, 0), r1), min1 + rotate(Vector3(c1.x, c1.y, 0), Vector3(0, 0, 0), r1), min1 + rotate(Vector3(c1.x, -c1.y, 0), Vector3(0, 0, 0), r1)};
-	std::vector<Vector3> p2 = {min2 + rotate(Vector3(-c2.x, -c2.y, 0), Vector3(0, 0, 0), r2), min2 + rotate(Vector3(-c2.x, c2.y, 0), Vector3(0, 0, 0), r2), min2 + rotate(Vector3(c2.x, c2.y, 0), Vector3(0, 0, 0), r2), min2 + rotate(Vector3(c2.x, -c2.y, 0), Vector3(0, 0, 0), r2)};
-	return polygons_intersect(p1, p2);
+	return polygons_intersect(box_corners(minx1, maxx1, miny1, maxy1, r1), box_corners(minx2, maxx2, miny2, maxy2, r2));
 }
 
 static asITypeInfo* g_MapAreaArrayType = NULL;
@@ -144,7 +145,7 @@ bool map_area::is_unfiltered(asIScriptFunction* filter_callback) {
 	return ret;
 }
 void map_area::unframe() {
-	if (!parent || !framesize || !framed) return;
+	if (!parent || !framed) return; // framesize says nothing here: 0 is the largest size, and an area that large stayed in its frames, so unframe() did nothing and set() left it where it was, or nowhere as far as a search could tell.
 	for (map_frame* f : frames) {
 		auto it = std::find(f->areas.begin(), f->areas.end(), this);
 		while (it != f->areas.end()) {
@@ -158,7 +159,7 @@ void map_area::unframe() {
 }
 void map_area::reframe() {
 	if (!parent || framed) return;
-	if (!framesize) framesize = get_frame_size(maxx - minx, maxy - miny, maxz - minz);
+	framesize = get_frame_size(maxx - minx, maxy - miny, maxz - minz); // Each time, as set() can have changed the size: check_map_area() goes by the size for the area as it is now, and a small area made large by set() kept the smallest frames, up to hundreds of millions of them.
 	Vector3 MIN = Vector3(minx, miny, minz);
 	Vector3 MAX = Vector3(maxx, maxy, maxz);
 	if (rotation > 0) {
@@ -357,9 +358,31 @@ void coordinate_map::get_areas(float minx, float maxx, float miny, float maxy, f
 	} else {
 		std::unordered_set<map_area*> taken; // See map_frame::add_areas_for_range.
 		for (int i = total_frame_sizes - 1; i >= 0; i--) {
-			for (int x = minx - d; x <= maxx + d + frame_sizes[i]; x += frame_sizes[i]) {
-				for (int y = miny - d; y <= maxy + d + frame_sizes[i]; y += frame_sizes[i]) {
-					for (int z = minz - d; z <= maxz + d + frame_sizes[i]; z += frame_sizes[i]) {
+			const int size = frame_sizes[i];
+			const double x0 = float(minx - d), x1 = float(maxx + d + size), y0 = float(miny - d), y1 = float(maxy + d + size), z0 = float(minz - d), z1 = float(maxz + d + size);
+			if (!(x0 <= x1 && y0 <= y1 && z0 <= z1)) continue;
+			// A range past what an int holds never ended (the walk below wrapped around), and a wide one took as long as it has positions, however few frames the map has: such a range looks through the frames there are, in the same order. The callback can change the map, so they are looked up one at a time.
+			bool walk = std::max({std::fabs(x0), std::fabs(x1), std::fabs(y0), std::fabs(y1), std::fabs(z0), std::fabs(z1)}) <= 2000000000.0;
+			if (walk) walk = ((x1 - x0) / size + 1) * ((y1 - y0) / size + 1) * ((z1 - z0) / size + 1) <= frames[i].size() + 64.0;
+			if (!walk) {
+				std::vector<hashpoint> found;
+				const double fx = std::floor(x0 / size) * size, fy = std::floor(y0 / size) * size, fz = std::floor(z0 / size) * size;
+				for (const auto& f : frames[i]) {
+					const hashpoint& h = f.first;
+					if (h.x >= fx && h.x <= x1 && h.y >= fy && h.y <= y1 && h.z >= fz && h.z <= z1) found.push_back(h);
+				}
+				std::sort(found.begin(), found.end(), [](const hashpoint& a, const hashpoint& b) { return std::tie(a.x, a.y, a.z) < std::tie(b.x, b.y, b.z); });
+				for (const hashpoint& h : found) {
+					map_frame* f = get_frame(h.x, h.y, h.z, i, false);
+					if (!f) continue;
+					p = f->add_areas_for_range(local_areas, taken, minx, maxx, miny, maxy, minz, maxz, d, p, filter_callback, flags, excluded_flags);
+					if (!priority_check) p = -1;
+				}
+				continue;
+			}
+			for (int x = x0; x <= x1; x += size) {
+				for (int y = y0; y <= y1; y += size) {
+					for (int z = z0; z <= z1; z += size) {
 						map_frame* f = get_frame(x, y, z, i, false);
 						if (!f) continue;
 						p = f->add_areas_for_range(local_areas, taken, minx, maxx, miny, maxy, minz, maxz, d, p, filter_callback, flags, excluded_flags);
