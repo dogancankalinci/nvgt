@@ -7,7 +7,9 @@ vcpkg_download_distfile(ARCHIVE
 vcpkg_extract_source_archive_ex(
     OUT_SOURCE_PATH SOURCE_PATH
     ARCHIVE "${ARCHIVE}"
-    PATCHES fix-system_clock.patch
+    PATCHES
+        fix-system_clock.patch
+        fix-quickhull-edge-map-and-flat-input.patch
 )
 
 vcpkg_cmake_configure(

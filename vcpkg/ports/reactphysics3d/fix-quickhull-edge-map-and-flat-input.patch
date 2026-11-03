@@ -1,0 +1,420 @@
+--- a/include/reactphysics3d/utils/quickhull/QHHalfEdgeStructure.h
++++ b/include/reactphysics3d/utils/quickhull/QHHalfEdgeStructure.h
+@@ -145,7 +145,9 @@
+             }
+ 
+             /// Recalculate the face centroid and normal to better fit its new vertices (using Newell method)
+-            void recalculateFace(const Array<Vector3>& points) {
++            /// Returns false for a face with no area (fewer than three vertices, or all of them on a line): the normal
++            /// can't be computed, and the hull has gone wrong (see QHHalfEdgeStructure::setBroken())
++            bool recalculateFace(const Array<Vector3>& points) {
+ 
+                 centroid.setToZero();
+                 normal.setToZero();
+@@ -173,9 +175,14 @@
+ 
+                 centroid = centroid / nbVertices;
+                 const decimal normalLength = normal.length();
+-                assert(normalLength > 0);
++                if (nbVertices < 3 || !(normalLength > 0 && normalLength < DECIMAL_LARGEST)) {
++                    normal.setToZero();
++                    area = 0;
++                    return false;
++                }
+                 normal = normal / normalLength;
+                 area = normalLength * decimal(0.5);
++                return true;
+             }
+ 
+             /// Return a string with the vertices of the face
+@@ -269,6 +276,9 @@
+         /// Number of half-edges
+         uint32 mNbHalfEdges = 0;
+ 
++        /// True once the structure was found inconsistent, see setBroken()
++        bool mIsBroken = false;
++
+         /// Number of vertices
+         uint32 mNbVertices = 0;
+ 
+@@ -324,6 +334,17 @@
+         /// Remove an half-edge
+         void removeHalfEdge(Edge* edge);
+ 
++        /// Give an half-edge other end vertices and keep the map of the edges in step with them
++        void setEdgeVertices(Edge* edge, Vertex* startVertex, Vertex* endVertex);
++
++        /// Points nearly flat, nearly on a line or nearly the same can leave the hull, through rounding errors, with a face
++        /// that has no area or an edge without its twin. Going on from there followed null pointers, so each step that can
++        /// find such a state marks the structure as broken, the algorithm stops and the hull is refused.
++        void setBroken() { mIsBroken = true; }
++
++        /// Return true if the structure was found inconsistent
++        bool isBroken() const { return mIsBroken; }
++
+         /// Remove a vertex
+         void removeVertex(Vertex* vertex);
+ 
+--- a/include/reactphysics3d/utils/quickhull/QuickHull.h
++++ b/include/reactphysics3d/utils/quickhull/QuickHull.h
+@@ -77,7 +77,7 @@
+         // Compute the initial tetrahedron convex hull
+         static bool computeInitialHull(Array<Vector3>& points, QHHalfEdgeStructure& convexHull,
+                                        Array<QHHalfEdgeStructure::Face*>& initialFaces,
+-                                       Array<uint32>& orphanPointsIndices,
++                                       Array<uint32>& orphanPointsIndices, decimal epsilon,
+                                        MemoryAllocator& allocator, std::vector<Message>& errors);
+ 
+         /// Extract the points from the array
+--- a/src/utils/quickhull/QHHalfEdgeStructure.cpp
++++ b/src/utils/quickhull/QHHalfEdgeStructure.cpp
+@@ -123,8 +123,6 @@
+         Vertex* v1 = faceVertices[i];
+         Vertex* v2 = faceVertices[i == faceVertices.size() - 1 ? 0 : i+1];
+ 
+-        assert(!mMapVerticesToEdge.containsKey(EdgeVertices(v1, v2)));
+-
+         // Create an edge
+         Edge* edge = new (mAllocator.allocate(mEdgeAllocatedSize)) Edge(v1, v2, face);
+         edge->previousFaceEdge = prevFaceEdge;
+@@ -134,8 +132,14 @@
+         auto it = mMapVerticesToEdge.find(EdgeVertices(v2, v1));
+         if (it != mMapVerticesToEdge.end()) {
+            twinEdge = it->second;
+-           assert(twinEdge->twinEdge == nullptr);
+-           twinEdge->twinEdge = edge;
++           if (twinEdge->twinEdge == nullptr) {
++               twinEdge->twinEdge = edge;
++           }
++           else {
++               // An edge between these vertices is already paired: see setBroken()
++               mIsBroken = true;
++               twinEdge = nullptr;
++           }
+         }
+         edge->twinEdge = twinEdge;
+ 
+@@ -152,9 +156,13 @@
+ 
+         mNbHalfEdges++;
+ 
+-        // Add the edge into the map
+-        assert(!mMapVerticesToEdge.containsKey(EdgeVertices(v1, v2)));
+-        mMapVerticesToEdge.add(Pair<EdgeVertices, Edge*>(EdgeVertices(v1, v2), edge));
++        // Add the edge into the map (a second edge from v1 to v2 would make Map::add() throw: see setBroken())
++        if (mMapVerticesToEdge.containsKey(EdgeVertices(v1, v2))) {
++            mIsBroken = true;
++        }
++        else {
++            mMapVerticesToEdge.add(Pair<EdgeVertices, Edge*>(EdgeVertices(v1, v2), edge));
++        }
+ 
+         assert(twinEdge != nullptr || mHalfEdges == edge);
+         assert(edge->face == face);
+@@ -172,7 +180,9 @@
+     mNbFaces++;
+ 
+     // Compute the normal, area and centroid
+-    face->recalculateFace(points);
++    if (!face->recalculateFace(points)) {
++        mIsBroken = true;
++    }
+ 
+     return face;
+ }
+@@ -258,8 +268,12 @@
+ // Remove an half-edge
+ void QHHalfEdgeStructure::removeHalfEdge(Edge* edge) {
+ 
+-    assert(mMapVerticesToEdge.containsKey(EdgeVertices(edge->startVertex, edge->endVertex)));
+-    mMapVerticesToEdge.remove(EdgeVertices(edge->startVertex, edge->endVertex));
++    if (mMapVerticesToEdge.containsKey(EdgeVertices(edge->startVertex, edge->endVertex))) {
++        mMapVerticesToEdge.remove(EdgeVertices(edge->startVertex, edge->endVertex));
++    }
++    else {
++        mIsBroken = true;
++    }
+ 
+     if (edge->twinEdge != nullptr) {
+         edge->twinEdge->twinEdge = nullptr;
+@@ -273,6 +287,29 @@
+     mNbHalfEdges--;
+ }
+ 
++// Give an half-edge other end vertices
++/// The map from a pair of vertices to its edge is what links a new face to its neighbors, so it has to follow
++/// the change.
++void QHHalfEdgeStructure::setEdgeVertices(Edge* edge, Vertex* startVertex, Vertex* endVertex) {
++
++    if (mMapVerticesToEdge.containsKey(EdgeVertices(edge->startVertex, edge->endVertex))) {
++        mMapVerticesToEdge.remove(EdgeVertices(edge->startVertex, edge->endVertex));
++    }
++    else {
++        mIsBroken = true;
++    }
++
++    edge->startVertex = startVertex;
++    edge->endVertex = endVertex;
++
++    if (mMapVerticesToEdge.containsKey(EdgeVertices(startVertex, endVertex))) {
++        mIsBroken = true;
++    }
++    else {
++        mMapVerticesToEdge.add(Pair<EdgeVertices, Edge*>(EdgeVertices(startVertex, endVertex), edge));
++    }
++}
++
+ // Remove a face and all its edges
+ void QHHalfEdgeStructure::removeFace(Face* face) {
+ 
+--- a/src/utils/quickhull/QuickHull.cpp
++++ b/src/utils/quickhull/QuickHull.cpp
+@@ -92,7 +92,7 @@
+     Array<QHHalfEdgeStructure::Face*> initialFaces(allocator);
+ 
+     // Compute the initial convex hull
+-    isValid &= computeInitialHull(points, convexHull, initialFaces, orphanPointsIndices, allocator, errors);
++    isValid &= computeInitialHull(points, convexHull, initialFaces, orphanPointsIndices, epsilon, allocator, errors);
+     if (!isValid) {
+         return false;
+     }
+@@ -110,7 +110,7 @@
+     uint32 nextVertexIndex;
+     QHHalfEdgeStructure::Face* nextFace;
+     findNextVertexCandidate(points, nextVertexIndex, convexHull, nextFace, epsilon);
+-    while (nextVertexIndex != INVALID_VERTEX_INDEX) {
++    while (nextVertexIndex != INVALID_VERTEX_INDEX && !convexHull.isBroken()) {
+ 
+         assert(nextFace != nullptr);
+ 
+@@ -120,7 +120,13 @@
+         // Get the next vertex candidate
+         findNextVertexCandidate(points, nextVertexIndex, convexHull, nextFace, epsilon);
+ 
+-        assert(convexHull.isValid());
++        assert(convexHull.isBroken() || convexHull.isValid());
++    }
++
++    // See QHHalfEdgeStructure::setBroken()
++    if (convexHull.isBroken()) {
++        errors.push_back(Message("Error in QuickHull: the convex hull could not be computed, the vertices are too close to a plane, a line or each other"));
++        return false;
+     }
+ 
+     assert(convexHull.isValid());
+@@ -216,10 +222,12 @@
+     // Find the horizon edges
+     findHorizon(points[vertexIndex], face, allocator, horizonVertices, visibleFaces, epsilon);
+ 
+-    assert(visibleFaces.size() >= 1);
+-    assert(horizonVertices.size() >= 6);
+-
+-    assert(horizonVertices[0]->externalIndex == horizonVertices[horizonVertices.size()-1]->externalIndex);
++    // A horizon of fewer than three edges, or one that doesn't close, can't be joined to the new vertex (see QHHalfEdgeStructure::setBroken())
++    if (visibleFaces.size() < 1 || horizonVertices.size() < 6 ||
++        horizonVertices[0]->externalIndex != horizonVertices[horizonVertices.size()-1]->externalIndex) {
++        convexHull.setBroken();
++        return;
++    }
+ 
+     // Delete all the faces visible from the vertex
+     deleteVisibleFaces(visibleFaces, convexHull, orphanPointsIndices, horizonVertices, allocator);
+@@ -227,15 +235,18 @@
+     // Build the new faces
+     Array<QHHalfEdgeStructure::Face*> newFaces(allocator);
+     buildNewFaces(vertexIndex, horizonVertices, convexHull, points, newFaces, allocator);
++    if (convexHull.isBroken()) return;
+ 
+     // Store faces deleted during merging of concave faces
+     Set<QHHalfEdgeStructure::Face*> deletedFaces(allocator);
+ 
+     // Merge concave faces (by giving priority to merging with large faces)
+     mergeLargeConcaveFaces(convexHull, newFaces, points, epsilon, deletedFaces);
++    if (convexHull.isBroken()) return;
+ 
+     // Merge concave faces
+     mergeConcaveFaces(convexHull, newFaces, points, epsilon, deletedFaces);
++    if (convexHull.isBroken()) return;
+ 
+     associateOrphanPointsToNewFaces(orphanPointsIndices, newFaces, points, epsilon, deletedFaces);
+ }
+@@ -382,6 +393,12 @@
+ 
+             const QHHalfEdgeStructure::Edge* twinEdge = edge->twinEdge;
+ 
++            // An edge without its twin: an empty horizon tells the caller (see QHHalfEdgeStructure::setBroken())
++            if (twinEdge == nullptr) {
++                outHorizonVertices.clear();
++                return;
++            }
++
+             // Get the next face
+             QHHalfEdgeStructure::Face* nextFace = twinEdge->face;
+ 
+@@ -432,7 +449,7 @@
+ 
+     // For each new face
+     uint32 i = 0;
+-    while(i < newFaces.size()) {
++    while(i < newFaces.size() && !convexHull.isBroken()) {
+ 
+         QHHalfEdgeStructure::Face* face1 = newFaces[i];
+ 
+@@ -448,8 +465,11 @@
+ 
+                 assert(faceEdge != nullptr);
+ 
+-                // Get the two neighbor faces
+-                assert(faceEdge->twinEdge != nullptr);
++                // Get the two neighbor faces (see QHHalfEdgeStructure::setBroken())
++                if (faceEdge->twinEdge == nullptr) {
++                    convexHull.setBroken();
++                    return;
++                }
+                 QHHalfEdgeStructure::Face* face2 = faceEdge->twinEdge->face;
+                 assert(!deletedFaces.contains(face2));
+ 
+@@ -508,7 +528,7 @@
+ 
+     // For each new face
+     uint32 i = 0;
+-    while(i < newFaces.size()) {
++    while(i < newFaces.size() && !convexHull.isBroken()) {
+ 
+         QHHalfEdgeStructure::Face* face = newFaces[i];
+ 
+@@ -524,6 +544,12 @@
+ 
+                 assert(faceEdge != nullptr);
+ 
++                // See QHHalfEdgeStructure::setBroken()
++                if (faceEdge->twinEdge == nullptr) {
++                    convexHull.setBroken();
++                    return;
++                }
++
+                 // If the two faces at this edge are forming a convex shape
+                 if (testIsConvexEdge(faceEdge, epsilon)) {
+ 
+@@ -611,7 +637,10 @@
+     assert(faceToKeep->isValid());
+ 
+     // Recalculate the face centroid and normal to better fit its vertices (using Newell method)
+-    faceToKeep->recalculateFace(points);
++    if (!faceToKeep->recalculateFace(points)) {
++        convexHull.setBroken();
++        return;
++    }
+ 
+     assert(faceToKeep->edge->face == faceToKeep);
+     assert(edgeBefore->nextFaceEdge->previousFaceEdge == edgeBefore);
+@@ -637,6 +666,9 @@
+     // While we can find an edge with an error (a redundant vertex) in the face
+     do {
+ 
++        // See QHHalfEdgeStructure::setBroken()
++        if (convexHull.isBroken()) return;
++
+         edgeError = nullptr;
+ 
+         // For each vertex of the face we check if the incoming and outgoing edge have
+@@ -649,6 +681,11 @@
+ 
+             QHHalfEdgeStructure::Edge* outEdge = inEdge->nextFaceEdge;
+ 
++            if (inEdge->twinEdge == nullptr || outEdge->twinEdge == nullptr) {
++                convexHull.setBroken();
++                return;
++            }
++
+             if (inEdge->twinEdge->face == outEdge->twinEdge->face) {
+                 edgeError = inEdge;
+                 break;
+@@ -677,6 +714,13 @@
+     // If the opposite face is a triangle
+     if (inEdge->twinEdge->face->isTriangle()) {
+ 
++        // The face is one too: they are two sides of the same flat triangle, and folding one into the other left a face of
++        // two edges (see QHHalfEdgeStructure::setBroken())
++        if (face->isTriangle()) {
++            convexHull.setBroken();
++            return;
++        }
++
+         QHHalfEdgeStructure::Edge* edgeBeforeTriangle = inEdge->previousFaceEdge;
+         QHHalfEdgeStructure::Edge* edgeAfterTriangle = inEdge->nextFaceEdge->nextFaceEdge;
+ 
+@@ -720,7 +764,9 @@
+         assert(edgeBeforeTriangle->nextFaceEdge->twinEdge->twinEdge == edgeBeforeTriangle->nextFaceEdge);
+ 
+         // Recalculate the face centroid and normal to better fit its vertices (using Newell method)
+-        faceToKeep->recalculateFace(points);
++        if (!faceToKeep->recalculateFace(points)) {
++            convexHull.setBroken();
++        }
+ 
+         assert(faceToKeep->isValid());
+     }
+@@ -729,11 +775,17 @@
+         QHHalfEdgeStructure::Vertex* vertexToRemove = inEdge->endVertex;
+         QHHalfEdgeStructure::Edge* outEdgeToRemove = inEdge->nextFaceEdge;
+ 
+-        inEdge->twinEdge->startVertex = outEdgeToRemove->endVertex;
++        // See QHHalfEdgeStructure::setBroken()
++        if (outEdgeToRemove->twinEdge == nullptr) {
++            convexHull.setBroken();
++            return;
++        }
++
++        convexHull.setEdgeVertices(inEdge->twinEdge, outEdgeToRemove->endVertex, inEdge->twinEdge->endVertex);
+         outEdgeToRemove->twinEdge->previousFaceEdge->nextFaceEdge = inEdge->twinEdge;
+         inEdge->twinEdge->previousFaceEdge = outEdgeToRemove->twinEdge->previousFaceEdge;
+ 
+-        inEdge->endVertex = outEdgeToRemove->endVertex;
++        convexHull.setEdgeVertices(inEdge, inEdge->startVertex, outEdgeToRemove->endVertex);
+         inEdge->nextFaceEdge = outEdgeToRemove->nextFaceEdge;
+         inEdge->nextFaceEdge->previousFaceEdge = inEdge;
+ 
+@@ -749,8 +801,9 @@
+         convexHull.removeVertex(vertexToRemove);
+ 
+         // Recalculate the face centroid and normal to better fit its vertices (using Newell method)
+-        face->recalculateFace(points);
+-        inEdge->twinEdge->face->recalculateFace(points);
++        if (!face->recalculateFace(points) || !inEdge->twinEdge->face->recalculateFace(points)) {
++            convexHull.setBroken();
++        }
+     }
+ }
+ 
+@@ -892,7 +945,7 @@
+ // Compute the initial tetrahedron convex hull
+ bool QuickHull::computeInitialHull(Array<Vector3>& points, QHHalfEdgeStructure& convexHull,
+                                    Array<QHHalfEdgeStructure::Face*>& initialFaces,
+-                                   Array<uint32>& orphanPointsIndices,
++                                   Array<uint32>& orphanPointsIndices, decimal epsilon,
+                                    MemoryAllocator& allocator, std::vector<Message>& errors) {
+ 
+     // Find the extreme points on each X, Y and Z axes
+@@ -961,7 +1014,9 @@
+         }
+     }
+ 
+-    if (maxLargestDistSquare < MACHINE_EPSILON) {
++    // With large coordinates the rounding errors of points on the line can be above MACHINE_EPSILON, and the
++    // farthest point can then be one of the first two. A tetrahedron can't be made from such points.
++    if (maxLargestDistSquare < MACHINE_EPSILON || maxLargestDistSquare <= epsilon * epsilon || i3 == i1 || i3 == i2) {
+         errors.push_back(Message("Error during initial hull creation in QuickHull: vertices too close to each other"));
+         return false;
+     }
+@@ -982,7 +1037,9 @@
+         }
+     }
+ 
+-    if (maxLargestDistSquare < MACHINE_EPSILON) {
++    // The same for points on the plane (the value compared with epsilon is a distance to the plane)
++    if (maxLargestDistSquare < MACHINE_EPSILON || maxLargestDistSquare <= epsilon * planeNormal.length() ||
++        i4 == i1 || i4 == i2 || i4 == i3) {
+         errors.push_back(Message("Error during initial hull creation in QuickHull: vertices too close to each other"));
+         return false;
+     }
