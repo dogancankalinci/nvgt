@@ -119,12 +119,13 @@ static int g_network_reaps = 0; // Of those, closing a URL's stream, which can w
 // At most this many of a resource manager's at once; close() waits for another itself, so that sounds loaded and let go of faster than they decode don't pile up decodes nobody plays, each holding its whole decoded file and the job threads.
 static constexpr int max_reaps = 2;
 // Takes a place among those of a resource manager, if there is one, or past them for a caller that mustn't wait, as an audio thread: none once uninit_sound() shut the sound system down, the process's exit following.
-static bool reserve_reap(ma_resource_manager* manager, bool past_max = false) {
+static bool reserve_reap(ma_resource_manager* manager, bool past_max = false, bool network = false) {
 	std::lock_guard<std::mutex> lock(g_reaps_mutex);
 	if (g_soundsystem_shut_down.test()) return false;
 	auto it = g_reaps.find(manager);
 	if (!past_max && it != g_reaps.end() && it->second >= max_reaps) return false;
 	g_reaps[manager]++;
+	if (network) g_network_reaps++; // With its place, under the one lock: counted after it, the exit's wait could see a reap that wasn't yet counted as a URL's, and wait for it past its bound, as nothing woke it once it was.
 	return true;
 }
 // Gives it back, notified under the lock, so that nothing of a thread freeing a source runs once a waiter goes on, as to the process's exit.
@@ -5277,14 +5278,10 @@ public:
 		const bool audio_thread = audio_engine_impl::on_audio_thread();
 		// A URL's stream on any thread: waited for here, a stalled read held close(), a reload and the script behind it for up to a minute.
 		const bool network = source && (source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM) && (source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_UNKNOWN_LENGTH);
-		if ((decoding(source.get()) || network || audio_thread && source && (source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM)) && reserve_reap(source_manager, audio_thread || network)) {
+		if ((decoding(source.get()) || network || audio_thread && source && (source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM)) && reserve_reap(source_manager, audio_thread || network, network)) {
 			reaped = make_unique<source_reap>();
 			reaped->manager = source_manager;
 			reaped->network = network;
-			if (network) {
-				std::lock_guard<std::mutex> lock(g_reaps_mutex);
-				g_network_reaps++;
-			}
 			const char *decoded_from = pcm_buffer.data();
 			reaped->pcm_buffer = std::move(pcm_buffer);
 			if (!reaped->pcm_buffer.empty() && reaped->pcm_buffer.data() != decoded_from) {
