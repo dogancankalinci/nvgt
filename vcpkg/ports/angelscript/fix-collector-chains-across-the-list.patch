@@ -1,0 +1,185 @@
+--- a/sdk/angelscript/source/as_gc.cpp
++++ b/sdk/angelscript/source/as_gc.cpp
+@@ -53,6 +53,9 @@
+ 	destroyOldState = destroyGarbage_init;
+ 	destroyNewBackward = false;
+ 	destroyOldBackward = false;
++	inFullCycle     = false;
++	destroyOldPasses = 0;
++	gatherReferences = false;
+ 	numDestroyed    = 0;
+ 	numNewDestroyed = 0;
+ 	numDetected     = 0;
+@@ -187,6 +190,10 @@
+ 
+ 		if( flags & asGC_FULL_CYCLE )
+ 		{
++			// ALTERED: see DestroyOldChains
++			inFullCycle = true;
++			destroyOldPasses = 0;
++
+ 			// Reset the state
+ 			if( doDetect )
+ 			{
+@@ -226,6 +233,7 @@
+ 					break;
+ 			}
+ 
++			inFullCycle = false;
+ 			isProcessing = false;
+ 			LEAVECRITICALSECTION(gcCollecting);
+ 			return 0;
+@@ -653,6 +661,13 @@
+ 					// Restart the cycle
+ 					destroyOldState = destroyGarbage_init;
+ 					destroyOldBackward = !destroyOldBackward;
++
++					// ALTERED: see DestroyOldChains
++					if( inFullCycle && ++destroyOldPasses >= 4 )
++					{
++						destroyOldPasses = 0;
++						DestroyOldChains();
++					}
+ 				}
+ 				else
+ 				{
+@@ -673,6 +688,101 @@
+ 	UNREACHABLE_RETURN;
+ }
+ 
++// ALTERED: taking turns going each way (see NextToDestroy) doesn't help a chain that goes back and forth over the list. A class with a
++// member the object makes for itself, such as a handle array, comes before that member in the list, and the member's reference
++// is to an object made before them both, so every pass reached one object of the chain: a full cycle went over the whole list for
++// each object (64000 of them took 4 seconds, a million would take hours, and this is the collection a script ends with). Once a
++// full cycle has taken a few passes, the objects that going leaves with only the collector's reference are found from the references of
++// the object that goes, instead of by another pass. An object still goes after what refers to it, as in a pass.
++int asCGarbageCollector::CompareObject(const void *a, const void *b)
++{
++	const void *objA = ((const asSObjTypePair*)a)->obj, *objB = ((const asSObjTypePair*)b)->obj;
++	return objA < objB ? -1 : (objA > objB ? 1 : 0);
++}
++
++asCGarbageCollector::asSObjTypePair *asCGarbageCollector::FindChainObject(void *obj)
++{
++	asSObjTypePair key = {obj, 0, 0};
++	asSObjTypePair *found = (asSObjTypePair*)bsearch(&key, chainObjects.AddressOf(), chainObjects.GetLength(), sizeof(asSObjTypePair), CompareObject);
++
++	// An object that went has a null type: its address can be another object's by now, one the table knows nothing about
++	return found && found->type ? found : 0;
++}
++
++void asCGarbageCollector::DestroyOldChains()
++{
++	// This function will only be called within the critical section gcCollecting, so no other
++	// thread changes the old list, and the destructors run here can't start another collection
++	asASSERT(isProcessing);
++
++	// The objects by address. As long as this runs, seqNbr holds the object's place in the old list.
++	asUINT length = (asUINT)gcOldObjects.GetLength();
++	chainObjects.Allocate(length, false);
++	if( length == 0 || chainObjects.GetCapacity() < length )
++		return;
++	chainObjects.SetLength(length);
++	for( asUINT n = 0; n < length; n++ )
++	{
++		chainObjects[n] = GetOldObjectAtIdx(n);
++		chainObjects[n].seqNbr = n;
++	}
++	qsort(chainObjects.AddressOf(), length, sizeof(asSObjTypePair), CompareObject);
++
++	// What fails to go on here for lack of memory is left for the passes
++	asCArray<void*> pending;
++	for( asUINT n = 0; n < length; n++ )
++		if( chainObjects[n].type->beh.gcGetRefCount && engine->CallObjectMethodRetInt(chainObjects[n].obj, chainObjects[n].type->beh.gcGetRefCount) == 1 )
++			pending.PushLast(chainObjects[n].obj);
++
++	asCArray<void*> references;
++	while( pending.GetLength() )
++	{
++		asSObjTypePair *gcObj = FindChainObject(pending.PopLast());
++		if( gcObj == 0 || engine->CallObjectMethodRetInt(gcObj->obj, gcObj->type->beh.gcGetRefCount) != 1 )
++			continue;
++
++		// The references are read while the object still has them
++		gatheredReferences.SetLength(0);
++		gatherReferences = true;
++		engine->CallObjectMethod(gcObj->obj, engine, gcObj->type->beh.gcEnumReferences);
++		gatherReferences = false;
++		references = gatheredReferences;
++
++		// As in DestroyOldGarbage
++		if( gcObj->type->flags & asOBJ_SCRIPT_OBJECT )
++		{
++			if( ((asCScriptObject*)gcObj->obj)->ReleaseByCollector() > 0 )
++				continue;
++		}
++		else
++			engine->CallObjectMethod(gcObj->obj, gcObj->type->beh.release);
++
++		numDestroyed++;
++
++		// As in RemoveOldObjectAtIdx, the last object of the list takes the place of the one that went
++		asUINT idx = gcObj->seqNbr;
++		gcObj->type = 0;
++		asUINT last = (asUINT)gcOldObjects.GetLength() - 1;
++		if( idx != last )
++		{
++			asSObjTypePair *lastObj = FindChainObject(GetOldObjectAtIdx(last).obj);
++			if( lastObj )
++				lastObj->seqNbr = idx;
++		}
++		RemoveOldObjectAtIdx(idx);
++
++		for( asUINT n = 0; n < references.GetLength(); n++ )
++		{
++			asSObjTypePair *ref = FindChainObject(references[n]);
++			if( ref && ref->type->beh.gcGetRefCount && engine->CallObjectMethodRetInt(ref->obj, ref->type->beh.gcGetRefCount) == 1 )
++				pending.PushLast(ref->obj);
++		}
++	}
++
++	chainObjects.SetLength(0);
++	gatheredReferences.SetLength(0);
++}
++
+ int asCGarbageCollector::IdentifyGarbageWithCyclicRefs()
+ {
+ 	// This function will only be called within the critical section gcCollecting
+@@ -1100,6 +1210,13 @@
+ 	// This function will only be called within the critical section gcCollecting
+ 	asASSERT(isProcessing);
+ 
++	// ALTERED: see DestroyOldChains
++	if( gatherReferences )
++	{
++		gatheredReferences.PushLast(reference);
++		return;
++	}
++
+ 	if( detectState == countReferences_loop )
+ 	{
+ 		// Find the reference in the map
+--- a/sdk/angelscript/source/as_gc.h
++++ b/sdk/angelscript/source/as_gc.h
+@@ -115,6 +115,9 @@
+ 	void           MoveAllObjectsToOldList();
+ 	void           SortOldObjects();
+ 	static int     CompareSeqNbr(const void *a, const void *b);
++	void           DestroyOldChains();
++	static int     CompareObject(const void *a, const void *b);
++	asSObjTypePair *FindChainObject(void *obj);
+ 
+ 	// Holds all the objects known by the garbage collector
+ 	asCArray<asSObjTypePair>           gcNewObjects;
+@@ -134,6 +137,11 @@
+ 	asUINT                             destroyOldIdx;
+ 	bool                               destroyNewBackward;
+ 	bool                               destroyOldBackward;
++	bool                               inFullCycle;
++	asUINT                             destroyOldPasses;
++	bool                               gatherReferences;
++	asCArray<void*>                    gatheredReferences;
++	asCArray<asSObjTypePair>           chainObjects;
+ 	asUINT                             numDestroyed;
+ 	asUINT                             numNewDestroyed;
+ 	egcDetectState                     detectState;
