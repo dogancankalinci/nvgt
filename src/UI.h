@@ -165,7 +165,7 @@ public:
 	void release() { if (asAtomicDec(_refcount) < 1) delete this; }
 	SDL_TrayEntry* get_sdl_entry() const { return _entry; }
 	bool is_valid() const { return _entry != nullptr; }
-	void invalidate() { _entry = nullptr; } // called by system_tray_menu::remove_entry
+	void invalidate(); // called by system_tray_menu::remove_entry and system_tray_menu::invalidate
 	system_tray_menu_item_type get_type() const { return _type; }
 	void set_label(const std::string& label) { if (_entry) SDL_SetTrayEntryLabel(_entry, label.c_str()); }
 	std::string get_label() const { return _entry ? from_cstr(SDL_GetTrayEntryLabel(_entry)) : ""; }
@@ -195,6 +195,7 @@ public:
 	system_tray_menu_item* insert_separator(int pos = -1);
 	system_tray_menu_item* find_item(SDL_TrayEntry* entry);
 	void remove_entry(system_tray_menu_item* item);
+	void invalidate(); // SDL freed the menu: it and everything in it, see system_tray_menu_item::invalidate
 	int get_entry_count() const;
 	CScriptArray* get_entries();
 };

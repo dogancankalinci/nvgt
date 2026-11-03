@@ -644,6 +644,17 @@ system_tray_menu_item::system_tray_menu_item(SDL_TrayEntry* entry, system_tray_m
 system_tray_menu_item::~system_tray_menu_item() {
 	if (_callback) { _callback->Release(); _callback = nullptr; }
 }
+// SDL frees an entry's submenu with the entry, and a tray's menus and entries with the tray, and checks the pointers it's given for null only: the
+// wrappers a script still held kept the freed pointers, and the next call on them read or wrote freed memory (inserting into a menu, setting a
+// callback). The wrappers of everything that goes are emptied first, and SDL refuses a null entry or menu.
+void system_tray_menu_item::invalidate() {
+	_entry = nullptr;
+	if (_submenu) _submenu->invalidate();
+}
+void system_tray_menu::invalidate() {
+	for (auto& item : _items) item->invalidate();
+	_menu = nullptr;
+}
 void system_tray_menu_item::set_callback(asIScriptFunction* func) {
 	if (_callback) _callback->Release();
 	_callback = func;
@@ -713,8 +724,9 @@ system_tray_menu_item* system_tray_menu::find_item(SDL_TrayEntry* entry) {
 }
 void system_tray_menu::remove_entry(system_tray_menu_item* item) {
 	if (!item) return;
-	SDL_RemoveTrayEntry(item->get_sdl_entry());
-	item->invalidate();
+	SDL_TrayEntry* entry = item->get_sdl_entry();
+	item->invalidate(); // With its submenu, which SDL frees with the entry.
+	SDL_RemoveTrayEntry(entry);
 	for (auto it = _items.begin(); it != _items.end(); ++it) {
 		if (it->get() == item) { _items.erase(it); break; }
 	}
@@ -739,6 +751,7 @@ system_tray::system_tray(const std::string& tooltip, graphic* icon) : _tray(null
 	_tray = SDL_CreateTray(icon ? icon->get_surface() : nullptr, tooltip.empty() ? nullptr : tooltip.c_str());
 }
 system_tray::~system_tray() {
+	if (_menu) _menu->invalidate(); // See system_tray_menu_item::invalidate.
 	_menu = nullptr;
 	if (_tray) { SDL_DestroyTray(_tray); _tray = nullptr; }
 }
