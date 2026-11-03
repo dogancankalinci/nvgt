@@ -781,6 +781,7 @@ class audio_engine_impl final : public audio_node_impl, public virtual audio_eng
 public:
 	std::shared_ptr<std::atomic<ma_uint64>> time_sets = std::make_shared<std::atomic<ma_uint64>>(0); // Times the script set this engine's time, which voids the blocks its sounds and groups recorded (see held_sound::block_set); shared with them, as they can outlive it.
 	static bool on_audio_thread() { return processing; } // This thread runs a device's data callback, as a processing callback does.
+	static constexpr ma_uint32 no_device_sample_rate = 48000; // That of an engine without a device that was given none.
 	bool meant_to_run() const { return started; } // Started, by the constructor or start(), and not stopped since.
 	engine_flags flags;
 	audio_engine_impl(int flags, int sample_rate, int channels) : audio_node_impl(nullptr, this), engine(nullptr), resource_manager(nullptr), script_data_callback(nullptr), engine_endpoint(nullptr), flags(static_cast<engine_flags>(flags)) {
@@ -822,7 +823,7 @@ public:
 			// Attach the resource manager to the sound service so that it can receive audio from custom sources.
 			cfg.pVFS = g_sound_service->get_vfs();
 			// This is the sample rate that sounds will be resampled to if necessary during loading. We set this equal to whatever sample rate the device got. This is maximally efficient as long as the user doesn't switch devices to one that runs at a different rate. When they do, a single resampler kicks in.
-			cfg.decodedSampleRate = device && !sample_rate? device->playback.internalSampleRate : sample_rate;
+			cfg.decodedSampleRate = sample_rate? sample_rate : device? device->playback.internalSampleRate : no_device_sample_rate; // An engine without a device runs at its own: as 0, sounds kept their files' rates, and MiniAudio's unfiltered linear resampler converted them as they played, aliasing a 96 kHz file's 30 kHz into the audible band at its full level.
 			// Set the resampler used during decoding to a high quality one. At the time of writing this, this is relying on support that I added to MiniAudio myself and has not yet been merged upstream.
 			cfg.resampling.algorithm = ma_resample_algorithm_custom;
 			cfg.resampling.pBackendVTable = &wdl_resampler_backend_vtable;
@@ -850,7 +851,7 @@ public:
 		else {
 			cfg.noDevice = MA_TRUE;
 			cfg.channels = channels > 0? channels : 2;
-			cfg.sampleRate = sample_rate > 0? sample_rate : 48000;
+			cfg.sampleRate = sample_rate? sample_rate : no_device_sample_rate;
 		}
 		if ((g_soundsystem_last_error = ma_engine_init(&cfg, &*engine)) != MA_SUCCESS) {
 			engine.reset();
