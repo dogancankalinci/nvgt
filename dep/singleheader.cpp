@@ -94,22 +94,38 @@ static ma_result nvgt_mp3_backend_init(void* user_data, ma_read_proc on_read, ma
 	return result;
 }
 static const bool nvgt_mp3_backend_installed = (g_ma_decoding_backend_vtable_mp3.onInit = nvgt_mp3_backend_init, true);
-// A WAV whose data size is 0, as from a recording that never closed its header, reads to the end of its file, as other players take it, rather than as empty. Only for samples of a fixed size, on a file whose end can be told.
+// A WAV whose data size is 0, as from a recording that never closed its header, reads to the end of its file, as other players take it, rather than as empty. Only for samples of a fixed size. A source that can't seek is read to its end and come back to, as dr_wav does for a size of 0xFFFFFFFF, which such a source can do within what it keeps of its start; one too long for that can't be opened, as such a WAV can't.
 static ma_result nvgt_wav_backend_init(void* user_data, ma_read_proc on_read, ma_seek_proc on_seek, ma_tell_proc on_tell, void* read_user_data, const ma_decoding_backend_config* config, const ma_allocation_callbacks* allocation_callbacks, ma_data_source** backend) {
 	ma_result result = ma_decoding_backend_init__wav(user_data, on_read, on_seek, on_tell, read_user_data, config, allocation_callbacks, backend);
 	if (result != MA_SUCCESS) return result;
 	ma_dr_wav* wav = &((ma_wav*)*backend)->dr;
 	const bool plain = wav->translatedFormatTag == MA_DR_WAVE_FORMAT_PCM || wav->translatedFormatTag == MA_DR_WAVE_FORMAT_IEEE_FLOAT;
+	if (wav->dataChunkDataSize || !plain || !wav->fmt.blockAlign) return result;
+	ma_uint64 size = 0;
 	ma_int64 end = 0;
-	if (wav->dataChunkDataSize || !plain || !wav->fmt.blockAlign || !on_tell || on_seek(read_user_data, 0, ma_seek_origin_end) != MA_SUCCESS) return result;
-	const bool told = on_tell(read_user_data, &end) == MA_SUCCESS;
-	on_seek(read_user_data, (ma_int64)wav->dataChunkDataPos, ma_seek_origin_start);
-	if (told && (ma_uint64)end > wav->dataChunkDataPos) {
-		const ma_uint64 frames = ((ma_uint64)end - wav->dataChunkDataPos) / wav->fmt.blockAlign;
-		wav->dataChunkDataSize = frames * wav->fmt.blockAlign;
-		wav->bytesRemaining = wav->dataChunkDataSize;
-		wav->totalPCMFrameCount = frames;
+	if (on_tell && on_seek(read_user_data, 0, ma_seek_origin_end) == MA_SUCCESS) {
+		const bool told = on_tell(read_user_data, &end) == MA_SUCCESS;
+		on_seek(read_user_data, (ma_int64)wav->dataChunkDataPos, ma_seek_origin_start);
+		if (!told || (ma_uint64)end <= wav->dataChunkDataPos) return result;
+		size = (ma_uint64)end - wav->dataChunkDataPos;
+	} else {
+		for (;;) {
+			ma_uint8 block[4096];
+			size_t got = 0;
+			const ma_result read = on_read(read_user_data, block, sizeof(block), &got);
+			size += got;
+			if (read != MA_SUCCESS || got < sizeof(block)) break;
+		}
+		if (on_seek(read_user_data, (ma_int64)wav->dataChunkDataPos, ma_seek_origin_start) != MA_SUCCESS) {
+			ma_decoding_backend_uninit__wav(user_data, *backend, allocation_callbacks);
+			*backend = NULL;
+			return MA_INVALID_FILE;
+		}
 	}
+	const ma_uint64 frames = size / wav->fmt.blockAlign;
+	wav->dataChunkDataSize = frames * wav->fmt.blockAlign;
+	wav->bytesRemaining = wav->dataChunkDataSize;
+	wav->totalPCMFrameCount = frames;
 	return result;
 }
 static const bool nvgt_wav_backend_installed = (g_ma_decoding_backend_vtable_wav.onInit = nvgt_wav_backend_init, true);
