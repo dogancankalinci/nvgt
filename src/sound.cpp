@@ -844,6 +844,7 @@ public:
 			}
 		}
 		ma_engine_config cfg = ma_engine_config_init();
+		cfg.monoExpansionMode = ma_mono_expansion_mode_stereo_only; // A mono sound that isn't spatialized plays from the front pair, as on a stereo engine, rather than from every channel, its LFE included, at full level each.
 		cfg.pContext = &g_sound_context;
 		cfg.pResourceManager = &*resource_manager;
 		cfg.noAutoStart = (flags & NO_AUTO_START) ? MA_TRUE : MA_FALSE;
@@ -1914,6 +1915,7 @@ static bool file_length_impossible(ma_decoder* decoder) {
 // In singleheader.cpp, where MiniAudio's decoders can be reached.
 ma_result nvgt_file_seek(const ma_data_source_vtable* vtable, ma_data_source* file, ma_uint64 frame, ma_bool32 can_seek);
 ma_uint64 nvgt_file_delay(const ma_data_source_vtable* vtable, ma_data_source* file);
+extern "C" ma_bool32 nvgt_channel_weights(const ma_channel* map_in, ma_uint32 channels_in, const ma_channel* map_out, ma_uint32 channels_out, float** weights);
 static held_file* file_held(ma_data_source* backend) {
 	const ma_data_source_vtable* vtable = backend? ((ma_data_source_base*)backend)->vtable : nullptr;
 	return vtable && vtable->onSeek == held_file_seek? const_cast<held_file*>(reinterpret_cast<const held_file*>(vtable)) : nullptr;
@@ -3715,15 +3717,17 @@ static ma_result float_view_get_cursor(ma_data_source* source, ma_uint64* cursor
 static ma_result float_view_get_length(ma_data_source* source, ma_uint64* length) { return ma_data_source_get_length_in_pcm_frames(((float_view*)source)->inner, length); }
 static ma_result float_view_set_looping(ma_data_source* source, ma_bool32 looping) { return ma_data_source_set_looping(((float_view*)source)->inner, looping); } // A stream loops seamlessly only when it loops itself.
 static ma_data_source_vtable g_float_view_vtable = {float_view_read, float_view_seek, float_view_get_data_format, float_view_get_cursor, float_view_get_length, float_view_set_looping, 0};
-// The source a sound reads: the one given if it is in float with no more channels than its engine, or else a float_view of it made in view. MiniAudio's sound mixes down in its simple mode, which drops every channel past the engine's: a 5.1 file on a stereo engine lost its centre and surrounds, and a 3-channel source its third. MiniAudio's weights for it leave an LFE out.
+// The source a sound reads: the one given if it is in float with its engine's channels in its engine's order, or a single channel, or else a float_view of it made in view, which mixes its channels into the engine's by their places (see nvgt_channel_weights()). MiniAudio's sound mixes in its simple mode, which drops every channel the engine has no place of: a 5.1 file on a stereo engine lost its centre and surrounds, a 3-channel source its third, and a quad one on a 5.1 engine its rear pair. A spatialized sound was mixed by its spatializer otherwise, so that turning spatialization on or off changed the speakers it played in. MiniAudio's weights leave an LFE out. A single channel is the spatializer's to place, and plays from the front pair otherwise (see the engine's monoExpansionMode).
 static ma_data_source* float_source(ma_data_source* source, unique_ptr<float_view>& view, ma_uint32 engine_channels, bool default_map = false) {
 	view.reset();
 	ma_format format = ma_format_unknown;
 	ma_uint32 channels = 0;
 	ma_channel channel_map[MA_MAX_CHANNELS];
 	if (ma_data_source_get_data_format(source, &format, &channels, nullptr, channel_map, MA_MAX_CHANNELS) != MA_SUCCESS || format == ma_format_unknown || !channels) return source;
-	if (default_map) ma_channel_map_init_standard(ma_standard_channel_map_default, channel_map, MA_MAX_CHANNELS, channels); // A stream, whose decoder isn't held yet, and gives its input's map for its output's (see held_decoder_get_data_format()).
-	const bool mixing = engine_channels && channels > engine_channels;
+	if (default_map || ma_channel_map_is_blank(channel_map, channels)) ma_channel_map_init_standard(ma_standard_channel_map_default, channel_map, MA_MAX_CHANNELS, channels); // A stream, whose decoder isn't held yet, and gives its input's map for its output's (see held_decoder_get_data_format()); or one that names none, as raw PCM.
+	ma_channel map_out[MA_MAX_CHANNELS];
+	if (engine_channels) ma_channel_map_init_standard(ma_standard_channel_map_default, map_out, MA_MAX_CHANNELS, engine_channels);
+	const bool mixing = engine_channels && channels > 1 && (channels != engine_channels || !ma_channel_map_is_equal(channel_map, map_out, channels));
 	if (format == ma_format_f32 && !mixing) return source;
 	view = make_unique<float_view>();
 	ma_data_source_config cfg = ma_data_source_config_init();
@@ -3737,10 +3741,14 @@ static ma_data_source* float_source(ma_data_source* source, unique_ptr<float_vie
 	view->channels = channels;
 	view->channels_out = channels;
 	if (mixing) {
-		ma_channel map_out[MA_MAX_CHANNELS];
-		ma_channel_map_init_standard(ma_standard_channel_map_default, map_out, MA_MAX_CHANNELS, engine_channels);
-		if (ma_channel_map_is_blank(channel_map, channels)) ma_channel_map_init_standard(ma_standard_channel_map_default, channel_map, MA_MAX_CHANNELS, channels); // One that names none, as raw PCM.
 		ma_channel_converter_config mixer_cfg = ma_channel_converter_config_init(ma_format_f32, channels, channel_map, engine_channels, map_out, ma_channel_mix_mode_rectangular);
+		std::vector<float> weights((size_t)channels * engine_channels);
+		std::vector<float*> rows(channels);
+		for (ma_uint32 i = 0; i < channels; i++) rows[i] = &weights[(size_t)i * engine_channels];
+		if (nvgt_channel_weights(channel_map, channels, map_out, engine_channels, rows.data())) { // Not for a mono engine, which MiniAudio mixes into as their average.
+			mixer_cfg.mixingMode = ma_channel_mix_mode_custom_weights;
+			mixer_cfg.ppWeights = rows.data();
+		}
 		if (ma_channel_converter_init(&mixer_cfg, nullptr, &view->mixer) == MA_SUCCESS) {
 			view->mixing = true;
 			view->channels_out = engine_channels;
@@ -4983,7 +4991,7 @@ public:
 			}
 			if (g_soundsystem_last_error != MA_SUCCESS) free_failed_source(made_source);
 			else {
-				ma_sound_config cfg = ma_sound_config_init();
+				ma_sound_config cfg = ma_sound_config_init_2(engine->get_ma_engine()); // With the engine's monoExpansionMode, as a sound made from a data source has.
 				// Not attached to the endpoint by MiniAudio, as postload() attaches it to its chain; so making it changes no node's lists and needs no graph lock.
 				cfg.flags = flags | MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT;
 				cfg.pDataSource = float_source(decode_front(&*made_source, made_front), made_view, engine->get_channels(), (flags & MA_SOUND_FLAG_STREAM) != 0);

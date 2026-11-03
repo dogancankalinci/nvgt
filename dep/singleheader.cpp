@@ -64,6 +64,57 @@ ma_result nvgt_file_seek(const ma_data_source_vtable* vtable, ma_data_source* fi
 }
 // The frames a file's own cursor counts that it never gives (see above).
 ma_uint64 nvgt_file_delay(const ma_data_source_vtable* vtable, ma_data_source* file) { return vtable == &g_ma_mp3_ds_vtable? ((ma_mp3*)file)->dr.delayInPCMFrames : 0; }
+// The weights ([in][out]) by which a source of two or more channels plays on two or more others, for a channel converter's custom weights; false for one or the other of a single channel, which MiniAudio's own modes take. MiniAudio's simple mode, which a sound with fewer channels than its engine played in, dropped every channel the engine has no place of, a quad file's rear pair on a 5.1 engine, and copied the front pair into the sides; and its rectangular mode, which mixed one with more, gave a channel sharing no plane with any output, as a back centre on a stereo or 5.1 engine, no weight at all, and filled outputs the source has no channel for from those near them. Here, a channel goes to its own place, or else, a side to the back of its side or the other way, where the source has no channel there, or else as the rectangular mode weighs it, or else, one at the back to the rearmost pair, and any other to the centre or the front pair. An LFE goes only to an LFE; an output no channel goes to stays silent, as other players leave it.
+extern "C" ma_bool32 nvgt_channel_weights(const ma_channel* map_in, ma_uint32 channels_in, const ma_channel* map_out, ma_uint32 channels_out, float** weights) {
+	if (channels_in < 2 || channels_out < 2 || channels_in > MA_MAX_CHANNELS || channels_out > MA_MAX_CHANNELS) return MA_FALSE;
+	auto out_index = [=](ma_channel position) -> int {
+		for (ma_uint32 out = 0; out < channels_out; out++) {
+			if (ma_channel_map_get_channel(map_out, channels_out, out) == position) return (int)out;
+		}
+		return -1;
+	};
+	auto pair = [&](float* row, ma_channel left, ma_channel right) {
+		const int l = out_index(left), r = out_index(right);
+		if (l < 0 || r < 0) return false;
+		row[l] = row[r] = 0.5f;
+		return true;
+	};
+	for (ma_uint32 in = 0; in < channels_in; in++) {
+		float* row = weights[in];
+		for (ma_uint32 out = 0; out < channels_out; out++) row[out] = 0;
+		const ma_channel position = ma_channel_map_get_channel(map_in, channels_in, in);
+		const int own = position == MA_CHANNEL_NONE? -1 : out_index(position);
+		if (own >= 0) {
+			row[own] = 1;
+			continue;
+		}
+		if (!ma_is_spatial_channel_position(position)) continue; // An LFE with no LFE to go to, as MiniAudio leaves it, or a channel of no place.
+		ma_channel counterpart = MA_CHANNEL_NONE;
+		switch (position) {
+			case MA_CHANNEL_SIDE_LEFT: counterpart = MA_CHANNEL_BACK_LEFT; break;
+			case MA_CHANNEL_SIDE_RIGHT: counterpart = MA_CHANNEL_BACK_RIGHT; break;
+			case MA_CHANNEL_BACK_LEFT: counterpart = MA_CHANNEL_SIDE_LEFT; break;
+			case MA_CHANNEL_BACK_RIGHT: counterpart = MA_CHANNEL_SIDE_RIGHT; break;
+			default: break;
+		}
+		const int stand_in = counterpart != MA_CHANNEL_NONE && !ma_channel_map_contains_channel_position(channels_in, map_in, counterpart)? out_index(counterpart) : -1;
+		if (stand_in >= 0) {
+			row[stand_in] = 1;
+			continue;
+		}
+		bool placed = false;
+		for (ma_uint32 out = 0; out < channels_out; out++) {
+			const ma_channel position_out = ma_channel_map_get_channel(map_out, channels_out, out);
+			if (ma_is_spatial_channel_position(position_out) && (row[out] = ma_calculate_channel_position_rectangular_weight(position, position_out)) != 0) placed = true;
+		}
+		if (placed) continue;
+		if (g_maChannelPlaneRatios[position][MA_PLANE_BACK] > 0 && (pair(row, MA_CHANNEL_BACK_LEFT, MA_CHANNEL_BACK_RIGHT) || pair(row, MA_CHANNEL_SIDE_LEFT, MA_CHANNEL_SIDE_RIGHT) || pair(row, MA_CHANNEL_FRONT_LEFT, MA_CHANNEL_FRONT_RIGHT))) continue;
+		const int centre = out_index(MA_CHANNEL_FRONT_CENTER);
+		if (centre >= 0) row[centre] = 1;
+		else pair(row, MA_CHANNEL_FRONT_LEFT, MA_CHANNEL_FRONT_RIGHT);
+	}
+	return MA_TRUE;
+}
 // dr_mp3 skips the frame of a LAME or Xing header by setting its stream cursor to that frame's end, forgetting what it had read past it, so that its clamp at the audio's end, which keeps it out of an ID3v1 tag, let the tag through, and the last MPEG frame, not followed by another, became silence. Put right as an MP3 opens, on every route to it through MiniAudio's table of its backend.
 static ma_result nvgt_mp3_backend_init(void* user_data, ma_read_proc on_read, ma_seek_proc on_seek, ma_tell_proc on_tell, void* read_user_data, const ma_decoding_backend_config* config, const ma_allocation_callbacks* allocation_callbacks, ma_data_source** backend) {
 	ma_result result = ma_decoding_backend_init__mp3(user_data, on_read, on_seek, on_tell, read_user_data, config, allocation_callbacks, backend);

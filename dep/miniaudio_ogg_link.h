@@ -31,6 +31,12 @@ typedef struct
 
 #include <string.h> /* For memset(). */
 
+/* NVGT's weights for mixing channels by their places, in dep/singleheader.cpp. */
+#ifdef __cplusplus
+extern "C"
+#endif
+ma_bool32 nvgt_channel_weights(const ma_channel* pChannelMapIn, ma_uint32 channelsIn, const ma_channel* pChannelMapOut, ma_uint32 channelsOut, float** ppWeights);
+
 /*
 The channel map of an Ogg Vorbis or Opus stream, which a decoder converts to MiniAudio's default for its channels. At 6 that
 default names the rear pair as sides: named so here too, the decoder only reorders them, as it does a WAV's, where as a back
@@ -217,13 +223,32 @@ static ma_result ma_ogg_link_frames_take(ma_ogg_link_frames* pLink, ma_format fo
             /* Ogg Vorbis and Ogg Opus share the Vorbis channel order. */
             ma_channel channelMapIn[MA_MAX_CHANNELS];
             ma_channel channelMapOut[MA_MAX_CHANNELS];
+            float* pWeightRows[MA_MAX_CHANNELS];
+            float* pWeights;
+            ma_uint32 iChannel;
             ma_data_converter_config config = ma_data_converter_config_init(ma_format_f32, ma_format_f32, pLink->channels, channels, pLink->sampleRate, sampleRate);
             ma_ogg_channel_map(channelMapIn, MA_MAX_CHANNELS, pLink->channels);
             ma_ogg_channel_map(channelMapOut, MA_MAX_CHANNELS, channels);
             config.pChannelMapIn = channelMapIn;
             config.pChannelMapOut = channelMapOut;
 
+            /* Mixed as a sound's channels are mixed into its engine's (see nvgt_channel_weights()). */
+            pWeights = (float*)ma_malloc(sizeof(float) * pLink->channels * channels, ma_ogg_link_frames_allocation_callbacks(pLink));
+            if (pWeights == NULL) {
+                return MA_OUT_OF_MEMORY;
+            }
+
+            for (iChannel = 0; iChannel < pLink->channels && iChannel < MA_MAX_CHANNELS; iChannel += 1) {
+                pWeightRows[iChannel] = pWeights + (size_t)iChannel * channels;
+            }
+
+            if (nvgt_channel_weights(channelMapIn, pLink->channels, channelMapOut, channels, pWeightRows)) {
+                config.channelMixMode = ma_channel_mix_mode_custom_weights;
+                config.ppChannelWeights = pWeightRows;
+            }
+
             result = ma_data_converter_init(&config, ma_ogg_link_frames_allocation_callbacks(pLink), &pLink->converter);
+            ma_free(pWeights, ma_ogg_link_frames_allocation_callbacks(pLink));
             if (result != MA_SUCCESS) {
                 return result;
             }
