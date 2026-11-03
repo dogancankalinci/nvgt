@@ -11,6 +11,7 @@
  * 3. This notice may not be removed or altered from any source distribution.
 */
 
+#include <algorithm>
 #include <array>
 #include <string>
 #include <vector>
@@ -20,6 +21,8 @@
 #include <Poco/File.h>
 #include <Poco/Glob.h>
 #include <Poco/Path.h>
+#include <Poco/TextIterator.h>
+#include <Poco/UTF8Encoding.h>
 #include <Poco/Timestamp.h>
 #include <Poco/UnicodeConverter.h>
 #include <SDL3/SDL.h>
@@ -43,10 +46,93 @@ bool FileHardLink(const std::string& source, const std::string& target) {
 	return true;
 }
 
+// fnmatch() and the directory listings outside Windows matched with Poco's Glob, which tries every place each * can end at, and again
+// for every place the one before it ended at: the time grows with the power of the number of *, and with the length of the text to that
+// power (7 * on 40 characters took 2 seconds; two on a long text as long). This matches as Glob does, in time the length of the text times
+// that of the pattern: after a mismatch only the last * moves on, as an earlier one never has to (a later * can take whatever the earlier
+// would have). Sets, escapes and characters (Unicode code points) are read by Glob's rules. A pattern Glob refuses (a \ at the end, a [ with
+// nothing after it) matches nothing, as Glob throws when it reaches it, and a [ without its ] still goes to Glob, as its meaning is Glob's alone.
+namespace {
+struct fnmatch_token {
+	enum { CHAR, ANY, STAR, SET } kind;
+	int c; // CHAR
+	size_t begin, end; // SET: its elements in the pattern, without [, ! and ]
+	bool invert;
+};
+// Glob::matchSet for a set that has its closing ].
+bool fnmatch_set(const std::vector<int>& p, size_t i, size_t end, int c) {
+	while (i < end) {
+		if (p[i] == '\\') i++;
+		int first = p[i], last = first;
+		if (++i < end && p[i] == '-') last = p[++i], i++;
+		if (first <= c && c <= last) return true;
+	}
+	return false;
+}
+}
 bool FNMatch(const std::string& file, const std::string& pattern) {
-	try {
-		return Glob(pattern).match(file);
-	} catch(Exception& e) { return false; }
+	std::vector<int> p, s;
+	UTF8Encoding utf8;
+	for (TextIterator it(pattern, utf8), end(pattern); it != end; ++it) p.push_back(*it);
+	for (TextIterator it(file, utf8), end(file); it != end; ++it) s.push_back(*it);
+	std::vector<fnmatch_token> tokens;
+	bool glob_only = false; // See below.
+	for (size_t i = 0; i < p.size(); i++) {
+		if (p[i] == '?') tokens.push_back({fnmatch_token::ANY, 0, 0, 0, false});
+		else if (p[i] == '*') { if (tokens.empty() || tokens.back().kind != fnmatch_token::STAR) tokens.push_back({fnmatch_token::STAR, 0, 0, 0, false}); }
+		else if (p[i] == '\\') {
+			if (++i == p.size()) return false;
+			tokens.push_back({fnmatch_token::CHAR, p[i], 0, 0, false});
+		} else if (p[i] == '[') {
+			if (++i == p.size()) return false;
+			bool invert = p[i] == '!';
+			if (invert && ++i == p.size()) return false;
+			size_t begin = i;
+			// The end of the set as Glob::matchSet walks it when no element matches.
+			while (i < p.size() && p[i] != ']') {
+				if (p[i] == '\\' && ++i == p.size()) return false;
+				if (++i < p.size() && p[i] == '-') {
+					if (++i == p.size()) return false;
+					i++;
+				}
+			}
+			// Glob reads a set two ways: element by element while nothing has matched, and from the element that matched on to the next ],
+			// skipping a character after each \\. With a ] at the end of a range (a-]) or a \\ in it, they find different ends, so where the
+			// set ends depends on the character; and a [ without its ] is read its own way (Glob throws, or takes the rest of the pattern as a
+			// set no element of which matched). Such a pattern is left to Glob, in its time: only with a few * on a short text.
+			if (i == p.size() || std::find(p.begin() + begin, p.begin() + i, ']') != p.begin() + i || std::find(p.begin() + begin, p.begin() + i, '\\') != p.begin() + i) {
+				glob_only = true;
+				break;
+			}
+			tokens.push_back({fnmatch_token::SET, 0, begin, i, invert});
+		} else tokens.push_back({fnmatch_token::CHAR, p[i], 0, 0, false});
+	}
+	if (glob_only) {
+		if (std::count(p.begin(), p.end(), '*') > 3 || s.size() > 256) return false;
+		try {
+			return Glob(pattern).match(file);
+		} catch(Exception&) { return false; }
+	}
+	auto matches = [&](const fnmatch_token& t, int c) {
+		if (t.kind == fnmatch_token::ANY) return true;
+		if (t.kind == fnmatch_token::CHAR) return t.c == c;
+		return fnmatch_set(p, t.begin, t.end, c) != t.invert;
+	};
+	size_t ti = 0, si = 0, star_t = std::string::npos, star_s = 0;
+	while (si < s.size()) {
+		if (ti < tokens.size() && tokens[ti].kind == fnmatch_token::STAR) {
+			star_t = ti++;
+			star_s = si;
+		} else if (ti < tokens.size() && matches(tokens[ti], s[si])) {
+			ti++;
+			si++;
+		} else if (star_t != std::string::npos) {
+			ti = star_t + 1;
+			si = ++star_s;
+		} else return false;
+	}
+	while (ti < tokens.size() && tokens[ti].kind == fnmatch_token::STAR) ti++;
+	return ti == tokens.size();
 }
 
 // Includes below only used for this function, the Angelscript filesystem functions are faster than Poco's directory iterators where we have to repeatedly call GetFileAttributes to determine whether each item is a file or directory.
