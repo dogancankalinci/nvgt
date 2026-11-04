@@ -13,9 +13,12 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 #include <Poco/Event.h>
@@ -438,13 +441,126 @@ public:
 	}
 };
 
+// thread_current on a thread of a thread_pool (or any thread NVGT didn't start for the script) gave the Thread object Poco keeps for
+// that thread, which the pool deletes once the thread ends (idle for the pool's idle time, stop_all(), the pool destroyed): a handle
+// the script kept then read freed memory. Such a thread is given a thread object of NVGT's own instead, one per thread, kept by the
+// handles to it: while the thread runs, every call is passed on to Poco's object (so its name, id, priority and running are those of
+// the pool's thread, as before), and once it has ended the object answers from what it last saw, running is false and join() returns.
+struct pool_thread_link {
+	Thread* real; // Poco's, valid while live: it is deleted only after its thread has ended, which is when live goes false.
+	bool live;
+	int id;
+	std::string name;
+	Thread::Priority priority;
+	Event ended{Event::EVENT_MANUALRESET};
+};
+static std::mutex& pool_links_mutex() {
+	static auto* m = new std::mutex; // Never destroyed: pool threads can end after the program's statics are gone.
+	return *m;
+}
+static std::unordered_map<Thread*, std::shared_ptr<pool_thread_link>>& pool_links() {
+	static auto* m = new std::unordered_map<Thread*, std::shared_ptr<pool_thread_link>>;
+	return *m;
+}
+static void thread_release(Thread* thread) {
+	angelscript_refcounted* rc = angelscript_refcounted_get(thread);
+	if (!rc || asAtomicDec(rc->refcount) >= 1) return;
+	{
+		std::lock_guard<std::mutex> lock(pool_links_mutex());
+		pool_links().erase(thread);
+	}
+	thread->~Thread();
+	free(rc);
+}
+// Runs f on the link of a thread object standing for a pool's thread, under the lock that keeps Poco's object from going meanwhile; false for any other thread object.
+template <class F> static bool with_pool_thread(Thread* thread, F f) {
+	std::lock_guard<std::mutex> lock(pool_links_mutex());
+	auto it = pool_links().find(thread);
+	if (it == pool_links().end()) return false;
+	f(*it->second);
+	return true;
+}
+// Lets go of this thread's stand-in, if it has one, as the thread ends.
+struct pool_thread_holder {
+	Thread* stand_in = nullptr;
+	std::shared_ptr<pool_thread_link> link;
+	~pool_thread_holder() {
+		if (!stand_in) return;
+		{
+			std::lock_guard<std::mutex> lock(pool_links_mutex());
+			link->name = link->real->getName();
+			link->priority = link->real->getPriority();
+			link->live = false;
+			link->real = nullptr;
+		}
+		link->ended.set();
+		thread_release(stand_in);
+	}
+};
+static thread_local pool_thread_holder t_pool_thread;
+Thread* script_thread_current() {
+	Thread* thread = Thread::current();
+	if (!thread || angelscript_refcounted_get(thread)) return thread; // The main thread (null), or a thread the script made.
+	if (!t_pool_thread.stand_in) {
+		auto link = std::make_shared<pool_thread_link>();
+		link->real = thread;
+		link->live = true;
+		link->id = thread->id();
+		link->name = thread->getName();
+		link->priority = thread->getPriority();
+		Thread* stand_in = angelscript_refcounted_factory<Thread>();
+		{
+			std::lock_guard<std::mutex> lock(pool_links_mutex());
+			pool_links()[stand_in] = link;
+		}
+		t_pool_thread.link = link;
+		t_pool_thread.stand_in = stand_in;
+	}
+	return t_pool_thread.stand_in; // thread@+: AngelScript adds the reference the handle holds.
+}
+int thread_get_id(Thread* thread) {
+	int id = 0;
+	return with_pool_thread(thread, [&](pool_thread_link& l) { id = l.id; }) ? id : thread->id();
+}
+void thread_set_priority(Thread* thread, Thread::Priority priority) {
+	if (!with_pool_thread(thread, [&](pool_thread_link& l) { if (l.live) l.real->setPriority(priority); l.priority = priority; })) thread->setPriority(priority);
+}
+Thread::Priority thread_get_priority(Thread* thread) {
+	Thread::Priority priority = Thread::PRIO_NORMAL;
+	return with_pool_thread(thread, [&](pool_thread_link& l) { priority = l.live ? l.real->getPriority() : l.priority; }) ? priority : thread->getPriority();
+}
+void thread_set_name(Thread* thread, const std::string& name) {
+	if (!with_pool_thread(thread, [&](pool_thread_link& l) { if (l.live) l.real->setName(name); l.name = name; })) thread->setName(name);
+}
+std::string thread_get_name(Thread* thread) {
+	std::string name;
+	return with_pool_thread(thread, [&](pool_thread_link& l) { name = l.live ? l.real->getName() : l.name; }) ? name : thread->getName();
+}
+bool thread_is_running(Thread* thread) {
+	bool running = false;
+	return with_pool_thread(thread, [&](pool_thread_link& l) { running = l.live && l.real->isRunning(); }) ? running : thread->isRunning();
+}
+void thread_wake_up(Thread* thread) {
+	if (!with_pool_thread(thread, [&](pool_thread_link& l) { if (l.live) l.real->wakeUp(); })) thread->wakeUp();
+}
+// Waits for a pool's thread to end without touching Poco's object, which the pool deletes then.
+static std::shared_ptr<pool_thread_link> pool_thread_link_of(Thread* thread) {
+	std::shared_ptr<pool_thread_link> link;
+	with_pool_thread(thread, [&](pool_thread_link& l) { link = pool_links()[thread]; });
+	return link;
+}
+void thread_join(Thread* thread) {
+	if (auto link = pool_thread_link_of(thread)) link->ended.wait();
+	else thread->join();
+}
+
 void thread_begin(Thread* thread, asIScriptFunction* func, CScriptDictionary* args) {
 	if (!func) {
 		if (args) args->Release();
 		return;
 	}
-	// Refused here instead of by Poco, whose start() does not give back all of the memory it took when it throws for a thread that is still running.
-	if (thread->isRunning()) {
+	// Refused here instead of by Poco, whose start() does not give back all of the memory it took when it throws for a thread that is still running. A pool's thread (see script_thread_current) is one the pool runs.
+	if (thread_is_running(thread) || pool_thread_link_of(thread)) {
 		if (args) args->Release();
 		func->Release();
 		throw SystemException("thread already running");
@@ -668,6 +784,7 @@ unsigned int thread_current_id() {
 	#endif
 }
 bool thread_try_join(Thread* thread, unsigned int ms) {
+	if (auto link = pool_thread_link_of(thread)) return link->ended.tryWait(ms);
 	return thread->tryJoin(ms);
 }
 void event_wait_ms(Event* event, unsigned int ms) {
@@ -710,25 +827,27 @@ void RegisterThreading(asIScriptEngine* engine) {
 	engine->RegisterEnumValue("thread_priority", "THREAD_PRIORITY_NORMAL", Thread::Priority::PRIO_NORMAL);
 	engine->RegisterEnumValue("thread_priority", "THREAD_PRIORITY_HIGH", Thread::Priority::PRIO_HIGH);
 	engine->RegisterEnumValue("thread_priority", "THREAD_PRIORITY_HIGHEST", Thread::Priority::PRIO_HIGHEST);
-	angelscript_refcounted_register<Thread>(engine, "thread");
+	engine->RegisterObjectType("thread", 0, asOBJ_REF);
+	engine->RegisterObjectBehaviour("thread", asBEHAVE_ADDREF, "void f()", asFUNCTION(angelscript_refcounted_duplicate<Thread>), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectBehaviour("thread", asBEHAVE_RELEASE, "void f()", asFUNCTION(thread_release), asCALL_CDECL_OBJFIRST); // See script_thread_current.
 	engine->RegisterGlobalFunction("bool get_thread_is_main() property", asFUNCTION(thread_is_main), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("uint thread_current_id()"), asFUNCTION(thread_current_id), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("void thread_yield()"), asFUNCTION(Thread::yield), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("bool thread_sleep(uint ms)"), asFUNCTION(thread_sleep), asCALL_CDECL);
-	engine->RegisterGlobalFunction(_O("thread@+ get_thread_current() property"), asFUNCTION(Thread::current), asCALL_CDECL);
+	engine->RegisterGlobalFunction(_O("thread@+ get_thread_current() property"), asFUNCTION(script_thread_current), asCALL_CDECL);
 	engine->RegisterFuncdef(_O("void thread_callback(dictionary@ args)"));
 	engine->RegisterObjectBehaviour(_O("thread"), asBEHAVE_FACTORY, _O("thread@ t()"), asFUNCTION(angelscript_refcounted_factory<Thread>), asCALL_CDECL);
 	engine->RegisterObjectBehaviour(_O("thread"), asBEHAVE_FACTORY, _O("thread@ t(const string&in name)"), asFUNCTION((angelscript_refcounted_factory<Thread, const std::string&>)), asCALL_CDECL);
-	engine->RegisterObjectMethod(_O("thread"), _O("int get_id() const property"), asMETHOD(Thread, id), asCALL_THISCALL);
-	engine->RegisterObjectMethod(_O("thread"), _O("void set_priority(thread_priority priority) property"), asMETHOD(Thread, setPriority), asCALL_THISCALL);
-	engine->RegisterObjectMethod(_O("thread"), _O("thread_priority get_priority() const property"), asMETHOD(Thread, getPriority), asCALL_THISCALL);
-	engine->RegisterObjectMethod(_O("thread"), _O("void set_name(const string&in name) property"), asMETHOD(Thread, setName), asCALL_THISCALL);
-	engine->RegisterObjectMethod(_O("thread"), _O("string get_name() const property"), asMETHOD(Thread, getName), asCALL_THISCALL);
-	engine->RegisterObjectMethod(_O("thread"), _O("void join()"), asMETHODPR(Thread, join, (), void), asCALL_THISCALL);
+	engine->RegisterObjectMethod(_O("thread"), _O("int get_id() const property"), asFUNCTION(thread_get_id), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(_O("thread"), _O("void set_priority(thread_priority priority) property"), asFUNCTION(thread_set_priority), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(_O("thread"), _O("thread_priority get_priority() const property"), asFUNCTION(thread_get_priority), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(_O("thread"), _O("void set_name(const string&in name) property"), asFUNCTION(thread_set_name), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(_O("thread"), _O("string get_name() const property"), asFUNCTION(thread_get_name), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(_O("thread"), _O("void join()"), asFUNCTION(thread_join), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(_O("thread"), _O("bool join(uint ms)"), asFUNCTION(thread_try_join), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(_O("thread"), _O("bool get_running() const property"), asMETHOD(Thread, isRunning), asCALL_THISCALL);
+	engine->RegisterObjectMethod(_O("thread"), _O("bool get_running() const property"), asFUNCTION(thread_is_running), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(_O("thread"), _O("void start(thread_callback@ routine, dictionary@ args = null)"), asFUNCTION(thread_begin), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(_O("thread"), _O("void wake_up()"), asMETHOD(Thread, wakeUp), asCALL_THISCALL);
+	engine->RegisterObjectMethod(_O("thread"), _O("void wake_up()"), asFUNCTION(thread_wake_up), asCALL_CDECL_OBJFIRST);
 	RegisterMutexType<Mutex>(engine, "mutex");
 	RegisterMutexType<FastMutex>(engine, "fast_mutex");
 	RegisterMutexType<NamedMutex>(engine, "named_mutex");
