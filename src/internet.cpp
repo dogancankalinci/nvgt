@@ -48,6 +48,7 @@
 #include "nvgt.h"
 #include "nvgt_angelscript.h"
 #include "pocostuff.h" // angelscript_refcounted
+#include "threading.h" // poco_ms
 #include "version.h"
 
 using namespace std;
@@ -660,7 +661,7 @@ public:
 		bool authorize = false;
 		int tries = _max_retries;
 		string download_buffer(1024 * 32, '\0'); // Should the user be able to configure this, larger buffer = faster download?
-		while (tries && !tryWait(_retry_delay)) {
+		while (tries && !tryWait(poco_ms(_retry_delay))) { // See poco_ms() in threading.cpp.
 			tries--;
 			try {
 				string path = _url.getPathAndQuery();

@@ -15,3 +15,4 @@
 class asIScriptEngine;
 
 void RegisterThreading(asIScriptEngine* engine);
+long poco_ms(unsigned int ms); // A script's uint milliseconds as the long Poco takes, see threading.cpp.

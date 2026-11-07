@@ -10,7 +10,9 @@
  * 3. This notice may not be removed or altered from any source distribution.
 */
 
+#include <algorithm>
 #include <atomic>
+#include <climits>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -760,18 +762,24 @@ template <class L, class T> void script_scoped_lock_destruct(script_scoped_lock<
 template <class T> void script_scoped_lock_unlock(script_scoped_lock<ScopedLockWithUnlock<T>, T>* mem) {
 	mem->lock.unlock();
 }
+// Poco takes the script's uint milliseconds as a long, 4 bytes on Windows and 32-bit targets, where 2^31 and more became negative: a wait of
+// 4294967295 ms (meant as for ever) ended at once, a lock(ms) timed out at once, a thread_sleep() on a script thread returned at once and join(ms)
+// returned false at once. The longest time a long holds (24.8 days there) is waited instead; it is one less, as Poco's Windows waits add 1.
+long poco_ms(unsigned int ms) {
+	return long(std::min<unsigned long long>(ms, (unsigned long long)LONG_MAX - 1));
+}
 template <class T> void mutex_lock_ms(T* mutex, unsigned int ms) {
-	mutex->lock(ms);
+	mutex->lock(poco_ms(ms));
 }
 template <class T> bool mutex_try_lock_ms(T* mutex, unsigned int ms) {
-	return mutex->tryLock(ms);
+	return mutex->tryLock(poco_ms(ms));
 }
 bool thread_sleep(unsigned int ms) {
 	if (!Thread::current()) {
-		Thread::sleep(ms);
+		Thread::sleep(poco_ms(ms));
 		return true;
 	}
-	return Thread::trySleep(ms);
+	return Thread::trySleep(poco_ms(ms));
 }
 // The script's uint fits the OS thread id on every target (a Windows DWORD, a Linux pid_t, an Apple mach port), but Poco returns it
 // as a long, which is 8 bytes on 64-bit Linux and Apple targets. Poco has no implementation for Android (it returns 0 for every
@@ -784,17 +792,17 @@ unsigned int thread_current_id() {
 	#endif
 }
 bool thread_try_join(Thread* thread, unsigned int ms) {
-	if (auto link = pool_thread_link_of(thread)) return link->ended.tryWait(ms);
-	return thread->tryJoin(ms);
+	if (auto link = pool_thread_link_of(thread)) return link->ended.tryWait(poco_ms(ms));
+	return thread->tryJoin(poco_ms(ms));
 }
 void event_wait_ms(Event* event, unsigned int ms) {
-	event->wait(ms);
+	event->wait(poco_ms(ms));
 }
 bool event_try_wait(Event* event, unsigned int ms) {
-	return event->tryWait(ms);
+	return event->tryWait(poco_ms(ms));
 }
 bool async_try_wait(async_result* result, unsigned int ms) {
-	return result->progress.tryWait(ms);
+	return result->progress.tryWait(poco_ms(ms));
 }
 
 template <class T> void RegisterMutexType(asIScriptEngine* engine, const std::string& type) {
