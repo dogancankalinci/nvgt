@@ -486,9 +486,16 @@ std::string datastream::read(unsigned int size) {
 	}
 	try {
 		if (size > 0) {
-			output.resize(size);
-			r->readRaw(&output[0], size);
-			output.resize(r->stream().gcount());
+			// Read as the data comes, in pieces that double: the whole size was allocated and zeroed first, so a length read from a corrupt or
+			// hostile file (read(700000000) of a file of 3 bytes) took 700 MB for a few bytes, and on a phone the memory there was.
+			while (output.size() < size) {
+				size_t done = output.size(), piece = std::min<size_t>(size - done, std::max<size_t>(done, 65536));
+				output.resize(done + piece);
+				r->readRaw(&output[done], piece);
+				size_t got = size_t(r->stream().gcount());
+				output.resize(done + got);
+				if (got < piece) break;
+			}
 		} else
 			StreamCopier::copyToString(*_istr, output);
 	} catch (std::exception) {
