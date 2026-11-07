@@ -2073,6 +2073,7 @@ static ma_result held_decoder_seek(ma_data_source* source, ma_uint64 frame) {
 	const ma_uint64 file_frame = file_rate == decoder->outputSampleRate? frame : wdl_frames_after_resampling(file_rate, decoder->outputSampleRate, frame);
 	ma_uint64 cursor = 0, before = 0;
 	const bool there = !file->can_seek && file_cursor(decoder->pBackend, &cursor) && cursor == file_frame;
+	const ma_uint64 cursor_before = cursor;
 	if (file->can_seek) file_cursor(decoder->pBackend, &before);
 	result = there? MA_SUCCESS : ma_data_source_seek_to_pcm_frame(decoder->pBackend, file_frame);
 	// MiniAudio's count of the frame in the file, and the resampler's, add 1 at a rate that divides the file's, which took a decoder's own length past the file's, refused by the formats that don't clamp it: Vorbis, Opus and MP3.
@@ -2100,6 +2101,10 @@ static ma_result held_decoder_seek(ma_data_source* source, ma_uint64 frame) {
 		return result;
 	}
 	if (file->can_seek) put_file_back(decoder->pBackend, before);
+	else if (file_cursor(decoder->pBackend, &cursor) && cursor > cursor_before) { // Refused having read the file on, its end come first, as Opus's short seek forward: nothing is left to read from where it was, so the decoder tells where its file is, rather than a place it no longer reads from.
+		ma_data_converter_reset(&decoder->converter);
+		decoder->readPointerInPCMFrames = file_rate == decoder->outputSampleRate? cursor : wdl_frames_after_resampling(decoder->outputSampleRate, file_rate, cursor);
+	}
 	if (file->can_seek || t_script_seek || !at_its_end(decoder, file)) return result;
 	if (file->finished.load() && !ma_data_source_is_looping(source)) return result;
 	file->finished.store(true);
