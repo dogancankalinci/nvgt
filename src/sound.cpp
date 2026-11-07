@@ -4980,10 +4980,9 @@ public:
 			if (claim_buffer_name(manager, triplet)) break;
 			g_sound_service->cleanup_triplet(triplet);
 		}
-		// A buffer is decoded at the resource manager's rate, the engine's unless an engine without a device was made without one, when buffers keep their own. So one whose own rate was far below it, as a header could claim 1 Hz, came out that many times larger: a 4 KB file took 192 MB and seconds to decode, and one of 400 KB more memory than there was. A source below min_sample_rate, which PCM and decoders are refused under too, is refused; from it on, what a buffer takes follows the sound's length, as for any file, rather than a ratio to the engine's rate, which refused rates PCM and decoders take on an engine above 48000 Hz. The resource manager gives a source's own rate no way out, so the file's header is read first by a decoder of its own, unless the resource manager holds the buffer already, as for a sound played again by its name, which that cost many times over; a source of unknown length isn't, as opening it twice would read it from its start again. Where the resource manager keeps a source's own rate instead, it decodes buffers and streams alike in pages of 1000 * (rate / 1000) frames of it, none below 1000 Hz, so those played silence while their load succeeded: there they are refused below 1000 Hz.
-		ma_uint32 decoded_rate = manager->config.decodedSampleRate;
-		bool buffered = (ma_flags & MA_SOUND_FLAG_DECODE) && !(ma_flags & MA_SOUND_FLAG_STREAM), streamed = (ma_flags & MA_SOUND_FLAG_STREAM) != 0;
-		if (!(ma_flags & MA_SOUND_FLAG_UNKNOWN_LENGTH) && (whole_in_pages || (buffered? !resource_cached(manager, triplet) : streamed && !decoded_rate))) {
+		// A buffer is decoded at the resource manager's rate, the engine's. So one whose own rate was far below it, as a header could claim 1 Hz, came out that many times larger: a 4 KB file took 192 MB and seconds to decode, and one of 400 KB more memory than there was. A source below min_sample_rate, which PCM and decoders are refused under too, is refused; from it on, what a buffer takes follows the sound's length, as for any file, rather than a ratio to the engine's rate, which refused rates PCM and decoders take on an engine above 48000 Hz. The resource manager gives a source's own rate no way out, so the file's header is read first by a decoder of its own, unless the resource manager holds the buffer already, as for a sound played again by its name, which that cost many times over; a source of unknown length isn't, as opening it twice would read it from its start again.
+		bool buffered = (ma_flags & MA_SOUND_FLAG_DECODE) && !(ma_flags & MA_SOUND_FLAG_STREAM);
+		if (!(ma_flags & MA_SOUND_FLAG_UNKNOWN_LENGTH) && (whole_in_pages || buffered && !resource_cached(manager, triplet))) {
 			bool length_impossible = false;
 			ma_uint32 own_rate = native_sample_rate(triplet, buffered? &length_impossible : nullptr);
 			if (!whole_in_pages && own_rate && own_rate < min_sample_rate) {
@@ -5771,7 +5770,7 @@ public:
 		return true;
 	}
 	bool seek_in_milliseconds(unsigned long long offset) override {
-		ma_uint32 sample_rate = 0; // The sound's own, which its frames count in; the engine's differs for a file at another rate, and is 0 for an engine without a device.
+		ma_uint32 sample_rate = 0; // The sound's own, which its frames count in; the engine's differs for a file at another rate.
 		if (!snd) return nothing_loaded();
 		if (ma_sound_get_data_format(&*snd, nullptr, nullptr, &sample_rate, nullptr, 0) != MA_SUCCESS || !sample_rate || !frames_fit(offset, sample_rate)) return false;
 		return seek_in_frames(frames_of_milliseconds(offset, sample_rate));
