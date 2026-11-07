@@ -179,7 +179,8 @@ template <class T> string socket_receive_bytes(T& sock, int length, int flags) {
 	if (length <= 0) return std::string();
 	string result(length, 0); // ooouuuch this initialization to null chars hurts and is a waste, find a way to fix it!
 	int recv_len = sock.receiveBytes(result.data(), length, flags);
-	result.resize(recv_len);
+	// A non-blocking socket with nothing to read gives -1 (Poco's SocketImpl::receiveBytes), which resize() took as the largest size: the script got a "string too long" exception instead of an empty string.
+	result.resize(recv_len > 0 ? recv_len : 0);
 	return result;
 }
 template <class T> string socket_receive_bytes_buf(T& sock, int flags, const Timespan& timeout) {
