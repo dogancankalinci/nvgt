@@ -189,15 +189,12 @@ static ma_result nvgt_wav_backend_init(void* user_data, ma_read_proc on_read, ma
 	} else {
 		const ma_uint64 most = 15 * 1024 * 1024; // Within the 16 MiB a source that can't seek keeps of its start while a decoder opens it (see prebuffer_istreambuf::OPEN_CAP).
 		bool ended = false;
-		while (size < most) {
+		while (!ended && size <= most) { // A read past it too, which sees the end of one of just that size.
 			ma_uint8 block[4096];
 			size_t got = 0;
 			const ma_result read = on_read(read_user_data, block, sizeof(block), &got);
 			size += got;
-			if (read != MA_SUCCESS || got < sizeof(block)) {
-				ended = true;
-				break;
-			}
+			if (read != MA_SUCCESS || got < sizeof(block)) ended = true;
 		}
 		if (!ended || on_seek(read_user_data, (ma_int64)wav->dataChunkDataPos, ma_seek_origin_start) != MA_SUCCESS) {
 			ma_decoding_backend_uninit__wav(user_data, *backend, allocation_callbacks);
