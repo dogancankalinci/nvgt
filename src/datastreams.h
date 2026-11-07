@@ -133,6 +133,7 @@ class datastream : public Poco::RefCountedObject {
 public:
 	void* user; // Free for advanced streams to use.
 	bool no_close; // If set to true, the close function becomes a no-op for singleton streams like stdin/stdout.
+	Poco::TextEncoding* text_encoding = nullptr; // The encoding the stream was opened with, null for none: see read_binary_string().
 	bool binary; // If set to false, the template read/write functions will write formatted text output instead of binary data, used by default for console streams.
 	bool autoflush; // If set to true, flush() is called after every write. Useful for pipes and process stdio where buffering would otherwise prevent the data from being delivered.
 	bool skip_eof; // If true, the read function will clear all error bits if the eof bit is set on read, useful for streams rather than finite data areas where new data could come in at any time.
@@ -211,6 +212,7 @@ public:
 	void opened_on_too(datastream* other);
 	int longest_way(bool up, const datastream* target, int limit); // See datastreams.cpp.
 	bool can_open_on(datastream* obj);
+	void read_binary_string(std::string& value);
 	// For code reading or writing the streams on a thread of its own, as the audio thread does for a sound's decoder or encoder: while it's held, close() waits rather than delete the streams under that code. The streams are looked up after taking it, as they're gone once closed.
 	std::unique_lock<std::recursive_mutex> hold_open() {
 		return std::unique_lock<std::recursive_mutex>(use_mutex);

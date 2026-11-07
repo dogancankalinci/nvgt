@@ -38,6 +38,7 @@
 #include <Poco/RefCountedObject.h>
 #include <Poco/StreamCopier.h>
 #include <Poco/TeeStream.h>
+#include <Poco/TextConverter.h>
 #include <Poco/TextEncoding.h>
 #include <iostream>
 #include <sstream>
@@ -262,10 +263,12 @@ bool datastream::open(std::istream* istr, std::ostream* ostr, const std::string&
 	if (!istr && !ostr)
 		return false;
 	if (encoding.empty()) {
+		text_encoding = nullptr;
 		r = istr ? new BinaryReader(*istr, BinaryReader::StreamByteOrder(byteorder)) : nullptr;
 		w = ostr ? new BinaryWriter(*ostr, BinaryWriter::StreamByteOrder(byteorder)) : nullptr;
 	} else {
 		TextEncoding& enc = TextEncoding::byName(encoding);
+		text_encoding = &enc; // See read_binary_string().
 		r = istr ? new BinaryReader(*istr, enc, BinaryReader::StreamByteOrder(byteorder)) : nullptr;
 		w = ostr ? new BinaryWriter(*ostr, enc, BinaryWriter::StreamByteOrder(byteorder)) : nullptr;
 	}
@@ -560,10 +563,40 @@ unsigned int datastream::write(const std::string& data) {
 	if (autoflush) flush();
 	return written(false);
 }
+// Poco's BinaryReader reserves the length a string's prefix claims before it reads the string: a prefix saying 700000000 over 3 bytes
+// committed 700 MB, and on Windows one of 2^32 - 1 threw bad_alloc instead of reading the 3 bytes. This reads as Poco 1.14.1's
+// BinaryReader::operator>>(std::string&) does, the bytes taken as they come in pieces that double (see read()), then converted from the
+// stream's encoding as Poco converts them.
+void datastream::read_binary_string(std::string& value) {
+	UInt32 size = 0;
+	r->read7BitEncoded(size);
+	value.clear();
+	if (!_istr->good()) return;
+	while (value.size() < size) {
+		size_t done = value.size(), piece = std::min<size_t>(size - done, std::max<size_t>(done, 65536));
+		value.resize(done + piece);
+		r->readRaw(&value[done], piece);
+		size_t got = size_t(r->stream().gcount());
+		value.resize(done + got);
+		if (got < piece) break;
+	}
+	if (text_encoding) {
+		TextConverter converter(*text_encoding, TextEncoding::global());
+		std::string converted;
+		converter.convert(value, converted);
+		std::swap(value, converted);
+	}
+}
 template <typename T>
 datastream& datastream::read(T& value) {
 	if (!r) return *this;
 	if (skip_eof && eof()) stream()->clear();
+	if constexpr(std::is_same<T, std::string>::value) {
+		if (binary) {
+			read_binary_string(value);
+			return *this;
+		}
+	}
 	binary ? (*r) >> value : (*_istr) >> value;
 	return *this;
 }
@@ -574,6 +607,12 @@ T datastream::read() {
 	else value = 0;
 	if (!r) return value;
 	if (skip_eof && eof()) stream()->clear();
+	if constexpr(std::is_same<T, std::string>::value) {
+		if (binary) {
+			read_binary_string(value);
+			return value;
+		}
+	}
 	binary ? (*r) >> value : (*_istr) >> value;
 	return value;
 }
