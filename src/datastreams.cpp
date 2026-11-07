@@ -630,13 +630,26 @@ datastream* datastream_cast_from(datastream* ds) {
 	}
 	return nullptr;
 }
+// What a stream is opened on (a file opened, a stream made on another) is made before open() takes it, and open() lets go of nothing it
+// refuses or throws for: an encoding name that doesn't exist threw from open(), and the file stayed open until the program ended (on Windows it
+// couldn't even be deleted), with the datastream a factory made for it and the reference to the stream another was being made on; a stream made
+// on another that open() refused (one that can't be reopened, or would go round or too deep, see can_open_on()) was never freed either. The
+// openers check these first, and throw for the name as TextEncoding::byName() does.
+static bool stream_encoding_known(const std::string& encoding) {
+	return encoding.empty() || !TextEncoding::find(encoding).isNull();
+}
+static void check_stream_encoding(const std::string& encoding) {
+	if (!stream_encoding_known(encoding)) throw NotFoundException(encoding);
+}
 // Open and factory functions for datastreams who's internal stream takes no arguments and thus can be opened by default.
 template <class T>
 bool datastream_simple_open(datastream* ds, f_streamargs) {
+	check_stream_encoding(encoding);
 	return ds->open(new T(), p_streamargs);
 }
 template <class T>
 datastream* datastream_simple_factory(f_streamargs) {
+	check_stream_encoding(encoding);
 	return new datastream(new T(), p_streamargs);
 }
 
@@ -710,10 +723,12 @@ void RegisterDatastreamType(asIScriptEngine* engine, const std::string& classnam
 // Simple open and factory functions for a stream that does not connect to another one, but who's factory function takes arguments that require no extra processing as they are passed.
 template <class T, typename... Args>
 bool generic_stream_open(datastream* ds, Args... args, f_streamargs) {
+	check_stream_encoding(encoding); // See stream_encoding_known().
 	return ds->open(new T(args...), p_streamargs, nullptr);
 }
 template <class T, typename... Args>
 datastream* generic_stream_factory(Args... args, f_streamargs) {
+	check_stream_encoding(encoding);
 	datastream* ds = new datastream();
 	generic_stream_open<T, Args...>(ds, args..., p_streamargs);
 	return ds;
@@ -743,6 +758,13 @@ template <class T, class S>
 bool connect_stream_open_argless(datastream* ds, datastream* ds_connect, f_streamargs) {
 	if (!ds_connect)
 		return false;
+	// See stream_encoding_known().
+	if (!stream_encoding_known(encoding)) {
+		ds_connect->release();
+		throw NotFoundException(encoding);
+	}
+	if (ds->no_close || !ds->can_open_on(ds_connect))
+		return connect_stream_fail(ds_connect);
 	S* stream;
 	if constexpr(std::is_same<S, std::istream>::value) {
 		if (!ds_connect->get_istr())
@@ -771,6 +793,10 @@ bool connect_stream_open_argless(datastream* ds, datastream* ds_connect, f_strea
 }
 template <class T, class S>
 datastream* connect_stream_factory_argless(datastream* ds_connect, f_streamargs) {
+	if (!stream_encoding_known(encoding)) { // See stream_encoding_known().
+		if (ds_connect) ds_connect->release();
+		throw NotFoundException(encoding);
+	}
 	datastream* ds = new datastream();
 	if (!connect_stream_open_argless<T, S>(ds, ds_connect, p_streamargs)) {
 		ds->release();
@@ -788,6 +814,13 @@ template <class T, class S, typename... Args>
 bool connect_stream_open(datastream* ds, datastream* ds_connect, Args... args, f_streamargs) {
 	if (!ds_connect)
 		return false;
+	// See stream_encoding_known().
+	if (!stream_encoding_known(encoding)) {
+		ds_connect->release();
+		throw NotFoundException(encoding);
+	}
+	if (ds->no_close || !ds->can_open_on(ds_connect))
+		return connect_stream_fail(ds_connect);
 	S* stream;
 	if constexpr(std::is_same<S, std::istream>::value) {
 		if (!ds_connect->get_istr())
@@ -816,6 +849,10 @@ bool connect_stream_open(datastream* ds, datastream* ds_connect, Args... args, f
 }
 template <class T, class S, typename... Args>
 datastream* connect_stream_factory(datastream* ds_connect, Args... args, f_streamargs) {
+	if (!stream_encoding_known(encoding)) { // See stream_encoding_known().
+		if (ds_connect) ds_connect->release();
+		throw NotFoundException(encoding);
+	}
 	datastream* ds = new datastream();
 	if (!connect_stream_open<T, S, Args...>(ds, ds_connect, args..., p_streamargs)) {
 		ds->release();
@@ -856,6 +893,7 @@ bool file_stream_open(datastream* ds, const std::string& path, const std::string
 	}
 	if ((m & std::ios::in) == 0 && (m & std::ios::out) == 0)
 		return false; // invalid mode.
+	check_stream_encoding(encoding); // See stream_encoding_known(); before a file opened for writing is emptied.
 	try {
 		std::iostream* iostr = new FileStream(path, m);
 		return ds->open((m & std::ios::in) != 0 ? iostr : nullptr, (m & std::ios::out) != 0 ? iostr : nullptr, p_streamargs, nullptr);
@@ -864,6 +902,7 @@ bool file_stream_open(datastream* ds, const std::string& path, const std::string
 	}
 }
 datastream* file_stream_factory(const std::string& path, const std::string& mode, f_streamargs) {
+	check_stream_encoding(encoding);
 	datastream* ds = new datastream();
 	file_stream_open(ds, path, mode, p_streamargs);
 	return ds;
@@ -875,9 +914,11 @@ unsigned long long file_stream_size(datastream* ds) {
 
 // stringstream.
 bool stringstream_open(datastream* ds, const std::string& initial = "", f_streamargs) {
+	check_stream_encoding(encoding); // See stream_encoding_known().
 	return ds->open(new std::stringstream(initial), p_streamargs, nullptr);
 }
 datastream* stringstream_factory(const std::string& initial, const std::string& encoding, int byteorder = BinaryReader::NATIVE_BYTE_ORDER) {
+	check_stream_encoding(encoding);
 	datastream* ds = new datastream();
 	stringstream_open(ds, initial, encoding, byteorder);
 	return ds;
