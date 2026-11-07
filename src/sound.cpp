@@ -1940,6 +1940,34 @@ static bool file_length_impossible(ma_decoder* decoder) {
 ma_result nvgt_file_seek(const ma_data_source_vtable* vtable, ma_data_source* file, ma_uint64 frame, ma_bool32 can_seek);
 ma_uint64 nvgt_file_delay(const ma_data_source_vtable* vtable, ma_data_source* file);
 extern "C" ma_bool32 nvgt_channel_weights(const ma_channel* map_in, ma_uint32 channels_in, const ma_channel* map_out, ma_uint32 channels_out, float** weights);
+// NVGT's weights for a channel converter between two maps, the defaults unless given (see nvgt_channel_weights()), kept for as long as the converter's config that apply() points at them.
+struct channel_weights {
+	ma_channel map_in[MA_MAX_CHANNELS], map_out[MA_MAX_CHANNELS];
+	std::vector<float> weights;
+	std::vector<float*> rows;
+	ma_uint32 channels_in, channels_out;
+	channel_weights(ma_uint32 in, ma_uint32 out, const ma_channel* given_in = nullptr, const ma_channel* given_out = nullptr) : channels_in(std::min<ma_uint32>(in, MA_MAX_CHANNELS)), channels_out(std::min<ma_uint32>(out, MA_MAX_CHANNELS)) {
+		if (given_in && !ma_channel_map_is_blank(given_in, channels_in)) ma_channel_map_copy(map_in, given_in, channels_in);
+		else ma_channel_map_init_standard(ma_standard_channel_map_default, map_in, MA_MAX_CHANNELS, channels_in);
+		if (given_out && !ma_channel_map_is_blank(given_out, channels_out)) ma_channel_map_copy(map_out, given_out, channels_out);
+		else ma_channel_map_init_standard(ma_standard_channel_map_default, map_out, MA_MAX_CHANNELS, channels_out);
+	}
+	// Sets a converter's config to use them, unless from one channel to one or between the same, where MiniAudio's own path is the same.
+	template <typename mode_t, typename map_t> void apply(mode_t& mode, float**& config_weights, map_t& config_in, map_t& config_out) {
+		if (channels_in == channels_out && ma_channel_map_is_equal(map_in, map_out, channels_in)) return;
+		weights.assign((size_t)channels_in * channels_out, 0.0f);
+		rows.resize(channels_in);
+		for (ma_uint32 i = 0; i < channels_in; i++) rows[i] = &weights[(size_t)i * channels_out];
+		if (!nvgt_channel_weights(map_in, channels_in, map_out, channels_out, rows.data())) return;
+		// Named otherwise than mono, which MiniAudio expands or averages itself before it looks at custom weights.
+		if (map_in[0] == MA_CHANNEL_MONO) map_in[0] = MA_CHANNEL_FRONT_CENTER;
+		if (map_out[0] == MA_CHANNEL_MONO) map_out[0] = MA_CHANNEL_FRONT_CENTER;
+		mode = ma_channel_mix_mode_custom_weights;
+		config_weights = rows.data();
+		config_in = map_in;
+		config_out = map_out;
+	}
+};
 static held_file* file_held(ma_data_source* backend) {
 	const ma_data_source_vtable* vtable = backend? ((ma_data_source_base*)backend)->vtable : nullptr;
 	return vtable && vtable->onSeek == held_file_seek? const_cast<held_file*>(reinterpret_cast<const held_file*>(vtable)) : nullptr;
@@ -2342,6 +2370,25 @@ class audio_decoder_impl : public audio_data_source_impl, public virtual audio_d
 	// Deliberately left unanswered: the decoder never asks for it (only ma_vfs_open_and_read_file does), and measuring a length
 	// means seeking to the end, which a live stream refuses and which would desync the rewind window from the decoder's position.
 	static ma_result vfs_info(ma_vfs*, ma_vfs_file, ma_file_info*) { return MA_NOT_IMPLEMENTED; }
+	// A decoder opened to another channel count than its file's mixes by NVGT's weights, as a sound does on its engine: MiniAudio's decoder takes only its own modes, so its converter is made again, before anything was read through it.
+	static ma_result remix_decoder(ma_decoder* d) {
+		ma_format format_in = ma_format_unknown;
+		ma_uint32 channels_in = 0, rate_in = 0;
+		ma_channel map_in[MA_MAX_CHANNELS];
+		ma_result result = ma_data_source_get_data_format(d->pBackend, &format_in, &channels_in, &rate_in, map_in, MA_MAX_CHANNELS);
+		if (result != MA_SUCCESS || channels_in == d->outputChannels || !channels_in) return result;
+		ma_data_converter_config cfg = ma_data_converter_config_init(format_in, d->outputFormat, channels_in, d->outputChannels, rate_in, d->outputSampleRate);
+		cfg.resampling.algorithm = ma_resample_algorithm_custom;
+		cfg.resampling.pBackendVTable = &wdl_resampler_backend_vtable;
+		cfg.allowDynamicSampleRate = MA_FALSE; // As the decoder makes it.
+		channel_weights weights(channels_in, d->outputChannels, map_in);
+		weights.apply(cfg.channelMixMode, cfg.ppChannelWeights, cfg.pChannelMapIn, cfg.pChannelMapOut);
+		if (cfg.channelMixMode != ma_channel_mix_mode_custom_weights) return MA_SUCCESS;
+		ma_data_converter_uninit(&d->converter, &d->allocationCallbacks);
+		result = ma_data_converter_init(&cfg, &d->allocationCallbacks, &d->converter);
+		if (result != MA_SUCCESS) memset(&d->converter, 0, sizeof(d->converter)); // Nothing for the decoder's uninit to free; the open fails.
+		return result;
+	}
 	ma_decoder_config decoder_config_init(unsigned int sample_rate, unsigned int channels) {
 		init_sound_context();
 		ma_decoder_config cfg = ma_decoder_config_init(ma_format_f32, channels, sample_rate);
@@ -2383,7 +2430,8 @@ public:
 		}
 		seekable = true;
 		ma_decoder_config cfg = decoder_config_init(sample_rate, channels);
-		if ((g_soundsystem_last_error = ma_decoder_init_vfs(g_sound_service->get_vfs(), triplet.c_str(), &cfg, &*decoder)) != MA_SUCCESS) decoder.reset();
+		if ((g_soundsystem_last_error = ma_decoder_init_vfs(g_sound_service->get_vfs(), triplet.c_str(), &cfg, &*decoder)) == MA_SUCCESS && (g_soundsystem_last_error = remix_decoder(&*decoder)) != MA_SUCCESS) ma_decoder_uninit(&*decoder);
+		if (g_soundsystem_last_error != MA_SUCCESS) decoder.reset();
 		else {
 			hold_decoder(&*decoder, true);
 			set_ma_data_source((ma_data_source*)&*decoder);
@@ -2425,7 +2473,8 @@ public:
 		ds_vfs->cb.onWrite = nullptr;   ds_vfs->cb.onSeek  = vfs_seek;
 		ds_vfs->cb.onTell  = vfs_tell;  ds_vfs->cb.onInfo  = vfs_info;
 		ds_vfs->sc = &*cursor;
-		if ((g_soundsystem_last_error = ma_decoder_init_vfs(ds_vfs.get(), "stream", &cfg, &*decoder)) != MA_SUCCESS) {
+		if ((g_soundsystem_last_error = ma_decoder_init_vfs(ds_vfs.get(), "stream", &cfg, &*decoder)) == MA_SUCCESS && (g_soundsystem_last_error = remix_decoder(&*decoder)) != MA_SUCCESS) ma_decoder_uninit(&*decoder);
+		if (g_soundsystem_last_error != MA_SUCCESS) {
 			decoder.reset();
 			ds_vfs.reset();
 			cursor.reset();
@@ -2633,9 +2682,12 @@ protected:
 		output_format = target_format;
 		if (!dc && (sample_rate != get_engine()->get_sample_rate() || channels != get_engine()->get_channels())) {
 			dc = make_unique<ma_data_converter>();
-			ma_data_converter_config cfg = ma_data_converter_config_init(ma_format_f32, ma_format_f32, get_engine()->get_channels(), target_channels, get_engine()->get_sample_rate(), target_sample_rate);
+			const ma_uint32 engine_channels = get_engine()->get_channels();
+			ma_data_converter_config cfg = ma_data_converter_config_init(ma_format_f32, ma_format_f32, engine_channels, target_channels, get_engine()->get_sample_rate(), target_sample_rate);
 			cfg.resampling.algorithm = ma_resample_algorithm_custom;
 			cfg.resampling.pBackendVTable = &wdl_resampler_backend_vtable;
+			channel_weights weights(cfg.channelsIn, cfg.channelsOut); // Mixed by their places, as a sound into its engine.
+			weights.apply(cfg.channelMixMode, cfg.ppChannelWeights, cfg.pChannelMapIn, cfg.pChannelMapOut);
 			if ((g_soundsystem_last_error = ma_data_converter_init(&cfg, nullptr, &*dc)) != MA_SUCCESS) {
 				// Not close(), which takes write_mtx; the open call that got here holds it.
 				dc.reset();
