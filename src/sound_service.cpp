@@ -524,7 +524,13 @@ encryption_filter::encryption_filter() {
 std::string encryption_filter::get_suffix(const directive_t &directive) const {
 	const std::shared_ptr<const std::string> key = std::static_pointer_cast<const std::string>(directive);
 	if (key == nullptr || key->empty()) return "";
-	return Poco::NumberFormatter::formatHex((Poco::UInt64)std::hash<std::string>{}(*key)); // A hash of the key, not the key, as the triplet is kept in MiniAudio's tables.
+	// A hash of the key, not the key, as the triplet is kept in MiniAudio's tables: FNV-1a, 64 bits on every build, where std::hash is 32 where size_t is, so that two keys shared a decrypted buffer once in 2^32 pairs.
+	Poco::UInt64 hash = 14695981039346656037ull;
+	for (unsigned char c : *key) {
+		hash ^= c;
+		hash *= 1099511628211ull;
+	}
+	return Poco::NumberFormatter::formatHex(hash);
 }
 std::istream *encryption_filter::wrap(std::istream &source, const directive_t directive) const {
 	// Key is expected to have been passed in through the directive interface.
