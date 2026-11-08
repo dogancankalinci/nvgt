@@ -26,6 +26,9 @@ typedef struct
     ma_uint32 channels;         /* The first logical stream's, which MiniAudio reads every frame in (see miniaudio_ogg_link.h). */
     ma_uint64 cursor;           /* In frames given: the library's count runs ahead by the frames held. */
     ma_ogg_link_frames link;    /* Frames of a later logical stream of other channels. */
+    ma_uint64 silenceOwed;      /* Frames of silence to give before anything else: a hole's span, as a truncated file's missing part plays (see the read). */
+    ma_int64 holeFrom;          /* The library's place where a hole began, while inHole. */
+    ma_bool32 inHole;
 } ma_libopus;
 
 MA_API ma_result ma_libopus_init(ma_read_proc onRead, ma_seek_proc onSeek, ma_tell_proc onTell, void* pReadSeekTellUserData, const ma_decoding_backend_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_libopus* pOpus);

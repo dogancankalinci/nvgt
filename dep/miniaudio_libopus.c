@@ -128,6 +128,7 @@ row without a frame fail the read with MA_ERROR, as a guard against data with no
 (see held_decoder_read() in src/sound.cpp).
 */
 #define MA_LIBOPUS_MAX_HOLES 16
+#define MA_LIBOPUS_MAX_HOLE_FRAMES (48000 * 60) /* The most silence a hole is given; a jump past it is taken as pages placed wrong rather than lost. */
 
 static void ma_libopus_opened(ma_libopus* pOpus)
 {
@@ -339,8 +340,20 @@ MA_API ma_result ma_libopus_read_pcm_frames(ma_libopus* pOpus, void* pFramesOut,
             void* pHeld;
             int link;
             int linkChannels;
+            ogg_int64_t libraryPlace;
 
             framesRemaining = (frameCount - totalFramesRead);
+
+            if (pOpus->silenceOwed > 0) {
+                ma_uint64 framesSilent = (pOpus->silenceOwed < framesRemaining) ? pOpus->silenceOwed : framesRemaining;
+                if (pFramesOut != NULL) {
+                    ma_silence_pcm_frames(ma_offset_pcm_frames_ptr(pFramesOut, totalFramesRead, format, channels), framesSilent, format, channels);
+                }
+
+                pOpus->silenceOwed -= framesSilent;
+                totalFramesRead += framesSilent;
+                continue;
+            }
 
             if (pOpus->link.frameCount > 0 || pOpus->link.owes) {
                 ma_uint64 framesTaken;
@@ -376,6 +389,7 @@ MA_API ma_result ma_libopus_read_pcm_frames(ma_libopus* pOpus, void* pFramesOut,
             }
 
             link = -1;
+            libraryPlace = op_pcm_tell(of);
             if (format == ma_format_f32) {
                 libopusResult = op_read_float(of, (float*     )pHeld, (int)samplesToRead, &link);
             } else {
@@ -383,7 +397,25 @@ MA_API ma_result ma_libopus_read_pcm_frames(ma_libopus* pOpus, void* pFramesOut,
             }
 
             if (libopusResult == OP_HOLE && ++holes <= MA_LIBOPUS_MAX_HOLES) {
+                if (!pOpus->inHole && libraryPlace >= 0) {
+                    pOpus->inHole = MA_TRUE;
+                    pOpus->holeFrom = libraryPlace;
+                }
+
                 continue;
+            }
+
+            /*
+            Past a hole, as a page lost from a damaged file or a gap in a stream, libopusfile goes on from the next page, whose place
+            is later by what was lost: given as silence, ahead of what follows, so that the cursor keeps to the places seeks and the
+            length are counted in, as a truncated file's missing part plays.
+            */
+            if (libopusResult > 0 && pOpus->inHole) {
+                ogg_int64_t libraryAfter = op_pcm_tell(of);
+                pOpus->inHole = MA_FALSE;
+                if (libraryAfter >= 0 && libraryAfter - libopusResult > pOpus->holeFrom && libraryAfter - libopusResult - pOpus->holeFrom <= MA_LIBOPUS_MAX_HOLE_FRAMES) {
+                    pOpus->silenceOwed = (ma_uint64)(libraryAfter - libopusResult - pOpus->holeFrom);
+                }
             }
 
             if (libopusResult < 0) {
@@ -442,24 +474,47 @@ MA_API ma_result ma_libopus_read_pcm_frames(ma_libopus* pOpus, void* pFramesOut,
 }
 
 #if !defined(MA_NO_LIBOPUS)
-/* Reads frames on and drops them, by what libopusfile gives whatever the stream's channels. How many it read, fewer at the stream's end. */
-static ogg_int64_t ma_libopus_read_on(OggOpusFile* of, ogg_int64_t frameCount)
+/*
+Reads on to a place in libopusfile's count, dropping what it reads, by what it gives whatever the stream's channels, and past holes
+as a read goes past them. The place it got to: short of the one asked at the stream's end, or past it where a hole skipped over it;
+-1 where it can't tell.
+*/
+static ogg_int64_t ma_libopus_read_on(OggOpusFile* of, ogg_int64_t target)
 {
     float dropped[255 * 8];
-    ogg_int64_t framesDone = 0;
+    int holes = 0;
+    ogg_int64_t place = op_pcm_tell(of);
 
-    while (framesDone < frameCount) {
+    while (place >= 0 && place < target) {
         int channels = op_channel_count(of, -1);
         int room = (int)(sizeof(dropped) / sizeof(dropped[0])) / channels;
-        int framesRead = op_read_float(of, dropped, ((frameCount - framesDone < room) ? (int)(frameCount - framesDone) : room) * channels, NULL);
+        int framesRead = op_read_float(of, dropped, ((target - place < room) ? (int)(target - place) : room) * channels, NULL);
+        if (framesRead == OP_HOLE && ++holes <= MA_LIBOPUS_MAX_HOLES) {
+            place = op_pcm_tell(of);
+            continue;
+        }
+
         if (framesRead <= 0) {
             break;
         }
 
-        framesDone += framesRead;
+        holes = 0;
+        place = op_pcm_tell(of);
     }
 
-    return framesDone;
+    return place;
+}
+#endif
+
+#if !defined(MA_NO_LIBOPUS)
+/* A seek to a frame within a hole, read on to where the stream goes on: silence from the frame to there, as a read gives a hole. */
+static ma_result ma_libopus_seek_into_hole(ma_libopus* pOpus, ma_uint64 frameIndex, ogg_int64_t resumesAt)
+{
+    ma_ogg_link_frames_clear(&pOpus->link);
+    pOpus->inHole = MA_FALSE;
+    pOpus->silenceOwed = (ma_uint64)(resumesAt - (ogg_int64_t)frameIndex);
+    pOpus->cursor = frameIndex;
+    return MA_SUCCESS;
 }
 #endif
 
@@ -467,6 +522,13 @@ MA_API ma_result ma_libopus_seek_to_pcm_frame(ma_libopus* pOpus, ma_uint64 frame
 {
     if (pOpus == NULL) {
         return MA_INVALID_ARGS;
+    }
+
+    /* Within the silence still to come for a hole: only less of it. */
+    if (frameIndex >= pOpus->cursor && frameIndex - pOpus->cursor < pOpus->silenceOwed) {
+        pOpus->silenceOwed -= frameIndex - pOpus->cursor;
+        pOpus->cursor = frameIndex;
+        return MA_SUCCESS;
     }
 
     #if !defined(MA_NO_LIBOPUS)
@@ -485,31 +547,72 @@ MA_API ma_result ma_libopus_seek_to_pcm_frame(ma_libopus* pOpus, ma_uint64 frame
         longest packet, which needs no pre-roll either.
         */
         if (at >= 0 && (ogg_int64_t)frameIndex > at && (ogg_int64_t)frameIndex - at <= 5760) {
-            ogg_int64_t framesRead = ma_libopus_read_on((OggOpusFile*)pOpus->of, (ogg_int64_t)frameIndex - at);
-            if (framesRead < (ogg_int64_t)frameIndex - at) {
+            ogg_int64_t reached = ma_libopus_read_on((OggOpusFile*)pOpus->of, (ogg_int64_t)frameIndex);
+            if (reached == (ogg_int64_t)frameIndex) {
+                libopusResult = 0;
+            } else if (reached > (ogg_int64_t)frameIndex && reached - (ogg_int64_t)frameIndex <= MA_LIBOPUS_MAX_HOLE_FRAMES) {
+                return ma_libopus_seek_into_hole(pOpus, frameIndex, reached);
+            } else if (op_seekable((OggOpusFile*)pOpus->of)) {
                 /*
-                The stream ended first, which libopusfile then read to its end, while the cursor and the frames held stayed where
-                they were, so that it gave them and then nothing. A stream that can seek goes back to where it was, the frames held
-                still to come; one that can't has nothing left, and is at its end.
+                The stream ended first, or a hole skipped over the frame: libopusfile's own seek, which finds it by the pages' places,
+                or else back to where it was, the cursor and the frames held still saying so.
                 */
-                if (op_seekable((OggOpusFile*)pOpus->of) && op_pcm_seek((OggOpusFile*)pOpus->of, at) == 0) {
+                libopusResult = op_pcm_seek((OggOpusFile*)pOpus->of, (ogg_int64_t)frameIndex);
+                if (libopusResult != 0) {
+                    op_pcm_seek((OggOpusFile*)pOpus->of, at);
                     return MA_INVALID_ARGS;
                 }
-
+            } else {
+                /*
+                The stream ended first, which libopusfile then read to its end, while the cursor and the frames held stayed where they
+                were, so that it gave them and then nothing: one that can't seek has nothing left, and is at its end.
+                */
                 ma_ogg_link_frames_clear(&pOpus->link);
-                pOpus->cursor = (ma_uint64)(at + framesRead);
+                pOpus->inHole = MA_FALSE;
+                pOpus->silenceOwed = 0;
+                if (reached >= 0) {
+                    pOpus->cursor = (ma_uint64)reached;
+                }
+
                 return MA_INVALID_OPERATION;
             }
-
-            libopusResult = 0;
         } else if (total > 0 && frameIndex == (ma_uint64)total) {
             libopusResult = op_pcm_seek((OggOpusFile*)pOpus->of, total - 1);
-            if (libopusResult == 0 && ma_libopus_read_on((OggOpusFile*)pOpus->of, 1) < 1) {
+            if (libopusResult == 0 && ma_libopus_read_on((OggOpusFile*)pOpus->of, total) < total) {
                 op_pcm_seek((OggOpusFile*)pOpus->of, at >= 0 ? at : 0); /* Back where it was, as the cursor and the frames held still say. */
                 libopusResult = OP_EREAD;
             }
         } else {
             libopusResult = op_pcm_seek((OggOpusFile*)pOpus->of, (ogg_int64_t)frameIndex);
+
+            /*
+            A frame within a hole, where no page holds it, which libopusfile can't seek to: sought from a frame before the hole, at
+            most a minute or so before it, and read on through it, the rest of the hole given as silence, as a read gives it.
+            */
+            if (libopusResult != 0 && libopusResult != OP_ENOSEEK && libopusResult != OP_EINVAL) {
+                ogg_int64_t back;
+                for (back = 48000; back <= (ogg_int64_t)MA_LIBOPUS_MAX_HOLE_FRAMES * 2; back *= 2) {
+                    ogg_int64_t anchor = ((ogg_int64_t)frameIndex > back) ? (ogg_int64_t)frameIndex - back : 0;
+                    if (op_pcm_seek((OggOpusFile*)pOpus->of, anchor) == 0) {
+                        ogg_int64_t reached = ma_libopus_read_on((OggOpusFile*)pOpus->of, (ogg_int64_t)frameIndex);
+                        if (reached == (ogg_int64_t)frameIndex) {
+                            libopusResult = 0;
+                        } else if (reached > (ogg_int64_t)frameIndex && reached - (ogg_int64_t)frameIndex <= MA_LIBOPUS_MAX_HOLE_FRAMES) {
+                            return ma_libopus_seek_into_hole(pOpus, frameIndex, reached);
+                        }
+
+                        break;
+                    }
+
+                    if (anchor == 0) {
+                        break;
+                    }
+                }
+
+                if (libopusResult != 0 && at >= 0) {
+                    op_pcm_seek((OggOpusFile*)pOpus->of, at); /* Back where it was, as the cursor and the frames held still say. */
+                }
+            }
         }
 
         if (libopusResult != 0) {
@@ -523,6 +626,8 @@ MA_API ma_result ma_libopus_seek_to_pcm_frame(ma_libopus* pOpus, ma_uint64 frame
         }
 
         ma_ogg_link_frames_clear(&pOpus->link);
+        pOpus->inHole = MA_FALSE;
+        pOpus->silenceOwed = 0;
         pOpus->cursor = frameIndex;
 
         return MA_SUCCESS;
