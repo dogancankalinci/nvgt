@@ -386,16 +386,47 @@ MA_API void ma_libvorbis_uninit(ma_libvorbis* pVorbis, const ma_allocation_callb
     }
     #endif
 
+    ma_free(pVorbis->pPastHole, ma_ogg_link_frames_allocation_callbacks(&pVorbis->link));
     ma_ogg_link_frames_uninit(&pVorbis->link);
     ma_data_source_uninit(&pVorbis->ds);
     ma_free(pVorbis->vf, pAllocationCallbacks);
 }
 
 #if !defined(MA_NO_LIBVORBIS)
-/* A hole, as a page lost from a damaged file or a gap in a stream, begins at the library's place before the read that found it. */
+/* Room for frames read past a hole, in the decoder's format and channels, kept until its span is known; NULL without memory. */
+static void* ma_libvorbis_keep_past_hole(ma_libvorbis* pVorbis, ma_uint64 frameCount)
+{
+    size_t bytesPerFrame = ma_get_bytes_per_frame(pVorbis->format, pVorbis->channels);
+    size_t sizeInBytes;
+
+    if (pVorbis->pastHoleFrameCount == 0) {
+        pVorbis->pastHoleFrameOffset = 0;
+    }
+
+    sizeInBytes = (size_t)(pVorbis->pastHoleFrameOffset + pVorbis->pastHoleFrameCount + frameCount) * bytesPerFrame;
+    if (sizeInBytes > pVorbis->pastHoleCapInBytes) {
+        size_t newCap = (pVorbis->pastHoleCapInBytes * 2 > sizeInBytes) ? pVorbis->pastHoleCapInBytes * 2 : sizeInBytes;
+        void* pNew = ma_realloc(pVorbis->pPastHole, newCap, ma_ogg_link_frames_allocation_callbacks(&pVorbis->link));
+        if (pNew == NULL) {
+            return NULL;
+        }
+
+        pVorbis->pPastHole = pNew;
+        pVorbis->pastHoleCapInBytes = newCap;
+    }
+
+    return (ma_uint8*)pVorbis->pPastHole + (size_t)(pVorbis->pastHoleFrameOffset + pVorbis->pastHoleFrameCount) * bytesPerFrame;
+}
+
+/*
+A hole, as a page lost from a damaged file or a gap in a stream, begins at the library's place before the read that found it. Not
+before frames were given since the open, a seek or the start of a logical stream: there it is where a stream that can't seek was
+joined, as a radio is part way through a track, whose library place counts from 0 until its first page's end and then jumps to the
+page's, taken for what a hole lost, a minute of silence after the first page; as at each new logical stream of one.
+*/
 static void ma_libvorbis_hole_begins(ma_libvorbis* pVorbis, ogg_int64_t libraryPlace)
 {
-    if (!pVorbis->inHole && libraryPlace >= 0) {
+    if (pVorbis->linkStarted && !pVorbis->inHole && libraryPlace >= 0) {
         pVorbis->inHole = MA_TRUE;
         pVorbis->holeFrom = libraryPlace;
     }
@@ -403,15 +434,30 @@ static void ma_libvorbis_hole_begins(ma_libvorbis* pVorbis, ogg_int64_t libraryP
 
 /*
 Past a hole, libvorbisfile goes on from the next page, whose place is later by what was lost, but it counts on from before the hole
-until that page's end, where its place jumps to the page's: by what was lost, given there as silence ahead of what follows, so that
-the cursor keeps to the places seeks and the length are counted in, as a truncated file's missing part plays. Only within a logical
-stream at the decoder's rate, whose places count its frames. A count that doesn't jump within a few seconds lost nothing.
+until that page's end, where its place jumps to the page's: by what was lost, given as silence ahead of the frames read past the hole,
+which are kept till then (see ma_libvorbis_keep_past_hole()), so that the cursor keeps to the places seeks and the length are counted
+in, as a truncated file's missing part plays, and a seek into the hole finds what a read finds. Only within a logical stream at the
+decoder's rate, whose places count its frames. A count that doesn't jump within a few seconds lost nothing.
 */
 static void ma_libvorbis_hole_ends(ma_libvorbis* pVorbis, OggVorbis_File* vf, ogg_int64_t libraryPlace, long framesRead, const vorbis_info* pInfo)
 {
     ogg_int64_t libraryAfter;
 
-    if (!pVorbis->inHole || framesRead <= 0) {
+    if (framesRead <= 0) {
+        return;
+    }
+
+    /* Frames of a new logical stream: a hole before them was where it began. */
+    if (!pVorbis->linkStarted || vf->current_serialno != pVorbis->linkSerial) {
+        if (vf->current_serialno != pVorbis->linkSerial) {
+            pVorbis->inHole = MA_FALSE;
+        }
+
+        pVorbis->linkSerial = vf->current_serialno;
+        pVorbis->linkStarted = MA_TRUE;
+    }
+
+    if (!pVorbis->inHole) {
         return;
     }
 
@@ -497,6 +543,7 @@ MA_API ma_result ma_libvorbis_read_pcm_frames(ma_libvorbis* pVorbis, void* pFram
             void* pFramesOutHere;
             vorbis_info* pInfo;
             ogg_int64_t libraryPlace;
+            ma_bool32 keep;
 
             framesRemaining = (frameCount - totalFramesRead);
             pFramesOutHere = ma_offset_pcm_frames_ptr(pFramesOut, totalFramesRead, format, channels);
@@ -509,6 +556,19 @@ MA_API ma_result ma_libvorbis_read_pcm_frames(ma_libvorbis* pVorbis, void* pFram
 
                 pVorbis->silenceOwed -= framesSilent;
                 totalFramesRead += framesSilent;
+                continue;
+            }
+
+            if (pVorbis->pastHoleFrameCount > 0 && !pVorbis->inHole) {
+                size_t bytesPerFrame = ma_get_bytes_per_frame(format, channels);
+                ma_uint64 framesKept = (pVorbis->pastHoleFrameCount < framesRemaining) ? pVorbis->pastHoleFrameCount : framesRemaining;
+                if (pFramesOut != NULL) {
+                    memcpy(pFramesOutHere, (ma_uint8*)pVorbis->pPastHole + (size_t)pVorbis->pastHoleFrameOffset * bytesPerFrame, (size_t)framesKept * bytesPerFrame);
+                }
+
+                pVorbis->pastHoleFrameOffset += framesKept;
+                pVorbis->pastHoleFrameCount -= framesKept;
+                totalFramesRead += framesKept;
                 continue;
             }
 
@@ -539,6 +599,11 @@ MA_API ma_result ma_libvorbis_read_pcm_frames(ma_libvorbis* pVorbis, void* pFram
                     continue;
                 }
 
+                if (libvorbisResult <= 0 && pVorbis->inHole && pVorbis->pastHoleFrameCount > 0) {
+                    pVorbis->inHole = MA_FALSE; /* The stream ended or failed before its place jumped: what was kept past the hole is given as it came. */
+                    continue;
+                }
+
                 if (libvorbisResult < 0) {
                     result = MA_ERROR;  /* Error while decoding. */
                     break;
@@ -557,8 +622,24 @@ MA_API ma_result ma_libvorbis_read_pcm_frames(ma_libvorbis* pVorbis, void* pFram
                 }
 
                 holes = 0;
+                keep = pVorbis->inHole && (ma_uint32)pInfo->channels == channels && (ma_uint32)pInfo->rate == pVorbis->sampleRate && vf->current_serialno == pVorbis->linkSerial;
+                if (keep) {
+                    void* pKept = ma_libvorbis_keep_past_hole(pVorbis, (ma_uint64)libvorbisResult);
+                    if (pKept == NULL) {
+                        result = MA_OUT_OF_MEMORY;
+                        break;
+                    }
+
+                    ma_interleave_pcm_frames(format, channels, libvorbisResult, (const void**)ppFramesF32, pKept);
+                    pVorbis->pastHoleFrameCount += libvorbisResult;
+                }
+
                 ma_libvorbis_hole_ends(pVorbis, vf, libraryPlace, libvorbisResult, pInfo);
-                if ((ma_uint32)pInfo->channels == channels && (ma_uint32)pInfo->rate == pVorbis->sampleRate && pVorbis->silenceOwed == 0) {
+                if (keep) {
+                    continue;
+                }
+
+                if ((ma_uint32)pInfo->channels == channels && (ma_uint32)pInfo->rate == pVorbis->sampleRate && pVorbis->silenceOwed == 0 && pVorbis->pastHoleFrameCount == 0) {
                     ma_ogg_link_frames_forget_converter(&pVorbis->link); /* Given straight, never held: a later stream to convert starts afresh, not with the tail of one before this. */
                     ma_interleave_pcm_frames(format, channels, libvorbisResult, (const void**)ppFramesF32, pFramesOutHere);
                     totalFramesRead += libvorbisResult;
@@ -604,6 +685,11 @@ MA_API ma_result ma_libvorbis_read_pcm_frames(ma_libvorbis* pVorbis, void* pFram
                     continue;
                 }
 
+                if (libvorbisResult <= 0 && pVorbis->inHole && pVorbis->pastHoleFrameCount > 0) {
+                    pVorbis->inHole = MA_FALSE; /* The stream ended or failed before its place jumped: what was kept past the hole is given as it came. */
+                    continue;
+                }
+
                 if (libvorbisResult < 0) {
                     result = MA_ERROR;  /* Error while decoding. */
                     break;
@@ -621,7 +707,24 @@ MA_API ma_result ma_libvorbis_read_pcm_frames(ma_libvorbis* pVorbis, void* pFram
                 }
 
                 holes = 0;
+                keep = pVorbis->inHole && (ma_uint32)pInfo->channels == channels && (ma_uint32)pInfo->rate == pVorbis->sampleRate && vf->current_serialno == pVorbis->linkSerial;
+                if (keep) {
+                    long framesHere = libvorbisResult / (long)(sizeof(ma_int16) * pInfo->channels);
+                    void* pKept = ma_libvorbis_keep_past_hole(pVorbis, (ma_uint64)framesHere);
+                    if (pKept == NULL) {
+                        result = MA_OUT_OF_MEMORY;
+                        break;
+                    }
+
+                    memcpy(pKept, pHeld, (size_t)framesHere * sizeof(ma_int16) * channels);
+                    pVorbis->pastHoleFrameCount += framesHere;
+                }
+
                 ma_libvorbis_hole_ends(pVorbis, vf, libraryPlace, libvorbisResult / (long)(sizeof(ma_int16) * pInfo->channels), pInfo);
+                if (keep) {
+                    continue;
+                }
+
                 if ((ma_uint32)pInfo->channels == channels && (ma_uint32)pInfo->rate == pVorbis->sampleRate) {
                     ma_ogg_link_frames_hold(&pVorbis->link, libvorbisResult / (sizeof(ma_int16) * pInfo->channels), format, pInfo->channels, pInfo->rate);
                 } else if (ma_ogg_link_channels_usable(pInfo->channels) && pInfo->rate > 0) {
@@ -662,29 +765,16 @@ MA_API ma_result ma_libvorbis_read_pcm_frames(ma_libvorbis* pVorbis, void* pFram
 }
 
 #if !defined(MA_NO_LIBVORBIS)
-/* Reads on to a place in libvorbisfile's count, dropping what it reads, past holes as a read goes past them. The place it got to; -1 where it can't tell. */
-static ogg_int64_t ma_libvorbis_read_on(OggVorbis_File* vf, ogg_int64_t target)
+/* Puts the decoder at a frame of its own, the library just sought to it: nothing held, owed or kept, and the logical stream known. */
+static void ma_libvorbis_reset_at(ma_libvorbis* pVorbis, OggVorbis_File* vf, ma_uint64 frameIndex)
 {
-    int holes = 0;
-    ogg_int64_t place = ov_pcm_tell(vf);
-
-    while (place >= 0 && place < target) {
-        float** ppFrames;
-        long framesRead = ov_read_float(vf, &ppFrames, (int)((target - place < 4096) ? target - place : 4096), NULL);
-        if (framesRead == OV_HOLE && ++holes <= MA_LIBVORBIS_MAX_HOLES) {
-            place = ov_pcm_tell(vf);
-            continue;
-        }
-
-        if (framesRead <= 0) {
-            break;
-        }
-
-        holes = 0;
-        place = ov_pcm_tell(vf);
-    }
-
-    return place;
+    ma_ogg_link_frames_clear(&pVorbis->link);
+    pVorbis->inHole = MA_FALSE;
+    pVorbis->silenceOwed = 0;
+    pVorbis->pastHoleFrameCount = 0;
+    pVorbis->linkStarted = MA_TRUE;
+    pVorbis->linkSerial = vf->current_serialno;
+    pVorbis->cursor = frameIndex;
 }
 #endif
 
@@ -694,9 +784,13 @@ MA_API ma_result ma_libvorbis_seek_to_pcm_frame(ma_libvorbis* pVorbis, ma_uint64
         return MA_INVALID_ARGS;
     }
 
-    /* Within the silence still to come for a hole: only less of it. */
-    if (frameIndex >= pVorbis->cursor && frameIndex - pVorbis->cursor < pVorbis->silenceOwed) {
-        pVorbis->silenceOwed -= frameIndex - pVorbis->cursor;
+    /* Within the silence still to come for a hole, or the frames kept past it: only less of them. */
+    if (!pVorbis->inHole && frameIndex >= pVorbis->cursor && frameIndex - pVorbis->cursor < pVorbis->silenceOwed + pVorbis->pastHoleFrameCount) {
+        ma_uint64 skip = frameIndex - pVorbis->cursor;
+        ma_uint64 skipSilence = (skip < pVorbis->silenceOwed) ? skip : pVorbis->silenceOwed;
+        pVorbis->silenceOwed -= skipSilence;
+        pVorbis->pastHoleFrameOffset += skip - skipSilence;
+        pVorbis->pastHoleFrameCount -= skip - skipSilence;
         pVorbis->cursor = frameIndex;
         return MA_SUCCESS;
     }
@@ -706,31 +800,68 @@ MA_API ma_result ma_libvorbis_seek_to_pcm_frame(ma_libvorbis* pVorbis, ma_uint64
         OggVorbis_File* vf = (OggVorbis_File*)pVorbis->vf;
         ogg_int64_t target = ma_libvorbis_library_frame(pVorbis, frameIndex);
         ogg_int64_t at = ov_pcm_tell(vf);
-        int libvorbisResult = ov_pcm_seek(vf, target);
+        int libvorbisResult;
 
         /*
-        A frame within a hole, where no page holds it, which libvorbisfile can't seek to: sought from a frame before the hole, at most
-        a couple of minutes before it, and read on through it, the rest of the hole given as silence, as a read gives it. Only within a
+        libvorbisfile's own seek decodes on from the page before the frame and drops what it decodes, and when that crosses a hole it
+        counts on as if nothing were lost, so that it lands a page's span off, early in the file's audio, while telling the frame asked.
+        Sought to the page's start instead, which it tells exactly, the rest is read on through the decoder's own reads, which give a
+        hole's silence and the frames past it where they belong, as a read from the start does. Only within a logical stream at the
+        decoder's rate, whose places count its frames; otherwise its own seek.
+        */
+        if (ov_seekable(vf) && pVorbis->sampleRate > 0 && ov_pcm_seek_page(vf, target) == 0) {
+            ogg_int64_t page = ov_pcm_tell(vf);
+            vorbis_info* pInfo = ov_info(vf, -1);
+            if (page >= 0 && page <= target && pInfo != NULL && (ma_uint32)pInfo->rate == pVorbis->sampleRate && ma_libvorbis_library_frame(pVorbis, frameIndex - (ma_uint64)(target - page)) == page) {
+                ma_uint8 scratch[4096];
+                ma_uint64 chunk = sizeof(scratch) / ma_get_bytes_per_frame(pVorbis->format, pVorbis->channels);
+
+                ma_libvorbis_reset_at(pVorbis, vf, frameIndex - (ma_uint64)(target - page));
+                while (pVorbis->cursor < frameIndex && chunk > 0) {
+                    ma_uint64 framesRead = 0;
+                    ma_libvorbis_read_pcm_frames(pVorbis, scratch, ((frameIndex - pVorbis->cursor) < chunk) ? (frameIndex - pVorbis->cursor) : chunk, &framesRead);
+                    if (framesRead == 0) {
+                        break;
+                    }
+                }
+
+                if (pVorbis->cursor == frameIndex) {
+                    return MA_SUCCESS;
+                }
+            }
+        }
+
+        libvorbisResult = ov_pcm_seek(vf, target);
+
+        /*
+        Near a hole, libvorbisfile either refuses the frame, where no page holds it, or takes it and lands past it, at the end of the
+        first page after the hole, whose frames it decodes without knowing their places and drops. So the frame is found as a read finds
+        it: sought from a frame before the hole that libvorbisfile lands on exactly, a second to a couple of minutes before it, and read
+        on to through the decoder's own reads, which give the hole's silence and the frames past it where they belong. Only within a
         logical stream at the decoder's rate, whose places count its frames.
         */
-        if (libvorbisResult != 0 && libvorbisResult != OV_ENOSEEK && libvorbisResult != OV_EINVAL && ov_seekable(vf) && pVorbis->sampleRate > 0) {
+        if (((libvorbisResult == 0 && ov_pcm_tell(vf) != target) || (libvorbisResult != 0 && libvorbisResult != OV_ENOSEEK && libvorbisResult != OV_EINVAL)) && ov_seekable(vf) && pVorbis->sampleRate > 0) {
             ogg_int64_t back;
+            libvorbisResult = OV_EREAD;
             for (back = pVorbis->sampleRate; back <= (ogg_int64_t)pVorbis->sampleRate * MA_LIBVORBIS_MAX_HOLE_SECONDS * 2; back *= 2) {
                 ogg_int64_t anchor = (target > back) ? target - back : 0;
-                if (ov_pcm_seek(vf, anchor) == 0) {
-                    ogg_int64_t reached = ma_libvorbis_read_on(vf, target);
-                    vorbis_info* pInfo = ov_info(vf, -1);
-                    if (reached == target) {
-                        libvorbisResult = 0;
-                    } else if (reached > target && pInfo != NULL && (ma_uint32)pInfo->rate == pVorbis->sampleRate && reached - target <= (ogg_int64_t)MA_LIBVORBIS_MAX_HOLE_SECONDS * pInfo->rate) {
-                        ma_ogg_link_frames_clear(&pVorbis->link);
-                        pVorbis->inHole = MA_FALSE;
-                        pVorbis->silenceOwed = (ma_uint64)(reached - target);
-                        pVorbis->cursor = frameIndex;
-                        return MA_SUCCESS;
+                ma_uint64 anchorFrame = frameIndex - (ma_uint64)(target - anchor);
+                vorbis_info* pInfo;
+
+                if (ma_libvorbis_library_frame(pVorbis, anchorFrame) == anchor && ov_pcm_seek(vf, anchor) == 0 && ov_pcm_tell(vf) == anchor && (pInfo = ov_info(vf, -1)) != NULL && (ma_uint32)pInfo->rate == pVorbis->sampleRate) {
+                    ma_uint8 scratch[4096];
+                    ma_uint64 chunk = sizeof(scratch) / ma_get_bytes_per_frame(pVorbis->format, pVorbis->channels);
+
+                    ma_libvorbis_reset_at(pVorbis, vf, anchorFrame);
+                    while (pVorbis->cursor < frameIndex && chunk > 0) {
+                        ma_uint64 framesRead = 0;
+                        ma_libvorbis_read_pcm_frames(pVorbis, scratch, ((frameIndex - pVorbis->cursor) < chunk) ? (frameIndex - pVorbis->cursor) : chunk, &framesRead);
+                        if (framesRead == 0) {
+                            break;
+                        }
                     }
 
-                    break;
+                    return (pVorbis->cursor == frameIndex) ? MA_SUCCESS : MA_INVALID_ARGS; /* Short of it, the stream ended there, where the decoder is. */
                 }
 
                 if (anchor == 0) {
@@ -738,7 +869,7 @@ MA_API ma_result ma_libvorbis_seek_to_pcm_frame(ma_libvorbis* pVorbis, ma_uint64
                 }
             }
 
-            if (libvorbisResult != 0 && at >= 0) {
+            if (at >= 0) {
                 ov_pcm_seek(vf, at); /* Back where it was, as the cursor and the frames held still say. */
             }
         }
@@ -753,11 +884,7 @@ MA_API ma_result ma_libvorbis_seek_to_pcm_frame(ma_libvorbis* pVorbis, ma_uint64
             }
         }
 
-        ma_ogg_link_frames_clear(&pVorbis->link);
-        pVorbis->inHole = MA_FALSE;
-        pVorbis->silenceOwed = 0;
-        pVorbis->cursor = frameIndex;
-
+        ma_libvorbis_reset_at(pVorbis, vf, frameIndex);
         return MA_SUCCESS;
     }
     #else

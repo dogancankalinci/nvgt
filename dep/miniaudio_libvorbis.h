@@ -30,6 +30,12 @@ typedef struct
     ma_uint64 silenceOwed;      /* Frames of silence to give before anything else: a hole's span, as a truncated file's missing part plays (see the read). */
     ma_int64 holeFrom;          /* The library's place where a hole began, while inHole. */
     ma_bool32 inHole;
+    ma_bool32 linkStarted;      /* Frames were given since the open, a seek or the start of a logical stream, before which a hole is where a stream was joined, not a loss. */
+    long linkSerial;            /* That logical stream's serial number. */
+    void* pPastHole;            /* Frames read past a hole, in the decoder's format and channels, kept until the library's place jumps to tell what the hole lost, so that they come after its silence. */
+    size_t pastHoleCapInBytes;
+    ma_uint64 pastHoleFrameCount;
+    ma_uint64 pastHoleFrameOffset;
 } ma_libvorbis;
 
 MA_API ma_result ma_libvorbis_init(ma_read_proc onRead, ma_seek_proc onSeek, ma_tell_proc onTell, void* pReadSeekTellUserData, const ma_decoding_backend_config* pConfig, const ma_allocation_callbacks* pAllocationCallbacks, ma_libvorbis* pVorbis);
