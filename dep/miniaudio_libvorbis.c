@@ -151,6 +151,7 @@ without a frame fail the read with MA_ERROR, as a guard against data with nothin
 */
 #define MA_LIBVORBIS_MAX_HOLES 16
 #define MA_LIBVORBIS_MAX_HOLE_SECONDS 60 /* The most silence a hole is given; a jump past it is taken as pages placed wrong rather than lost. */
+#define MA_LIBVORBIS_HOLE_WAIT_SECONDS 10 /* The most kept past a hole, at the decoder's rate, waiting for the place to tell what it lost. */
 
 static void ma_libvorbis_opened(ma_libvorbis* pVorbis)
 {
@@ -420,7 +421,7 @@ static void* ma_libvorbis_keep_past_hole(ma_libvorbis* pVorbis, ma_uint64 frameC
 
 /*
 A hole, as a page lost from a damaged file or a gap in a stream, begins at the library's place before the read that found it. Not
-before frames were given since the open, a seek or the start of a logical stream: there it is where a stream that can't seek was
+before frames were given since the open or the start of a logical stream, as a seek counts as given: there it is where a stream that can't seek was
 joined, as a radio is part way through a track, whose library place counts from 0 until its first page's end and then jumps to the
 page's, taken for what a hole lost, a minute of silence after the first page; as at each new logical stream of one.
 */
@@ -470,10 +471,15 @@ static void ma_libvorbis_hole_ends(ma_libvorbis* pVorbis, OggVorbis_File* vf, og
     if (libraryAfter > libraryPlace + framesRead) {
         ogg_int64_t lost = libraryAfter - (libraryPlace + framesRead);
         pVorbis->inHole = MA_FALSE;
-        if ((ma_uint32)pInfo->rate == pVorbis->sampleRate && lost <= (ogg_int64_t)MA_LIBVORBIS_MAX_HOLE_SECONDS * pInfo->rate) {
-            pVorbis->silenceOwed = (ma_uint64)lost;
+        if ((ma_uint32)pInfo->rate == pVorbis->sampleRate && (ma_uint32)pInfo->channels == pVorbis->channels && lost <= (ogg_int64_t)MA_LIBVORBIS_MAX_HOLE_SECONDS * pInfo->rate) {
+            pVorbis->silenceOwed = (ma_uint64)lost; /* Only where the frames past the hole were kept, so that it comes before them. */
         }
-    } else if (libraryAfter - pVorbis->holeFrom > (ogg_int64_t)pInfo->rate * 10) {
+    } else if (libraryAfter < libraryPlace + framesRead || libraryAfter - pVorbis->holeFrom > (ogg_int64_t)MA_LIBVORBIS_HOLE_WAIT_SECONDS * (pVorbis->sampleRate < 384000 ? pVorbis->sampleRate : 384000) || pVorbis->pastHoleFrameCount > (ma_uint64)MA_LIBVORBIS_HOLE_WAIT_SECONDS * (pVorbis->sampleRate < 384000 ? pVorbis->sampleRate : 384000)) { /* A rate a header could claim at any size, bounded. */
+        /*
+        A count that went back, as pages placed wrong, or that didn't jump within a few seconds of the decoder's own rate, lost
+        nothing that can be told: the frames kept are given as they came. Kept on, they grew with the rest of the stream, all of it
+        decoded in one read.
+        */
         pVorbis->inHole = MA_FALSE;
     }
 }
@@ -825,9 +831,8 @@ MA_API ma_result ma_libvorbis_seek_to_pcm_frame(ma_libvorbis* pVorbis, ma_uint64
                     }
                 }
 
-                if (pVorbis->cursor == frameIndex) {
-                    return MA_SUCCESS;
-                }
+                /* Short of it, the stream ended or failed there, where the decoder now is, its cursor saying so; a seek that held_file can put back from. */
+                return (pVorbis->cursor == frameIndex) ? MA_SUCCESS : MA_INVALID_ARGS;
             }
         }
 
