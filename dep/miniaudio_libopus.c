@@ -542,6 +542,32 @@ MA_API ma_result ma_libopus_seek_to_pcm_frame(ma_libopus* pOpus, ma_uint64 frame
         int libopusResult;
 
         /*
+        A stream that can't seek: libopusfile counts its places from each logical stream's start there, while the cursor counts from
+        the whole stream's, so that a place it tells can't be set against a frame sought, and a frame far behind, in an earlier
+        logical stream, was taken for one a short way ahead. A short way forward is read on through the reads themselves, which give
+        holes and the frames held as they would; anything else, behind included, is refused. At the stream's end, the cursor says
+        where it is.
+        */
+        if (!op_seekable((OggOpusFile*)pOpus->of)) {
+            float dropped[255 * 8];
+            ma_uint64 chunk = (pOpus->channels > 0) ? (sizeof(dropped) / sizeof(dropped[0])) / pOpus->channels : 0;
+
+            if (frameIndex < pOpus->cursor || frameIndex - pOpus->cursor > 5760 || chunk == 0) {
+                return MA_INVALID_OPERATION;
+            }
+
+            while (pOpus->cursor < frameIndex) {
+                ma_uint64 framesRead = 0;
+                ma_libopus_read_pcm_frames(pOpus, dropped, ((frameIndex - pOpus->cursor) < chunk) ? (frameIndex - pOpus->cursor) : chunk, &framesRead);
+                if (framesRead == 0) {
+                    break;
+                }
+            }
+
+            return (pOpus->cursor == frameIndex) ? MA_SUCCESS : MA_INVALID_OPERATION;
+        }
+
+        /*
         libopusfile's seek a short way forward, under 90 ms, keeps what's left of the packet it decoded, which a read that took
         less than a packet leaves, so that those frames played as what was sought to. Read on rather than seek, to 120 ms, its
         longest packet, which needs no pre-roll either.
@@ -552,7 +578,7 @@ MA_API ma_result ma_libopus_seek_to_pcm_frame(ma_libopus* pOpus, ma_uint64 frame
                 libopusResult = 0;
             } else if (reached > (ogg_int64_t)frameIndex && reached - (ogg_int64_t)frameIndex <= MA_LIBOPUS_MAX_HOLE_FRAMES) {
                 return ma_libopus_seek_into_hole(pOpus, frameIndex, reached);
-            } else if (op_seekable((OggOpusFile*)pOpus->of)) {
+            } else {
                 /*
                 The stream ended first, or a hole skipped over the frame: libopusfile's own seek, which finds it by the pages' places,
                 or else back to where it was, the cursor and the frames held still saying so.
@@ -562,19 +588,6 @@ MA_API ma_result ma_libopus_seek_to_pcm_frame(ma_libopus* pOpus, ma_uint64 frame
                     op_pcm_seek((OggOpusFile*)pOpus->of, at);
                     return MA_INVALID_ARGS;
                 }
-            } else {
-                /*
-                The stream ended first, which libopusfile then read to its end, while the cursor and the frames held stayed where they
-                were, so that it gave them and then nothing: one that can't seek has nothing left, and is at its end.
-                */
-                ma_ogg_link_frames_clear(&pOpus->link);
-                pOpus->inHole = MA_FALSE;
-                pOpus->silenceOwed = 0;
-                if (reached >= 0) {
-                    pOpus->cursor = (ma_uint64)reached;
-                }
-
-                return MA_INVALID_OPERATION;
             }
         } else if (total > 0 && frameIndex == (ma_uint64)total) {
             libopusResult = op_pcm_seek((OggOpusFile*)pOpus->of, total - 1);
