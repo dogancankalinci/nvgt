@@ -1939,6 +1939,8 @@ static bool file_length_impossible(ma_decoder* decoder) {
 // In singleheader.cpp, where MiniAudio's decoders can be reached.
 ma_result nvgt_file_seek(const ma_data_source_vtable* vtable, ma_data_source* file, ma_uint64 frame, ma_bool32 can_seek);
 ma_uint64 nvgt_file_delay(const ma_data_source_vtable* vtable, ma_data_source* file);
+static bool pcm_fits_in_wav(unsigned int size, ma_format format, int channels);
+static int pcm_frame_size(ma_format format, int channels);
 extern "C" ma_bool32 nvgt_channel_weights(const ma_channel* map_in, ma_uint32 channels_in, const ma_channel* map_out, ma_uint32 channels_out, float** weights);
 // NVGT's weights for a channel converter between two maps, the defaults unless given (see nvgt_channel_weights()), kept for as long as the converter's config that apply() points at them.
 struct channel_weights {
@@ -5183,6 +5185,7 @@ public:
 		return load_special("::memory", g_memory_protocol_slot, memory_protocol::directive(buffer, size));
 	}
 	bool load_pcm(void *buffer, unsigned int size, ma_format format, int samplerate, int channels) override {
+		if (!pcm_fits_in_wav(size, format, channels)) return false; // Refused before the sound loaded goes, as for any other refusal here.
 		if (snd)
 			close_to_reload();
 		pcm_buffer.clear();
@@ -5226,7 +5229,7 @@ public:
 	}
 	bool stream_pcm(const void* data, unsigned int size_in_frames, ma_format format, unsigned int sample_rate, unsigned int channels, unsigned int buffer_size) override {
 		if (format != ma_format_unknown) {
-			if (!buffer_size) buffer_size = size_in_frames * 2;
+			if (!buffer_size) buffer_size = size_in_frames > UINT_MAX / 2? UINT_MAX : size_in_frames * 2; // Twice it, which wrapped in 32 bits past 2^31 frames to a ring of a frame or two the rest was queued through, a frame at a time.
 			if (!channels) channels = get_engine()->get_channels();
 			if (!buffer_size || channels > MA_MAX_CHANNELS) { // Nothing to size a buffer by, or more channels than a node can describe, as for a ring buffer: refused before the sound loaded already goes.
 				g_soundsystem_last_error = MA_INVALID_ARGS;
@@ -6290,6 +6293,14 @@ void set_sound_default_engine(audio_engine* engine) {
 	if (old) old->release(); // After the lock: destroying the engine waits for its processing callback, which can be asking for the default engine.
 }
 // The bytes in one frame of PCM, 0 for a format pcm_to_wav() can't write.
+// Whether PCM of this size fits a RIFF chunk's 32-bit size, as pcm_to_wav() writes it; MA_TOO_BIG otherwise, which the sum of its sizes wrapped to a few bytes in, failing as a bad file.
+static bool pcm_fits_in_wav(unsigned int size, ma_format format, int channels) {
+	const int frame_size = pcm_frame_size(format, channels);
+	const unsigned int data_size = frame_size? size - size % frame_size : size;
+	if ((unsigned long long)data_size + data_size % 2 <= 0xFFFFFFFFull - 36) return true;
+	g_soundsystem_last_error = MA_TOO_BIG;
+	return false;
+}
 static int pcm_frame_size(ma_format format, int channels) {
 	int frame_size = 0;
 	switch (format) {
@@ -6339,10 +6350,7 @@ bool sound::pcm_to_wav(const void *buffer, unsigned int size, ma_format format, 
 	if (!frame_size)
 		return false;
 	unsigned int data_size = size - size % frame_size; // Whole frames only.
-	if ((unsigned long long)data_size + data_size % 2 > 0xFFFFFFFFull - 36) { // More than a RIFF chunk's 32-bit size holds, which the sum below wrapped to a few bytes in, failing as a bad file.
-		g_soundsystem_last_error = MA_TOO_BIG;
-		return false;
-	}
+	if (!pcm_fits_in_wav(size, format, channels)) return false;
 	output.resize(44 + (size_t)data_size + data_size % 2); // RIFF pads an odd number of data bytes with one more.
 	if (write_pcm_as_wav(buffer, data_size, format, samplerate, channels, &output[0], output.size()))
 		return true;
