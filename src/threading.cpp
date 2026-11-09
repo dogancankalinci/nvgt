@@ -806,6 +806,10 @@ template <class T> void mutex_lock_ms(T* mutex, unsigned int ms) {
 template <class T> bool mutex_try_lock_ms(T* mutex, unsigned int ms) {
 	return mutex->tryLock(poco_ms(ms));
 }
+// mutex_lock(m, ms) and fast_mutex_lock(m, ms) gave the uint to Poco's ScopedLockWithUnlock(M&, long) as it was, so they still timed out at once for 2^31 ms and more there (4294967295 included) while another thread held the mutex.
+template <class L, class T> void script_scoped_lock_construct_ms(void* mem, T* target, unsigned int ms) {
+	script_scoped_lock_construct<L, T, long>(mem, target, poco_ms(ms));
+}
 bool thread_sleep(unsigned int ms) {
 	if (!Thread::current()) {
 		Thread::sleep(poco_ms(ms));
@@ -888,7 +892,7 @@ template <class T> void RegisterMutexType(asIScriptEngine* engine, const std::st
 	typedef script_scoped_lock<ScopedLockWithUnlock<T>, T> lock_type;
 	engine->RegisterObjectType(format("%s_lock", type).c_str(), sizeof(lock_type), asOBJ_VALUE | asGetTypeTraits<lock_type>());
 	engine->RegisterObjectBehaviour(format("%s_lock", type).c_str(), asBEHAVE_CONSTRUCT, format("void f(%s@ target)", type).c_str(), asFUNCTION((script_scoped_lock_construct<ScopedLockWithUnlock<T>, T>)), asCALL_CDECL_OBJFIRST);
-	if constexpr(!std::is_same<T, NamedMutex>::value) engine->RegisterObjectBehaviour(format("%s_lock", type).c_str(), asBEHAVE_CONSTRUCT, format("void f(%s@ target, uint milliseconds)", type).c_str(), asFUNCTION((script_scoped_lock_construct<ScopedLockWithUnlock<T>, T, unsigned int>)), asCALL_CDECL_OBJFIRST);
+	if constexpr(!std::is_same<T, NamedMutex>::value) engine->RegisterObjectBehaviour(format("%s_lock", type).c_str(), asBEHAVE_CONSTRUCT, format("void f(%s@ target, uint milliseconds)", type).c_str(), asFUNCTION((script_scoped_lock_construct_ms<ScopedLockWithUnlock<T>, T>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectBehaviour(format("%s_lock", type).c_str(), asBEHAVE_DESTRUCT, "void f()", asFUNCTION((script_scoped_lock_destruct<ScopedLockWithUnlock<T>, T>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(format("%s_lock", type).c_str(), _O("void unlock()"), asFUNCTION(script_scoped_lock_unlock<T>), asCALL_CDECL_OBJFIRST);
 }
