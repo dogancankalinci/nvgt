@@ -837,6 +837,43 @@ bool async_try_wait(async_result* result, unsigned int ms) {
 	return result->progress.tryWait(poco_ms(ms));
 }
 
+// mutex and fast_mutex keep which thread holds them and how many times, so that unlock() by a thread that doesn't hold one (it is unlocked, or another thread locked it) raises on every platform. Poco's unlock() went straight to the system: on Windows, LeaveCriticalSection by another thread while one held the mutex let a third thread in beside the holder, silently, and an unlock of an unlocked one did nothing; POSIX's recursive mutex raised "cannot unlock mutex" for both, and its non-recursive fast mutex unlocked it whoever held it. Locking is Poco's as before: recursive for mutex, and for fast_mutex where the system's is (Windows).
+template <class T> class script_mutex : public T {
+	std::atomic<std::thread::id> owner{}; // A thread compares it only with its own id, which only it stores.
+	unsigned int count = 0; // Changed only by the thread holding the mutex.
+	void acquired() {
+		if (count++ == 0) owner.store(std::this_thread::get_id(), std::memory_order_relaxed);
+	}
+public:
+	void lock() {
+		T::lock();
+		acquired();
+	}
+	void lock(long milliseconds) {
+		T::lock(milliseconds);
+		acquired();
+	}
+	bool tryLock() {
+		if (!T::tryLock()) return false;
+		acquired();
+		return true;
+	}
+	bool tryLock(long milliseconds) {
+		if (!T::tryLock(milliseconds)) return false;
+		acquired();
+		return true;
+	}
+	void unlock() {
+		// A mutex that isn't locked is left alone, as the documentation says; one held by another thread can't be unlocked here, on any
+		// platform (Windows let it through, which broke the other thread's mutual exclusion; POSIX Poco threw).
+		std::thread::id cur = owner.load(std::memory_order_relaxed);
+		if (cur == std::thread::id()) return;
+		if (cur != std::this_thread::get_id()) throw SystemException("cannot unlock mutex");
+		if (--count == 0) owner.store(std::thread::id(), std::memory_order_relaxed);
+		T::unlock();
+	}
+};
+
 template <class T> void RegisterMutexType(asIScriptEngine* engine, const std::string& type) {
 	angelscript_refcounted_register<T>(engine, type.c_str());
 	if constexpr(std::is_same<T, NamedMutex>::value) engine->RegisterObjectBehaviour(type.c_str(), asBEHAVE_FACTORY, format("%s@ m(const string&in name)", type).c_str(), asFUNCTION((angelscript_refcounted_factory<T, const std::string&>)), asCALL_CDECL);
@@ -888,8 +925,8 @@ void RegisterThreading(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod(_O("thread"), _O("bool get_running() const property"), asFUNCTION(thread_is_running), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(_O("thread"), _O("void start(thread_callback@ routine, dictionary@ args = null)"), asFUNCTION(thread_begin), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(_O("thread"), _O("void wake_up()"), asFUNCTION(thread_wake_up), asCALL_CDECL_OBJFIRST);
-	RegisterMutexType<Mutex>(engine, "mutex");
-	RegisterMutexType<FastMutex>(engine, "fast_mutex");
+	RegisterMutexType<script_mutex<Mutex>>(engine, "mutex");
+	RegisterMutexType<script_mutex<FastMutex>>(engine, "fast_mutex");
 	RegisterMutexType<NamedMutex>(engine, "named_mutex");
 	RegisterMutexType<SpinlockMutex>(engine, "spinlock_mutex");
 	angelscript_refcounted_register<RWLock>(engine, "rw_lock");
