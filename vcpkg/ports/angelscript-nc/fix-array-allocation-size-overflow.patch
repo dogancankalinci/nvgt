@@ -1,0 +1,25 @@
+--- a/sdk/angelscript/source/as_array.h
++++ b/sdk/angelscript/source/as_array.h
+@@ -205,6 +205,12 @@
+ 	T *tmp = 0;
+ 	if( numElements )
+ 	{
++		// ALTERED: a size whose bytes don't fit in a size_t is refused as out of memory. On 32-bit targets the product wrapped
++		// around (2^30 entries of 4 bytes made 0 bytes), so a small block, or the internal buffer, was taken for numElements
++		// entries, which the caller then wrote past: asEP_INIT_CALL_STACK_SIZE 119304648 made the context's call stack array
++		// 32 bytes long while it counted 1073741832 entries.
++		if( numElements > size_t(-1) / sizeof(T) )
++			return;
+ 		if( sizeof(T)*numElements <= sizeof(buf) )
+ 			// Use the internal buffer
+ 			tmp = reinterpret_cast<T*>(buf);
+@@ -290,6 +296,9 @@
+ 	if( numElements )
+ 	{
+ 		asASSERT(asQWORD(numElements) * sizeof(T) <= 2147483647);
++		// ALTERED: refused as in Allocate.
++		if( numElements > size_t(-1) / sizeof(T) )
++			return;
+ 		if( sizeof(T)*numElements <= sizeof(buf) )
+ 			// Use the internal buffer
+ 			tmp = reinterpret_cast<T*>(buf);

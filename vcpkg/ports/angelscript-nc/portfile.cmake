@@ -146,6 +146,7 @@ vcpkg_from_github(
         fix-collector-chains-across-the-list.patch
         fix-nesting-reserve-small-stacks.patch
         fix-call-stack-size-product.patch
+        fix-array-allocation-size-overflow.patch
 )
 
 vcpkg_cmake_configure(
