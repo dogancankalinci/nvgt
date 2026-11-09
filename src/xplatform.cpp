@@ -335,11 +335,14 @@ void android_permission_requests_shutdown() {
 bool show_android_toast(const std::string& message, int duration, int gravity, int x_offset, int y_offset) {
 	return SDL_ShowAndroidToast(message.c_str(), duration, gravity, x_offset, y_offset);
 }
+// SDL gives null when it can't get the path (a Java exception), which made a std::string from a null pointer (a crash): an empty string instead.
 std::string get_directory_appdata() {
-	return SDL_GetAndroidInternalStoragePath();
+	const char* path = SDL_GetAndroidInternalStoragePath();
+	return path ? path : "";
 }
 std::string get_directory_temp() {
-	return SDL_GetAndroidCachePath();
+	const char* path = SDL_GetAndroidCachePath();
+	return path ? path : "";
 }
 #endif
 void RegisterXplatform(asIScriptEngine* engine) {
