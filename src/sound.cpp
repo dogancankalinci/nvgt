@@ -5213,6 +5213,7 @@ public:
 			return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // As sound.open(null) says, which this didn't.
 		ma_format format = ma_format_from_angelscript_type(buffer->GetElementTypeId());
 		if (format == ma_format_unknown || !pcm_format_in_range(samplerate, channels)) return false;
+		if (!count_fits((unsigned long long)buffer->GetSize() * buffer->GetElementSize())) return false; // Past 4 GiB, which the 32-bit product wrapped to a few bytes, loaded as a sliver of the array, as the memory_buffer overload refuses it.
 		return load_pcm(buffer->GetBuffer(), buffer->GetSize() * buffer->GetElementSize(), format, samplerate, channels);
 	}
 	bool load_pcm_script_memory_buffer(script_memory_buffer* buffer, int samplerate, int channels) override {
