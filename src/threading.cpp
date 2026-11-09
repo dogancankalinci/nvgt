@@ -21,6 +21,7 @@
 #include <thread>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 #include <Poco/Event.h>
@@ -110,6 +111,32 @@ static void async_arg_failed(asIScriptContext* aCtx, const std::string& text) {
 		aCtx->SetException(text.c_str());
 }
 
+// The thread objects NVGT makes for the script: a script's thread objects, and the thread an async call gets when it isn't given a pool. script_thread_current tells them from the Thread object Poco keeps for any other thread by this list. It told them apart by angelscript_refcounted_get's magic word, read 8 bytes before the object: memory belonging to whatever holds Poco's object (in a pool's thread, the end of its name string, which libstdc++ never writes for a name of 16 or more characters), so a 0x1234abcd left there by freed memory made thread_current hand Poco's object to the script as one it could hold and release.
+static std::mutex& script_threads_mutex() {
+	static auto* m = new std::mutex; // Never destroyed, like pool_links_mutex below.
+	return *m;
+}
+static std::unordered_set<Thread*>& script_threads() {
+	static auto* s = new std::unordered_set<Thread*>;
+	return *s;
+}
+template <typename... A> static Thread* script_thread_new(A... args) {
+	Thread* thread = angelscript_refcounted_factory<Thread>(args...);
+	try {
+		std::lock_guard<std::mutex> lock(script_threads_mutex());
+		script_threads().insert(thread);
+	} catch (...) {
+		angelscript_refcounted_release<Thread>(thread);
+		throw;
+	}
+	return thread;
+}
+static bool is_script_thread(Thread* thread) {
+	std::lock_guard<std::mutex> lock(script_threads_mutex());
+	return script_threads().count(thread) != 0;
+}
+static void thread_release(Thread* thread);
+
 // We'll put the code for the highest level of nvgt's multithreading support on the top this time. This allows an nvgt user to write a line of code such as async<string> result(url_get, "https://nvgt.dev"); and after result.try_wait(ms) returns true, user can fetch result with result.value or opImplCast.
 class async_result : public RefCountedObject, public Runnable {
 	void* value;
@@ -128,12 +155,13 @@ public:
 	Event progress; // Public so that some functions in this object can be called directly from Angelscript such as wait and tryWait.
 	async_result(asITypeInfo* t) : value(nullptr), subtype(t), subtypeid(subtype->GetSubTypeId()), progress(Event::EVENT_MANUALRESET), task(nullptr), ctx(nullptr), returns_reference(false), succeeded(false) {}
 	~async_result() {
-		if (task) angelscript_refcounted_release<Thread>(task);
 		release_value_args();
 		if (value) {
 			if (subtypeid & asTYPEID_MASK_OBJECT) subtype->GetEngine()->ReleaseScriptObject(*(void**)value, subtype->GetSubType());
 			free(value);
 		}
+		// Last: run() can drop the last reference on the call's own thread, where the releases above can run script destructors, and thread_current there gave this object after it was freed.
+		if (task) thread_release(task);
 	}
 	void* get_value() {
 		if (!ctx) throw NullValueException("Object not initialized");
@@ -340,7 +368,7 @@ public:
 		try {
 			if (pool) pool->start(*this);
 			else {
-				task = angelscript_refcounted_factory<Thread>();
+				task = script_thread_new();
 				task->start(*this);
 			}
 		} catch (...) {
@@ -429,7 +457,7 @@ public:
 			if (args) args->Release();
 			if (func) func->Release();
 		}
-		if (thread) angelscript_refcounted_release<Thread>(thread);
+		if (thread) thread_release(thread);
 		asThreadCleanup();
 		delete this; // Poco wants us to keep these Runnable objects alive as long as the thread is running, meaning we must delete ourself from within the thread to avoid some other sort of cleanup machinery.
 		return;
@@ -438,7 +466,7 @@ public:
 	void discard() {
 		if (args) args->Release();
 		if (func) func->Release();
-		if (thread) angelscript_refcounted_release<Thread>(thread);
+		if (thread) thread_release(thread);
 		delete this;
 	}
 };
@@ -471,6 +499,10 @@ static void thread_release(Thread* thread) {
 		std::lock_guard<std::mutex> lock(pool_links_mutex());
 		pool_links().erase(thread);
 	}
+	{
+		std::lock_guard<std::mutex> lock(script_threads_mutex());
+		script_threads().erase(thread);
+	}
 	thread->~Thread();
 	free(rc);
 }
@@ -502,7 +534,7 @@ struct pool_thread_holder {
 static thread_local pool_thread_holder t_pool_thread;
 Thread* script_thread_current() {
 	Thread* thread = Thread::current();
-	if (!thread || angelscript_refcounted_get(thread)) return thread; // The main thread (null), or a thread the script made.
+	if (!thread || is_script_thread(thread)) return thread; // The main thread (null), or a thread the script made.
 	if (!t_pool_thread.stand_in) {
 		auto link = std::make_shared<pool_thread_link>();
 		link->real = thread;
@@ -844,8 +876,8 @@ void RegisterThreading(asIScriptEngine* engine) {
 	engine->RegisterGlobalFunction(_O("bool thread_sleep(uint ms)"), asFUNCTION(thread_sleep), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("thread@+ get_thread_current() property"), asFUNCTION(script_thread_current), asCALL_CDECL);
 	engine->RegisterFuncdef(_O("void thread_callback(dictionary@ args)"));
-	engine->RegisterObjectBehaviour(_O("thread"), asBEHAVE_FACTORY, _O("thread@ t()"), asFUNCTION(angelscript_refcounted_factory<Thread>), asCALL_CDECL);
-	engine->RegisterObjectBehaviour(_O("thread"), asBEHAVE_FACTORY, _O("thread@ t(const string&in name)"), asFUNCTION((angelscript_refcounted_factory<Thread, const std::string&>)), asCALL_CDECL);
+	engine->RegisterObjectBehaviour(_O("thread"), asBEHAVE_FACTORY, _O("thread@ t()"), asFUNCTION(script_thread_new<>), asCALL_CDECL);
+	engine->RegisterObjectBehaviour(_O("thread"), asBEHAVE_FACTORY, _O("thread@ t(const string&in name)"), asFUNCTION((script_thread_new<const std::string&>)), asCALL_CDECL);
 	engine->RegisterObjectMethod(_O("thread"), _O("int get_id() const property"), asFUNCTION(thread_get_id), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(_O("thread"), _O("void set_priority(thread_priority priority) property"), asFUNCTION(thread_set_priority), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(_O("thread"), _O("thread_priority get_priority() const property"), asFUNCTION(thread_get_priority), asCALL_CDECL_OBJFIRST);
