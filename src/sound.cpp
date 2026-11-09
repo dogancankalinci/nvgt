@@ -6292,7 +6292,6 @@ void set_sound_default_engine(audio_engine* engine) {
 	}
 	if (old) old->release(); // After the lock: destroying the engine waits for its processing callback, which can be asking for the default engine.
 }
-// The bytes in one frame of PCM, 0 for a format pcm_to_wav() can't write.
 // Whether PCM of this size fits a RIFF chunk's 32-bit size, as pcm_to_wav() writes it; MA_TOO_BIG otherwise, which the sum of its sizes wrapped to a few bytes in, failing as a bad file.
 static bool pcm_fits_in_wav(unsigned int size, ma_format format, int channels) {
 	const int frame_size = pcm_frame_size(format, channels);
@@ -6301,6 +6300,7 @@ static bool pcm_fits_in_wav(unsigned int size, ma_format format, int channels) {
 	g_soundsystem_last_error = MA_TOO_BIG;
 	return false;
 }
+// The bytes in one frame of PCM, 0 for a format pcm_to_wav() can't write.
 static int pcm_frame_size(ma_format format, int channels) {
 	int frame_size = 0;
 	switch (format) {
