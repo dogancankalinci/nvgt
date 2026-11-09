@@ -25,6 +25,7 @@
 #include <obfuscate.h>
 #include <scriptarray.h> 
 #include <chrono>
+#include <climits>
 #include <cstring>
 #include <ctime>
 #include <fstream>
@@ -446,62 +447,49 @@ std::string get_weekday_name(LocalDateTime &dt) {
 		return DateTimeFormat::WEEKDAY_NAMES[dt.dayOfWeek()];
 	return "";
 }
-/**
- * Either adds or subtracts a timespan from either a LocalDateTime or a DateTime.
- * Always returns boolean true.
-*/
-template <class t> bool add_timespan(t &dt, Timespan &timespan, bool negative) {
-	if (negative)
-		dt -= timespan;
-	else
-		dt += timespan;
-	return true;
+// Raised by the add_ methods below for a date they can't reach, as verify_date_time raises for an invalid date.
+static bool add_out_of_range() {
+	asIScriptContext* ctx = asGetActiveContext();
+	if (ctx) ctx->SetException("Invalid date/time.");
+	return false;
 }
 
 /**
  * Convenience methods for adding days, hours, minutes and seconds to a datetime or calendar.
+ * The span is the signed amount of units in 64 bits. It was abs(amount) units, subtracted for a negative amount, and abs(-2147483648) is -2147483648 (undefined, in practice), so add_seconds(-2147483648) went 68 years forward and add_minutes(-2147483648) 4083 years forward; and the microseconds of a span over about 106 million days or 2.5 billion hours, or their 100-nanosecond intervals in the date, didn't fit in 64 bits and wrapped to an unrelated span, which could land on a valid date. A span longer than the whole range of valid dates (Poco's, under 15000 years) raises; any other is added, and Poco raises when the result is out of range, as before.
 */
-#define make_add_units(x, a, b, c, d, e) \
-	template <class t> \
-	bool add_##x(t &dt, asINT32 amount) { \
-		if (amount == 0) { \
-			return false; \
-		} \
-		Timespan timespan(a, b, c, d, e); \
-		return add_timespan(dt, timespan, amount < 0); \
-	}
-make_add_units(days, abs(amount), 0, 0, 0, 0)
-make_add_units(hours, 0, abs(amount), 0, 0, 0)
-make_add_units(minutes, 0, 0, abs(amount), 0, 0)
-make_add_units(seconds, 0, 0, 0, abs(amount), 0)
+template <class t> bool add_units(t &dt, asINT32 amount, Timespan::TimeDiff unit) {
+	if (amount == 0)
+		return false;
+	const Timespan::TimeDiff limit = Timespan::TimeDiff(15000) * 366 * Timespan::DAYS / unit; // Its 100-nanosecond intervals added to any valid date's still fit in 64 bits.
+	if (amount > limit || amount < -limit)
+		return add_out_of_range();
+	dt += Timespan(Timespan::TimeDiff(amount) * unit);
+	return true;
+}
+template <class t> bool add_days(t &dt, asINT32 amount) { return add_units(dt, amount, Timespan::DAYS); }
+template <class t> bool add_hours(t &dt, asINT32 amount) { return add_units(dt, amount, Timespan::HOURS); }
+template <class t> bool add_minutes(t &dt, asINT32 amount) { return add_units(dt, amount, Timespan::MINUTES); }
+template <class t> bool add_seconds(t &dt, asINT32 amount) { return add_units(dt, amount, Timespan::SECONDS); }
 
+// Moves a date to the given year and month (counted from 1), keeping its day up to the end of that month (so February 29th of a year that has none becomes the 28th) and its time. The year is worked out in 64 bits and checked first: it was year() + amount in 32 bits, which add_years(2147483647) overflowed (2026 became 2025) and with add_years(-2147483648) gave a year Poco's assign() didn't refuse and left the date as it was; and add_months worked the year out in float, which for an amount near either end of the int range left a month past 12 (Poco's table of month lengths was read past its end) or overflowed.
+template <class t> bool move_to_month(t &dt, asINT64 year, int month) {
+	if (year < INT_MIN || year > INT_MAX || !DateTime::isValid(int(year), month, 1))
+		return add_out_of_range();
+	dt.assign(int(year), month, min(dt.day(), DateTime::daysOfMonth(int(year), month)), dt.hour(), dt.minute(), dt.second(), dt.millisecond(), dt.microsecond());
+	return true;
+}
 template <class t> bool add_years(t &dt, asINT32 amount) {
 	if (amount == 0)
 		return false;
-	asINT32 yearToAssign = dt.year() + amount;
-	// February 29th of a year that has none becomes the 28th, as add_months() keeps a day to the end of its month.
-	dt.assign(yearToAssign, dt.month(), min(dt.day(), DateTime::daysOfMonth(yearToAssign, dt.month())), dt.hour(), dt.minute(), dt.second(), dt.millisecond(), dt.microsecond());
-	return true;
+	return move_to_month(dt, asINT64(dt.year()) + amount, dt.month());
 }
 template <class t> bool add_months(t &dt, asINT32 amount) {
 	if (amount == 0)
 		return false;
-	asINT32 monthToAssign = dt.month() + amount;
-	asINT32 yearsToAdd = 0;
-	if (monthToAssign > 12) {
-		yearsToAdd = (monthToAssign - 1) / 12;
-		monthToAssign -= (yearsToAdd * 12);
-	} else if (monthToAssign <= 0) {
-		yearsToAdd = (int64_t)ceil(abs(monthToAssign) / 12.0f) * -1;
-		monthToAssign = (abs(yearsToAdd) * 12) - abs(monthToAssign);
-		if (monthToAssign == 0) {
-			monthToAssign = 12;
-			yearsToAdd -= 1;
-		}
-	}
-	asINT32 yearToAssign = dt.year() + yearsToAdd;
-	dt.assign(dt.year() + yearsToAdd, monthToAssign, min(dt.day(), DateTime::daysOfMonth(yearToAssign, monthToAssign)), dt.hour(), dt.minute(), dt.second(), dt.millisecond(), dt.microsecond());
-	return true;
+	asINT64 months = asINT64(dt.year()) * 12 + (dt.month() - 1) + amount; // Counted from January of year 0, negative before it.
+	asINT64 year = months >= 0 ? months / 12 : -((11 - months) / 12); // Rounded down.
+	return move_to_month(dt, year, int(months - year * 12) + 1);
 }
 /**
  * Computes the difference between two dates either in years, months, days, hours, minutes or seconds.
