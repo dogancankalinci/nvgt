@@ -395,6 +395,16 @@ MA_API void ma_libvorbis_uninit(ma_libvorbis* pVorbis, const ma_allocation_callb
 }
 
 #if !defined(MA_NO_LIBVORBIS)
+/* Lets go of the room for frames kept past a hole once none are left in it, unless it is small, rather than holding it for the decoder's life. */
+static void ma_libvorbis_let_go_of_kept(ma_libvorbis* pVorbis)
+{
+    if (pVorbis->pastHoleFrameCount == 0 && pVorbis->pastHoleCapInBytes > 1024 * 1024) {
+        ma_free(pVorbis->pPastHole, ma_ogg_link_frames_allocation_callbacks(&pVorbis->link));
+        pVorbis->pPastHole = NULL;
+        pVorbis->pastHoleCapInBytes = 0;
+    }
+}
+
 /* Room for frames read past a hole, in the decoder's format and channels, kept until its span is known; NULL without memory. */
 static void* ma_libvorbis_keep_past_hole(ma_libvorbis* pVorbis, ma_uint64 frameCount)
 {
@@ -408,6 +418,10 @@ static void* ma_libvorbis_keep_past_hole(ma_libvorbis* pVorbis, ma_uint64 frameC
     sizeInBytes = (size_t)(pVorbis->pastHoleFrameOffset + pVorbis->pastHoleFrameCount + frameCount) * bytesPerFrame;
     if (sizeInBytes > pVorbis->pastHoleCapInBytes) {
         size_t newCap = (pVorbis->pastHoleCapInBytes * 2 > sizeInBytes) ? pVorbis->pastHoleCapInBytes * 2 : sizeInBytes;
+        if (newCap > MA_LIBVORBIS_HOLE_WAIT_BYTES && newCap > sizeInBytes) {
+            newCap = (sizeInBytes > MA_LIBVORBIS_HOLE_WAIT_BYTES) ? sizeInBytes : MA_LIBVORBIS_HOLE_WAIT_BYTES; /* No doubling past the bound, which the hole ends at, a read past it at most. */
+        }
+
         void* pNew = ma_realloc(pVorbis->pPastHole, newCap, ma_ogg_link_frames_allocation_callbacks(&pVorbis->link));
         if (pNew == NULL) {
             return NULL;
@@ -604,11 +618,7 @@ MA_API ma_result ma_libvorbis_read_pcm_frames(ma_libvorbis* pVorbis, void* pFram
                 pVorbis->pastHoleFrameOffset += framesKept;
                 pVorbis->pastHoleFrameCount -= framesKept;
                 totalFramesRead += framesKept;
-                if (pVorbis->pastHoleFrameCount == 0 && pVorbis->pastHoleCapInBytes > 1024 * 1024) { /* Given all: not held for the decoder's life. */
-                    ma_free(pVorbis->pPastHole, ma_ogg_link_frames_allocation_callbacks(&pVorbis->link));
-                    pVorbis->pPastHole = NULL;
-                    pVorbis->pastHoleCapInBytes = 0;
-                }
+                ma_libvorbis_let_go_of_kept(pVorbis);
 
                 continue;
             }
@@ -825,6 +835,7 @@ static void ma_libvorbis_reset_at(ma_libvorbis* pVorbis, OggVorbis_File* vf, ma_
     pVorbis->inHole = MA_FALSE;
     pVorbis->silenceOwed = 0;
     pVorbis->pastHoleFrameCount = 0;
+    ma_libvorbis_let_go_of_kept(pVorbis);
     pVorbis->linkStarted = MA_TRUE;
     pVorbis->linkSerial = vf->current_serialno;
     pVorbis->cursor = frameIndex;
@@ -844,6 +855,7 @@ MA_API ma_result ma_libvorbis_seek_to_pcm_frame(ma_libvorbis* pVorbis, ma_uint64
         pVorbis->silenceOwed -= skipSilence;
         pVorbis->pastHoleFrameOffset += skip - skipSilence;
         pVorbis->pastHoleFrameCount -= skip - skipSilence;
+        ma_libvorbis_let_go_of_kept(pVorbis);
         pVorbis->cursor = frameIndex;
         return MA_SUCCESS;
     }

@@ -476,14 +476,18 @@ MA_API ma_result ma_libopus_read_pcm_frames(ma_libopus* pOpus, void* pFramesOut,
 #if !defined(MA_NO_LIBOPUS)
 /*
 Reads on to a place in libopusfile's count, dropping what it reads, by what it gives whatever the stream's channels, and past holes
-as a read goes past them. The place it got to: short of the one asked at the stream's end, or past it where a hole skipped over it;
--1 where it can't tell.
+as a read goes past them. The place it got to: short of the one asked at the stream's end, or on an error, which pError is given (0
+at the end), or past it where a hole skipped over it; -1 where it can't tell.
 */
-static ogg_int64_t ma_libopus_read_on(OggOpusFile* of, ogg_int64_t target)
+static ogg_int64_t ma_libopus_read_on(OggOpusFile* of, ogg_int64_t target, int* pError)
 {
     float dropped[255 * 8];
     int holes = 0;
     ogg_int64_t place = op_pcm_tell(of);
+
+    if (pError != NULL) {
+        *pError = 0;
+    }
 
     while (place >= 0 && place < target) {
         int channels = op_channel_count(of, -1);
@@ -495,6 +499,10 @@ static ogg_int64_t ma_libopus_read_on(OggOpusFile* of, ogg_int64_t target)
         }
 
         if (framesRead <= 0) {
+            if (pError != NULL) {
+                *pError = framesRead;
+            }
+
             break;
         }
 
@@ -573,7 +581,8 @@ MA_API ma_result ma_libopus_seek_to_pcm_frame(ma_libopus* pOpus, ma_uint64 frame
         longest packet, which needs no pre-roll either.
         */
         if (at >= 0 && (ogg_int64_t)frameIndex > at && (ogg_int64_t)frameIndex - at <= 5760) {
-            ogg_int64_t reached = ma_libopus_read_on((OggOpusFile*)pOpus->of, (ogg_int64_t)frameIndex);
+            int readError;
+            ogg_int64_t reached = ma_libopus_read_on((OggOpusFile*)pOpus->of, (ogg_int64_t)frameIndex, &readError);
             if (reached == (ogg_int64_t)frameIndex) {
                 libopusResult = 0;
             } else if (reached > (ogg_int64_t)frameIndex && reached - (ogg_int64_t)frameIndex <= MA_LIBOPUS_MAX_HOLE_FRAMES) {
@@ -586,12 +595,12 @@ MA_API ma_result ma_libopus_seek_to_pcm_frame(ma_libopus* pOpus, ma_uint64 frame
                 libopusResult = op_pcm_seek((OggOpusFile*)pOpus->of, (ogg_int64_t)frameIndex);
                 if (libopusResult != 0) {
                     op_pcm_seek((OggOpusFile*)pOpus->of, at);
-                    return MA_INVALID_ARGS;
+                    return (readError < 0 && readError != OP_HOLE) ? MA_ERROR : MA_INVALID_ARGS; /* A read that failed, or past what can be read. */
                 }
             }
         } else if (total > 0 && frameIndex == (ma_uint64)total) {
             libopusResult = op_pcm_seek((OggOpusFile*)pOpus->of, total - 1);
-            if (libopusResult == 0 && ma_libopus_read_on((OggOpusFile*)pOpus->of, total) < total) {
+            if (libopusResult == 0 && ma_libopus_read_on((OggOpusFile*)pOpus->of, total, NULL) < total) {
                 op_pcm_seek((OggOpusFile*)pOpus->of, at >= 0 ? at : 0); /* Back where it was, as the cursor and the frames held still say. */
                 libopusResult = OP_EREAD;
             }
@@ -607,13 +616,14 @@ MA_API ma_result ma_libopus_seek_to_pcm_frame(ma_libopus* pOpus, ma_uint64 frame
                 for (back = 48000; back <= (ogg_int64_t)MA_LIBOPUS_MAX_HOLE_FRAMES * 2; back *= 2) {
                     ogg_int64_t anchor = ((ogg_int64_t)frameIndex > back) ? (ogg_int64_t)frameIndex - back : 0;
                     if (op_pcm_seek((OggOpusFile*)pOpus->of, anchor) == 0) {
-                        ogg_int64_t reached = ma_libopus_read_on((OggOpusFile*)pOpus->of, (ogg_int64_t)frameIndex);
+                        int readError;
+                        ogg_int64_t reached = ma_libopus_read_on((OggOpusFile*)pOpus->of, (ogg_int64_t)frameIndex, &readError);
                         if (reached == (ogg_int64_t)frameIndex) {
                             libopusResult = 0;
                         } else if (reached > (ogg_int64_t)frameIndex && reached - (ogg_int64_t)frameIndex <= MA_LIBOPUS_MAX_HOLE_FRAMES) {
                             return ma_libopus_seek_into_hole(pOpus, frameIndex, reached);
                         } else if (reached >= 0 && reached < (ogg_int64_t)frameIndex) {
-                            libopusResult = OP_EINVAL; /* The stream ends before it, in a hole at its end: past what can be read, as Vorbis refuses it. */
+                            libopusResult = (readError < 0 && readError != OP_HOLE) ? readError : OP_EINVAL; /* A read that failed keeps its error; the stream's end before it, in a hole at its end, is past what can be read, as Vorbis refuses it. */
                         }
 
                         break;
