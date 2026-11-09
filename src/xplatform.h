@@ -46,6 +46,7 @@ typedef void* native_window_t;
 #endif
 
 bool running_on_mobile();
+void android_permission_requests_shutdown(); // Before the engine is shut down: see xplatform.cpp (nothing to do off Android).
 std::string get_font_path(const std::string& name);
 void register_native_tts(); // Actual function exists in either android.cpp, apple.mm, linux.cpp or win.cpp, of which only one will be built.
 #ifndef NVGT_STUB

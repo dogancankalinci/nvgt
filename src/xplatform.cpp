@@ -16,7 +16,11 @@
 #ifndef _WIN32
 #include <dlfcn.h>
 #endif
+#include <condition_variable>
+#include <mutex>
 #include <string>
+#include <unordered_set>
+#include <vector>
 #include <Poco/Clock.h>
 #include <Poco/Environment.h>
 #include <Poco/File.h>
@@ -193,6 +197,7 @@ bool request_android_permission(const std::string& permission, asIScriptFunction
 	if (callback) callback->Release();
 	return false;
 }
+void android_permission_requests_shutdown() {}
 bool show_android_toast(const std::string& message, int duration, int gravity, int x_offset, int y_offset) { return false; }
 std::string get_directory_appdata() {
 	return Path::configHome();
@@ -201,41 +206,105 @@ std::string get_directory_temp() {
 	return Path::temp();
 }
 #else
+// The answer to a request comes on the Java UI thread (SDL calls the callback from nativePermissionResult, out of a list SDL_Quit
+// doesn't clear), or at once on the requesting thread when the permission is already granted. It could come after the script had
+// ended and the engine was shut down (the user answering late, or Android cancelling the request when the activity finishes), and
+// the callback then asked a null g_ScriptEngine for a context and released a function the engine had freed; one answered during the
+// shut down ran while the engine was being destroyed. android_permission_requests_shutdown(), called before the engine goes, lets go
+// of the callbacks still waiting, aborts the ones running and waits for them; an answer after it only frees the request's data.
+struct android_permission_request_callback_data;
+struct android_permission_requests_state {
+	std::mutex mutex;
+	std::condition_variable idle;
+	std::unordered_set<android_permission_request_callback_data*> waiting; // With a callback, not answered yet.
+	std::unordered_set<asIScriptContext*> executing; // Contexts running a callback now.
+	int running = 0; // Callbacks between taking a context and letting go of their function.
+	bool engine_gone = false;
+};
+static android_permission_requests_state& android_permission_requests() {
+	static auto* state = new android_permission_requests_state; // Never destroyed: an answer can come during static destruction.
+	return *state;
+}
 struct android_permission_request_callback_data {
 	asIScriptFunction* func;
+	const bool with_callback; // func can't tell once android_permission_requests_shutdown() has let go of it.
 	std::string callback_data;
 	Event completed;
 	bool was_granted;
-	android_permission_request_callback_data(asIScriptFunction* func, const std::string& callback_data) : func(func), callback_data(callback_data), was_granted(false) {}
+	android_permission_request_callback_data(asIScriptFunction* func, const std::string& callback_data) : func(func), with_callback(func != nullptr), callback_data(callback_data), was_granted(false) {}
 	void execute(std::string permission, bool granted) {
 		was_granted = granted;
-		if (!func) {
+		if (!with_callback) {
 			completed.set();
 			return;
 		}
-		asIScriptContext* ctx = g_ScriptEngine->RequestContext();
-		if (!ctx || ctx->Prepare(func) < 0) goto done;
-		if (ctx->SetArgObject(0, &permission) < 0 || ctx->SetArgByte(1, granted) < 0 || ctx->SetArgObject(2, &callback_data) < 0) goto done;
-		ctx->Execute();
-		done:
-		if (ctx) g_ScriptEngine->ReturnContext(ctx); // None when the pool couldn't make one, which NVGT's ReturnContextCallback can't take.
-		if (func) func->Release();
+		android_permission_requests_state& state = android_permission_requests();
+		asIScriptContext* ctx = nullptr;
+		{
+			std::lock_guard<std::mutex> lock(state.mutex);
+			state.waiting.erase(this);
+			if (state.engine_gone) return; // android_permission_requests_shutdown() let go of func.
+			state.running++;
+			ctx = g_ScriptEngine->RequestContext();
+			if (ctx) state.executing.insert(ctx);
+		}
+		bool prepared = ctx && ctx->Prepare(func) >= 0 && ctx->SetArgObject(0, &permission) >= 0 && ctx->SetArgByte(1, granted) >= 0 && ctx->SetArgObject(2, &callback_data) >= 0;
+		if (prepared) {
+			std::lock_guard<std::mutex> lock(state.mutex);
+			prepared = !state.engine_gone; // An Abort() before Execute() is dropped by Prepare(): don't start one the shut down already asked to stop.
+		}
+		if (prepared) ctx->Execute();
+		if (ctx) {
+			{
+				std::lock_guard<std::mutex> lock(state.mutex);
+				state.executing.erase(ctx);
+			}
+			g_ScriptEngine->ReturnContext(ctx); // None when the pool couldn't make one, which NVGT's ReturnContextCallback can't take.
+		}
+		func->Release();
+		func = nullptr;
+		{
+			std::lock_guard<std::mutex> lock(state.mutex);
+			state.running--;
+		}
+		state.idle.notify_all();
 		completed.set();
 	}
 };
 void android_permission_request_callback(void* raw_data, const char* permission, bool granted) {
 	android_permission_request_callback_data* data = reinterpret_cast<android_permission_request_callback_data*>(raw_data);
 	// With a callback nothing waits for the answer, and the request's data was never freed: it is freed here once the callback has run. Without one, request_android_permission waits for the answer and frees it.
-	bool has_callback = data->func != nullptr;
+	bool has_callback = data->with_callback;
 	data->execute(permission, granted);
 	if (has_callback) delete data;
 }
 bool request_android_permission(const std::string& permission, asIScriptFunction* callback, const std::string& callback_data) {
 	android_permission_request_callback_data* data = new android_permission_request_callback_data(callback, callback_data);
+	android_permission_requests_state& state = android_permission_requests();
+	if (callback) {
+		bool engine_gone;
+		{
+			std::lock_guard<std::mutex> lock(state.mutex);
+			engine_gone = state.engine_gone;
+			if (!engine_gone) state.waiting.insert(data); // Before SDL is asked: the answer can come at once, or on the UI thread before SDL returns.
+		}
+		if (engine_gone) { // A script destructor run by the engine's shut down: its callback could never run.
+			callback->Release();
+			delete data;
+			return false;
+		}
+	}
 	bool result = SDL_RequestAndroidPermission(permission.c_str(), android_permission_request_callback, data);
 	// A request SDL couldn't submit never gets an answer (SDL calls no callback then): the call without a callback waited for one for good, and with one the data and the callback's reference were never let go of.
 	if (!result) {
-		if (callback) callback->Release();
+		if (callback) {
+			bool released;
+			{
+				std::lock_guard<std::mutex> lock(state.mutex);
+				released = state.waiting.erase(data) == 0; // android_permission_requests_shutdown() let go of it meanwhile.
+			}
+			if (!released) callback->Release();
+		}
 		delete data;
 		return false;
 	}
@@ -245,6 +314,23 @@ bool request_android_permission(const std::string& permission, asIScriptFunction
 		delete data;
 	}
 	return result;
+}
+void android_permission_requests_shutdown() {
+	android_permission_requests_state& state = android_permission_requests();
+	std::vector<asIScriptFunction*> callbacks;
+	{
+		std::lock_guard<std::mutex> lock(state.mutex);
+		state.engine_gone = true;
+		for (android_permission_request_callback_data* data : state.waiting) {
+			callbacks.push_back(data->func);
+			data->func = nullptr;
+		}
+		state.waiting.clear();
+		for (asIScriptContext* ctx : state.executing) ctx->Abort();
+	}
+	for (asIScriptFunction* func : callbacks) func->Release(); // Unlocked: a delegate's object can run a script destructor.
+	std::unique_lock<std::mutex> lock(state.mutex);
+	state.idle.wait(lock, [&state] { return state.running == 0; });
 }
 bool show_android_toast(const std::string& message, int duration, int gravity, int x_offset, int y_offset) {
 	return SDL_ShowAndroidToast(message.c_str(), duration, gravity, x_offset, y_offset);

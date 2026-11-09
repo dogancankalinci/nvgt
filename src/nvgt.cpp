@@ -349,6 +349,7 @@ protected:
 	#endif
 	void uninitialize() override {
 		g_shutting_down = true;
+		android_permission_requests_shutdown(); // A permission callback answered from now on must not run on the engine shut down below.
 		garbage_collect_stop_thread(); // Mode 3's collector thread, when the script ended without its module being discarded (preglobals() returning false, a failure): it collects on the engine shut down below.
 		Application::uninitialize();
 		#ifdef _WIN32
