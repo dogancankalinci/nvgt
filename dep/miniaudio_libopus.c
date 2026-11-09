@@ -612,6 +612,8 @@ MA_API ma_result ma_libopus_seek_to_pcm_frame(ma_libopus* pOpus, ma_uint64 frame
                             libopusResult = 0;
                         } else if (reached > (ogg_int64_t)frameIndex && reached - (ogg_int64_t)frameIndex <= MA_LIBOPUS_MAX_HOLE_FRAMES) {
                             return ma_libopus_seek_into_hole(pOpus, frameIndex, reached);
+                        } else if (reached >= 0 && reached < (ogg_int64_t)frameIndex) {
+                            libopusResult = OP_EINVAL; /* The stream ends before it, in a hole at its end: past what can be read, as Vorbis refuses it. */
                         }
 
                         break;
