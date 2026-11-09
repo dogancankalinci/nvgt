@@ -145,6 +145,7 @@ vcpkg_from_github(
         fix-nesting-stack-overflow.patch
         fix-collector-chains-across-the-list.patch
         fix-nesting-reserve-small-stacks.patch
+        fix-call-stack-size-product.patch
 )
 
 vcpkg_cmake_configure(

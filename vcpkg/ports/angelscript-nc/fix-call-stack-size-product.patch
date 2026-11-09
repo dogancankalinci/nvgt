@@ -1,0 +1,57 @@
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -65,6 +65,16 @@
+ 
+ BEGIN_AS_NAMESPACE
+ 
++// ALTERED: the call stack array's length for a number of call states, saturated at the last whole state an asUINT length holds.
++// asEP_MAX_CALL_STACK_SIZE and asEP_INIT_CALL_STACK_SIZE were multiplied by CALLSTACK_FRAME_SIZE in 32 bits, so 477218589 (2^32 / 9)
++// or more wrapped around: a limit of 477218589 calls became 5 array entries (every recursion stopped with a stack overflow 10 calls
++// deep, where the first growth was refused), and the initial size became small and unrelated.
++static asUINT CallStackLength(asUINT states)
++{
++	const asUINT maxStates = 0xFFFFFFFFu / CALLSTACK_FRAME_SIZE;
++	return (states > maxStates ? maxStates : states) * CALLSTACK_FRAME_SIZE;
++}
++
+ #if defined(AS_DEBUG)
+ 
+ class asCDebugStats
+@@ -827,7 +837,7 @@
+ 
+ 		// Set up the call stack too
+ 		if (m_callStack.GetCapacity() < m_engine->ep.initCallStackSize)
+-			m_callStack.AllocateNoConstruct(m_engine->ep.initCallStackSize * CALLSTACK_FRAME_SIZE, true);
++			m_callStack.AllocateNoConstruct(CallStackLength(m_engine->ep.initCallStackSize), true);
+ 	}
+ 
+ 	// Reset state
+@@ -1872,7 +1882,7 @@
+ 	// execution finished with the abandoned function's return value.
+ 	if (m_callStack.GetLength() + 2*CALLSTACK_FRAME_SIZE >= m_callStack.GetCapacity())
+ 	{
+-		if (m_engine->ep.maxCallStackSize > 0 && m_callStack.GetLength() >= m_engine->ep.maxCallStackSize*CALLSTACK_FRAME_SIZE)
++		if (m_engine->ep.maxCallStackSize > 0 && m_callStack.GetLength() >= CallStackLength(m_engine->ep.maxCallStackSize))
+ 		{
+ 			// The call stack is too big to grow further
+ 			// If an error occurs, no change to the context should be done
+@@ -2031,7 +2041,7 @@
+ 	asUINT oldLength = m_callStack.GetLength();
+     if (oldLength >= m_callStack.GetCapacity())
+     {
+-        if (m_engine->ep.maxCallStackSize > 0 && oldLength >= m_engine->ep.maxCallStackSize * CALLSTACK_FRAME_SIZE)
++        if (m_engine->ep.maxCallStackSize > 0 && oldLength >= CallStackLength(m_engine->ep.maxCallStackSize))
+         {
+ 			// The call stack is too big to grow further
+ 			// ALTERED: CallScriptFunction, the only caller that can get here, is called with the program pointer past the call
+@@ -2048,8 +2058,8 @@
+ 		asUINT states = oldLength / CALLSTACK_FRAME_SIZE / 2;
+ 		if( states < 10 ) states = 10;
+ 		asUINT newCapacity = oldLength + states * CALLSTACK_FRAME_SIZE;
+-		if( m_engine->ep.maxCallStackSize > 0 && newCapacity > m_engine->ep.maxCallStackSize * CALLSTACK_FRAME_SIZE )
+-			newCapacity = m_engine->ep.maxCallStackSize * CALLSTACK_FRAME_SIZE;
++		if( m_engine->ep.maxCallStackSize > 0 && newCapacity > CallStackLength(m_engine->ep.maxCallStackSize) )
++			newCapacity = CallStackLength(m_engine->ep.maxCallStackSize);
+ 		if( newCapacity > oldLength )
+ 			m_callStack.AllocateNoConstruct(newCapacity, true);
+ 		if( oldLength + CALLSTACK_FRAME_SIZE > m_callStack.GetCapacity() )
