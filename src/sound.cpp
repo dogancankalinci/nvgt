@@ -5235,13 +5235,11 @@ public:
 				g_soundsystem_last_error = MA_INVALID_ARGS;
 				return false;
 			}
+			unique_ptr<pcm_queue> made_queue = make_unique<pcm_queue>(); // Made before the sound loaded goes: a queue MiniAudio refuses, as one too big, closed it before refusing, as no other refusal here does.
+			if ((g_soundsystem_last_error = made_queue->init(format, channels, buffer_size)) != MA_SUCCESS) return false;
 			if (snd) close_to_reload();
 			if (!sample_rate) sample_rate = get_engine()->get_sample_rate();
-			pcm_stream = make_unique<pcm_queue>();
-			if ((g_soundsystem_last_error = pcm_stream->init(format, channels, buffer_size)) != MA_SUCCESS) {
-				pcm_stream.reset();
-				return false;
-			}
+			pcm_stream = std::move(made_queue);
 			ma_pcm_rb_set_sample_rate(&pcm_stream->rb, sample_rate);
 			// As load_special() makes a sound: not attached by MiniAudio, so without the graph lock, and handed to snd once made.
 			held_sound_ptr made(new held_sound());
