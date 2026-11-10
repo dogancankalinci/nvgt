@@ -147,9 +147,15 @@ float pathfinder::get_difficulty(int x, int y, int z, int parent_x, int parent_y
 	int _ds = solve_desperation; // see pathfinder::solve_desperation
 	if (_ds < 0 || _ds > 10) _ds = 0;
 	hashpoint pt(x, y, z);
-	hashpoint_float_map::iterator n = difficulty_cache[_ds].find(pt);
-	if (n != difficulty_cache[_ds].end())
-		return n->second;
+	// A callback that is given the parent (pathfinder_callback_ex, or the legacy one) can answer differently for each parent, so its answers
+	// aren't kept by point: the one for whichever parent asked first was given for every other, so a cell that can't be entered from one
+	// side was closed from every side, and find() found no path where there was one.
+	bool by_point = callback_mode == CALLBACK_SIMPLE;
+	if (by_point) {
+		hashpoint_float_map::iterator n = difficulty_cache[_ds].find(pt);
+		if (n != difficulty_cache[_ds].end())
+			return n->second;
+	}
 	if (abort)
 		return FLT_MAX;
 	asIScriptContext* ACtx = asGetActiveContext();
@@ -210,7 +216,7 @@ float pathfinder::get_difficulty(int x, int y, int z, int parent_x, int parent_y
 	if (v < 0)
 		v = 0;
 	float val = (v < 10 ? v : FLT_MAX);
-	difficulty_cache[_ds][pt] = val;
+	if (by_point) difficulty_cache[_ds][pt] = val;
 	if (new_context)
 		g_ScriptEngine->ReturnContext(ctx);
 	else
