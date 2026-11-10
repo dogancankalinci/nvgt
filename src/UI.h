@@ -108,11 +108,12 @@ public:
 	bool flash(unsigned int operation) { return SDL_FlashWindow(_window, (SDL_FlashOperation)operation); }
 	bool show_system_menu(int x, int y) { return SDL_ShowWindowSystemMenu(_window, x, y); }
 	bool set_icon(graphic* icon) { return icon && SDL_SetWindowIcon(_window, icon->get_surface()); }
-	bool get_position(int& x, int& y) const { return SDL_GetWindowPosition(_window, &x, &y); }
+	// &out parameters, set on every path: see graphics.cpp's getters.
+	bool get_position(int& x, int& y) const { x = y = 0; return SDL_GetWindowPosition(_window, &x, &y); }
 	bool set_position(int x, int y) { return SDL_SetWindowPosition(_window, x, y); }
-	bool get_size(int& w, int& h) const { return SDL_GetWindowSize(_window, &w, &h); }
+	bool get_size(int& w, int& h) const { w = h = 0; return SDL_GetWindowSize(_window, &w, &h); }
 	bool set_size(int w, int h) { return SDL_SetWindowSize(_window, w, h); }
-	bool get_size_in_pixels(int& w, int& h) const { return SDL_GetWindowSizeInPixels(_window, &w, &h); }
+	bool get_size_in_pixels(int& w, int& h) const { w = h = 0; return SDL_GetWindowSizeInPixels(_window, &w, &h); }
 	bool get_minimum_size(int& w, int& h) const { return SDL_GetWindowMinimumSize(_window, &w, &h); }
 	bool set_minimum_size(int w, int h) { return SDL_SetWindowMinimumSize(_window, w, h); }
 	bool get_maximum_size(int& w, int& h) const { return SDL_GetWindowMaximumSize(_window, &w, &h); }

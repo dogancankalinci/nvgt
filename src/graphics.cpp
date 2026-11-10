@@ -38,8 +38,10 @@ unsigned int graphic::get_blend_mode() const {
 	return (unsigned int)mode;
 }
 
+// The getters below give their &out parameters a value on every path: AngelScript hands them over uninitialized and copies them into
+// the script's variables whatever is returned, so a failure (a font that didn't load, a call SDL refuses) left the script stack bytes.
 bool graphic::get_color_mod(unsigned int& r, unsigned int& g, unsigned int& b) const {
-	Uint8 rv, gv, bv;
+	Uint8 rv = 0, gv = 0, bv = 0;
 	bool ok = SDL_GetSurfaceColorMod(_surface, &rv, &gv, &bv);
 	r = rv; g = gv; b = bv;
 	return ok;
@@ -119,7 +121,7 @@ bool graphics_texture::set_color_mod(unsigned int r, unsigned int g, unsigned in
 }
 
 bool graphics_texture::get_color_mod(unsigned int& r, unsigned int& g, unsigned int& b) const {
-	Uint8 rv, gv, bv;
+	Uint8 rv = 0, gv = 0, bv = 0;
 	bool ok = SDL_GetTextureColorMod(_texture, &rv, &gv, &bv);
 	r = rv; g = gv; b = bv;
 	return ok;
@@ -189,6 +191,7 @@ void text_font::clear_fallback_fonts() {
 }
 
 bool text_font::get_dpi(int& hdpi, int& vdpi) const {
+	hdpi = vdpi = 0;
 	if (!_font) return false;
 	return TTF_GetFontDPI(_font, &hdpi, &vdpi);
 }
@@ -201,27 +204,32 @@ graphic* text_font::get_glyph_image(unsigned int ch) const {
 }
 
 bool text_font::get_glyph_metrics(unsigned int ch, int& minx, int& maxx, int& miny, int& maxy, int& advance) const {
+	minx = maxx = miny = maxy = advance = 0;
 	if (!_font) return false;
 	return TTF_GetGlyphMetrics(_font, ch, &minx, &maxx, &miny, &maxy, &advance);
 }
 
 bool text_font::get_kerning_size(unsigned int prev_ch, unsigned int ch, int& kerning) const {
+	kerning = 0;
 	if (!_font) return false;
 	return TTF_GetGlyphKerning(_font, prev_ch, ch, &kerning);
 }
 
 bool text_font::get_string_size(const std::string& text, int& w, int& h) const {
-	if (!_font) { w = h = 0; return false; }
+	w = h = 0;
+	if (!_font) return false;
 	return TTF_GetStringSize(_font, text.c_str(), text.size(), &w, &h);
 }
 
 bool text_font::get_string_size_wrapped(const std::string& text, int wrap_width, int& w, int& h) const {
-	if (!_font) { w = h = 0; return false; }
+	w = h = 0;
+	if (!_font) return false;
 	return TTF_GetStringSizeWrapped(_font, text.c_str(), text.size(), wrap_width, &w, &h);
 }
 
 bool text_font::measure_string(const std::string& text, int max_width, int& measured_width, int& measured_length) const {
-	if (!_font) { measured_width = measured_length = 0; return false; }
+	measured_width = measured_length = 0;
+	if (!_font) return false;
 	size_t len = 0;
 	bool ok = TTF_MeasureString(_font, text.c_str(), text.size(), max_width, &measured_width, &len);
 	measured_length = (int)len;
@@ -297,17 +305,19 @@ graphics_renderer::~graphics_renderer() {
 }
 
 bool graphics_renderer::get_draw_color(unsigned int& r, unsigned int& g, unsigned int& b, unsigned int& a) const {
-	Uint8 rv, gv, bv, av;
+	Uint8 rv = 0, gv = 0, bv = 0, av = 0;
 	bool ok = SDL_GetRenderDrawColor(_renderer, &rv, &gv, &bv, &av);
 	r = rv; g = gv; b = bv; a = av;
 	return ok;
 }
 
 bool graphics_renderer::get_scale(float& sx, float& sy) const {
+	sx = sy = 0;
 	return SDL_GetRenderScale(_renderer, &sx, &sy);
 }
 
 bool graphics_renderer::get_vsync(int& vsync) const {
+	vsync = 0;
 	return SDL_GetRenderVSync(_renderer, &vsync);
 }
 
@@ -324,10 +334,12 @@ unsigned int graphics_renderer::get_draw_blend_mode() const {
 }
 
 bool graphics_renderer::get_output_size(int& w, int& h) const {
+	w = h = 0;
 	return SDL_GetRenderOutputSize(_renderer, &w, &h);
 }
 
 bool graphics_renderer::get_current_output_size(int& w, int& h) const {
+	w = h = 0;
 	return SDL_GetCurrentRenderOutputSize(_renderer, &w, &h);
 }
 
@@ -396,7 +408,8 @@ bool graphics_renderer::set_logical_presentation(int w, int h, unsigned int mode
 }
 
 bool graphics_renderer::get_logical_presentation(int& w, int& h, unsigned int& mode) const {
-	SDL_RendererLogicalPresentation m;
+	w = h = 0;
+	SDL_RendererLogicalPresentation m = SDL_LOGICAL_PRESENTATION_DISABLED;
 	bool ok = SDL_GetRenderLogicalPresentation(_renderer, &w, &h, &m);
 	mode = (unsigned int)m;
 	return ok;
@@ -408,7 +421,7 @@ bool graphics_renderer::set_viewport(int x, int y, int w, int h) {
 }
 
 bool graphics_renderer::get_viewport(int& x, int& y, int& w, int& h) const {
-	SDL_Rect r;
+	SDL_Rect r = {0, 0, 0, 0};
 	bool ok = SDL_GetRenderViewport(_renderer, &r);
 	x = r.x; y = r.y; w = r.w; h = r.h;
 	return ok;
@@ -420,7 +433,7 @@ bool graphics_renderer::set_clip_rect(int x, int y, int w, int h) {
 }
 
 bool graphics_renderer::get_clip_rect(int& x, int& y, int& w, int& h) const {
-	SDL_Rect r;
+	SDL_Rect r = {0, 0, 0, 0};
 	bool ok = SDL_GetRenderClipRect(_renderer, &r);
 	x = r.x; y = r.y; w = r.w; h = r.h;
 	return ok;
