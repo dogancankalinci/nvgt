@@ -841,7 +841,7 @@ bool async_try_wait(async_result* result, unsigned int ms) {
 	return result->progress.tryWait(poco_ms(ms));
 }
 
-// mutex and fast_mutex keep which thread holds them and how many times, so that unlock() by a thread that doesn't hold one (it is unlocked, or another thread locked it) raises on every platform. Poco's unlock() went straight to the system: on Windows, LeaveCriticalSection by another thread while one held the mutex let a third thread in beside the holder, silently, and an unlock of an unlocked one did nothing; POSIX's recursive mutex raised "cannot unlock mutex" for both, and its non-recursive fast mutex unlocked it whoever held it. Locking is Poco's as before: recursive for mutex, and for fast_mutex where the system's is (Windows).
+// mutex, fast_mutex, named_mutex and spinlock_mutex keep which thread holds them and how many times, so that unlock() by a thread that doesn't hold one (it is unlocked, or another thread locked it) raises on every platform. Poco's unlock() went straight to the system: on Windows, LeaveCriticalSection by another thread while one held the mutex let a third thread in beside the holder, silently, and an unlock of an unlocked one did nothing; POSIX's recursive mutex raised "cannot unlock mutex" for both, and its non-recursive fast mutex unlocked it whoever held it. Locking is Poco's as before: recursive for mutex, and for fast_mutex where the system's is (Windows). named_mutex and spinlock_mutex were Poco's own until round 45: another thread's unlock() of a spinlock_mutex let a third thread in beside the holder, and an unlock() of a named_mutex nobody here held did nothing on Windows but raised the count of the POSIX semaphore behind it, after which two holders got in.
 template <class T> class script_mutex : public T {
 	std::atomic<std::thread::id> owner{}; // A thread compares it only with its own id, which only it stores.
 	unsigned int count = 0; // Changed only by the thread holding the mutex.
@@ -849,6 +849,7 @@ template <class T> class script_mutex : public T {
 		if (count++ == 0) owner.store(std::this_thread::get_id(), std::memory_order_relaxed);
 	}
 public:
+	using T::T; // named_mutex's name.
 	void lock() {
 		T::lock();
 		acquired();
@@ -996,7 +997,7 @@ struct script_rw_write_hold : script_rw_hold {
 
 template <class T> void RegisterMutexType(asIScriptEngine* engine, const std::string& type) {
 	angelscript_refcounted_register<T>(engine, type.c_str());
-	if constexpr(std::is_same<T, NamedMutex>::value) engine->RegisterObjectBehaviour(type.c_str(), asBEHAVE_FACTORY, format("%s@ m(const string&in name)", type).c_str(), asFUNCTION((angelscript_refcounted_factory<T, const std::string&>)), asCALL_CDECL);
+	if constexpr(std::is_same<T, script_mutex<NamedMutex>>::value) engine->RegisterObjectBehaviour(type.c_str(), asBEHAVE_FACTORY, format("%s@ m(const string&in name)", type).c_str(), asFUNCTION((angelscript_refcounted_factory<T, const std::string&>)), asCALL_CDECL);
 	else {
 		engine->RegisterObjectBehaviour(type.c_str(), asBEHAVE_FACTORY, format("%s@ m()", type).c_str(), asFUNCTION(angelscript_refcounted_factory<T>), asCALL_CDECL);
 		engine->RegisterObjectMethod(type.c_str(), _O("void lock(uint milliseconds)"), asFUNCTION(mutex_lock_ms<T>), asCALL_CDECL_OBJFIRST);
@@ -1008,7 +1009,7 @@ template <class T> void RegisterMutexType(asIScriptEngine* engine, const std::st
 	typedef script_scoped_lock<ScopedLockWithUnlock<T>, T> lock_type;
 	engine->RegisterObjectType(format("%s_lock", type).c_str(), sizeof(lock_type), asOBJ_VALUE | asGetTypeTraits<lock_type>());
 	engine->RegisterObjectBehaviour(format("%s_lock", type).c_str(), asBEHAVE_CONSTRUCT, format("void f(%s@ target)", type).c_str(), asFUNCTION((script_scoped_lock_construct<ScopedLockWithUnlock<T>, T>)), asCALL_CDECL_OBJFIRST);
-	if constexpr(!std::is_same<T, NamedMutex>::value) engine->RegisterObjectBehaviour(format("%s_lock", type).c_str(), asBEHAVE_CONSTRUCT, format("void f(%s@ target, uint milliseconds)", type).c_str(), asFUNCTION((script_scoped_lock_construct_ms<ScopedLockWithUnlock<T>, T>)), asCALL_CDECL_OBJFIRST);
+	if constexpr(!std::is_same<T, script_mutex<NamedMutex>>::value) engine->RegisterObjectBehaviour(format("%s_lock", type).c_str(), asBEHAVE_CONSTRUCT, format("void f(%s@ target, uint milliseconds)", type).c_str(), asFUNCTION((script_scoped_lock_construct_ms<ScopedLockWithUnlock<T>, T>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectBehaviour(format("%s_lock", type).c_str(), asBEHAVE_DESTRUCT, "void f()", asFUNCTION((script_scoped_lock_destruct<ScopedLockWithUnlock<T>, T>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(format("%s_lock", type).c_str(), _O("void unlock()"), asFUNCTION(script_scoped_lock_unlock<T>), asCALL_CDECL_OBJFIRST);
 }
@@ -1047,8 +1048,8 @@ void RegisterThreading(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod(_O("thread"), _O("void wake_up()"), asFUNCTION(thread_wake_up), asCALL_CDECL_OBJFIRST);
 	RegisterMutexType<script_mutex<Mutex>>(engine, "mutex");
 	RegisterMutexType<script_mutex<FastMutex>>(engine, "fast_mutex");
-	RegisterMutexType<NamedMutex>(engine, "named_mutex");
-	RegisterMutexType<SpinlockMutex>(engine, "spinlock_mutex");
+	RegisterMutexType<script_mutex<NamedMutex>>(engine, "named_mutex");
+	RegisterMutexType<script_mutex<SpinlockMutex>>(engine, "spinlock_mutex");
 	angelscript_refcounted_register<script_rw_lock>(engine, "rw_lock");
 	engine->RegisterObjectBehaviour(_O("rw_lock"), asBEHAVE_FACTORY, _O("rw_lock@ l()"), asFUNCTION(angelscript_refcounted_factory<script_rw_lock>), asCALL_CDECL);
 	engine->RegisterObjectMethod(_O("rw_lock"), _O("void read_lock()"), asMETHOD(script_rw_lock, read_lock), asCALL_THISCALL);
