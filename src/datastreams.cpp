@@ -521,6 +521,7 @@ UInt64 datastream::read_7bit_encoded() {
 	return integer;
 }
 void datastream::read_7bit_encoded(UInt64& integer) {
+	integer = 0; // An &out parameter, see read(T&).
 	if (_istr)
 		r->read7BitEncoded(integer);
 }
@@ -587,8 +588,12 @@ void datastream::read_binary_string(std::string& value) {
 		std::swap(value, converted);
 	}
 }
+// value is an &out parameter, which AngelScript hands over uninitialized and copies into the script's variable whatever happens: a
+// stream that isn't open, or binary data that ended, left it as it was, so ds >> x at the end of the data gave x whatever the
+// temporary held (a stale value, or stack bytes). It reads as 0 then, as read_int() and the others do.
 template <typename T>
 datastream& datastream::read(T& value) {
+	if constexpr(!std::is_same<T, std::string>::value) value = 0;
 	if (!r) return *this;
 	if (skip_eof && eof()) stream()->clear();
 	if constexpr(std::is_same<T, std::string>::value) {
