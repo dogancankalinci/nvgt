@@ -887,6 +887,8 @@ void RegisterPocostuff(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("var", "var& opAssign(const var&in other)", asFUNCTION(poco_var_assign_var), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("var", "var& opPostInc()", asFUNCTION(poco_var_inc), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("var", "var& opPostDec()", asFUNCTION(poco_var_dec), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("var", "var& opPreInc()", asFUNCTION(poco_var_inc), asCALL_CDECL_OBJFIRST); // The same function: ++v as v++, which already gave the new value.
+	engine->RegisterObjectMethod("var", "var& opPreDec()", asFUNCTION(poco_var_dec), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("var", "int opCmp(const var&in other) const", asFUNCTION(poco_var_cmp), asCALL_CDECL_OBJFIRST);
 	RegisterPocoVarType<int>(engine, "int");
 	RegisterPocoVarType<unsigned int>(engine, "uint");
