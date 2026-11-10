@@ -10,6 +10,7 @@
  * 3. This notice may not be removed or altered from any source distribution.
 */
 
+#include <new>
 #include <angelscript.h>
 #include <Poco/Format.h>
 #include <Poco/RefCountedObject.h>
@@ -78,6 +79,7 @@ struct angelscript_refcounted {
 };
 template <class T> inline void* angelscript_refcounted_create() {
 	angelscript_refcounted* rc = (angelscript_refcounted*) malloc(sizeof(angelscript_refcounted) + sizeof(T)); // We don't use the new operator here because we don't want the constructor of the containing object to fire until the user's factory function.
+	if (!rc) throw std::bad_alloc(); // The header was written through the null pointer.
 	rc->refcount = 1;
 	rc->magic = 0x1234abcd;
 	return (char*)rc + sizeof(angelscript_refcounted);
@@ -111,9 +113,27 @@ template <class T> inline void angelscript_refcounted_register(asIScriptEngine* 
 	engine->RegisterObjectBehaviour(type, asBEHAVE_RELEASE, "void f()", asFUNCTION(angelscript_refcounted_release<T>), asCALL_CDECL_OBJFIRST);
 }
 
+// Frees a block from angelscript_refcounted_create() whose object was never made. A constructor that throws (a Poco assertion, as for datetime(2024, 13, 1), a websocket that can't connect) left its block allocated: a script catching the exception leaked one with each try.
+template <class T> inline void angelscript_refcounted_discard(void* mem) { free((char*)mem - sizeof(angelscript_refcounted)); }
 // This is a template constructor that generally stops one from needing to create factory functions for each object that uses this angelscript_refcounted mechanism.
-template <class T, typename... A> T* angelscript_refcounted_factory(A... args) { return new (angelscript_refcounted_create<T>()) T(args...); }
+template <class T, typename... A> T* angelscript_refcounted_factory(A... args) {
+	void* mem = angelscript_refcounted_create<T>();
+	try {
+		return new (mem) T(args...);
+	} catch (...) {
+		angelscript_refcounted_discard<T>(mem);
+		throw;
+	}
+}
 // And similarly, a common trait of value typed objects is returning new versions of themselves, so handle functions that do that here too.
-template <class T, auto F, typename... A> T* angelscript_refcounted_duplicating_method(T* obj, A... args) { return new (angelscript_refcounted_create<T>()) T((obj->*F)(args...)); }
+template <class T, auto F, typename... A> T* angelscript_refcounted_duplicating_method(T* obj, A... args) {
+	void* mem = angelscript_refcounted_create<T>();
+	try {
+		return new (mem) T((obj->*F)(args...));
+	} catch (...) {
+		angelscript_refcounted_discard<T>(mem);
+		throw;
+	}
+}
 
 void RegisterPocostuff(asIScriptEngine* engine);
