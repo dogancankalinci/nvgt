@@ -1,0 +1,21 @@
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -2216,6 +2216,18 @@
+ 
+ 				if( dt.IsPrimitive() )
+ 				{
++					// ALTERED: the temporary of a primitive is cleared first, as an object's is constructed and a handle's cleared
++					// below: it is copied into the argument's variable after the call whatever the function did, and a function
++					// that didn't assign it (a registered function on a failure path, a script function returning early) gave the
++					// variable what the slot held, the value of an earlier temporary or stack bytes.
++					asCByteCode tmpBC(engine);
++					if( dt.GetSizeInMemoryDWords() > 1 )
++						tmpBC.InstrSHORT_QW(asBC_SetV8, (short)offset, 0);
++					else
++						tmpBC.InstrSHORT_DW(asBC_SetV4, (short)offset, 0);
++					tmpBC.AddCode(&ctx->bc);
++					ctx->bc.AddCode(&tmpBC);
++
+ 					ctx->type.SetVariable(dt, offset, true);
+ 					PushVariableOnStack(ctx, true);
+ 				}

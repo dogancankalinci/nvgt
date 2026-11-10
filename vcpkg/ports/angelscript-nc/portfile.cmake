@@ -147,6 +147,7 @@ vcpkg_from_github(
         fix-nesting-reserve-small-stacks.patch
         fix-call-stack-size-product.patch
         fix-array-allocation-size-overflow.patch
+        fix-out-reference-temporary-cleared.patch
 )
 
 vcpkg_cmake_configure(
