@@ -1148,15 +1148,17 @@ int PragmaCallback(const string &pragmaText, CScriptBuilder &builder, void* /*us
 		if (tokenClass == asTC_UNKNOWN) return -1;
 		pos += length;
 	}
+	if (cleanText.empty()) return -1; // "#pragma" with nothing after it: erasing the leading space of an empty string ran memmove over SIZE_MAX bytes with libstdc++.
 	cleanText.erase(cleanText.begin());
+	// Each name is matched with the space after it: "#pragma document" with nothing after it threw out_of_range (reported as "invalid string position"), and "#pragma documentation x" added the asset "tion x".
 	if (cleanText.starts_with("include ")) {
 		cleanText.erase(0, 8);
 		g_IncludeDirs.insert(g_IncludeDirs.begin(), cleanText);
 	} else if (cleanText.starts_with("stub ")) g_stub = cleanText.substr(5);
 	else if (cleanText.starts_with("embed ")) embed_pack(cleanText.substr(6), Path(cleanText.substr(6)).getFileName());
 	else if (cleanText.starts_with("asset $")) add_game_asset_to_bundle(cleanText.substr(7), GAME_ASSET_UNCOMPRESSED);
-	else if (cleanText.starts_with("asset")) add_game_asset_to_bundle(cleanText.substr(6));
-	else if (cleanText.starts_with("document")) add_game_asset_to_bundle(cleanText.substr(9), GAME_ASSET_DOCUMENT);
+	else if (cleanText.starts_with("asset ")) add_game_asset_to_bundle(cleanText.substr(6));
+	else if (cleanText.starts_with("document ")) add_game_asset_to_bundle(cleanText.substr(9), GAME_ASSET_DOCUMENT);
 	else if (cleanText.starts_with("plugin ")) {
 		string plugin_name = cleanText.substr(7);
 		if (find(g_pending_plugins.begin(), g_pending_plugins.end(), plugin_name) == g_pending_plugins.end())
@@ -1180,7 +1182,7 @@ int PragmaCallback(const string &pragmaText, CScriptBuilder &builder, void* /*us
 			value = trim(cleanText.substr(sep + 1));
 		}
 		config.setString(key, value);
-	} else if (cleanText.starts_with("namespace")) {
+	} else if (cleanText.starts_with("namespace ")) {
 		string ns = cleanText.substr(10);
 		int space = ns.rfind(" ");
 		if (space == string::npos) return -1;
