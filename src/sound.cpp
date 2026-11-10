@@ -1199,8 +1199,7 @@ public:
 		}
 	}
 	void get_listener_cone(unsigned int index, float *inner_radians, float *outer_radians, float *outer_gain) const override {
-		if (!engine) return;
-		bool listening = index < ma_engine_get_listener_count(&*engine); // MiniAudio gave 0 for a listener it doesn't have.
+		bool listening = engine && index < ma_engine_get_listener_count(&*engine); // MiniAudio gave 0 for a listener it doesn't have; every out value is written, as the other getters write theirs.
 		if (inner_radians) *inner_radians = listening? listener_cones[index].inner.load() : 0;
 		if (outer_radians) *outer_radians = listening? listener_cones[index].outer.load() : 0;
 		if (outer_gain) *outer_gain = listening? listener_cones[index].outer_gain.load() : 0;
