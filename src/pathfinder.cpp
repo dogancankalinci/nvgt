@@ -259,7 +259,8 @@ CScriptArray* pathfinder::find(int start_x, int start_y, int start_z, int end_x,
 	must_reset = false;
 	total_cost = 0;
 	if (!callback) return array;
-	if (search_range > 0 && allow_diagonals && hypot(end_x - start_x, end_y - start_y, end_z - start_z) > search_range || search_range > 0 && !allow_diagonals && (abs(end_x - start_x) + abs(end_y - start_y) + abs(end_z - start_z)) > search_range) return array;
+	// The differences in 64 bits: as ints they overflowed for coordinates far apart (undefined behaviour), as did the range test in AdjacentCost for a search_range near the int limit.
+	if (search_range > 0 && allow_diagonals && hypot(double(end_x) - start_x, double(end_y) - start_y, double(end_z) - start_z) > search_range || search_range > 0 && !allow_diagonals && (std::abs(int64_t(end_x) - start_x) + std::abs(int64_t(end_y) - start_y) + std::abs(int64_t(end_z) - start_z)) > search_range) return array;
 	if (automatic_reset || !cache) reset();
 	callback_data = data;
 	if (data) data->AddRef();
@@ -350,7 +351,7 @@ void pathfinder::AdjacentCost(void* node, micropather::MPVector<micropather::Sta
 		void* st = encode_state(nx, ny, nz, solve_desperation);
 		if (!st)
 			continue;
-		if (search_range > 0 && (nx < start_x - search_range || nx > start_x + search_range || ny < start_y - search_range || ny > start_y + search_range || nz < start_z - search_range || nz > start_z + search_range)) {
+		if (search_range > 0 && (std::abs(int64_t(nx) - start_x) > search_range || std::abs(int64_t(ny) - start_y) > search_range || std::abs(int64_t(nz) - start_z) > search_range)) {
 			/*
 			micropather::StateCost cost={st, FLT_MAX};
 			neighbors->push_back(cost);
