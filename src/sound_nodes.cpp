@@ -163,6 +163,25 @@ class passthrough_node_impl : public effect_node_impl, public virtual passthroug
 };
 passthrough_node* passthrough_node::create(audio_engine* engine) { return new passthrough_node_impl(engine); }
 
+// What rewiring lets go of on this thread, released once its outermost release_scope ends, after every lock taken within it: a reference let go of can be the last, as to a reverb3d's mixer, whose spatializer lets go of reverb3ds that take a reverb node's send lock, which a reverb3d's set_reverb() holds while it takes a chain's lock. Per thread rather than per chain, so that a chain rewired within another chain's rewiring, or under a send lock, releases only after those locks too.
+static thread_local int t_release_depth = 0;
+static thread_local std::vector<audio_node*> t_deferred_releases;
+struct release_scope {
+	release_scope() { t_release_depth++; }
+	~release_scope() {
+		if (--t_release_depth > 0) return;
+		std::vector<audio_node*> releasing;
+		releasing.swap(t_deferred_releases);
+		for (audio_node* n : releasing) n->release(); // Any a release lets go of in turn go through scopes of their own.
+	}
+	release_scope(const release_scope&) = delete;
+	release_scope& operator=(const release_scope&) = delete;
+};
+static void release_later(audio_node* n) {
+	if (!n) return;
+	if (t_release_depth > 0) t_deferred_releases.push_back(n);
+	else n->release();
+}
 class audio_node_chain_impl : public passthrough_node_impl, public virtual audio_node_chain {
 	std::vector<audio_node*> nodes;
 	std::vector<unsigned int> input_buses; // For each node, the input bus the node before it feeds, which every rewiring attaches to again.
@@ -173,23 +192,13 @@ class audio_node_chain_impl : public passthrough_node_impl, public virtual audio
 protected:
 	// Every change and read of the chain's nodes and endpoint takes this, as one script thread can change a sound's chain while another changes it too, such as a global panner change rewiring every spatializer. Recursive because the changes call one another; never taken on the audio thread, which only reads the MiniAudio graph.
 	mutable std::recursive_mutex chain_mutex;
-	// The rewiring below runs under the chain lock, and what it lets go of is released only once the outermost rewiring ends, after that lock: a reference let go of can be the last, as to a reverb3d's mixer, whose spatializer lets go of reverb3ds that take the send lock of a reverb node, which a reverb3d's set_reverb() holds while it takes this chain's lock.
-	int rewire_depth = 0; // Under chain_mutex.
-	std::vector<audio_node*> deferred_releases; // Under chain_mutex.
+	// A chain's rewiring runs under its lock, and what it lets go of is released once the thread's outermost release_scope ends, after every lock it took (see release_scope).
 	struct rewire_scope {
 		audio_node_chain_impl &chain;
-		rewire_scope(audio_node_chain_impl &c) : chain(c) {
-			chain.chain_mutex.lock();
-			chain.rewire_depth++;
-		}
-		~rewire_scope() {
-			std::vector<audio_node*> releasing;
-			if (--chain.rewire_depth == 0) releasing.swap(chain.deferred_releases);
-			chain.chain_mutex.unlock();
-			for (audio_node *n : releasing) n->release();
-		}
+		release_scope releases; // Ends after the destructor's unlock.
+		rewire_scope(audio_node_chain_impl &c) : chain(c) { chain.chain_mutex.lock(); }
+		~rewire_scope() { chain.chain_mutex.unlock(); }
 	};
-	void release_later(audio_node *n) { if (n) deferred_releases.push_back(n); }
 	// Holds what a node's output goes into until the rewiring ends, as attaching or detaching that output lets go of it, which a node the script attached elsewhere by hand could hold the last reference to.
 	void hold_destination(audio_node *n) {
 		if (!n) return;
@@ -247,9 +256,9 @@ public:
 		// The node before is attached to the new one first, on the new node's input_bus_index, which a node that takes no input, as a sound or data source, refuses with nothing changed; the new node is then attached to the next one on the bus the next one was fed on, and when the new node can't feed it, as with another channel count, the node before goes back to it.
 		unsigned int next_bus = bus_at(new_idx);
 		hold_destination(prev? prev : this);
-		hold_destination(node);
 		if (prev && !prev->attach_output_bus(0, node, input_bus_index)) return false;
 		else if (!prev && !audio_node_impl::attach_output_bus(0, node, input_bus_index)) return false;
+		hold_destination(node); // Only once the node was taken, which refuses one that would loop the chain under the graph lock before the node's own lock is taken here, as a chain's is: taken first, a refused nest took the two chains' locks in the order another thread rewiring around it takes them the other way, hanging both.
 		if (next && !node->attach_output_bus(0, next, next_bus)) {
 			ma_result error = g_soundsystem_last_error;
 			if (prev) prev->attach_output_bus(0, next, next_bus);
@@ -902,6 +911,7 @@ static bool reverb_free_for(audio_node* verb, audio_node* target, int own_uses) 
 }
 // A reverb3d lets go of its reverb. The last of them takes a node that isn't a mixer off its destination under the node's send lock, the count's entry kept until then, so that a reverb3d taking the node up meanwhile counts itself into that entry and sends under the same lock, after, rather than being cut off. A let-go finding the entry gone or made anew has nothing to take off: the one before took the node off, or a new user sends it now. A mixer keeps its parent, as a mixer of the script's.
 static void reverb_let_go(audio_node* verb) {
+	release_scope releases; // What a chain taken off its destination lets go of, after the send lock.
 	std::shared_ptr<std::recursive_mutex> send;
 	{
 		std::lock_guard<std::mutex> lock(g_reverb_users_mutex);
@@ -956,6 +966,7 @@ public:
 	}
 	// Sends a reverb that isn't a mixer, counted, on under its send lock (see reverb_let_go()), letting go of what it went into before after that lock (see reverb_destination()).
 	void send_counted(audio_node* verb, const std::shared_ptr<std::recursive_mutex>& send) {
+		release_scope releases; // What a chain sent on lets go of, after the send lock.
 		audio_node* previous;
 		{
 			std::lock_guard<std::recursive_mutex> send_lock(*send);
@@ -1357,7 +1368,7 @@ private:
 	bool parameters_valid;
 	int preferred_panner_id, preferred_attenuator_id;
 	int current_panner_id, current_attenuator_id;
-	// Its rewiring runs in the chain's rewire_scope, releasing what it lets go of after the outermost one ends (see audio_node_chain_impl).
+	// Its rewiring runs in the chain's rewire_scope, what it lets go of released once the thread's outermost release_scope ends (see release_scope).
 	void position_reverb() {
 		rewire_scope scope(*this);
 		if (!reverb_attachment) return;
