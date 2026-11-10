@@ -1114,7 +1114,9 @@ reverb3d* reverb3d::create(audio_node* reverb, mixer* destination, audio_engine*
 	if (destination) return new reverb3d_impl(e, reverb, destination);
 	// Without a destination, a reverb other reverb3ds use goes on where they send it, rather than into a mixer of this one's own that took it from them (see reverb_free_for()).
 	if (reverb && reverb_users_of(reverb) > 0) {
-		audio_node* into = reverb_goes_into(reverb);
+		// A reverb that isn't a mixer goes where its attachment does, which the last other reverb3d sharing it can let go of on another thread meanwhile, outside the topology lock: held until the new reverb3d holds its own.
+		struct holding { audio_node* node; ~holding() { if (node) node->release(); } } destination_held{dynamic_cast<mixer*>(reverb)? nullptr : reverb_destination(reverb)};
+		audio_node* into = destination_held.node? destination_held.node : reverb_goes_into(reverb);
 		if (mixer* theirs = dynamic_cast<mixer*>(into)) return new reverb3d_impl(e, reverb, theirs);
 		if (into == e->get_endpoint()) return new reverb3d_impl(e, reverb, nullptr);
 	}
