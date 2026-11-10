@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <atomic>
 #include <climits>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -30,7 +31,6 @@
 #include <Poco/NamedMutex.h>
 #include <Poco/RefCountedObject.h>
 #include <Poco/Runnable.h>
-#include <Poco/RWLock.h>
 #include <Poco/ScopedLock.h>
 #include <Poco/Thread.h>
 #include <Poco/ThreadPool.h>
@@ -878,6 +878,110 @@ public:
 	}
 };
 
+// rw_lock is NVGT's own, so that it behaves the same on every platform. It was Poco's RWLock, which on Android (RWLock_Android.h) is one plain
+// mutex: two readers excluded each other, try_read_lock failed while another thread read, and a thread taking a read lock twice, or two reading
+// threads waiting for each other, deadlocked. On Windows and with glibc an unlock() with nothing locked broke it for good: no write lock got in
+// again. Readers share it and a writer has it alone. A thread waiting to write keeps new readers out, as on Windows, so that readers can't keep a
+// writer waiting for ever, but a thread that already reads gets in again (it would wait for itself; on Windows it did while a writer waited).
+// Locking it in a way that would wait for itself for ever (a read or write lock while holding the write lock, the write lock while reading)
+// raises, as glibc did for a write lock taken twice. unlock() lets go of the thread's write lock or one of its read locks; a thread holding
+// none lets go of the write lock or a read lock another thread holds, as Windows did (a lock handed to another thread to unlock), and with
+// nothing locked it does nothing, as mutex.unlock() does.
+class script_rw_lock {
+	typedef std::vector<std::pair<std::thread::id, unsigned int>> reader_list;
+	std::mutex state_mutex;
+	std::condition_variable changed;
+	std::thread::id writer; // The thread holding the write lock, std::thread::id() when none does.
+	unsigned int writers_waiting = 0;
+	reader_list readers; // The threads holding read locks, each with how many it holds.
+	reader_list::iterator reader(std::thread::id thread) {
+		return std::find_if(readers.begin(), readers.end(), [thread](const reader_list::value_type& r) { return r.first == thread; });
+	}
+public:
+	void read_lock() {
+		std::thread::id me = std::this_thread::get_id();
+		std::unique_lock<std::mutex> lock(state_mutex);
+		if (writer == me) throw SystemException("cannot lock reader/writer lock");
+		reader_list::iterator r = reader(me);
+		if (r != readers.end()) {
+			if (r->second == UINT_MAX) throw SystemException("cannot lock reader/writer lock");
+			r->second++;
+			return;
+		}
+		changed.wait(lock, [this] { return writer == std::thread::id() && writers_waiting == 0; });
+		readers.emplace_back(me, 1);
+	}
+	bool try_read_lock() {
+		std::thread::id me = std::this_thread::get_id();
+		std::lock_guard<std::mutex> lock(state_mutex);
+		if (writer != std::thread::id()) return false;
+		reader_list::iterator r = reader(me);
+		if (r != readers.end()) {
+			if (r->second == UINT_MAX) return false;
+			r->second++;
+			return true;
+		}
+		if (writers_waiting) return false;
+		readers.emplace_back(me, 1);
+		return true;
+	}
+	void write_lock() {
+		std::thread::id me = std::this_thread::get_id();
+		std::unique_lock<std::mutex> lock(state_mutex);
+		if (writer == me || reader(me) != readers.end()) throw SystemException("cannot lock reader/writer lock");
+		writers_waiting++;
+		changed.wait(lock, [this] { return writer == std::thread::id() && readers.empty(); });
+		writers_waiting--;
+		writer = me;
+	}
+	bool try_write_lock() {
+		std::lock_guard<std::mutex> lock(state_mutex);
+		if (writer != std::thread::id() || !readers.empty()) return false;
+		writer = std::this_thread::get_id();
+		return true;
+	}
+	// Lets go of the write lock or a read lock the thread holds, or with others_too, when it holds none, of another thread's.
+	void release(std::thread::id thread, bool others_too) {
+		std::lock_guard<std::mutex> lock(state_mutex);
+		reader_list::iterator r = reader(thread);
+		if (writer == thread) writer = std::thread::id();
+		else if (r != readers.end()) {
+			if (--r->second == 0) readers.erase(r);
+		} else if (!others_too) return;
+		else if (writer != std::thread::id()) writer = std::thread::id();
+		else if (!readers.empty()) {
+			if (--readers.back().second == 0) readers.pop_back();
+		} else return;
+		changed.notify_all();
+	}
+	void unlock() { release(std::this_thread::get_id(), true); }
+};
+// rw_scoped_lock, rw_read_lock and rw_write_lock lock when made. Destroyed, by whichever thread, they let go of the lock the thread that made
+// them holds, or of none if it holds none any more: Poco's unlocked once more whatever had happened, so after an unlock by hand that took another
+// thread's lock or, with nothing locked, broke the lock.
+class script_rw_hold {
+	script_rw_lock& target;
+	std::thread::id holder;
+public:
+	script_rw_hold(script_rw_lock& target, bool write) : target(target), holder(std::this_thread::get_id()) {
+		if (write) target.write_lock();
+		else target.read_lock();
+	}
+	~script_rw_hold() {
+		try {
+			target.release(holder, false);
+		} catch (...) {}
+	}
+	script_rw_hold(const script_rw_hold&) = delete;
+	script_rw_hold& operator=(const script_rw_hold&) = delete;
+};
+struct script_rw_read_hold : script_rw_hold {
+	script_rw_read_hold(script_rw_lock& target) : script_rw_hold(target, false) {}
+};
+struct script_rw_write_hold : script_rw_hold {
+	script_rw_write_hold(script_rw_lock& target) : script_rw_hold(target, true) {}
+};
+
 template <class T> void RegisterMutexType(asIScriptEngine* engine, const std::string& type) {
 	angelscript_refcounted_register<T>(engine, type.c_str());
 	if constexpr(std::is_same<T, NamedMutex>::value) engine->RegisterObjectBehaviour(type.c_str(), asBEHAVE_FACTORY, format("%s@ m(const string&in name)", type).c_str(), asFUNCTION((angelscript_refcounted_factory<T, const std::string&>)), asCALL_CDECL);
@@ -933,22 +1037,22 @@ void RegisterThreading(asIScriptEngine* engine) {
 	RegisterMutexType<script_mutex<FastMutex>>(engine, "fast_mutex");
 	RegisterMutexType<NamedMutex>(engine, "named_mutex");
 	RegisterMutexType<SpinlockMutex>(engine, "spinlock_mutex");
-	angelscript_refcounted_register<RWLock>(engine, "rw_lock");
-	engine->RegisterObjectBehaviour(_O("rw_lock"), asBEHAVE_FACTORY, _O("rw_lock@ l()"), asFUNCTION(angelscript_refcounted_factory<RWLock>), asCALL_CDECL);
-	engine->RegisterObjectMethod(_O("rw_lock"), _O("void read_lock()"), asMETHOD(RWLock, readLock), asCALL_THISCALL);
-	engine->RegisterObjectMethod(_O("rw_lock"), _O("bool try_read_lock()"), asMETHOD(RWLock, tryReadLock), asCALL_THISCALL);
-	engine->RegisterObjectMethod(_O("rw_lock"), _O("void write_lock()"), asMETHOD(RWLock, writeLock), asCALL_THISCALL);
-	engine->RegisterObjectMethod(_O("rw_lock"), _O("bool try_write_lock()"), asMETHOD(RWLock, tryWriteLock), asCALL_THISCALL);
-	engine->RegisterObjectMethod(_O("rw_lock"), _O("void unlock()"), asMETHOD(RWLock, unlock), asCALL_THISCALL);
-	engine->RegisterObjectType("rw_scoped_lock", sizeof(script_scoped_lock<ScopedRWLock, RWLock>), asOBJ_VALUE | asGetTypeTraits<script_scoped_lock<ScopedRWLock, RWLock>>());
-	engine->RegisterObjectBehaviour("rw_scoped_lock", asBEHAVE_CONSTRUCT, "void f(rw_lock@ lock, bool write)", asFUNCTION((script_scoped_lock_construct<ScopedRWLock, RWLock, bool>)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectBehaviour("rw_scoped_lock", asBEHAVE_DESTRUCT, "void f()", asFUNCTION((script_scoped_lock_destruct<ScopedRWLock, RWLock>)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectType("rw_read_lock", sizeof(script_scoped_lock<ScopedReadRWLock, RWLock>), asOBJ_VALUE | asGetTypeTraits<script_scoped_lock<ScopedReadRWLock, RWLock>>());
-	engine->RegisterObjectBehaviour("rw_read_lock", asBEHAVE_CONSTRUCT, "void f(rw_lock@ target)", asFUNCTION((script_scoped_lock_construct<ScopedReadRWLock, RWLock>)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectBehaviour("rw_read_lock", asBEHAVE_DESTRUCT, "void f()", asFUNCTION((script_scoped_lock_destruct<ScopedReadRWLock, RWLock>)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectType("rw_write_lock", sizeof(script_scoped_lock<ScopedWriteRWLock, RWLock>), asOBJ_VALUE | asGetTypeTraits<script_scoped_lock<ScopedWriteRWLock, RWLock>>());
-	engine->RegisterObjectBehaviour("rw_write_lock", asBEHAVE_CONSTRUCT, "void f(rw_lock@ target)", asFUNCTION((script_scoped_lock_construct<ScopedWriteRWLock, RWLock>)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectBehaviour("rw_write_lock", asBEHAVE_DESTRUCT, "void f()", asFUNCTION((script_scoped_lock_destruct<ScopedWriteRWLock, RWLock>)), asCALL_CDECL_OBJFIRST);
+	angelscript_refcounted_register<script_rw_lock>(engine, "rw_lock");
+	engine->RegisterObjectBehaviour(_O("rw_lock"), asBEHAVE_FACTORY, _O("rw_lock@ l()"), asFUNCTION(angelscript_refcounted_factory<script_rw_lock>), asCALL_CDECL);
+	engine->RegisterObjectMethod(_O("rw_lock"), _O("void read_lock()"), asMETHOD(script_rw_lock, read_lock), asCALL_THISCALL);
+	engine->RegisterObjectMethod(_O("rw_lock"), _O("bool try_read_lock()"), asMETHOD(script_rw_lock, try_read_lock), asCALL_THISCALL);
+	engine->RegisterObjectMethod(_O("rw_lock"), _O("void write_lock()"), asMETHOD(script_rw_lock, write_lock), asCALL_THISCALL);
+	engine->RegisterObjectMethod(_O("rw_lock"), _O("bool try_write_lock()"), asMETHOD(script_rw_lock, try_write_lock), asCALL_THISCALL);
+	engine->RegisterObjectMethod(_O("rw_lock"), _O("void unlock()"), asMETHOD(script_rw_lock, unlock), asCALL_THISCALL);
+	engine->RegisterObjectType("rw_scoped_lock", sizeof(script_scoped_lock<script_rw_hold, script_rw_lock>), asOBJ_VALUE | asGetTypeTraits<script_scoped_lock<script_rw_hold, script_rw_lock>>());
+	engine->RegisterObjectBehaviour("rw_scoped_lock", asBEHAVE_CONSTRUCT, "void f(rw_lock@ lock, bool write)", asFUNCTION((script_scoped_lock_construct<script_rw_hold, script_rw_lock, bool>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectBehaviour("rw_scoped_lock", asBEHAVE_DESTRUCT, "void f()", asFUNCTION((script_scoped_lock_destruct<script_rw_hold, script_rw_lock>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectType("rw_read_lock", sizeof(script_scoped_lock<script_rw_read_hold, script_rw_lock>), asOBJ_VALUE | asGetTypeTraits<script_scoped_lock<script_rw_read_hold, script_rw_lock>>());
+	engine->RegisterObjectBehaviour("rw_read_lock", asBEHAVE_CONSTRUCT, "void f(rw_lock@ target)", asFUNCTION((script_scoped_lock_construct<script_rw_read_hold, script_rw_lock>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectBehaviour("rw_read_lock", asBEHAVE_DESTRUCT, "void f()", asFUNCTION((script_scoped_lock_destruct<script_rw_read_hold, script_rw_lock>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectType("rw_write_lock", sizeof(script_scoped_lock<script_rw_write_hold, script_rw_lock>), asOBJ_VALUE | asGetTypeTraits<script_scoped_lock<script_rw_write_hold, script_rw_lock>>());
+	engine->RegisterObjectBehaviour("rw_write_lock", asBEHAVE_CONSTRUCT, "void f(rw_lock@ target)", asFUNCTION((script_scoped_lock_construct<script_rw_write_hold, script_rw_lock>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectBehaviour("rw_write_lock", asBEHAVE_DESTRUCT, "void f()", asFUNCTION((script_scoped_lock_destruct<script_rw_write_hold, script_rw_lock>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterEnum("thread_event_type");
 	engine->RegisterEnumValue("thread_event_type", "THREAD_EVENT_MANUAL_RESET", Event::EVENT_MANUALRESET);
 	engine->RegisterEnumValue("thread_event_type", "THREAD_EVENT_AUTO_RESET", Event::EVENT_AUTORESET);
