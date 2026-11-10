@@ -173,6 +173,30 @@ class audio_node_chain_impl : public passthrough_node_impl, public virtual audio
 protected:
 	// Every change and read of the chain's nodes and endpoint takes this, as one script thread can change a sound's chain while another changes it too, such as a global panner change rewiring every spatializer. Recursive because the changes call one another; never taken on the audio thread, which only reads the MiniAudio graph.
 	mutable std::recursive_mutex chain_mutex;
+	// The rewiring below runs under the chain lock, and what it lets go of is released only once the outermost rewiring ends, after that lock: a reference let go of can be the last, as to a reverb3d's mixer, whose spatializer lets go of reverb3ds that take the send lock of a reverb node, which a reverb3d's set_reverb() holds while it takes this chain's lock.
+	int rewire_depth = 0; // Under chain_mutex.
+	std::vector<audio_node*> deferred_releases; // Under chain_mutex.
+	struct rewire_scope {
+		audio_node_chain_impl &chain;
+		rewire_scope(audio_node_chain_impl &c) : chain(c) {
+			chain.chain_mutex.lock();
+			chain.rewire_depth++;
+		}
+		~rewire_scope() {
+			std::vector<audio_node*> releasing;
+			if (--chain.rewire_depth == 0) releasing.swap(chain.deferred_releases);
+			chain.chain_mutex.unlock();
+			for (audio_node *n : releasing) n->release();
+		}
+	};
+	void release_later(audio_node *n) { if (n) deferred_releases.push_back(n); }
+	// Holds what a node's output goes into until the rewiring ends, as attaching or detaching that output lets go of it, which a node the script attached elsewhere by hand could hold the last reference to.
+	void hold_destination(audio_node *n) {
+		if (!n) return;
+		if (n == static_cast<audio_node*>(this)) release_later(audio_node_impl::acquire_output_destination(0));
+		else if (auto chain = dynamic_cast<audio_node_chain_impl*>(n)) release_later(chain->acquire_endpoint());
+		else if (auto impl = dynamic_cast<audio_node_impl*>(n)) release_later(impl->acquire_output_destination(0));
+	}
 public:
 	audio_node_chain_impl(audio_node* source, audio_node* endpoint, audio_engine* e) : passthrough_node_impl(e), endpoint(nullptr) {
 		if (source) source->attach_output_bus(0, this, 0);
@@ -206,7 +230,7 @@ public:
 	}
 	bool detach_all_output_buses() override { return detach_output_bus(0); }
 	bool add_node(audio_node* node, audio_node* after, unsigned int input_bus_index) override {
-		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		rewire_scope scope(*this);
 		if (!node) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // As every refusal here says why; these said nothing.
 		if (node == static_cast<audio_node*>(this) || node == endpoint || index_of(node) != -1) { // The chain itself, its endpoint or a node already in it, which would loop the chain.
 			g_soundsystem_last_error = MA_INVALID_ARGS;
@@ -222,6 +246,8 @@ public:
 		audio_node* next = new_idx? (new_idx < nodes.size()? nodes[new_idx] : endpoint) : (!nodes.empty()? first() : endpoint);
 		// The node before is attached to the new one first, on the new node's input_bus_index, which a node that takes no input, as a sound or data source, refuses with nothing changed; the new node is then attached to the next one on the bus the next one was fed on, and when the new node can't feed it, as with another channel count, the node before goes back to it.
 		unsigned int next_bus = bus_at(new_idx);
+		hold_destination(prev? prev : this);
+		hold_destination(node);
 		if (prev && !prev->attach_output_bus(0, node, input_bus_index)) return false;
 		else if (!prev && !audio_node_impl::attach_output_bus(0, node, input_bus_index)) return false;
 		if (next && !node->attach_output_bus(0, next, next_bus)) {
@@ -237,20 +263,17 @@ public:
 		return true;
 	}
 	bool add_node_at(audio_node* node, int after, unsigned int input_bus_index) override {
-		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		rewire_scope scope(*this);
 		if (after < -1 || after >= int(nodes.size())) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS;
 		audio_node* insert_after = after > -1? nodes[after] : nullptr;
 		return add_node(node, insert_after, input_bus_index);
 	}
 	// The removed nodes are let go of once the chain's lock is: the last reference to a node, such as a reverb3d's mixer, can take the send lock of the reverb node its sends go to, which a reverb3d's set_reverb() holds while it takes that node's chain lock, should the reverb node be this chain.
 	bool remove_node(audio_node* node) override {
+		rewire_scope scope(*this);
 		audio_node* removed = nullptr;
-		bool success;
-		{
-			std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
-			success = take_out(node, removed);
-		}
-		if (removed) removed->release();
+		bool success = take_out(node, removed);
+		release_later(removed);
 		return success;
 	}
 	// Takes a node out of the chain under its lock, handing its reference back to let go of after (see remove_node()).
@@ -262,6 +285,8 @@ public:
 		audio_node* next = (*it) != nodes.back()? *(it + 1) : endpoint;
 		size_t index = it - nodes.begin();
 		unsigned int next_bus = bus_at(index + 1);
+		hold_destination(prev? prev : this);
+		hold_destination(node);
 		if (prev && next && !prev->attach_output_bus(0, next, next_bus)) return false;
 		else if (!prev && next && !audio_node_impl::attach_output_bus(0, next, next_bus)) return false;
 		else if (!next) { // The last node of a chain without an endpoint: what fed it no longer leads anywhere, nor holds it.
@@ -274,30 +299,27 @@ public:
 		return node->detach_output_bus(0);
 	}
 	bool remove_node_at(unsigned int index) override {
+		rewire_scope scope(*this);
+		if (index >= nodes.size()) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS;
 		audio_node* removed = nullptr;
-		bool success;
-		{
-			std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
-			if (index >= nodes.size()) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS;
-			success = take_out(nodes[index], removed);
-		}
-		if (removed) removed->release(); // As remove_node().
+		bool success = take_out(nodes[index], removed);
+		release_later(removed); // As remove_node().
 		return success;
 	}
 	bool clear(bool detach_nodes) override {
-		std::vector<audio_node*> removed;
-		bool success;
-		{
-			std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
-			success = audio_node_impl::detach_output_bus(0);
-			for (audio_node* node : nodes) {
-				if (success && detach_nodes) success = node->detach_output_bus(0);
+		rewire_scope scope(*this);
+		hold_destination(this);
+		bool success = audio_node_impl::detach_output_bus(0);
+		for (audio_node* node : nodes) {
+			if (success && detach_nodes) {
+				hold_destination(node);
+				success = node->detach_output_bus(0);
 			}
-			if (success && endpoint) success = audio_node_impl::attach_output_bus(0, endpoint, endpoint_input_bus_index);
-			removed.swap(nodes);
-			input_buses.clear();
 		}
-		for (audio_node* node : removed) node->release(); // As remove_node().
+		if (success && endpoint) success = audio_node_impl::attach_output_bus(0, endpoint, endpoint_input_bus_index);
+		for (audio_node* node : nodes) release_later(node); // As remove_node().
+		nodes.clear();
+		input_buses.clear();
 		return success;
 	}
 	// The chain holds a reference of its own to the endpoint. The attachment to it, whichever node it is from, holds another, but every insert, removal or clear rewires that attachment, which let go of the endpoint's only reference before the endpoint was attached to again, and a script can detach a node of the chain through the audio_node API.
@@ -306,10 +328,10 @@ public:
 	void set_endpoint(audio_node* node, unsigned int input_bus_index) override { put_endpoint(node, input_bus_index); }
 	// set_endpoint(), telling whether it attached the node or detached the chain.
 	bool put_endpoint(audio_node* node, unsigned int input_bus_index) {
-		audio_node *old;
+		rewire_scope scope(*this);
+		audio_node *old = endpoint;
 		{
-			std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
-			old = endpoint;
+			hold_destination(!nodes.empty()? last() : this);
 			if (node) {
 				bool attached = !nodes.empty()? last()->attach_output_bus(0, node, input_bus_index) : audio_node_impl::attach_output_bus(0, node, input_bus_index);
 				if (!attached) return false; // get_endpoint() tells the attach failed.
@@ -322,7 +344,7 @@ public:
 				endpoint = nullptr;
 			}
 		}
-		if (old) old->release(); // Last, as it can be the node just attached again, and after the chain's lock, as remove_node() lets go of a node.
+		release_later(old); // After the chain's lock, as remove_node() lets go of a node, and after the reference just taken, as it can be the node just attached again.
 		return true;
 	}
 	audio_node* get_endpoint() const override {
@@ -1335,23 +1357,7 @@ private:
 	bool parameters_valid;
 	int preferred_panner_id, preferred_attenuator_id;
 	int current_panner_id, current_attenuator_id;
-	// The rewiring below runs under the chain lock, and what it lets go of is released only once the outermost rewiring ends, after that lock: letting go of a reverb3d can free its mixer and that mixer's spatializer, whose destructor takes g_tracked_spatializers_mutex and that spatializer's own chain lock, not to be taken under this one's.
-	int rewire_depth = 0; // Under chain_mutex.
-	std::vector<audio_node*> deferred_releases; // Under chain_mutex.
-	struct rewire_scope {
-		audio_spatializer_impl &spatializer;
-		rewire_scope(audio_spatializer_impl &s) : spatializer(s) {
-			spatializer.chain_mutex.lock();
-			spatializer.rewire_depth++;
-		}
-		~rewire_scope() {
-			std::vector<audio_node*> releasing;
-			if (--spatializer.rewire_depth == 0) releasing.swap(spatializer.deferred_releases);
-			spatializer.chain_mutex.unlock();
-			for (audio_node *n : releasing) n->release();
-		}
-	};
-	void release_later(audio_node *n) { deferred_releases.push_back(n); }
+	// Its rewiring runs in the chain's rewire_scope, releasing what it lets go of after the outermost one ends (see audio_node_chain_impl).
 	void position_reverb() {
 		rewire_scope scope(*this);
 		if (!reverb_attachment) return;
