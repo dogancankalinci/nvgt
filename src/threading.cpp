@@ -956,6 +956,18 @@ public:
 	}
 	void unlock() { release(std::this_thread::get_id(), true); }
 };
+// acquire_exclusive_lock() and the others (see RegisterScriptstuff() in scriptstuff.cpp) share one of these, never destroyed, so that a thread
+// still holding or asking for it while the program exits finds it alive. It was a std::shared_mutex: release_exclusive_lock() or
+// release_shared_lock() with nothing held ended the program on Windows (STATUS_RESOURCE_NOT_OWNED, which no script catch sees) and was
+// undefined elsewhere, and the exclusive lock taken twice, or while holding the shared one, waited for ever. Now it behaves as rw_lock does.
+static script_rw_lock& script_global_lock() {
+	static script_rw_lock* lock = new script_rw_lock();
+	return *lock;
+}
+void script_acquire_exclusive_lock() { script_global_lock().write_lock(); }
+void script_release_exclusive_lock() { script_global_lock().unlock(); }
+void script_acquire_shared_lock() { script_global_lock().read_lock(); }
+void script_release_shared_lock() { script_global_lock().unlock(); }
 // rw_scoped_lock, rw_read_lock and rw_write_lock lock when made. Destroyed, by whichever thread, they let go of the lock the thread that made
 // them holds, or of none if it holds none any more: Poco's unlocked once more whatever had happened, so after an unlock by hand that took another
 // thread's lock or, with nothing locked, broke the lock.

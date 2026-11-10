@@ -1330,16 +1330,12 @@ void RegisterScripting(asIScriptEngine* engine) {
 // comparisons (CScriptArray::Precache) and every string constant a build or a function's release adds or removes
 // (CStdStringFactory). A script holding the lock across any of these waited for itself for good (weakref<T> w(obj) between
 // acquire_exclusive_lock() and release_exclusive_lock() never returned), and a shared holder blocked them on every thread.
-// Scripts now share a reader/writer lock of their own, which nothing else takes; it is never destroyed, so a thread still
-// holding or asking for it while the program exits finds it alive.
-static std::shared_mutex& script_lock() {
-	static std::shared_mutex* lock = new std::shared_mutex();
-	return *lock;
-}
-static void script_acquire_exclusive_lock() { script_lock().lock(); }
-static void script_release_exclusive_lock() { script_lock().unlock(); }
-static void script_acquire_shared_lock() { script_lock().lock_shared(); }
-static void script_release_shared_lock() { script_lock().unlock_shared(); }
+// Scripts now share a reader/writer lock of their own, which nothing else takes: an rw_lock, defined in threading.cpp (see
+// script_global_lock() there).
+void script_acquire_exclusive_lock();
+void script_release_exclusive_lock();
+void script_acquire_shared_lock();
+void script_release_shared_lock();
 void RegisterScriptstuff(asIScriptEngine* engine) {
 	engine->SetDefaultAccessMask(NVGT_SUBSYSTEM_UNCLASSIFIED);
 	engine->RegisterGlobalProperty("const bool profiler_is_running", &is_profiling);
