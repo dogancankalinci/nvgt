@@ -477,6 +477,13 @@ bool CScriptAny::Retrieve(void *ref, int refTypeId) const
 			*(asINT64*)ref = asINT64(value.valueFlt);
 			return true;
 		}
+
+		// ALTERED: as the dictionary's Get does, a number that can't be retrieved (the any is empty or holds another type) is
+		// given as 0: the &out temporary AngelScript hands over for a primitive isn't initialized, and it is copied into the
+		// script's variable whatever is returned (any().retrieve(d) gave d stack bytes, -nan in a test).
+		int size = engine->GetSizeOfPrimitiveType(refTypeId);
+		if( size > 0 )
+			memset(ref, 0, size);
 	}
 
 	return false;
