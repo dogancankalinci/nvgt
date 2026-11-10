@@ -1002,6 +1002,7 @@ public:
 		return b.get();
 	}
 	int set_bytecode(const std::string& code, bool* release = NULL, CScriptArray* errors = NULL) {
+		if (release) *release = false; // An &out parameter (debug_info_was_stripped), given uninitialized: see datastream::read(T&).
 		if (!get_mod()) {
 			if (errors)
 				errors->Release();
