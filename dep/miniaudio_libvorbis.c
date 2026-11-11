@@ -542,6 +542,10 @@ MA_API ma_result ma_libvorbis_read_pcm_frames(ma_libvorbis* pVorbis, void* pFram
         return MA_INVALID_ARGS;
     }
 
+    if (pVorbis->placeLost) {
+        return MA_AT_END; /* Nothing says where they'd come from (see ma_libvorbis_put_back()). */
+    }
+
     /* NVGT: a NULL output skips frames, as MiniAudio's data sources allow, read into scratch memory a chunk at a time; the reads below write to it. */
     if (pFramesOut == NULL) {
         ma_uint8 scratch[16384];
@@ -839,6 +843,24 @@ static void ma_libvorbis_reset_at(ma_libvorbis* pVorbis, OggVorbis_File* vf, ma_
     pVorbis->linkStarted = MA_TRUE;
     pVorbis->linkSerial = vf->current_serialno;
     pVorbis->cursor = frameIndex;
+    pVorbis->placeLost = MA_FALSE;
+}
+
+/*
+Puts libvorbisfile back where it was before a seek that failed, which dumps its decoding as it searches. Within a hole its place
+counts on from before the hole, behind where the frames kept say, so there is none to put back to; nor once that seek fails too.
+Then nothing held, kept or owed says where its reads go on from: they are let go of, the cursor says no place a caller could have
+sought from, which a caller finding the cursor moved by the failed seek puts back, as from the start, and until a seek lands the
+place is lost, reads giving nothing rather than audio from wherever the search stopped.
+*/
+static void ma_libvorbis_put_back(ma_libvorbis* pVorbis, OggVorbis_File* vf, ogg_int64_t at)
+{
+    if (!pVorbis->inHole && at >= 0 && ov_pcm_seek(vf, at) == 0) {
+        return;
+    }
+
+    ma_libvorbis_reset_at(pVorbis, vf, ~(ma_uint64)0);
+    pVorbis->placeLost = MA_TRUE;
 }
 #endif
 
@@ -849,7 +871,7 @@ MA_API ma_result ma_libvorbis_seek_to_pcm_frame(ma_libvorbis* pVorbis, ma_uint64
     }
 
     /* Within the silence still to come for a hole, or the frames kept past it: only less of them. */
-    if (!pVorbis->inHole && frameIndex >= pVorbis->cursor && frameIndex - pVorbis->cursor < pVorbis->silenceOwed + pVorbis->pastHoleFrameCount) {
+    if (!pVorbis->placeLost && !pVorbis->inHole && frameIndex >= pVorbis->cursor && frameIndex - pVorbis->cursor < pVorbis->silenceOwed + pVorbis->pastHoleFrameCount) {
         ma_uint64 skip = frameIndex - pVorbis->cursor;
         ma_uint64 skipSilence = (skip < pVorbis->silenceOwed) ? skip : pVorbis->silenceOwed;
         pVorbis->silenceOwed -= skipSilence;
@@ -945,9 +967,7 @@ MA_API ma_result ma_libvorbis_seek_to_pcm_frame(ma_libvorbis* pVorbis, ma_uint64
                 }
             }
 
-            if (at >= 0) {
-                ov_pcm_seek(vf, at); /* Back where it was, as the cursor and the frames held still say. */
-            }
+            ma_libvorbis_put_back(pVorbis, vf, at); /* Back where it was, as the cursor and the frames held still say. */
         }
 
         if (libvorbisResult != 0) {
