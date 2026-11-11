@@ -4154,9 +4154,18 @@ public:
 	audio_spatializer* get_spatializer() const {
 		if (!spatializer) {
 			audio_spatializer* made = audio_spatializer::create(const_cast<mixer_impl*>(this), get_engine());
-			// After the effects chain, which runs first wherever it is made, so that a mixer's effects are positioned with it rather than applied to it once positioned, whichever was made first; a chain the script took out of internal_node_chain leaves the spatializer first.
-			record_node_hold(static_cast<const audio_node*>(this), made); // Held by this mixer too, which a script can take out of internal_node_chain.
-			if (!effects_chain || !node_chain->add_node(made, effects_chain)) node_chain->add_node(made);
+			try {
+				record_node_hold(static_cast<const audio_node*>(this), made); // Held by this mixer too, which a script can take out of internal_node_chain.
+				// After the effects chain, which runs first wherever it is made, so that a mixer's effects are positioned with it rather than applied to it once positioned, whichever was made first; a chain the script took out of internal_node_chain leaves the spatializer first.
+				if (!effects_chain || !node_chain->add_node(made, effects_chain)) node_chain->add_node(made);
+			} catch (...) { // As on running out of memory: not kept by this mixer, which forgets it rather than leaving it tracked and its engine held for good.
+				last_error_kept kept;
+				drop_node_hold(static_cast<const audio_node*>(this), made);
+				made->forget_mixer();
+				node_chain->remove_node(made);
+				made->release();
+				throw;
+			}
 			// Published once made, as the loop check reads it from other threads (see get_reverb3d_sent_to()), which must not see the pointer before what it points to.
 			reinterpret_cast<std::atomic<audio_spatializer*>&>(spatializer).store(made, std::memory_order_release);
 		}
