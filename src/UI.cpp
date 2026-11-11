@@ -290,9 +290,14 @@ game_window::game_window(SDL_Window* window) : _window(window), _owns_window(fal
 	#endif
 }
 game_window::~game_window() {
+	close();
+}
+void game_window::close() {
 	_font = nullptr;
 	_renderer = nullptr;
 	if (_owns_window && _window) SDL_DestroyWindow(_window);
+	_window = nullptr;
+	_native_window = nullptr;
 }
 graphics_renderer* game_window::ensure_renderer() {
 	// Create the SDL renderer the first time graphics are actually drawn. Until then get_renderer()
@@ -455,7 +460,11 @@ bool DestroyNVGTWindow() {
 	// keep posting events for as long as the window exists. Quitting SDL with a live window lets a
 	// key press on the Java UI thread lock that just-destroyed mutex and deadlock against
 	// Android_ActivityMutex (input-dispatch ANR). This order also keeps ~game_window from passing a
-	// stale SDL_Window to SDL_DestroyWindow after SDL_Quit.
+	// stale SDL_Window to SDL_DestroyWindow after SDL_Quit. The SDL window is destroyed here even when the script still holds the
+	// game_window show_window() returned: letting go of g_window alone left it alive through SDL_Quit (the deadlock above), and the
+	// held object destroyed it later, possibly after show_window() had made a new window at the same address, which it then destroyed.
+	// The held object stays valid, with no window: its methods fail as SDL's do for a null window.
+	g_window->close();
 	g_window = nullptr;
 	InputDestroy();
 	TTF_Quit();

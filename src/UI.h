@@ -65,6 +65,7 @@ public:
 	game_window(const std::string& title, unsigned int w, unsigned int h, unsigned int flags);
 	game_window(SDL_Window* window);
 	~game_window();
+	void close(); // Destroys the SDL window (when this object made it) and lets go of the renderer and font, whoever holds this object.
 	void duplicate() { asAtomicInc(_refcount); }
 	void release() { if (asAtomicDec(_refcount) < 1) delete this; }
 	SDL_Window* get_sdl_window() const { return _window; }
