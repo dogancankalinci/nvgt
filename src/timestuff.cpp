@@ -100,13 +100,32 @@ void timer_queue_item::execute() {
 timer_queue::timer_queue() : RefCount(1), last_looped(ticks()), open_tick(false) {
 }
 void timer_queue::add_ref() {
+	gc_flag = false;
 	asAtomicInc(RefCount);
 }
 void timer_queue::release() {
+	gc_flag = false;
 	if (asAtomicDec(RefCount) < 1) {
 		reset();
 		delete this;
 	}
+}
+void timer_queue::enum_references(asIScriptEngine* engine) {
+	// Under the lock, as set() and delete() on other threads change the timers. The collector calls this outside its own locks, and a
+	// queue being looped holds itself (see loop()), so it is never garbage while its callbacks run.
+	std::lock_guard<std::recursive_mutex> l(mtx);
+	for (const auto& t : timer_objects) {
+		if (t.second->callback) engine->GCEnumCallback(t.second->callback);
+	}
+	for (timer_queue_item* t : deleting_timers) {
+		if (t->callback) engine->GCEnumCallback(t->callback);
+	}
+}
+static asITypeInfo* g_timer_queue_type = nullptr;
+static timer_queue* timer_queue_factory() {
+	timer_queue* q = new timer_queue();
+	if (g_timer_queue_type) g_timer_queue_type->GetEngine()->NotifyGarbageCollectorOfNewObject(q, g_timer_queue_type);
+	return q;
 }
 void timer_queue::reset() {
 	std::lock_guard<std::recursive_mutex> l(mtx);
@@ -688,10 +707,16 @@ void RegisterScriptTimestuffCore(asIScriptEngine *engine) {
 	engine->SetDefaultAccessMask(NVGT_SUBSYSTEM_UNCLASSIFIED);
 	engine->RegisterGlobalProperty(_O("bool speedhack_protection"), &speedhack_protection);
 	engine->SetDefaultAccessMask(NVGT_SUBSYSTEM_TMRQ);
-	engine->RegisterObjectType(_O("timer_queue"), 0, asOBJ_REF);
-	engine->RegisterObjectBehaviour(_O("timer_queue"), asBEHAVE_FACTORY, _O("timer_queue @q()"), asFUNCTION(timestuff_factory<timer_queue>), asCALL_CDECL);
+	int timer_queue_type_id = engine->RegisterObjectType(_O("timer_queue"), 0, asOBJ_REF | asOBJ_GC); // See timer_queue::enum_references().
+	g_timer_queue_type = timer_queue_type_id >= 0 ? engine->GetTypeInfoById(timer_queue_type_id) : nullptr;
+	engine->RegisterObjectBehaviour(_O("timer_queue"), asBEHAVE_FACTORY, _O("timer_queue @q()"), asFUNCTION(timer_queue_factory), asCALL_CDECL);
 	engine->RegisterObjectBehaviour(_O("timer_queue"), asBEHAVE_ADDREF, _O("void f()"), asMETHOD(timer_queue, add_ref), asCALL_THISCALL);
 	engine->RegisterObjectBehaviour(_O("timer_queue"), asBEHAVE_RELEASE, _O("void f()"), asMETHOD(timer_queue, release), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour(_O("timer_queue"), asBEHAVE_GETREFCOUNT, _O("int f()"), asMETHOD(timer_queue, get_ref_count), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour(_O("timer_queue"), asBEHAVE_SETGCFLAG, _O("void f()"), asMETHOD(timer_queue, set_gc_flag), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour(_O("timer_queue"), asBEHAVE_GETGCFLAG, _O("bool f()"), asMETHOD(timer_queue, get_gc_flag), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour(_O("timer_queue"), asBEHAVE_ENUMREFS, _O("void f(int&in)"), asMETHOD(timer_queue, enum_references), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour(_O("timer_queue"), asBEHAVE_RELEASEREFS, _O("void f(int&in)"), asMETHOD(timer_queue, release_all_references), asCALL_THISCALL);
 	engine->RegisterFuncdef(_O("uint timer_callback(string timer_id, string user_data)"));
 	engine->RegisterObjectMethod(_O("timer_queue"), _O("string get_failures() const property"), asMETHOD(timer_queue, get_failures), asCALL_THISCALL); // An accessor rather than the property it was, to read the text under its lock; q.failures reads as before.
 	engine->RegisterObjectMethod(_O("timer_queue"), _O("void set(const string&in timer_id, timer_callback@ callback, const string&in callback_data, uint64 milliseconds, bool repeating = false)"), asMETHOD(timer_queue, set), asCALL_THISCALL);

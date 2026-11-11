@@ -48,6 +48,7 @@ class timer_queue {
 	uint64_t last_looped;
 	bool open_tick;
 	int RefCount;
+	bool gc_flag = false;
 	void purge_deleting_timers();
 	// Scripts read failures (get_failures()) on any thread while loop() adds to it on the thread looping the queue, so it has a lock of its own, which nothing holds while script code runs: under mtx, which loop() holds while it runs timer callbacks, a read would wait for every callback of the loop() under way, and never end if one of them waited for the reading thread.
 	std::mutex failures_mtx;
@@ -73,6 +74,14 @@ public:
 	timer_queue();
 	void add_ref();
 	void release();
+	// The garbage collector's behaviours. The timers' callbacks are references the queue holds, often delegates of the object that holds
+	// the queue: a cycle the collector couldn't see while timer_queue wasn't one of its types, so such an object was never freed (its
+	// destructor never ran) once the script let go of it.
+	int get_ref_count() { return RefCount; }
+	void set_gc_flag() { gc_flag = true; }
+	bool get_gc_flag() { return gc_flag; }
+	void enum_references(asIScriptEngine* engine);
+	void release_all_references(asIScriptEngine* engine) { reset(); }
 	void set(const std::string& id, asIScriptFunction* callback, const std::string& user_data, uint64_t timeout, bool repeating = false);
 	void set_dataless(const std::string& id, asIScriptFunction* callback, uint64_t timeout, bool repeating = false) {
 		set(id, callback, "", timeout, repeating);
