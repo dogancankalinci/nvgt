@@ -677,8 +677,10 @@ public:
 					if (!_session) _session = _url.getScheme() == "http"? new HTTPClientSession(_url.getHost(), _url.getPort()) : new HTTPSClientSession(_url.getHost(), _url.getPort());
 					if (authorize) _creds.authenticate(req, tmp_response);
 					_session->setKeepAlive(_keepalive);
-					_session->setTimeout(_connect_timeout * 1000, _send_timeout * 1000, _receive_timeout * 1000);
-					_session->setKeepAliveTimeout(_keepalive_timeout * 1000);
+					// In microseconds, computed in 64 bits: the milliseconds times 1000 as an unsigned int wrapped for timeouts of 4294968 ms
+					// (71.6 minutes) or more, so a longer timeout became a short, unrelated one (5000000 ms gave 705 seconds, 4294968 ms 704 us).
+					_session->setTimeout(Timespan::TimeDiff(_connect_timeout) * 1000, Timespan::TimeDiff(_send_timeout) * 1000, Timespan::TimeDiff(_receive_timeout) * 1000);
+					_session->setKeepAliveTimeout(Timespan::TimeDiff(_keepalive_timeout) * 1000);
 				}
 				std::ostream& ostr = _session->sendRequest(req);
 				if (tryWait(0)) break;
