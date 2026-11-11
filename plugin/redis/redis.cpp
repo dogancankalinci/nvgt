@@ -180,7 +180,9 @@ private:
 			arr.add(std::forward<T>(value));
 	}
 
-	// Execute command and handle errors
+	// Execute command and handle errors. result is left as it was when the command fails (an error reply, which Poco throws for, or a
+	// lost connection), so the callers start it at 0: 53 of them returned an uninitialized Int64 then (INCR on a value that isn't a
+	// number gave garbage, and exists() of any key could be true).
 	template <typename T>
 	bool execute_command(const Array& cmd, T& result) {
 		try {
@@ -354,7 +356,7 @@ public:
 			m_last_error = "Not connected";
 			return 0;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("INCR", key), result);
 		return result;
 	}
@@ -364,7 +366,7 @@ public:
 			m_last_error = "Not connected";
 			return 0;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("DECR", key), result);
 		return result;
 	}
@@ -374,7 +376,7 @@ public:
 			m_last_error = "Not connected";
 			return 0;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("INCRBY", key, increment), result);
 		return result;
 	}
@@ -384,7 +386,7 @@ public:
 			m_last_error = "Not connected";
 			return 0;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("DECRBY", key, decrement), result);
 		return result;
 	}
@@ -394,7 +396,7 @@ public:
 			m_last_error = "Not connected";
 			return 0;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("APPEND", key, value), result);
 		return result;
 	}
@@ -404,7 +406,7 @@ public:
 			m_last_error = "Not connected";
 			return 0;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("STRLEN", key), result);
 		return result;
 	}
@@ -425,7 +427,7 @@ public:
 			m_last_error = "Not connected";
 			return 0;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("SETRANGE", key, offset, value), result);
 		return result;
 	}
@@ -435,7 +437,7 @@ public:
 			m_last_error = "Not connected";
 			return false;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("SETNX", key, value), result);
 		return result > 0;
 	}
@@ -549,7 +551,7 @@ public:
 			m_last_error = "Not connected";
 			return false;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("EXISTS", key), result);
 		return result > 0;
 	}
@@ -559,7 +561,7 @@ public:
 			m_last_error = "Not connected";
 			return false;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("DEL", key), result);
 		return result > 0;
 	}
@@ -569,7 +571,7 @@ public:
 			m_last_error = "Not connected";
 			return false;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("EXPIRE", key, seconds), result);
 		return result > 0;
 	}
@@ -579,7 +581,7 @@ public:
 			m_last_error = "Not connected";
 			return -2;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("TTL", key), result);
 		return result;
 	}
@@ -623,7 +625,7 @@ public:
 			m_last_error = "Not connected";
 			return 0;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("LPUSH", key, value), result);
 		return result;
 	}
@@ -633,7 +635,7 @@ public:
 			m_last_error = "Not connected";
 			return 0;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("RPUSH", key, value), result);
 		return result;
 	}
@@ -665,7 +667,7 @@ public:
 			m_last_error = "Not connected";
 			return 0;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("LLEN", key), result);
 		return result;
 	}
@@ -715,7 +717,7 @@ public:
 			m_last_error = "Not connected";
 			return 0;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("LREM", key, count, value), result);
 		return result;
 	}
@@ -734,7 +736,7 @@ public:
 			m_last_error = "Not connected";
 			return 0;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("LINSERT", key, before_after, pivot, value), result);
 		return result;
 	}
@@ -744,7 +746,7 @@ public:
 			m_last_error = "Not connected";
 			return false;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("HSET", key, field, value), result);
 		return true;
 	}
@@ -765,7 +767,7 @@ public:
 			m_last_error = "Not connected";
 			return false;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("HEXISTS", key, field), result);
 		return result > 0;
 	}
@@ -775,7 +777,7 @@ public:
 			m_last_error = "Not connected";
 			return 0;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("HDEL", key, field), result);
 		return result;
 	}
@@ -785,7 +787,7 @@ public:
 			m_last_error = "Not connected";
 			return 0;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("HLEN", key), result);
 		return result;
 	}
@@ -858,7 +860,7 @@ public:
 			m_last_error = "Not connected";
 			return 0;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("HINCRBY", key, field, increment), result);
 		return result;
 	}
@@ -879,7 +881,7 @@ public:
 			m_last_error = "Not connected";
 			return false;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("HSETNX", key, field, value), result);
 		return result > 0;
 	}
@@ -889,7 +891,7 @@ public:
 			m_last_error = "Not connected";
 			return 0;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("SADD", key, member), result);
 		return result;
 	}
@@ -907,7 +909,7 @@ public:
 			std::string* member = static_cast<std::string*>(members->At(i));
 			cmd.add(*member);
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(cmd, result);
 		return result;
 	}
@@ -917,7 +919,7 @@ public:
 			m_last_error = "Not connected";
 			return 0;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("SCARD", key), result);
 		return result;
 	}
@@ -927,7 +929,7 @@ public:
 			m_last_error = "Not connected";
 			return false;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("SISMEMBER", key, member), result);
 		return result > 0;
 	}
@@ -957,7 +959,7 @@ public:
 			m_last_error = "Not connected";
 			return 0;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("SREM", key, member), result);
 		return result;
 	}
@@ -1093,7 +1095,7 @@ public:
 			m_last_error = "Not connected";
 			return false;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("SMOVE", source, destination, member), result);
 		return result > 0;
 	}
@@ -1103,7 +1105,7 @@ public:
 			m_last_error = "Not connected";
 			return 0;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("PUBLISH", channel, message), result);
 		return result;
 	}
@@ -1113,7 +1115,7 @@ public:
 			m_last_error = "Not connected";
 			return 0;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("ZADD", key, score, member), result);
 		return result;
 	}
@@ -1123,7 +1125,7 @@ public:
 			m_last_error = "Not connected";
 			return 0;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("ZCARD", key), result);
 		return result;
 	}
@@ -1133,7 +1135,7 @@ public:
 			m_last_error = "Not connected";
 			return 0;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("ZCOUNT", key, min, max), result);
 		return result;
 	}
@@ -1200,7 +1202,7 @@ public:
 			m_last_error = "Not connected";
 			return -1;
 		}
-		Int64 result;
+		Int64 result = 0;
 		if (execute_command(make_command("ZRANK", key, member), result))
 			return result;
 		return -1;
@@ -1211,7 +1213,7 @@ public:
 			m_last_error = "Not connected";
 			return -1;
 		}
-		Int64 result;
+		Int64 result = 0;
 		if (execute_command(make_command("ZREVRANK", key, member), result))
 			return result;
 		return -1;
@@ -1222,7 +1224,7 @@ public:
 			m_last_error = "Not connected";
 			return 0;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("ZREM", key, member), result);
 		return result;
 	}
@@ -1268,7 +1270,7 @@ public:
 			m_last_error = "Not connected";
 			return 0;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("ZREMRANGEBYRANK", key, start, stop), result);
 		return result;
 	}
@@ -1278,7 +1280,7 @@ public:
 			m_last_error = "Not connected";
 			return 0;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("ZREMRANGEBYSCORE", key, min, max), result);
 		return result;
 	}
@@ -1288,7 +1290,7 @@ public:
 			m_last_error = "Not connected";
 			return false;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("SETBIT", key, offset, value ? 1 : 0), result);
 		return result > 0;
 	}
@@ -1298,7 +1300,7 @@ public:
 			m_last_error = "Not connected";
 			return false;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("GETBIT", key, offset), result);
 		return result > 0;
 	}
@@ -1308,7 +1310,7 @@ public:
 			m_last_error = "Not connected";
 			return 0;
 		}
-		Int64 result;
+		Int64 result = 0;
 		if (start == -1 || end == -1)
 			execute_command(make_command("BITCOUNT", key), result);
 		else
@@ -1331,7 +1333,7 @@ public:
 			std::string* key = static_cast<std::string*>(keys->At(i));
 			cmd.add(*key);
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(cmd, result);
 		return result;
 	}
@@ -1341,7 +1343,7 @@ public:
 			m_last_error = "Not connected";
 			return -1;
 		}
-		Int64 result;
+		Int64 result = 0;
 		if (start == -1 || end == -1)
 			execute_command(make_command("BITPOS", key, bit ? 1 : 0), result);
 		else
@@ -1370,7 +1372,7 @@ public:
 			m_last_error = "Not connected";
 			return 0;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("DBSIZE"), result);
 		return result;
 	}
@@ -1411,7 +1413,7 @@ public:
 			m_last_error = "Not connected";
 			return 0;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("LASTSAVE"), result);
 		return result;
 	}
@@ -1600,7 +1602,7 @@ public:
 			m_last_error = "Not connected";
 			return 0;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("GEOADD", key, longitude, latitude, member), result);
 		return result;
 	}
@@ -1747,7 +1749,7 @@ public:
 			m_last_error = "Not connected";
 			return false;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("PFADD", key, element), result);
 		return result > 0;
 	}
@@ -1765,7 +1767,7 @@ public:
 			std::string* element = static_cast<std::string*>(elements->At(i));
 			cmd.add(*element);
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(cmd, result);
 		return result > 0;
 	}
@@ -1775,7 +1777,7 @@ public:
 			m_last_error = "Not connected";
 			return 0;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("PFCOUNT", key), result);
 		return result;
 	}
@@ -1793,7 +1795,7 @@ public:
 			std::string* key = static_cast<std::string*>(keys->At(i));
 			cmd.add(*key);
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(cmd, result);
 		return result;
 	}
@@ -1969,7 +1971,7 @@ public:
 		Array cmd = make_command("MEMORY", "USAGE", key);
 		if (samples > 0)
 			cmd.add("SAMPLES").add(NumberFormatter::format(samples));
-		Int64 result;
+		Int64 result = 0;
 		execute_command(cmd, result);
 		return result;
 	}
@@ -2100,7 +2102,7 @@ public:
 			m_last_error = "Not connected";
 			return -1;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("CLIENT", "ID"), result);
 		return result;
 	}
@@ -2179,7 +2181,7 @@ public:
 			m_last_error = "Not connected";
 			return false;
 		}
-		Int64 result;
+		Int64 result = 0;
 		execute_command(make_command("ACL", "DELUSER", username), result);
 		return result > 0;
 	}
