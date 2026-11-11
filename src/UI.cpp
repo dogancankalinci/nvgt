@@ -43,6 +43,8 @@
 #include <cmath>
 #include <string>
 #include <unordered_set>
+#include <unordered_map>
+#include <mutex>
 #include <vector>
 #include <Poco/StringTokenizer.h>
 #include <Poco/SynchronizedObject.h>
@@ -650,41 +652,119 @@ std::string sdl_get_hint(const std::string& hint) {
 
 static game_window* game_window_factory(const std::string& title, unsigned int w, unsigned int h, unsigned int flags) { return new game_window(title, w, h, flags); }
 
+// The tray wrappers are garbage-collected types. The collector reads their references (enum_references) on a thread of its own with garbage_collect_mode 3 while the script's thread changes them, so the reference fields change and are read under this lock, which is never held while script code runs. It also guards the entry registry below.
+static std::recursive_mutex& system_tray_gc_mutex() {
+	static std::recursive_mutex* m = new std::recursive_mutex; // never destroyed: a wrapper can go late in the program's end
+	return *m;
+}
+static asITypeInfo* g_system_tray_type = nullptr, *g_system_tray_menu_type = nullptr, *g_system_tray_menu_item_type = nullptr;
+static void system_tray_gc_notify(void* obj, asITypeInfo* type) {
+	if (obj && type) type->GetEngine()->NotifyGarbageCollectorOfNewObject(obj, type);
+}
+// SDL calls an entry's callback with the entry; the item is looked up here rather than given to SDL as the callback's userdata. The collector frees the members of a cycle one step at a time, so an item could be freed while its tray, still on screen, kept calling into it on a click until the tray went too.
+static std::unordered_map<SDL_TrayEntry*, system_tray_menu_item*>& system_tray_items() {
+	static auto* items = new std::unordered_map<SDL_TrayEntry*, system_tray_menu_item*>;
+	return *items;
+}
+// SDL's tray functions are for the thread that made the tray (the main thread); the collector, or a script thread letting go of the last handle, can free the wrapper on another one.
+static void SDLCALL system_tray_destroy_on_main_thread(void* tray) { SDL_DestroyTray(static_cast<SDL_Tray*>(tray)); }
+static void system_tray_destroy(SDL_Tray* tray) {
+	if (!tray) return;
+	if (SDL_IsMainThread() || !SDL_RunOnMainThread(system_tray_destroy_on_main_thread, tray, false)) SDL_DestroyTray(tray);
+}
+
 // system_tray_menu_item implementation
 static void SDLCALL tray_entry_sdl_callback(void* userdata, SDL_TrayEntry* entry) {
-	static_cast<system_tray_menu_item*>(userdata)->invoke_callback();
+	system_tray_menu_item* item = nullptr;
+	{
+		std::lock_guard<std::recursive_mutex> lock(system_tray_gc_mutex());
+		auto found = system_tray_items().find(entry);
+		if (found != system_tray_items().end()) {
+			item = found->second;
+			item->duplicate();
+		}
+	}
+	if (!item) return;
+	item->invoke_callback();
+	item->release();
 }
-system_tray_menu_item::system_tray_menu_item(SDL_TrayEntry* entry, system_tray_menu_item_type type) : _entry(entry), _callback(nullptr), _type(type), _refcount(1) {}
+system_tray_menu_item::system_tray_menu_item(SDL_TrayEntry* entry, system_tray_menu_item_type type) : _entry(entry), _callback(nullptr), _type(type), _refcount(1) {
+	std::lock_guard<std::recursive_mutex> lock(system_tray_gc_mutex());
+	if (_entry) system_tray_items()[_entry] = this;
+}
 system_tray_menu_item::~system_tray_menu_item() {
+	{
+		std::lock_guard<std::recursive_mutex> lock(system_tray_gc_mutex());
+		auto found = _entry ? system_tray_items().find(_entry) : system_tray_items().end();
+		if (found != system_tray_items().end() && found->second == this) system_tray_items().erase(found);
+	}
 	if (_callback) { _callback->Release(); _callback = nullptr; }
+}
+void system_tray_menu_item::enum_references(asIScriptEngine* engine) {
+	std::lock_guard<std::recursive_mutex> lock(system_tray_gc_mutex());
+	if (_callback) engine->GCEnumCallback(_callback);
+	if (_submenu) engine->GCEnumCallback(_submenu.get());
+}
+void system_tray_menu_item::release_all_references(asIScriptEngine* engine) {
+	// An item that is garbage is in a menu that is too, and so on up to a tray that is going: its submenu's entries go with that tray (see invalidate()).
+	asIScriptFunction* callback;
+	Poco::AutoPtr<system_tray_menu> submenu;
+	{
+		std::lock_guard<std::recursive_mutex> lock(system_tray_gc_mutex());
+		callback = _callback;
+		_callback = nullptr;
+		submenu = _submenu;
+		_submenu = nullptr;
+	}
+	if (submenu) submenu->invalidate();
+	if (callback) callback->Release();
 }
 // SDL frees an entry's submenu with the entry, and a tray's menus and entries with the tray, and checks the pointers it's given for null only: the
 // wrappers a script still held kept the freed pointers, and the next call on them read or wrote freed memory (inserting into a menu, setting a
 // callback). The wrappers of everything that goes are emptied first, and SDL refuses a null entry or menu.
 void system_tray_menu_item::invalidate() {
+	std::lock_guard<std::recursive_mutex> lock(system_tray_gc_mutex());
+	auto found = _entry ? system_tray_items().find(_entry) : system_tray_items().end();
+	if (found != system_tray_items().end() && found->second == this) system_tray_items().erase(found);
 	_entry = nullptr;
 	if (_submenu) _submenu->invalidate();
 }
 void system_tray_menu::invalidate() {
+	std::lock_guard<std::recursive_mutex> lock(system_tray_gc_mutex());
 	for (auto& item : _items) item->invalidate();
 	_menu = nullptr;
 }
 void system_tray_menu_item::set_callback(asIScriptFunction* func) {
-	if (_callback) _callback->Release();
-	_callback = func;
-	if (_callback) {
-		_callback->AddRef();
-		SDL_SetTrayEntryCallback(_entry, tray_entry_sdl_callback, this);
-	} else SDL_SetTrayEntryCallback(_entry, nullptr, nullptr);
+	if (func) func->AddRef();
+	asIScriptFunction* previous;
+	{
+		std::lock_guard<std::recursive_mutex> lock(system_tray_gc_mutex());
+		previous = _callback;
+		_callback = func;
+	}
+	if (previous) previous->Release();
+	if (!_entry) return;
+	if (func) SDL_SetTrayEntryCallback(_entry, tray_entry_sdl_callback, nullptr); // see system_tray_items()
+	else SDL_SetTrayEntryCallback(_entry, nullptr, nullptr);
 }
 void system_tray_menu_item::invoke_callback() {
-	if (!_callback || !_entry) return;
+	asIScriptFunction* callback;
+	{
+		std::lock_guard<std::recursive_mutex> lock(system_tray_gc_mutex());
+		callback = _entry ? _callback : nullptr;
+		if (callback) callback->AddRef(); // the collector, or set_callback() from the callback itself, may let go of it meanwhile
+	}
+	if (!callback) return;
+	struct callback_hold {
+		asIScriptFunction* f;
+		~callback_hold() { f->Release(); }
+	} hold{callback};
 	asIScriptContext* ACtx = asGetActiveContext();
 	if (script_callbacks_stopped(ACtx)) return; // exit() was called since the script called the function handling this tray event.
 	bool new_context = ACtx == nullptr || ACtx->PushState() < 0;
 	asIScriptContext* ctx = new_context ? g_ScriptEngine->RequestContext() : ACtx;
 	if (!ctx) return;
-	if (ctx->Prepare(_callback) >= 0) {
+	if (ctx->Prepare(callback) >= 0) {
 		duplicate(); // give the script one reference for the item parameter
 		ctx->SetArgObject(0, this);
 		execute_nested(ctx);
@@ -700,7 +780,10 @@ system_tray_menu* system_tray_menu_item::get_submenu() {
 	SDL_TrayMenu* menu = SDL_GetTraySubmenu(_entry);
 	if (!menu) menu = SDL_CreateTraySubmenu(_entry);
 	if (!menu) return nullptr;
-	_submenu = new system_tray_menu(menu);
+	system_tray_menu* submenu = new system_tray_menu(menu);
+	system_tray_gc_notify(submenu, g_system_tray_menu_type);
+	std::lock_guard<std::recursive_mutex> lock(system_tray_gc_mutex());
+	_submenu = submenu;
 	return _submenu.get();
 }
 
@@ -710,8 +793,23 @@ system_tray_menu_item* system_tray_menu::make_entry(int pos, const char* label, 
 	SDL_TrayEntry* entry = SDL_InsertTrayEntryAt(_menu, pos, label, flags);
 	if (!entry) return nullptr;
 	system_tray_menu_item* item = new system_tray_menu_item(entry, type);
+	system_tray_gc_notify(item, g_system_tray_menu_item_type);
+	std::lock_guard<std::recursive_mutex> lock(system_tray_gc_mutex());
 	_items.emplace_back(item);
 	return item;
+}
+void system_tray_menu::enum_references(asIScriptEngine* engine) {
+	std::lock_guard<std::recursive_mutex> lock(system_tray_gc_mutex());
+	for (auto& item : _items) engine->GCEnumCallback(item.get());
+}
+void system_tray_menu::release_all_references(asIScriptEngine* engine) {
+	// A menu that is garbage is in a tray that is going (see system_tray_menu_item::release_all_references): an item the script still holds is invalid from now on, as it would be once that tray went.
+	std::vector<Poco::AutoPtr<system_tray_menu_item>> items;
+	{
+		std::lock_guard<std::recursive_mutex> lock(system_tray_gc_mutex());
+		items.swap(_items);
+		for (auto& item : items) item->invalidate();
+	}
 }
 system_tray_menu_item* system_tray_menu::insert_item(const std::string& label, asIScriptFunction* callback, bool disabled, int pos) {
 	system_tray_menu_item* item = make_entry(pos, label.c_str(), SDL_TRAYENTRY_BUTTON | (disabled ? SDL_TRAYENTRY_DISABLED : 0), SYSTEM_TRAY_ITEM);
@@ -741,8 +839,10 @@ void system_tray_menu::remove_entry(system_tray_menu_item* item) {
 	SDL_TrayEntry* entry = item->get_sdl_entry();
 	item->invalidate(); // With its submenu, which SDL frees with the entry.
 	SDL_RemoveTrayEntry(entry);
+	Poco::AutoPtr<system_tray_menu_item> removed; // let go of outside the lock
+	std::lock_guard<std::recursive_mutex> lock(system_tray_gc_mutex());
 	for (auto it = _items.begin(); it != _items.end(); ++it) {
-		if (it->get() == item) { _items.erase(it); break; }
+		if (it->get() == item) { removed = *it; _items.erase(it); break; }
 	}
 }
 int system_tray_menu::get_entry_count() const {
@@ -753,7 +853,12 @@ int system_tray_menu::get_entry_count() const {
 CScriptArray* system_tray_menu::get_entries() {
 	asITypeInfo* array_type = get_array_type("array<system_tray_menu_item@>");
 	CScriptArray* arr = CScriptArray::Create(array_type);
-	for (auto& item : _items) {
+	std::vector<Poco::AutoPtr<system_tray_menu_item>> items;
+	{
+		std::lock_guard<std::recursive_mutex> lock(system_tray_gc_mutex());
+		items = _items;
+	}
+	for (auto& item : items) {
 		system_tray_menu_item* ptr = item.get();
 		arr->InsertLast(&ptr);
 	}
@@ -764,21 +869,42 @@ CScriptArray* system_tray_menu::get_entries() {
 system_tray::system_tray(const std::string& tooltip, graphic* icon) : _tray(nullptr), _refcount(1) {
 	_tray = SDL_CreateTray(icon ? icon->get_surface() : nullptr, tooltip.empty() ? nullptr : tooltip.c_str());
 }
-system_tray::~system_tray() {
-	if (_menu) _menu->invalidate(); // See system_tray_menu_item::invalidate.
-	_menu = nullptr;
-	if (_tray) { SDL_DestroyTray(_tray); _tray = nullptr; }
+void system_tray::teardown() {
+	Poco::AutoPtr<system_tray_menu> menu;
+	SDL_Tray* tray;
+	{
+		std::lock_guard<std::recursive_mutex> lock(system_tray_gc_mutex());
+		if (_menu) _menu->invalidate(); // See system_tray_menu_item::invalidate.
+		menu = _menu;
+		_menu = nullptr;
+		tray = _tray;
+		_tray = nullptr;
+	}
+	system_tray_destroy(tray);
 }
+system_tray::~system_tray() { teardown(); }
+void system_tray::enum_references(asIScriptEngine* engine) {
+	std::lock_guard<std::recursive_mutex> lock(system_tray_gc_mutex());
+	if (_menu) engine->GCEnumCallback(_menu.get());
+}
+void system_tray::release_all_references(asIScriptEngine* engine) { teardown(); } // a tray that is garbage goes now, menus first
 system_tray_menu* system_tray::get_menu() {
 	if (_menu) return _menu.get();
 	if (!_tray) return nullptr;
 	SDL_TrayMenu* menu = SDL_GetTrayMenu(_tray);
 	if (!menu) menu = SDL_CreateTrayMenu(_tray);
 	if (!menu) return nullptr;
-	_menu = new system_tray_menu(menu);
+	system_tray_menu* m = new system_tray_menu(menu);
+	system_tray_gc_notify(m, g_system_tray_menu_type);
+	std::lock_guard<std::recursive_mutex> lock(system_tray_gc_mutex());
+	_menu = m;
 	return _menu.get();
 }
-static system_tray* system_tray_factory(const std::string& tooltip, graphic* icon) { return new system_tray(tooltip, icon); }
+static system_tray* system_tray_factory(const std::string& tooltip, graphic* icon) {
+	system_tray* t = new system_tray(tooltip, icon);
+	system_tray_gc_notify(t, g_system_tray_type);
+	return t;
+}
 
 // The script reads the native window as a uint64; a pointer is 4 bytes on 32-bit targets.
 asQWORD game_window_get_native_window(const game_window& window) { return asQWORD(reinterpret_cast<uintptr_t>(window.get_native_window())); }
@@ -925,9 +1051,27 @@ void RegisterUI(asIScriptEngine* engine) {
 	engine->RegisterEnumValue("system_tray_menu_item_type", "SYSTEM_TRAY_SEPARATOR", SYSTEM_TRAY_SEPARATOR);
 	engine->RegisterEnumValue("system_tray_menu_item_type", "SYSTEM_TRAY_SUBMENU", SYSTEM_TRAY_SUBMENU);
 	// Register types first so cross-referencing method signatures and the funcdef work.
-	engine->RegisterObjectType("system_tray_menu_item", 0, asOBJ_REF);
-	engine->RegisterObjectType("system_tray_menu", 0, asOBJ_REF);
-	engine->RegisterObjectType("system_tray", 0, asOBJ_REF);
+	int tray_item_type_id = engine->RegisterObjectType("system_tray_menu_item", 0, asOBJ_REF | asOBJ_GC); // See system_tray_gc_mutex().
+	int tray_menu_type_id = engine->RegisterObjectType("system_tray_menu", 0, asOBJ_REF | asOBJ_GC);
+	int tray_type_id = engine->RegisterObjectType("system_tray", 0, asOBJ_REF | asOBJ_GC);
+	g_system_tray_menu_item_type = tray_item_type_id >= 0 ? engine->GetTypeInfoById(tray_item_type_id) : nullptr;
+	g_system_tray_menu_type = tray_menu_type_id >= 0 ? engine->GetTypeInfoById(tray_menu_type_id) : nullptr;
+	g_system_tray_type = tray_type_id >= 0 ? engine->GetTypeInfoById(tray_type_id) : nullptr;
+	engine->RegisterObjectBehaviour("system_tray_menu_item", asBEHAVE_GETREFCOUNT, "int f()", asMETHOD(system_tray_menu_item, get_ref_count), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour("system_tray_menu_item", asBEHAVE_SETGCFLAG, "void f()", asMETHOD(system_tray_menu_item, set_gc_flag), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour("system_tray_menu_item", asBEHAVE_GETGCFLAG, "bool f()", asMETHOD(system_tray_menu_item, get_gc_flag), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour("system_tray_menu_item", asBEHAVE_ENUMREFS, "void f(int&in)", asMETHOD(system_tray_menu_item, enum_references), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour("system_tray_menu_item", asBEHAVE_RELEASEREFS, "void f(int&in)", asMETHOD(system_tray_menu_item, release_all_references), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour("system_tray_menu", asBEHAVE_GETREFCOUNT, "int f()", asMETHOD(system_tray_menu, get_ref_count), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour("system_tray_menu", asBEHAVE_SETGCFLAG, "void f()", asMETHOD(system_tray_menu, set_gc_flag), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour("system_tray_menu", asBEHAVE_GETGCFLAG, "bool f()", asMETHOD(system_tray_menu, get_gc_flag), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour("system_tray_menu", asBEHAVE_ENUMREFS, "void f(int&in)", asMETHOD(system_tray_menu, enum_references), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour("system_tray_menu", asBEHAVE_RELEASEREFS, "void f(int&in)", asMETHOD(system_tray_menu, release_all_references), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour("system_tray", asBEHAVE_GETREFCOUNT, "int f()", asMETHOD(system_tray, get_ref_count), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour("system_tray", asBEHAVE_SETGCFLAG, "void f()", asMETHOD(system_tray, set_gc_flag), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour("system_tray", asBEHAVE_GETGCFLAG, "bool f()", asMETHOD(system_tray, get_gc_flag), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour("system_tray", asBEHAVE_ENUMREFS, "void f(int&in)", asMETHOD(system_tray, enum_references), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour("system_tray", asBEHAVE_RELEASEREFS, "void f(int&in)", asMETHOD(system_tray, release_all_references), asCALL_THISCALL);
 	engine->RegisterFuncdef("void system_tray_callback(system_tray_menu_item@ item)");
 	// system_tray_menu_item
 	engine->RegisterObjectBehaviour("system_tray_menu_item", asBEHAVE_ADDREF, "void f()", asMETHOD(system_tray_menu_item, duplicate), asCALL_THISCALL);

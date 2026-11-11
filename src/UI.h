@@ -160,11 +160,18 @@ class system_tray_menu_item {
 	asIScriptFunction* _callback;
 	system_tray_menu_item_type _type;
 	mutable int _refcount;
+	bool _gc_flag = false;
 public:
 	system_tray_menu_item(SDL_TrayEntry* entry, system_tray_menu_item_type type);
 	~system_tray_menu_item(); // defined in .cpp so that system_tray_menu is complete there
-	void duplicate() { asAtomicInc(_refcount); }
-	void release() { if (asAtomicDec(_refcount) < 1) delete this; }
+	void duplicate() { _gc_flag = false; asAtomicInc(_refcount); }
+	void release() { _gc_flag = false; if (asAtomicDec(_refcount) < 1) delete this; }
+	// The garbage collector's behaviours (see system_tray_gc_mutex() in UI.cpp): a tray holds its menu, a menu its items, an item its callback (often a delegate of the object that holds the tray) and its submenu, a cycle the collector couldn't see while these weren't its types, so such an object was never freed (its destructor never ran, its tray stayed in the notification area) once the script let go of it.
+	int get_ref_count() { return _refcount; }
+	void set_gc_flag() { _gc_flag = true; }
+	bool get_gc_flag() { return _gc_flag; }
+	void enum_references(asIScriptEngine* engine);
+	void release_all_references(asIScriptEngine* engine);
 	SDL_TrayEntry* get_sdl_entry() const { return _entry; }
 	bool is_valid() const { return _entry != nullptr; }
 	void invalidate(); // called by system_tray_menu::remove_entry and system_tray_menu::invalidate
@@ -185,11 +192,17 @@ class system_tray_menu {
 	SDL_TrayMenu* _menu;
 	std::vector<Poco::AutoPtr<system_tray_menu_item>> _items;
 	mutable int _refcount;
+	bool _gc_flag = false;
 	system_tray_menu_item* make_entry(int pos, const char* label, SDL_TrayEntryFlags flags, system_tray_menu_item_type type);
 public:
 	system_tray_menu(SDL_TrayMenu* menu);
-	void duplicate() { asAtomicInc(_refcount); }
-	void release() { if (asAtomicDec(_refcount) < 1) delete this; }
+	void duplicate() { _gc_flag = false; asAtomicInc(_refcount); }
+	void release() { _gc_flag = false; if (asAtomicDec(_refcount) < 1) delete this; }
+	int get_ref_count() { return _refcount; } // the garbage collector's behaviours, see system_tray_menu_item
+	void set_gc_flag() { _gc_flag = true; }
+	bool get_gc_flag() { return _gc_flag; }
+	void enum_references(asIScriptEngine* engine);
+	void release_all_references(asIScriptEngine* engine);
 	SDL_TrayMenu* get_sdl_menu() const { return _menu; }
 	system_tray_menu_item* insert_item(const std::string& label, asIScriptFunction* callback = nullptr, bool disabled = false, int pos = -1);
 	system_tray_menu_item* insert_checkbox(const std::string& label, bool checked = false, asIScriptFunction* callback = nullptr, bool disabled = false, int pos = -1);
@@ -206,11 +219,18 @@ class system_tray {
 	SDL_Tray* _tray;
 	Poco::AutoPtr<system_tray_menu> _menu; // lazily created when get_menu() is first called
 	mutable int _refcount;
+	bool _gc_flag = false;
+	void teardown(); // invalidates the menus and destroys the SDL tray, see ~system_tray
 public:
 	system_tray(const std::string& tooltip, graphic* icon);
 	~system_tray();
-	void duplicate() { asAtomicInc(_refcount); }
-	void release() { if (asAtomicDec(_refcount) < 1) delete this; }
+	void duplicate() { _gc_flag = false; asAtomicInc(_refcount); }
+	void release() { _gc_flag = false; if (asAtomicDec(_refcount) < 1) delete this; }
+	int get_ref_count() { return _refcount; } // the garbage collector's behaviours, see system_tray_menu_item
+	void set_gc_flag() { _gc_flag = true; }
+	bool get_gc_flag() { return _gc_flag; }
+	void enum_references(asIScriptEngine* engine);
+	void release_all_references(asIScriptEngine* engine);
 	bool is_valid() const { return _tray != nullptr; }
 	void set_icon(graphic* icon) { if (_tray) SDL_SetTrayIcon(_tray, icon ? icon->get_surface() : nullptr); }
 	void set_tooltip(const std::string& tooltip) { if (_tray) SDL_SetTrayTooltip(_tray, tooltip.empty() ? nullptr : tooltip.c_str()); }
