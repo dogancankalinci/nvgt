@@ -594,6 +594,16 @@ static ma_result ma_libopus_land(ma_libopus* pOpus, ma_uint64 frameIndex, ogg_in
 
     ma_ogg_link_frames_clear(&pOpus->link);
     if (op_pcm_seek((OggOpusFile*)pOpus->of, (ogg_int64_t)frameIndex) != 0) {
+        /*
+        Neither: the frames held before are gone with the link, so the cursor no longer reaches where libopusfile is, past the frame.
+        The place it tells is where reads go on from, which a caller finding the cursor moved by the failed seek puts back.
+        */
+        ogg_int64_t now = op_pcm_tell((OggOpusFile*)pOpus->of);
+        pOpus->inHole = MA_FALSE;
+        pOpus->silenceOwed = 0;
+        if (now >= 0) {
+            pOpus->cursor = (ma_uint64)now;
+        }
         return result;
     }
 
