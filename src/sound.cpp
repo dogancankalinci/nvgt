@@ -1770,18 +1770,23 @@ struct pcm_queue {
 	ma_pcm_rb rb;
 	// Frames written into the ring buffer and read out of it since it began, and the frame up to which the reader drops what it reads: a discard is a position rather than a count of what is queued, which, taken while the reader was copying frames out, as MiniAudio's ring buffer copies before it commits the read, still held those, so that the next read dropped as many frames written after the discard.
 	std::atomic<ma_uint64> written{0}, taken{0}, discard_to{0};
+	bool initialized = false; // So that one dropped on a throw, as on running out of memory, frees its ring buffer, while one uninitialised already isn't again.
 	ma_result init(ma_format format, ma_uint32 channels, ma_uint32 frames) {
 		ma_result result = ma_pcm_rb_init(format, channels, frames, nullptr, nullptr, &rb);
 		if (result != MA_SUCCESS) return result;
 		ma_data_source_config config = ma_data_source_config_init();
 		config.vtable = &vtable;
 		if ((result = ma_data_source_init(&config, &base)) != MA_SUCCESS) ma_pcm_rb_uninit(&rb);
+		else initialized = true;
 		return result;
 	}
 	void uninit() {
+		if (!initialized) return;
+		initialized = false;
 		ma_data_source_uninit(&base);
 		ma_pcm_rb_uninit(&rb);
 	}
+	~pcm_queue() { uninit(); }
 	// By the writer, or with it held off: what was written so far goes.
 	void discard() { discard_to.store(written.load()); }
 	// By the writer, once frames are committed.
@@ -5281,10 +5286,10 @@ public:
 			if ((g_soundsystem_last_error = made_queue->init(format, channels, buffer_size)) != MA_SUCCESS) return false;
 			if (snd) close_to_reload();
 			if (!sample_rate) sample_rate = get_engine()->get_sample_rate();
+			// As load_special() makes a sound: not attached by MiniAudio, so without the graph lock, and handed to snd once made. Before the queue is the sound's: running out of memory making it left the queue with no sound to read it, taken by every later stream_pcm() for one running, which then refused or timed out.
+			held_sound_ptr made(new held_sound());
 			pcm_stream = std::move(made_queue);
 			ma_pcm_rb_set_sample_rate(&pcm_stream->rb, sample_rate);
-			// As load_special() makes a sound: not attached by MiniAudio, so without the graph lock, and handed to snd once made.
-			held_sound_ptr made(new held_sound());
 			if ((g_soundsystem_last_error = ma_sound_init_from_data_source(get_engine()->get_ma_engine(), float_source(&pcm_stream->base, view, get_engine()->get_channels()), MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT, nullptr, &*made)) != MA_SUCCESS) {
 				view.reset();
 				pcm_stream->uninit();
