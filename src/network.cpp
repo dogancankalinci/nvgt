@@ -190,9 +190,15 @@ unsigned int network::get_peer_average_round_trip_time(asQWORD peer_id) {
 	return peer->roundTripTime;
 }
 
+// Whether a channel number is one of the channels set up (0 to max_channels - 1; with max_channels 0 ENet still gives every peer
+// channel 0). It was tested with >, so channel max_channels passed: sent to one peer ENet refused it (false), but a broadcast on it
+// returned true and reached nobody.
+static bool channel_set_up(unsigned char channel, unsigned char channel_count) {
+	return channel < (channel_count ? channel_count : 1);
+}
 bool network::send(asQWORD peer_id, const std::string& message, unsigned char channel, bool reliable) {
 	std::lock_guard<std::recursive_mutex> lock(mtx);
-	if (!host || channel > channel_count) return false;
+	if (!host || !channel_set_up(channel, channel_count)) return false;
 	ENetPeer* peer = get_peer(peer_id);
 	if (peer_id && !peer) return false;
 	ENetPacket* packet = enet_packet_create(message.c_str(), message.size(), (reliable ? ENET_PACKET_FLAG_RELIABLE : 0));
@@ -206,7 +212,7 @@ bool network::send(asQWORD peer_id, const std::string& message, unsigned char ch
 }
 bool network::send_peer(asQWORD peer, const std::string& message, unsigned char channel, bool reliable) {
 	std::lock_guard<std::recursive_mutex> lock(mtx);
-	if (!host || channel > channel_count) return false;
+	if (!host || !channel_set_up(channel, channel_count)) return false;
 	ENetPeer* peer_obj = reinterpret_cast<ENetPeer*>(peer);
 	if (peer < asQWORD(host->peers) || peer >= asQWORD(host->peers + host->peerCount) || (peer - asQWORD(host->peers)) % sizeof(ENetPeer) != 0) return false;
 	ENetPacket* packet = enet_packet_create(message.c_str(), message.size(), (reliable ? ENET_PACKET_FLAG_RELIABLE : 0));
