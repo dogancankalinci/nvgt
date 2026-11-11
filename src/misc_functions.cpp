@@ -34,6 +34,13 @@
 #include <Poco/UTF8Encoding.h>
 #include <ctime>
 #include <sstream>
+#include <istream>
+#include <memory>
+#include <mutex>
+#include <thread>
+#include <chrono>
+#include <cerrno>
+#include <cstring>
 #include <angelscript.h>
 #include <scriptarray.h>
 #include <SDL3/SDL.h>
@@ -105,40 +112,196 @@ enum process_flags {
 	PROCESS_CAPTURE = 128,         // convenience flag: forces PROCESS_PIPE_STDOUT | PROCESS_PIPE_STDERR
 };
 
-// close_cb called by datastream when closing. Detaches the underlying SDL_IOStream handle so that close doesn't try to SDL_CloseIO a stream owned by SDL_Process.
-static void process_stream_detach_cb(datastream* ds) {
-	if (ds->user) static_cast<sdl_file_ios*>(ds->user)->detach(); // user is then nulled by datastream::close() after calling the callback; the stream itself is deleted by the datastream as it owns _istr/_ostr.
+// close_cb of a process's stdin datastream. Closing it closes the pipe, which is how a child that reads its input to the end learns it has all of it: before, the pipe stayed open until the process object went, so `p.stdin.close(); p.read()` with such a child (sort, a filter) waited for good. The stream's buffer is flushed and let go of first; SDL_CloseIO then also makes the SDL_Process forget the stream (its cleanup callback), so that SDL_DestroyProcess doesn't close it again.
+static void process_stdin_close_cb(datastream* ds) {
+	sdl_file_ios* fs = static_cast<sdl_file_ios*>(ds->user);
+	if (!fs) return;
+	SDL_IOStream* io = fs->nativeHandle();
+	fs->detach();
+	if (io) SDL_CloseIO(io);
+}
+
+// A process's stdout or stderr pipe, shared with the datastream the script may hold on it. The SDL_IOStream (non-blocking) belongs to the SDL_Process; io is nulled when the process object lets go of it. A child stops once it has written what a pipe holds until someone reads it, so wait(), read() and running move what it writes into pending, which read(), stdout and stderr serve before the pipe: otherwise a talkative child never ended (PROCESS_WAIT, wait() and the legacy run(..., true, ...) never returned), also where run() adds the pipes itself because no console is available.
+struct process_pipe {
+	std::mutex mtx;
+	SDL_IOStream* io;
+	std::string pending;
+	size_t pending_pos = 0;
+	bool ended = false; // every writer closed the pipe, or reading it failed
+	explicit process_pipe(SDL_IOStream* io) : io(io) {}
+	size_t read_device(char* buffer, size_t length) { // mtx held; never blocks
+		if (!io || ended) return 0;
+		size_t n = SDL_ReadIO(io, buffer, length);
+		if (n == 0 && SDL_GetIOStatus(io) != SDL_IO_STATUS_NOT_READY) ended = true;
+		return n;
+	}
+	bool drain() { // true if anything was moved
+		std::lock_guard<std::mutex> lock(mtx);
+		char buffer[16384];
+		bool moved = false;
+		size_t n;
+		while ((n = read_device(buffer, sizeof(buffer))) > 0) {
+			if (pending_pos) { pending.erase(0, pending_pos); pending_pos = 0; }
+			pending.append(buffer, n);
+			moved = true;
+		}
+		return moved;
+	}
+	size_t read(char* buffer, size_t length) {
+		std::lock_guard<std::mutex> lock(mtx);
+		if (pending_pos < pending.size()) {
+			size_t n = std::min(length, pending.size() - pending_pos);
+			memcpy(buffer, pending.data() + pending_pos, n);
+			pending_pos += n;
+			if (pending_pos == pending.size()) { pending.clear(); pending_pos = 0; }
+			return n;
+		}
+		return read_device(buffer, length);
+	}
+	bool done() { std::lock_guard<std::mutex> lock(mtx); return !io || ended; }
+};
+class process_output_buf : public std::streambuf {
+	std::shared_ptr<process_pipe> pipe;
+	char buffer[4096];
+protected:
+	int_type underflow() override {
+		if (gptr() < egptr()) return traits_type::to_int_type(*gptr());
+		size_t n = pipe->read(buffer, sizeof(buffer));
+		if (!n) return traits_type::eof(); // nothing yet, or the end: as the SDL stream wrapper did (the datastream sets skip_eof)
+		setg(buffer, buffer, buffer + n);
+		return traits_type::to_int_type(*gptr());
+	}
+public:
+	explicit process_output_buf(std::shared_ptr<process_pipe> p) : pipe(std::move(p)) { setg(buffer, buffer, buffer); }
+	void take_unread(std::string& out) { out.append(gptr(), egptr()); setg(buffer, buffer, buffer); }
+};
+class process_output_stream : public std::istream {
+	process_output_buf buf;
+public:
+	explicit process_output_stream(std::shared_ptr<process_pipe> p) : std::istream(nullptr), buf(std::move(p)) { rdbuf(&buf); }
+	void take_unread(std::string& out) { buf.take_unread(out); }
+};
+
+// A process let go of while its child may still write to its stdout/stderr pipes: SDL_DestroyProcess closed them under the child, whose next write then failed (SIGPIPE ends a POSIX child), as the legacy bool run() did to every child at once. A thread of its own now reads and discards what the child writes until every writer has closed the pipes; it makes no SDL call, as it may still run while SDL shuts down. The SDL_Process is destroyed afterwards by the next run() or process release (on exit, the system reclaims it).
+#ifdef _WIN32
+typedef HANDLE process_native_pipe;
+#else
+typedef int process_native_pipe;
+#endif
+struct process_orphans {
+	std::mutex mtx;
+	std::vector<SDL_Process*> done;
+};
+static process_orphans& get_process_orphans() {
+	static process_orphans* orphans = new process_orphans(); // never destroyed: a drain thread may outlive static destruction
+	return *orphans;
+}
+static void process_destroy_orphans() {
+	std::vector<SDL_Process*> done;
+	{
+		process_orphans& o = get_process_orphans();
+		std::lock_guard<std::mutex> lock(o.mtx);
+		done.swap(o.done);
+	}
+	for (SDL_Process* proc : done) SDL_DestroyProcess(proc);
+}
+static int process_discard(process_native_pipe h) { // reads what the pipe holds now: 1 something read, 0 nothing yet, -1 the pipe ended
+	char buffer[16384];
+	int result = 0;
+	for (;;) {
+		#ifdef _WIN32
+		DWORD n = 0;
+		if (!ReadFile(h, buffer, sizeof(buffer), &n, nullptr)) return GetLastError() == ERROR_NO_DATA ? result : -1;
+		if (n == 0) return result;
+		#else
+		ssize_t n = ::read(h, buffer, sizeof(buffer));
+		if (n < 0 && errno == EINTR) continue;
+		if (n < 0) return errno == EAGAIN || errno == EWOULDBLOCK ? result : -1;
+		if (n == 0) return -1;
+		#endif
+		result = 1;
+	}
+}
+static bool process_drain_orphan(SDL_Process* proc, std::vector<process_native_pipe> pipes) {
+	try {
+		std::thread([proc, pipes]() mutable {
+			unsigned delay = 1;
+			while (!pipes.empty()) {
+				bool got = false;
+				for (size_t i = 0; i < pipes.size();) {
+					int r = process_discard(pipes[i]);
+					if (r < 0) { pipes.erase(pipes.begin() + i); continue; }
+					if (r > 0) got = true;
+					i++;
+				}
+				if (pipes.empty()) break;
+				if (got) delay = 1;
+				else {
+					std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+					delay = std::min(delay * 2, 50u);
+				}
+			}
+			process_orphans& o = get_process_orphans();
+			std::lock_guard<std::mutex> lock(o.mtx);
+			o.done.push_back(proc);
+		}).detach();
+		return true;
+	} catch (const std::exception&) { return false; } // no thread: the pipes close as before
+}
+static bool process_native_handle(SDL_IOStream* io, process_native_pipe& h) {
+	SDL_PropertiesID props = SDL_GetIOProperties(io);
+	#ifdef _WIN32
+	h = static_cast<HANDLE>(SDL_GetPointerProperty(props, SDL_PROP_IOSTREAM_WINDOWS_HANDLE_POINTER, nullptr));
+	return h && h != INVALID_HANDLE_VALUE;
+	#else
+	h = static_cast<int>(SDL_GetNumberProperty(props, SDL_PROP_IOSTREAM_FILE_DESCRIPTOR_NUMBER, -1));
+	return h >= 0;
+	#endif
 }
 
 class process {
 	SDL_Process* _proc;
+	std::shared_ptr<process_pipe> _out;
+	std::shared_ptr<process_pipe> _err;
 	Poco::AutoPtr<datastream> _stdin_ds;
 	Poco::AutoPtr<datastream> _stdout_ds;
 	Poco::AutoPtr<datastream> _stderr_ds;
 	mutable int _refcount;
-	datastream* make_stream(SDL_IOStream* io, std::ios::openmode mode) {
-		if (!io) return nullptr;
-		datastream* ds = mode & std::ios::in? new datastream(new sdl_file_input_stream(io), nullptr, "", Poco::BinaryReader::NATIVE_BYTE_ORDER, nullptr) : new datastream(nullptr, new sdl_file_output_stream(io), "", Poco::BinaryReader::NATIVE_BYTE_ORDER, nullptr);
-		ds->set_close_callback(process_stream_detach_cb);
+	static bool drain(const std::shared_ptr<process_pipe>& pipe) { return pipe && pipe->drain(); }
+	bool drain_both() { bool out = drain(_out); return drain(_err) || out; }
+	datastream* make_output_stream(const std::shared_ptr<process_pipe>& pipe) {
+		datastream* ds = new datastream(new process_output_stream(pipe), nullptr, "", Poco::BinaryReader::NATIVE_BYTE_ORDER, nullptr);
 		ds->binary = false;
 		ds->skip_eof = true;
-		if (mode & std::ios::out) ds->autoflush = true;
 		return ds;
 	}
-	void detach_stream(Poco::AutoPtr<datastream>& ds) {
-		sdl_file_ios* fs = nullptr;
-		if (ds && ds->get_istr()) fs = dynamic_cast<sdl_file_ios*>(ds->get_istr());
-		else if (ds && ds->get_ostr()) fs = dynamic_cast<sdl_file_ios*>(ds->get_ostr());
+	void detach_stdin() {
+		sdl_file_ios* fs = _stdin_ds && _stdin_ds->get_ostr() ? dynamic_cast<sdl_file_ios*>(_stdin_ds->get_ostr()) : nullptr;
 		if (fs) fs->detach();
 	}
 public:
-	process(SDL_Process* proc) : _proc(proc), _refcount(1) {}
+	process(SDL_Process* proc) : _proc(proc), _refcount(1) {
+		SDL_PropertiesID props = SDL_GetProcessProperties(proc);
+		if (SDL_IOStream* io = static_cast<SDL_IOStream*>(SDL_GetPointerProperty(props, SDL_PROP_PROCESS_STDOUT_POINTER, nullptr))) _out = std::make_shared<process_pipe>(io);
+		if (SDL_IOStream* io = static_cast<SDL_IOStream*>(SDL_GetPointerProperty(props, SDL_PROP_PROCESS_STDERR_POINTER, nullptr))) _err = std::make_shared<process_pipe>(io);
+	}
 	~process() {
-		// Detach all stdio wrappers before destroying the SDL process; SDL_DestroyProcess frees the underlying SDL_IOStreams.
-		detach_stream(_stdin_ds);
-		detach_stream(_stdout_ds);
-		detach_stream(_stderr_ds);
+		// Let go of every stdio wrapper before the SDL process goes; SDL_DestroyProcess frees the underlying SDL_IOStreams. A stdout/stderr datastream the script still holds serves what was moved off the pipe, then ends.
+		detach_stdin();
+		std::vector<process_native_pipe> open_pipes;
+		for (std::shared_ptr<process_pipe>* pipe : {&_out, &_err}) {
+			if (!*pipe) continue;
+			std::lock_guard<std::mutex> lock((*pipe)->mtx);
+			process_native_pipe h;
+			if ((*pipe)->io && !(*pipe)->ended && process_native_handle((*pipe)->io, h)) open_pipes.push_back(h);
+			(*pipe)->io = nullptr;
+		}
+		if (_proc && !open_pipes.empty()) {
+			if (SDL_IOStream* in = static_cast<SDL_IOStream*>(SDL_GetPointerProperty(SDL_GetProcessProperties(_proc), SDL_PROP_PROCESS_STDIN_POINTER, nullptr))) SDL_CloseIO(in); // the child's input ends now, as it did when the process was destroyed here
+			if (process_drain_orphan(_proc, std::move(open_pipes))) _proc = nullptr;
+		}
 		if (_proc) SDL_DestroyProcess(_proc);
+		process_destroy_orphans();
 	}
 	void duplicate() { asAtomicInc(_refcount); }
 	void release() { if (asAtomicDec(_refcount) < 1) delete this; }
@@ -148,52 +311,82 @@ public:
 		return SDL_GetNumberProperty(SDL_GetProcessProperties(_proc), SDL_PROP_PROCESS_PID_NUMBER, -1);
 	}
 	bool kill(bool force = true) { return _proc && SDL_KillProcess(_proc, force); }
-	bool running() const { return _proc && !SDL_WaitProcess(_proc, false, nullptr); }
-	int wait() { int code = -1; if (_proc) SDL_WaitProcess(_proc, true, &code); return code; }
+	bool running() {
+		if (!_proc) return false;
+		drain_both(); // a script polling this would otherwise wait for good on a child stalled writing
+		return !SDL_WaitProcess(_proc, false, nullptr);
+	}
+	int wait() {
+		int code = -1;
+		if (!_proc) return code;
+		if (!_out && !_err) {
+			SDL_WaitProcess(_proc, true, &code);
+			return code;
+		}
+		for (unsigned delay = 1; !SDL_WaitProcess(_proc, false, &code);) {
+			if (drain_both()) delay = 1;
+			else {
+				SDL_Delay(delay);
+				delay = std::min(delay * 2, 20u);
+			}
+		}
+		drain_both(); // what was written just before the end
+		return code;
+	}
 	std::string read() {
-		if (!_proc) return "";
-		size_t datasize = 0;
-		void* data = SDL_ReadProcess(_proc, &datasize, nullptr);
-		if (!data) return "";
-		std::string result(static_cast<char*>(data), datasize);
-		SDL_free(data);
+		if (!_proc || !_out) return "";
+		// stdout to its end: first what the script's stdout datastream took off the pipe and hasn't read (read() used to skip it), then what wait() and running moved off it. stderr is drained meanwhile: a child stalled writing to it would never end its stdout.
+		std::string result;
+		if (_stdout_ds) if (process_output_stream* os = dynamic_cast<process_output_stream*>(_stdout_ds->get_istr())) os->take_unread(result);
+		char buffer[16384];
+		for (unsigned delay = 1;;) {
+			size_t n = _out->read(buffer, sizeof(buffer));
+			if (n) {
+				result.append(buffer, n);
+				delay = 1;
+				continue;
+			}
+			if (_out->done()) break;
+			if (drain(_err)) delay = 1;
+			else {
+				SDL_Delay(delay);
+				delay = std::min(delay * 2, 20u);
+			}
+		}
+		wait();
 		return result;
 	}
 	datastream* get_stdin() {
 		if (!_proc) return nullptr;
 		if (!_stdin_ds) {
-			SDL_IOStream* io = SDL_GetProcessInput(_proc);
-			datastream* ds = make_stream(io, std::ios::out);
-			if (ds) _stdin_ds = ds;
-			else return nullptr;
+			SDL_IOStream* io = static_cast<SDL_IOStream*>(SDL_GetPointerProperty(SDL_GetProcessProperties(_proc), SDL_PROP_PROCESS_STDIN_POINTER, nullptr));
+			if (!io) return nullptr;
+			sdl_file_output_stream* os = new sdl_file_output_stream(io);
+			datastream* ds = new datastream(nullptr, os, "", Poco::BinaryReader::NATIVE_BYTE_ORDER, nullptr);
+			ds->user = static_cast<sdl_file_ios*>(os);
+			ds->set_close_callback(process_stdin_close_cb);
+			ds->binary = false;
+			ds->skip_eof = true;
+			ds->autoflush = true;
+			_stdin_ds = ds;
 		}
 		return _stdin_ds.get();
 	}
 	datastream* get_stdout() {
-		if (!_proc) return nullptr;
-		if (!_stdout_ds) {
-			SDL_IOStream* io = SDL_GetProcessOutput(_proc);
-			datastream* ds = make_stream(io, std::ios::in);
-			if (ds) _stdout_ds = ds;
-			else return nullptr;
-		}
+		if (!_proc || !_out) return nullptr;
+		if (!_stdout_ds) _stdout_ds = make_output_stream(_out);
 		return _stdout_ds.get();
 	}
 	datastream* get_stderr() {
-		if (!_proc) return nullptr;
-		if (!_stderr_ds) {
-			SDL_PropertiesID props = SDL_GetProcessProperties(_proc);
-			SDL_IOStream* io = props ? static_cast<SDL_IOStream*>(SDL_GetPointerProperty(props, SDL_PROP_PROCESS_STDERR_POINTER, nullptr)) : nullptr;
-			datastream* ds = make_stream(io, std::ios::in);
-			if (ds) _stderr_ds = ds;
-			else return nullptr;
-		}
+		if (!_proc || !_err) return nullptr;
+		if (!_stderr_ds) _stderr_ds = make_output_stream(_err);
 		return _stderr_ds.get();
 	}
 };
 
 process* run(const std::vector<std::string>& args, int flags, const std::string& workdir) {
 	if (args.empty()) return nullptr;
+	process_destroy_orphans();
 	// Expand convenience flags and auto-pipe stdout/stderr when no console is available (e.g. GUI subsystem on Windows, where DuplicateHandle on invalid stdio handles would otherwise cause CreateProcessWithProperties to fail).
 	if ((flags & PROCESS_CAPTURE) || !is_console_available()) flags |= PROCESS_PIPE_STDOUT | PROCESS_PIPE_STDERR;
 	std::vector<const char*> argv;
