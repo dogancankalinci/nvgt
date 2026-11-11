@@ -30,7 +30,8 @@ class map_area {
 	bool gc_flag = false;
 	bool is_unfiltered(asIScriptFunction* filter_callback);
 public:
-	coordinate_map* parent;
+	coordinate_map* parent; // not a reference the area holds: read and changed under coordinate_map::links_mutex() only (see get_map())
+	coordinate_map* get_map() const;
 	float minx;
 	float maxx;
 	float miny;
@@ -77,15 +78,18 @@ class coordinate_map {
 	ankerl::unordered_dense::map<hashpoint, map_frame*, hashpoint_hash, hashpoint_equals> frames[total_frame_sizes];
 	int ref_count;
 	bool gc_flag = false;
+	bool collected = false; // given to the garbage collector, which then holds a reference of its own
+	friend coordinate_map* new_coordinate_map();
 public:
-	// Held while the frames' lists of areas change and while the garbage collector reads them, which with garbage_collect_mode 3 it does on a thread of its own. Never held while script code runs.
-	std::recursive_mutex frames_mtx;
+	// One lock for every map, held while the frames' lists of areas, a map's set of areas or an area's parent change and while the garbage collector reads the frames, and around a map's last release. Every map and area is now freed by the collector's last release, on its own thread with garbage_collect_mode 3 or on any thread that makes a garbage-collected object, so a map going there cleared the parent of the areas a script still held while that script read it, and an area going there took itself out of a map the script was adding to. A lock of the map's own went with the map. Never destroyed, never held while script code runs.
+	static std::recursive_mutex& links_mutex();
 	std::unordered_set<map_area*> areas;
 	coordinate_map() : ref_count(1) {}
 	void add_ref();
 	void release();
 	// The garbage collector's behaviours. The frames hold references to the areas, whose primary data is often the object that holds the map: a cycle the collector couldn't see while coordinate_map and coordinate_map_area weren't its types, so such an object was never freed (its destructor never ran) once the script let go of it.
 	int get_ref_count() { return ref_count; }
+	int collector_refs() const { return collected ? 1 : 0; }
 	void set_gc_flag() { gc_flag = true; }
 	bool get_gc_flag() { return gc_flag; }
 	void enum_references(asIScriptEngine* engine);
