@@ -1743,10 +1743,18 @@ BOOL legacy_sound::play_wait() {
 		return FALSE;
 	QWORD pos = BASS_Mixer_ChannelGetPosition(channel, BASS_POS_BYTE);
 	QWORD len = BASS_ChannelGetLength(channel, BASS_POS_BYTE);
-	if (len - pos < 0)
-		return FALSE;
-	double time_to_sleep = BASS_ChannelBytes2Seconds(channel, len - pos) / get_pitch();
-	nvgt_wait(time_to_sleep * 1000);
+	// The positions are unsigned, so a check of len - pos < 0 never held: a length or position BASS couldn't tell (-1, as for a stream of unknown length) made the wait millions of years, cut to an int from a double too large for it, which is undefined (no wait at all on x86, 24.8 days on ARM). Without a time to count down, as there, or with a pitch that gives none, the sound is waited for while it plays, as sound.play_wait() waits.
+	double time_to_sleep = len != QWORD(-1) && pos != QWORD(-1) && pos <= len? BASS_ChannelBytes2Seconds(channel, len - pos) / get_pitch() : -1;
+	if (!(time_to_sleep >= 0) || !isfinite(time_to_sleep)) {
+		while (is_playing())
+			nvgt_wait(5);
+		return TRUE;
+	}
+	const double longest = 2147483647; // An int's milliseconds: a longer wait is made of several.
+	for (double ms = time_to_sleep * 1000; ms > 0; ms -= longest)
+		nvgt_wait(ms < longest? int(ms) : int(longest));
+	while (is_playing()) // The time counted from the mixer's position runs out a little before the channel stops, which a play() or play_wait() straight after refused as still playing.
+		nvgt_wait(5);
 	return TRUE;
 }
 
