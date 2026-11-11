@@ -421,7 +421,9 @@ public:
 			else
 				m_session = new SMTPClientSession(m_host, m_port);
 			m_session->login(m_host);
-			m_session->setTimeout(Poco::Timespan(m_timeout * 1000));  // Convert ms to microseconds
+			// Milliseconds to microseconds in 64 bits: in int, 2147484 ms (35.8 minutes) or more overflowed (undefined; in practice a
+			// negative or unrelated timeout).
+			m_session->setTimeout(Poco::Timespan(Poco::Timespan::TimeDiff(m_timeout) * 1000));
 			m_last_error.clear();
 			return true;
 		} catch (const Exception& e) {
