@@ -182,32 +182,50 @@ static void release_later(audio_node* n) {
 	if (t_release_depth > 0) t_deferred_releases.push_back(n);
 	else n->release();
 }
-// Guards every chain's nested_chains, a leaf lock: nothing else is taken under it.
-static std::mutex g_chain_nesting_mutex;
+// The holds of claim_node_hold(), a leaf lock: nothing else is taken under it.
+static std::mutex g_node_holds_mutex;
+static std::unordered_map<const audio_node*, std::vector<const audio_node*>> g_node_holds;
+bool claim_node_hold(const audio_node* holder, const audio_node* held) {
+	if (!holder || !held) return true;
+	if (held == holder) return false;
+	std::lock_guard<std::mutex> lock(g_node_holds_mutex);
+	if (g_node_holds.count(held)) { // Walked only from a node that holds any: most hold none, as a filter.
+		std::vector<const audio_node*> pending{held};
+		std::unordered_set<const audio_node*> walked;
+		while (!pending.empty()) {
+			const audio_node* n = pending.back();
+			pending.pop_back();
+			if (n == holder) return false;
+			if (!walked.insert(n).second) continue;
+			auto it = g_node_holds.find(n);
+			if (it != g_node_holds.end()) pending.insert(pending.end(), it->second.begin(), it->second.end());
+		}
+	}
+	g_node_holds[holder].push_back(held);
+	return true;
+}
+void record_node_hold(const audio_node* holder, const audio_node* held) {
+	if (!holder || !held) return;
+	std::lock_guard<std::mutex> lock(g_node_holds_mutex);
+	g_node_holds[holder].push_back(held);
+}
+void drop_node_hold(const audio_node* holder, const audio_node* held) {
+	if (!holder || !held) return;
+	std::lock_guard<std::mutex> lock(g_node_holds_mutex);
+	auto it = g_node_holds.find(holder);
+	if (it == g_node_holds.end()) return;
+	auto at = find(it->second.begin(), it->second.end(), held);
+	if (at != it->second.end()) it->second.erase(at);
+	if (it->second.empty()) g_node_holds.erase(it);
+}
+void drop_node_holds(const audio_node* holder) {
+	std::lock_guard<std::mutex> lock(g_node_holds_mutex);
+	g_node_holds.erase(holder);
+}
 class audio_node_chain_impl : public passthrough_node_impl, public virtual audio_node_chain {
 	std::vector<audio_node*> nodes;
 	std::vector<unsigned int> input_buses; // For each node, the input bus the node before it feeds, which every rewiring attaches to again.
-	// The chains among the nodes, under g_chain_nesting_mutex, registered before the chain calls into one and forgotten only after its last call: a chain is never added to one it is already in at any depth, which the graph's loop check can't tell once a script detaches a node of the outer chain by hand, and which looped every rewiring of either chain through the other forever. A chain so takes a nested chain's lock under its own only while registered, which keeps every chain lock taken outer first.
-	std::vector<audio_node_chain_impl*> nested_chains;
-	// Whether this chain is the given one or holds it at any depth. Under g_chain_nesting_mutex, whose registered chains each hold a reference to those nested in them, keeping every chain walked alive.
-	bool nests(const audio_node_chain_impl* chain) const {
-		std::vector<const audio_node_chain_impl*> pending{this}, walked;
-		while (!pending.empty()) {
-			const audio_node_chain_impl* c = pending.back();
-			pending.pop_back();
-			if (c == chain) return true;
-			if (find(walked.begin(), walked.end(), c) != walked.end()) continue;
-			walked.push_back(c);
-			pending.insert(pending.end(), c->nested_chains.begin(), c->nested_chains.end());
-		}
-		return false;
-	}
-	void forget_nested(audio_node_chain_impl* chain) {
-		if (!chain) return;
-		std::lock_guard<std::mutex> lock(g_chain_nesting_mutex);
-		auto it = find(nested_chains.begin(), nested_chains.end(), chain);
-		if (it != nested_chains.end()) nested_chains.erase(it);
-	}
+	// Each node and the endpoint are claimed (see claim_node_hold()) before the chain calls into them and dropped only after its last call: a chain is never added to one it is already in at any depth, which the graph's loop check can't tell once a script detaches a node of the outer chain by hand, and which looped every rewiring of either chain through the other forever. A chain so takes a nested chain's lock under its own only while it holds it, which keeps every chain lock taken outer first.
 	audio_node* endpoint;
 	unsigned int endpoint_input_bus_index = 0; // The endpoint's input bus the chain feeds, which every rewiring attaches to again.
 	// The input bus the node at index takes the chain on, index being nodes.size() for the endpoint.
@@ -235,6 +253,7 @@ public:
 		if (endpoint) attach_output_bus(0, endpoint, 0);
 	}
 	~audio_node_chain_impl() {
+		drop_node_holds(static_cast<audio_node*>(this));
 		// We only release references, all attachments are kept in tact. Call clear(true) to detach all known nodes instead.
 		for (audio_node* node: nodes) node->release();
 		if (endpoint) endpoint->release();
@@ -276,20 +295,15 @@ public:
 		}
 		audio_node* prev = new_idx? nodes[new_idx -1] : nullptr;
 		audio_node* next = new_idx? (new_idx < nodes.size()? nodes[new_idx] : endpoint) : (!nodes.empty()? first() : endpoint);
-		auto nested = dynamic_cast<audio_node_chain_impl*>(node);
-		if (nested) { // Checked and registered together, before any call into the chain, so that two threads nesting two chains into each other at once can't both pass.
-			std::lock_guard<std::mutex> lock(g_chain_nesting_mutex);
-			if (nested->nests(this)) {
-				g_soundsystem_last_error = MA_INVALID_ARGS;
-				return false;
-			}
-			nested_chains.push_back(nested);
+		if (!claim_node_hold(static_cast<audio_node*>(this), node)) { // Checked and recorded together, before any call into the node, so that two threads nesting two chains into each other at once can't both pass.
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return false;
 		}
 		// The node before is attached to the new one first, on the new node's input_bus_index, which a node that takes no input, as a sound or data source, refuses with nothing changed; the new node is then attached to the next one on the bus the next one was fed on, and when the new node can't feed it, as with another channel count, the node before goes back to it.
 		unsigned int next_bus = bus_at(new_idx);
 		hold_destination(prev? prev : this);
 		if ((prev && !prev->attach_output_bus(0, node, input_bus_index)) || (!prev && !audio_node_impl::attach_output_bus(0, node, input_bus_index))) {
-			forget_nested(nested);
+			drop_node_hold(static_cast<audio_node*>(this), node);
 			return false;
 		}
 		hold_destination(node); // Once the node was taken, as its output is changed only from here on.
@@ -297,7 +311,7 @@ public:
 			ma_result error = g_soundsystem_last_error;
 			if (prev) prev->attach_output_bus(0, next, next_bus);
 			else audio_node_impl::attach_output_bus(0, next, next_bus);
-			forget_nested(nested);
+			drop_node_hold(static_cast<audio_node*>(this), node);
 			g_soundsystem_last_error = error;
 			return false;
 		}
@@ -341,7 +355,7 @@ public:
 		input_buses.erase(input_buses.begin() + index);
 		removed = node;
 		bool detached = node->detach_output_bus(0);
-		forget_nested(dynamic_cast<audio_node_chain_impl*>(node)); // After the last call into it (see nested_chains).
+		drop_node_hold(static_cast<audio_node*>(this), node); // After the last call into it (see nodes).
 		return detached;
 	}
 	bool remove_node_at(unsigned int index) override {
@@ -363,11 +377,10 @@ public:
 			}
 		}
 		if (success && endpoint) success = audio_node_impl::attach_output_bus(0, endpoint, endpoint_input_bus_index);
-		{
-			std::lock_guard<std::mutex> lock(g_chain_nesting_mutex);
-			nested_chains.clear();
+		for (audio_node* node : nodes) {
+			drop_node_hold(static_cast<audio_node*>(this), node);
+			release_later(node); // As remove_node().
 		}
-		for (audio_node* node : nodes) release_later(node); // As remove_node().
 		nodes.clear();
 		input_buses.clear();
 		return success;
@@ -380,11 +393,19 @@ public:
 	bool put_endpoint(audio_node* node, unsigned int input_bus_index) {
 		rewire_scope scope(*this);
 		audio_node *old = endpoint;
+		// Not the chain itself, one of its nodes, nor one that holds it at any depth, which loop it: the graph's check refuses them only while the chain's attachments are as it made them (see nodes).
+		if (node && (index_of(node) != -1 || !claim_node_hold(static_cast<audio_node*>(this), node))) {
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return false;
+		}
 		{
 			hold_destination(!nodes.empty()? last() : this);
 			if (node) {
 				bool attached = !nodes.empty()? last()->attach_output_bus(0, node, input_bus_index) : audio_node_impl::attach_output_bus(0, node, input_bus_index);
-				if (!attached) return false; // get_endpoint() tells the attach failed.
+				if (!attached) { // get_endpoint() tells the attach failed.
+					drop_node_hold(static_cast<audio_node*>(this), node);
+					return false;
+				}
 				endpoint = node;
 				endpoint->duplicate();
 				endpoint_input_bus_index = input_bus_index;
@@ -394,6 +415,7 @@ public:
 				endpoint = nullptr;
 			}
 		}
+		drop_node_hold(static_cast<audio_node*>(this), old); // One record of it: the node attached again was claimed once more above.
 		release_later(old); // After the chain's lock, as remove_node() lets go of a node, and after the reference just taken, as it can be the node just attached again.
 		return true;
 	}
@@ -993,6 +1015,7 @@ class reverb3d_impl : public passthrough_node_impl, public virtual reverb3d {
 public:
 	reverb3d_impl(audio_engine* e, audio_node* reverb, mixer* destination) : passthrough_node_impl(e), output_mixer(destination), reverb(reverb), min_volume(-7), max_volume(-5), max_volume_distance(7), max_audible_distance(60), volume_curve(0.4) {
 		if (output_mixer) output_mixer->duplicate(); // reverb owns its own reference to output_mixer via attach_output_bus below; this is reverb3d_impl's separate reference for get_mixer().
+		record_node_hold(static_cast<audio_node*>(this), output_mixer); // Nothing holds a reverb3d being made.
 		if (reverb) wire_reverb(reverb);
 	}
 	// Attaches this node to the reverb and the reverb to the destination, keeping the reverb only when it took this node's output, as for one of another channel count it wouldn't. The reverb3d holds a reference of its own to the reverb, as a script can detach this node, which is an audio_node, from it.
@@ -1001,6 +1024,7 @@ public:
 		if (!attach_output_bus(0, verb, 0)) return;
 		reverb = verb;
 		reverb->duplicate();
+		record_node_hold(static_cast<audio_node*>(this), reverb);
 		std::shared_ptr<std::recursive_mutex> send = reverb_used(reverb);
 		if (dynamic_cast<mixer*>(reverb)) send_onward(reverb, output_mixer);
 		else send_counted(reverb, send);
@@ -1023,6 +1047,7 @@ public:
 	}
 	~reverb3d_impl() {
 		last_error_kept kept;
+		drop_node_holds(static_cast<audio_node*>(this));
 		if (reverb) {
 			reverb_let_go(reverb); // A node the script keeps no longer goes on into the destination, which kept a reverb3d's own mixer alive and processed with it.
 			reverb->release();
@@ -1050,9 +1075,16 @@ public:
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return;
 		}
+		// Nor a node that holds this reverb3d at any depth, as a chain it is in, whose loop the graph refuses only while the chain's attachments are as it made them (see claim_node_hold()).
+		if (!claim_node_hold(static_cast<audio_node*>(this), verb)) {
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return;
+		}
 		// A mixer goes into the destination first, which refuses a loop, and then this node into the new reverb, which replaces the link to the old one: either refused leaves the old reverb as it was, rather than let go of before the new one was refused.
-		if (verb_mixer && !send_onward(verb, output_mixer)) return;
-		if (verb? !attach_output_bus(0, verb, 0) : !detach_output_bus(0)) return;
+		if ((verb_mixer && !send_onward(verb, output_mixer)) || (verb? !attach_output_bus(0, verb, 0) : !detach_output_bus(0))) {
+			drop_node_hold(static_cast<audio_node*>(this), verb);
+			return;
+		}
 		audio_node* old = reverb;
 		reverb = verb;
 		if (reverb) {
@@ -1061,6 +1093,7 @@ public:
 			if (!verb_mixer) send_counted(reverb, send);
 		}
 		if (old) {
+			drop_node_hold(static_cast<audio_node*>(this), old);
 			reverb_let_go(old); // Still sent on for the reverb3ds that use it too.
 			old->release();
 		}
@@ -1088,10 +1121,18 @@ public:
 				g_soundsystem_last_error = MA_INVALID_OPERATION;
 				return;
 			}
-			if (reverb && !send_onward(reverb, mix)) return;
+			if (!claim_node_hold(static_cast<audio_node*>(this), mix)) { // A mixer that holds this reverb3d at any depth (see claim_node_hold()).
+				g_soundsystem_last_error = MA_INVALID_ARGS;
+				return;
+			}
+			if (reverb && !send_onward(reverb, mix)) {
+				drop_node_hold(static_cast<audio_node*>(this), mix);
+				return;
+			}
 			old = output_mixer;
 			output_mixer = mix;
 			if (output_mixer) output_mixer->duplicate();
+			drop_node_hold(static_cast<audio_node*>(this), old);
 		}
 		if (old) old->release();
 	}
@@ -1470,6 +1511,7 @@ public:
 	}
 	~audio_spatializer_impl() {
 		last_error_kept kept;
+		drop_node_holds(static_cast<audio_node*>(this));
 		// Out of the set first, which a global panner or attenuator change takes its references from: it takes none once the last one went (see duplicate_if_alive()), so none is rewiring this one as its node goes, nor reaches it once it is out.
 		{ std::lock_guard<std::mutex> lock(g_tracked_spatializers_mutex); g_tracked_spatializers.erase(this); }
 		// A component the script kept goes on without this spatializer: off the graph first, which waits for the audio thread to stop processing it, then without its pointer back here, so it passes audio through if used again.
@@ -1536,9 +1578,23 @@ public:
 			}
 			return;
 		}
-		splitter_node* attachment = new_reverb? new_reverb->create_attachment() : nullptr; // First: one that can't be made, or throws, leaves the sound its old reverb, which was let go of before it.
-		if (new_reverb && !attachment) return;
+		if (!claim_node_hold(static_cast<audio_node*>(this), new_reverb)) { // One whose reverb holds this spatializer at any depth, as a chain it is in (see claim_node_hold()).
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return;
+		}
+		splitter_node* attachment = nullptr;
+		try {
+			attachment = new_reverb? new_reverb->create_attachment() : nullptr; // First: one that can't be made, or throws, leaves the sound its old reverb, which was let go of before it.
+		} catch (...) {
+			drop_node_hold(static_cast<audio_node*>(this), new_reverb);
+			throw;
+		}
+		if (new_reverb && !attachment) {
+			drop_node_hold(static_cast<audio_node*>(this), new_reverb);
+			return;
+		}
 		if (reverb) {
+			drop_node_hold(static_cast<audio_node*>(this), reverb);
 			release_later(reverb);
 			reverb = nullptr;
 			if (reverb_attachment) {

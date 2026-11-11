@@ -504,6 +504,15 @@ bool reverb3d_reaches(reverb3d* verb, const std::function<bool(mixer*)>& is_targ
 // Held by whatever changes the links mixer_reaches() follows (a mixer's parent, its spatializer and the reverb3d that sends to, a reverb3d's mixer) and by the checks that follow them, and taken before any chain, spatialization or graph lock: each link holds a reference to what it points to, so under this nothing a check reaches can be freed, as it was when another thread let go of a mixer the check had just stepped to.
 extern std::recursive_mutex g_audio_topology_mutex;
 bool reverb_fits(audio_node* verb, audio_node* destination, ma_uint32 channels_in);
+// The references nodes hold to one another outside the graph: a chain's nodes and endpoint, a mixer's chains, spatializer and parent, a reverb3d's reverb and mixer, a spatializer's reverb3d. The graph's loop check follows attachments only, which a script can detach by hand, after which a chain could come to hold one that holds it, the two never freed. Recorded by pointer only, under a leaf lock, and never followed into the nodes, so a check reads nothing that can be freed meanwhile. A holder records a hold before it calls into the node and drops it after its last call, before letting the node go, and drops all of its own as it is destroyed.
+// Records holder holding held unless held already holds holder at any depth, or is holder: false, recording nothing, for one that would loop.
+bool claim_node_hold(const audio_node* holder, const audio_node* held);
+// As claim_node_hold(), unchecked, for a hold that can't loop, as one on a node just made.
+void record_node_hold(const audio_node* holder, const audio_node* held);
+// Drops one record of holder holding held, if any.
+void drop_node_hold(const audio_node* holder, const audio_node* held);
+// Drops every hold of a holder, which is being destroyed.
+void drop_node_holds(const audio_node* holder);
 
 
 extern int g_audio_basic_panner;

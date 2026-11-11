@@ -4068,6 +4068,7 @@ protected:
 public:
 	mixer_impl(audio_engine *e, bool sound_group = true) : audio_node_impl(nullptr, e), snd(nullptr), shape(nullptr), node_chain(audio_node_chain::create(nullptr, nullptr, e)), effects_chain(nullptr), parent_mixer(nullptr), spatializer(nullptr) {
 		init_sound_context();
+		record_node_hold(static_cast<audio_node*>(this), node_chain); // As every node a mixer holds (see claim_node_hold()).
 		node_chain->set_endpoint(e->get_endpoint());
 		if (!sound_group) return;
 		snd = held_sound_ptr(new held_sound());
@@ -4076,6 +4077,7 @@ public:
 			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex);
 			if ((g_soundsystem_last_error = ma_sound_group_init(e->get_ma_engine(), MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT, nullptr, &*snd)) != MA_SUCCESS) {
 				snd.reset(); // Not uninitialised by the destructor, which the constructor throwing doesn't run, nor configured, attached and played as before.
+				drop_node_holds(static_cast<audio_node*>(this));
 				if (node_chain) node_chain->release();
 				throw std::runtime_error("failed to create mixer");
 			}
@@ -4092,6 +4094,7 @@ public:
 	}
 	~mixer_impl() {
 		last_error_kept kept;
+		drop_node_holds(static_cast<audio_node*>(this));
 		track_shape(false);
 		stop();
 		unique_lock<mutex> lock(spatialization_params_mutex);
@@ -4113,6 +4116,7 @@ public:
 		if (!spatializer) {
 			audio_spatializer* made = audio_spatializer::create(const_cast<mixer_impl*>(this), get_engine());
 			// After the effects chain, which runs first wherever it is made, so that a mixer's effects are positioned with it rather than applied to it once positioned, whichever was made first; a chain the script took out of internal_node_chain leaves the spatializer first.
+			record_node_hold(static_cast<const audio_node*>(this), made); // Held by this mixer too, which a script can take out of internal_node_chain.
 			if (!effects_chain || !node_chain->add_node(made, effects_chain)) node_chain->add_node(made);
 			// Published once made, as the loop check reads it from other threads (see get_reverb3d_sent_to()), which must not see the pointer before what it points to.
 			reinterpret_cast<std::atomic<audio_spatializer*>&>(spatializer).store(made, std::memory_order_release);
@@ -4143,8 +4147,10 @@ public:
 			if (node_chain->get_endpoint() != target) return false; // It couldn't attach, as to a node without an input, which leaves this where it was.
 			// Held by this mixer too, not only through the chain, whose endpoint the rewiring above let go of and a script can change through internal_node_chain.
 			if (mix) mix->duplicate();
+			record_node_hold(static_cast<audio_node*>(this), mix); // Unchecked: the chain's claim on it, just taken, refused one that holds this mixer.
 			old = parent_mixer;
 			parent_mixer = mix;
+			drop_node_hold(static_cast<audio_node*>(this), old);
 		}
 		if (old) old->release(); // After the topology lock: it can be the last reference.
 		return true;
@@ -4243,6 +4249,7 @@ public:
 	audio_node_chain* get_effects_chain() override {
 		if (!effects_chain) {
 			effects_chain = audio_node_chain::create(nullptr, nullptr, get_engine());
+			record_node_hold(static_cast<audio_node*>(this), effects_chain);
 			node_chain->add_node(effects_chain); // First, before the spatializer: see get_spatializer().
 		}
 		return effects_chain;
@@ -5403,6 +5410,7 @@ public:
 				spatializer = nullptr;
 			}
 			node_chain->remove_node(forgotten);
+			drop_node_hold(static_cast<audio_node*>(this), forgotten);
 			forgotten->release();
 		}
 		// Taken out of snd under the lock a listener's move and the audio thread read snd under, so neither reads the sound while it is freed.
