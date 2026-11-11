@@ -187,22 +187,18 @@ static std::mutex g_node_holds_mutex;
 static std::unordered_map<const audio_node*, std::vector<const audio_node*>> g_node_holds;
 bool claim_node_hold(const audio_node* holder, const audio_node* held) {
 	if (!holder || !held) return true;
-	if (held == holder) return false;
+	// Under the graph lock, as the graph's own loop check, which follows these holds too: holds and attachments are each checked and made one at a time, so two that close a loop between them can't both pass.
+	std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex);
+	if (audio_node_impl::reaches_node(const_cast<audio_node*>(held), holder)) return false;
 	std::lock_guard<std::mutex> lock(g_node_holds_mutex);
-	if (g_node_holds.count(held)) { // Walked only from a node that holds any: most hold none, as a filter.
-		std::vector<const audio_node*> pending{held};
-		std::unordered_set<const audio_node*> walked;
-		while (!pending.empty()) {
-			const audio_node* n = pending.back();
-			pending.pop_back();
-			if (n == holder) return false;
-			if (!walked.insert(n).second) continue;
-			auto it = g_node_holds.find(n);
-			if (it != g_node_holds.end()) pending.insert(pending.end(), it->second.begin(), it->second.end());
-		}
-	}
 	g_node_holds[holder].push_back(held);
 	return true;
+}
+std::unique_lock<std::mutex> node_holds_lock() { return std::unique_lock<std::mutex>(g_node_holds_mutex); }
+void append_node_holds(const audio_node* n, std::vector<audio_node*>& out) {
+	auto it = g_node_holds.find(n);
+	if (it == g_node_holds.end()) return;
+	for (const audio_node* held : it->second) out.push_back(const_cast<audio_node*>(held));
 }
 void record_node_hold(const audio_node* holder, const audio_node* held) {
 	if (!holder || !held) return;
