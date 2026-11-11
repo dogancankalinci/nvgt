@@ -117,15 +117,21 @@ void timer_queue::reset() {
 	timer_objects.clear();
 	flush();
 }
+// Letting go of a timer's callback can run script code: the destructor of the object a delegate was the last to hold, which can use
+// this queue again (reset() and flush() purge from inside, set() and delete() change the set). The callback was let go of in the middle
+// of the walk, with the timer still in the set and still pointing to it: a purge from inside let go of the same callback again and
+// deleted the timer, after which the walk deleted it a second time through an iterator the inner purge had erased. Each timer is now
+// taken out of the set and deleted first, its callback let go of last, and the walk starts again from the set as it then is.
 void timer_queue::purge_deleting_timers() {
-	for (auto it = deleting_timers.begin(); it != deleting_timers.end();) {
-		if (executing_timers.contains(*it)) { // A run of its callback is going on, see executing_timers.
-			it++;
-			continue;
-		}
-		if ((*it)->callback) (*it)->callback->Release();
-		delete *it;
-		it = deleting_timers.erase(it);
+	for (;;) {
+		auto it = std::find_if(deleting_timers.begin(), deleting_timers.end(), [this](timer_queue_item* t) { return !executing_timers.contains(t); }); // One whose callback is running is left, see executing_timers.
+		if (it == deleting_timers.end()) return;
+		timer_queue_item* t = *it;
+		deleting_timers.erase(it);
+		asIScriptFunction* callback = t->callback;
+		t->callback = nullptr;
+		delete t;
+		if (callback) callback->Release();
 	}
 }
 CScriptArray* timer_queue::list_timers() {
@@ -149,14 +155,19 @@ void timer_queue::set(const std::string &id, asIScriptFunction *callback, const 
 	if (timeout < 1) timeout = 1;
 	auto it = timer_objects.find(id);
 	if (it != timer_objects.end()) {
-		if (it->second->callback) it->second->callback->Release();
-		it->second->callback = callback;
-		it->second->callback_data = callback_data;
-		it->second->timeout = timeout;
-		it->second->repeating = repeating;
-		it->second->is_scheduled = true;
-		it->second->cancel();
-		timers.schedule(it->second, timeout);
+		// The old callback is let go of last, once the timer is the new one: letting go of it can run script code that uses this queue
+		// (see purge_deleting_timers()), and let go of first, a destructor that deleted or reset this timer left the update to a freed
+		// timer (and a reset let go of the old callback a second time).
+		timer_queue_item* t = it->second;
+		asIScriptFunction* old_callback = t->callback;
+		t->callback = callback;
+		t->callback_data = callback_data;
+		t->timeout = timeout;
+		t->repeating = repeating;
+		t->is_scheduled = true;
+		t->cancel();
+		timers.schedule(t, timeout);
+		if (old_callback) old_callback->Release();
 		return;
 	}
 	timer_objects[id] = new timer_queue_item(this, id, callback, callback_data, timeout, repeating);
