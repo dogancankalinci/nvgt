@@ -4067,32 +4067,42 @@ protected:
 	audio_node_chain* effects_chain;
 public:
 	mixer_impl(audio_engine *e, bool sound_group = true) : audio_node_impl(nullptr, e), snd(nullptr), shape(nullptr), node_chain(audio_node_chain::create(nullptr, nullptr, e)), effects_chain(nullptr), parent_mixer(nullptr), spatializer(nullptr) {
-		init_sound_context();
-		node_chain->set_endpoint(e->get_endpoint());
-		if (!sound_group) {
-			record_node_hold(static_cast<audio_node*>(this), node_chain); // As every node a mixer holds (see claim_node_hold()); only once made, as a constructor that throws leaves none behind, which a node made later at the same address took for its own.
-			return;
-		}
-		snd = held_sound_ptr(new held_sound());
-		// Not attached by MiniAudio, which would attach a group without a parent to the endpoint at once, while it still had MiniAudio's own processing; it is attached to its chain below.
-		{
-			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex);
-			if ((g_soundsystem_last_error = ma_sound_group_init(e->get_ma_engine(), MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT, nullptr, &*snd)) != MA_SUCCESS) {
-				snd.reset(); // Not uninitialised by the destructor, which the constructor throwing doesn't run, nor configured, attached and played as before.
-				if (node_chain) node_chain->release();
-				throw std::runtime_error("failed to create mixer");
+		// What the constructor made is let go of if it throws, as on running out of memory, which runs no destructor: the chain, holding the engine through its endpoint, and the group stayed alive for good, the engine and its device with them.
+		bool group_made = false;
+		try {
+			init_sound_context();
+			node_chain->set_endpoint(e->get_endpoint());
+			if (sound_group) {
+				snd = held_sound_ptr(new held_sound());
+				// Not attached by MiniAudio, which would attach a group without a parent to the endpoint at once, while it still had MiniAudio's own processing; it is attached to its chain below.
+				{
+					std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex);
+					if ((g_soundsystem_last_error = ma_sound_group_init(e->get_ma_engine(), MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT, nullptr, &*snd)) != MA_SUCCESS) throw std::runtime_error("failed to create mixer"); // Not configured, attached and played as before.
+					group_made = true;
+					hold_rate_of(&*snd, e);
+				}
+				node = (ma_node_base *)&*snd;
+				set_max_distance(70);
+				ma_sound_group_set_rolloff(&*snd, 0); // Our own spatializer controls attenuation.
+				// With MiniAudio's attenuation linear, which a rolloff of 0 leaves at 1: its default inverse model divided 0 by 0 for a min_distance of 0, and the NaN, clamped to the maximum gain, turned the cones off and raised the sound by a maximum gain above 1.
+				ma_sound_group_set_attenuation_model(&*snd, ma_attenuation_model_linear);
+				ma_sound_group_set_directional_attenuation_factor(&*snd, 0); // Our spatializer also controls panning.
+				attach_output_bus(0, node_chain, 0);
+				play();
 			}
-			hold_rate_of(&*snd, e);
+			record_node_hold(static_cast<audio_node*>(this), node_chain); // As every node a mixer holds (see claim_node_hold()); only once made, as a constructor that throws must leave none behind, which a node made later at the same address took for its own.
+		} catch (...) {
+			last_error_kept kept;
+			drop_node_holds(static_cast<audio_node*>(this));
+			if (group_made) {
+				std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); // As the destructor uninitialises it.
+				ma_sound_group_uninit(&*snd);
+			}
+			node = nullptr;
+			snd.reset();
+			node_chain->release();
+			throw;
 		}
-		node = (ma_node_base *)&*snd;
-		set_max_distance(70);
-		ma_sound_group_set_rolloff(&*snd, 0); // Our own spatializer controls attenuation.
-		// With MiniAudio's attenuation linear, which a rolloff of 0 leaves at 1: its default inverse model divided 0 by 0 for a min_distance of 0, and the NaN, clamped to the maximum gain, turned the cones off and raised the sound by a maximum gain above 1.
-		ma_sound_group_set_attenuation_model(&*snd, ma_attenuation_model_linear);
-		ma_sound_group_set_directional_attenuation_factor(&*snd, 0); // Our spatializer also controls panning.
-		attach_output_bus(0, node_chain, 0);
-		play();
-		record_node_hold(static_cast<audio_node*>(this), node_chain); // As above.
 	}
 	~mixer_impl() {
 		last_error_kept kept;
