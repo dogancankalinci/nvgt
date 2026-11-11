@@ -866,13 +866,14 @@ void script_function_call_count_statement(asIScriptContext* ctx) {
 	// A statement of this call is one of every call it was made in too, so their limits are counted here as well. A limit exceeded by an outer call aborts this one, which passes the abort on to that call (see pop_nested_state), or, in a context of its own, has it end at that call's next statement.
 	for (script_function_call_data* d = limited; d; d = d->outer) {
 		if (d->max_statement_count < 1) continue;
-		d->current_statement_count += 1;
-		if (d->current_statement_count > d->max_statement_count) {
+		// Tested before counting: counted first, a limit of 2147483647 could never be exceeded, and its 2^31st statement overflowed the int.
+		if (d->current_statement_count >= d->max_statement_count) {
 			d->exceeded = true;
 			if (ctx == d->ctx) d->aborted_ctx = true;
 			ctx->Abort();
 			return;
 		}
+		d->current_statement_count++;
 	}
 }
 class script_module_bytecode_stream : public asIBinaryStream {
