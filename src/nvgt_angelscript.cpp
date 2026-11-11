@@ -860,7 +860,11 @@ public:
 		while (!worker->tryJoin(5)) {
 			string status = output->get_status();
 			if (!quiet && !status.empty()) {
-				if (isUI) ShowNVGTWindow(status);
+				if (isUI) {
+					// show_window()'s function, which adds the reference the script's handle holds: dropped here, every status shown kept one,
+					// so DestroyNVGTWindow() below never freed the window object.
+					if (game_window* window = ShowNVGTWindow(status)) window->release();
+				}
 				else cout << status << endl;
 			}
 			if (isUI) refresh_window();
