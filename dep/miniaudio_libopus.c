@@ -289,6 +289,10 @@ MA_API ma_result ma_libopus_read_pcm_frames(ma_libopus* pOpus, void* pFramesOut,
         return MA_INVALID_ARGS;
     }
 
+    if (pOpus->placeLost) {
+        return MA_AT_END; /* Nothing says where they'd come from (see ma_libopus_put_back()). */
+    }
+
     /* NVGT: a NULL output skips frames, as MiniAudio's data sources allow, read into scratch memory a chunk at a time; the reads below write to it. */
     if (pFramesOut == NULL) {
         ma_uint8 scratch[16384];
@@ -577,13 +581,16 @@ static ma_result ma_libopus_seek_into_hole(ma_libopus* pOpus, ma_uint64 frameInd
     pOpus->inHole = MA_FALSE;
     pOpus->silenceOwed = (ma_uint64)(resumesAt - (ogg_int64_t)frameIndex);
     pOpus->cursor = frameIndex;
+    pOpus->placeLost = MA_FALSE;
     return MA_SUCCESS;
 }
 
 /*
 Puts libopusfile back where it was before a seek that failed, which clears its decoding before it searches. Should that fail too,
-nothing held or owed says where its reads go on from: they are let go of, and the cursor says no place a caller could have sought
-from, which a caller finding the cursor moved by the failed seek puts back, as from the start.
+nothing held or owed says where its reads go on from: they are let go of, the cursor says no place a caller could have sought from,
+which a caller finding the cursor moved by the failed seek puts back, as from the start, and until a seek lands the place is lost:
+reads give nothing, rather than audio from wherever the search stopped, and seeks go through op_pcm_seek(), as libopusfile's own
+place, which reads 0 once cleared, would take a seek near the start for a short one read on from there.
 */
 static void ma_libopus_put_back(ma_libopus* pOpus, ogg_int64_t at)
 {
@@ -595,6 +602,7 @@ static void ma_libopus_put_back(ma_libopus* pOpus, ogg_int64_t at)
     pOpus->inHole = MA_FALSE;
     pOpus->silenceOwed = 0;
     pOpus->cursor = ~(ma_uint64)0;
+    pOpus->placeLost = MA_TRUE;
 }
 
 /*
@@ -627,6 +635,7 @@ static ma_result ma_libopus_land(ma_libopus* pOpus, ma_uint64 frameIndex, ogg_in
     pOpus->inHole = MA_FALSE;
     pOpus->silenceOwed = 0;
     pOpus->cursor = frameIndex;
+    pOpus->placeLost = MA_FALSE;
     return MA_SUCCESS;
 }
 #endif
@@ -642,7 +651,7 @@ MA_API ma_result ma_libopus_seek_to_pcm_frame(ma_libopus* pOpus, ma_uint64 frame
     channels than the decoder's leaves: only less of them, exact, where libopusfile's own seek starts afresh behind them and its
     pre-roll gave other frames. Every logical stream is at 48 kHz, so the frames held are given one for one.
     */
-    if (frameIndex >= pOpus->cursor) {
+    if (!pOpus->placeLost && frameIndex >= pOpus->cursor) {
         ma_uint64 skip = frameIndex - pOpus->cursor;
         if (skip < pOpus->silenceOwed || (skip < pOpus->silenceOwed + pOpus->link.frameCount && !pOpus->link.owes)) {
             ma_uint64 skipSilence = (skip < pOpus->silenceOwed) ? skip : pOpus->silenceOwed;
@@ -700,7 +709,7 @@ MA_API ma_result ma_libopus_seek_to_pcm_frame(ma_libopus* pOpus, ma_uint64 frame
         less than a packet leaves, so that those frames played as what was sought to. Read on rather than seek, to 120 ms, its
         longest packet, which needs no pre-roll either.
         */
-        if (at >= 0 && (ogg_int64_t)frameIndex >= at && (ogg_int64_t)frameIndex - at <= 5760) { /* Its place too, the frames held all passed: read on by nothing. */
+        if (!pOpus->placeLost && at >= 0 && (ogg_int64_t)frameIndex >= at && (ogg_int64_t)frameIndex - at <= 5760) { /* Its place too, the frames held all passed: read on by nothing. */
             int readError;
             float kept[255 * 8];
             int keptFrames;
@@ -758,7 +767,7 @@ MA_API ma_result ma_libopus_seek_to_pcm_frame(ma_libopus* pOpus, ma_uint64 frame
                     }
                 }
 
-                if (libopusResult != 0 && at >= 0) {
+                if (libopusResult != 0) {
                     ma_libopus_put_back(pOpus, at); /* Back where it was, as the cursor and the frames held still say. */
                 }
             }
@@ -778,6 +787,7 @@ MA_API ma_result ma_libopus_seek_to_pcm_frame(ma_libopus* pOpus, ma_uint64 frame
         pOpus->inHole = MA_FALSE;
         pOpus->silenceOwed = 0;
         pOpus->cursor = frameIndex;
+        pOpus->placeLost = MA_FALSE;
 
         return MA_SUCCESS;
     }
