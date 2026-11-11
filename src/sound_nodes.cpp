@@ -179,8 +179,13 @@ struct release_scope {
 };
 static void release_later(audio_node* n) {
 	if (!n) return;
-	if (t_release_depth > 0) t_deferred_releases.push_back(n);
-	else n->release();
+	if (t_release_depth > 0) {
+		try {
+			t_deferred_releases.push_back(n);
+			return;
+		} catch (...) {} // Out of memory: let go of at once rather than kept for good, or thrown out of a rewiring that already made its change.
+	}
+	n->release();
 }
 // The holds of claim_node_hold(), a leaf lock: nothing else is taken under it.
 static std::mutex g_node_holds_mutex;
