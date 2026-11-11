@@ -182,9 +182,32 @@ static void release_later(audio_node* n) {
 	if (t_release_depth > 0) t_deferred_releases.push_back(n);
 	else n->release();
 }
+// Guards every chain's nested_chains, a leaf lock: nothing else is taken under it.
+static std::mutex g_chain_nesting_mutex;
 class audio_node_chain_impl : public passthrough_node_impl, public virtual audio_node_chain {
 	std::vector<audio_node*> nodes;
 	std::vector<unsigned int> input_buses; // For each node, the input bus the node before it feeds, which every rewiring attaches to again.
+	// The chains among the nodes, under g_chain_nesting_mutex, registered before the chain calls into one and forgotten only after its last call: a chain is never added to one it is already in at any depth, which the graph's loop check can't tell once a script detaches a node of the outer chain by hand, and which looped every rewiring of either chain through the other forever. A chain so takes a nested chain's lock under its own only while registered, which keeps every chain lock taken outer first.
+	std::vector<audio_node_chain_impl*> nested_chains;
+	// Whether this chain is the given one or holds it at any depth. Under g_chain_nesting_mutex, whose registered chains each hold a reference to those nested in them, keeping every chain walked alive.
+	bool nests(const audio_node_chain_impl* chain) const {
+		std::vector<const audio_node_chain_impl*> pending{this}, walked;
+		while (!pending.empty()) {
+			const audio_node_chain_impl* c = pending.back();
+			pending.pop_back();
+			if (c == chain) return true;
+			if (find(walked.begin(), walked.end(), c) != walked.end()) continue;
+			walked.push_back(c);
+			pending.insert(pending.end(), c->nested_chains.begin(), c->nested_chains.end());
+		}
+		return false;
+	}
+	void forget_nested(audio_node_chain_impl* chain) {
+		if (!chain) return;
+		std::lock_guard<std::mutex> lock(g_chain_nesting_mutex);
+		auto it = find(nested_chains.begin(), nested_chains.end(), chain);
+		if (it != nested_chains.end()) nested_chains.erase(it);
+	}
 	audio_node* endpoint;
 	unsigned int endpoint_input_bus_index = 0; // The endpoint's input bus the chain feeds, which every rewiring attaches to again.
 	// The input bus the node at index takes the chain on, index being nodes.size() for the endpoint.
@@ -203,7 +226,7 @@ protected:
 	void hold_destination(audio_node *n) {
 		if (!n) return;
 		if (n == static_cast<audio_node*>(this)) release_later(audio_node_impl::acquire_output_destination(0));
-		else if (auto chain = dynamic_cast<audio_node_chain_impl*>(n)) release_later(chain->acquire_endpoint());
+		else if (dynamic_cast<audio_node_chain_impl*>(n)) return; // A chain's output changes only through its own put_endpoint(), which holds what it lets go of until this thread's outermost release_scope ends; taking its lock here as well only added a nested chain lock.
 		else if (auto impl = dynamic_cast<audio_node_impl*>(n)) release_later(impl->acquire_output_destination(0));
 	}
 public:
@@ -253,16 +276,28 @@ public:
 		}
 		audio_node* prev = new_idx? nodes[new_idx -1] : nullptr;
 		audio_node* next = new_idx? (new_idx < nodes.size()? nodes[new_idx] : endpoint) : (!nodes.empty()? first() : endpoint);
+		auto nested = dynamic_cast<audio_node_chain_impl*>(node);
+		if (nested) { // Checked and registered together, before any call into the chain, so that two threads nesting two chains into each other at once can't both pass.
+			std::lock_guard<std::mutex> lock(g_chain_nesting_mutex);
+			if (nested->nests(this)) {
+				g_soundsystem_last_error = MA_INVALID_ARGS;
+				return false;
+			}
+			nested_chains.push_back(nested);
+		}
 		// The node before is attached to the new one first, on the new node's input_bus_index, which a node that takes no input, as a sound or data source, refuses with nothing changed; the new node is then attached to the next one on the bus the next one was fed on, and when the new node can't feed it, as with another channel count, the node before goes back to it.
 		unsigned int next_bus = bus_at(new_idx);
 		hold_destination(prev? prev : this);
-		if (prev && !prev->attach_output_bus(0, node, input_bus_index)) return false;
-		else if (!prev && !audio_node_impl::attach_output_bus(0, node, input_bus_index)) return false;
-		hold_destination(node); // Only once the node was taken, which refuses one that would loop the chain under the graph lock before the node's own lock is taken here, as a chain's is: taken first, a refused nest took the two chains' locks in the order another thread rewiring around it takes them the other way, hanging both.
+		if ((prev && !prev->attach_output_bus(0, node, input_bus_index)) || (!prev && !audio_node_impl::attach_output_bus(0, node, input_bus_index))) {
+			forget_nested(nested);
+			return false;
+		}
+		hold_destination(node); // Once the node was taken, as its output is changed only from here on.
 		if (next && !node->attach_output_bus(0, next, next_bus)) {
 			ma_result error = g_soundsystem_last_error;
 			if (prev) prev->attach_output_bus(0, next, next_bus);
 			else audio_node_impl::attach_output_bus(0, next, next_bus);
+			forget_nested(nested);
 			g_soundsystem_last_error = error;
 			return false;
 		}
@@ -305,7 +340,9 @@ public:
 		nodes.erase(it);
 		input_buses.erase(input_buses.begin() + index);
 		removed = node;
-		return node->detach_output_bus(0);
+		bool detached = node->detach_output_bus(0);
+		forget_nested(dynamic_cast<audio_node_chain_impl*>(node)); // After the last call into it (see nested_chains).
+		return detached;
 	}
 	bool remove_node_at(unsigned int index) override {
 		rewire_scope scope(*this);
@@ -326,6 +363,10 @@ public:
 			}
 		}
 		if (success && endpoint) success = audio_node_impl::attach_output_bus(0, endpoint, endpoint_input_bus_index);
+		{
+			std::lock_guard<std::mutex> lock(g_chain_nesting_mutex);
+			nested_chains.clear();
+		}
 		for (audio_node* node : nodes) release_later(node); // As remove_node().
 		nodes.clear();
 		input_buses.clear();
