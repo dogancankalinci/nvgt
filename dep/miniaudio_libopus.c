@@ -657,6 +657,7 @@ MA_API ma_result ma_libopus_seek_to_pcm_frame(ma_libopus* pOpus, ma_uint64 frame
         if (!op_seekable((OggOpusFile*)pOpus->of)) {
             float dropped[255 * 8];
             ma_uint64 chunk = (pOpus->channels > 0) ? (sizeof(dropped) / sizeof(dropped[0])) / pOpus->channels : 0;
+            ma_result readResult = MA_SUCCESS;
 
             if (frameIndex < pOpus->cursor || frameIndex - pOpus->cursor > 5760 || chunk == 0) {
                 return MA_INVALID_OPERATION;
@@ -664,13 +665,17 @@ MA_API ma_result ma_libopus_seek_to_pcm_frame(ma_libopus* pOpus, ma_uint64 frame
 
             while (pOpus->cursor < frameIndex) {
                 ma_uint64 framesRead = 0;
-                ma_libopus_read_pcm_frames(pOpus, dropped, ((frameIndex - pOpus->cursor) < chunk) ? (frameIndex - pOpus->cursor) : chunk, &framesRead);
+                readResult = ma_libopus_read_pcm_frames(pOpus, dropped, ((frameIndex - pOpus->cursor) < chunk) ? (frameIndex - pOpus->cursor) : chunk, &framesRead);
                 if (framesRead == 0) {
                     break;
                 }
             }
 
-            return (pOpus->cursor == frameIndex) ? MA_SUCCESS : MA_INVALID_OPERATION;
+            if (pOpus->cursor == frameIndex) {
+                return MA_SUCCESS;
+            }
+
+            return (readResult != MA_SUCCESS && readResult != MA_AT_END) ? readResult : MA_INVALID_OPERATION; /* A read that failed keeps its error, as a stream that can seek keeps it; the end before the frame is past what can be read. */
         }
 
         /*
