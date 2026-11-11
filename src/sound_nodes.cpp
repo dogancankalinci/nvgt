@@ -302,13 +302,30 @@ public:
 		}
 		// The node before is attached to the new one first, on the new node's input_bus_index, which a node that takes no input, as a sound or data source, refuses with nothing changed; the new node is then attached to the next one on the bus the next one was fed on, and when the new node can't feed it, as with another channel count, the node before goes back to it.
 		unsigned int next_bus = bus_at(new_idx);
+		try { // Room for the node first, so that recording it once wired can't throw, as on running out of memory, leaving it wired but not in the chain, or in nodes but not input_buses.
+			nodes.reserve(nodes.size() + 1);
+			input_buses.reserve(input_buses.size() + 1);
+		} catch (...) {
+			drop_node_hold(static_cast<audio_node*>(this), node);
+			throw;
+		}
 		hold_destination(prev? prev : this);
 		if ((prev && !prev->attach_output_bus(0, node, input_bus_index)) || (!prev && !audio_node_impl::attach_output_bus(0, node, input_bus_index))) {
 			drop_node_hold(static_cast<audio_node*>(this), node);
 			return false;
 		}
 		hold_destination(node); // Once the node was taken, as its output is changed only from here on.
-		if (next && !node->attach_output_bus(0, next, next_bus)) {
+		bool fed = true;
+		try {
+			fed = !next || node->attach_output_bus(0, next, next_bus);
+		} catch (...) { // As refused: the node before goes back to the next one.
+			last_error_kept kept;
+			if (prev) prev->attach_output_bus(0, next, next_bus);
+			else audio_node_impl::attach_output_bus(0, next, next_bus);
+			drop_node_hold(static_cast<audio_node*>(this), node);
+			throw;
+		}
+		if (!fed) {
 			ma_result error = g_soundsystem_last_error;
 			if (prev) prev->attach_output_bus(0, next, next_bus);
 			else audio_node_impl::attach_output_bus(0, next, next_bus);
