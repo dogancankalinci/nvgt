@@ -4155,11 +4155,19 @@ public:
 				return false;
 			}
 			audio_node *target = mix? mix : get_engine()->get_endpoint();
-			node_chain->set_endpoint(target);
-			if (node_chain->get_endpoint() != target) return false; // It couldn't attach, as to a node without an input, which leaves this where it was.
-			// Held by this mixer too, not only through the chain, whose endpoint the rewiring above let go of and a script can change through internal_node_chain.
+			// Held by this mixer too, not only through the chain, whose endpoint the rewiring below lets go of and a script can change through internal_node_chain. Recorded first, unchecked, as the chain's claim on it below refuses one that holds this mixer, and dropped again if the chain doesn't go there: recorded after, running out of memory left the reference taken and the old parent in place with the chain already at the new one.
+			record_node_hold(static_cast<audio_node*>(this), mix);
+			try {
+				node_chain->set_endpoint(target);
+			} catch (...) {
+				drop_node_hold(static_cast<audio_node*>(this), mix);
+				throw;
+			}
+			if (node_chain->get_endpoint() != target) { // It couldn't attach, as to a node without an input, which leaves this where it was.
+				drop_node_hold(static_cast<audio_node*>(this), mix);
+				return false;
+			}
 			if (mix) mix->duplicate();
-			record_node_hold(static_cast<audio_node*>(this), mix); // Unchecked: the chain's claim on it, just taken, refused one that holds this mixer.
 			old = parent_mixer;
 			parent_mixer = mix;
 			drop_node_hold(static_cast<audio_node*>(this), old);
