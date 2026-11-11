@@ -5191,6 +5191,7 @@ public:
 		return load_special("::memory", g_memory_protocol_slot, memory_protocol::directive(buffer, size));
 	}
 	bool load_pcm(void *buffer, unsigned int size, ma_format format, int samplerate, int channels) override {
+		if (channels < 1 || channels > MA_MAX_CHANNELS || !pcm_frame_size(format, channels)) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // What pcm_to_wav() refuses, refused before the sound loaded goes too, rather than after it was closed, which read as success.
 		if (!pcm_fits_in_wav(size, format, channels)) return false; // Refused before the sound loaded goes, as for any other refusal here.
 		if (snd)
 			close_to_reload();
@@ -6350,10 +6351,9 @@ static bool write_pcm_as_wav(const void *buffer, unsigned int size, ma_format fo
 	return stream.good();
 }
 bool sound::pcm_to_wav(const void *buffer, unsigned int size, ma_format format, int samplerate, int channels, std::string &output) {
-	if (channels < 1 || channels > MA_MAX_CHANNELS) return false; // dr_wav keeps the count in 16 bits, and divided by it cut to 0.
+	if (channels < 1 || channels > MA_MAX_CHANNELS) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // dr_wav keeps the count in 16 bits, and divided by it cut to 0.
 	int frame_size = pcm_frame_size(format, channels);
-	if (!frame_size)
-		return false;
+	if (!frame_size) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // A format it can't write.
 	unsigned int data_size = size - size % frame_size; // Whole frames only.
 	if (!pcm_fits_in_wav(size, format, channels)) return false;
 	output.resize(44 + (size_t)data_size + data_size % 2); // RIFF pads an odd number of data bytes with one more.
