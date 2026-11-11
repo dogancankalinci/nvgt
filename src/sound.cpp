@@ -2075,6 +2075,7 @@ static ma_uint64 read_file_on(ma_data_source* backend, ma_uint64 frames);
 // Puts a file back at a frame after a seek that failed having moved it, as dr_mp3's, which reads a truncated file to its end before failing: the decoder reads on from where it was, as a refused seek leaves any other.
 static void put_file_back(ma_data_source* backend, ma_uint64 before) {
 	ma_uint64 cursor = 0;
+	if (before == ~(ma_uint64)0) return; // A place a decoder lost before the seek (see ma_libopus_put_back()): none to go back to, which read the whole file to reach.
 	if (!file_cursor(backend, &cursor) || cursor == before) return;
 	if (ma_data_source_seek_to_pcm_frame(backend, 0) == MA_SUCCESS) read_file_on(backend, before);
 }

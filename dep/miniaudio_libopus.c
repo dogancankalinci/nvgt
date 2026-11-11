@@ -595,6 +595,10 @@ place, which reads 0 once cleared, would take a seek near the start for a short 
 static void ma_libopus_put_back(ma_libopus* pOpus, ogg_int64_t at)
 {
     if (at >= 0 && op_pcm_seek((OggOpusFile*)pOpus->of, at) == 0) {
+        if (pOpus->placeLost) { /* Lost before, at was what a cleared libopusfile tells, 0, where it now is: found again. */
+            pOpus->cursor = (ma_uint64)at;
+            pOpus->placeLost = MA_FALSE;
+        }
         return;
     }
 
