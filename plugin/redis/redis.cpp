@@ -261,7 +261,7 @@ public:
 
 	bool connect() {
 		try {
-			Timespan timeout(m_timeout_ms * 1000);  // microseconds
+			Timespan timeout(Timespan::TimeDiff(m_timeout_ms) * 1000);  // microseconds, in 64 bits: in int, 2147484 ms or more overflowed
 			ptr->connect(m_host, m_port, timeout);
 			// Authenticate if password is set
 			if (!m_password.empty()) {
