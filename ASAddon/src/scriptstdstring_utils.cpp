@@ -252,13 +252,16 @@ static void StringSlice_Generic(asIScriptGeneric *gen)
 	new (gen->GetAddressOfReturnLocation()) string(StringSlice(start, end, *str));
 }
 
+// ALTERED: the arguments are numbered from 0 (the object isn't one), as in the other wrappers here: these two read each from the next
+// one's place (the count as the start, the replacement as the count) and the last from past the end. The value returned is made in the
+// return location, which holds no string yet, not assigned to it. Only builds with AS_MAX_PORTABILITY use them.
 static void StringReplaceRange_Generic(asIScriptGeneric *gen)
 {
-	asUINT start = gen->GetArgDWord(1);
-	int count = gen->GetArgDWord(2);
-	string *replace = reinterpret_cast<string *>(gen->GetArgAddress(3));
+	asUINT start = gen->GetArgDWord(0);
+	int count = gen->GetArgDWord(1);
+	string *replace = reinterpret_cast<string *>(gen->GetArgAddress(2));
 	string *self = reinterpret_cast<string *>(gen->GetObject());
-	*reinterpret_cast<string *>(gen->GetAddressOfReturnLocation()) = StringReplaceRange(start, count, *replace, *self);
+	new (gen->GetAddressOfReturnLocation()) string(StringReplaceRange(start, count, *replace, *self));
 }
 
 static void StringReplaceRangeThis_Generic(asIScriptGeneric *gen)
@@ -272,12 +275,13 @@ static void StringReplaceRangeThis_Generic(asIScriptGeneric *gen)
 
 static void StringReplace_Generic(asIScriptGeneric *gen)
 {
-	string *search = reinterpret_cast<string *>(gen->GetArgAddress(1));
-	string *replace = reinterpret_cast<string *>(gen->GetArgAddress(2));
-	bool replaceAll = gen->GetArgByte(3);
-	asUINT offset = gen->GetArgDWord(4);
+	// ALTERED: see StringReplaceRange_Generic
+	string *search = reinterpret_cast<string *>(gen->GetArgAddress(0));
+	string *replace = reinterpret_cast<string *>(gen->GetArgAddress(1));
+	bool replaceAll = gen->GetArgByte(2);
+	asUINT offset = gen->GetArgDWord(3);
 	string *self = reinterpret_cast<string *>(gen->GetObject());
-	*reinterpret_cast<string *>(gen->GetAddressOfReturnLocation()) = StringReplace(*search, *replace, replaceAll, offset, *self);
+	new (gen->GetAddressOfReturnLocation()) string(StringReplace(*search, *replace, replaceAll, offset, *self));
 }
 
 // Returns a reversed version of the given string.
