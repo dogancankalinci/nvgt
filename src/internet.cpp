@@ -747,6 +747,8 @@ public:
 		ScopedLock lock(*this);
 		if (_response.empty()) return 0;
 		else if (!_response.hasContentLength()) return -1;
+		// A response whose body is empty (Content-Length: 0, such as an empty answer to a POST) is all there once its headers are: it gave 0 / 0, NaN.
+		if (_response.getContentLength() == 0) return 1;
 		return float(_bytes_downloaded) / _response.getContentLength();
 	}
 	URI get_url() {
