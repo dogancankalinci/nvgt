@@ -27,15 +27,24 @@ void string_pad(std::string& str, int blocksize = 16) {
 	if (remainder == 0) remainder = 16;
 	str += std::string(remainder, (char)remainder);
 }
+// Takes off the padding string_pad() adds (PKCS#7): the last byte holds how many padding bytes there are, 1 to 16, and each of them
+// holds that count. Anything else gives "", which is how a wrong key shows. Only the last byte was looked at, and 0 was taken as no
+// padding, so about 1 in 15 decryptions with a wrong key gave garbage instead of "" (a last byte of 0 gave the whole decrypted
+// string, padding and all); checking every padding byte leaves about 1 in 256.
 void string_unpad(std::string& str) {
 	if (str.size() == 0) return;
-	if (str[str.size() - 1] > 16 || str[str.size() - 1] >= str.size()) {
+	unsigned char pad = (unsigned char)str[str.size() - 1];
+	if (pad == 0 || pad > 16 || pad >= str.size()) {
 		str.resize(0);
 		return;
 	}
-	int new_size = str.size() - (str[str.size() - 1]);
-	if (new_size < 0) new_size = 0;
-	str.resize(new_size);
+	for (size_t i = str.size() - pad; i < str.size(); i++) {
+		if ((unsigned char)str[i] != pad) {
+			str.resize(0);
+			return;
+		}
+	}
+	str.resize(str.size() - pad);
 }
 std::string string_aes_encrypt(const std::string& original_text, std::string key) {
 	if (original_text.empty()) return "";
