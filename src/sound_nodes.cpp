@@ -1011,8 +1011,13 @@ class reverb3d_impl : public passthrough_node_impl, public virtual reverb3d {
 public:
 	reverb3d_impl(audio_engine* e, audio_node* reverb, mixer* destination) : passthrough_node_impl(e), output_mixer(destination), reverb(reverb), min_volume(-7), max_volume(-5), max_volume_distance(7), max_audible_distance(60), volume_curve(0.4) {
 		if (output_mixer) output_mixer->duplicate(); // reverb owns its own reference to output_mixer via attach_output_bus below; this is reverb3d_impl's separate reference for get_mixer().
-		record_node_hold(static_cast<audio_node*>(this), output_mixer); // Nothing holds a reverb3d being made.
-		if (reverb) wire_reverb(reverb);
+		try {
+			record_node_hold(static_cast<audio_node*>(this), output_mixer); // Nothing holds a reverb3d being made.
+			if (reverb) wire_reverb(reverb);
+		} catch (...) { // The destructor doesn't run: no hold is left behind, which a node made later at the same address took for its own.
+			drop_node_holds(static_cast<audio_node*>(this));
+			throw;
+		}
 	}
 	// Attaches this node to the reverb and the reverb to the destination, keeping the reverb only when it took this node's output, as for one of another channel count it wouldn't. The reverb3d holds a reference of its own to the reverb, as a script can detach this node, which is an audio_node, from it.
 	void wire_reverb(audio_node* verb) {

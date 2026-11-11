@@ -4068,16 +4068,17 @@ protected:
 public:
 	mixer_impl(audio_engine *e, bool sound_group = true) : audio_node_impl(nullptr, e), snd(nullptr), shape(nullptr), node_chain(audio_node_chain::create(nullptr, nullptr, e)), effects_chain(nullptr), parent_mixer(nullptr), spatializer(nullptr) {
 		init_sound_context();
-		record_node_hold(static_cast<audio_node*>(this), node_chain); // As every node a mixer holds (see claim_node_hold()).
 		node_chain->set_endpoint(e->get_endpoint());
-		if (!sound_group) return;
+		if (!sound_group) {
+			record_node_hold(static_cast<audio_node*>(this), node_chain); // As every node a mixer holds (see claim_node_hold()); only once made, as a constructor that throws leaves none behind, which a node made later at the same address took for its own.
+			return;
+		}
 		snd = held_sound_ptr(new held_sound());
 		// Not attached by MiniAudio, which would attach a group without a parent to the endpoint at once, while it still had MiniAudio's own processing; it is attached to its chain below.
 		{
 			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex);
 			if ((g_soundsystem_last_error = ma_sound_group_init(e->get_ma_engine(), MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT, nullptr, &*snd)) != MA_SUCCESS) {
 				snd.reset(); // Not uninitialised by the destructor, which the constructor throwing doesn't run, nor configured, attached and played as before.
-				drop_node_holds(static_cast<audio_node*>(this));
 				if (node_chain) node_chain->release();
 				throw std::runtime_error("failed to create mixer");
 			}
@@ -4091,6 +4092,7 @@ public:
 		ma_sound_group_set_directional_attenuation_factor(&*snd, 0); // Our spatializer also controls panning.
 		attach_output_bus(0, node_chain, 0);
 		play();
+		record_node_hold(static_cast<audio_node*>(this), node_chain); // As above.
 	}
 	~mixer_impl() {
 		last_error_kept kept;
