@@ -1040,13 +1040,12 @@ public:
 	// Sends a reverb that isn't a mixer, counted, on under its send lock (see reverb_let_go()), letting go of what it went into before after that lock (see reverb_destination()).
 	void send_counted(audio_node* verb, const std::shared_ptr<std::recursive_mutex>& send) {
 		release_scope releases; // What a chain sent on lets go of, after the send lock.
-		audio_node* previous;
+		struct holding { audio_node* node = nullptr; ~holding() { if (node) node->release(); } } previous; // Let go of after the send lock, and should sending the reverb on throw, as on running out of memory, too: what the reverb went into, as a mixer a reverb3d made, stayed alive for good.
 		{
 			std::lock_guard<std::recursive_mutex> send_lock(*send);
-			previous = reverb_destination(verb);
+			previous.node = reverb_destination(verb);
 			send_onward(verb, output_mixer);
 		}
-		if (previous) previous->release();
 	}
 	// The reverb into the destination, the engine's output without one. A mixer given as the reverb goes there as a mixer, through its chain, effects and spatializer, and with the link a parent the loop check follows, rather than having its group's output taken from its chain, which skipped them and, once the reverb was replaced, left the mixer silent for good.
 	bool send_onward(audio_node* verb, mixer* destination) {
