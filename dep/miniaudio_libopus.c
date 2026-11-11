@@ -581,6 +581,23 @@ static ma_result ma_libopus_seek_into_hole(ma_libopus* pOpus, ma_uint64 frameInd
 }
 
 /*
+Puts libopusfile back where it was before a seek that failed, which clears its decoding before it searches. Should that fail too,
+nothing held or owed says where its reads go on from: they are let go of, and the cursor says no place a caller could have sought
+from, which a caller finding the cursor moved by the failed seek puts back, as from the start.
+*/
+static void ma_libopus_put_back(ma_libopus* pOpus, ogg_int64_t at)
+{
+    if (at >= 0 && op_pcm_seek((OggOpusFile*)pOpus->of, at) == 0) {
+        return;
+    }
+
+    ma_ogg_link_frames_clear(&pOpus->link);
+    pOpus->inHole = MA_FALSE;
+    pOpus->silenceOwed = 0;
+    pOpus->cursor = ~(ma_uint64)0;
+}
+
+/*
 Lands a seek whose read on reached the frame, or a hole past it, with what it read past the frame held. Without room to hold that, the
 link was let go of and libopusfile is already past the frame: sought to it then, rather than left reading on from past the frame with
 the cursor and the frames held from before. at is where libopusfile was before the seek, which it told.
@@ -602,9 +619,8 @@ static ma_result ma_libopus_land(ma_libopus* pOpus, ma_uint64 frameIndex, ogg_in
         */
         pOpus->inHole = MA_FALSE;
         pOpus->silenceOwed = 0;
-        if (at >= 0 && op_pcm_seek((OggOpusFile*)pOpus->of, at) == 0) {
-            pOpus->cursor = (ma_uint64)at;
-        }
+        pOpus->cursor = (at >= 0) ? (ma_uint64)at : 0;
+        ma_libopus_put_back(pOpus, at);
         return result;
     }
 
@@ -699,7 +715,7 @@ MA_API ma_result ma_libopus_seek_to_pcm_frame(ma_libopus* pOpus, ma_uint64 frame
                 */
                 libopusResult = op_pcm_seek((OggOpusFile*)pOpus->of, (ogg_int64_t)frameIndex);
                 if (libopusResult != 0) {
-                    op_pcm_seek((OggOpusFile*)pOpus->of, at);
+                    ma_libopus_put_back(pOpus, at);
                     return (readError < 0 && readError != OP_HOLE) ? MA_ERROR : MA_INVALID_ARGS; /* A read that failed, or past what can be read. */
                 }
             }
@@ -709,7 +725,7 @@ MA_API ma_result ma_libopus_seek_to_pcm_frame(ma_libopus* pOpus, ma_uint64 frame
                 libopusResult = OP_EREAD;
             }
             if (libopusResult != 0) {
-                op_pcm_seek((OggOpusFile*)pOpus->of, at >= 0 ? at : 0); /* Back where it was, as the cursor and the frames held still say: a seek that failed cleared its decoding too, reading on from wherever its search stopped. */
+                ma_libopus_put_back(pOpus, at); /* Back where it was, as the cursor and the frames held still say: a seek that failed cleared its decoding too, reading on from wherever its search stopped. */
             }
         } else {
             libopusResult = op_pcm_seek((OggOpusFile*)pOpus->of, (ogg_int64_t)frameIndex);
@@ -743,7 +759,7 @@ MA_API ma_result ma_libopus_seek_to_pcm_frame(ma_libopus* pOpus, ma_uint64 frame
                 }
 
                 if (libopusResult != 0 && at >= 0) {
-                    op_pcm_seek((OggOpusFile*)pOpus->of, at); /* Back where it was, as the cursor and the frames held still say. */
+                    ma_libopus_put_back(pOpus, at); /* Back where it was, as the cursor and the frames held still say. */
                 }
             }
         }
