@@ -583,9 +583,9 @@ static ma_result ma_libopus_seek_into_hole(ma_libopus* pOpus, ma_uint64 frameInd
 /*
 Lands a seek whose read on reached the frame, or a hole past it, with what it read past the frame held. Without room to hold that, the
 link was let go of and libopusfile is already past the frame: sought to it then, rather than left reading on from past the frame with
-the cursor and the frames held from before.
+the cursor and the frames held from before. at is where libopusfile was before the seek, which it told.
 */
-static ma_result ma_libopus_land(ma_libopus* pOpus, ma_uint64 frameIndex, ogg_int64_t reached, const float* pKept, int keptFrames, int keptChannels)
+static ma_result ma_libopus_land(ma_libopus* pOpus, ma_uint64 frameIndex, ogg_int64_t reached, const float* pKept, int keptFrames, int keptChannels, ogg_int64_t at)
 {
     ma_result result = ma_libopus_hold_kept(pOpus, pKept, keptFrames, keptChannels);
     if (result == MA_SUCCESS) {
@@ -595,14 +595,15 @@ static ma_result ma_libopus_land(ma_libopus* pOpus, ma_uint64 frameIndex, ogg_in
     ma_ogg_link_frames_clear(&pOpus->link);
     if (op_pcm_seek((OggOpusFile*)pOpus->of, (ogg_int64_t)frameIndex) != 0) {
         /*
-        Neither: the frames held before are gone with the link, so the cursor no longer reaches where libopusfile is, past the frame.
-        The place it tells is where reads go on from, which a caller finding the cursor moved by the failed seek puts back.
+        Neither: the frames held before are gone with the link, so the cursor no longer reaches where libopusfile is, and the failed
+        seek cleared its decoding, after which it tells 0 and reads on from wherever its search stopped. Sought back to where it was
+        before the seek, and the cursor with it, past the frames let go of: a caller finding the cursor moved by the failed seek puts
+        the file back.
         */
-        ogg_int64_t now = op_pcm_tell((OggOpusFile*)pOpus->of);
         pOpus->inHole = MA_FALSE;
         pOpus->silenceOwed = 0;
-        if (now >= 0) {
-            pOpus->cursor = (ma_uint64)now;
+        if (at >= 0 && op_pcm_seek((OggOpusFile*)pOpus->of, at) == 0) {
+            pOpus->cursor = (ma_uint64)at;
         }
         return result;
     }
@@ -690,7 +691,7 @@ MA_API ma_result ma_libopus_seek_to_pcm_frame(ma_libopus* pOpus, ma_uint64 frame
             int keptChannels = 0;
             ogg_int64_t reached = ma_libopus_read_on((OggOpusFile*)pOpus->of, (ogg_int64_t)frameIndex, &readError, kept, &keptFrames, &keptChannels);
             if (reached == (ogg_int64_t)frameIndex || (reached > (ogg_int64_t)frameIndex && reached - (ogg_int64_t)frameIndex <= MA_LIBOPUS_MAX_HOLE_FRAMES)) {
-                return ma_libopus_land(pOpus, frameIndex, reached, kept, keptFrames, keptChannels); /* At the frame, or within a hole: silence to where it goes on. */
+                return ma_libopus_land(pOpus, frameIndex, reached, kept, keptFrames, keptChannels, at); /* At the frame, or within a hole: silence to where it goes on. */
             } else {
                 /*
                 The stream ended first, or a hole skipped over the frame: libopusfile's own seek, which finds it by the pages' places,
@@ -705,8 +706,10 @@ MA_API ma_result ma_libopus_seek_to_pcm_frame(ma_libopus* pOpus, ma_uint64 frame
         } else if (total > 0 && frameIndex == (ma_uint64)total) {
             libopusResult = op_pcm_seek((OggOpusFile*)pOpus->of, total - 1);
             if (libopusResult == 0 && ma_libopus_read_on((OggOpusFile*)pOpus->of, total, NULL, NULL, NULL, NULL) < total) {
-                op_pcm_seek((OggOpusFile*)pOpus->of, at >= 0 ? at : 0); /* Back where it was, as the cursor and the frames held still say. */
                 libopusResult = OP_EREAD;
+            }
+            if (libopusResult != 0) {
+                op_pcm_seek((OggOpusFile*)pOpus->of, at >= 0 ? at : 0); /* Back where it was, as the cursor and the frames held still say: a seek that failed cleared its decoding too, reading on from wherever its search stopped. */
             }
         } else {
             libopusResult = op_pcm_seek((OggOpusFile*)pOpus->of, (ogg_int64_t)frameIndex);
@@ -726,7 +729,7 @@ MA_API ma_result ma_libopus_seek_to_pcm_frame(ma_libopus* pOpus, ma_uint64 frame
                         int keptChannels = 0;
                         ogg_int64_t reached = ma_libopus_read_on((OggOpusFile*)pOpus->of, (ogg_int64_t)frameIndex, &readError, kept, &keptFrames, &keptChannels);
                         if (reached == (ogg_int64_t)frameIndex || (reached > (ogg_int64_t)frameIndex && reached - (ogg_int64_t)frameIndex <= MA_LIBOPUS_MAX_HOLE_FRAMES)) {
-                            return ma_libopus_land(pOpus, frameIndex, reached, kept, keptFrames, keptChannels);
+                            return ma_libopus_land(pOpus, frameIndex, reached, kept, keptFrames, keptChannels, at);
                         } else if (reached >= 0 && reached < (ogg_int64_t)frameIndex) {
                             libopusResult = (readError < 0 && readError != OP_HOLE) ? readError : OP_EINVAL; /* A read that failed keeps its error; the stream's end before it, in a hole at its end, is past what can be read, as Vorbis refuses it. */
                         }
