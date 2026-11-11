@@ -4,6 +4,6 @@ Get the length of a sound, in milliseconds, or in frames when the sound's engine
 `uint64 sound::length;`
 
 ## Remarks:
-A stream without a known length, such as one from stream_url() or stream_pcm(), reads 0. Such a stream played with play_looped() has no length to count its passes by, so its position keeps rising through them.
+A stream without a known length, such as one from stream_url() or stream_pcm(), reads 0. A stream from stream_url() played with play_looped() has no length to count its passes by, so its position keeps rising through them; play_looped() refuses a stream_pcm() sound.
 
 A sound playing a chain of data sources, opened with open(), reads the length of the whole chain, from the source its head was on when it was opened, or the head itself from its start if it was on none, and play_looped() loops the whole chain, which ends after one pass instead when a source in it can't seek back to its start (see play_looped()); it reads 0 while a source's length is unknown, until that source has played through, or if a later source in the chain links back to it or to itself, even one that holds nothing and so ends the chain. A single source linked to itself reads its own length.
