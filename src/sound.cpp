@@ -817,6 +817,7 @@ public:
 		if (!init_sound_context()) throw runtime_error(Poco::format("failed to initialize sound context %d", int(g_soundsystem_last_error)));
 		if (!(flags & NO_DEVICE) && processing) throw_refusal(MA_INVALID_OPERATION, "an engine with a device can't be made on an audio thread"); // As in a processing callback: opening and starting its device held that audio up, as starting or changing a device there is refused for.
 		engine = std::make_unique<ma_engine>();
+		resource_manager = std::make_unique<ma_resource_manager>(); // Before the device starts: made after it, running out of memory freed the device without stopping it, its thread calling back into the engine freed.
 		// We need a self-managed device because at least on Windows, we can't meet low-latency requirements without specific configurations.
 		if ((flags & NO_DEVICE) == 0) {
 			device = std::make_unique<ma_device>();
@@ -858,7 +859,6 @@ public:
 			}
 			// MiniAudio takes at most MA_RESOURCE_MANAGER_MAX_JOB_THREAD_COUNT job threads and won't start with more, and hardware_concurrency() reports 0 when it can't tell, which would leave asynchronous loads no thread to finish them.
 			cfg.jobThreadCount = std::clamp(std::thread::hardware_concurrency(), 1u, (unsigned int)MA_RESOURCE_MANAGER_MAX_JOB_THREAD_COUNT);
-			resource_manager = std::make_unique<ma_resource_manager>();
 			if ((g_soundsystem_last_error = ma_resource_manager_init(&cfg, &*resource_manager)) != MA_SUCCESS) {
 				if (device) uninit_device(&*device); // None for an engine without a device.
 				device.reset();
@@ -890,7 +890,21 @@ public:
 		// Set some default properties for spatialization.
 		set_listener_direction(0, 0, 1, 0); // Y forward
 		set_listener_world_up(0, 0, 0, 1);  // Z up
-		engine_endpoint = new audio_engine_endpoint(reinterpret_cast<ma_node_base *>(ma_engine_get_endpoint(&*engine)), this);
+		try {
+			engine_endpoint = new audio_engine_endpoint(reinterpret_cast<ma_node_base *>(ma_engine_get_endpoint(&*engine)), this);
+		} catch (...) { // As on running out of memory, which runs no destructor: the engine, its resource manager and its device are uninitialised as the destructor does, rather than freed running, the device's thread calling back into them.
+			last_error_kept kept;
+			if (device) {
+				ma_device_stop(&*device);
+				uninit_device(&*device);
+			}
+			{
+				std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex);
+				ma_engine_uninit(&*engine);
+			}
+			ma_resource_manager_uninit(&*resource_manager);
+			throw;
+		}
 	}
 	~audio_engine_impl() {
 		if (device) {
