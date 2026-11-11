@@ -1004,7 +1004,7 @@ static void reverb_let_go(audio_node* verb) {
 		}
 		send = it->second.send;
 	}
-	audio_node* destination = nullptr;
+	struct holding { audio_node* node = nullptr; ~holding() { if (node) node->release(); } } destination; // Let go of after the send lock, and should taking the node off throw, as on running out of memory, too: kept, a mixer a reverb3d made stayed alive and mixed for good.
 	{
 		std::lock_guard<std::recursive_mutex> send_lock(*send);
 		auto unused = [&]() {
@@ -1017,14 +1017,13 @@ static void reverb_let_go(audio_node* verb) {
 			take_off = unused() != g_reverb_users.end();
 		}
 		if (take_off) {
-			destination = reverb_destination(verb);
+			destination.node = reverb_destination(verb);
 			verb->detach_output_bus(0);
 			std::lock_guard<std::mutex> lock(g_reverb_users_mutex);
 			auto it = unused();
 			if (it != g_reverb_users.end()) g_reverb_users.erase(it);
 		}
 	}
-	if (destination) destination->release();
 }
 class reverb3d_impl : public passthrough_node_impl, public virtual reverb3d {
 	audio_node* reverb;
@@ -1078,7 +1077,9 @@ public:
 		last_error_kept kept;
 		drop_node_holds(static_cast<audio_node*>(this));
 		if (reverb) {
-			reverb_let_go(reverb); // A node the script keeps no longer goes on into the destination, which kept a reverb3d's own mixer alive and processed with it.
+			try {
+				reverb_let_go(reverb); // A node the script keeps no longer goes on into the destination, which kept a reverb3d's own mixer alive and processed with it.
+			} catch (...) {} // Out of memory taking it off: left where it goes rather than ending the program from a destructor.
 			reverb->release();
 		}
 		if (output_mixer) output_mixer->release();
