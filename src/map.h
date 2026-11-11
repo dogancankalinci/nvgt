@@ -18,6 +18,7 @@
 #include <angelscript.h>
 #include <reactphysics3d/mathematics/Vector3.h>
 #include <scriptany.h>
+#include <mutex>
 #include "pathfinder.h"
 #define total_frame_sizes 3
 
@@ -26,6 +27,7 @@ class coordinate_map;
 class map_frame;
 class map_area {
 	int ref_count;
+	bool gc_flag = false;
 	bool is_unfiltered(asIScriptFunction* filter_callback);
 public:
 	coordinate_map* parent;
@@ -49,6 +51,12 @@ public:
 	map_area(coordinate_map* p, float minx, float max, float miny, float maxy, float minz, float maxz, float rotation, CScriptAny* primary_data, const std::string& data1, const std::string& data2, const std::string& data3, int priority, asINT64 flags);
 	void add_ref();
 	void release();
+	// The garbage collector's behaviours (see coordinate_map's): primary_data is a reference the area holds, often to the object that holds the map.
+	int get_ref_count() { return ref_count; }
+	void set_gc_flag() { gc_flag = true; }
+	bool get_gc_flag() { return gc_flag; }
+	void enum_references(asIScriptEngine* engine);
+	void release_all_references(asIScriptEngine* engine);
 	void unframe();
 	void reframe();
 	void set(float minx, float maxx, float miny, float maxy, float minz, float maxz, float rotation);
@@ -63,16 +71,25 @@ public:
 	int size;
 	int add_areas_for_point(std::vector<map_area*>& local_areas, float x, float y, float z, float d = 0.0, int p = -1, asIScriptFunction* filter_callback = NULL, asINT64 flags = 0, asINT64 excluded_flags = 0);
 	int add_areas_for_range(std::vector<map_area*>& local_areas, std::unordered_set<map_area*>& taken, float minx, float maxx, float miny, float maxy, float minz, float maxz, float d = 0.0, int p = -1, asIScriptFunction* filter_callback = NULL, asINT64 flags = 0, asINT64 excluded_flags = 0);
-	void reset();
+	void reset(std::vector<map_area*>& held);
 };
 class coordinate_map {
 	ankerl::unordered_dense::map<hashpoint, map_frame*, hashpoint_hash, hashpoint_equals> frames[total_frame_sizes];
 	int ref_count;
+	bool gc_flag = false;
 public:
+	// Held while the frames' lists of areas change and while the garbage collector reads them, which with garbage_collect_mode 3 it does on a thread of its own. Never held while script code runs.
+	std::recursive_mutex frames_mtx;
 	std::unordered_set<map_area*> areas;
 	coordinate_map() : ref_count(1) {}
 	void add_ref();
 	void release();
+	// The garbage collector's behaviours. The frames hold references to the areas, whose primary data is often the object that holds the map: a cycle the collector couldn't see while coordinate_map and coordinate_map_area weren't its types, so such an object was never freed (its destructor never ran) once the script let go of it.
+	int get_ref_count() { return ref_count; }
+	void set_gc_flag() { gc_flag = true; }
+	bool get_gc_flag() { return gc_flag; }
+	void enum_references(asIScriptEngine* engine);
+	void release_all_references(asIScriptEngine* engine) { reset(); }
 	reactphysics3d::Vector3 get_frame_coordinates(int x, int y, int z, int size);
 	map_frame* get_frame(int x, int y, int z, int size, bool create = true);
 	map_area* add_area(float minx, float maxx, float miny, float maxy, float minz, float maxz, float rotation, CScriptAny* primary_data, const std::string& data1, const std::string& data2, const std::string& data3, int priority, asINT64 flags = 0);

@@ -84,6 +84,8 @@ bool boxes_intersect(float minx1, float maxx1, float miny1, float maxy1, float r
 }
 
 static asITypeInfo* g_MapAreaArrayType = NULL;
+static asITypeInfo* g_coordinate_map_type = nullptr; // for NotifyGarbageCollectorOfNewObject
+static asITypeInfo* g_map_area_type = nullptr;
 
 int frame_sizes[] = {8192, 256, 32, 0};
 int get_frame_size(float x, float y, float z) {
@@ -113,15 +115,25 @@ map_area::map_area(coordinate_map* p, float minx, float maxx, float miny, float 
 	reframe();
 }
 void map_area::add_ref() {
+	gc_flag = false;
 	asAtomicInc(ref_count);
 }
 void map_area::release() {
+	gc_flag = false;
 	if (asAtomicDec(ref_count) < 1) {
 		if (primary_data)
 			primary_data->Release();
 		if (parent) parent->areas.erase(this);
 		delete this;
 	}
+}
+void map_area::enum_references(asIScriptEngine* engine) {
+	if (primary_data) engine->GCEnumCallback(primary_data);
+}
+void map_area::release_all_references(asIScriptEngine* engine) {
+	CScriptAny* data = primary_data;
+	primary_data = nullptr;
+	if (data) data->Release();
 }
 bool map_area::is_unfiltered(asIScriptFunction* filter_callback) {
 	if (filter_callback == NULL) return true;
@@ -146,6 +158,7 @@ bool map_area::is_unfiltered(asIScriptFunction* filter_callback) {
 }
 void map_area::unframe() {
 	if (!parent || !framed) return; // framesize says nothing here: 0 is the largest size, and an area that large stayed in its frames, so unframe() did nothing and set() left it where it was, or nowhere as far as a search could tell.
+	std::lock_guard<std::recursive_mutex> lock(parent->frames_mtx); // release() below never lets go of the last reference, so no script runs under it
 	for (map_frame* f : frames) {
 		auto it = std::find(f->areas.begin(), f->areas.end(), this);
 		while (it != f->areas.end()) {
@@ -162,6 +175,7 @@ void map_area::reframe() {
 	framesize = get_frame_size(maxx - minx, maxy - miny, maxz - minz); // Each time, as set() can have changed the size: check_map_area() goes by the size for the area as it is now, and a small area made large by set() kept the smallest frames, up to hundreds of millions of them.
 	Vector3 MIN = Vector3(minx, miny, minz);
 	Vector3 MAX = Vector3(maxx, maxy, maxz);
+	std::lock_guard<std::recursive_mutex> lock(parent->frames_mtx);
 	if (rotation > 0) {
 		Vector3 d = MAX - MIN;
 		std::vector<Vector3> points = {rotate(MIN, center, rotation), rotate(Vector3(MIN.x + d.x, MIN.y, 0), center, rotation), rotate(Vector3(MIN.x, MIN.y + d.y, 0), center, rotation), rotate(Vector3(MIN.x + d.x, MIN.y + d.y, 0), center, rotation)};
@@ -276,7 +290,7 @@ int map_frame::add_areas_for_range(std::vector<map_area*>& local_areas, std::uno
 	release_snapshot(snap);
 	return p;
 }
-void map_frame::reset() {
+void map_frame::reset(std::vector<map_area*>& held) {
 	// An area can outlive this frame (script keeps a handle, or a filter callback reset the map mid-query), so it must not
 	// keep links to frames that are about to be freed or its later unframe() writes into them. Only coordinate_map::reset
 	// calls this, and it frees every frame of the map, which are all the frames any of its areas can be in, so an area's
@@ -287,20 +301,30 @@ void map_frame::reset() {
 			i->frames.clear();
 			i->framed = false;
 		}
-		i->release();
+		held.push_back(i); // the frame's reference, let go of by coordinate_map::reset() once the frames are gone
 	}
 	areas.clear();
 }
 
 void coordinate_map::add_ref() {
+	gc_flag = false;
 	asAtomicInc(ref_count);
 }
 void coordinate_map::release() {
+	gc_flag = false;
 	if (asAtomicDec(ref_count) < 1) {
 		for (map_area* a : areas) a->parent = nullptr;
 		areas.clear();
 		reset();
 		delete this;
+	}
+}
+void coordinate_map::enum_references(asIScriptEngine* engine) {
+	std::lock_guard<std::recursive_mutex> lock(frames_mtx);
+	for (int i = 0; i < total_frame_sizes; i++) {
+		for (const auto& f : frames[i]) {
+			for (map_area* a : f.second->areas) engine->GCEnumCallback(a); // one reference for each time the area is in a frame (see map_area::reframe)
+		}
 	}
 }
 Vector3 coordinate_map::get_frame_coordinates(int x, int y, int z, int size) {
@@ -338,6 +362,7 @@ map_area* coordinate_map::add_area(float minx, float maxx, float miny, float max
 	}
 	map_area* a = new map_area(this, minx, maxx, miny, maxy, minz, maxz, rotation, primary_data, data1, data2, data3, priority, flags);
 	areas.insert(a);
+	if (g_map_area_type) g_map_area_type->GetEngine()->NotifyGarbageCollectorOfNewObject(a, g_map_area_type);
 	return a;
 }
 void coordinate_map::get_areas(float minx, float maxx, float miny, float maxy, float minz, float maxz, float d, std::vector<map_area*>& local_areas, bool priority_check, asIScriptFunction* filter_callback, asINT64 flags, asINT64 excluded_flags) {
@@ -451,17 +476,25 @@ map_area* coordinate_map::get_area(float x, float y, float z, int max_priority, 
 	return result;
 }
 void coordinate_map::reset() {
-	for (int i = 0; i < total_frame_sizes; i++) {
-		for (auto f : frames[i]) {
-			f.second->reset();
-			delete f.second;
+	// The frames' references are let go of once the frames are gone and the lock is free: letting go of an area's last reference frees its primary data, which can run a script destructor, and one that changed this map (added an area, say) while the frames were still being walked here invalidated the walk.
+	std::vector<map_area*> held;
+	{
+		std::lock_guard<std::recursive_mutex> lock(frames_mtx);
+		for (int i = 0; i < total_frame_sizes; i++) {
+			for (auto f : frames[i]) {
+				f.second->reset(held);
+				delete f.second;
+			}
+			frames[i].clear();
 		}
-		frames[i].clear();
 	}
+	for (map_area* a : held) a->release();
 }
 
 coordinate_map* new_coordinate_map() {
-	return new coordinate_map();
+	coordinate_map* m = new coordinate_map();
+	if (g_coordinate_map_type) g_coordinate_map_type->GetEngine()->NotifyGarbageCollectorOfNewObject(m, g_coordinate_map_type);
+	return m;
 }
 
 void RegisterScriptMap(asIScriptEngine* engine) {
@@ -469,11 +502,18 @@ void RegisterScriptMap(asIScriptEngine* engine) {
 	engine->RegisterGlobalFunction(_O("vector rotate(const vector&in point, const vector&in origin, double theta, bool maintain_z = true)"), asFUNCTION(rotate), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("bool boxes_intersect(float minx1, float maxx1, float miny1, float maxy1, float r1, float minx2, float maxx2, float miny2, float maxy2, float r2)"), asFUNCTION(boxes_intersect), asCALL_CDECL);
 	engine->SetDefaultAccessMask(NVGT_SUBSYSTEM_MAP);
-	engine->RegisterObjectType(_O("coordinate_map"), 0, asOBJ_REF);
-	engine->RegisterObjectType(_O("coordinate_map_area"), 0, asOBJ_REF);
+	int map_type_id = engine->RegisterObjectType(_O("coordinate_map"), 0, asOBJ_REF | asOBJ_GC); // See coordinate_map::enum_references().
+	g_coordinate_map_type = map_type_id >= 0 ? engine->GetTypeInfoById(map_type_id) : nullptr;
+	int area_type_id = engine->RegisterObjectType(_O("coordinate_map_area"), 0, asOBJ_REF | asOBJ_GC);
+	g_map_area_type = area_type_id >= 0 ? engine->GetTypeInfoById(area_type_id) : nullptr;
 	engine->RegisterFuncdef(_O("bool coordinate_map_filter_callback(coordinate_map_area@ area)"));
 	engine->RegisterObjectBehaviour(_O("coordinate_map_area"), asBEHAVE_ADDREF, _O("void f()"), asMETHOD(map_area, add_ref), asCALL_THISCALL);
 	engine->RegisterObjectBehaviour(_O("coordinate_map_area"), asBEHAVE_RELEASE, _O("void f()"), asMETHOD(map_area, release), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour(_O("coordinate_map_area"), asBEHAVE_GETREFCOUNT, _O("int f()"), asMETHOD(map_area, get_ref_count), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour(_O("coordinate_map_area"), asBEHAVE_SETGCFLAG, _O("void f()"), asMETHOD(map_area, set_gc_flag), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour(_O("coordinate_map_area"), asBEHAVE_GETGCFLAG, _O("bool f()"), asMETHOD(map_area, get_gc_flag), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour(_O("coordinate_map_area"), asBEHAVE_ENUMREFS, _O("void f(int&in)"), asMETHOD(map_area, enum_references), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour(_O("coordinate_map_area"), asBEHAVE_RELEASEREFS, _O("void f(int&in)"), asMETHOD(map_area, release_all_references), asCALL_THISCALL);
 	engine->RegisterObjectProperty(_O("coordinate_map_area"), _O("const coordinate_map@ map"), asOFFSET(map_area, parent));
 	engine->RegisterObjectProperty(_O("coordinate_map_area"), _O("const float minx"), asOFFSET(map_area, minx));
 	engine->RegisterObjectProperty(_O("coordinate_map_area"), _O("const float maxx"), asOFFSET(map_area, maxx));
@@ -498,6 +538,11 @@ void RegisterScriptMap(asIScriptEngine* engine) {
 	engine->RegisterObjectBehaviour(_O("coordinate_map"), asBEHAVE_FACTORY, _O("coordinate_map @m()"), asFUNCTION(new_coordinate_map), asCALL_CDECL);
 	engine->RegisterObjectBehaviour(_O("coordinate_map"), asBEHAVE_ADDREF, _O("void f()"), asMETHOD(coordinate_map, add_ref), asCALL_THISCALL);
 	engine->RegisterObjectBehaviour(_O("coordinate_map"), asBEHAVE_RELEASE, _O("void f()"), asMETHOD(coordinate_map, release), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour(_O("coordinate_map"), asBEHAVE_GETREFCOUNT, _O("int f()"), asMETHOD(coordinate_map, get_ref_count), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour(_O("coordinate_map"), asBEHAVE_SETGCFLAG, _O("void f()"), asMETHOD(coordinate_map, set_gc_flag), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour(_O("coordinate_map"), asBEHAVE_GETGCFLAG, _O("bool f()"), asMETHOD(coordinate_map, get_gc_flag), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour(_O("coordinate_map"), asBEHAVE_ENUMREFS, _O("void f(int&in)"), asMETHOD(coordinate_map, enum_references), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour(_O("coordinate_map"), asBEHAVE_RELEASEREFS, _O("void f(int&in)"), asMETHOD(coordinate_map, release_all_references), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("coordinate_map"), _O("coordinate_map_area@ add_area(float minx, float maxx, float miny, float maxy, float minz, float maxz, float rotation, any@ primary_data, const string&in data1, const string&in data2, const string&in data3, int priority, int64 flags = 0)"), asMETHOD(coordinate_map, add_area), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("coordinate_map"), _O("coordinate_map_area@[]@ get_areas(float x, float y, float z, float d = 0.0, coordinate_map_filter_callback@ filter_callback = null, int64 required_flags = 0, int64 excluded_flags = 0) const"), asMETHOD(coordinate_map, get_areas_script), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("coordinate_map"), _O("coordinate_map_area@[]@ get_areas(float minx, float maxx, float miny, float maxy, float minz, float maxz, float d = 0.0, coordinate_map_filter_callback@ filter_callback = null, int64 required_flags = 0, int64 excluded_flags = 0) const"), asMETHOD(coordinate_map, get_areas_in_range_script), asCALL_THISCALL);
