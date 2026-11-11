@@ -467,6 +467,10 @@ Joint* world_create_joint(PhysicsWorld& world, const JointInfo& info) {
 // body's velocities are already zero and setType has just cleared its forces.
 // A step can leave a body with a position that isn't finite whatever a script gave it (a concave shape on a body that moves has no volume to make an inertia from), and the next step read and wrote outside of the broad phase's tree with it, as for a transform set to that, see check_transform().
 void world_update(PhysicsWorld& world, decimal time_step) {
+	// reactphysics3d's update() isn't made to be re-entered: it calls the contact and trigger callbacks from inside its step, and an update()
+	// made by one ran a whole second step inside the first, on the state the first was in the middle of using (it went on afterwards from
+	// what the inner one left); a raycast or a test callback runs while the world is walked, which an update changes. It was let through.
+	if (!g_physics_callback_scopes.empty()) throw runtime_error("a physics world cannot be updated from inside a physics callback; defer it until the callback returns");
 	for (uint32 b = 0; b < world.getNbRigidBodies(); b++) check_transform(world.getRigidBody(b)->getTransform());
 	world.update(time_step);
 }
