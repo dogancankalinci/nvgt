@@ -512,6 +512,11 @@ void handle_sdl_event(SDL_Event* evt) {
 }
 void refresh_window() {
 	anticheat_check();
+	// Only the thread that showed the window handles its events and draws to it, as wait() already has it. Called on another thread (a
+	// script thread's loop, an async call), SDL_PumpEvents() and the renderer's present() ran away from the thread SDL's video and the
+	// renderer belong to, and the events were handled into the input state (g_UserInput, the key arrays) and post_events at the same
+	// time as the window thread's own wait() handled others there, which no lock guards.
+	if (g_window && g_WindowThreadId != thread_current_thread_id()) return;
 	#ifdef _WIN32
 	process_keyhook_commands();
 	#endif
