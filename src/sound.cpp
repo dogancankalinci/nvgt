@@ -1854,7 +1854,14 @@ public:
 		if ((g_soundsystem_last_error = queue->init(ma_format_f32, channels, size)) != MA_SUCCESS) throw std::runtime_error("failed to initialize ring buffer");
 		rb = &queue->rb;
 		ma_pcm_rb_set_sample_rate(rb, get_engine()->get_sample_rate()); // Frames are written at the engine's rate, as the microphone records them; MiniAudio leaves it 0.
-		set_ma_data_source((ma_data_source*)&queue->base);
+		bool sourced = false;
+		try {
+			sourced = set_ma_data_source((ma_data_source*)&queue->base);
+		} catch (...) { // Off the node before the queue it reads goes, which the destructor doesn't run for.
+			audio_data_source_impl::reset();
+			throw;
+		}
+		if (!sourced) throw std::runtime_error("failed to initialize ring buffer node"); // Made without its node, it was refused every read; refused now, as a ring buffer that can't be made, its queue freed.
 	}
 	~audio_ring_buffer_impl() {
 		audio_data_source_impl::reset(); // Qualified: audio_ring_buffer_impl::reset() below overrides a different (ring-buffer-clearing) virtual and would otherwise hide this one.
