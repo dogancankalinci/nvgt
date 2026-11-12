@@ -152,8 +152,8 @@ class async_result : public RefCountedObject, public Runnable {
 	// The function finished and its result was taken. An empty exception string was the only sign of success, so an execution that ended in an exception whose message is empty (throw("")), or a result whose copy failed, read as a success: failed was false and the value was read from a null pointer.
 	bool succeeded;
 public:
-	Event progress; // Public so that some functions in this object can be called directly from Angelscript such as wait and tryWait.
-	async_result(asITypeInfo* t) : value(nullptr), subtype(t), subtypeid(subtype->GetSubTypeId()), progress(Event::EVENT_MANUALRESET), task(nullptr), ctx(nullptr), returns_reference(false), succeeded(false) {}
+	std::shared_ptr<Event> progress; // Public so that some functions in this object can be called directly from Angelscript such as wait and tryWait. Shared, as run() signals it after letting go of this object (see there).
+	async_result(asITypeInfo* t) : value(nullptr), subtype(t), subtypeid(subtype->GetSubTypeId()), progress(std::make_shared<Event>(Event::EVENT_MANUALRESET)), task(nullptr), ctx(nullptr), returns_reference(false), succeeded(false) {}
 	~async_result() {
 		release_value_args();
 		if (value) {
@@ -165,16 +165,16 @@ public:
 	}
 	void* get_value() {
 		if (!ctx) throw NullValueException("Object not initialized");
-		progress.wait();
+		progress->wait();
 		if (!succeeded) throw Exception(exception);
 		if ((subtypeid & asTYPEID_MASK_OBJECT) && !(subtypeid & asTYPEID_OBJHANDLE))
 			return *(void**)value;
 		else return value;
 	}
-	std::string get_exception() { return progress.tryWait(0) ? exception : ""; }
+	std::string get_exception() { return progress->tryWait(0) ? exception : ""; }
 	void wait() {
 		if (!ctx) throw NullValueException("Object not initialized");
-		progress.wait();
+		progress->wait();
 	}
 	bool call(asIScriptGeneric* gen, ThreadPool* pool = nullptr) {
 		asIScriptContext* aCtx = asGetActiveContext();
@@ -403,8 +403,10 @@ public:
 		}
 		ctx->GetEngine()->ReturnContext(ctx);
 		release_value_args();
-		progress.set();
+		// The thread lets go of this object before it signals the end: signalled first, a script that let go of the object as soon as wait() returned left the last reference to this thread, so the result (a returned object or handle) was released a moment later here, its destructor running beside the script, and a script counting its objects after the wait still saw it. Now the script's own release frees the result on its thread, unless nothing but this thread held the object, which then goes here as before.
+		std::shared_ptr<Event> done = progress;
 		release();
+		done->set();
 		// This thread's AngelScript data (the list of active contexts and more) was never freed, a leak with every async call made on a thread of its own, which then ends. It is freed last, after release(), which can delete this object and run script destructors here.
 		asThreadCleanup();
 	}
@@ -416,8 +418,8 @@ public:
 		}
 		ref_handles.clear();
 	}
-	bool complete() { return ctx && progress.tryWait(0); }
-	bool failed() { return progress.tryWait(0) && !succeeded; }
+	bool complete() { return ctx && progress->tryWait(0); }
+	bool failed() { return progress->tryWait(0) && !succeeded; }
 };
 async_result* async_unprepared_factory(asITypeInfo* type) { return new async_result(type); }
 void async_factory(asIScriptGeneric* gen) {
@@ -838,7 +840,7 @@ bool event_try_wait(Event* event, unsigned int ms) {
 	return event->tryWait(poco_ms(ms));
 }
 bool async_try_wait(async_result* result, unsigned int ms) {
-	return result->progress.tryWait(poco_ms(ms));
+	return result->progress->tryWait(poco_ms(ms));
 }
 
 // mutex, fast_mutex, named_mutex and spinlock_mutex keep which thread holds them and how many times, so that unlock() by a thread that doesn't hold one (it is unlocked, or another thread locked it) raises on every platform. Poco's unlock() went straight to the system: on Windows, LeaveCriticalSection by another thread while one held the mutex let a third thread in beside the holder, silently, and an unlock of an unlocked one did nothing; POSIX's recursive mutex raised "cannot unlock mutex" for both, and its non-recursive fast mutex unlocked it whoever held it. Locking is Poco's as before: recursive for mutex, and for fast_mutex where the system's is (Windows). named_mutex and spinlock_mutex were Poco's own until round 45: another thread's unlock() of a spinlock_mutex let a third thread in beside the holder, and an unlock() of a named_mutex nobody here held did nothing on Windows but raised the count of the POSIX semaphore behind it, after which two holders got in.
