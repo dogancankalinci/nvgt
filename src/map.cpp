@@ -135,8 +135,16 @@ coordinate_map* map_area::get_map() const {
 	// The map property. It was the parent field itself, registered as a handle: `@area.map = null;` released a reference the area never held, and the map was freed while the script still held it. And a map the script has let go of is only kept by the collector now until it is freed: it is no map any more, as when it was freed at once, and handing it out again would bring it back as the collector frees it on another thread.
 	std::lock_guard<std::recursive_mutex> lock(coordinate_map::links_mutex());
 	if (!parent || parent->get_ref_count() <= parent->collector_refs()) return nullptr;
-	parent->add_ref();
-	return parent;
+	asILockableSharedBool* dead = parent->get_weakref_flag(); // see there
+	if (!dead) {
+		parent->add_ref();
+		return parent;
+	}
+	dead->Lock();
+	bool gone = dead->Get();
+	if (!gone) parent->add_ref(); // no other lock is taken while the flag is held, see the collector's MarkWeakRefsOfGarbageDead
+	dead->Unlock();
+	return gone ? nullptr : parent;
 }
 void map_area::enum_references(asIScriptEngine* engine) {
 	if (primary_data) engine->GCEnumCallback(primary_data);
@@ -329,12 +337,32 @@ void coordinate_map::release() {
 	gc_flag = false;
 	{
 		std::lock_guard<std::recursive_mutex> lock(links_mutex()); // the count goes down under the lock, so that map_area::get_map() never hands out a map going
+		if (weak_flag) {
+			// A weak reference (weakref<coordinate_map>, which the flag allows, and the collector's view of get_map()) turns strong under the flag's lock alone: a reference that isn't the last goes under it, and the flag is marked dead before the last one goes. One turned strong in between (Set() takes the lock itself) keeps the map alive with weak references that no longer reach it.
+			weak_flag->Lock();
+			if (ref_count > 1) {
+				asAtomicDec(ref_count);
+				weak_flag->Unlock();
+				return;
+			}
+			weak_flag->Unlock();
+			weak_flag->Set(true);
+		}
 		if (asAtomicDec(ref_count) >= 1) return;
 		for (map_area* a : areas) a->parent = nullptr;
 		areas.clear();
+		if (weak_flag) {
+			weak_flag->Release();
+			weak_flag = nullptr;
+		}
 	}
 	reset();
 	delete this;
+}
+asILockableSharedBool* coordinate_map::get_weakref_flag() {
+	std::lock_guard<std::recursive_mutex> lock(links_mutex());
+	if (!weak_flag) weak_flag = asCreateLockableSharedBool();
+	return weak_flag;
 }
 void coordinate_map::enum_references(asIScriptEngine* engine) {
 	std::lock_guard<std::recursive_mutex> lock(links_mutex());
@@ -564,6 +592,7 @@ void RegisterScriptMap(asIScriptEngine* engine) {
 	engine->RegisterObjectBehaviour(_O("coordinate_map"), asBEHAVE_GETREFCOUNT, _O("int f()"), asMETHOD(coordinate_map, get_ref_count), asCALL_THISCALL);
 	engine->RegisterObjectBehaviour(_O("coordinate_map"), asBEHAVE_SETGCFLAG, _O("void f()"), asMETHOD(coordinate_map, set_gc_flag), asCALL_THISCALL);
 	engine->RegisterObjectBehaviour(_O("coordinate_map"), asBEHAVE_GETGCFLAG, _O("bool f()"), asMETHOD(coordinate_map, get_gc_flag), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour(_O("coordinate_map"), asBEHAVE_GET_WEAKREF_FLAG, _O("int& f()"), asMETHOD(coordinate_map, get_weakref_flag), asCALL_THISCALL);
 	engine->RegisterObjectBehaviour(_O("coordinate_map"), asBEHAVE_ENUMREFS, _O("void f(int&in)"), asMETHOD(coordinate_map, enum_references), asCALL_THISCALL);
 	engine->RegisterObjectBehaviour(_O("coordinate_map"), asBEHAVE_RELEASEREFS, _O("void f(int&in)"), asMETHOD(coordinate_map, release_all_references), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("coordinate_map"), _O("coordinate_map_area@ add_area(float minx, float maxx, float miny, float maxy, float minz, float maxz, float rotation, any@ primary_data, const string&in data1, const string&in data2, const string&in data3, int priority, int64 flags = 0)"), asMETHOD(coordinate_map, add_area), asCALL_THISCALL);

@@ -79,6 +79,7 @@ class coordinate_map {
 	int ref_count;
 	bool gc_flag = false;
 	bool collected = false; // given to the garbage collector, which then holds a reference of its own
+	asILockableSharedBool* weak_flag = nullptr; // see get_weakref_flag()
 	friend coordinate_map* new_coordinate_map();
 public:
 	// One lock for every map, held while the frames' lists of areas, a map's set of areas or an area's parent change and while the garbage collector reads the frames, and around a map's last release. Every map and area is now freed by the collector's last release, on its own thread with garbage_collect_mode 3 or on any thread that makes a garbage-collected object, so a map going there cleared the parent of the areas a script still held while that script read it, and an area going there took itself out of a map the script was adding to. A lock of the map's own went with the map. Never destroyed, never held while script code runs.
@@ -90,6 +91,8 @@ public:
 	// The garbage collector's behaviours. The frames hold references to the areas, whose primary data is often the object that holds the map: a cycle the collector couldn't see while coordinate_map and coordinate_map_area weren't its types, so such an object was never freed (its destructor never ran) once the script let go of it.
 	int get_ref_count() { return ref_count; }
 	int collector_refs() const { return collected ? 1 : 0; }
+	// An area's link to its map is a weak reference (the area holds none), which map_area::get_map() turns strong. The collector marks this flag dead, under its lock, once it has found the map to be garbage and before it breaks it: get_map() handed out a map the collector then emptied (reset() as its RELEASEREFS) between the steps of breaking the cycle, on the collector's thread or between incremental steps on the script's. Made when first asked for, under links_mutex().
+	asILockableSharedBool* get_weakref_flag();
 	void set_gc_flag() { gc_flag = true; }
 	bool get_gc_flag() { return gc_flag; }
 	void enum_references(asIScriptEngine* engine);
