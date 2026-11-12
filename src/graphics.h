@@ -14,6 +14,7 @@
 
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <angelscript.h>
 #include <scriptarray.h>
@@ -62,11 +63,14 @@ graphic* load_surface(const std::string& file);
 graphic* load_surface(const std::string& file, const pack_interface* pack_file);
 graphic* create_surface(int width, int height, unsigned int pixel_format);
 
+class graphics_renderer;
 class graphics_texture {
 	SDL_Texture* _texture;
 	int _width;
 	int _height;
 	int _refcount;
+	friend class graphics_renderer;
+	graphics_renderer* _owner = nullptr; // the renderer that made it, see graphics_renderer::detach()
 public:
 	graphics_texture(SDL_Texture* texture);
 	~graphics_texture();
@@ -157,7 +161,12 @@ class graphics_renderer {
 	int _refcount;
 	bool _dirty;
 	bool _presented_once;
+	friend class graphics_texture;
+	std::unordered_set<graphics_texture*> _textures; // made by create_texture() and not let go of yet
 public:
+	// SDL destroys a window's renderer, and every texture made by it, with the window: a renderer or texture the script still held kept the freed pointer, and a renderer or texture made later (show_window() again) could get its address, which the old object then drew on and, when let go of, destroyed. game_window::close() has every renderer of its window let go of its SDL renderer and textures first.
+	void detach();
+	static void window_closing(SDL_Window* window);
 	graphics_renderer();
 	graphics_renderer(game_window* window);
 	~graphics_renderer();

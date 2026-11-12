@@ -297,7 +297,10 @@ game_window::~game_window() {
 void game_window::close() {
 	_font = nullptr;
 	_renderer = nullptr;
-	if (_owns_window && _window) SDL_DestroyWindow(_window);
+	if (_owns_window && _window) {
+		graphics_renderer::window_closing(_window); // a renderer the script still holds lets go of what SDL frees with the window, see there
+		SDL_DestroyWindow(_window);
+	}
 	_window = nullptr;
 	_native_window = nullptr;
 }

@@ -10,6 +10,7 @@
  * 3. This notice may not be removed or altered from any source distribution.
 */
 
+#include <mutex>
 #include "graphics.h"
 #include "UI.h"
 #include "nvgt_plugin.h"
@@ -109,11 +110,16 @@ graphics_texture::graphics_texture(SDL_Texture* texture) : _texture(texture), _r
 	}
 }
 
+static std::recursive_mutex& graphics_renderers_mutex(); // see graphics_renderer
 graphics_texture::~graphics_texture() {
-	if (_texture) {
-		SDL_DestroyTexture(_texture);
+	SDL_Texture* texture;
+	{
+		std::lock_guard<std::recursive_mutex> lock(graphics_renderers_mutex());
+		if (_owner) _owner->_textures.erase(this);
+		texture = _texture; // null once its renderer let go of it (see graphics_renderer::detach())
 		_texture = nullptr;
 	}
+	if (texture) SDL_DestroyTexture(texture);
 }
 
 bool graphics_texture::set_color_mod(unsigned int r, unsigned int g, unsigned int b) {
@@ -271,6 +277,16 @@ std::string font_tag_to_string(unsigned int tag) {
 
 // graphics_renderer
 
+// Every renderer that has an SDL renderer, for graphics_renderer::window_closing().
+// Also guards each renderer's set of textures and a texture's link to its renderer, as a texture or renderer can be let go of on a script thread while the window closes on its own.
+static std::recursive_mutex& graphics_renderers_mutex() {
+	static auto* m = new std::recursive_mutex; // never destroyed: a renderer can go late in the program's end
+	return *m;
+}
+static std::unordered_set<graphics_renderer*>& graphics_renderers() {
+	static auto* s = new std::unordered_set<graphics_renderer*>;
+	return *s;
+}
 graphics_renderer::graphics_renderer() : _renderer(nullptr), _refcount(1), _dirty(false), _presented_once(false) {
 	// Default renderer attaches to whichever window SDL currently considers the focused one, if any.
 	SDL_Window* win = SDL_GetKeyboardFocus();
@@ -283,6 +299,10 @@ graphics_renderer::graphics_renderer() : _renderer(nullptr), _refcount(1), _dirt
 	#ifdef __APPLE__
 	if (_renderer) voice_over_renderer_created(win);
 	#endif
+	if (_renderer) {
+		std::lock_guard<std::recursive_mutex> lock(graphics_renderers_mutex());
+		graphics_renderers().insert(this);
+	}
 }
 
 graphics_renderer::graphics_renderer(game_window* window) : _renderer(nullptr), _refcount(1), _dirty(false), _presented_once(false) {
@@ -295,12 +315,35 @@ graphics_renderer::graphics_renderer(game_window* window) : _renderer(nullptr), 
 	#ifdef __APPLE__
 	if (_renderer) voice_over_renderer_created(window->get_sdl_window());
 	#endif
+	if (_renderer) {
+		std::lock_guard<std::recursive_mutex> lock(graphics_renderers_mutex());
+		graphics_renderers().insert(this);
+	}
 }
 
 graphics_renderer::~graphics_renderer() {
+	std::lock_guard<std::recursive_mutex> lock(graphics_renderers_mutex());
+	graphics_renderers().erase(this);
+	detach();
+}
+void graphics_renderer::detach() {
+	std::lock_guard<std::recursive_mutex> lock(graphics_renderers_mutex());
+	for (graphics_texture* t : _textures) {
+		if (t->_texture) SDL_DestroyTexture(t->_texture);
+		t->_texture = nullptr;
+		t->_owner = nullptr;
+	}
+	_textures.clear();
 	if (_renderer) {
 		SDL_DestroyRenderer(_renderer);
 		_renderer = nullptr;
+	}
+}
+void graphics_renderer::window_closing(SDL_Window* window) {
+	if (!window) return;
+	std::lock_guard<std::recursive_mutex> lock(graphics_renderers_mutex()); // a renderer let go of on another thread meanwhile waits
+	for (graphics_renderer* r : graphics_renderers()) {
+		if (r->_renderer && SDL_GetRenderWindow(r->_renderer) == window) r->detach();
 	}
 }
 
@@ -383,7 +426,12 @@ bool graphics_renderer::render_graphic_ex(graphic* gfx, float src_x, float src_y
 graphics_texture* graphics_renderer::create_texture(graphic* gfx) {
 	if (!gfx || !gfx->get_surface()) return nullptr;
 	SDL_Texture* tex = SDL_CreateTextureFromSurface(_renderer, gfx->get_surface());
-	return tex ? new graphics_texture(tex) : nullptr;
+	if (!tex) return nullptr;
+	graphics_texture* t = new graphics_texture(tex);
+	std::lock_guard<std::recursive_mutex> lock(graphics_renderers_mutex());
+	t->_owner = this;
+	_textures.insert(t);
+	return t;
 }
 
 bool graphics_renderer::render_texture(graphics_texture* tex, float dst_x, float dst_y) {
