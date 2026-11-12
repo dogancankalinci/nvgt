@@ -680,8 +680,13 @@ static void SDLCALL tray_entry_sdl_callback(void* userdata, SDL_TrayEntry* entry
 		std::lock_guard<std::recursive_mutex> lock(system_tray_gc_mutex());
 		auto found = system_tray_items().find(entry);
 		if (found != system_tray_items().end()) {
-			item = found->second;
-			item->duplicate();
+			asILockableSharedBool* dead = found->second->get_weakref_flag(); // see there
+			if (dead) dead->Lock();
+			if (!dead || !dead->Get()) {
+				item = found->second;
+				item->duplicate(); // no other lock is taken while the flag is held, see the collector's MarkWeakRefsOfGarbageDead
+			}
+			if (dead) dead->Unlock();
 		}
 	}
 	if (!item) return;
@@ -697,8 +702,36 @@ system_tray_menu_item::~system_tray_menu_item() {
 		std::lock_guard<std::recursive_mutex> lock(system_tray_gc_mutex());
 		auto found = _entry ? system_tray_items().find(_entry) : system_tray_items().end();
 		if (found != system_tray_items().end() && found->second == this) system_tray_items().erase(found);
+		if (_weak_flag) {
+			_weak_flag->Set(true);
+			_weak_flag->Release();
+			_weak_flag = nullptr;
+		}
 	}
 	if (_callback) { _callback->Release(); _callback = nullptr; }
+}
+void system_tray_menu_item::release() {
+	_gc_flag = false;
+	{
+		std::lock_guard<std::recursive_mutex> lock(system_tray_gc_mutex());
+		if (_weak_flag) {
+			// A weak reference (weakref<system_tray_menu_item>, which the flag allows) turns strong under the flag's lock alone: a reference that isn't the last goes under it, and the flag is marked dead before the last one goes. One turned strong in between (Set() takes the lock itself) keeps the item alive with weak references that no longer reach it.
+			_weak_flag->Lock();
+			if (_refcount > 1) {
+				asAtomicDec(_refcount);
+				_weak_flag->Unlock();
+				return;
+			}
+			_weak_flag->Unlock();
+			_weak_flag->Set(true);
+		}
+	}
+	if (asAtomicDec(_refcount) < 1) delete this;
+}
+asILockableSharedBool* system_tray_menu_item::get_weakref_flag() {
+	std::lock_guard<std::recursive_mutex> lock(system_tray_gc_mutex());
+	if (!_weak_flag) _weak_flag = asCreateLockableSharedBool();
+	return _weak_flag;
 }
 void system_tray_menu_item::enum_references(asIScriptEngine* engine) {
 	std::lock_guard<std::recursive_mutex> lock(system_tray_gc_mutex());
@@ -1085,6 +1118,7 @@ void RegisterUI(asIScriptEngine* engine) {
 	engine->RegisterObjectBehaviour("system_tray_menu_item", asBEHAVE_GETREFCOUNT, "int f()", asMETHOD(system_tray_menu_item, get_ref_count), asCALL_THISCALL);
 	engine->RegisterObjectBehaviour("system_tray_menu_item", asBEHAVE_SETGCFLAG, "void f()", asMETHOD(system_tray_menu_item, set_gc_flag), asCALL_THISCALL);
 	engine->RegisterObjectBehaviour("system_tray_menu_item", asBEHAVE_GETGCFLAG, "bool f()", asMETHOD(system_tray_menu_item, get_gc_flag), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour("system_tray_menu_item", asBEHAVE_GET_WEAKREF_FLAG, "int& f()", asMETHOD(system_tray_menu_item, get_weakref_flag), asCALL_THISCALL);
 	engine->RegisterObjectBehaviour("system_tray_menu_item", asBEHAVE_ENUMREFS, "void f(int&in)", asMETHOD(system_tray_menu_item, enum_references), asCALL_THISCALL);
 	engine->RegisterObjectBehaviour("system_tray_menu_item", asBEHAVE_RELEASEREFS, "void f(int&in)", asMETHOD(system_tray_menu_item, release_all_references), asCALL_THISCALL);
 	engine->RegisterObjectBehaviour("system_tray_menu", asBEHAVE_GETREFCOUNT, "int f()", asMETHOD(system_tray_menu, get_ref_count), asCALL_THISCALL);

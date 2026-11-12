@@ -161,17 +161,20 @@ class system_tray_menu_item {
 	system_tray_menu_item_type _type;
 	mutable int _refcount;
 	bool _gc_flag = false;
+	asILockableSharedBool* _weak_flag = nullptr; // see get_weakref_flag()
 public:
 	system_tray_menu_item(SDL_TrayEntry* entry, system_tray_menu_item_type type);
 	~system_tray_menu_item(); // defined in .cpp so that system_tray_menu is complete there
 	void duplicate() { _gc_flag = false; asAtomicInc(_refcount); }
-	void release() { _gc_flag = false; if (asAtomicDec(_refcount) < 1) delete this; }
+	void release(); // see get_weakref_flag()
 	// The garbage collector's behaviours (see system_tray_gc_mutex() in UI.cpp): a tray holds its menu, a menu its items, an item its callback (often a delegate of the object that holds the tray) and its submenu, a cycle the collector couldn't see while these weren't its types, so such an object was never freed (its destructor never ran, its tray stayed in the notification area) once the script let go of it.
 	int get_ref_count() { return _refcount; }
 	void set_gc_flag() { _gc_flag = true; }
 	bool get_gc_flag() { return _gc_flag; }
 	void enum_references(asIScriptEngine* engine);
 	void release_all_references(asIScriptEngine* engine);
+	// The entry registry (system_tray_items() in UI.cpp) is a weak link to the item, which a click turns strong. The collector marks this flag dead once it has found the item to be garbage, before it breaks the cycle one object at a time: a click meanwhile ran the item's callback on objects the collector was emptying. Made when first asked for, under system_tray_gc_mutex().
+	asILockableSharedBool* get_weakref_flag();
 	SDL_TrayEntry* get_sdl_entry() const { return _entry; }
 	bool is_valid() const { return _entry != nullptr; }
 	void invalidate(); // called by system_tray_menu::remove_entry and system_tray_menu::invalidate
