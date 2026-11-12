@@ -441,8 +441,10 @@ void json_unchain(SharedPtr<Dynamic::Var>& value) {
 	json_take_apart_pending(pending);
 }
 // An indent or a step of billions of spaces took as long to write as it takes to run out of memory, with nothing a script could do about it.
+// So did a negative step other than -1 (the default, which keeps the indent): Poco adds the step to the unsigned indent of each nested
+// level, so -2 with an indent of 0 gave the next level about 4 billion spaces (stringify(0, -1000) of [1, [2]] ran for minutes).
 static void check_json_indent(unsigned int indent, int step) {
-	if (indent > 1024 || step > 1024) throw InvalidArgumentException("json indent out of range");
+	if (indent > 1024 || step > 1024 || step < -1) throw InvalidArgumentException("json indent out of range");
 }
 static void check_json_value(const Dynamic::Var& value, std::vector<const void*>& path) {
 	if (value.type() == typeid(JSON::Object::Ptr)) {
