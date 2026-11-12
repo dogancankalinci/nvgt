@@ -5790,10 +5790,14 @@ public:
 		}
 		ma_resource_manager_data_buffer *failed_buffer = reaped? nullptr : finish_load_jobs(source.get());
 		// Off the graph first, which waits for the audio thread to stop reading the sound, so nothing reads what is let go of below.
+		std::vector<audio_node*> attached; // What its output was attached to, as by the script by hand, let go of after the graph lock: kept, the references lasted until the next load or the sound's end, an encoder it went into left open and output_attached() reading true for a closed sound.
 		{
 			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex);
 			ma_node_detach_all_output_buses(&*closing);
+			attached.swap(output_connections);
+			drop_rate_bridges();
 		}
+		for (audio_node* n : attached) if (n) n->release();
 		// A wrapper the script got of the sound's own source is emptied before the source is freed with the sound, rather than left pointing at it; this also lets go of sources chained to it. Not under the graph lock, which the wrapper takes after its own.
 		if (datasource && !datasource_opened) {
 			if (auto impl = dynamic_cast<audio_data_source_impl*>(datasource)) impl->forget_source();
