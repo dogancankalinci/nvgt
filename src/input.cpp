@@ -889,9 +889,12 @@ bool StartTextInput() {
 	#if defined(TARGET_OS_IOS) && TARGET_OS_IOS
 		ios_set_direct_interaction(false);
 	#endif
+	// SDL copies the properties into the window: the set made here was never destroyed, a leak (about 240 bytes) with every call.
 	SDL_PropertiesID props = SDL_CreateProperties();
 	SDL_SetNumberProperty(props, SDL_PROP_TEXTINPUT_CAPITALIZATION_NUMBER, SDL_CAPITALIZE_NONE);
-	return SDL_StartTextInputWithProperties(g_window ? g_window->get_sdl_window() : nullptr, props);
+	bool result = SDL_StartTextInputWithProperties(g_window ? g_window->get_sdl_window() : nullptr, props);
+	if (props) SDL_DestroyProperties(props);
+	return result;
 }
 
 bool StopTextInput() {
