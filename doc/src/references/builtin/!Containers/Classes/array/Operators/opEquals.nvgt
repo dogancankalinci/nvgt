@@ -3,6 +3,10 @@
 	bool array::opEquals(const array&in other);
 	## Arguments:
 		* const array&in other: the array to compare.
+	## Returns:
+		bool: true if both arrays have the same length and each pair of elements is equal, false otherwise.
+	## Remarks:
+		Elements that are objects are compared with their class's opEquals method, or its opCmp method if it has no opEquals. An exception thrown inside that method is not passed on to your script: the comparison stops there, and the arrays count as not equal.
 */
 
 // Example:

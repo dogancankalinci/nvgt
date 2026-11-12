@@ -16,3 +16,5 @@ where `t` refers to the array's datatype.
 It should return true if A is considered less than B, or false otherwise.
 
 Please note the signature must match exactly - parameters must be declared as `const &in` otherwise it will result in a compilation error.
+
+An exception thrown inside the callback is not passed on to your script: the sort skips the comparisons left in that pass and goes on with the next one, so the array may end up only partly sorted.

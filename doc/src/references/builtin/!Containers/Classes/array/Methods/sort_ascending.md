@@ -10,3 +10,5 @@ Sorts an array in ascending order.
 
 ## Remarks:
 To sort an array of objects, it is necessary for the class to overload the comparison operator by implementing opCmp.
+
+An exception thrown inside opCmp is not passed on to your script: that comparison counts as "not less", and the sort goes on with the others, so the array may end up only partly sorted.

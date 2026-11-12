@@ -10,6 +10,7 @@
 	## Remarks:
 		Be ware that this method will start getting slower the larger your array is, this is because this find method must search through every item in the array until it finds an item that equals what you are looking for.
 		Be sure to never write code like `string value = array[array.find("testing")];` or anything else where you call array.find() directly within the array's indexing operator. This is because array.find() could return -1, meaning that an index out of bounds exception will be thrown if you use the value returned by this function without verifying it first.
+		For an array of objects, the elements are compared with their class's opEquals method, or its opCmp method if it has no opEquals. An exception thrown inside that method is not passed on to your script: that element counts as not equal, and the search goes on with the next one, so find() returns the index of a later match or -1.
 */
 
 // Example:
