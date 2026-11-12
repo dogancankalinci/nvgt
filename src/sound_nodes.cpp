@@ -1236,6 +1236,21 @@ public:
 		output_claim owning{verb_mixer? nullptr : verb, nullptr};
 		struct entry_kept { audio_node* node; bool made; bool kept = false; ~entry_kept() { if (!kept && made) reverb_entry_forget(node); } } entry{verb, verb && reverb_entry_made(verb)}; // Before anything changes (see reverb_entry_made()); one made here is forgotten again on a refusal, rather than kept for good.
 		// A mixer goes into the destination first, which refuses a loop, and then this node into the new reverb, which replaces the link to the old one: either refused leaves the old reverb as it was, rather than let go of before the new one was refused.
+		// A mixer given as the reverb is moved to the destination before this node is attached to it: should the attach or the count then be refused or throw, as on running out of memory, it goes back to the parent it had, rather than left moved with that parent let go of.
+		struct parent_kept {
+			mixer* mix;
+			mixer* parent;
+			bool kept = false;
+			parent_kept(mixer* m) : mix(m), parent(m? m->get_mixer() : nullptr) { if (parent) parent->duplicate(); }
+			~parent_kept() {
+				if (mix && !kept) {
+					try {
+						mix->set_mixer(parent);
+					} catch (...) {}
+				}
+				if (parent) parent->release();
+			}
+		} moved{verb_mixer};
 		if ((verb_mixer && !send_onward(verb, output_mixer)) || (verb? !attach_output_bus(0, verb, 0) : !detach_output_bus(0))) return;
 		// Counted and, for a node that isn't a mixer, sent on before the old one is let go of: one that can't be sent on, as the engine's endpoint or a node whose attach there loops, is refused with this node back on the old reverb, rather than taken with the sends going wherever it already went and success read from the old one's let-go.
 		std::shared_ptr<std::recursive_mutex> send;
@@ -1265,6 +1280,7 @@ public:
 		claim.kept = true;
 		owning.kept = true;
 		entry.kept = true;
+		moved.kept = true;
 		// The old one is let go of once the new one is in, should counting or sending the new one throw, as on running out of memory, too: left, it stayed counted, attached and mixing for good.
 		struct letting_go {
 			reverb3d_impl* self;
