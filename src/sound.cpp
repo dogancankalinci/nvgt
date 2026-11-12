@@ -538,8 +538,27 @@ static int audio_device_index(ma_device_type type, const ma_device_id &id) {
 	}
 }
 // Better to return an empty array instead of null for now. A single one, as the script adds its own reference to what these return, so a new array each time was never let go.
+// Made again by a later call when there was no memory for it: kept null for good, every read that fell back on it dereferenced null.
 static CScriptArray *empty_device_list() {
-	static CScriptArray *empty = CScriptArray::Create(get_array_type("array<string>"));
+	static std::atomic<CScriptArray*> empty{nullptr};
+	CScriptArray* made = empty.load(std::memory_order_acquire);
+	if (made) return made;
+	if (!(made = CScriptArray::Create(get_array_type("array<string>")))) return nullptr;
+	CScriptArray* there = nullptr;
+	if (!empty.compare_exchange_strong(there, made, std::memory_order_acq_rel)) { // Another thread's, made meanwhile.
+		made->Release();
+		return there;
+	}
+	return made;
+}
+// The empty list with a reference of the caller's own, or null with MA_OUT_OF_MEMORY.
+static CScriptArray *acquire_empty_device_list() {
+	CScriptArray* empty = empty_device_list();
+	if (!empty) {
+		g_soundsystem_last_error = MA_OUT_OF_MEMORY;
+		return nullptr;
+	}
+	empty->AddRef();
 	return empty;
 }
 // The types the sound system's script calls make, kept once looked up: get_array_type() can wait for the build lock when a type isn't in its cache, which on an audio thread, as in a processing callback, held up the audio, and could wait for a thread destroying the engine while that waited for the callback (see data_callback()). Looked up on a script thread when a processing callback is set, so that its calls find them.
@@ -559,8 +578,7 @@ static ma_result array_refusal(asIScriptContext* ctx) {
 // On an audio thread, as in a processing callback, the lists as last taken, without listing the devices there, which held up the audio for milliseconds.
 CScriptArray *get_sound_input_devices() {
 	if ((on_an_audio_thread() || !refresh_audio_devices()) && !g_sound_script_input_devices) {
-		empty_device_list()->AddRef();
-		return empty_device_list();
+		return acquire_empty_device_list();
 	}
 	std::lock_guard<std::mutex> lock(g_devices_mutex);
 	g_sound_script_input_devices->AddRef();
@@ -568,8 +586,7 @@ CScriptArray *get_sound_input_devices() {
 }
 CScriptArray *get_sound_output_devices() {
 	if ((on_an_audio_thread() || !refresh_audio_devices()) && !g_sound_script_output_devices) {
-		empty_device_list()->AddRef();
-		return empty_device_list();
+		return acquire_empty_device_list();
 	}
 	std::lock_guard<std::mutex> lock(g_devices_mutex);
 	g_sound_script_output_devices->AddRef();
@@ -712,6 +729,11 @@ void garbage_collect_inline_sounds() {
 	vector<sound*> finished;
 	{
 		unique_lock<mutex> lock(g_inlined_sounds_mutex); // For the whole walk, as sounds that start playing on other threads are added meanwhile.
+		try { // Room for all of them before any is taken out: a push_back running out of memory threw with sounds already taken out, never released.
+			finished.reserve(g_inlined_sounds.size());
+		} catch (...) {
+			return; // Collected by a later call.
+		}
 		for (auto it = g_inlined_sounds.begin(); it != g_inlined_sounds.end();) {
 			if (sound_due_to_play(*it)) ++it;
 			else {
@@ -2525,7 +2547,7 @@ public:
 			if ((g_soundsystem_last_error = ma_decoder_init_vfs(g_sound_service->get_vfs(), triplet.c_str(), &cfg, &*decoder)) == MA_SUCCESS) {
 				initialized = true;
 				if ((g_soundsystem_last_error = remix_decoder(&*decoder)) != MA_SUCCESS) {
-					ma_decoder_uninit(&*decoder);
+					let_go_of_decoder(&*decoder); // With what hold_decoder() made for it, once it ran.
 					initialized = false;
 				}
 			}
@@ -2533,7 +2555,7 @@ public:
 			else {
 				hold_decoder(&*decoder, true);
 				if (!set_ma_data_source((ma_data_source*)&*decoder)) {
-					ma_decoder_uninit(&*decoder);
+					let_go_of_decoder(&*decoder); // With what hold_decoder() made for it, once it ran.
 					initialized = false;
 					decoder.reset();
 				}
@@ -2541,7 +2563,7 @@ public:
 		} catch (...) {
 			last_error_kept kept;
 			audio_data_source_impl::reset();
-			if (initialized) ma_decoder_uninit(&*decoder);
+			if (initialized) let_go_of_decoder(&*decoder); // With what hold_decoder() made for it, once it ran.
 			decoder.reset();
 			g_sound_service->cleanup_triplet(triplet);
 			throw;
@@ -2589,7 +2611,7 @@ public:
 			if ((g_soundsystem_last_error = ma_decoder_init_vfs(ds_vfs.get(), "stream", &cfg, &*decoder)) == MA_SUCCESS) {
 				initialized = true;
 				if ((g_soundsystem_last_error = remix_decoder(&*decoder)) != MA_SUCCESS) {
-					ma_decoder_uninit(&*decoder);
+					let_go_of_decoder(&*decoder); // With what hold_decoder() made for it, once it ran.
 					initialized = false;
 				}
 			}
@@ -2603,7 +2625,7 @@ public:
 				datastream_ref = ds;
 				hold_decoder(&*decoder, seekable);
 				if (!set_ma_data_source((ma_data_source*)&*decoder)) { // A node that can't be made: refused, rather than left open with nothing to read it through, the stream kept until close().
-					ma_decoder_uninit(&*decoder);
+					let_go_of_decoder(&*decoder); // With what hold_decoder() made for it, once it ran.
 					initialized = false;
 					decoder.reset();
 					ds_vfs.reset();
@@ -2615,7 +2637,7 @@ public:
 		} catch (...) {
 			last_error_kept kept;
 			audio_data_source_impl::reset();
-			if (initialized) ma_decoder_uninit(&*decoder);
+			if (initialized) let_go_of_decoder(&*decoder); // With what hold_decoder() made for it, once it ran.
 			decoder.reset();
 			ds_vfs.reset();
 			cursor.reset();
