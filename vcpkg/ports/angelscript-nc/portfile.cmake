@@ -155,6 +155,7 @@ vcpkg_from_github(
         fix-default-assignment-stops-at-failed-member.patch
         fix-refused-template-variadic-registration.patch
         fix-alloc-after-refused-constructor.patch
+        fix-mismatched-assignment-without-context.patch
 )
 
 vcpkg_cmake_configure(

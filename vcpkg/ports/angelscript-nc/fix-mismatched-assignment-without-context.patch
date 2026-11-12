@@ -1,0 +1,18 @@
+diff --git a/sdk/angelscript/source/as_scriptobject.cpp b/sdk/angelscript/source/as_scriptobject.cpp
+index 9fd89a9..291e4bd 100644
+--- a/sdk/angelscript/source/as_scriptobject.cpp
++++ b/sdk/angelscript/source/as_scriptobject.cpp
+@@ -1061,8 +1061,12 @@ int asCScriptObject::CopyFromAs(const asCScriptObject *other, asCObjectType *in_
+ 		{
+ 			// We cannot allow a value assignment from a type that isn't the same or 
+ 			// derives from this type as the member properties may not have the same layout
++			// ALTERED: there may be no active context (the application's AssignScriptObject, or asCScriptEngine::CallCopyBehaviour,
++			// given objects of unrelated script classes outside any execution): the null context was dereferenced. The failure is
++			// still returned.
+ 			asIScriptContext *ctx = asGetActiveContext();
+-			ctx->SetException(TXT_MISMATCH_IN_VALUE_ASSIGN);
++			if( ctx )
++				ctx->SetException(TXT_MISMATCH_IN_VALUE_ASSIGN);
+ 			return asERROR;
+ 		}
+ 
