@@ -3375,6 +3375,16 @@ static constexpr float max_pitch_ratio = 1000;
 // The lowest rate MiniAudio's resampler takes, and a lower pitch is held at: it refuses one whose ratio times 1000 is below 1 and keeps the rate it had, which could be far faster than hold_rate() then allows.
 static constexpr float min_pitch_ratio = 1.0f / 1000;
 // A MiniAudio sound or group as sounds and mixers make them, whose rate MiniAudio is given held by hold_rate().
+// Runs what it was given only if the scope it guards is left by a throw, as on running out of memory, unless disarmed: an exception path's undo that normal returns, which undo things themselves, don't run.
+template <class F> struct on_unwind {
+	F undo;
+	bool armed = true;
+	int uncaught;
+	explicit on_unwind(F f) : undo(std::move(f)), uncaught(std::uncaught_exceptions()) {}
+	~on_unwind() { if (armed && std::uncaught_exceptions() > uncaught) undo(); }
+	on_unwind(const on_unwind&) = delete;
+	on_unwind& operator=(const on_unwind&) = delete;
+};
 struct held_sound : ma_sound {
 	std::atomic<float> pitch{1}; // The pitch the script set, which MiniAudio is given only held.
 	float given = 1; // The pitch MiniAudio was last given; only the thread reading the engine uses it.
@@ -5178,6 +5188,22 @@ public:
 			if (claim_buffer_name(manager, triplet)) break;
 			g_sound_service->cleanup_triplet(triplet);
 		}
+		unique_ptr<ma_resource_manager_data_source> made_source;
+		unique_ptr<decode_front_view> made_front;
+		unique_ptr<float_view> made_view;
+		bool sound_made = false;
+		// A throw from here until the sound is this one's, as on running out of memory, undoes what was made and claimed: left, the source was freed with its load still running on a job thread, which then wrote into it, the sound freed initialised, and the name and the triplet's entry, holding a pack, claimed for good.
+		on_unwind unwinding([&]() {
+			last_error_kept kept;
+			if (sound_made && made) ma_sound_uninit(&*made);
+			if (made_source) discard_source(made_source);
+			if (load_state) {
+				load_state->abandon();
+				load_state = nullptr;
+			}
+			let_go_of_buffer_name(manager, triplet);
+			g_sound_service->cleanup_triplet(triplet);
+		});
 		// A buffer is decoded at the resource manager's rate, the engine's. So one whose own rate was far below it, as a header could claim 1 Hz, came out that many times larger: a 4 KB file took 192 MB and seconds to decode, and one of 400 KB more memory than there was. A source below min_sample_rate, which PCM and decoders are refused under too, is refused; from it on, what a buffer takes follows the sound's length, as for any file, rather than a ratio to the engine's rate, which refused rates PCM and decoders take on an engine above 48000 Hz. The resource manager gives a source's own rate no way out, so the file's header is read first by a decoder of its own, unless the resource manager holds the buffer already, as for a sound played again by its name, which that cost many times over; a source of unknown length isn't, as opening it twice would read it from its start again.
 		bool buffered = (ma_flags & MA_SOUND_FLAG_DECODE) && !(ma_flags & MA_SOUND_FLAG_STREAM);
 		if (!(ma_flags & MA_SOUND_FLAG_UNKNOWN_LENGTH) && (whole_in_pages || buffered && !resource_cached(manager, triplet))) {
@@ -5194,9 +5220,6 @@ public:
 		// A buffer MiniAudio would load synchronously, as for load_memory(), is loaded asynchronously and waited for: see g_resource_tree_mutex.
 		bool wait_for_load = !(ma_flags & (MA_SOUND_FLAG_ASYNC | MA_SOUND_FLAG_STREAM));
 		ma_uint32 flags = ma_flags | (wait_for_load? MA_SOUND_FLAG_ASYNC : 0);
-		unique_ptr<ma_resource_manager_data_source> made_source;
-		unique_ptr<decode_front_view> made_front;
-		unique_ptr<float_view> made_view;
 		bool tree_held = false; // The retry below holds g_resource_tree_mutex around its attempt.
 		// Each attempt gets its own load state, so one a failed attempt left with MiniAudio can't be mistaken for the next. It makes the source and then the sound from it, as ma_sound_init_ex() would from the file's name, but keeps the source: see source.
 		auto attempt_init = [&]() {
@@ -5208,7 +5231,12 @@ public:
 			source_cfg.pFilePath = triplet.c_str();
 			source_cfg.flags = flags | MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_WAIT_INIT; // A sound's loading flags are the resource manager's; the sound needs its source's format, so the source is waited for that far, as ma_sound_init_ex() does.
 			source_cfg.pNotifications = &notifications;
-			made_source = make_unique<ma_resource_manager_data_source>();
+			try {
+				made_source = make_unique<ma_resource_manager_data_source>();
+			} catch (...) {
+				delete state; // Never handed to MiniAudio: both its references are this one's.
+				throw;
+			}
 			{
 				std::shared_lock<std::shared_mutex> shared_tree_lock(g_resource_tree_mutex, std::defer_lock);
 				std::unique_lock<std::shared_mutex> tree_lock(g_resource_tree_mutex, std::defer_lock);
@@ -5223,9 +5251,15 @@ public:
 				ma_sound_config cfg = ma_sound_config_init_2(engine->get_ma_engine()); // With the engine's monoExpansionMode, as a sound made from a data source has.
 				// Not attached to the endpoint by MiniAudio, as postload() attaches it to its chain; so making it changes no node's lists and needs no graph lock.
 				cfg.flags = flags | MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT;
-				cfg.pDataSource = float_source(decode_front(&*made_source, made_front), made_view, engine->get_channels(), (flags & MA_SOUND_FLAG_STREAM) != 0);
+				try {
+					cfg.pDataSource = float_source(decode_front(&*made_source, made_front), made_view, engine->get_channels(), (flags & MA_SOUND_FLAG_STREAM) != 0);
+				} catch (...) { // The source's load still running: its jobs finished before it goes, under the tree's lock as held here.
+					discard_source(made_source, tree_held);
+					if (state) state->abandon();
+					throw;
+				}
 				if ((g_soundsystem_last_error = ma_sound_init_ex(engine->get_ma_engine(), &cfg, &*made)) != MA_SUCCESS) discard_source(made_source, tree_held);
-				else if (wait_for_load) {
+				else if ((sound_made = true), wait_for_load) {
 					{
 						std::unique_lock<std::mutex> lock(state->mtx);
 						state->cv.wait(lock, [state]() { return state->done; });
@@ -5233,6 +5267,7 @@ public:
 					ma_result loaded = ma_resource_manager_data_source_result(&*made_source);
 					if (loaded != MA_SUCCESS) {
 						ma_sound_uninit(&*made);
+						sound_made = false;
 						discard_source(made_source);
 						g_soundsystem_last_error = loaded;
 					}
@@ -5294,6 +5329,7 @@ public:
 				file = encryption_filter::source_of(file); // An encrypted URL's, which otherwise kept up to 16 MiB to come back to for as long as it played.
 				if (auto url_stream = dynamic_cast<prebuffer_istream*>(file)) url_stream->opened(); // Open, so that it needn't keep so much to come back to.
 			}
+			unwinding.armed = false; // This sound's from here, closed by loaded_or_closed() should postload() throw.
 			source = std::move(made_source);
 			view = std::move(made_view);
 			front = std::move(made_front);
