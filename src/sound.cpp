@@ -5165,17 +5165,27 @@ class sound_impl final : public mixer_impl, public virtual sound {
 		end_reap(manager, network);
 	}
 	// discard_source() for a source load_source() made, handed to a reap on an audio thread, as close() frees a source there: freeing it waits for its decode and the cache's lock, which held the device up on a load's failure. Freed here when no reap can be made.
-	static void discard_made_source(unique_ptr<ma_resource_manager_data_source> &src, ma_resource_manager* manager, bool tree_held = false) {
+	// The memory a source loaded from memory reads, pcm_buffer, goes with it, as close() hands it over: freed by the sound while the reap still waited out the decode reading it, it was read after it was freed. A URL's stream is reaped as one (see g_network_reaps).
+	void discard_made_source(unique_ptr<ma_resource_manager_data_source> &src, ma_resource_manager* manager, bool tree_held = false) {
 		if (src && !tree_held && audio_engine_impl::on_audio_thread()) {
+			const bool network = (src->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM) && (src->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_UNKNOWN_LENGTH);
 			unique_ptr<source_reap> late;
 			try {
 				late = make_unique<source_reap>();
 			} catch (...) {}
-			if (late && reserve_reap(manager, true)) {
-				late->manager = manager;
-				late->source = std::move(src);
-				reap(std::move(late));
-				return;
+			if (late && reserve_reap(manager, true, network)) {
+				const char *decoded_from = pcm_buffer.data();
+				late->pcm_buffer = std::move(pcm_buffer);
+				if (late->pcm_buffer.empty() || late->pcm_buffer.data() == decoded_from) { // Moved with its memory, which a string short enough to keep within itself isn't: then freed here, as close() does.
+					late->manager = manager;
+					late->network = network;
+					late->source = std::move(src);
+					reap(std::move(late));
+					return;
+				}
+				pcm_buffer = std::move(late->pcm_buffer);
+				late.reset();
+				end_reap(manager, network);
 			}
 		}
 		discard_source(src, tree_held);
