@@ -166,13 +166,22 @@ passthrough_node* passthrough_node::create(audio_engine* engine) { return new pa
 // What rewiring lets go of on this thread, released once its outermost release_scope ends, after every lock taken within it: a reference let go of can be the last, as to a reverb3d's mixer, whose spatializer lets go of reverb3ds that take a reverb node's send lock, which a reverb3d's set_reverb() holds while it takes a chain's lock. Per thread rather than per chain, so that a chain rewired within another chain's rewiring, or under a send lock, releases only after those locks too.
 static thread_local int t_release_depth = 0;
 static thread_local std::vector<audio_node*> t_deferred_releases;
+// Where a release is deferred to when the list can't grow, as on running out of memory: let go of at once instead, a reference released under the very locks the deferral keeps it from, as a reverb3d's destructor under a chain's lock taking a send lock another thread holds while it waits for that chain, deadlocked.
+static constexpr int deferred_release_spares = 64;
+static thread_local audio_node* t_deferred_spares[deferred_release_spares];
+static thread_local int t_deferred_spare_count = 0;
 struct release_scope {
 	release_scope() { t_release_depth++; }
 	~release_scope() {
 		if (--t_release_depth > 0) return;
 		std::vector<audio_node*> releasing;
 		releasing.swap(t_deferred_releases);
+		audio_node* spares[deferred_release_spares];
+		int spare_count = t_deferred_spare_count;
+		for (int i = 0; i < spare_count; i++) spares[i] = t_deferred_spares[i];
+		t_deferred_spare_count = 0;
 		for (audio_node* n : releasing) n->release(); // Any a release lets go of in turn go through scopes of their own.
+		for (int i = 0; i < spare_count; i++) spares[i]->release();
 	}
 	release_scope(const release_scope&) = delete;
 	release_scope& operator=(const release_scope&) = delete;
@@ -182,11 +191,20 @@ static void release_later(audio_node* n) {
 	if (t_release_depth > 0) {
 		try {
 			t_deferred_releases.push_back(n);
-			return;
-		} catch (...) {} // Out of memory: let go of at once rather than kept for good, or thrown out of a rewiring that already made its change.
+		} catch (...) { // Out of memory: deferred to a spare slot, never thrown out of a rewiring that already made its change; with none left, kept for good rather than released under the locks (see t_deferred_spares).
+			if (t_deferred_spare_count < deferred_release_spares) t_deferred_spares[t_deferred_spare_count++] = n;
+		}
+		return;
 	}
 	n->release();
 }
+// A hold claimed (see claim_node_hold()), dropped again when the change it was claimed for doesn't go through, a throw included, as on running out of memory: left, the record outlived the node, which a later loop check stepped into once it was freed.
+struct hold_claim {
+	const audio_node* holder;
+	const audio_node* held;
+	bool kept = false;
+	~hold_claim() { if (!kept) drop_node_hold(holder, held); }
+};
 // The holds of claim_node_hold(), a leaf lock: nothing else is taken under it.
 static std::mutex g_node_holds_mutex;
 static std::unordered_map<const audio_node*, std::vector<const audio_node*>> g_node_holds;
@@ -249,9 +267,19 @@ protected:
 		else if (auto impl = dynamic_cast<audio_node_impl*>(n)) release_later(impl->acquire_output_destination(0));
 	}
 public:
-	audio_node_chain_impl(audio_node* source, audio_node* endpoint, audio_engine* e) : passthrough_node_impl(e), endpoint(nullptr) {
-		if (source) source->attach_output_bus(0, this, 0);
-		if (endpoint) attach_output_bus(0, endpoint, 0);
+	audio_node_chain_impl(audio_node* source, audio_node* to, audio_engine* e) : passthrough_node_impl(e), endpoint(nullptr) {
+		bool fed = source && source->attach_output_bus(0, this, 0);
+		// A throw attaching the endpoint, as on running out of memory, runs no destructor and frees this chain, which the source's attachment holds: taken off it first, and what the endpoint took let go of.
+		try {
+			if (to) attach_output_bus(0, to, 0);
+		} catch (...) {
+			last_error_kept kept;
+			if (fed) source->detach_output_bus(0);
+			drop_node_holds(static_cast<audio_node*>(this));
+			if (endpoint) endpoint->release();
+			endpoint = nullptr;
+			throw;
+		}
 	}
 	~audio_node_chain_impl() {
 		drop_node_holds(static_cast<audio_node*>(this));
@@ -300,20 +328,14 @@ public:
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
+		hold_claim claim{static_cast<audio_node*>(this), node}; // Dropped unless the node goes in.
 		// The node before is attached to the new one first, on the new node's input_bus_index, which a node that takes no input, as a sound or data source, refuses with nothing changed; the new node is then attached to the next one on the bus the next one was fed on, and when the new node can't feed it, as with another channel count, the node before goes back to it.
 		unsigned int next_bus = bus_at(new_idx);
-		try { // Room for the node first, so that recording it once wired can't throw, as on running out of memory, leaving it wired but not in the chain, or in nodes but not input_buses.
-			nodes.reserve(nodes.size() + 1);
-			input_buses.reserve(input_buses.size() + 1);
-		} catch (...) {
-			drop_node_hold(static_cast<audio_node*>(this), node);
-			throw;
-		}
+		// Room for the node first, so that recording it once wired can't throw, as on running out of memory, leaving it wired but not in the chain, or in nodes but not input_buses.
+		nodes.reserve(nodes.size() + 1);
+		input_buses.reserve(input_buses.size() + 1);
 		hold_destination(prev? prev : this);
-		if ((prev && !prev->attach_output_bus(0, node, input_bus_index)) || (!prev && !audio_node_impl::attach_output_bus(0, node, input_bus_index))) {
-			drop_node_hold(static_cast<audio_node*>(this), node);
-			return false;
-		}
+		if ((prev && !prev->attach_output_bus(0, node, input_bus_index)) || (!prev && !audio_node_impl::attach_output_bus(0, node, input_bus_index))) return false;
 		hold_destination(node); // Once the node was taken, as its output is changed only from here on.
 		bool fed = true;
 		try {
@@ -322,17 +344,16 @@ public:
 			last_error_kept kept;
 			if (prev) prev->attach_output_bus(0, next, next_bus);
 			else audio_node_impl::attach_output_bus(0, next, next_bus);
-			drop_node_hold(static_cast<audio_node*>(this), node);
 			throw;
 		}
 		if (!fed) {
 			ma_result error = g_soundsystem_last_error;
 			if (prev) prev->attach_output_bus(0, next, next_bus);
 			else audio_node_impl::attach_output_bus(0, next, next_bus);
-			drop_node_hold(static_cast<audio_node*>(this), node);
 			g_soundsystem_last_error = error;
 			return false;
 		}
+		claim.kept = true;
 		nodes.insert(nodes.begin() + new_idx, node);
 		input_buses.insert(input_buses.begin() + new_idx, input_bus_index);
 		node->duplicate();
@@ -416,14 +437,13 @@ public:
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
+		hold_claim claim{static_cast<audio_node*>(this), node}; // Dropped unless it becomes the endpoint.
 		{
 			hold_destination(!nodes.empty()? last() : this);
 			if (node) {
 				bool attached = !nodes.empty()? last()->attach_output_bus(0, node, input_bus_index) : audio_node_impl::attach_output_bus(0, node, input_bus_index);
-				if (!attached) { // get_endpoint() tells the attach failed.
-					drop_node_hold(static_cast<audio_node*>(this), node);
-					return false;
-				}
+				if (!attached) return false; // get_endpoint() tells the attach failed.
+				claim.kept = true;
 				endpoint = node;
 				endpoint->duplicate();
 				endpoint_input_bus_index = input_bus_index;
@@ -1110,22 +1130,28 @@ public:
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return;
 		}
+		hold_claim claim{static_cast<audio_node*>(this), verb}; // Dropped unless it becomes the reverb.
 		// A mixer goes into the destination first, which refuses a loop, and then this node into the new reverb, which replaces the link to the old one: either refused leaves the old reverb as it was, rather than let go of before the new one was refused.
-		if ((verb_mixer && !send_onward(verb, output_mixer)) || (verb? !attach_output_bus(0, verb, 0) : !detach_output_bus(0))) {
-			drop_node_hold(static_cast<audio_node*>(this), verb);
-			return;
-		}
-		audio_node* old = reverb;
+		if ((verb_mixer && !send_onward(verb, output_mixer)) || (verb? !attach_output_bus(0, verb, 0) : !detach_output_bus(0))) return;
+		claim.kept = true;
+		// The old one is let go of once the new one is in, should counting or sending the new one throw, as on running out of memory, too: left, it stayed counted, attached and mixing for good.
+		struct letting_go {
+			reverb3d_impl* self;
+			audio_node* node;
+			~letting_go() {
+				if (!node) return;
+				drop_node_hold(static_cast<audio_node*>(self), node);
+				try {
+					reverb_let_go(node); // Still sent on for the reverb3ds that use it too.
+				} catch (...) {} // Left where it goes rather than thrown from a destructor.
+				node->release();
+			}
+		} old{this, reverb};
 		reverb = verb;
 		if (reverb) {
 			reverb->duplicate();
 			std::shared_ptr<std::recursive_mutex> send = reverb_used(reverb);
 			if (!verb_mixer) send_counted(reverb, send);
-		}
-		if (old) {
-			drop_node_hold(static_cast<audio_node*>(this), old);
-			reverb_let_go(old); // Still sent on for the reverb3ds that use it too.
-			old->release();
 		}
 	}
 	audio_node* get_reverb() const override { return reverb; }
@@ -1155,10 +1181,9 @@ public:
 				g_soundsystem_last_error = MA_INVALID_ARGS;
 				return;
 			}
-			if (reverb && !send_onward(reverb, mix)) {
-				drop_node_hold(static_cast<audio_node*>(this), mix);
-				return;
-			}
+			hold_claim claim{static_cast<audio_node*>(this), mix}; // Dropped unless it becomes the mixer, a throw sending the reverb on included.
+			if (reverb && !send_onward(reverb, mix)) return;
+			claim.kept = true;
 			old = output_mixer;
 			output_mixer = mix;
 			if (output_mixer) output_mixer->duplicate();
@@ -1199,17 +1224,23 @@ public:
 			return nullptr;
 		}
 		splitter_node* splitter = splitter_node::create(get_engine(), get_output_channels(0));
-		if (dry_output && !splitter->attach_output_bus(0, dry_output, 0)) {
+		try { // A throw attaching it, as on running out of memory, lets go of it too: kept, it held this reverb3d and the dry output, mixing for good.
+			if (dry_output && !splitter->attach_output_bus(0, dry_output, 0)) {
+				splitter->release();
+				return nullptr;
+			}
+			if (!splitter->attach_output_bus(1, this, 0)) {
+				splitter->release();
+				return nullptr;
+			}
+			if (dry_input && !dry_input->attach_output_bus(0, splitter, 0)) {
+				splitter->release();
+				return nullptr;
+			}
+		} catch (...) {
+			last_error_kept kept;
 			splitter->release();
-			return nullptr;
-		}
-		if (!splitter->attach_output_bus(1, this, 0)) {
-			splitter->release();
-			return nullptr;
-		}
-		if (dry_input && !dry_input->attach_output_bus(0, splitter, 0)) {
-			splitter->release();
-			return nullptr;
+			throw;
 		}
 		return splitter;
 	}
@@ -1612,35 +1643,35 @@ public:
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return;
 		}
-		splitter_node* attachment = nullptr;
-		try {
-			attachment = new_reverb? new_reverb->create_attachment() : nullptr; // First: one that can't be made, or throws, leaves the sound its old reverb, which was let go of before it.
-		} catch (...) {
-			drop_node_hold(static_cast<audio_node*>(this), new_reverb);
-			throw;
-		}
-		if (new_reverb && !attachment) {
-			drop_node_hold(static_cast<audio_node*>(this), new_reverb);
-			return;
+		hold_claim claim{static_cast<audio_node*>(this), new_reverb}; // Dropped unless it becomes the reverb3d.
+		splitter_node* attachment = new_reverb? new_reverb->create_attachment() : nullptr; // First: one that can't be made, or throws, leaves the sound its old reverb, which was let go of before it.
+		if (new_reverb && !attachment) return;
+		// The old attachment out of the chain before anything else changes, so that a throw there, as on running out of memory, leaves the old reverb as it was, the new attachment let go of.
+		if (reverb_attachment) {
+			try {
+				remove_node(reverb_attachment);
+			} catch (...) {
+				if (attachment) attachment->release();
+				throw;
+			}
 		}
 		if (reverb) {
 			drop_node_hold(static_cast<audio_node*>(this), reverb);
 			release_later(reverb);
-			reverb = nullptr;
-			if (reverb_attachment) {
-				remove_node(reverb_attachment);
-				release_later(reverb_attachment);
-				reverb_attachment = nullptr;
-			}
 		}
+		if (reverb_attachment) release_later(reverb_attachment);
+		reverb = nullptr;
+		reverb_attachment = nullptr;
 		if (new_reverb) {
+			// Kept before it is placed, so that a throw placing it leaves it this spatializer's, let go of as any other, rather than held by nothing.
+			new_reverb->duplicate();
+			reverb = new_reverb;
 			reverb_attachment = attachment;
 			reverb_placement = placement;
+			claim.kept = true;
 			if (attached_mixer && parameters_valid) reverb_attachment->set_output_bus_volume(1, reverb_send_volume(new_reverb));
 			position_reverb();
-			new_reverb->duplicate();
 		}
-		reverb = new_reverb;
 	}
 	spatializer_component_node* get_panner() const override {
 		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
