@@ -5258,7 +5258,14 @@ public:
 				g_soundsystem_last_error = MA_INVALID_ARGS;
 				return false;
 			}
-			if (claim_buffer_name(manager, triplet)) break;
+			bool claimed;
+			try {
+				claimed = claim_buffer_name(manager, triplet);
+			} catch (...) { // Out of memory claiming it: the triplet's entry, holding a pack, cleaned up rather than left for good.
+				g_sound_service->cleanup_triplet(triplet);
+				throw;
+			}
+			if (claimed) break;
 			g_sound_service->cleanup_triplet(triplet);
 		}
 		unique_ptr<ma_resource_manager_data_source> made_source;
@@ -5384,6 +5391,7 @@ public:
 
 		// A stream fills two pages, of about a second each, before it is made, its decoder not yet looping, and MiniAudio's page fill ends after meeting a looping decoder's end twice with nothing read between; a stream wholly read into its pages so went silent where it looped, at its first loop and, under half a page, every second one. Such a source, its decoder at its end once the pages are filled, is loaded as a buffer instead, which loops seamlessly in no more memory; one of unknown length isn't, as loading it again would read it from its start again.
 		if (g_soundsystem_last_error == MA_SUCCESS && (made_source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM) && !(ma_flags & MA_SOUND_FLAG_UNKNOWN_LENGTH) && reinterpret_cast<std::atomic<ma_bool32>*>(&made_source->backend.stream.isDecoderAtEnd)->load()) {
+			unwinding.armed = false; // Undone here, by hand: a throw from the load below undid it again, uninitialising the sound twice and letting go of a name another sound may have claimed since.
 			ma_sound_uninit(&*made);
 			made_view.reset();
 			made_front.reset();
