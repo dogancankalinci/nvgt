@@ -1,0 +1,16 @@
+diff --git a/sdk/angelscript/source/as_gc.cpp b/sdk/angelscript/source/as_gc.cpp
+--- a/sdk/angelscript/source/as_gc.cpp
++++ b/sdk/angelscript/source/as_gc.cpp
+@@ -1148,9 +1148,9 @@
+ 			}
+ 		}
+ 	}
+-	if( flags.GetLength() == 0 )
+-		return true;
+-
++	// ALTERED: also without a flag to lock: the count comparison below is what finds an object another thread took a
++	// reference to between buildMap reading its count and setting its flag (an array, a dictionary, a registered type, a
++	// script object never weak-referenced), which was otherwise taken for garbage while that thread held it.
+ 	bool touched = false;
+ 	for( gcMap.MoveFirst(&cursor); cursor; gcMap.MoveNext(&cursor, cursor) )
+ 	{

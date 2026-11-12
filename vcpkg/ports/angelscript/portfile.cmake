@@ -147,6 +147,7 @@ vcpkg_from_github(
         fix-call-stack-size-product.patch
         fix-array-allocation-size-overflow.patch
         fix-out-reference-temporary-cleared.patch
+        fix-gc-count-check-without-weak-flags.patch
 )
 
 vcpkg_cmake_configure(
