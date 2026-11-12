@@ -3830,12 +3830,15 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 	}
 	ma_uint64 target = seek_target.load();
 	if (target != ~(ma_uint64)0 && !ma_sound_at_end(s)) { // ~0 is "no seek", as for MiniAudio.
-		ma_data_source_seek_to_pcm_frame(s->pDataSource, target);
+		// Moved only by a seek the source made: one it refused, as a datastream that can't seek back past what it kept, plays on from where it was, which its time jumping to the target no longer followed.
+		const bool sought = ma_data_source_seek_to_pcm_frame(s->pDataSource, target) == MA_SUCCESS;
 		// The node's time counts the engine's frames, the target the source's, as MiniAudio's own seek mixes them: converted, rather than reading 551 ms after a seek to 1200 of a 22050 Hz source on a 48000 Hz engine.
 		ma_uint32 source_rate = 0, engine_rate = ma_engine_get_sample_rate(ma_sound_get_engine(s));
 		ma_data_source_get_data_format(s->pDataSource, nullptr, nullptr, &source_rate, nullptr, 0);
-		ma_node_set_time(s, source_rate && engine_rate && source_rate != engine_rate? (ma_uint64)((double)target * engine_rate / source_rate) : target);
-		s->processingCacheFramesRemaining = 0;
+		if (sought) {
+			ma_node_set_time(s, source_rate && engine_rate && source_rate != engine_rate? (ma_uint64)((double)target * engine_rate / source_rate) : target);
+			s->processingCacheFramesRemaining = 0;
+		}
 		seek_target.compare_exchange_strong(target, ~(ma_uint64)0); // A seek made meanwhile stays for the next block.
 	}
 	ma_uint32 wanted = *frame_count_out, done = 0, channels = ma_node_get_output_channels(node, 0);
