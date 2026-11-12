@@ -45,6 +45,10 @@ class timer_queue {
 	TimerWheel timers;
 	std::unordered_map<std::string, timer_queue_item*> timer_objects;
 	std::unordered_set<timer_queue_item*> deleting_timers;
+	// The callbacks the timers hold (one count per timer), for the collector (enum_references()), under a lock of their own that nothing holds while script code runs: under mtx, which loop() holds while it runs timer callbacks, the collector's thread (garbage_collect_mode 3) waited for every callback of a loop() under way and collected nothing meanwhile (a callback running a menu loop stopped collection for as long as the menu ran), as get_failures() did before failures_mtx. Changed under mtx and this lock, before a callback is let go of and once one is held.
+	std::mutex gc_refs_mtx;
+	std::unordered_map<asIScriptFunction*, int> gc_refs;
+	void gc_ref(asIScriptFunction* callback, int n);
 	uint64_t last_looped;
 	bool open_tick;
 	int RefCount;

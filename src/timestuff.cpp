@@ -110,15 +110,17 @@ void timer_queue::release() {
 		delete this;
 	}
 }
+void timer_queue::gc_ref(asIScriptFunction* callback, int n) {
+	if (!callback) return;
+	std::lock_guard<std::mutex> l(gc_refs_mtx);
+	if ((gc_refs[callback] += n) <= 0) gc_refs.erase(callback);
+}
 void timer_queue::enum_references(asIScriptEngine* engine) {
-	// Under the lock, as set() and delete() on other threads change the timers. The collector calls this outside its own locks, and a
+	// From gc_refs (see there), as set() and delete() on other threads change the timers and loop() holds mtx while callbacks run. A
 	// queue being looped holds itself (see loop()), so it is never garbage while its callbacks run.
-	std::lock_guard<std::recursive_mutex> l(mtx);
-	for (const auto& t : timer_objects) {
-		if (t.second->callback) engine->GCEnumCallback(t.second->callback);
-	}
-	for (timer_queue_item* t : deleting_timers) {
-		if (t->callback) engine->GCEnumCallback(t->callback);
+	std::lock_guard<std::mutex> l(gc_refs_mtx);
+	for (const auto& r : gc_refs) {
+		for (int i = 0; i < r.second; i++) engine->GCEnumCallback(r.first);
 	}
 }
 static asITypeInfo* g_timer_queue_type = nullptr;
@@ -150,6 +152,7 @@ void timer_queue::purge_deleting_timers() {
 		asIScriptFunction* callback = t->callback;
 		t->callback = nullptr;
 		delete t;
+		gc_ref(callback, -1);
 		if (callback) callback->Release();
 	}
 }
@@ -186,10 +189,13 @@ void timer_queue::set(const std::string &id, asIScriptFunction *callback, const 
 		t->is_scheduled = true;
 		t->cancel();
 		timers.schedule(t, timeout);
+		gc_ref(callback, 1);
+		gc_ref(old_callback, -1);
 		if (old_callback) old_callback->Release();
 		return;
 	}
 	timer_objects[id] = new timer_queue_item(this, id, callback, callback_data, timeout, repeating);
+	gc_ref(callback, 1);
 	timers.schedule(timer_objects[id], timeout);
 }
 uint64_t timer_queue::elapsed(const std::string &id) {
