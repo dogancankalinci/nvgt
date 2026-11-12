@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <climits>
 #include <condition_variable>
 #include <cstdint>
@@ -137,6 +138,31 @@ static bool is_script_thread(Thread* thread) {
 	return script_threads().count(thread) != 0;
 }
 static void thread_release(Thread* thread);
+// A thread object can be started on one script thread while another joins it (join(), join(ms)) or asks whether it runs. Poco's Thread
+// isn't made for that: its join, once the run has ended, closes the handle of the thread it reads again then and clears it, which by
+// then can be the handle of the run another thread has just started; the next start() found the thread not running and started a
+// second one on the same object, and the program ended (a fast fail on Windows) or crashed. Each thread object NVGT makes for a script
+// has this: the start, the clean up of an ended run and the running check take the lock, and a join waits for the run's end on the
+// event, which the run sets as it ends, outside the lock (a start meanwhile waits only for that clean up). Kept until the object goes.
+struct script_thread_life {
+	std::mutex lock;
+	Event finished{Event::EVENT_MANUALRESET};
+	script_thread_life() { finished.set(); } // A thread never started has no run to wait for.
+};
+static std::mutex& script_thread_lives_mutex() {
+	static auto* m = new std::mutex; // Never destroyed, like script_threads_mutex.
+	return *m;
+}
+static std::unordered_map<Thread*, std::shared_ptr<script_thread_life>>& script_thread_lives() {
+	static auto* m = new std::unordered_map<Thread*, std::shared_ptr<script_thread_life>>;
+	return *m;
+}
+static std::shared_ptr<script_thread_life> script_thread_life_of(Thread* thread) {
+	std::lock_guard<std::mutex> lock(script_thread_lives_mutex());
+	std::shared_ptr<script_thread_life>& life = script_thread_lives()[thread];
+	if (!life) life = std::make_shared<script_thread_life>();
+	return life;
+}
 
 // We'll put the code for the highest level of nvgt's multithreading support on the top this time. This allows an nvgt user to write a line of code such as async<string> result(url_get, "https://nvgt.dev"); and after result.try_wait(ms) returns true, user can fetch result with result.value or opImplCast.
 class async_result : public RefCountedObject, public Runnable {
@@ -144,6 +170,7 @@ class async_result : public RefCountedObject, public Runnable {
 	asITypeInfo* subtype;
 	int subtypeid;
 	Thread* task; // A pointer instead of a direct object because if an async_result object is created from a thread pool or has not yet been set up, a specific thread will not exist for it.
+	std::shared_ptr<script_thread_life> task_life; // task's, whose run ends with this call's: a script can join it (thread_current in the function), see script_thread_life.
 	asIScriptContext* ctx; // The angelscript context used to call the function asynchronously, stored as a property because we need to pass it between functions in this class without arguments.
 	std::vector<std::pair<void*, asITypeInfo*>> value_args; // Value typed arguments must be copied before being passed to the destination function on another thread, this is because such arguments reside on the stack and so they would otherwise get destroyed when the async_result::call method unwinds but well before the destination function returns. Store pointers to such copied arguments here so they can be released later. Objects made for reference parameters (a default value) and objects passed by handle to a reference parameter, which the caller can let go of before the function runs, are held here too (a list, as the same object can be passed twice).
 	std::vector<asQWORD> ref_values; // The values whose addresses reference parameters of primitive or handle types are given (8 bytes hold any primitive or a handle), sized once in call() so that the addresses stay valid until the function has run.
@@ -370,9 +397,12 @@ public:
 			if (pool) pool->start(*this);
 			else {
 				task = script_thread_new();
+				task_life = script_thread_life_of(task);
+				task_life->finished.reset();
 				task->start(*this);
 			}
 		} catch (...) {
+			if (task_life) task_life->finished.set();
 			engine->ReturnContext(ctx);
 			release();
 			throw;
@@ -406,8 +436,10 @@ public:
 		release_value_args();
 		// The thread lets go of this object before it signals the end: signalled first, a script that let go of the object as soon as wait() returned left the last reference to this thread, so the result (a returned object or handle) was released a moment later here, its destructor running beside the script, and a script counting its objects after the wait still saw it. Now the script's own release frees the result on its thread, unless nothing but this thread held the object, which then goes here as before.
 		std::shared_ptr<Event> done = progress;
+		std::shared_ptr<script_thread_life> life = task_life; // Kept: release() can delete this object.
 		release();
 		done->set();
+		if (life) life->finished.set();
 		// This thread's AngelScript data (the list of active contexts and more) was never freed, a leak with every async call made on a thread of its own, which then ends. It is freed last, after release(), which can delete this object and run script destructors here.
 		asThreadCleanup();
 	}
@@ -443,8 +475,9 @@ class script_runnable : public Runnable {
 	asIScriptFunction* func;
 	CScriptDictionary* args;
 	Thread* thread; // May be null if started from a ThreadPool.
+	std::shared_ptr<script_thread_life> life; // The thread object's, see script_thread_life; null for a pool.
 public:
-	script_runnable(asIScriptFunction* func, CScriptDictionary* args, Thread* thread = nullptr) : func(func), args(args), thread(thread) {}
+	script_runnable(asIScriptFunction* func, CScriptDictionary* args, Thread* thread = nullptr, std::shared_ptr<script_thread_life> life = nullptr) : func(func), args(args), thread(thread), life(life) {}
 	void run() {
 		int execution_result = asEXECUTION_FINISHED;
 		asIScriptContext* ctx = nullptr;
@@ -460,6 +493,7 @@ public:
 			if (args) args->Release();
 			if (func) func->Release();
 		}
+		if (life) life->finished.set(); // See script_thread_life.
 		if (thread) thread_release(thread);
 		asThreadCleanup();
 		delete this; // Poco wants us to keep these Runnable objects alive as long as the thread is running, meaning we must delete ourself from within the thread to avoid some other sort of cleanup machinery.
@@ -505,6 +539,10 @@ static void thread_release(Thread* thread) {
 	{
 		std::lock_guard<std::mutex> lock(script_threads_mutex());
 		script_threads().erase(thread);
+	}
+	{
+		std::lock_guard<std::mutex> lock(script_thread_lives_mutex());
+		script_thread_lives().erase(thread);
 	}
 	thread->~Thread();
 	free(rc);
@@ -575,7 +613,10 @@ std::string thread_get_name(Thread* thread) {
 }
 bool thread_is_running(Thread* thread) {
 	bool running = false;
-	return with_pool_thread(thread, [&](pool_thread_link& l) { running = l.live && l.real->isRunning(); }) ? running : thread->isRunning();
+	if (with_pool_thread(thread, [&](pool_thread_link& l) { running = l.live && l.real->isRunning(); })) return running;
+	std::shared_ptr<script_thread_life> life = script_thread_life_of(thread);
+	std::lock_guard<std::mutex> lock(life->lock); // See script_thread_life.
+	return thread->isRunning();
 }
 void thread_wake_up(Thread* thread) {
 	if (!with_pool_thread(thread, [&](pool_thread_link& l) { if (l.live) l.real->wakeUp(); })) thread->wakeUp();
@@ -586,9 +627,34 @@ static std::shared_ptr<pool_thread_link> pool_thread_link_of(Thread* thread) {
 	with_pool_thread(thread, [&](pool_thread_link& l) { link = pool_links()[thread]; });
 	return link;
 }
+// Waits up to ms (for ever with -1) for the thread object's run to end and cleans up after it, see script_thread_life.
+static bool script_thread_join(Thread* thread, long long ms) {
+	std::shared_ptr<script_thread_life> life = script_thread_life_of(thread);
+	auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms < 0 ? 0 : ms);
+	int spins = 0;
+	for (;;) {
+		if (ms < 0) life->finished.wait();
+		else {
+			auto now = std::chrono::steady_clock::now();
+			long long left = now < until ? std::chrono::duration_cast<std::chrono::milliseconds>(until - now).count() : 0;
+			if (!life->finished.tryWait(long(std::min<long long>(left, LONG_MAX - 1)))) return false;
+		}
+		{
+			std::lock_guard<std::mutex> lock(life->lock);
+			if (!thread->isRunning()) {
+				thread->tryJoin(0);
+				return true;
+			}
+		}
+		// The run has ended (or another has been started, whose end the next wait waits for) and its system thread is about to.
+		if (ms >= 0 && std::chrono::steady_clock::now() >= until) return false;
+		if (++spins < 100) Thread::yield();
+		else Thread::sleep(1); // A thread object started some other way than by start() has no run setting the event.
+	}
+}
 void thread_join(Thread* thread) {
 	if (auto link = pool_thread_link_of(thread)) link->ended.wait();
-	else thread->join();
+	else script_thread_join(thread, -1);
 }
 
 void thread_begin(Thread* thread, asIScriptFunction* func, CScriptDictionary* args) {
@@ -596,8 +662,15 @@ void thread_begin(Thread* thread, asIScriptFunction* func, CScriptDictionary* ar
 		if (args) args->Release();
 		return;
 	}
+	if (pool_thread_link_of(thread)) {
+		if (args) args->Release();
+		func->Release();
+		throw SystemException("thread already running");
+	}
+	std::shared_ptr<script_thread_life> life = script_thread_life_of(thread);
+	std::lock_guard<std::mutex> lock(life->lock); // See script_thread_life.
 	// Refused here instead of by Poco, whose start() does not give back all of the memory it took when it throws for a thread that is still running. A pool's thread (see script_thread_current) is one the pool runs.
-	if (thread_is_running(thread) || pool_thread_link_of(thread)) {
+	if (thread->isRunning()) {
 		if (args) args->Release();
 		func->Release();
 		throw SystemException("thread already running");
@@ -605,12 +678,16 @@ void thread_begin(Thread* thread, asIScriptFunction* func, CScriptDictionary* ar
 	// A run that has finished but was never joined is joined now; Poco's start() would otherwise replace its thread without ever joining it, so that thread would keep its stack until the process ends. Poco marks a thread as no longer running and done in one step, so this never waits, and it does nothing for a thread that was joined already.
 	thread->tryJoin(0);
 	angelscript_refcounted_duplicate<Thread>(thread);
-	script_runnable* runnable = new script_runnable(func, args, thread);
+	script_runnable* runnable = new script_runnable(func, args, thread, life);
+	life->finished.reset();
 	try {
 		thread->start(*runnable);
 	} catch (...) {
 		// Poco throws after creating the thread only when it fails to apply a priority other than normal, and that thread then runs and frees the runnable itself; at normal priority every failure comes before a thread exists.
-		if (thread->getPriority() == Thread::PRIO_NORMAL) runnable->discard();
+		if (thread->getPriority() == Thread::PRIO_NORMAL) {
+			runnable->discard();
+			life->finished.set();
+		}
 		throw;
 	}
 }
@@ -847,7 +924,7 @@ unsigned int thread_current_id() {
 }
 bool thread_try_join(Thread* thread, unsigned int ms) {
 	if (auto link = pool_thread_link_of(thread)) return link->ended.tryWait(poco_ms(ms));
-	return thread->tryJoin(poco_ms(ms));
+	return script_thread_join(thread, ms); // See script_thread_life.
 }
 void event_wait_ms(Event* event, unsigned int ms) {
 	event->wait(poco_ms(ms));
