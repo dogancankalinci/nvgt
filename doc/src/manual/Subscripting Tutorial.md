@@ -113,6 +113,8 @@ void main() {
 		alert("error", join(err, "\r\n\r\n"));
 		exit();
 	}
+	// NVGT doesn't initialize a module's global variables when it is built (nor when set_bytecode() loads it): until reset_globals() runs their initializers, numbers are 0, handles null, and objects not made yet, so using one raises a null pointer exception. This example's subscript has no global variables, but if yours does, initialize them now, after binding any imported functions their initializers call.
+	// mod.reset_globals(err);
 	// Next, if any functions are being shared via the imported functions method, we need to bind their addresses from this nvgt_game module to our example module. Don't worry it's just one line + error checking, but what is happening behind the scenes in this next call is that we are looping through all functions that have been imported, and we're searching for them by declaration in the nvgt_game module. When we find them, we tell the example module the function's address.
 	if (mod.bind_all_imported_functions() < 0) {
 		alert("error", "failed to bind any imported functions");
