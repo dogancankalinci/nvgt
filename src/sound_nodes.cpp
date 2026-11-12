@@ -1439,6 +1439,8 @@ reverb3d* reverb3d::create(audio_node* reverb, mixer* destination, audio_engine*
 		audio_node* into = destination_held.node? destination_held.node : reverb_goes_into(reverb);
 		if (mixer* theirs = dynamic_cast<mixer*>(into)) return new reverb3d_impl(e, reverb, theirs);
 		if (into == e->get_endpoint()) return new reverb3d_impl(e, reverb, nullptr);
+		// Gone elsewhere by hand, or nowhere: taken into a mixer of this one's own, it was taken from the reverb3ds using it without the check a destination gets above.
+		throw_refusal(MA_INVALID_OPERATION, "the reverb goes into another destination for another reverb3d already");
 	}
 	mixer *own = new_mixer(e);
 	try {
