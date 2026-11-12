@@ -196,8 +196,13 @@ int CContextMgr::ExecuteScripts()
 			engine->GetGCStatistics(&gcSize1);
 
 			// ALTERED: published before the request flag is checked, and the flag set before this is read in AbortAll, so
-			// either this sees the request or AbortAll on the other thread sees the context and aborts it
-			m_executingCtx = ctx;
+			// either this sees the request or AbortAll on the other thread sees the context and aborts it. Under the lock AbortAll
+			// reads it under: a plain store here, a weakly ordered CPU (ARM) could let both miss, AbortAll reading no context and
+			// the exchange below not yet seeing the flag, so the execution started went on after exit() until it ended or yielded.
+			{
+				std::lock_guard<std::mutex> guard(m_executingLock);
+				m_executingCtx = ctx;
+			}
 			if( m_abortAllRequested.exchange(false) )
 			{
 				ClearExecutingCtx();
