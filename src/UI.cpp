@@ -596,9 +596,24 @@ void refresh_window() {
 		post_events.clear();
 	}
 }
+bool thread_is_main(); // threading.cpp
 void wait(int ms) {
 	anticheat_check();
 	if (!g_window || g_WindowThreadId != thread_current_thread_id()) {
+		// Mode 2 collects every wait() cycle on the main thread, as the documentation has it, with or without a window: without one
+		// wait() only slept, so a console script (or one before show_window()) waiting in a loop never had NVGT's steps run, and
+		// cyclic garbage made before the loop stayed until AngelScript's own steps ran as more objects were made.
+		if (!g_window && thread_is_main()) {
+			while (ms >= 0) {
+				int MS = (ms > 25 ? 25 : ms);
+				if (g_GCMode == 2)
+					garbage_collect_action();
+				Poco::Thread::sleep(MS);
+				ms -= MS;
+				if (ms < 1) break;
+			}
+			return;
+		}
 		Poco::Thread::sleep(ms);
 		return;
 	}
