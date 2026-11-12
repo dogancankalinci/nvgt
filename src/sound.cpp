@@ -2984,7 +2984,11 @@ public:
 		if (get_active()) return false; // Still open, as on an audio thread while a script thread holds the encoder's lock (MA_BUSY): the session stays, writing to its stream, which letting go of the pulled stream below freed under it, and a later close() let go of again. Told by whether it closed, not by close()'s result, which is false for a session closed whose last output failed.
 		// What an earlier pull session left for read() is let go of only once this one is open, and kept when the open is refused.
 		datastream* earlier = pull_stream;
-		pull_stream = new datastream(new stringstream());
+		{
+			std::unique_ptr<stringstream> buffer(new stringstream()); // Freed should making the datastream over it throw, as on running out of memory, which left it allocated for good.
+			pull_stream = new datastream(buffer.get());
+			buffer.release(); // The datastream's now.
+		}
 		bool opened;
 		try {
 			opened = open_stream(pull_stream, sample_rate, channels, flags);
