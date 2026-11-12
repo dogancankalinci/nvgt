@@ -35,6 +35,7 @@
 #include <ctime>
 #include <sstream>
 #include <istream>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -121,12 +122,14 @@ static void process_stdin_close_cb(datastream* ds) {
 	if (io) SDL_CloseIO(io);
 }
 
-// A process's stdout or stderr pipe, shared with the datastream the script may hold on it. The SDL_IOStream (non-blocking) belongs to the SDL_Process; io is nulled when the process object lets go of it. A child stops once it has written what a pipe holds until someone reads it, so wait(), read() and running move what it writes into pending, which read(), stdout and stderr serve before the pipe: otherwise a talkative child never ended (PROCESS_WAIT, wait() and the legacy run(..., true, ...) never returned), also where run() adds the pipes itself because no console is available.
+// A process's stdout or stderr pipe, shared with the datastream the script may hold on it. The SDL_IOStream (non-blocking) belongs to the SDL_Process; io is nulled when the process object lets go of it. A child stops once it has written what a pipe holds until someone reads it, so wait(), read() and running move what it writes into pending, which read(), stdout and stderr serve before the pipe: otherwise a talkative child never ended (PROCESS_WAIT, wait() and the legacy run(..., true, ...) never returned), also where run() adds the pipes itself because no console is available. What pending holds unread is capped at max_pending: past it nothing more is moved, so a child whose output nobody reads stalls writing as it did before this buffer (rather than the script's memory growing for as long as the child writes), and goes on once read(), stdout or stderr take some of it; nothing is dropped.
 struct process_pipe {
+	static constexpr size_t max_pending = 64 * 1024 * 1024;
 	std::mutex mtx;
 	SDL_IOStream* io;
-	std::string pending;
+	std::deque<std::string> pending; // chunks as drain() moved them; the first is read from pending_pos (so taking a little at a time never moves what is left)
 	size_t pending_pos = 0;
+	size_t pending_size = 0; // bytes in pending not read yet
 	bool ended = false; // every writer closed the pipe, or reading it failed
 	explicit process_pipe(SDL_IOStream* io) : io(io) {}
 	size_t read_device(char* buffer, size_t length) { // mtx held; never blocks
@@ -140,20 +143,22 @@ struct process_pipe {
 		char buffer[16384];
 		bool moved = false;
 		size_t n;
-		while ((n = read_device(buffer, sizeof(buffer))) > 0) {
-			if (pending_pos) { pending.erase(0, pending_pos); pending_pos = 0; }
-			pending.append(buffer, n);
+		while (pending_size < max_pending && (n = read_device(buffer, std::min(sizeof(buffer), max_pending - pending_size))) > 0) {
+			pending.emplace_back(buffer, n);
+			pending_size += n;
 			moved = true;
 		}
 		return moved;
 	}
 	size_t read(char* buffer, size_t length) {
 		std::lock_guard<std::mutex> lock(mtx);
-		if (pending_pos < pending.size()) {
-			size_t n = std::min(length, pending.size() - pending_pos);
-			memcpy(buffer, pending.data() + pending_pos, n);
+		if (pending_size) {
+			const std::string& chunk = pending.front();
+			size_t n = std::min(length, chunk.size() - pending_pos);
+			memcpy(buffer, chunk.data() + pending_pos, n);
 			pending_pos += n;
-			if (pending_pos == pending.size()) { pending.clear(); pending_pos = 0; }
+			pending_size -= n;
+			if (pending_pos == chunk.size()) { pending.pop_front(); pending_pos = 0; }
 			return n;
 		}
 		return read_device(buffer, length);
