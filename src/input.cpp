@@ -41,7 +41,8 @@ static std::unordered_map<unsigned int, std::string> g_KeyNames;
 static unsigned char g_KeysPressed[SDL_SCANCODE_COUNT];
 static unsigned char g_KeysRepeating[SDL_SCANCODE_COUNT];
 static unsigned char g_KeysForced[SDL_SCANCODE_COUNT];
-static const bool* g_KeysDown = NULL;
+// SDL's keyboard state (static in SDL, never freed), null while the video subsystem is down. destroy_window() on the window's thread sets it to null while a script thread can be reading keys: each function reads it once into a local, as a null check and a later read of the global could see it change in between (a null access, most easily in keys_down(), whose loop reads it again after every InsertLast() call).
+static const bool* volatile g_KeysDown = NULL;
 static int g_KeysDownArrayLen = 0;
 static unsigned char g_KeysReleased[SDL_SCANCODE_COUNT];
 static unsigned char g_MouseButtonsPressed[32];
@@ -224,15 +225,17 @@ bool KeyRepeating(int key) {
 	return r;
 }
 bool key_down(int key) {
-	if (key < 0 || key >= SDL_SCANCODE_COUNT || !g_KeysDown)
+	const bool* keys_down = g_KeysDown; // See g_KeysDown.
+	if (key < 0 || key >= SDL_SCANCODE_COUNT || !keys_down)
 		return false;
-	return g_KeysReleased[key] == 0 && (g_KeysDown[key] == 1 || g_KeysForced[key]);
+	return g_KeysReleased[key] == 0 && (keys_down[key] == 1 || g_KeysForced[key]);
 }
 bool KeyReleased(int key) {
-	if (key < 0 || key >= SDL_SCANCODE_COUNT || !g_KeysDown)
+	const bool* keys_down = g_KeysDown; // See g_KeysDown.
+	if (key < 0 || key >= SDL_SCANCODE_COUNT || !keys_down)
 		return false;
 	bool r = g_KeysReleased[key] == 1;
-	if (r && g_KeysDown[key] == 1)
+	if (r && keys_down[key] == 1)
 		return false;
 	g_KeysReleased[key] = 0;
 	return r;
@@ -241,9 +244,10 @@ bool key_up(int key) {
 	return !key_down(key);
 }
 bool insure_key_up(int key) {
-	if (key < 0 || key >= SDL_SCANCODE_COUNT || !g_KeysDown)
+	const bool* keys_down = g_KeysDown; // See g_KeysDown.
+	if (key < 0 || key >= SDL_SCANCODE_COUNT || !keys_down)
 		return false;
-	if (g_KeysDown[key] == 1)
+	if (keys_down[key] == 1)
 		g_KeysReleased[key] = 1;
 	else
 		return false;
@@ -320,23 +324,25 @@ CScriptArray* keys_down() {
 	if (!key_code_array_type)
 		key_code_array_type = get_array_type("array<int>");
 	CScriptArray* array = CScriptArray::Create(key_code_array_type);
-	if (!g_KeysDown)
+	const bool* keys_down = g_KeysDown; // See g_KeysDown.
+	if (!keys_down)
 		return array;
 	for (int i = 0; i < g_KeysDownArrayLen; i++) {
-		if (g_KeysDown[i] == 1 || g_KeysForced[i])
+		if (keys_down[i] == 1 || g_KeysForced[i])
 			array->InsertLast(&i);
 	}
 	return array;
 }
 int g_TotalKeysDownCache = -1;
 int total_keys_down() {
-	if (!g_KeysDown)
+	const bool* keys_down = g_KeysDown; // See g_KeysDown.
+	if (!keys_down)
 		return 0;
 	if (!g_KeyboardStateChange && g_TotalKeysDownCache > 0)
 		return g_TotalKeysDownCache;
 	int c = 0;
 	for (int i = 0; i < g_KeysDownArrayLen; i++) {
-		if (g_KeysDown[i] || g_KeysReleased[i])
+		if (keys_down[i] || g_KeysReleased[i])
 			c++;
 	}
 	g_KeyboardStateChange = false;
