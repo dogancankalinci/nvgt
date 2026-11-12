@@ -7,6 +7,11 @@
 
 #include "scriptgrid.h"
 
+#ifndef NVGT_PLUGIN_INCLUDE
+// ALTERED: nvgt_angelscript.cpp, see GridCopyStopped below. A plugin's copy of this add-on can't reach it.
+bool script_callbacks_stopped(asIScriptContext* ctx);
+#endif
+
 using namespace std;
 
 BEGIN_AS_NAMESPACE
@@ -479,6 +484,22 @@ CScriptGrid::CScriptGrid(asUINT width, asUINT height, asITypeInfo *ti)
 		objType->GetEngine()->NotifyGarbageCollectorOfNewObject(this, objType);
 }
 
+// ALTERED: whether the copy of elements (see Resize and the constructor that takes a value) must stop: an element's opAssign
+// raised an exception (hadException tells one the script already had), or exit() was called since the script began the copy
+// (NVGT's script_callbacks_stopped). Every remaining element's opAssign ran after it.
+static bool GridCopyStopped(asIScriptContext *ctx, bool hadException)
+{
+	if( ctx == 0 )
+		return false;
+	if( !hadException && ctx->GetState() == asEXECUTION_EXCEPTION )
+		return true;
+#ifndef NVGT_PLUGIN_INCLUDE
+	if( script_callbacks_stopped(ctx) )
+		return true;
+#endif
+	return false;
+}
+
 void CScriptGrid::Resize(asUINT width, asUINT height)
 {
 	// Make sure the size isn't too large for us to handle
@@ -491,6 +512,13 @@ void CScriptGrid::Resize(asUINT width, asUINT height)
 	// is done is the one released.
 	SGridHold hold(this);
 
+	// ALTERED: an exception raised while the new buffer is made (an element's constructor) or filled (an element's opAssign)
+	// ends the resize, and the grid is left as it was: the copy went on, every remaining element's opAssign run after the
+	// exception (on a context of its own, as the script's context refuses a nested call once it has one, whose exceptions
+	// were lost), and the half-copied buffer was installed.
+	asIScriptContext *ctx = asGetActiveContext();
+	const bool hadException = ctx && ctx->GetState() == asEXECUTION_EXCEPTION;
+
 	// Create a new buffer
 	SGridBuffer *tmpBuffer = 0;
 	CreateBuffer(&tmpBuffer, width, height);
@@ -498,9 +526,22 @@ void CScriptGrid::Resize(asUINT width, asUINT height)
 		return;
 
 	// Copy the existing values to the new buffer
-	for( asUINT y = 0; y < height && buffer && y < buffer->height; y++ )
+	bool failed = GridCopyStopped(ctx, hadException);
+	for( asUINT y = 0; !failed && y < height && buffer && y < buffer->height; y++ )
 		for( asUINT x = 0; x < width && buffer && x < buffer->width && y < buffer->height; x++ )
+		{
 			SetValue(tmpBuffer, x, y, At(buffer, x, y));
+			if( GridCopyStopped(ctx, hadException) )
+			{
+				failed = true;
+				break;
+			}
+		}
+	if( failed )
+	{
+		DeleteBuffer(tmpBuffer);
+		return;
+	}
 
 	// Install the new buffer before releasing the old one, see BufferSwapLock. Only a grid the garbage collector
 	// tracks can be walked by it.
@@ -543,9 +584,16 @@ CScriptGrid::CScriptGrid(asUINT width, asUINT height, void *defVal, asITypeInfo 
 		objType->GetEngine()->NotifyGarbageCollectorOfNewObject(this, objType);
 
 	// Initialize the elements with the default value
+	// ALTERED: no more once an exception is raised (an element's opAssign), see Resize
+	asIScriptContext *ctx = asGetActiveContext();
+	const bool hadException = ctx && ctx->GetState() == asEXECUTION_EXCEPTION;
 	for( asUINT y = 0; y < GetHeight(); y++ )
 		for( asUINT x = 0; x < GetWidth(); x++ )
+		{
+			if( GridCopyStopped(ctx, hadException) )
+				return;
 			SetValue(x, y, defVal);
+		}
 }
 
 void CScriptGrid::SetValue(asUINT x, asUINT y, void *value)
