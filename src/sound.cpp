@@ -1787,6 +1787,7 @@ public:
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
+		if (queue_refuses(self)) return false; // Looping it on itself, as set_looping(true) is refused for a queue (see queue_refuses()): taken and read back, it was never followed.
 		if (new_next && !self && new_next != src_next && new_next != src_cur && new_next != held_current && (!can_chain(new_next) || is_sound_owned(new_next) || is_used(new_next))) {
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
