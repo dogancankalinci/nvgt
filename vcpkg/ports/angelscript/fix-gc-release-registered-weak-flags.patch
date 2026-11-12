@@ -1,0 +1,68 @@
+diff --git a/sdk/angelscript/source/as_gc.cpp b/sdk/angelscript/source/as_gc.cpp
+--- a/sdk/angelscript/source/as_gc.cpp
++++ b/sdk/angelscript/source/as_gc.cpp
+@@ -459,7 +459,7 @@
+ 						if( refCount > 0 ) kept = true;
+ 					}
+ 					else
+-						engine->CallObjectMethod(gcObj.obj, gcObj.type->beh.release);
++						kept = ReleaseRegisteredByCollector(gcObj.obj, gcObj.type); // ALTERED: see there
+ 
+ 					// Was the object really destroyed?
+ 					if( kept )
+@@ -630,7 +630,7 @@
+ 						if( refCount > 0 ) kept = true;
+ 					}
+ 					else
+-						engine->CallObjectMethod(gcObj.obj, gcObj.type->beh.release);
++						kept = ReleaseRegisteredByCollector(gcObj.obj, gcObj.type); // ALTERED: see there
+ 
+ 					// Was the object really destroyed?
+ 					if( kept )
+@@ -1120,6 +1120,35 @@
+ // whose flag was set again after a revival (its count differs) gets an outside reference in the map, which detectGarbage
+ // then reads as alive, as it does a cleared flag. Other threads lock one flag at a time and take no other lock while they
+ // hold one, so holding several here can't deadlock.
++// ALTERED: the collector lets go of an object nothing else holds (DestroyNewGarbage, DestroyOldGarbage). A registered type with a
++// weak reference flag (asBEHAVE_GET_WEAKREF_FLAG: the weakref add-on, NVGT's map and tray item) could have a weak reference turned
++// strong on another thread between the collector reading the count of 1 and its release: the object then lived on with the other
++// thread's reference, out of the collector's list for good (a cycle it later took part in was never collected), as script
++// objects did before asCScriptObject::ReleaseByCollector. Here the count is read again under the flag's lock, and the flag is marked
++// dead before the release, so no weak reference can turn strong after it; otherwise the collector keeps its reference and the object
++// stays in its list. Such a flag is made with asCreateLockableSharedBool, as the manual asks; the behaviour makes it if there was
++// none, which costs one flag for each object let go of this way. Returns true when the object was kept.
++bool asCGarbageCollector::ReleaseRegisteredByCollector(void *obj, asCObjectType *type)
++{
++	if( type->beh.getWeakRefFlag )
++	{
++		asCLockableSharedBool *flag = static_cast<asCLockableSharedBool*>(reinterpret_cast<asILockableSharedBool*>(engine->CallObjectMethodRetPtr(obj, type->beh.getWeakRefFlag)));
++		if( flag )
++		{
++			flag->Lock();
++			if( engine->CallObjectMethodRetInt(obj, type->beh.gcGetRefCount) != 1 )
++			{
++				flag->Unlock();
++				return true;
++			}
++			flag->SetLocked(true);
++			flag->Unlock();
++		}
++	}
++	engine->CallObjectMethod(obj, type->beh.release);
++	return false;
++}
++
+ bool asCGarbageCollector::MarkWeakRefsOfGarbageDead()
+ {
+ 	asCArray<asCLockableSharedBool*> flags;
+diff --git a/sdk/angelscript/source/as_gc.h b/sdk/angelscript/source/as_gc.h
+--- a/sdk/angelscript/source/as_gc.h
++++ b/sdk/angelscript/source/as_gc.h
+@@ -107,6 +107,7 @@
+ 	int            IdentifyGarbageWithCyclicRefs();
+ 	// ALTERED: marks dead the weak references to the objects found to be garbage, unless one was revived, see the definition
+ 	bool           MarkWeakRefsOfGarbageDead();
++	bool ReleaseRegisteredByCollector(void *obj, asCObjectType *type); // ALTERED: see as_gc.cpp
+ 	asSObjTypePair GetNewObjectAtIdx(int idx);
+ 	asSObjTypePair GetOldObjectAtIdx(int idx);
+ 	void           RemoveNewObjectAtIdx(int idx);
