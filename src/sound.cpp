@@ -2126,6 +2126,17 @@ static ma_result read_on_to_frame(ma_data_source* backend, ma_uint64 cursor, ma_
 	put_file_back(backend, before);
 	return MA_INVALID_ARGS;
 }
+// Puts a decoder's file back after a seek it refused, or, from a place it had lost before the seek (see ma_libopus_put_back()), with none to go back to, takes where the file now is as the decoder's: left, a script's decoder read from the file's new place while its position, length clamp and end counted from the old.
+static void put_decoder_file_back(ma_decoder* decoder, ma_uint32 file_rate, ma_uint64 before) {
+	if (before != ~(ma_uint64)0) {
+		put_file_back(decoder->pBackend, before);
+		return;
+	}
+	ma_uint64 now = 0;
+	if (!file_cursor(decoder->pBackend, &now) || now == ~(ma_uint64)0) return;
+	ma_data_converter_reset(&decoder->converter);
+	decoder->readPointerInPCMFrames = file_rate == decoder->outputSampleRate? now : wdl_frames_after_resampling(decoder->outputSampleRate, file_rate, now);
+}
 static ma_result held_decoder_seek(ma_data_source* source, ma_uint64 frame) {
 	ma_decoder* decoder = (ma_decoder*)source;
 	// A frame whose product with the file's rate is past 64 bits, which MiniAudio's and the resampler's counts of it in the file wrapped, the seek reported as made to an earlier frame: refused, as past a length, possible only for a decoder that doesn't know its length.
@@ -2156,7 +2167,7 @@ static ma_result held_decoder_seek(ma_data_source* source, ma_uint64 frame) {
 	}
 	if (result == MA_SUCCESS && t_script_seek && file->refused.load() != MA_SUCCESS) {
 		const ma_result refused = (ma_result)file->refused.exchange(MA_SUCCESS);
-		put_file_back(decoder->pBackend, before);
+		put_decoder_file_back(decoder, file_rate, before);
 		return refused;
 	} // Refused by a file that can seek, which a script is told, the decoder reading on from where it was rather than giving silence from the frame (see held_file_seek()).
 	if (result == MA_SUCCESS && file->can_seek && file_cursor(decoder->pBackend, &cursor) && cursor < file_frame && (result = read_on_to_frame(decoder->pBackend, cursor, file_frame, before)) != MA_SUCCESS) {
@@ -2173,7 +2184,7 @@ static ma_result held_decoder_seek(ma_data_source* source, ma_uint64 frame) {
 		file->ended.store(false);
 		return result;
 	}
-	if (file->can_seek) put_file_back(decoder->pBackend, before);
+	if (file->can_seek) put_decoder_file_back(decoder, file_rate, before);
 	else if (file_cursor(decoder->pBackend, &cursor) && cursor > cursor_before) { // Refused having read the file on, its end come first, as Opus's short seek forward: nothing is left to read from where it was, so the decoder tells where its file is, rather than a place it no longer reads from.
 		ma_data_converter_reset(&decoder->converter);
 		decoder->readPointerInPCMFrames = file_rate == decoder->outputSampleRate? cursor : wdl_frames_after_resampling(decoder->outputSampleRate, file_rate, cursor);
