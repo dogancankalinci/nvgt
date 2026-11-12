@@ -2771,7 +2771,17 @@ class audio_encoder_impl : public effect_node_impl, public virtual audio_encoder
 	// The resampler keeps the last frames written until it is told no more come, which it takes to be calls without input. It is drained up to the length the frames written make at the encoder's rate.
 	void drain_converter() {
 		unsigned long long expected = frames_written * dc->sampleRateOut / dc->sampleRateIn;
-		vector<char> buffer(1024 * ma_get_bytes_per_frame(dc->formatOut, dc->channelsOut));
+		// The write's scratch where it is large enough, and otherwise room made here: running out of memory for it loses the converter's tail, rather than throwing out of close() and the destructors that call it, which ended the program.
+		const size_t needed = 1024 * ma_get_bytes_per_frame(dc->formatOut, dc->channelsOut);
+		vector<char> own;
+		if (dc_buffer.size() < needed) {
+			try {
+				own.resize(needed);
+			} catch (...) {
+				return;
+			}
+		}
+		vector<char>& buffer = dc_buffer.size() >= needed? dc_buffer : own;
 		for (int idle = 0; idle < 3 && frames_converted < expected;) {
 			ma_uint64 frame_count_in = 0, frame_count_out = std::min<unsigned long long>(1024, expected - frames_converted);
 			if (ma_data_converter_process_pcm_frames(&*dc, nullptr, &frame_count_in, buffer.data(), &frame_count_out) != MA_SUCCESS) break;
@@ -2817,14 +2827,25 @@ protected:
 		channels = target_channels;
 		output_format = target_format;
 		if (!dc && (sample_rate != get_engine()->get_sample_rate() || channels != get_engine()->get_channels())) {
-			dc = make_unique<ma_data_converter>();
 			const ma_uint32 engine_channels = get_engine()->get_channels();
 			ma_data_converter_config cfg = ma_data_converter_config_init(ma_format_f32, ma_format_f32, engine_channels, target_channels, get_engine()->get_sample_rate(), target_sample_rate);
 			cfg.resampling.algorithm = ma_resample_algorithm_custom;
 			cfg.resampling.pBackendVTable = &wdl_resampler_backend_vtable;
-			channel_weights weights(cfg.channelsIn, cfg.channelsOut); // Mixed by their places, as a sound into its engine.
-			weights.apply(cfg.channelMixMode, cfg.ppChannelWeights, cfg.pChannelMapIn, cfg.pChannelMapOut);
-			if ((g_soundsystem_last_error = ma_data_converter_init(&cfg, nullptr, &*dc)) != MA_SUCCESS) {
+			// A throw making the converter or its weights, as on running out of memory, closes the encoder as a converter that fails to start does: left open, its writes went unconverted, reading the frames at its channels from input at the engine's, past their end.
+			try {
+				dc = make_unique<ma_data_converter>();
+				channel_weights weights(cfg.channelsIn, cfg.channelsOut); // Mixed by their places, as a sound into its engine.
+				weights.apply(cfg.channelMixMode, cfg.ppChannelWeights, cfg.pChannelMapIn, cfg.pChannelMapOut);
+				g_soundsystem_last_error = ma_data_converter_init(&cfg, nullptr, &*dc);
+			} catch (...) {
+				last_error_kept kept;
+				dc.reset();
+				close_impl();
+				close_result = MA_SUCCESS;
+				sample_rate = channels = 0;
+				throw;
+			}
+			if (g_soundsystem_last_error != MA_SUCCESS) {
 				// Not close(), which takes write_mtx; the open call that got here holds it.
 				dc.reset();
 				close_impl();
