@@ -954,8 +954,21 @@ public:
 static std::unordered_set<std::string>* g_decl_types_seen = nullptr;
 static size_t g_decl_type_levels = 0;
 static const size_t g_max_decl_type_levels = 1024;
+// Every use of a module through a script_module, and script_get_module(), holds this lock. AngelScript's module isn't made to be
+// used by two threads at once, and scripts reach one from any thread: a section added while another thread built the module
+// (AddScriptSection on the builder that Build() deletes), two builds or two discards of one module, a module discarded or
+// rebuilt while another thread read its functions or globals, and a script_module's name changed while another thread looked it
+// up, crashed. Each script_module looked its module up by name with no lock, on every use. The lock is recursive: a global's
+// initializer (reset_globals()) or destructor (discard(), script_get_module() replacing a module) is script code, which can use a
+// module again; that code runs with the lock held, so it mustn't wait for another thread using a module. A build takes the build
+// lock (see GetScriptBuildMutex) after this one, never the other way round.
+static std::recursive_mutex& script_module_mutex() {
+	static auto* m = new std::recursive_mutex; // Never destroyed: a script thread can still use a module as the program ends.
+	return *m;
+}
 class script_module {
 	std::string mod_name;
+	// Only with script_module_mutex() held, once for each use: the module can be discarded or replaced between two lookups.
 	asIScriptModule* get_mod() { return g_ScriptEngine->GetModule(mod_name.c_str(), asGM_ONLY_IF_EXISTS); }
 	int RefCount;
 	bool exists;
@@ -975,56 +988,64 @@ public:
 			delete this;
 	}
 	int add_section(const std::string& name, const std::string& code, int line_offset = 0) {
-		if (!get_mod())
+		std::lock_guard<std::recursive_mutex> lock(script_module_mutex()); // See script_module_mutex().
+		asIScriptModule* mod = get_mod();
+		if (!mod)
 			return asNO_MODULE;
-		return get_mod()->AddScriptSection(name.c_str(), code.c_str(), code.size(), line_offset);
+		return mod->AddScriptSection(name.c_str(), code.c_str(), code.size(), line_offset);
 	}
 	int build(CScriptArray* errors) {
-		if (!get_mod()) {
-			if (errors) errors->Release(); // The handle given for errors is this function's to let go of, as on every other path.
-			return asNO_MODULE;
-		}
 		// This thread's messages go to errors (see CScriptMessageSink), and the build waits for another thread's (see GetScriptBuildMutex).
 		int result;
 		{
-			rebuild_hold old_globals; // See rebuild_hold; destroyed after the lock below.
-			CScriptMessageSink message_sink(script_message_callback, errors);
-			std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex());
-			old_globals.take(get_mod());
-			result = get_mod()->Build();
+			rebuild_hold old_globals; // See rebuild_hold; destroyed after the locks below.
+			std::lock_guard<std::recursive_mutex> lock(script_module_mutex()); // See script_module_mutex().
+			asIScriptModule* mod = get_mod();
+			if (!mod) result = asNO_MODULE; // The handle given for errors is still this function's to let go of, as on every other path.
+			else {
+				CScriptMessageSink message_sink(script_message_callback, errors);
+				std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex());
+				old_globals.take(mod);
+				result = mod->Build();
+			}
 		}
 		if (errors)
 			errors->Release();
 		return result;
 	}
 	std::string get_bytecode(bool release) {
-		if (!get_mod()) return "";
+		std::lock_guard<std::recursive_mutex> lock(script_module_mutex()); // See script_module_mutex().
+		asIScriptModule* mod = get_mod();
+		if (!mod) return "";
 		script_module_bytecode_stream b;
-		if (get_mod()->SaveByteCode(&b, release) < 0) return "";
+		if (mod->SaveByteCode(&b, release) < 0) return "";
 		return b.get();
 	}
 	int set_bytecode(const std::string& code, bool* release = NULL, CScriptArray* errors = NULL) {
 		if (release) *release = false; // An &out parameter (debug_info_was_stripped), given uninitialized: see datastream::read(T&).
-		if (!get_mod()) {
-			if (errors)
-				errors->Release();
-			return asNO_MODULE;
-		}
 		int ret;
 		{
 			rebuild_hold old_globals; // See build().
-			CScriptMessageSink message_sink(script_message_callback, errors); // See build().
-			std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex());
-			old_globals.take(get_mod());
-			script_module_bytecode_stream b(code);
-			ret = get_mod()->LoadByteCode(&b, release);
+			std::lock_guard<std::recursive_mutex> lock(script_module_mutex()); // See script_module_mutex().
+			asIScriptModule* mod = get_mod();
+			if (!mod) ret = asNO_MODULE;
+			else {
+				CScriptMessageSink message_sink(script_message_callback, errors); // See build().
+				std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex());
+				old_globals.take(mod);
+				script_module_bytecode_stream b(code);
+				ret = mod->LoadByteCode(&b, release);
+			}
 		}
 		if (errors)
 			errors->Release();
 		return ret;
 	}
 	int reset_globals(CScriptArray* errors) {
-		if (!get_mod()) {
+		std::unique_lock<std::recursive_mutex> lock(script_module_mutex()); // See script_module_mutex(): the initialisation, script code, runs with it held.
+		asIScriptModule* mod = get_mod();
+		if (!mod) {
+			lock.unlock();
 			if (errors)
 				errors->Release();
 			return asNO_MODULE;
@@ -1032,6 +1053,7 @@ public:
 		CScriptMessageSink message_sink(script_message_callback, errors); // See build(). No build lock: the globals' initialisation is script code.
 		asIScriptContext* ctx = g_ScriptEngine->RequestContext();
 		if (!ctx) {
+			lock.unlock();
 			std::string err = "ERROR: failed to acquire context";
 			if (errors)
 				errors->InsertLast(&err);
@@ -1040,7 +1062,8 @@ public:
 				errors->Release();
 			return asERROR;
 		}
-		int result = get_mod()->ResetGlobalVars(ctx);
+		int result = mod->ResetGlobalVars(ctx);
+		lock.unlock();
 		message_sink.End();
 		if (ctx) {
 			ctx->Unprepare();
@@ -1051,29 +1074,33 @@ public:
 		return result;
 	}
 	int bind_all_imported_functions() {
-		if (!get_mod())
+		std::lock_guard<std::recursive_mutex> lock(script_module_mutex()); // See script_module_mutex().
+		asIScriptModule* mod = get_mod();
+		if (!mod)
 			return asNO_MODULE;
 		std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex()); // Each import is looked up by its declaration in the module it comes from, as get_function_by_decl() does (see get_function_by_name()).
-		return get_mod()->BindAllImportedFunctions();
+		return mod->BindAllImportedFunctions();
 	}
 	int bind_imported_function(asUINT index, asIScriptFunction* func) {
-		if (!get_mod())
+		std::lock_guard<std::recursive_mutex> lock(script_module_mutex()); // See script_module_mutex().
+		asIScriptModule* mod = get_mod();
+		if (!mod)
 			return asNO_MODULE;
 		if (!func)
 			return asNO_FUNCTION;
-		return get_mod()->BindImportedFunction(index, func);
+		return mod->BindImportedFunction(index, func);
 	}
 	asIScriptFunction* compile_function(const std::string& section_name, const std::string& code, CScriptArray* errors, bool add_to_module = false, asDWORD line_offset = 0) {
-		if (!get_mod()) {
-			if (errors) errors->Release();
-			return NULL;
-		}
-		asIScriptFunction* out_ptr;
-		int result;
+		asIScriptFunction* out_ptr = NULL;
+		int result = asNO_MODULE;
 		{
-			CScriptMessageSink message_sink(script_message_callback, errors); // See build().
-			std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex());
-			result = get_mod()->CompileFunction(section_name.c_str(), code.c_str(), line_offset, (add_to_module ? asCOMP_ADD_TO_MODULE : 0), &out_ptr);
+			std::lock_guard<std::recursive_mutex> lock(script_module_mutex()); // See script_module_mutex().
+			asIScriptModule* mod = get_mod();
+			if (mod) {
+				CScriptMessageSink message_sink(script_message_callback, errors); // See build().
+				std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex());
+				result = mod->CompileFunction(section_name.c_str(), code.c_str(), line_offset, (add_to_module ? asCOMP_ADD_TO_MODULE : 0), &out_ptr);
+			}
 		}
 		if (result < 0) {
 			if (errors) errors->Release();
@@ -1083,15 +1110,16 @@ public:
 		return out_ptr;
 	}
 	int compile_global(const std::string& section_name, const std::string& code, CScriptArray* errors, asDWORD line_offset = 0) {
-		if (!get_mod()) {
-			if (errors) errors->Release();
-			return asNO_MODULE;
-		}
 		int result;
 		{
-			CScriptMessageSink message_sink(script_message_callback, errors); // See build().
-			std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex());
-			result = get_mod()->CompileGlobalVar(section_name.c_str(), code.c_str(), line_offset);
+			std::lock_guard<std::recursive_mutex> lock(script_module_mutex()); // See script_module_mutex().
+			asIScriptModule* mod = get_mod();
+			if (!mod) result = asNO_MODULE;
+			else {
+				CScriptMessageSink message_sink(script_message_callback, errors); // See build().
+				std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex());
+				result = mod->CompileGlobalVar(section_name.c_str(), code.c_str(), line_offset);
+			}
 		}
 		if (errors) errors->Release();
 		return result;
@@ -1100,34 +1128,55 @@ public:
 	// calls written for the old declaration that pass a line offset compiling.
 	int compile_global_at(const std::string& section_name, const std::string& code, asDWORD line_offset) { return compile_global(section_name, code, nullptr, line_offset); }
 	void discard() {
-		if (!get_mod()) return;
-		get_mod()->Discard();
+		std::lock_guard<std::recursive_mutex> lock(script_module_mutex()); // See script_module_mutex(): the globals' destructors, script code, run with it held.
+		asIScriptModule* mod = get_mod();
+		if (!mod) return;
+		mod->Discard();
 	}
 	asDWORD get_function_count() {
-		if (!get_mod()) return 0;
-		return get_mod()->GetFunctionCount();
+		std::lock_guard<std::recursive_mutex> lock(script_module_mutex()); // See script_module_mutex().
+		asIScriptModule* mod = get_mod();
+		if (!mod) return 0;
+		return mod->GetFunctionCount();
 	}
 	asDWORD get_global_count() {
-		if (!get_mod()) return 0;
-		return get_mod()->GetGlobalVarCount();
+		std::lock_guard<std::recursive_mutex> lock(script_module_mutex()); // See script_module_mutex().
+		asIScriptModule* mod = get_mod();
+		if (!mod) return 0;
+		return mod->GetGlobalVarCount();
 	}
 	asDWORD get_imported_function_count() {
-		if (!get_mod()) return 0;
-		return get_mod()->GetImportedFunctionCount();
+		std::lock_guard<std::recursive_mutex> lock(script_module_mutex()); // See script_module_mutex().
+		asIScriptModule* mod = get_mod();
+		if (!mod) return 0;
+		return mod->GetImportedFunctionCount();
 	}
 	asDWORD set_access_mask(asDWORD mask) {
-		if (!get_mod()) return 0;
-		return get_mod()->SetAccessMask(mask);
+		std::lock_guard<std::recursive_mutex> lock(script_module_mutex()); // See script_module_mutex().
+		asIScriptModule* mod = get_mod();
+		if (!mod) return 0;
+		return mod->SetAccessMask(mask);
+	}
+	// The functions found are given with the reference the script's handle holds, added under the lock: added by AngelScript
+	// after the return (script_function@+), it came after the lock, by when another thread could have rebuilt or discarded the
+	// module and freed the function.
+	static asIScriptFunction* add_ref(asIScriptFunction* func) {
+		if (func) func->AddRef();
+		return func;
 	}
 	asIScriptFunction* get_function_by_index(int index) {
-		if (!get_mod()) return NULL;
-		return get_mod()->GetFunctionByIndex(index);
+		std::lock_guard<std::recursive_mutex> lock(script_module_mutex()); // See script_module_mutex().
+		asIScriptModule* mod = get_mod();
+		if (!mod) return NULL;
+		return add_ref(mod->GetFunctionByIndex(index));
 	}
 	// A lookup by name or declaration starts in the module's default namespace, which ExecuteString sets for the time of a build (a default value of script_function.call() or async<T> evaluated on another thread), so it takes the build lock (see GetScriptBuildMutex); a declaration can also make a type.
 	asIScriptFunction* get_function_by_name(const std::string& name) {
-		if (!get_mod()) return NULL;
+		std::lock_guard<std::recursive_mutex> lock(script_module_mutex()); // See script_module_mutex().
+		asIScriptModule* mod = get_mod();
+		if (!mod) return NULL;
 		std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex());
-		return get_mod()->GetFunctionByName(name.c_str());
+		return add_ref(mod->GetFunctionByName(name.c_str()));
 	}
 	// A declaration is parsed in time that doubles with each template argument nested in it: 22 levels took 3.5 seconds, and 26 didn't end in 45. And every type it names is made in the engine and stays, one per level, array brackets included: three lookups of 1500 [] left 200 MB. A declaration is often data here, and no real one nests this deep.
 	static bool decl_nests_too_deep(const std::string& decl) {
@@ -1174,94 +1223,117 @@ public:
 		}
 	}
 	asIScriptFunction* get_function_by_decl(const std::string& name) {
-		if (!get_mod()) return NULL;
+		std::lock_guard<std::recursive_mutex> lock(script_module_mutex()); // See script_module_mutex().
+		asIScriptModule* mod = get_mod();
+		if (!mod) return NULL;
 		std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex());
 		std::vector<std::string> types;
 		if (decl_refused(name, types)) return NULL;
-		asIScriptFunction* func = get_mod()->GetFunctionByDecl(name.c_str());
+		asIScriptFunction* func = mod->GetFunctionByDecl(name.c_str());
 		if (!func) decl_found_nothing(types);
-		return func;
+		return add_ref(func);
 	}
 	const std::string get_imported_function_decl(asDWORD index) {
-		if (!get_mod())
+		std::lock_guard<std::recursive_mutex> lock(script_module_mutex()); // See script_module_mutex().
+		asIScriptModule* mod = get_mod();
+		if (!mod)
 			return "";
-		const char* result = get_mod()->GetImportedFunctionDeclaration(index);
+		const char* result = mod->GetImportedFunctionDeclaration(index);
 		if (!result) return "";
 		return std::string(result);
 	}
 	int get_imported_function_index(const std::string& decl) {
-		if (!get_mod())
+		std::lock_guard<std::recursive_mutex> lock(script_module_mutex()); // See script_module_mutex().
+		asIScriptModule* mod = get_mod();
+		if (!mod)
 			return asNO_MODULE;
 		std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex()); // The declaration is parsed as get_function_by_decl() parses one (see get_function_by_name()).
 		std::vector<std::string> types;
 		if (decl_refused(decl, types)) return asINVALID_DECLARATION;
-		int index = get_mod()->GetImportedFunctionIndexByDecl(decl.c_str());
+		int index = mod->GetImportedFunctionIndexByDecl(decl.c_str());
 		if (index < 0) decl_found_nothing(types);
 		return index;
 	}
 	const std::string get_imported_function_module(asDWORD index) {
-		if (!get_mod())
+		std::lock_guard<std::recursive_mutex> lock(script_module_mutex()); // See script_module_mutex().
+		asIScriptModule* mod = get_mod();
+		if (!mod)
 			return "";
-		const char* result = get_mod()->GetImportedFunctionSourceModule(index);
+		const char* result = mod->GetImportedFunctionSourceModule(index);
 		if (!result) return "";
 		return std::string(result);
 	}
 	CScriptAny* get_global(asDWORD index) {
-		if (!get_mod())
+		std::lock_guard<std::recursive_mutex> lock(script_module_mutex()); // See script_module_mutex(): a copy of a script class, script code, is made with it held.
+		asIScriptModule* mod = get_mod();
+		if (!mod)
 			return NULL;
 		const char* name;
 		int type_id;
-		if (get_mod()->GetGlobalVar(index, &name, NULL, &type_id) < 0)
+		if (mod->GetGlobalVar(index, &name, NULL, &type_id) < 0)
 			return NULL;
-		void* ref = get_mod()->GetAddressOfGlobalVar(index);
+		void* ref = mod->GetAddressOfGlobalVar(index);
 		if (!ref) return NULL;
 		return new CScriptAny(ref, type_id, g_ScriptEngine);
 	}
 	const std::string get_global_decl(asDWORD index) {
-		if (!get_mod())
+		std::lock_guard<std::recursive_mutex> lock(script_module_mutex()); // See script_module_mutex().
+		asIScriptModule* mod = get_mod();
+		if (!mod)
 			return "";
-		const char* result = get_mod()->GetGlobalVarDeclaration(index);
+		const char* result = mod->GetGlobalVarDeclaration(index);
 		if (!result) return "";
 		return std::string(result);
 	}
 	int get_global_index_by_decl(const std::string& decl) {
-		if (!get_mod())
+		std::lock_guard<std::recursive_mutex> lock(script_module_mutex()); // See script_module_mutex().
+		asIScriptModule* mod = get_mod();
+		if (!mod)
 			return asNO_MODULE;
 		std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex()); // See get_function_by_name().
 		std::vector<std::string> types;
 		if (decl_refused(decl, types)) return asINVALID_DECLARATION;
-		int index = get_mod()->GetGlobalVarIndexByDecl(decl.c_str());
+		int index = mod->GetGlobalVarIndexByDecl(decl.c_str());
 		if (index < 0) decl_found_nothing(types);
 		return index;
 	}
 	int get_global_index_by_name(const std::string& decl) {
-		if (!get_mod())
+		std::lock_guard<std::recursive_mutex> lock(script_module_mutex()); // See script_module_mutex().
+		asIScriptModule* mod = get_mod();
+		if (!mod)
 			return asNO_MODULE;
 		std::lock_guard<std::recursive_mutex> build_lock(GetScriptBuildMutex()); // See get_function_by_name().
-		return get_mod()->GetGlobalVarIndexByName(decl.c_str());
+		return mod->GetGlobalVarIndexByName(decl.c_str());
 	}
 	const std::string get_global_name(asDWORD index) {
-		if (!get_mod())
+		std::lock_guard<std::recursive_mutex> lock(script_module_mutex()); // See script_module_mutex().
+		asIScriptModule* mod = get_mod();
+		if (!mod)
 			return "";
 		const char* result;
-		if (get_mod()->GetGlobalVar(index, &result) < 0) return "";
+		if (mod->GetGlobalVar(index, &result) < 0) return "";
 		if (!result) return "";
 		return std::string(result);
 	}
 	const std::string get_name() {
-		if (!get_mod())
+		std::lock_guard<std::recursive_mutex> lock(script_module_mutex()); // See script_module_mutex().
+		asIScriptModule* mod = get_mod();
+		if (!mod)
 			return "";
-		const char* result = get_mod()->GetName();
+		const char* result = mod->GetName();
 		if (!result) return "";
 		return std::string(result);
 	}
 	void set_name(const std::string& name) {
-		if (!get_mod()) return;
-		get_mod()->SetName(name.c_str());
+		std::lock_guard<std::recursive_mutex> lock(script_module_mutex()); // See script_module_mutex(): mod_name is read by every use on any thread.
+		asIScriptModule* mod = get_mod();
+		if (!mod) return;
+		mod->SetName(name.c_str());
 		mod_name = name;
 	}
 };
 script_module* script_get_module(const std::string& name, int mode) {
+	std::lock_guard<std::recursive_mutex> lock(script_module_mutex()); // See script_module_mutex(): asGM_ALWAYS_CREATE discards the module it replaces.
 	bool exists = false;
 	if (mode != asGM_ALWAYS_CREATE) exists = g_ScriptEngine->GetModule(name.c_str(), asGM_ONLY_IF_EXISTS) != NULL;
 	asIScriptModule* mod = g_ScriptEngine->GetModule(name.c_str(), (asEGMFlags)mode);
@@ -1306,9 +1378,9 @@ void RegisterScripting(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod(_O("script_module"), _O("int compile_global(const string&in section_name, const string&in code, uint line_offset)"), asMETHOD(script_module, compile_global_at), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("script_module"), _O("script_function@ compile_function(const string&in section_name, const string&in code, string[]@ errors=null, bool add_to_module=false, uint line_offset=0)"), asMETHOD(script_module, compile_function), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("script_module"), _O("void discard()"), asMETHOD(script_module, discard), asCALL_THISCALL);
-	engine->RegisterObjectMethod(_O("script_module"), _O("script_function@+ get_function_by_decl(const string&in decl)"), asMETHOD(script_module, get_function_by_decl), asCALL_THISCALL);
-	engine->RegisterObjectMethod(_O("script_module"), _O("script_function@+ get_function_by_index(uint index)"), asMETHOD(script_module, get_function_by_index), asCALL_THISCALL);
-	engine->RegisterObjectMethod(_O("script_module"), _O("script_function@+ get_function_by_name(const string&in name)"), asMETHOD(script_module, get_function_by_name), asCALL_THISCALL);
+	engine->RegisterObjectMethod(_O("script_module"), _O("script_function@ get_function_by_decl(const string&in decl)"), asMETHOD(script_module, get_function_by_decl), asCALL_THISCALL);
+	engine->RegisterObjectMethod(_O("script_module"), _O("script_function@ get_function_by_index(uint index)"), asMETHOD(script_module, get_function_by_index), asCALL_THISCALL);
+	engine->RegisterObjectMethod(_O("script_module"), _O("script_function@ get_function_by_name(const string&in name)"), asMETHOD(script_module, get_function_by_name), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("script_module"), _O("any@ get_global(uint index)"), asMETHOD(script_module, get_global), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("script_module"), _O("const string get_global_decl(uint index)"), asMETHOD(script_module, get_global_decl), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("script_module"), _O("int get_global_index_by_decl(const string&in decl)"), asMETHOD(script_module, get_global_index_by_decl), asCALL_THISCALL);
