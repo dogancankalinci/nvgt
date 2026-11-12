@@ -5304,6 +5304,8 @@ public:
 	}
 	// whole_in_pages is set for a stream loaded again as a buffer because it fitted in its two pages (see below), whose rate isn't checked again: the buffer takes no more than the pages it filled, and the stream itself wasn't refused. Its length is, as a short file's header can claim any. Its buffer is shared with no other sound, so the file is read as it is now, as a stream reads it, rather than taken as another sound loaded it before it changed.
 	bool load_source(const std::string &filename, const size_t protocol_slot, directive_t protocol_directive, const size_t filter_slot, directive_t filter_directive, ma_uint32 ma_flags, bool whole_in_pages) {
+		// Not a load that waits for its whole decode, as load_memory()'s, on an audio thread, as in a processing callback, which held the device's audio up for as long as the sound took to decode: refused before the sound loaded goes, as engines and microphones are refused there. A short stream loaded again whole (whole_in_pages) waits only for its few frames.
+		if (!(ma_flags & (MA_SOUND_FLAG_ASYNC | MA_SOUND_FLAG_STREAM)) && !whole_in_pages && audio_engine_impl::on_audio_thread()) return (g_soundsystem_last_error = MA_INVALID_OPERATION) == MA_SUCCESS;
 		garbage_collect_inline_sounds();
 		if (snd)
 			close_to_reload();
@@ -5434,7 +5436,7 @@ public:
 		// For the time being, give it one more try without any flags if we got -10 (MA_INVALID_FILE) because MA's support for loading mp3 is limited.
 		// Not for a source of unknown length, such as a URL: loading without flags reads the source in whole, which needs its size, so it only opened the source again to fail with an error in place of the decoder's.
 		// Nor for a stream, which the same decoders read from the same source: it read a file the script meant to stream, which can be gigabytes, in whole into memory, under the cache's lock that every other load waits for, to fail as it had.
-		if (g_soundsystem_last_error == MA_INVALID_FILE && !(ma_flags & (MA_SOUND_FLAG_UNKNOWN_LENGTH | MA_SOUND_FLAG_STREAM))) {
+		if (g_soundsystem_last_error == MA_INVALID_FILE && !(ma_flags & (MA_SOUND_FLAG_UNKNOWN_LENGTH | MA_SOUND_FLAG_STREAM)) && !audio_engine_impl::on_audio_thread()) { // Not on an audio thread, which the retry's synchronous load under the cache's whole lock held up for as long as other loads held it.
 			// Synchronously: an asynchronous load leaves the cached file below only at times, and unregistering a name MiniAudio doesn't find hangs every later load. Under the cache's lock throughout, with the unregister: another thread's load of that name in between found the cached file, failed on it too and kept it cached for good.
 			std::lock_guard<std::shared_mutex> tree_lock(g_resource_tree_mutex);
 			tree_held = true;
