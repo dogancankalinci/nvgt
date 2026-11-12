@@ -2334,7 +2334,14 @@ class audio_decoder_impl : public audio_data_source_impl, public virtual audio_d
 			// Keeps every byte read so far so the window's end tracks the stream's real position; once full it can never answer a seek again, so it's freed immediately rather than held for the rest of the decoder's life.
 			if (sc->mirrors_stream() && got) {
 				const size_t cap = sc->opening? stream_cursor::OPEN_CAP : stream_cursor::CAP;
-				if (sc->window.size() < cap) sc->window.append(out, std::min(cap - sc->window.size(), got));
+				if (sc->window.size() < cap) {
+					try {
+						sc->window.append(out, std::min(cap - sc->window.size(), got));
+					} catch (...) { // Out of memory, on whichever thread reads the decoder, the audio thread's included, where a throw ended the program: the window given up, as when it fills.
+						sc->window_full = true;
+						std::string().swap(sc->window);
+					}
+				}
 				if (sc->window.size() >= cap) {
 					sc->window_full = true;
 					std::string().swap(sc->window);
@@ -2782,7 +2789,12 @@ protected:
 	vector<char> converted, dc_buffer; // Scratch for write_converted() and write_locked(), under write_mtx.
 	unsigned int write_converted(const void* frames, unsigned int frame_count) {
 		if (output_format == ma_format_f32) return write_impl(frames, frame_count);
-		converted.resize((size_t)frame_count * ma_get_bytes_per_frame(output_format, channels)); // Kept, so that an encoder in the graph doesn't allocate on the audio thread every block.
+		try {
+			converted.resize((size_t)frame_count * ma_get_bytes_per_frame(output_format, channels)); // Kept, so that an encoder in the graph doesn't allocate on the audio thread every block.
+		} catch (...) { // Out of memory, as on the audio thread, where a throw ended the program: the block lost, as a write that failed.
+			g_soundsystem_last_error = MA_OUT_OF_MEMORY;
+			return 0;
+		}
 		if (output_format == ma_format_u8) { // To the nearest step: MiniAudio's conversion cuts down, half a step low, which wrote silence as 0x7F.
 			const float* in = static_cast<const float*>(frames);
 			ma_uint8* out = reinterpret_cast<ma_uint8*>(converted.data());
@@ -2970,7 +2982,13 @@ public:
 			return frames;
 		}
 		unsigned int dc_bufsize = 1024; // frames
-		dc_buffer.resize(dc_bufsize * ma_get_bytes_per_frame(dc->formatOut, dc->channelsOut));
+		try {
+			dc_buffer.resize(dc_bufsize * ma_get_bytes_per_frame(dc->formatOut, dc->channelsOut));
+		} catch (...) { // As in write_converted().
+			if (close_result == MA_SUCCESS) close_result = MA_OUT_OF_MEMORY;
+			g_soundsystem_last_error = MA_OUT_OF_MEMORY;
+			return 0;
+		}
 		ma_uint64 total_processed = 0;
 		while (total_processed < frame_count) {
 			ma_uint64 frame_count_in = frame_count - total_processed, frame_count_out = dc_bufsize;
