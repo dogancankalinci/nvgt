@@ -65,8 +65,9 @@ std::atomic<asQWORD> g_GCAutoFullTime{ticks()};
 static std::atomic<bool> g_GCFullRequested{false}; // garbage_collect() in mode 3, see garbage_collect_action().
 std::atomic<unsigned int> g_GCAutoFrequency{300000};
 void garbage_collect(bool full = true) {
+	// One step of both kinds, as the automatic modes take (garbage_collect_action()). It was a detection step only: objects reach the list detection walks, and garbage is freed, only in destruction steps, so in mode 1 (manual) a script calling this regularly, as the documentation asks, never had a new cycle found or any garbage freed by it.
 	if (!full && g_GCMode < 3)
-		g_ScriptEngine->GarbageCollect(asGC_ONE_STEP | asGC_DETECT_GARBAGE);
+		g_ScriptEngine->GarbageCollect(asGC_ONE_STEP);
 	else if (full && g_GCMode < 3)
 		g_ScriptEngine->GarbageCollect(asGC_FULL_CYCLE);
 	else if (full && g_GCMode == 3)
