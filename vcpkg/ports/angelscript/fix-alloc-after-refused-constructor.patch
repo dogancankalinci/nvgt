@@ -1,0 +1,109 @@
+diff --git a/sdk/angelscript/source/as_callfunc.cpp b/sdk/angelscript/source/as_callfunc.cpp
+index 014b7a3..39c0287 100644
+--- a/sdk/angelscript/source/as_callfunc.cpp
++++ b/sdk/angelscript/source/as_callfunc.cpp
+@@ -319,7 +319,9 @@ void CleanVariadicArgsOfGenericCall(asCScriptEngine *engine, asCScriptFunction *
+ // the copy of an object passed by value were never released or freed, as neither the compiled script nor the exception
+ // handler cleans up the arguments of a system function call. They are released and freed here and their stack slots
+ // cleared, so the arguments are consumed whether the function is called or not.
+-void CleanArgsOfUnmadeCall(asCContext *context, asCScriptFunction *descr, asDWORD *args)
++// ALTERED: returns the size of what it walked, for CallSystemFunction and CallGeneric to return as the size of what the call
++// took off the stack, see there.
++int CleanArgsOfUnmadeCall(asCContext *context, asCScriptFunction *descr, asDWORD *args)
+ {
+ 	asCScriptEngine *engine = context->m_engine;
+ 	int offset = 0;
+@@ -366,6 +368,7 @@ void CleanArgsOfUnmadeCall(asCContext *context, asCScriptFunction *descr, asDWOR
+ 		}
+ 		offset += dt.GetSizeOnStackDWords();
+ 	}
++	return offset;
+ }
+ 
+ // This function should prepare system functions so that it will be faster to call them
+@@ -916,8 +919,7 @@ int CallSystemFunction(int id, asCContext *context)
+ 			if( obj == 0 )
+ 			{
+ 				context->SetInternalException(TXT_NULL_POINTER_ACCESS);
+-				CleanArgsOfUnmadeCall(context, descr, args + AS_PTR_SIZE);
+-				return 0;
++				return AS_PTR_SIZE + CleanArgsOfUnmadeCall(context, descr, args + AS_PTR_SIZE); // ALTERED: see below
+ 			}
+ 
+ 			// Skip the object pointer
+@@ -971,8 +973,7 @@ int CallSystemFunction(int id, asCContext *context)
+ 			if( tempPtr == 0 )
+ 			{
+ 				context->SetInternalException(TXT_NULL_POINTER_ACCESS);
+-				CleanArgsOfUnmadeCall(context, descr, args + AS_PTR_SIZE);
+-				return 0;
++				return AS_PTR_SIZE + CleanArgsOfUnmadeCall(context, descr, args + AS_PTR_SIZE); // ALTERED: see below
+ 			}
+ 
+ 			// ALTERED: with asCALL_THISCALL_OBJLAST or OBJFIRST the object on the stack is an argument of the auxiliary
+@@ -1018,17 +1019,21 @@ int CallSystemFunction(int id, asCContext *context)
+ 	if( sysFunc->nativeArgsDontFit )
+ 	{
+ 		context->SetInternalException(TXT_INVALID_CALLING_CONVENTION);
+-		CleanArgsOfUnmadeCall(context, descr, args);
+-		return 0;
++		return int(args - context->m_regs.stackPointer) + CleanArgsOfUnmadeCall(context, descr, args); // ALTERED: see below
+ 	}
+ #endif
+ 
+ 	// ALTERED: a null reference to an object is refused before anything is taken from the stack, see PrepareObjectRefArgs
++	// ALTERED: a call that isn't made returns the size of the arguments it consumed (the object pointer and what
++	// CleanArgsOfUnmadeCall walked), as a call that is made does. It returned 0, and asBC_ALLOC, which takes the address of
++	// the variable to store the new object in from below the arguments, read it from the slot of the object pointer it had
++	// pushed: the memory of the object (a value type on the heap: a member of a script class, a string copied from a member
++	// declared after it, which its initializer read before it was made) was written and freed and written again, a use after
++	// free, while the variable was left alone. A call that raised an exception takes everything it was given off the stack.
+ 	if( sysFunc->objectRefArgs.GetLength() && HasNullObjectRefArg(sysFunc, args) )
+ 	{
+ 		context->SetInternalException(TXT_NULL_POINTER_ACCESS);
+-		CleanArgsOfUnmadeCall(context, descr, args);
+-		return 0;
++		return int(args - context->m_regs.stackPointer) + CleanArgsOfUnmadeCall(context, descr, args);
+ 	}
+ 
+ 	if( descr->DoesReturnOnStack() )
+diff --git a/sdk/angelscript/source/as_callfunc.h b/sdk/angelscript/source/as_callfunc.h
+index a962208..7b5334c 100644
+--- a/sdk/angelscript/source/as_callfunc.h
++++ b/sdk/angelscript/source/as_callfunc.h
+@@ -63,8 +63,9 @@ int CallSystemFunction(int id, asCContext *context);
+ asDWORD ExtendSubwordArg(const asCDataType &type, asDWORD value);
+ 
+ // ALTERED: releases or frees the arguments of a registered method that isn't called because its object pointer is null
+-// (see as_callfunc.cpp). args points at the first value after the object pointer.
+-void CleanArgsOfUnmadeCall(asCContext *context, asCScriptFunction *descr, asDWORD *args);
++// (see as_callfunc.cpp). args points at the first value after the object pointer. Returns the size in dwords of what it
++// walked: the arguments, with the address of the return location and a variadic count.
++int CleanArgsOfUnmadeCall(asCContext *context, asCScriptFunction *descr, asDWORD *args);
+ 
+ // ALTERED: whether an argument that is a reference to an object is null (see asSSystemFunctionInterface::objectRefArgs).
+ // args points at the first value after the object pointer, as for CleanArgsOfUnmadeCall.
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+index 26b7c1c..891f573 100644
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -6590,8 +6590,7 @@ int asCContext::CallGeneric(asCScriptFunction *descr)
+ 		if( currentObject == 0 )
+ 		{
+ 			SetInternalException(TXT_NULL_POINTER_ACCESS);
+-			CleanArgsOfUnmadeCall(this, descr, args + AS_PTR_SIZE);
+-			return 0;
++			return AS_PTR_SIZE + CleanArgsOfUnmadeCall(this, descr, args + AS_PTR_SIZE); // ALTERED: see CallSystemFunction
+ 		}
+ 
+ 		asASSERT( sysFunc->baseOffset == 0 );
+@@ -6606,8 +6605,7 @@ int asCContext::CallGeneric(asCScriptFunction *descr)
+ 		(descr->IsVariadic() && HasNullVariadicObjectRefArg(descr, args)) )
+ 	{
+ 		SetInternalException(TXT_NULL_POINTER_ACCESS);
+-		CleanArgsOfUnmadeCall(this, descr, args);
+-		return 0;
++		return int(args - m_regs.stackPointer) + CleanArgsOfUnmadeCall(this, descr, args); // ALTERED: see CallSystemFunction
+ 	}
+ 
+ 	if( descr->DoesReturnOnStack() )

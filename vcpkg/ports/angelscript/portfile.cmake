@@ -153,6 +153,7 @@ vcpkg_from_github(
         fix-native-call-argument-limits.patch
         fix-default-assignment-stops-at-failed-member.patch
         fix-refused-template-variadic-registration.patch
+        fix-alloc-after-refused-constructor.patch
 )
 
 vcpkg_cmake_configure(
