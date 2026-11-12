@@ -259,6 +259,9 @@ CScriptDictionary::CScriptDictionary(asBYTE *buffer)
 			}
 
 			Set(name, ref, typeId);
+			// ALTERED: no more values once one's copy failed, see operator=
+			if( !ValueCopyMade(name, ref, typeId) )
+				break;
 		}
 
 		// Advance the buffer pointer with the size of the value
@@ -361,6 +364,16 @@ void CScriptDictionary::ReleaseAllReferences(asIScriptEngine * /*engine*/)
 	DeleteAll();
 }
 
+// ALTERED: whether the value Set() just put under key is a copy of src, an object passed by value: a failed copy leaves
+// the key with no object (see CScriptDictValue::Set). Anything else is made whatever happens.
+bool CScriptDictionary::ValueCopyMade(const dictKey_t &key, void *src, int typeId) const
+{
+	if( !(typeId & asTYPEID_MASK_OBJECT) || (typeId & asTYPEID_OBJHANDLE) || src == 0 )
+		return true;
+	dictMap_t::const_iterator it = dict.find(key);
+	return it != dict.end() && it->second.m_valueObj != 0;
+}
+
 CScriptDictionary &CScriptDictionary::operator =(const CScriptDictionary &other)
 {
 	// ALTERED: both dictionaries are held, and the keys of the other are copied from a list taken first, each value looked up
@@ -390,7 +403,17 @@ CScriptDictionary &CScriptDictionary::operator =(const CScriptDictionary &other)
 		if( it->second.m_typeId & asTYPEID_OBJHANDLE )
 			Set(keys[n], (void*)const_cast<void**>(&it->second.m_valueObj), it->second.m_typeId);
 		else if( it->second.m_typeId & asTYPEID_MASK_OBJECT )
-			Set(keys[n], (void*)it->second.m_valueObj, it->second.m_typeId);
+		{
+			// ALTERED: the copy stops at the first value whose copy failed (its copy constructor or opAssign raised an
+			// exception), as the script's own execution stops at the exception. The rest were copied after it, each script
+			// class's copy run on a context of its own (the script's context refuses a nested call once it has the
+			// exception), whose exception was lost: every value's copy constructor ran.
+			void *src = it->second.m_valueObj;
+			int typeId = it->second.m_typeId;
+			Set(keys[n], src, typeId);
+			if( !ValueCopyMade(keys[n], src, typeId) )
+				break;
+		}
 		else
 			Set(keys[n], (void*)const_cast<asINT64*>(&it->second.m_valueInt), it->second.m_typeId);
 	}

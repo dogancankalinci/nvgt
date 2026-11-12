@@ -248,6 +248,9 @@ protected:
 	// Whether the iterator may be read (sets a script exception if not)
 	bool CheckIter(const CScriptDictIter *iter) const;
 
+	// ALTERED: whether Set() made the copy of an object passed by value (see the .cpp)
+	bool ValueCopyMade(const dictKey_t &key, void *src, int typeId) const;
+
 	// Our properties
 	asIScriptEngine *engine;
 	mutable int      refCount;
