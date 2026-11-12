@@ -99,6 +99,12 @@ static mixer* acquire_default_mixer() {
 }
 mixer* get_sound_default_mixer() { return acquire_default_mixer(); } // The reference goes to the script.
 void set_sound_default_mixer(mixer* mix) { // Takes the script's reference.
+	// Not a sound, which a script can give as a mixer through a cast: it takes no input, so that every sound_play() was refused and every sound made played straight to the engine with that refusal left behind. Refused, the default kept.
+	if (mix && (!mix->get_ma_node() || ma_node_get_input_bus_count(mix->get_ma_node()) == 0)) {
+		mix->release();
+		g_soundsystem_last_error = MA_INVALID_ARGS;
+		return;
+	}
 	mixer* old;
 	{
 		std::lock_guard<std::mutex> lock(g_audio_mixer_mutex);
