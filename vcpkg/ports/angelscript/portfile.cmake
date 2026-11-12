@@ -150,6 +150,7 @@ vcpkg_from_github(
         fix-gc-count-check-without-weak-flags.patch
         fix-gc-registered-weak-flags.patch
         fix-gc-release-registered-weak-flags.patch
+        fix-native-call-argument-limits.patch
 )
 
 vcpkg_cmake_configure(

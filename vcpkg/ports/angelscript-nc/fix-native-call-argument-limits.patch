@@ -1,0 +1,617 @@
+diff --git a/sdk/angelscript/source/as_callfunc.cpp b/sdk/angelscript/source/as_callfunc.cpp
+index e08725f..014b7a3 100644
+--- a/sdk/angelscript/source/as_callfunc.cpp
++++ b/sdk/angelscript/source/as_callfunc.cpp
+@@ -784,6 +784,20 @@ int PrepareSystemFunction(asCScriptFunction *func, asSSystemFunctionInterface *i
+ 		else
+ 			offset += dt.GetSizeOnStackDWords();
+ 	}
++
++#ifdef AS_NATIVE_ARGS_LIMITED
++	// ALTERED: a function with more arguments than the native calling code can pass (see CallSystemFunctionNativeArgsFit) is
++	// refused, as one taking a type it can't pass by value is. It was called with the arguments written past the buffers
++	// the native calling code puts them in.
++	internal->nativeArgsDontFit = !CallSystemFunctionNativeArgsFit(func, internal);
++	if( internal->nativeArgsDontFit )
++	{
++		engine->WriteMessage("", 0, 0, asMSGTYPE_INFORMATION, func->GetDeclarationStr().AddressOf());
++		engine->WriteMessage("", 0, 0, asMSGTYPE_ERROR, TXT_DONT_SUPPORT_ARG_COUNT);
++		engine->ConfigError(asNOT_SUPPORTED, 0, 0, 0);
++		return asNOT_SUPPORTED;
++	}
++#endif
+ #endif // !defined(AS_MAX_PORTABILITY)
+ 	return 0;
+ }
+@@ -997,6 +1011,18 @@ int CallSystemFunction(int id, asCContext *context)
+ #endif // AS_NO_THISCALL_FUNCTOR_METHOD
+ 	}
+ 
++#ifdef AS_NATIVE_ARGS_LIMITED
++	// ALTERED: a function refused by PrepareSystemFunction as the native calling code can't pass its arguments isn't called.
++	// It can still be reached through a context it was prepared on directly, which doesn't check whether the configuration
++	// failed.
++	if( sysFunc->nativeArgsDontFit )
++	{
++		context->SetInternalException(TXT_INVALID_CALLING_CONVENTION);
++		CleanArgsOfUnmadeCall(context, descr, args);
++		return 0;
++	}
++#endif
++
+ 	// ALTERED: a null reference to an object is refused before anything is taken from the stack, see PrepareObjectRefArgs
+ 	if( sysFunc->objectRefArgs.GetLength() && HasNullObjectRefArg(sysFunc, args) )
+ 	{
+diff --git a/sdk/angelscript/source/as_callfunc.h b/sdk/angelscript/source/as_callfunc.h
+index 7a29b71..a962208 100644
+--- a/sdk/angelscript/source/as_callfunc.h
++++ b/sdk/angelscript/source/as_callfunc.h
+@@ -73,6 +73,14 @@ bool HasNullObjectRefArg(asSSystemFunctionInterface *sysFunc, asDWORD *args);
+ // ALTERED: the same for a variadic function (see as_callfunc.cpp)
+ bool HasNullVariadicObjectRefArg(asCScriptFunction *descr, asDWORD *args);
+ 
++// ALTERED: whether the native calling code of this platform can pass the function's arguments, which it puts in buffers of
++// a fixed size (see the platform's as_callfunc_*.cpp). PrepareSystemFunction refuses a function whose arguments don't fit.
++// Only the platforms below check this.
++#if !defined(AS_MAX_PORTABILITY) && (defined(AS_X64_GCC) || defined(AS_X64_MSVC) || defined(AS_ARM64) || (defined(AS_ARM) && defined(AS_SOFTFP)))
++#define AS_NATIVE_ARGS_LIMITED
++bool CallSystemFunctionNativeArgsFit(asCScriptFunction *descr, asSSystemFunctionInterface *sysFunc);
++#endif
++
+ // ALTERED: cleans up the variadic arguments after a call of a variadic generic function (see as_callfunc.cpp). args points
+ // at the first argument, after the return pointer and the count of arguments.
+ void CleanVariadicArgsOfGenericCall(asCScriptEngine *engine, asCScriptFunction *descr, asDWORD *args, asUINT argCount);
+@@ -144,6 +152,10 @@ struct asSSystemFunctionInterface
+ 	// CallSystemFunction and asCContext::CallGeneric. Set by PrepareSystemFunction and PrepareSystemFunctionGeneric.
+ 	asCArray<short>      objectRefArgs;
+ 
++	// ALTERED: set by PrepareSystemFunction when the native calling code can't pass the function's arguments, see
++	// CallSystemFunctionNativeArgsFit. CallSystemFunction then doesn't call the function.
++	bool                 nativeArgsDontFit;
++
+ 	asSSystemFunctionInterface()
+ 	{ 
+ 		Clear(); 
+@@ -168,6 +180,7 @@ struct asSSystemFunctionInterface
+ 		compositeOffset     = 0;
+ 		isCompositeIndirect = false;
+ 		auxiliary           = 0;
++		nativeArgsDontFit   = false;
+ 
+ 		paramAutoHandles.SetLength(0);
+ 		cleanArgs.SetLength(0);
+@@ -188,6 +201,7 @@ struct asSSystemFunctionInterface
+ 		compositeOffset     = in.compositeOffset;
+ 		isCompositeIndirect = in.isCompositeIndirect;
+ 		auxiliary           = in.auxiliary;
++		nativeArgsDontFit   = in.nativeArgsDontFit;
+ 
+ 		cleanArgs           = in.cleanArgs;
+ 		paramAutoHandles    = in.paramAutoHandles;
+diff --git a/sdk/angelscript/source/as_callfunc_arm.cpp b/sdk/angelscript/source/as_callfunc_arm.cpp
+index ec85582..4cdc3bd 100644
+--- a/sdk/angelscript/source/as_callfunc_arm.cpp
++++ b/sdk/angelscript/source/as_callfunc_arm.cpp
+@@ -73,6 +73,93 @@ extern "C" asQWORD armFuncR0R1      (const asDWORD *, int, asFUNCTION_t, asDWORD
+ extern "C" asQWORD armFuncObjLast   (const asDWORD *, int, asFUNCTION_t, asDWORD obj);
+ extern "C" asQWORD armFuncR0ObjLast (const asDWORD *, int, asFUNCTION_t, asDWORD r0, asDWORD obj);
+ 
++// ALTERED: the number of dwords paramBuffer holds for the arguments, after the two free ones at its start
++#define ARM_MAX_ARG_DWORDS 64
++
++// ALTERED: whether CallSystemFunctionNative can pass the function's arguments in paramBuffer, which holds
++// ARM_MAX_ARG_DWORDS of them. Nothing limited how many a function had, so a registered function with more (65 int
++// parameters, or on Android and Linux 17 pairs of an int and an int64, as each int64 is aligned to an even dword) was
++// called with the arguments written past paramBuffer, over the rest of the frame. The dwords are counted as
++// CallSystemFunctionNative puts them in the buffer (see there; the two must be kept alike), and PrepareSystemFunction
++// refuses a function that doesn't fit.
++bool CallSystemFunctionNativeArgsFit(asCScriptFunction *descr, asSSystemFunctionInterface *sysFunc)
++{
++	int callConv = sysFunc->callConv;
++	if( sysFunc->hostReturnInMemory )
++		callConv++;
++	bool isThisCallMethod = callConv >= ICC_THISCALL_OBJLAST;
++
++#if !defined(AS_ANDROID) && !defined(AS_LINUX)
++	// Otherwise the arguments are passed from the context's stack, without a copy
++	if( !(sysFunc->takesObjByVal || isThisCallMethod) )
++		return true;
++#endif
++
++#if defined(AS_ANDROID) || defined(AS_LINUX)
++	// The same mask as CallSystemFunctionNative's, which tells the dwords that a 64-bit value can't start at
++	int mask = 1;
++	if( isThisCallMethod )
++		mask = 0;
++	else
++	{
++		switch( callConv )
++		{
++			case ICC_THISCALL:
++			case ICC_CDECL_OBJFIRST:
++			case ICC_VIRTUAL_THISCALL:
++			case ICC_THISCALL_RETURNINMEM:
++			case ICC_CDECL_OBJFIRST_RETURNINMEM:
++			case ICC_VIRTUAL_THISCALL_RETURNINMEM:
++				mask = 0;
++				break;
++			default:
++				break;
++		}
++	}
++	if( sysFunc->hostReturnInMemory )
++		mask = !mask;
++#endif
++
++	int dpos = 2;
++	if( isThisCallMethod && (callConv >= ICC_THISCALL_OBJFIRST &&
++		callConv <= ICC_VIRTUAL_THISCALL_OBJFIRST_RETURNINMEM) )
++		dpos++;
++	for( asUINT n = 0; n < descr->parameterTypes.GetLength(); n++ )
++	{
++		const asCDataType &dt = descr->parameterTypes[n];
++		if( dt.IsObject() && !dt.IsObjectHandle() && !dt.IsReference() )
++		{
++#ifdef COMPLEX_OBJS_PASSED_BY_REF
++			if( dt.GetTypeInfo()->flags & COMPLEX_MASK )
++			{
++				dpos++;
++				continue;
++			}
++#endif
++#if defined(AS_ANDROID) || defined(AS_LINUX)
++			if( ((dt.GetTypeInfo()->flags & asOBJ_APP_CLASS_ALIGN8) ||
++				 ((dt.GetTypeInfo()->flags & (asOBJ_APP_FLOAT | asOBJ_APP_PRIMITIVE)) && dt.GetSizeInMemoryBytes() == 8)) &&
++				((dpos & 1) == mask) )
++				dpos++;
++#endif
++			dpos += dt.GetSizeInMemoryDWords();
++		}
++		else
++		{
++#if defined(AS_ANDROID) || defined(AS_LINUX)
++			if( !dt.IsObjectHandle() && !dt.IsReference() && dt.GetSizeOnStackDWords() == 2 && ((dpos & 1) == mask) )
++				dpos++;
++#endif
++			dpos += dt.GetSizeOnStackDWords();
++		}
++	}
++	if( isThisCallMethod && (callConv >= ICC_THISCALL_OBJLAST &&
++		callConv <= ICC_VIRTUAL_THISCALL_OBJLAST_RETURNINMEM) )
++		dpos++;
++
++	return dpos - 2 <= ARM_MAX_ARG_DWORDS;
++}
++
+ asQWORD CallSystemFunctionNative(asCContext *context, asCScriptFunction *descr, void *obj, asDWORD *args, void *retPointer, asQWORD &/*retQW2*/, void *secondObject)
+ {
+ 	asCScriptEngine *engine = context->m_engine;
+@@ -92,7 +179,7 @@ asQWORD CallSystemFunctionNative(asCContext *context, asCScriptFunction *descr,
+ 	bool isThisCallMethod = callConv >= ICC_THISCALL_OBJLAST;
+ 
+ 
+-	asDWORD paramBuffer[64+2];
++	asDWORD paramBuffer[ARM_MAX_ARG_DWORDS+2];
+ 	// Android & Linux needs to align 64bit types on even registers, but this isn't done on iOS or Windows Phone
+ 	// TODO: optimize runtime: There should be a check for this in PrepareSystemFunction() so this 
+ 	//                         doesn't have to be done for functions that don't have any 64bit types
+@@ -262,12 +349,14 @@ asQWORD CallSystemFunctionNative(asCContext *context, asCScriptFunction *descr,
+ 	case ICC_VIRTUAL_THISCALL_OBJLAST_RETURNINMEM:
+ 		// Get virtual function table from the object pointer
+ 		vftable = *(asFUNCTION_t**)obj;
++		// ALTERED: paramSize dwords, as for the non-virtual method above. One more was passed, which the method doesn't take:
++		// it was read past the arguments, and past paramBuffer when they filled it.
+ #ifdef __GNUC__
+ 		// On GNUC the address where the return value will be placed should be put in R0
+-		retQW = armFuncR0R1(args, (paramSize+1)<<2, vftable[FuncPtrToUInt(func)>>2], (asDWORD)retPointer, (asDWORD)obj);
++		retQW = armFuncR0R1(args, paramSize<<2, vftable[FuncPtrToUInt(func)>>2], (asDWORD)retPointer, (asDWORD)obj);
+ #else
+ 		// On Windows the R0 should always hold the object pointer, and the address for the return value comes after
+-		retQW = armFuncR0R1(args, (paramSize+1)<<2, vftable[FuncPtrToUInt(func)>>2], (asDWORD)obj, (asDWORD)retPointer);
++		retQW = armFuncR0R1(args, paramSize<<2, vftable[FuncPtrToUInt(func)>>2], (asDWORD)obj, (asDWORD)retPointer);
+ #endif
+ 		break;
+ 	case ICC_CDECL_OBJLAST:
+diff --git a/sdk/angelscript/source/as_callfunc_arm64.cpp b/sdk/angelscript/source/as_callfunc_arm64.cpp
+index b42cfa0..0bef0bc 100644
+--- a/sdk/angelscript/source/as_callfunc_arm64.cpp
++++ b/sdk/angelscript/source/as_callfunc_arm64.cpp
+@@ -139,6 +139,163 @@ static inline void PadAppleStack(asQWORD* const argsArray, asQWORD& numArgs, asQ
+ }
+ #endif
+ 
++// ALTERED: the number of quadwords stackArgs holds, see CallSystemFunctionNativeArgsFit
++#define ARM64_MAX_STACK_ARG_QWORDS 64
++
++// ALTERED: counts the bytes of stackArgs CallSystemFunctionNative uses for an argument of size bytes that goes on the
++// stack, aligned as it aligns it there
++static inline void ARM64_PlaceStackArg(asQWORD &stackBytes, asUINT align, asUINT size)
++{
++#if defined(AS_IPHONE) || defined(AS_MAC)
++	// Apple aligns an argument on the stack by its size, see PadAppleStack
++	stackBytes = (stackBytes + align - 1) / align * align;
++	stackBytes += size;
++#else
++	// Every argument starts a new quadword
++	UNUSED_VAR(align);
++	stackBytes += (size + sizeof(asQWORD) - 1) / sizeof(asQWORD) * sizeof(asQWORD);
++#endif
++}
++
++// ALTERED: whether CallSystemFunctionNative can pass the function's arguments: stackArgs holds ARM64_MAX_STACK_ARG_QWORDS
++// quadwords for the arguments that don't get a register. Nothing limited how many a function had, so a registered function
++// with more on the stack (73 int64 parameters, or 37 ?&in ones) was called with the arguments written past
++// stackArgs, over the rest of the frame. The arguments are placed as CallSystemFunctionNative places them (see there; the
++// two must be kept alike), and PrepareSystemFunction refuses a function that doesn't fit.
++bool CallSystemFunctionNativeArgsFit(asCScriptFunction *descr, asSSystemFunctionInterface *sysFunc)
++{
++	const int callConv = sysFunc->callConv;
++	asQWORD numGPRegArgs    = 0;
++	asQWORD numFloatRegArgs = 0;
++	asQWORD stackBytes      = 0;
++#if defined(AS_IPHONE) || defined(AS_MAC)
++	const asUINT floatStackSize = sizeof(float);
++	const asUINT typeIdStackSize = sizeof(int);
++#else
++	const asUINT floatStackSize = sizeof(asQWORD);
++	const asUINT typeIdStackSize = sizeof(asQWORD);
++#endif
++
++	if( (callConv >= ICC_THISCALL && callConv <= ICC_VIRTUAL_THISCALL_RETURNINMEM) ||
++		(callConv >= ICC_THISCALL_OBJLAST && callConv <= ICC_VIRTUAL_THISCALL_OBJFIRST_RETURNINMEM) )
++		numGPRegArgs++;
++	if( callConv == ICC_CDECL_OBJFIRST || callConv == ICC_CDECL_OBJFIRST_RETURNINMEM ||
++		callConv == ICC_THISCALL_OBJFIRST || callConv == ICC_THISCALL_OBJFIRST_RETURNINMEM ||
++		callConv == ICC_VIRTUAL_THISCALL_OBJFIRST || callConv == ICC_VIRTUAL_THISCALL_OBJFIRST_RETURNINMEM )
++		numGPRegArgs++;
++
++	for( asUINT n = 0; n < descr->parameterTypes.GetLength(); n++ )
++	{
++		const asCDataType &parmType = descr->parameterTypes[n];
++		const asCTypeInfo *const parmTypeInfo = parmType.GetTypeInfo();
++		if( parmType.IsObject() && !parmType.IsObjectHandle() && !parmType.IsReference() )
++		{
++			const asUINT parmDWords = parmType.GetSizeInMemoryDWords();
++			const asUINT parmQWords = (parmDWords >> 1) + (parmDWords & 1);
++			const asUINT parmBytes = parmType.GetSizeInMemoryBytes();
++			if( (parmTypeInfo->flags & asOBJ_APP_FLOAT) && (parmBytes == sizeof(float) || parmBytes == sizeof(double)) )
++			{
++				if( numFloatRegArgs < FLOAT_ARG_REGISTERS )
++					numFloatRegArgs++;
++				else
++					ARM64_PlaceStackArg(stackBytes, parmBytes, parmBytes);
++				continue;
++			}
++			const bool isHFA = IsRegisterHFA(parmType);
++			if( (parmTypeInfo->flags & COMPLEX_MASK) || (parmQWords > 2 && !isHFA) )
++			{
++				if( numGPRegArgs < GP_ARG_REGISTERS )
++					numGPRegArgs++;
++				else
++					ARM64_PlaceStackArg(stackBytes, sizeof(asQWORD), sizeof(asQWORD));
++				continue;
++			}
++			if( isHFA )
++			{
++				const bool doubles = (parmTypeInfo->flags & asOBJ_APP_CLASS_ALIGN8) != 0;
++				const asUINT memberSize = doubles ? sizeof(double) : sizeof(float);
++				const asUINT members = parmBytes / memberSize;
++				if( numFloatRegArgs + members <= FLOAT_ARG_REGISTERS )
++					numFloatRegArgs += members;
++				else
++				{
++					numFloatRegArgs = FLOAT_ARG_REGISTERS;
++#if defined(AS_IPHONE) || defined(AS_MAC)
++					ARM64_PlaceStackArg(stackBytes, memberSize, parmBytes);
++#else
++					ARM64_PlaceStackArg(stackBytes, sizeof(asQWORD), parmQWords * sizeof(asQWORD));
++#endif
++				}
++			}
++			else
++			{
++				if( numGPRegArgs + parmQWords <= GP_ARG_REGISTERS )
++					numGPRegArgs += parmQWords;
++				else
++				{
++					numGPRegArgs = GP_ARG_REGISTERS;
++					ARM64_PlaceStackArg(stackBytes, sizeof(asQWORD), parmQWords * sizeof(asQWORD));
++				}
++			}
++		}
++		else if( parmType.IsFloatType() && !parmType.IsReference() )
++		{
++			if( numFloatRegArgs >= FLOAT_ARG_REGISTERS )
++				ARM64_PlaceStackArg(stackBytes, floatStackSize, floatStackSize);
++			else
++				numFloatRegArgs++;
++		}
++		else if( parmType.IsDoubleType() && !parmType.IsReference() )
++		{
++			if( numFloatRegArgs >= FLOAT_ARG_REGISTERS )
++				ARM64_PlaceStackArg(stackBytes, sizeof(asQWORD), sizeof(asQWORD));
++			else
++				numFloatRegArgs++;
++		}
++		else if( parmType.GetTokenType() == ttQuestion )
++		{
++			// The reference and then the type id
++			if( numGPRegArgs + 1 <= GP_ARG_REGISTERS )
++				numGPRegArgs++;
++			else
++				ARM64_PlaceStackArg(stackBytes, sizeof(asQWORD), sizeof(asQWORD));
++			if( numGPRegArgs + 1 <= GP_ARG_REGISTERS )
++				numGPRegArgs++;
++			else
++				ARM64_PlaceStackArg(stackBytes, typeIdStackSize, typeIdStackSize);
++		}
++		else
++		{
++			const asUINT parmDWords = parmType.GetSizeOnStackDWords();
++			const asUINT parmQWords = (parmDWords >> 1) + (parmDWords & 1);
++			if( numGPRegArgs + parmQWords <= GP_ARG_REGISTERS )
++				numGPRegArgs += parmQWords;
++			else
++			{
++#if defined(AS_IPHONE) || defined(AS_MAC)
++				asUINT parmBytes = (parmType.IsReference() || parmType.IsObjectHandle()) ? AS_PTR_SIZE * 4 : parmType.GetSizeInMemoryBytes();
++				ARM64_PlaceStackArg(stackBytes, parmBytes, parmBytes);
++#else
++				ARM64_PlaceStackArg(stackBytes, sizeof(asQWORD), parmQWords * sizeof(asQWORD));
++#endif
++			}
++		}
++	}
++#if defined(AS_IPHONE) || defined(AS_MAC)
++	ARM64_PlaceStackArg(stackBytes, sizeof(asQWORD), 0);
++#endif
++
++	if( callConv == ICC_CDECL_OBJLAST || callConv == ICC_CDECL_OBJLAST_RETURNINMEM ||
++		callConv == ICC_THISCALL_OBJLAST || callConv == ICC_THISCALL_OBJLAST_RETURNINMEM ||
++		callConv == ICC_VIRTUAL_THISCALL_OBJLAST || callConv == ICC_VIRTUAL_THISCALL_OBJLAST_RETURNINMEM )
++	{
++		if( numGPRegArgs >= GP_ARG_REGISTERS )
++			ARM64_PlaceStackArg(stackBytes, sizeof(asQWORD), sizeof(asQWORD));
++	}
++
++	return stackBytes <= ARM64_MAX_STACK_ARG_QWORDS * sizeof(asQWORD);
++}
++
+ asQWORD CallSystemFunctionNative(asCContext *context, asCScriptFunction *descr, void *obj, asDWORD *args, void *retPointer, asQWORD &retQW2, void *secondObject)
+ {
+ 	asCScriptEngine *engine = context->m_engine;
+@@ -151,7 +308,7 @@ asQWORD CallSystemFunctionNative(asCContext *context, asCScriptFunction *descr,
+ 
+ 	asQWORD       gpRegArgs[GP_ARG_REGISTERS];
+ 	asQWORD       floatRegArgs[FLOAT_ARG_REGISTERS];
+-	asQWORD       stackArgs[64]; // It's how many x64 users can have
++	asQWORD       stackArgs[ARM64_MAX_STACK_ARG_QWORDS]; // It's how many x64 users can have
+ 	asQWORD       numGPRegArgs    = 0;
+ 	asQWORD       numFloatRegArgs = 0;
+ 	asQWORD       numStackArgs    = 0;
+diff --git a/sdk/angelscript/source/as_callfunc_x64_gcc.cpp b/sdk/angelscript/source/as_callfunc_x64_gcc.cpp
+index d73579e..b892863 100644
+--- a/sdk/angelscript/source/as_callfunc_x64_gcc.cpp
++++ b/sdk/angelscript/source/as_callfunc_x64_gcc.cpp
+@@ -175,6 +175,108 @@ static inline bool IsVariableArgument( asCDataType type )
+ 	return ( type.GetTokenType() == ttQuestion ) ? true : false;
+ }
+ 
++// ALTERED: counts where CallSystemFunctionNative puts count eightbytes of the class type (one argument, or the two of an
++// object that gets two registers or none): in registers while enough of the class are left, on the stack otherwise
++static void X64_PlaceArg(int type, int count, int &usedIntRegs, int &usedSseRegs, int &stackArgs)
++{
++	if( type == x64INTARG && usedIntRegs + count <= MAX_CALL_INT_REGISTERS )
++		usedIntRegs += count;
++	else if( type == x64FLOATARG && usedSseRegs + count <= MAX_CALL_SSE_REGISTERS )
++		usedSseRegs += count;
++	else
++		stackArgs += count;
++}
++
++// ALTERED: whether CallSystemFunctionNative can pass the function's arguments. paramBuffer, argsType and argsPair hold
++// X64_CALLSTACK_SIZE eightbytes, and tempBuff the MAX_CALL_INT_REGISTERS + MAX_CALL_SSE_REGISTERS of the registers
++// followed by those that go on the stack, 29 of them. Nothing limited how many a function had, so a registered function
++// with more on the stack (36 int parameters, or 15 ?&in ones after six others) was called with the arguments written past
++// tempBuff and paramBuffer, over the rest of the frame. The eightbytes are counted as CallSystemFunctionNative arranges
++// them (see there; the two must be kept alike), and PrepareSystemFunction refuses a function that doesn't fit.
++bool CallSystemFunctionNativeArgsFit(asCScriptFunction *descr, asSSystemFunctionInterface *sysFunc)
++{
++	int callConv = sysFunc->callConv;
++	if( sysFunc->hostReturnInMemory )
++		callConv++;
++
++	// The pointers passed before the arguments, all in integer registers, and the object pointer after them
++	int  usedIntRegs = 0;
++	int  usedSseRegs = 0;
++	int  stackArgs   = 0;
++	bool post        = false;
++	switch( callConv )
++	{
++	case ICC_CDECL_RETURNINMEM:
++	case ICC_STDCALL_RETURNINMEM:
++	case ICC_THISCALL:
++	case ICC_VIRTUAL_THISCALL:
++	case ICC_CDECL_OBJFIRST:
++		usedIntRegs = 1;
++		break;
++	case ICC_THISCALL_RETURNINMEM:
++	case ICC_VIRTUAL_THISCALL_RETURNINMEM:
++	case ICC_CDECL_OBJFIRST_RETURNINMEM:
++		usedIntRegs = 2;
++		break;
++#ifndef AS_NO_THISCALL_FUNCTOR_METHOD
++	case ICC_THISCALL_OBJLAST:
++	case ICC_VIRTUAL_THISCALL_OBJLAST:
++		usedIntRegs = 1;
++		post = true;
++		break;
++	case ICC_THISCALL_OBJLAST_RETURNINMEM:
++	case ICC_VIRTUAL_THISCALL_OBJLAST_RETURNINMEM:
++		usedIntRegs = 2;
++		post = true;
++		break;
++	case ICC_THISCALL_OBJFIRST:
++	case ICC_VIRTUAL_THISCALL_OBJFIRST:
++		usedIntRegs = 2;
++		break;
++	case ICC_THISCALL_OBJFIRST_RETURNINMEM:
++	case ICC_VIRTUAL_THISCALL_OBJFIRST_RETURNINMEM:
++		usedIntRegs = 3;
++		break;
++#endif
++	case ICC_CDECL_OBJLAST:
++		post = true;
++		break;
++	case ICC_CDECL_OBJLAST_RETURNINMEM:
++		usedIntRegs = 1;
++		post = true;
++		break;
++	default:
++		break;
++	}
++
++	for( asUINT a = 0; a < descr->parameterTypes.GetLength(); a++ )
++	{
++		const asCDataType &parmType = descr->parameterTypes[a];
++		if( (parmType.IsFloatType() || parmType.IsDoubleType()) && !parmType.IsReference() )
++			X64_PlaceArg(x64FLOATARG, 1, usedIntRegs, usedSseRegs, stackArgs);
++		else if( IsVariableArgument(parmType) )
++		{
++			// The reference and the type id, each an argument of its own
++			X64_PlaceArg(x64INTARG, 1, usedIntRegs, usedSseRegs, stackArgs);
++			X64_PlaceArg(x64INTARG, 1, usedIntRegs, usedSseRegs, stackArgs);
++		}
++		else if( parmType.IsPrimitive() || parmType.IsReference() || parmType.IsObjectHandle() )
++			X64_PlaceArg(x64INTARG, 1, usedIntRegs, usedSseRegs, stackArgs);
++		else if( parmType.GetTypeInfo()->flags & COMPLEX_MASK )
++			X64_PlaceArg(x64INTARG, 1, usedIntRegs, usedSseRegs, stackArgs);
++		else if( parmType.GetSizeInMemoryDWords() > 4 )
++			stackArgs += (parmType.GetSizeInMemoryBytes() + 7) / 8;
++		else if( parmType.GetTypeInfo()->flags & (asOBJ_APP_CLASS_ALLINTS | asOBJ_APP_PRIMITIVE) )
++			X64_PlaceArg(x64INTARG, parmType.GetSizeInMemoryDWords() > 2 ? 2 : 1, usedIntRegs, usedSseRegs, stackArgs);
++		else if( parmType.GetTypeInfo()->flags & (asOBJ_APP_CLASS_ALLFLOATS | asOBJ_APP_FLOAT) )
++			X64_PlaceArg(x64FLOATARG, parmType.GetSizeInMemoryDWords() > 2 ? 2 : 1, usedIntRegs, usedSseRegs, stackArgs);
++	}
++	if( post )
++		X64_PlaceArg(x64INTARG, 1, usedIntRegs, usedSseRegs, stackArgs);
++
++	return stackArgs <= X64_CALLSTACK_SIZE - MAX_CALL_INT_REGISTERS - MAX_CALL_SSE_REGISTERS;
++}
++
+ asQWORD CallSystemFunctionNative(asCContext *context, asCScriptFunction *descr, void *obj, asDWORD *args, void *retPointer, asQWORD &retQW2, void *secondObject)
+ {
+ 	asCScriptEngine            *engine             = context->m_engine;
+@@ -371,13 +473,12 @@ asQWORD CallSystemFunctionNative(asCContext *context, asCScriptFunction *descr,
+ 				// ALTERED: An object larger than 16 bytes that isn't complex is passed in memory, i.e. its bytes are
+ 				// copied to the stack, not its address to a register. The memory is freed with the other arguments
+ 				// after the call (AS_LARGE_OBJS_PASSED_BY_REF).
++				// ALTERED: the buffers are known to hold every argument, see CallSystemFunctionNativeArgsFit. This refused the
++				// call when the eightbytes before the object and the object's own came to more than the stack part of tempBuff,
++				// although those before it that go in registers take none of it (8 doubles, 6 integers and then an object of
++				// 128 bytes need 16 of its 29), and it left the copies of the objects after it unfreed.
+ 				asUINT qwords = (parmType.GetSizeInMemoryBytes() + 7) / 8;
+-				if( argIndex + qwords > X64_CALLSTACK_SIZE - MAX_CALL_INT_REGISTERS - MAX_CALL_SSE_REGISTERS )
+-				{
+-					// More than the buffers here can hold on the stack
+-					context->SetInternalException(TXT_INVALID_CALLING_CONVENTION);
+-					return 0;
+-				}
++				asASSERT( argIndex + qwords <= X64_CALLSTACK_SIZE );
+ 				memcpy(paramBuffer + argIndex, *(void**)stack_pointer, parmType.GetSizeInMemoryBytes());
+ 				for( asUINT q = 0; q < qwords; q++ )
+ 					argsType[argIndex + q] = x64MEMARG;
+diff --git a/sdk/angelscript/source/as_callfunc_x64_msvc.cpp b/sdk/angelscript/source/as_callfunc_x64_msvc.cpp
+index f4422e5..3a9cb70 100644
+--- a/sdk/angelscript/source/as_callfunc_x64_msvc.cpp
++++ b/sdk/angelscript/source/as_callfunc_x64_msvc.cpp
+@@ -51,6 +51,68 @@ extern "C" asQWORD CallX64(const asQWORD *args, const asQWORD *floatArgs, int pa
+ extern "C" asDWORD GetReturnedFloat();
+ extern "C" asQWORD GetReturnedDouble();
+ 
++// ALTERED: the number of quadwords allArgBuffer holds, see CallSystemFunctionNativeArgsFit
++#define X64_MSVC_MAX_ARG_QWORDS 64
++
++// ALTERED: whether CallSystemFunctionNative can pass the function's arguments in allArgBuffer, which holds
++// X64_MSVC_MAX_ARG_QWORDS of them. Nothing limited how many a function had, so a registered function with more (65 int
++// parameters, or 33 ?&in ones) was called with the arguments written past allArgBuffer, over the rest of
++// the frame. The quadwords are counted as CallSystemFunctionNative puts them in the buffer (see there; the two must be kept
++// alike), and PrepareSystemFunction refuses a function that doesn't fit.
++bool CallSystemFunctionNativeArgsFit(asCScriptFunction *descr, asSSystemFunctionInterface *sysFunc)
++{
++	int callConv = sysFunc->callConv;
++	asUINT paramSize = 0;
++
++	if( (callConv >= ICC_THISCALL && callConv <= ICC_VIRTUAL_THISCALL_RETURNINMEM) ||
++		(callConv >= ICC_THISCALL_OBJLAST && callConv <= ICC_VIRTUAL_THISCALL_OBJFIRST_RETURNINMEM) )
++		paramSize++;
++	if( sysFunc->hostReturnInMemory )
++	{
++		callConv++;
++		paramSize++;
++	}
++	if( callConv == ICC_CDECL_OBJFIRST ||
++		callConv == ICC_CDECL_OBJFIRST_RETURNINMEM ||
++		callConv == ICC_THISCALL_OBJFIRST ||
++		callConv == ICC_THISCALL_OBJFIRST_RETURNINMEM ||
++		callConv == ICC_VIRTUAL_THISCALL_OBJFIRST ||
++		callConv == ICC_VIRTUAL_THISCALL_OBJFIRST_RETURNINMEM )
++		paramSize++;
++
++	for( asUINT n = 0; n < descr->parameterTypes.GetLength(); n++ )
++	{
++		asCDataType &dt = descr->parameterTypes[n];
++		if( dt.IsObject() && !dt.IsObjectHandle() && !dt.IsReference() )
++		{
++			const int bytes = dt.GetSizeInMemoryBytes();
++			if( dt.GetSizeInMemoryDWords() >= AS_LARGE_OBJ_MIN_SIZE ||
++				(dt.GetTypeInfo()->flags & COMPLEX_MASK) ||
++				(bytes != 1 && bytes != 2 && bytes != 4 && bytes != 8) )
++				paramSize++;
++			else
++			{
++				asUINT dwords = dt.GetSizeInMemoryDWords();
++				paramSize += (dwords >> 1) + (dwords & 1);
++			}
++		}
++		else if( dt.GetTokenType() == ttQuestion )
++			paramSize += 2;
++		else
++			paramSize++;
++	}
++
++	if( callConv == ICC_CDECL_OBJLAST ||
++		callConv == ICC_CDECL_OBJLAST_RETURNINMEM ||
++		callConv == ICC_THISCALL_OBJLAST ||
++		callConv == ICC_THISCALL_OBJLAST_RETURNINMEM ||
++		callConv == ICC_VIRTUAL_THISCALL_OBJLAST ||
++		callConv == ICC_VIRTUAL_THISCALL_OBJLAST_RETURNINMEM )
++		paramSize++;
++
++	return paramSize <= X64_MSVC_MAX_ARG_QWORDS;
++}
++
+ asQWORD CallSystemFunctionNative(asCContext *context, asCScriptFunction *descr, void *obj, asDWORD *args, void *retPointer, asQWORD &/*retQW2*/, void *secondObject)
+ {
+ 	asCScriptEngine *engine = context->m_engine;
+@@ -61,7 +123,7 @@ asQWORD CallSystemFunctionNative(asCContext *context, asCScriptFunction *descr,
+ 	asUINT   paramSize         = 0; // QWords
+ 	void   **vftable;
+ 
+-	asQWORD  allArgBuffer[64];
++	asQWORD  allArgBuffer[X64_MSVC_MAX_ARG_QWORDS];
+ 	asQWORD  floatArgBuffer[4];
+ 
+ 	int callConv = sysFunc->callConv;
+diff --git a/sdk/angelscript/source/as_texts.h b/sdk/angelscript/source/as_texts.h
+index 9f7818f..a9e60de 100644
+--- a/sdk/angelscript/source/as_texts.h
++++ b/sdk/angelscript/source/as_texts.h
+@@ -350,6 +350,7 @@
+ #define TXT_DONT_SUPPORT_TYPE_s_BY_VAL                   "Don't support passing type '%s' by value to application in native calling convention on this platform"
+ // TODO: Should be something like "This platform requires that AngelScript knows the exact content of the type '%s' in order to return by value from application in native calling convention"
+ #define TXT_DONT_SUPPORT_RET_TYPE_s_BY_VAL               "Don't support returning type '%s' by value from application in native calling convention on this platform"
++#define TXT_DONT_SUPPORT_ARG_COUNT                       "Don't support passing this many arguments to application in native calling convention on this platform"
+ #define TXT_d_GC_CANNOT_FREE_OBJ_OF_TYPE_s               "Object {%d}. GC cannot destroy an object of type '%s' as it doesn't know how many references to there are."
+ #define TXT_d_GC_CANNOT_FREE_OBJ_OF_TYPE_s_REF_COUNT_d   "Object {%d}. GC cannot destroy an object of type '%s' as it can't see all references. Current ref count is %d."
+ #define TXT_OBJECT_TYPE_s_DOESNT_EXIST                   "Object type '%s' doesn't exist"
