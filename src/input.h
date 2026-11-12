@@ -44,6 +44,7 @@ class joystick : public Poco::RefCountedObject {
 	std::vector<uint8_t> hat_values;
 
 public:
+	void detach_sdl(); // see joysticks_quit() in input.cpp
 	// BGT compatibility properties
 	unsigned int get_joysticks() const;
 	bool get_has_x() const;

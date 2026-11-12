@@ -91,12 +91,14 @@ void InputInit() {
 	SDL_Init(SDL_INIT_VIDEO);
 	g_KeysDown = SDL_GetKeyboardState(&g_KeysDownArrayLen);
 }
+static void joysticks_quit();
 void InputDestroy() {
 	if (SDL_WasInit(0) == 0) return;
 	#ifdef _WIN32
 	uninstall_keyhook();
 	#endif
 	system_tray_quit(); // SDL_Quit frees every tray, with the menus and entries the script's tray objects point to
+	joysticks_quit(); // and closes every gamepad
 	SDL_Quit();
 	g_KeysDown = NULL;
 }
@@ -416,6 +418,19 @@ static joystick* joystick_factory() {
 	return new joystick();
 }
 
+// SDL_Quit() (destroy_window(), the end of the program) closes every gamepad, and the joystick objects a script still held kept the freed pointers: one opened once SDL was back could get such an address, and the old object then read it and, when let go of, closed it under the new object. Every joystick object lets go of its gamepad first, as set() to a missing index does.
+void joystick::detach_sdl() {
+	if (stick) SDL_CloseGamepad(stick);
+	stick = nullptr;
+	js_handle = nullptr;
+	current_index = -1;
+}
+static void joysticks_quit() {
+	Poco::FastMutex::ScopedLock lock(g_joysticks_mutex);
+	for (joystick* js : g_active_joysticks) {
+		if (js) js->detach_sdl();
+	}
+}
 void update_joysticks() {
 	Poco::FastMutex::ScopedLock lock(g_joysticks_mutex);
 	for (joystick* js : g_active_joysticks) {
