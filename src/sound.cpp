@@ -4307,9 +4307,14 @@ public:
 				play();
 			}
 			record_node_hold(static_cast<audio_node*>(this), node_chain); // As every node a mixer holds (see claim_node_hold()); only once made, as a constructor that throws must leave none behind, which a node made later at the same address took for its own.
+			// Its group's output goes into its chain and its chain's into its parent, which no user chain or reverb3d may take (see own_output()): taken, the mixer skipped its effects, spatializer and parent, and once let go of was silent for good.
+			own_output(static_cast<audio_node*>(this), static_cast<audio_node*>(this));
+			own_output(node_chain, static_cast<audio_node*>(this));
 		} catch (...) {
 			last_error_kept kept;
 			drop_node_holds(static_cast<audio_node*>(this));
+			disown_output(static_cast<audio_node*>(this), static_cast<audio_node*>(this));
+			disown_output(node_chain, static_cast<audio_node*>(this));
 			if (group_made) {
 				std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); // As the destructor uninitialises it.
 				ma_sound_group_uninit(&*snd);
@@ -4323,6 +4328,8 @@ public:
 	~mixer_impl() {
 		last_error_kept kept;
 		drop_node_holds(static_cast<audio_node*>(this));
+		disown_output(static_cast<audio_node*>(this), static_cast<audio_node*>(this));
+		disown_output(node_chain, static_cast<audio_node*>(this));
 		track_shape(false);
 		stop();
 		unique_lock<mutex> lock(spatialization_params_mutex);

@@ -521,6 +521,9 @@ void record_node_hold(const audio_node* holder, const audio_node* held);
 void drop_node_hold(const audio_node* holder, const audio_node* held);
 // Drops every hold of a holder, which is being destroyed.
 void drop_node_holds(const audio_node* holder);
+// Records owner as what rewires node's output, which no chain or reverb3d may then take (see g_output_owners), as a mixer owns its own output and its chain's; and drops that record, as the owner goes.
+void own_output(const audio_node* node, const audio_node* owner);
+void disown_output(const audio_node* node, const audio_node* owner);
 
 
 extern int g_audio_basic_panner;

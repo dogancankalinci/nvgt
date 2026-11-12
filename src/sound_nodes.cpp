@@ -241,7 +241,7 @@ void drop_node_holds(const audio_node* holder) {
 	std::lock_guard<std::mutex> lock(g_node_holds_mutex);
 	g_node_holds.erase(holder);
 }
-// Who a node's output belongs to, under g_node_holds_mutex: the chain the node is in, which wires its output to the next node, or the reverb3ds using it as their reverb, which send it on together (see reverb_free_for()). A node one already rewires is refused to another with MA_ALREADY_IN_USE: a node in two chains, or in a chain and a reverb3d's reverb, had its single output fought over, each rewiring of one taking it from the other, so that a sound went silent for good or played where another was placed.
+// Who a node's output belongs to, under g_node_holds_mutex: the chain the node is in, which wires its output to the next node, the reverb3ds using it as their reverb, which send it on together (see reverb_free_for()), or what wires it itself, as a mixer its group's output and its chain's, and a reverb3d its own (see own_output()). A node one already rewires is refused to another with MA_ALREADY_IN_USE: a node in two chains, or in a chain and a reverb3d's reverb, had its single output fought over, each rewiring of one taking it from the other, so that a sound went silent for good or played where another was placed.
 struct output_owner {
 	const audio_node* chain = nullptr; // Null for a reverb.
 	int reverb_uses = 0;
@@ -257,6 +257,16 @@ static void drop_output_for_chain(const audio_node* node, const audio_node* chai
 	std::lock_guard<std::mutex> lock(g_node_holds_mutex);
 	auto it = g_output_owners.find(node);
 	if (it != g_output_owners.end() && it->second.chain == chain) g_output_owners.erase(it);
+}
+void own_output(const audio_node* node, const audio_node* owner) {
+	if (!node) return;
+	std::lock_guard<std::mutex> lock(g_node_holds_mutex);
+	output_owner& entry = g_output_owners[node];
+	entry.chain = owner;
+	entry.reverb_uses = 0;
+}
+void disown_output(const audio_node* node, const audio_node* owner) {
+	if (node) drop_output_for_chain(node, owner);
 }
 static bool claim_output_for_reverb(const audio_node* node) {
 	std::lock_guard<std::mutex> lock(g_node_holds_mutex);
@@ -1041,9 +1051,15 @@ static void reverb_uncount(audio_node* verb) {
 	if (it != g_reverb_users.end() && it->second.users > 0) it->second.users--;
 }
 // Makes a node's users entry ahead of counting a reverb3d into it, so that the count, made once the reverb3d has changed over to the node, can't throw, as on running out of memory, leaving it a reverb it never counted, whose let-go later took another user's count to 0. An entry left without users reads as none.
-static void reverb_entry_made(audio_node* verb) {
+static bool reverb_entry_made(audio_node* verb) {
 	std::lock_guard<std::mutex> lock(g_reverb_users_mutex);
-	g_reverb_users[verb];
+	return g_reverb_users.try_emplace(verb).second;
+}
+// Forgets an entry a refused reverb3d left without users, which was kept for good, unless something still holds its send lock, as another reverb3d's let-go in progress does.
+static void reverb_entry_forget(audio_node* verb) {
+	std::lock_guard<std::mutex> lock(g_reverb_users_mutex);
+	auto it = g_reverb_users.find(verb);
+	if (it != g_reverb_users.end() && it->second.users == 0 && it->second.send.use_count() == 1) g_reverb_users.erase(it);
 }
 // What a reverb node that isn't a mixer goes into now, with a reference the caller lets go of after the node's send lock: sending the node elsewhere or detaching it lets go of the one it held, whose destructor, as a mixer's letting go of a reverb3d of its own, takes the reverb locks.
 static audio_node* reverb_destination(audio_node* verb) {
@@ -1115,11 +1131,13 @@ public:
 		if (output_mixer) output_mixer->duplicate(); // reverb owns its own reference to output_mixer via attach_output_bus below; this is reverb3d_impl's separate reference for get_mixer().
 		bool counted = false;
 		try {
+			own_output(static_cast<audio_node*>(this), static_cast<audio_node*>(this)); // Its output goes into its reverb, which no chain or other reverb3d may take: taken, the sends skipped the reverb, and once let go of went nowhere for good.
 			record_node_hold(static_cast<audio_node*>(this), output_mixer); // Nothing holds a reverb3d being made.
 			if (verb) wire_reverb(verb, counted);
 		} catch (...) { // As on running out of memory. The destructor doesn't run, so what it lets go of is let go of here: a hold left behind was taken by a node made later at the same address for its own, and the mixer a reverb3d made for itself, attached to the engine, and the reverb, counted among its users for good, stayed alive.
 			last_error_kept kept;
 			drop_node_holds(static_cast<audio_node*>(this));
+			disown_output(static_cast<audio_node*>(this), static_cast<audio_node*>(this));
 			if (counted) reverb_let_go(reverb);
 			if (reverb) {
 				drop_output_for_reverb(reverb);
@@ -1133,8 +1151,9 @@ public:
 	// counted tells, should it throw, whether it counted itself among the reverb's users.
 	void wire_reverb(audio_node* verb, bool& counted) {
 		reverb = nullptr;
-		if (!claim_output_for_reverb(verb)) throw_refusal(MA_ALREADY_IN_USE, "the reverb is a node of a chain"); // Whose output the chain rewires (see g_output_owners).
-		output_claim owning{verb, nullptr};
+		const bool verb_mixer = dynamic_cast<mixer*>(verb) != nullptr; // Sent on through its set_mixer(), which its own output stays with: not claimed.
+		if (!verb_mixer && !claim_output_for_reverb(verb)) throw_refusal(MA_ALREADY_IN_USE, "the reverb's output belongs to a chain or another node"); // Whose output a chain or the node itself rewires (see g_output_owners).
+		output_claim owning{verb_mixer? nullptr : verb, nullptr};
 		if (!attach_output_bus(0, verb, 0)) return;
 		reverb = verb;
 		reverb->duplicate();
@@ -1143,9 +1162,11 @@ public:
 		std::shared_ptr<std::recursive_mutex> send = reverb_used(reverb);
 		counted = true;
 		// Refused when it can't be sent on, as reverb3d.reverb refuses it: made, the sends went wherever the node already went, with an error left behind the reverb3d made.
-		if (!(dynamic_cast<mixer*>(reverb)? send_onward(reverb, output_mixer) : send_counted(reverb, send))) {
+		if (!(verb_mixer? send_onward(reverb, output_mixer) : send_counted(reverb, send))) {
 			const ma_result error = g_soundsystem_last_error;
+			send.reset();
 			reverb_uncount(reverb);
+			reverb_entry_forget(reverb);
 			counted = false;
 			throw_refusal(error != MA_SUCCESS? error : MA_INVALID_OPERATION, "the reverb can't be sent on to the destination");
 		}
@@ -1178,6 +1199,7 @@ public:
 			drop_output_for_reverb(reverb);
 			reverb->release();
 		}
+		disown_output(static_cast<audio_node*>(this), static_cast<audio_node*>(this));
 		if (output_mixer) output_mixer->release();
 	}
 	void set_reverb(audio_node* verb) override {
@@ -1207,12 +1229,12 @@ public:
 			return;
 		}
 		hold_claim claim{static_cast<audio_node*>(this), verb}; // Dropped unless it becomes the reverb.
-		if (verb && !claim_output_for_reverb(verb)) { // A node of a chain, whose output the chain rewires (see g_output_owners).
+		if (verb && !verb_mixer && !claim_output_for_reverb(verb)) { // A node whose output a chain or the node itself rewires (see g_output_owners); a mixer is sent on through its set_mixer(), its own output staying with it.
 			g_soundsystem_last_error = MA_ALREADY_IN_USE;
 			return;
 		}
-		output_claim owning{verb, nullptr};
-		if (verb) reverb_entry_made(verb); // Before anything changes (see reverb_entry_made()).
+		output_claim owning{verb_mixer? nullptr : verb, nullptr};
+		struct entry_kept { audio_node* node; bool made; bool kept = false; ~entry_kept() { if (!kept && made) reverb_entry_forget(node); } } entry{verb, verb && reverb_entry_made(verb)}; // Before anything changes (see reverb_entry_made()); one made here is forgotten again on a refusal, rather than kept for good.
 		// A mixer goes into the destination first, which refuses a loop, and then this node into the new reverb, which replaces the link to the old one: either refused leaves the old reverb as it was, rather than let go of before the new one was refused.
 		if ((verb_mixer && !send_onward(verb, output_mixer)) || (verb? !attach_output_bus(0, verb, 0) : !detach_output_bus(0))) return;
 		// Counted and, for a node that isn't a mixer, sent on before the old one is let go of: one that can't be sent on, as the engine's endpoint or a node whose attach there loops, is refused with this node back on the old reverb, rather than taken with the sends going wherever it already went and success read from the old one's let-go.
@@ -1231,6 +1253,7 @@ public:
 			}
 			if (!sent) {
 				const ma_result error = g_soundsystem_last_error;
+				send.reset(); // So that the entry, with nothing else holding its send lock, can be forgotten.
 				reverb_uncount(verb);
 				if (reverb) attach_output_bus(0, reverb, 0);
 				else detach_output_bus(0);
@@ -1240,6 +1263,7 @@ public:
 		}
 		claim.kept = true;
 		owning.kept = true;
+		entry.kept = true;
 		// The old one is let go of once the new one is in, should counting or sending the new one throw, as on running out of memory, too: left, it stayed counted, attached and mixing for good.
 		struct letting_go {
 			reverb3d_impl* self;
