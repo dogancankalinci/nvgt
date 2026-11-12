@@ -130,6 +130,8 @@ static bool reserve_reap(ma_resource_manager* manager, bool past_max = false, bo
 		g_reaps[manager];
 		if (network) g_network_reaps_of[manager];
 	} catch (...) {
+		auto made = g_reaps.find(manager); // Not left at 0, which an engine's destruction took for a reap still to end and waited for without end.
+		if (made != g_reaps.end() && made->second == 0) g_reaps.erase(made);
 		return false;
 	}
 	g_reaps[manager]++;
@@ -167,7 +169,12 @@ static bool leave_to_network_reaps(ma_resource_manager* manager) {
 		return network != g_network_reaps_of.end() && network->second == reaps->second;
 	});
 	if (!g_reaps.count(manager)) return false;
-	g_orphaned_managers.insert(manager);
+	try {
+		g_orphaned_managers.insert(manager);
+	} catch (...) { // Out of memory leaving it, from an engine's destructor, where a throw ended the program: its URLs' reaps waited for too, as they were before it could be left.
+		g_reaps_done.wait(lock, [manager]() { return !g_reaps.count(manager); });
+		return false;
+	}
 	return true;
 }
 // As the process exits: all of them, but not for long for those closing a URL's stream, which a stalled read kept from exiting for up to a minute, and which do nothing but wake when it times out.
