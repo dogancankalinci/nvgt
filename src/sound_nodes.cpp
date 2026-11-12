@@ -984,6 +984,11 @@ static std::shared_ptr<std::recursive_mutex> reverb_used(audio_node* verb) {
 	use.users++;
 	return use.send;
 }
+// Makes a node's users entry ahead of counting a reverb3d into it, so that the count, made once the reverb3d has changed over to the node, can't throw, as on running out of memory, leaving it a reverb it never counted, whose let-go later took another user's count to 0. An entry left without users reads as none.
+static void reverb_entry_made(audio_node* verb) {
+	std::lock_guard<std::mutex> lock(g_reverb_users_mutex);
+	g_reverb_users[verb];
+}
 // What a reverb node that isn't a mixer goes into now, with a reference the caller lets go of after the node's send lock: sending the node elsewhere or detaching it lets go of the one it held, whose destructor, as a mixer's letting go of a reverb3d of its own, takes the reverb locks.
 static audio_node* reverb_destination(audio_node* verb) {
 	if (auto chain = dynamic_cast<audio_node_chain_impl*>(verb)) return chain->acquire_endpoint();
@@ -1131,6 +1136,7 @@ public:
 			return;
 		}
 		hold_claim claim{static_cast<audio_node*>(this), verb}; // Dropped unless it becomes the reverb.
+		if (verb) reverb_entry_made(verb); // Before anything changes (see reverb_entry_made()).
 		// A mixer goes into the destination first, which refuses a loop, and then this node into the new reverb, which replaces the link to the old one: either refused leaves the old reverb as it was, rather than let go of before the new one was refused.
 		if ((verb_mixer && !send_onward(verb, output_mixer)) || (verb? !attach_output_bus(0, verb, 0) : !detach_output_bus(0))) return;
 		claim.kept = true;
@@ -1578,7 +1584,9 @@ public:
 		// A component the script kept goes on without this spatializer: off the graph first, which waits for the audio thread to stop processing it, then without its pointer back here, so it passes audio through if used again.
 		for (spatializer_component_node *component : {panner, attenuator}) {
 			if (!component) continue;
-			component->detach_all_output_buses();
+			try {
+				component->detach_all_output_buses();
+			} catch (...) {} // Out of memory taking it off, which a destructor can't throw: left on the graph, where it passes audio through once it forgets this spatializer.
 			component->forget_spatializer();
 		}
 		destroy_node();
