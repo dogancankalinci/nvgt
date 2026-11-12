@@ -260,6 +260,7 @@ static size_t g_memory_protocol_slot = 0;
 static size_t g_netstream_protocol_slot = 0;
 static std::vector<ma_decoding_backend_vtable *> g_decoders;
 bool add_decoder(ma_decoding_backend_vtable *vtable) {
+	if (std::find(g_decoders.begin(), g_decoders.end(), vtable) != g_decoders.end()) return true; // Once: a sound system setup run again after one that failed added the default decoders twice.
 	try {
 		g_decoders.push_back(vtable);
 		return true;
@@ -374,16 +375,24 @@ bool init_sound_context() {
 		ma_context_uninit(&g_sound_context);
 		return false;
 	}
-	// Register encryption support:
-	g_sound_service->register_filter(encryption_filter::get_instance(), g_encryption_filter_slot);
-	// And access to packs, et al:
-	g_sound_service->register_protocol(pack_protocol::get_instance(), g_pack_protocol_slot);
-	g_sound_service->register_protocol(memory_protocol::get_instance(), g_memory_protocol_slot);
-	g_sound_service->register_protocol(netstream_protocol::get_instance(), g_netstream_protocol_slot);
-	// Install default decoders into miniaudio.
-	add_decoder(ma_decoding_backend_libvorbis);
-	add_decoder(ma_decoding_backend_libopus);
-	refresh_audio_devices();
+	// A throw from here on, as on running out of memory, takes down what was made, as the failures above do: left, the next call made the context again over the one there.
+	try {
+		// Register encryption support:
+		g_sound_service->register_filter(encryption_filter::get_instance(), g_encryption_filter_slot);
+		// And access to packs, et al:
+		g_sound_service->register_protocol(pack_protocol::get_instance(), g_pack_protocol_slot);
+		g_sound_service->register_protocol(memory_protocol::get_instance(), g_memory_protocol_slot);
+		g_sound_service->register_protocol(netstream_protocol::get_instance(), g_netstream_protocol_slot);
+		// Install default decoders into miniaudio.
+		add_decoder(ma_decoding_backend_libvorbis);
+		add_decoder(ma_decoding_backend_libopus);
+		refresh_audio_devices();
+	} catch (...) {
+		g_sound_service.reset();
+		ma_context_uninit(&g_sound_context);
+		g_soundsystem_last_error = MA_OUT_OF_MEMORY;
+		return false;
+	}
 	g_soundsystem_initialized.test_and_set(); // only now may other threads use what is set up here
 	return true;
 }
@@ -431,16 +440,23 @@ static CScriptArray *g_sound_script_input_devices = nullptr, *g_sound_script_out
 struct audio_device_lists {
 	vector<ma_device_info> inputs, outputs;
 	CScriptArray *input_names = nullptr, *output_names = nullptr;
+	bool failed = false; // Out of memory listing them.
 };
 ma_bool32 ma_device_enum_callback(ma_context * /*ctx*/, ma_device_type type, const ma_device_info *info, void *user) {
 	audio_device_lists *lists = (audio_device_lists*)user;
-	string devname = info->name;
-	if (type == ma_device_type_playback) {
-		lists->outputs.push_back(*info);
-		lists->output_names->InsertLast(&devname);
-	} else if (type == ma_device_type_capture) {
-		lists->inputs.push_back(*info);
-		lists->input_names->InsertLast(&devname);
+	// Nothing thrown back through MiniAudio, which holds its enumeration lock while it calls this, so that a throw, as on running out of memory, left it locked and every later device list waited for good: the enumeration is stopped instead, its lists not taken.
+	try {
+		string devname = info->name;
+		if (type == ma_device_type_playback) {
+			lists->outputs.push_back(*info);
+			lists->output_names->InsertLast(&devname);
+		} else if (type == ma_device_type_capture) {
+			lists->inputs.push_back(*info);
+			lists->input_names->InsertLast(&devname);
+		}
+	} catch (...) {
+		lists->failed = true;
+		return MA_FALSE;
 	}
 	return MA_TRUE;
 }
@@ -457,6 +473,7 @@ bool refresh_audio_devices() {
 		return false;
 	}
 	ma_result result = ma_context_enumerate_devices(&g_sound_context, ma_device_enum_callback, &lists);
+	if (result == MA_SUCCESS && lists.failed) result = MA_OUT_OF_MEMORY;
 	if (result == MA_SUCCESS) { // Otherwise the lists taken before stay.
 		std::lock_guard<std::mutex> lock(g_devices_mutex);
 		g_sound_input_devices.swap(lists.inputs);
