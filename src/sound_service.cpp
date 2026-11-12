@@ -14,6 +14,7 @@
 #include "sound_service.h"
 #include "xplatform.h" // NVGT_MOBILE
 #include <Poco/Exception.h>
+#include <new> // std::bad_alloc
 #include <Poco/Net/NetException.h>
 #include <Poco/UnicodeConverter.h>
 #include <SDL3/SDL_filesystem.h>
@@ -374,9 +375,10 @@ public:
 		if (!filter_suffix.empty()) triplet << "\x1e#" << args.filter_slot << ":" << filter_suffix; // A file decoded through one key shares nothing with a load through another, which would otherwise have played it without its key being checked.
 		if (own_entry) triplet << "\x1e" << ++own_entries;
 		if (salt) triplet << "\x1e~" << salt;
-		set_temp_args(triplet.str(), args);
+		std::string made = triplet.str(); // Once: a second copy, returned after the entry was made, could throw, as on running out of memory, with nobody given the name to clean the entry up by.
+		set_temp_args(made, args);
 
-		return triplet.str();
+		return made;
 	}
 	std::istream *open_triplet(const char *triplet, size_t filter_slot = 0, const directive_t filter_directive = nullptr) {
 		// Get our VFS args back.
@@ -386,9 +388,13 @@ public:
 		const protocol *proto = protocols[args.protocol_slot]->get();
 		std::istream *result = proto->open_uri(args.name.c_str(), args.protocol_directive);
 
-		if (result)
+		if (!result) return nullptr;
+		try {
 			return apply_filter(result, args.filter_slot, args.filter_directive);
-		return nullptr;
+		} catch (...) { // Not taken by a filter that threw making its own stream.
+			delete result;
+			throw;
+		}
 	}
 	bool cleanup_triplet(const std::string &triplet) {
 		std::unique_lock<std::mutex> lock(temp_args_mtx);
@@ -423,7 +429,15 @@ private:
 	static ma_result onOpen(ma_vfs *pVFS, const char *pFilePath, ma_uint32 openMode, ma_vfs_file *pFile) {
 		vfs_cast(pVFS);
 		t_open_error = MA_ERROR;
-		std::istream *file = vfs->service->open_triplet(pFilePath);
+		std::istream *file = nullptr;
+		// Nothing thrown back into MiniAudio, which calls this on its job threads for an asynchronous load or a stream, where a throw, as on running out of memory or from a plugin's pack, ended the program.
+		try {
+			file = vfs->service->open_triplet(pFilePath);
+		} catch (const std::bad_alloc&) {
+			return MA_OUT_OF_MEMORY;
+		} catch (...) {
+			return MA_ERROR;
+		}
 		if (file == NULL) {
 			// Not found, as the file protocol tells, or not permitted, etc. Never as a decoder's failure, INVALID_FILE or NO_BACKEND: a load takes those as said of a file it read, retries it without flags and unregisters the name from MiniAudio's cache, which for a name never read in returns without unlocking that cache, so that every later load hung.
 			return t_open_error == MA_INVALID_FILE || t_open_error == MA_NO_BACKEND? MA_ERROR : t_open_error;
