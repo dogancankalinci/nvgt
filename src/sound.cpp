@@ -6150,6 +6150,10 @@ public:
 		fade_from_stop = fade_frames > 0;
 	}
 	void set_looping(bool looping) override {
+		if (looping && (pcm_stream || datasource_opened && audio_data_source_impl::live_queue(datasource))) { // As play_looped() refuses it: a queue has no end to loop from, and looping read true while nothing looped.
+			g_soundsystem_last_error = MA_INVALID_OPERATION;
+			return;
+		}
 		if (snd)
 			ma_sound_set_looping(&*snd, looping);
 	}
