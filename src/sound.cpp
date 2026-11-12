@@ -126,6 +126,12 @@ static bool reserve_reap(ma_resource_manager* manager, bool past_max = false, bo
 	if (g_soundsystem_shut_down.test()) return false;
 	auto it = g_reaps.find(manager);
 	if (!past_max && it != g_reaps.end() && it->second >= max_reaps) return false;
+	try { // The entries made first, so that running out of memory gives no place, waited for by the caller, rather than a throw out of close() before it took the sound off the graph, or a place counted and never given back.
+		g_reaps[manager];
+		if (network) g_network_reaps_of[manager];
+	} catch (...) {
+		return false;
+	}
 	g_reaps[manager]++;
 	if (network) { // With its place, under the one lock: counted after it, the exit's wait could see a reap that wasn't yet counted as a URL's, and wait for it past its bound, as nothing woke it once it was.
 		g_network_reaps++;
@@ -5535,8 +5541,14 @@ public:
 		const bool audio_thread = audio_engine_impl::on_audio_thread();
 		// A URL's stream on any thread: waited for here, a stalled read held close(), a reload and the script behind it for up to a minute.
 		const bool network = source && (source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM) && (source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_UNKNOWN_LENGTH);
-		if ((decoding(source.get()) || network || audio_thread && source && (source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM)) && reserve_reap(source_manager, audio_thread || network, network)) {
-			reaped = make_unique<source_reap>();
+		if (decoding(source.get()) || network || audio_thread && source && (source->flags & MA_RESOURCE_MANAGER_DATA_SOURCE_FLAG_STREAM)) {
+			// Made before its place is taken: running out of memory after left the place taken for good, which the engine's destruction and the process's exit then waited for.
+			try {
+				reaped = make_unique<source_reap>();
+			} catch (...) {} // Waited for here instead, as with no place.
+			if (reaped && !reserve_reap(source_manager, audio_thread || network, network)) reaped.reset();
+		}
+		if (reaped) {
 			reaped->manager = source_manager;
 			reaped->network = network;
 			const char *decoded_from = pcm_buffer.data();
@@ -5569,7 +5581,9 @@ public:
 				unique_lock<mutex> lock(spatialization_params_mutex);
 				spatializer = nullptr;
 			}
-			node_chain->remove_node(forgotten);
+			try {
+				node_chain->remove_node(forgotten);
+			} catch (...) {} // Out of memory rewiring around it: left in the chain, which this sound still holds, rather than thrown out of close() before the sound is off the graph, which a destructor's close() then left attached as its parts were freed.
 			drop_node_hold(static_cast<audio_node*>(this), forgotten);
 			forgotten->release();
 		}
@@ -5611,8 +5625,14 @@ public:
 				else tree_held = tree_lock.try_lock();
 			}
 			// On an audio thread the tree's lock is only tried: a load holding the tree whole, as one tried again without flags for a file that couldn't be decoded, held a processing callback letting a sound go for as long, 100 ms for a large file; the source is then freed on a thread of its own. Its jobs are done (see finish_load_jobs() above), so it no longer reads memory this sound keeps.
-			if (!tree_held && reserve_reap(source_manager, true)) {
-				unique_ptr<source_reap> late = make_unique<source_reap>();
+			unique_ptr<source_reap> late;
+			if (!tree_held) { // As above, made before its place is taken.
+				try {
+					late = make_unique<source_reap>();
+				} catch (...) {}
+				if (late && !reserve_reap(source_manager, true)) late.reset();
+			}
+			if (late) {
 				late->manager = source_manager;
 				late->source = std::move(source);
 				if (claimed_manager) {
