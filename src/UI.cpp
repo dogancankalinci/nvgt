@@ -577,6 +577,14 @@ void refresh_window() {
 				renderer->present();
 			}
 		}
+	} else if (g_window) {
+		// A hidden window isn't presented, and SDL keeps every drawing command queued until its renderer presents or flushes: a script
+		// drawing while its window was hidden (hide_window() with the game loop going on, a window made hidden) grew SDL's queue by
+		// every frame's drawing for as long as it stayed hidden, until the program ran out of memory (an outlined circle of radius 3000
+		// is about 17000 queued points). The commands are carried out each frame instead, on the window's back buffer, which shows
+		// nothing; the frame is still presented once the window is shown.
+		graphics_renderer* renderer = g_window->peek_renderer();
+		if (renderer && renderer->is_valid() && renderer->has_pending_frame()) renderer->flush();
 	}
 	SDL_Event evt;
 	std::unordered_set<int> keys_pressed_this_frame;
