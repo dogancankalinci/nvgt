@@ -2498,12 +2498,33 @@ public:
 			return false;
 		}
 		seekable = true;
-		ma_decoder_config cfg = decoder_config_init(sample_rate, channels);
-		if ((g_soundsystem_last_error = ma_decoder_init_vfs(g_sound_service->get_vfs(), triplet.c_str(), &cfg, &*decoder)) == MA_SUCCESS && (g_soundsystem_last_error = remix_decoder(&*decoder)) != MA_SUCCESS) ma_decoder_uninit(&*decoder);
-		if (g_soundsystem_last_error != MA_SUCCESS) decoder.reset();
-		else {
-			hold_decoder(&*decoder, true);
-			set_ma_data_source((ma_data_source*)&*decoder);
+		// A throw from here, as on running out of memory, undoes what was made, the triplet's entry, which holds the pack, cleaned up too; a node that can't be made refuses the open rather than leaving the decoder open with nothing to read it through.
+		bool initialized = false;
+		try {
+			ma_decoder_config cfg = decoder_config_init(sample_rate, channels);
+			if ((g_soundsystem_last_error = ma_decoder_init_vfs(g_sound_service->get_vfs(), triplet.c_str(), &cfg, &*decoder)) == MA_SUCCESS) {
+				initialized = true;
+				if ((g_soundsystem_last_error = remix_decoder(&*decoder)) != MA_SUCCESS) {
+					ma_decoder_uninit(&*decoder);
+					initialized = false;
+				}
+			}
+			if (g_soundsystem_last_error != MA_SUCCESS) decoder.reset();
+			else {
+				hold_decoder(&*decoder, true);
+				if (!set_ma_data_source((ma_data_source*)&*decoder)) {
+					ma_decoder_uninit(&*decoder);
+					initialized = false;
+					decoder.reset();
+				}
+			}
+		} catch (...) {
+			last_error_kept kept;
+			audio_data_source_impl::reset();
+			if (initialized) ma_decoder_uninit(&*decoder);
+			decoder.reset();
+			g_sound_service->cleanup_triplet(triplet);
+			throw;
 		}
 		g_sound_service->cleanup_triplet(triplet);
 		return g_soundsystem_last_error == MA_SUCCESS;
@@ -2561,7 +2582,15 @@ public:
 				cursor->opening = false;
 				datastream_ref = ds;
 				hold_decoder(&*decoder, seekable);
-				set_ma_data_source((ma_data_source*)&*decoder);
+				if (!set_ma_data_source((ma_data_source*)&*decoder)) { // A node that can't be made: refused, rather than left open with nothing to read it through, the stream kept until close().
+					ma_decoder_uninit(&*decoder);
+					initialized = false;
+					decoder.reset();
+					ds_vfs.reset();
+					cursor.reset();
+					datastream_ref = nullptr;
+					ds->release();
+				}
 			}
 		} catch (...) {
 			last_error_kept kept;
