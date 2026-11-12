@@ -1149,12 +1149,20 @@ void CScriptArray::InsertAt(asUINT index, const CScriptArray &arr)
 	// ALTERED: both arrays are held while the new elements are made and assigned (script code, see Resize and SetValue). The
 	// elements are read from where they then are, as the assignments can change either array.
 	SArrayHold holdThis(this), holdOther(&arr);
+	// ALTERED: no more elements are assigned once an exception is raised (by the constructor of a new element, see Resize, or
+	// by an element's opAssign), as for the array's assignment (see CopyElements), or exit() is called (see
+	// ArrayCallbacksStopped): every element's opAssign ran after it.
+	asIScriptContext *ctx = asGetActiveContext();
+	const bool hadException = ctx && ctx->GetState() == asEXECUTION_EXCEPTION;
+#define INSERT_STOPPED (ctx && ((!hadException && ctx->GetState() == asEXECUTION_EXCEPTION) || ArrayCallbacksStopped(ctx, 0)))
 	asUINT elements = arr.GetSize();
 	Resize(elements, index);
 	if (&arr != this)
 	{
 		for (asUINT n = 0; n < arr.GetSize(); n++)
 		{
+			if (INSERT_STOPPED)
+				break;
 			// This const cast is allowed, since we know the
 			// value will only be used to make a copy of it
 			void *value = const_cast<void*>(arr.At(n));
@@ -1168,6 +1176,8 @@ void CScriptArray::InsertAt(asUINT index, const CScriptArray &arr)
 		// and then the elements after
 		for (asUINT n = 0; n < index; n++)
 		{
+			if (INSERT_STOPPED)
+				break;
 			// This const cast is allowed, since we know the
 			// value will only be used to make a copy of it
 			void *value = const_cast<void*>(arr.At(n));
@@ -1176,6 +1186,8 @@ void CScriptArray::InsertAt(asUINT index, const CScriptArray &arr)
 
 		for (asUINT n = index + elements, m = 0; n < arr.GetSize(); n++, m++)
 		{
+			if (INSERT_STOPPED)
+				break;
 			// This const cast is allowed, since we know the
 			// value will only be used to make a copy of it
 			void *value = const_cast<void*>(arr.At(n));
@@ -1183,6 +1195,7 @@ void CScriptArray::InsertAt(asUINT index, const CScriptArray &arr)
 		}
 	}
 }
+#undef INSERT_STOPPED
 
 void CScriptArray::InsertLast(void *value)
 {
@@ -2178,8 +2191,13 @@ void CScriptArray::CopyElements(const CScriptArray &other)
 			ctx = engine->RequestContext();
 	}
 
+	// ALTERED: see below; exit() called meanwhile (by an element's opAssign run in a context of its own, or by another thread)
+	// stops the copy too, see ArrayCallbacksStopped
+	asIScriptContext *callerCtx = asGetActiveContext();
 	for( asUINT n = 0; n < buffer->numElements && n < other.buffer->numElements; n++ )
 	{
+		if( ArrayCallbacksStopped(callerCtx, 0) )
+			break;
 		void **d = (void**)(buffer->data + n * sizeof(void*));
 		void **s = (void**)(other.buffer->data + n * sizeof(void*));
 		if( subTypeId & asTYPEID_OBJHANDLE )
@@ -2196,6 +2214,10 @@ void CScriptArray::CopyElements(const CScriptArray &other)
 		}
 
 		// Call the assignment operator on the object
+		// ALTERED: the copy stops at the first element whose assignment failed (its opAssign or opHndlAssign raised an
+		// exception), as the script's own execution stops at the exception. The rest were assigned after it, each script
+		// class's opAssign then run on a context of its own (the script's context refuses a nested call once it has the
+		// exception), whose exception was lost: every element's opAssign ran.
 		SElementHold holdDst(engine, subType, *d), holdSrc(engine, subType, *s);
 		if( ctx )
 		{
@@ -2203,12 +2225,14 @@ void CScriptArray::CopyElements(const CScriptArray &other)
 			ctx->SetObject(*d);
 			ctx->SetArgAddress(0, *s);
 			// TODO: Handle errors
-			ctx->Execute();
+			if( ctx->Execute() != asEXECUTION_FINISHED )
+				break;
 		}
 		else
 		{
 			// opHndlAssign doesn't exist, so try ordinary value assign instead
-			engine->AssignScriptObject(*d, *s, subType);
+			if( engine->AssignScriptObject(*d, *s, subType) < 0 )
+				break;
 		}
 	}
 
