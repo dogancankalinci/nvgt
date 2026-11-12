@@ -18,6 +18,7 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <thread>
 #include <type_traits>
@@ -613,14 +614,29 @@ void thread_begin(Thread* thread, asIScriptFunction* func, CScriptDictionary* ar
 		throw;
 	}
 }
+// Poco's ThreadPool picks an idle thread under its lock and starts the task on it after letting go of the lock, while stopAll() lets
+// go of and deletes every thread of the pool, busy or idle: a thread_pool's stop_all() on one script thread while another started a
+// task on that pool deleted the thread the task was being started on (a crash, a use after free in Poco's PooledThread::start).
+// Starts share a lock of the pool's, and stop_all() takes it alone. The locks are shared out by the pool's address and never
+// destroyed (a pool can be stopped as the program ends).
+static std::shared_mutex& pool_stop_lock(const ThreadPool* pool) {
+	static auto* locks = new std::shared_mutex[64];
+	std::uintptr_t address = reinterpret_cast<std::uintptr_t>(pool);
+	return locks[((address >> 4) ^ (address >> 12)) & 63];
+}
+void pool_stop_all(ThreadPool* pool) {
+	std::unique_lock<std::shared_mutex> lock(pool_stop_lock(pool));
+	pool->stopAll();
+}
 // ThreadPool throws, if at all, before it hands the runnable to a worker, so a failed start can always discard it.
-template <class F> void pooled_thread_start(asIScriptFunction* func, CScriptDictionary* args, F start) {
+template <class F> void pooled_thread_start(ThreadPool* pool, asIScriptFunction* func, CScriptDictionary* args, F start) {
 	if (!func) {
 		if (args) args->Release();
 		return;
 	}
 	script_runnable* runnable = new script_runnable(func, args);
 	try {
+		std::shared_lock<std::shared_mutex> lock(pool_stop_lock(pool)); // See pool_stop_lock().
 		start(*runnable);
 	} catch (...) {
 		runnable->discard();
@@ -628,16 +644,16 @@ template <class F> void pooled_thread_start(asIScriptFunction* func, CScriptDict
 	}
 }
 void pooled_thread_begin(ThreadPool* pool, asIScriptFunction* func, CScriptDictionary* args) {
-	pooled_thread_start(func, args, [pool](Runnable& r) { pool->start(r); });
+	pooled_thread_start(pool, func, args, [pool](Runnable& r) { pool->start(r); });
 }
 void pooled_thread_begin(ThreadPool* pool, asIScriptFunction* func, CScriptDictionary* args, const std::string& name) {
-	pooled_thread_start(func, args, [pool, &name](Runnable& r) { pool->start(r, name); });
+	pooled_thread_start(pool, func, args, [pool, &name](Runnable& r) { pool->start(r, name); });
 }
 void pooled_thread_begin(ThreadPool* pool, asIScriptFunction* func, CScriptDictionary* args, Thread::Priority priority) {
-	pooled_thread_start(func, args, [pool, priority](Runnable& r) { pool->startWithPriority(priority, r); });
+	pooled_thread_start(pool, func, args, [pool, priority](Runnable& r) { pool->startWithPriority(priority, r); });
 }
 void pooled_thread_begin(ThreadPool* pool, asIScriptFunction* func, CScriptDictionary* args, const std::string& name, Thread::Priority priority) {
-	pooled_thread_start(func, args, [pool, priority, &name](Runnable& r) { pool->startWithPriority(priority, r, name); });
+	pooled_thread_start(pool, func, args, [pool, priority, &name](Runnable& r) { pool->startWithPriority(priority, r, name); });
 }
 
 // STL atomics support (thanks @ethindp)!
@@ -1091,7 +1107,7 @@ void RegisterThreading(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod(_O("thread_pool"), _O("void start(thread_callback@ routine, dictionary@ args, thread_priority priority)"), asFUNCTIONPR(pooled_thread_begin, (ThreadPool*, asIScriptFunction*, CScriptDictionary*, Thread::Priority), void), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(_O("thread_pool"), _O("void start(thread_callback@ routine, dictionary@ args, const string&in name)"), asFUNCTIONPR(pooled_thread_begin, (ThreadPool*, asIScriptFunction*, CScriptDictionary*, const std::string&), void), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(_O("thread_pool"), _O("void start(thread_callback@ routine, dictionary@ args, const string&in name, thread_priority priority)"), asFUNCTIONPR(pooled_thread_begin, (ThreadPool*, asIScriptFunction*, CScriptDictionary*, const std::string&, Thread::Priority), void), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("thread_pool", "void stop_all()", asMETHOD(ThreadPool, stopAll), asCALL_THISCALL);
+	engine->RegisterObjectMethod("thread_pool", "void stop_all()", asFUNCTION(pool_stop_all), asCALL_CDECL_OBJFIRST); // See pool_stop_lock().
 	engine->RegisterObjectMethod("thread_pool", "void join_all()", asMETHOD(ThreadPool, joinAll), asCALL_THISCALL);
 	engine->RegisterObjectMethod("thread_pool", "void collect()", asMETHOD(ThreadPool, collect), asCALL_THISCALL);
 	engine->RegisterObjectMethod("thread_pool", "const string& get_name() const property", asMETHOD(ThreadPool, name), asCALL_THISCALL);
