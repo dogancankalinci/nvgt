@@ -71,10 +71,11 @@ extern "C" ma_bool32 nvgt_channel_weights(const ma_channel* map_in, ma_uint32 ch
 	if (!channels_in || !channels_out || channels_in > MA_MAX_CHANNELS || channels_out > MA_MAX_CHANNELS || channels_in == 1 && channels_out == 1) return MA_FALSE;
 	if (channels_out == 1) {
 		static const ma_channel front_pair[2] = {MA_CHANNEL_FRONT_LEFT, MA_CHANNEL_FRONT_RIGHT};
-		std::vector<float> pair_weights((size_t)channels_in * 2);
-		std::vector<float*> rows(channels_in);
+		// On the stack, at most MA_MAX_CHANNELS: called from C, as the Ogg link conversion on an audio or job thread, where an allocation that threw ended the program.
+		float pair_weights[MA_MAX_CHANNELS * 2] = {};
+		float* rows[MA_MAX_CHANNELS];
 		for (ma_uint32 in = 0; in < channels_in; in++) rows[in] = &pair_weights[(size_t)in * 2];
-		nvgt_channel_weights(map_in, channels_in, front_pair, 2, rows.data());
+		nvgt_channel_weights(map_in, channels_in, front_pair, 2, rows);
 		for (ma_uint32 in = 0; in < channels_in; in++) weights[in][0] = (rows[in][0] + rows[in][1]) / 2;
 		return MA_TRUE;
 	}
