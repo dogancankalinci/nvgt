@@ -96,6 +96,7 @@ void InputDestroy() {
 	#ifdef _WIN32
 	uninstall_keyhook();
 	#endif
+	system_tray_quit(); // SDL_Quit frees every tray, with the menus and entries the script's tray objects point to
 	SDL_Quit();
 	g_KeysDown = NULL;
 }

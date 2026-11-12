@@ -232,6 +232,7 @@ public:
 	void enum_references(asIScriptEngine* engine);
 	void release_all_references(asIScriptEngine* engine);
 	bool is_valid() const { return _tray != nullptr; }
+	SDL_Tray* detach_sdl(); // see system_tray_quit()
 	void set_icon(graphic* icon) { if (_tray) SDL_SetTrayIcon(_tray, icon ? icon->get_surface() : nullptr); }
 	void set_tooltip(const std::string& tooltip) { if (_tray) SDL_SetTrayTooltip(_tray, tooltip.empty() ? nullptr : tooltip.c_str()); }
 	system_tray_menu* get_menu();
@@ -239,6 +240,7 @@ public:
 
 game_window* ShowNVGTWindow(const std::string& window_title, unsigned int flags = 0);
 bool DestroyNVGTWindow();
+void system_tray_quit(); // before SDL_Quit(), see UI.cpp
 bool WindowIsFocused();
 int get_window_width();
 int get_window_height();

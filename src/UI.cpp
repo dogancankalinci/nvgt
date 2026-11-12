@@ -866,14 +866,39 @@ CScriptArray* system_tray_menu::get_entries() {
 }
 
 // system_tray implementation
+// Every tray wrapper that has an SDL tray, under system_tray_gc_mutex(). SDL_Quit() (destroy_window(), and the end of the program) frees every tray with its menus and entries, and the wrappers a script still held kept the freed pointers: the next call on an item (its label, checked state or callback, a click) or a menu (adding an entry) read or wrote freed memory, and a tray made once SDL was back could get a freed tray's address, which the old wrapper then took for its own and destroyed. system_tray_quit() empties the wrappers first, as their tray going does.
+static std::unordered_set<system_tray*>& system_tray_live() {
+	static auto* trays = new std::unordered_set<system_tray*>;
+	return *trays;
+}
 system_tray::system_tray(const std::string& tooltip, graphic* icon) : _tray(nullptr), _refcount(1) {
 	_tray = SDL_CreateTray(icon ? icon->get_surface() : nullptr, tooltip.empty() ? nullptr : tooltip.c_str());
+	std::lock_guard<std::recursive_mutex> lock(system_tray_gc_mutex());
+	if (_tray) system_tray_live().insert(this);
+}
+SDL_Tray* system_tray::detach_sdl() { // system_tray_gc_mutex() held; lets go of nothing, so no script code runs under it
+	if (_menu) _menu->invalidate();
+	SDL_Tray* tray = _tray;
+	_tray = nullptr;
+	return tray;
+}
+void system_tray_quit() {
+	std::vector<SDL_Tray*> trays;
+	{
+		std::lock_guard<std::recursive_mutex> lock(system_tray_gc_mutex());
+		for (system_tray* t : system_tray_live()) {
+			if (SDL_Tray* tray = t->detach_sdl()) trays.push_back(tray);
+		}
+		system_tray_live().clear();
+	}
+	for (SDL_Tray* tray : trays) system_tray_destroy(tray);
 }
 void system_tray::teardown() {
 	Poco::AutoPtr<system_tray_menu> menu;
 	SDL_Tray* tray;
 	{
 		std::lock_guard<std::recursive_mutex> lock(system_tray_gc_mutex());
+		system_tray_live().erase(this);
 		if (_menu) _menu->invalidate(); // See system_tray_menu_item::invalidate.
 		menu = _menu;
 		_menu = nullptr;
