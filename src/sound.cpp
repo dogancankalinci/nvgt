@@ -383,15 +383,18 @@ bool init_sound_context() {
 	}
 	// A throw from here on, as on running out of memory, takes down what was made, as the failures above do: left, the next call made the context again over the one there.
 	try {
-		// Register encryption support:
-		g_sound_service->register_filter(encryption_filter::get_instance(), g_encryption_filter_slot);
-		// And access to packs, et al:
-		g_sound_service->register_protocol(pack_protocol::get_instance(), g_pack_protocol_slot);
-		g_sound_service->register_protocol(memory_protocol::get_instance(), g_memory_protocol_slot);
-		g_sound_service->register_protocol(netstream_protocol::get_instance(), g_netstream_protocol_slot);
-		// Install default decoders into miniaudio.
-		add_decoder(ma_decoding_backend_libvorbis);
-		add_decoder(ma_decoding_backend_libopus);
+		// Each registration's failure counts too, which each reports rather than throws: ignored, its slot stayed 0, so that a decryption key dereferenced filter 0's empty entry, packs were read from the disk and memory loads failed.
+		bool registered =
+			// Register encryption support:
+			g_sound_service->register_filter(encryption_filter::get_instance(), g_encryption_filter_slot) &&
+			// And access to packs, et al:
+			g_sound_service->register_protocol(pack_protocol::get_instance(), g_pack_protocol_slot) &&
+			g_sound_service->register_protocol(memory_protocol::get_instance(), g_memory_protocol_slot) &&
+			g_sound_service->register_protocol(netstream_protocol::get_instance(), g_netstream_protocol_slot) &&
+			// Install default decoders into miniaudio.
+			add_decoder(ma_decoding_backend_libvorbis) &&
+			add_decoder(ma_decoding_backend_libopus);
+		if (!registered) throw std::bad_alloc(); // As below.
 		refresh_audio_devices();
 	} catch (...) {
 		g_sound_service.reset();
@@ -480,6 +483,8 @@ bool refresh_audio_devices() {
 	}
 	ma_result result = ma_context_enumerate_devices(&g_sound_context, ma_device_enum_callback, &lists);
 	if (result == MA_SUCCESS && lists.failed) result = MA_OUT_OF_MEMORY;
+	// A name the array couldn't grow for, which it doesn't throw for, left the names out of step with the devices, so that a name's index opened another device.
+	if (result == MA_SUCCESS && (lists.input_names->GetSize() != lists.inputs.size() || lists.output_names->GetSize() != lists.outputs.size())) result = MA_OUT_OF_MEMORY;
 	if (result == MA_SUCCESS) { // Otherwise the lists taken before stay.
 		std::lock_guard<std::mutex> lock(g_devices_mutex);
 		g_sound_input_devices.swap(lists.inputs);
