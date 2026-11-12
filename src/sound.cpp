@@ -1338,16 +1338,21 @@ protected:
 	// Lets go of a reference this object held to a source it used, after handing the source to any head now on it.
 	static void let_go(audio_data_source* source) {
 		remove_user(source);
-		hand_over_to_heads(source);
-		source->release();
+		if (hand_over_to_heads(source)) source->release(); // Kept for good otherwise, rather than freed under a head still reading it.
 	}
 	// A head reading through a chain moves its MiniAudio current source along the chain, which no link holds once it is let go of. Any head now on the source being let go of takes a reference to it, so it reads on to that source's end rather than reading freed memory, and the source can't be closed meanwhile.
-	static void hand_over_to_heads(audio_data_source* source) {
+	// Whether it could: room for every head is made before any is taken, as a push_back running out of memory threw with a head's reference taken and the source's references not let go of, out of a destructor too.
+	static bool hand_over_to_heads(audio_data_source* source) {
 		ma_data_source *target = source->get_ma_data_source();
-		if (!target) return;
+		if (!target) return true;
 		std::vector<audio_data_source_impl*> heads;
 		{
 			std::lock_guard<std::mutex> lock(g_data_sources_map_mutex);
+			try {
+				heads.reserve(g_data_sources_map.size());
+			} catch (...) {
+				return false;
+			}
 			for (auto &entry : g_data_sources_map) {
 				if (entry.second == source || ma_data_source_get_current(entry.first) != target) continue;
 				auto head = dynamic_cast<audio_data_source_impl*>(entry.second);
@@ -1358,6 +1363,7 @@ protected:
 			head->hold_current(source);
 			head->release();
 		}
+		return true;
 	}
 	void hold_current(audio_data_source* source) {
 		audio_data_source *previous;
@@ -4429,9 +4435,24 @@ public:
 	audio_spatializer_reverb3d_placement get_reverb3d_placement() const override { audio_spatializer* made = made_spatializer(); return made? made->get_reverb3d_placement() : postpan; }
 	audio_node_chain* get_effects_chain() override {
 		if (!effects_chain) {
-			effects_chain = audio_node_chain::create(nullptr, nullptr, get_engine());
-			record_node_hold(static_cast<audio_node*>(this), effects_chain);
-			node_chain->add_node(effects_chain); // First, before the spatializer: see get_spatializer().
+			// Kept only once it is in the chain: kept before, a throw, as on running out of memory, or a refused add left every later call giving a chain nothing reads, its effects never heard.
+			audio_node_chain* made = audio_node_chain::create(nullptr, nullptr, get_engine());
+			bool added = false;
+			try {
+				record_node_hold(static_cast<audio_node*>(this), made);
+				added = node_chain->add_node(made); // First, before the spatializer: see get_spatializer().
+			} catch (...) {
+				last_error_kept kept;
+				drop_node_hold(static_cast<audio_node*>(this), made);
+				made->release();
+				throw;
+			}
+			if (!added) {
+				drop_node_hold(static_cast<audio_node*>(this), made);
+				made->release();
+				return nullptr;
+			}
+			effects_chain = made;
 		}
 		return effects_chain;
 	}
