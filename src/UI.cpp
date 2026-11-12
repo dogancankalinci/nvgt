@@ -481,18 +481,18 @@ bool DestroyNVGTWindow() {
 	#ifdef __APPLE__
 	voice_over_game_window(nullptr);
 	#endif
-	// The window must be gone before InputDestroy's SDL_Quit: SDL_VideoQuit destroys the event queue
+	// The window must be gone before InputQuitVideo() quits SDL's video subsystem (as before SDL_Quit at the program's end): SDL_VideoQuit destroys the event queue
 	// (and its mutex) before it destroys any surviving windows, while Android's JNI input callbacks
 	// keep posting events for as long as the window exists. Quitting SDL with a live window lets a
 	// key press on the Java UI thread lock that just-destroyed mutex and deadlock against
 	// Android_ActivityMutex (input-dispatch ANR). This order also keeps ~game_window from passing a
-	// stale SDL_Window to SDL_DestroyWindow after SDL_Quit. The SDL window is destroyed here even when the script still holds the
-	// game_window show_window() returned: letting go of g_window alone left it alive through SDL_Quit (the deadlock above), and the
+	// stale SDL_Window to SDL_DestroyWindow after SDL_VideoQuit. The SDL window is destroyed here even when the script still holds the
+	// game_window show_window() returned: letting go of g_window alone left it alive through SDL_VideoQuit (the deadlock above), and the
 	// held object destroyed it later, possibly after show_window() had made a new window at the same address, which it then destroyed.
 	// The held object stays valid, with no window: its methods fail as SDL's do for a null window.
 	g_window->close();
 	g_window = nullptr;
-	InputDestroy();
+	InputQuitVideo();
 	TTF_Quit();
 	return true;
 }

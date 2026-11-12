@@ -92,8 +92,9 @@ void InputInit() {
 	g_KeysDown = SDL_GetKeyboardState(&g_KeysDownArrayLen);
 }
 static void joysticks_quit();
+static bool g_sdl_quit_pending = false; // InputQuitVideo() left SDL itself up, with no subsystem perhaps: InputDestroy() still quits it.
 void InputDestroy() {
-	if (SDL_WasInit(0) == 0) return;
+	if (SDL_WasInit(0) == 0 && !g_sdl_quit_pending) return;
 	#ifdef _WIN32
 	uninstall_keyhook();
 	#endif
@@ -101,7 +102,25 @@ void InputDestroy() {
 	joysticks_quit(); // and closes every gamepad
 	game_windows_quit(); // and destroys every window
 	SDL_Quit();
+	g_sdl_quit_pending = false;
 	g_KeysDown = NULL;
+}
+// destroy_window(): only SDL's video subsystem goes, with the windows, renderers and textures, and the keyboard hook and the trays,
+// which nothing serves without a window (wait() pumps no events then). It ran the whole SDL_Quit(), which also freed the pixel format
+// details every graphic's surface points to (a graphic made before destroy_window() and used after show_window() read freed memory),
+// closed every gamepad, and reset every hint and property set until then (the debugger's SDL_HINT_NO_SIGNAL_HANDLERS, the
+// application name, the script's own sdl_set_hint() calls). Those now stay until InputDestroy() at the program's end. The windows
+// still go before the video subsystem does, for the Android order DestroyNVGTWindow() explains.
+void InputQuitVideo() {
+	if (!(SDL_WasInit(0) & SDL_INIT_VIDEO)) return;
+	#ifdef _WIN32
+	uninstall_keyhook();
+	#endif
+	system_tray_quit();
+	game_windows_quit();
+	SDL_QuitSubSystem(SDL_INIT_VIDEO);
+	g_sdl_quit_pending = true;
+	if (!(SDL_WasInit(0) & SDL_INIT_VIDEO)) g_KeysDown = NULL; // InputInit() fetches it again once it starts the video subsystem again
 }
 bool InputEvent(SDL_Event* evt) {
 	if (evt->type == SDL_EVENT_KEY_DOWN) {
