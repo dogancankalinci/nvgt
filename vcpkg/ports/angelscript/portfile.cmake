@@ -151,6 +151,7 @@ vcpkg_from_github(
         fix-gc-registered-weak-flags.patch
         fix-gc-release-registered-weak-flags.patch
         fix-native-call-argument-limits.patch
+        fix-default-assignment-stops-at-failed-member.patch
 )
 
 vcpkg_cmake_configure(

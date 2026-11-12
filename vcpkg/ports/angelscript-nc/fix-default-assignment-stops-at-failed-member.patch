@@ -1,0 +1,99 @@
+diff --git a/sdk/angelscript/source/as_scriptengine.cpp b/sdk/angelscript/source/as_scriptengine.cpp
+index 9536a42..a41d5ad 100644
+--- a/sdk/angelscript/source/as_scriptengine.cpp
++++ b/sdk/angelscript/source/as_scriptengine.cpp
+@@ -6102,12 +6102,27 @@ int asCScriptEngine::CallCopyBehaviour(void *dst, void *src, int funcId)
+ {
+ 	asCScriptFunction *func = scriptFunctions[funcId];
+ 	asASSERT( func && func->funcType == asFUNC_SYSTEM && func->parameterTypes.GetLength() == 1 );
++	// ALTERED: the default opAssign of a script class (ScriptObject_Assignment) reports a failed copy (a member's opAssign
++	// raised an exception, see asCScriptObject::CopyFromAs) only by the exception it leaves in the active context, of which
++	// there may be none: the copy is made here as it makes it, by CopyFromAs, which returns the result
++	if( funcId == scriptTypeBehaviours.beh.copy )
++	{
++		asCScriptObject *dstObj = reinterpret_cast<asCScriptObject*>(dst);
++		return dstObj->CopyFromAs(reinterpret_cast<asCScriptObject*>(src), CastToObjectType(reinterpret_cast<asCTypeInfo*>(dstObj->GetObjectType()))) < 0 ? asERROR : asSUCCESS;
++	}
+ 	// ALTERED: not for an opAssign that returns a handle either (such as R@ opAssign(const R &in)), whose returned
+ 	// reference CallObjectMethod dropped, so every such assignment leaked one reference to the destination. The context
+ 	// releases the returned handle when it is unprepared.
+ 	if( func->parameterTypes[0].IsReference() && !func->DoesReturnOnStack() && !func->returnType.IsObjectHandle() )
+ 	{
++		// ALTERED: a registered opAssign reports a failure by raising a script exception in the active context (as the
++		// default opAssign of a script class does when a member's copy fails, see asCScriptObject::CopyFromAs), which is
++		// a failed copy here: it was reported as made, to AssignScriptObject's caller and to the copy of a class's members.
++		asIScriptContext *active = asGetActiveContext();
++		bool hadException = active && active->GetState() == asEXECUTION_EXCEPTION;
+ 		CallObjectMethod(dst, src, func->sysFuncIntf, func);
++		if( active && !hadException && active->GetState() == asEXECUTION_EXCEPTION )
++			return asERROR;
+ 		return asSUCCESS;
+ 	}
+ 
+diff --git a/sdk/angelscript/source/as_scriptobject.cpp b/sdk/angelscript/source/as_scriptobject.cpp
+index 77db1b8..9fd89a9 100644
+--- a/sdk/angelscript/source/as_scriptobject.cpp
++++ b/sdk/angelscript/source/as_scriptobject.cpp
+@@ -1113,10 +1113,18 @@ int asCScriptObject::CopyFromAs(const asCScriptObject *other, asCObjectType *in_
+ 								ctx->SetException(TXT_NULL_POINTER_ACCESS);
+ 							return asERROR;
+ 						}
++						// ALTERED: the copy stops at a member whose copy failed (its opAssign raised an exception), as the script's
++						// own execution stops at the exception. The following members were copied after it, the opAssign of each
++						// one that is a script class run on a context of its own (the script's context refuses a nested call once it
++						// has the exception), whose exceptions were lost: every member's opAssign ran, and the assignment the script
++						// saw fail was carried out to its end.
++						int r;
+ 						if( prop->type.IsReference() || (prop->type.GetTypeInfo()->flags & asOBJ_REF) )
+-							CopyObject(*src, *dst, CastToObjectType(prop->type.GetTypeInfo()), engine);
++							r = CopyObject(*src, *dst, CastToObjectType(prop->type.GetTypeInfo()), engine);
+ 						else
+-							CopyObject(src, dst, CastToObjectType(prop->type.GetTypeInfo()), engine);
++							r = CopyObject(src, dst, CastToObjectType(prop->type.GetTypeInfo()), engine);
++						if( r < 0 )
++							return asERROR;
+ 					}
+ 					else
+ 						CopyHandle((asPWORD*)src, (asPWORD*)dst, CastToObjectType(prop->type.GetTypeInfo()), engine);
+@@ -1321,23 +1329,25 @@ void asCScriptObject::FreeObject(void *ptr, asCObjectType *in_objType, asCScript
+ 	}
+ }
+ 
+-void asCScriptObject::CopyObject(const void *src, void *dst, asCObjectType *in_objType, asCScriptEngine *engine)
++// ALTERED: returns a negative value when the copy failed, see CopyFromAs
++int asCScriptObject::CopyObject(const void *src, void *dst, asCObjectType *in_objType, asCScriptEngine *engine)
+ {
+ 	int funcIndex = in_objType->beh.copy;
+ 	if( funcIndex )
+ 	{
+ 		asCScriptFunction *func = engine->scriptFunctions[in_objType->beh.copy];
+ 		if( func->funcType == asFUNC_SYSTEM )
+-			engine->CallCopyBehaviour(dst, const_cast<void*>(src), funcIndex); // ALTERED: see asCScriptEngine::CallCopyBehaviour
++			return engine->CallCopyBehaviour(dst, const_cast<void*>(src), funcIndex); // ALTERED: see asCScriptEngine::CallCopyBehaviour
+ 		else
+ 		{
+ 			// Call the script class' opAssign method
+ 			asASSERT(in_objType->flags & asOBJ_SCRIPT_OBJECT );
+-			reinterpret_cast<asCScriptObject*>(dst)->CopyFrom(reinterpret_cast<const asCScriptObject*>(src));
++			return reinterpret_cast<asCScriptObject*>(dst)->CopyFrom(reinterpret_cast<const asCScriptObject*>(src));
+ 		}
+ 	}
+ 	else if( in_objType->size && (in_objType->flags & asOBJ_POD) )
+ 		memcpy(dst, src, in_objType->size);
++	return asSUCCESS;
+ }
+ 
+ void asCScriptObject::CopyHandle(asPWORD *src, asPWORD *dst, asCObjectType *in_objType, asCScriptEngine *engine)
+diff --git a/sdk/angelscript/source/as_scriptobject.h b/sdk/angelscript/source/as_scriptobject.h
+index fa29619..9125951 100644
+--- a/sdk/angelscript/source/as_scriptobject.h
++++ b/sdk/angelscript/source/as_scriptobject.h
+@@ -121,7 +121,7 @@ public:
+ 	// Used for properties
+ 	void *AllocateUninitializedObject(asCObjectType *objType, asCScriptEngine *engine);
+ 	void FreeObject(void *ptr, asCObjectType *objType, asCScriptEngine *engine);
+-	void CopyObject(const void *src, void *dst, asCObjectType *objType, asCScriptEngine *engine);
++	int  CopyObject(const void *src, void *dst, asCObjectType *objType, asCScriptEngine *engine); // ALTERED: returns whether the copy was made
+ 	void CopyHandle(asPWORD *src, asPWORD *dst, asCObjectType *objType, asCScriptEngine *engine);
+ 	int  CopyFromAs(const asCScriptObject *other, asCObjectType *objType);
+ 
