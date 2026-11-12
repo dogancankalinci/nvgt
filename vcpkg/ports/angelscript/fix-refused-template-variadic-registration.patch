@@ -1,0 +1,78 @@
+diff --git a/sdk/angelscript/source/as_scriptengine.cpp b/sdk/angelscript/source/as_scriptengine.cpp
+index 9536a42..abd8922 100644
+--- a/sdk/angelscript/source/as_scriptengine.cpp
++++ b/sdk/angelscript/source/as_scriptengine.cpp
+@@ -3137,20 +3137,31 @@ int asCScriptEngine::RegisterMethodToObjectType(asCObjectType *objectType, const
+ 		return ConfigError(asINVALID_DECLARATION, "RegisterObjectMethod", objectType->name.AddressOf(), declaration);
+ 	}
+ 
++	// ALTERED: a refused template or variadic method is deleted, as on the other paths that refuse one: it was left allocated,
++	// with the internal reference it holds to the object type and its template subtypes, and the error named
++	// RegisterGlobalFunction for a variadic method.
+ 	if (func->templateSubTypes.GetLength())
+ 	{
+ 		func->funcType = asFUNC_TEMPLATE;
+ 
+ 		// Template functions are only supported for generic calling convention
+ 		if (callConv != asCALL_GENERIC)
+-			return ConfigError(asNOT_SUPPORTED, "RegisterObjectMethod", declaration, 0);
++		{
++			func->funcType = asFUNC_DUMMY;
++			asDELETE(func,asCScriptFunction);
++			return ConfigError(asNOT_SUPPORTED, "RegisterObjectMethod", objectType->name.AddressOf(), declaration);
++		}
+ 	}
+ 
+ 	if (func->IsVariadic())
+ 	{
+ 		// Variadic functions are only supported for generic calling convention
+ 		if (callConv != asCALL_GENERIC)
+-			return ConfigError(asNOT_SUPPORTED, "RegisterGlobalFunction", declaration, 0);
++		{
++			func->funcType = asFUNC_DUMMY;
++			asDELETE(func,asCScriptFunction);
++			return ConfigError(asNOT_SUPPORTED, "RegisterObjectMethod", objectType->name.AddressOf(), declaration);
++		}
+ 	}
+ 
+ 	// Check name conflicts
+@@ -3276,20 +3287,29 @@ int asCScriptEngine::RegisterGlobalFunction(const char *declaration, const asSFu
+ 		return ConfigError(asINVALID_DECLARATION, "RegisterGlobalFunction", declaration, 0);
+ 	}
+ 
++	// ALTERED: a refused template or variadic function is deleted, see RegisterMethodToObjectType
+ 	if (func->templateSubTypes.GetLength())
+ 	{
+ 		func->funcType = asFUNC_TEMPLATE;
+ 
+ 		// Template functions are only supported for generic calling convention
+ 		if (callConv != asCALL_GENERIC)
++		{
++			func->funcType = asFUNC_DUMMY;
++			asDELETE(func,asCScriptFunction);
+ 			return ConfigError(asNOT_SUPPORTED, "RegisterGlobalFunction", declaration, 0);
++		}
+ 	}
+ 
+ 	if (func->IsVariadic())
+ 	{
+ 		// Variadic functions are only supported for generic calling convention
+ 		if(callConv != asCALL_GENERIC)
++		{
++			func->funcType = asFUNC_DUMMY;
++			asDELETE(func,asCScriptFunction);
+ 			return ConfigError(asNOT_SUPPORTED, "RegisterGlobalFunction", declaration, 0);
++		}
+ 	}
+ 
+ 	// TODO: namespace: What if the declaration defined an explicit namespace?
+@@ -6865,6 +6885,9 @@ int asCScriptEngine::RegisterFuncdef(const char *decl)
+ 	r = bld.CheckNameConflict(func->name.AddressOf(), 0, 0, defaultNamespace, true, false, false);
+ 	if( r < 0 )
+ 	{
++		// ALTERED: set as dummy function before deleting, as on the other paths: the destructor asserts that a function
++		// deleted with its first reference still counted is a dummy (a debug build stopped on a funcdef whose name was taken)
++		func->funcType = asFUNC_DUMMY;
+ 		asDELETE(func,asCScriptFunction);
+ 		return ConfigError(asNAME_TAKEN, "RegisterFuncdef", decl, 0);
+ 	}
