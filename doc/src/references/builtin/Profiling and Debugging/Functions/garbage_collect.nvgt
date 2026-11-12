@@ -7,6 +7,7 @@
 		If full is set to false, the garbage collector only runs a small increment. If you have set the garbage collect mode to manual, you will need to regularly call this function yourself throughout the game. Otherwise this will be done automatically every 5-25 milliseconds, either in a dedicated thread, or during a wait() operation.
 		If full is set to true, this will do a full cleanout. This could take considerably longer, especially in larger games, so the automatic system never does this. It is up to you to perform a full cycle at a time that is appropriate for your game.
 		In garbage collect mode 3, the collector's own thread does the work: a full cycle asked for here runs on that thread shortly after this call returns, and a call with full set to false does nothing, as that thread already runs the small increments.
+		Only one collection runs at a time. If one is already running when this is called, on another thread (mode 3's collector thread, a garbage_collect() call on another thread, or AngelScript's own small steps as another thread creates objects) or on this one (from a destructor that a collection runs), this call returns at once without collecting, even with full set to true; objects that were garbage then are freed by a later collection.
 */
 
 // Example:
