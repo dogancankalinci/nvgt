@@ -1,0 +1,44 @@
+diff --git a/sdk/angelscript/source/as_gc.cpp b/sdk/angelscript/source/as_gc.cpp
+--- a/sdk/angelscript/source/as_gc.cpp
++++ b/sdk/angelscript/source/as_gc.cpp
+@@ -1131,23 +1131,30 @@
+ 	// collector was breaking or had broken. Made now, it is marked dead with the others, and a weak reference made later
+ 	// finds it so. Nothing but the collector reaches the garbage, so no other thread makes one meanwhile, and no lock is held
+ 	// yet (GetWeakRefFlag takes the global lock).
+-	for( gcMap.MoveFirst(&cursor); cursor; gcMap.MoveNext(&cursor, cursor) )
+-		if( gcMap.GetValue(cursor).type->flags & asOBJ_SCRIPT_OBJECT )
+-			reinterpret_cast<asCScriptObject*>(gcMap.GetKey(cursor))->GetWeakRefFlag();
+-
++	// ALTERED: a registered type's weak reference flag (asBEHAVE_GET_WEAKREF_FLAG) the same way: the weakref add-on, or the
++	// application's own weak link (NVGT's map area to its map), turned it strong while breakCircles broke the object, and the
++	// script then held an object the collector emptied. The behaviour makes the flag when first asked for it, and is the
++	// application's code, which may take a lock of its own: it is called here, with no flag locked yet, and not while flags are
++	// locked below (a thread holding that lock while it waits for one of those flags deadlocked with the collector). Such a flag
++	// is made with asCreateLockableSharedBool, as the manual asks.
+ 	for( gcMap.MoveFirst(&cursor); cursor; gcMap.MoveNext(&cursor, cursor) )
+ 	{
++		void *obj = gcMap.GetKey(cursor);
+ 		asCObjectType *type = gcMap.GetValue(cursor).type;
++		asCLockableSharedBool *flag = 0;
+ 		if( type->flags & asOBJ_SCRIPT_OBJECT )
+ 		{
+-			asCLockableSharedBool *flag = reinterpret_cast<asCScriptObject*>(gcMap.GetKey(cursor))->LoadWeakRefFlag();
+-			if( flag )
+-			{
+-				flag->Lock();
+-				flags.PushLast(flag);
+-			}
++			reinterpret_cast<asCScriptObject*>(obj)->GetWeakRefFlag();
++			flag = reinterpret_cast<asCScriptObject*>(obj)->LoadWeakRefFlag();
+ 		}
++		else if( type->beh.getWeakRefFlag )
++			flag = static_cast<asCLockableSharedBool*>(reinterpret_cast<asILockableSharedBool*>(engine->CallObjectMethodRetPtr(obj, type->beh.getWeakRefFlag)));
++		if( flag )
++			flags.PushLast(flag);
+ 	}
++
++	for( asUINT n = 0; n < flags.GetLength(); n++ )
++		flags[n]->Lock();
+ 	// ALTERED: also without a flag to lock: the count comparison below is what finds an object another thread took a
+ 	// reference to between buildMap reading its count and setting its flag (an array, a dictionary, a registered type, a
+ 	// script object never weak-referenced), which was otherwise taken for garbage while that thread held it.
