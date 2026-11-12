@@ -1701,9 +1701,19 @@ public:
 		if (!src || (g_soundsystem_last_error = ma_data_source_get_data_format(src->pDataSource, nullptr, nullptr, &sample_rate, nullptr, 0)) != MA_SUCCESS || !sample_rate) return 0;
 		return get_length_frames() * 1000.0f / sample_rate; // As counted within the range.
 	}
-	bool set_looping(bool looping) override { return src && !in_use()? (g_soundsystem_last_error = ma_data_source_set_looping(src->pDataSource, looping)) == MA_SUCCESS : refused_now(); }
+	// A ring buffer or microphone, a queue, never reaches an end and has no place to range or loop over: looping, a range and a loop point were taken and read back with no effect, and a range made its length, and a sound's that opened it, read as the range's. Refused, as a sound fed by a queue refuses looping; their defaults stay settable.
+	bool queue_refuses(bool setting) const {
+		if (!setting || !is_live_queue()) return false;
+		g_soundsystem_last_error = MA_INVALID_OPERATION;
+		return true;
+	}
+	bool set_looping(bool looping) override {
+		if (queue_refuses(looping)) return false;
+		return src && !in_use()? (g_soundsystem_last_error = ma_data_source_set_looping(src->pDataSource, looping)) == MA_SUCCESS : refused_now();
+	}
 	bool get_looping() const override { return src? ma_data_source_is_looping(src->pDataSource) : false; }
 	bool set_range(unsigned long long start_frame, unsigned long long end_frame) override {
+		if (queue_refuses(start_frame != 0 || end_frame != ~0ull)) return false;
 		if (!src || in_use()) return refused_now();
 		if (end_frame < start_frame) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // As MiniAudio refuses it, before the seek below moves the source.
 		// MiniAudio ignores its seek into the new range failing: a start past the end of a source of unknown length reported as set, reading on outside it. So it's made first, for a source that says a seek is past its end.
@@ -1720,7 +1730,7 @@ public:
 		*start_frame = *end_frame = 0;
 		if (src) ma_data_source_get_range_in_pcm_frames(src->pDataSource, start_frame, end_frame);
 	}
-	bool set_loop_point(unsigned long long start_frame, unsigned long long end_frame) override { return src && !in_use()? (g_soundsystem_last_error = ma_data_source_set_loop_point_in_pcm_frames(src->pDataSource, start_frame, end_frame)) == MA_SUCCESS : refused_now(); }
+	bool set_loop_point(unsigned long long start_frame, unsigned long long end_frame) override { if (queue_refuses(start_frame != 0 || end_frame != ~0ull)) return false; return src && !in_use()? (g_soundsystem_last_error = ma_data_source_set_loop_point_in_pcm_frames(src->pDataSource, start_frame, end_frame)) == MA_SUCCESS : refused_now(); }
 	void get_loop_point(unsigned long long* start_frame, unsigned long long* end_frame) const override {
 		*start_frame = *end_frame = 0;
 		if (src) ma_data_source_get_loop_point_in_pcm_frames(src->pDataSource, start_frame, end_frame);
