@@ -1274,6 +1274,21 @@ public:
 			return NULL;
 		void* ref = mod->GetAddressOfGlobalVar(index);
 		if (!ref) return NULL;
+		// An any keeps a number as an int64 or a double, as any.store() does for a script (see CScriptAny::Store), and retrieves it as
+		// either. A global of another number type (int, uint8, float...) was handed over under its own type, which no retrieve() takes:
+		// every form gave false and 0, and the add-on's assertion ended a debug build.
+		asINT64 integer;
+		double real;
+		switch (type_id) {
+			case asTYPEID_INT8: integer = *(asINT8*)ref; return new CScriptAny(&integer, asTYPEID_INT64, g_ScriptEngine);
+			case asTYPEID_INT16: integer = *(asINT16*)ref; return new CScriptAny(&integer, asTYPEID_INT64, g_ScriptEngine);
+			case asTYPEID_INT32: integer = *(int*)ref; return new CScriptAny(&integer, asTYPEID_INT64, g_ScriptEngine);
+			case asTYPEID_UINT8: integer = *(asBYTE*)ref; return new CScriptAny(&integer, asTYPEID_INT64, g_ScriptEngine);
+			case asTYPEID_UINT16: integer = *(asWORD*)ref; return new CScriptAny(&integer, asTYPEID_INT64, g_ScriptEngine);
+			case asTYPEID_UINT32: integer = *(asDWORD*)ref; return new CScriptAny(&integer, asTYPEID_INT64, g_ScriptEngine);
+			case asTYPEID_UINT64: integer = asINT64(*(asQWORD*)ref); return new CScriptAny(&integer, asTYPEID_INT64, g_ScriptEngine);
+			case asTYPEID_FLOAT: real = *(float*)ref; return new CScriptAny(&real, asTYPEID_DOUBLE, g_ScriptEngine);
+		}
 		return new CScriptAny(ref, type_id, g_ScriptEngine);
 	}
 	const std::string get_global_decl(asDWORD index) {
