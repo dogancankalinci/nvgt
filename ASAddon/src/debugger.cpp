@@ -687,7 +687,11 @@ bool CDebugger::InterpretCommand(const string &cmd, asIScriptContext *ctx)
 			}
 			else if (r == asEXECUTION_EXCEPTION)
 			{
-				Output(string("exception: ") + execCtx->GetExceptionString());
+				Output(string("exception: ") + (execCtx ? execCtx->GetExceptionString() : "")); // ALTERED: ExecuteString runs it on a context of its own when the pool gave none here
+			}
+			else if (r == asOUT_OF_MEMORY)
+			{
+				Output("out of memory while evaluating statement\n");
 			}
 			else if (r != asERROR)
 			{

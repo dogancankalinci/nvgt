@@ -774,6 +774,13 @@ void CScriptArray::SetValue(asINT64 index, void *value)
 				// TODO: Reuse active context if existing
 				asIScriptEngine* engine = objType->GetEngine();
 				asIScriptContext* ctx = engine->RequestContext();
+				// ALTERED: the engine's pool can't always give a context (no memory to make one), which was prepared all the same (a crash)
+				if (!ctx)
+				{
+					if (asIScriptContext* active = asGetActiveContext())
+						active->SetException("Out of memory");
+					return;
+				}
 				ctx->Prepare(func);
 				ctx->SetObject(ptr);
 				ctx->SetArgAddress(0, value);
@@ -1435,6 +1442,13 @@ bool CScriptArray::operator==(const CScriptArray &other) const
 			// callbacks: NVGT counts the statements of every context it runs towards a script_function.call()'s limit and
 			// has its debugger stop at their breakpoints with its line callback, which a new context lacks.
 			cmpContext = objType->GetEngine()->RequestContext();
+			// ALTERED: the engine's pool can't always give a context (no memory to make one), which the comparisons then used (a crash)
+			if( cmpContext == 0 )
+			{
+				if( callerCtx )
+					callerCtx->SetException("Out of memory");
+				return false;
+			}
 		}
 	}
 
@@ -1711,6 +1725,13 @@ int CScriptArray::Find(asUINT startAt, void *value) const
 			// callbacks: NVGT counts the statements of every context it runs towards a script_function.call()'s limit and
 			// has its debugger stop at their breakpoints with its line callback, which a new context lacks.
 			cmpContext = objType->GetEngine()->RequestContext();
+			// ALTERED: see operator==
+			if( cmpContext == 0 )
+			{
+				if( callerCtx )
+					callerCtx->SetException("Out of memory");
+				return -1;
+			}
 		}
 	}
 
@@ -1905,6 +1926,13 @@ void CScriptArray::Sort(asUINT startAt, asUINT count, bool asc)
 		}
 		if( cmpContext == 0 )
 			cmpContext = objType->GetEngine()->RequestContext();
+		// ALTERED: see operator==
+		if( cmpContext == 0 )
+		{
+			if( callerCtx )
+				callerCtx->SetException("Out of memory");
+			return;
+		}
 
 		// Do the sorting
 		struct {
@@ -2087,6 +2115,13 @@ void CScriptArray::Sort(asIScriptFunction *func, asUINT startAt, asUINT count)
 	}
 	if (cmpContext == 0)
 		cmpContext = objType->GetEngine()->RequestContext();
+	// ALTERED: see operator==
+	if (cmpContext == 0)
+	{
+		if (callerCtx)
+			callerCtx->SetException("Out of memory");
+		return;
+	}
 
 	// TODO: Security issue: If the array is accessed from the callback while the sort is going on the result may be unpredictable
 	//       For example, the callback resizes the array in the middle of the sort

@@ -1318,9 +1318,11 @@ asIScriptContext* RequestContextCallback(asIScriptEngine *engine, void* /*param*
 		}
 	}
 	if (!pool_size) {
-		ctx = engine->CreateContext();
-		ctx->SetExceptionCallback(asFUNCTION(ExceptionHandlerCallback), NULL, asCALL_CDECL);
-		ctx->SetLineCallback(asFUNCTION(nvgt_line_callback), NULL, asCALL_CDECL);
+		ctx = engine->CreateContext(); // Null when there was no memory for it, which every caller of RequestContext() checks for: the callbacks were set on it all the same (a crash).
+		if (ctx) {
+			ctx->SetExceptionCallback(asFUNCTION(ExceptionHandlerCallback), NULL, asCALL_CDECL);
+			ctx->SetLineCallback(asFUNCTION(nvgt_line_callback), NULL, asCALL_CDECL);
+		}
 	}
 	if (ctx) {
 		asPWORD exits = g_exit_count;

@@ -216,6 +216,15 @@ int ExecuteString(asIScriptEngine *engine, const char *code, void *ref, int refT
 
 	// If no context was provided, request a new one from the engine
 	asIScriptContext *execCtx = ctx ? ctx : engine->RequestContext();
+	// ALTERED: the engine's pool can't always give a context (no memory to make one): the function is let go of, and the failure
+	// returned, rather than prepared on a null context (a crash).
+	if( !execCtx )
+	{
+		buildLock.lock();
+		func->Release();
+		buildLock.unlock();
+		return asOUT_OF_MEMORY;
+	}
 	// ALTERED: a context the caller gave that ExecuteString prepared before (the one script_function.call() evaluates all its
 	// default values in) lets go of the function built then, see EXECUTESTRING_CONTEXT_USER_DATA. Prepare would let go of it
 	// itself, freeing its id outside the build lock while a build on another thread takes ids from the same list.
