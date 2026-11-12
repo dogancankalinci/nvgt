@@ -1430,7 +1430,9 @@ public:
 	audio_data_source_impl(audio_engine* e, ma_data_source* initial_src = nullptr) : audio_node_impl(nullptr, e), src_cur(nullptr), src_next(nullptr), src(nullptr) { if (initial_src) set_ma_data_source(initial_src); }
 	~audio_data_source_impl() {
 		last_error_kept kept;
-		reset();
+		try {
+			reset();
+		} catch (...) {} // Out of memory handing its sources over: left, rather than the program ended from a destructor.
 	}
 	static void add_user(audio_data_source* ds) {
 		if (auto impl = dynamic_cast<audio_data_source_impl*>(ds)) impl->users++;
@@ -2506,40 +2508,60 @@ public:
 			if (ds) ds->release();
 			return false;
 		}
-		ma_decoder_config cfg = decoder_config_init(sample_rate, channels);
-		cursor = make_unique<stream_cursor>();
-		cursor->ds = ds;
-		std::istream* in = ds->get_istr();
-		in->clear(); // A stream an earlier call left failed, as a seek it refused, would report no position.
-		std::streampos at = in->tellg(); // A stream partly read already, as after the script read a header from it, is decoded from where it is.
-		if (at >= 0) cursor->base = at;
-		in->clear();
-		seekable = false;
-		if (at >= 0) { // Tried by seeking to its end and back, before anything else reads it.
-			in->seekg(0, std::ios_base::end);
-			seekable = !in->fail();
+		// The script's stream is this decoder's from here, let go of on a throw too, as on running out of memory, with what was made for it: kept, it was never freed.
+		bool initialized = false;
+		try {
+			ma_decoder_config cfg = decoder_config_init(sample_rate, channels);
+			cursor = make_unique<stream_cursor>();
+			cursor->ds = ds;
+			std::istream* in = ds->get_istr();
+			in->clear(); // A stream an earlier call left failed, as a seek it refused, would report no position.
+			std::streampos at = in->tellg(); // A stream partly read already, as after the script read a header from it, is decoded from where it is.
+			if (at >= 0) cursor->base = at;
 			in->clear();
-			in->seekg(at); // Back whether or not that worked, should a stream have moved before failing the seek.
-			if (in->fail()) seekable = false;
-			in->clear();
-		}
-		ds_vfs = make_unique<ds_vfs_t>();
-		ds_vfs->cb.onOpen  = vfs_open;  ds_vfs->cb.onOpenW = nullptr;
-		ds_vfs->cb.onClose = vfs_close; ds_vfs->cb.onRead  = vfs_read;
-		ds_vfs->cb.onWrite = nullptr;   ds_vfs->cb.onSeek  = vfs_seek;
-		ds_vfs->cb.onTell  = vfs_tell;  ds_vfs->cb.onInfo  = vfs_info;
-		ds_vfs->sc = &*cursor;
-		if ((g_soundsystem_last_error = ma_decoder_init_vfs(ds_vfs.get(), "stream", &cfg, &*decoder)) == MA_SUCCESS && (g_soundsystem_last_error = remix_decoder(&*decoder)) != MA_SUCCESS) ma_decoder_uninit(&*decoder);
-		if (g_soundsystem_last_error != MA_SUCCESS) {
+			seekable = false;
+			if (at >= 0) { // Tried by seeking to its end and back, before anything else reads it.
+				in->seekg(0, std::ios_base::end);
+				seekable = !in->fail();
+				in->clear();
+				in->seekg(at); // Back whether or not that worked, should a stream have moved before failing the seek.
+				if (in->fail()) seekable = false;
+				in->clear();
+			}
+			ds_vfs = make_unique<ds_vfs_t>();
+			ds_vfs->cb.onOpen  = vfs_open;  ds_vfs->cb.onOpenW = nullptr;
+			ds_vfs->cb.onClose = vfs_close; ds_vfs->cb.onRead  = vfs_read;
+			ds_vfs->cb.onWrite = nullptr;   ds_vfs->cb.onSeek  = vfs_seek;
+			ds_vfs->cb.onTell  = vfs_tell;  ds_vfs->cb.onInfo  = vfs_info;
+			ds_vfs->sc = &*cursor;
+			if ((g_soundsystem_last_error = ma_decoder_init_vfs(ds_vfs.get(), "stream", &cfg, &*decoder)) == MA_SUCCESS) {
+				initialized = true;
+				if ((g_soundsystem_last_error = remix_decoder(&*decoder)) != MA_SUCCESS) {
+					ma_decoder_uninit(&*decoder);
+					initialized = false;
+				}
+			}
+			if (g_soundsystem_last_error != MA_SUCCESS) {
+				decoder.reset();
+				ds_vfs.reset();
+				cursor.reset();
+				ds->release();
+			} else {
+				cursor->opening = false;
+				datastream_ref = ds;
+				hold_decoder(&*decoder, seekable);
+				set_ma_data_source((ma_data_source*)&*decoder);
+			}
+		} catch (...) {
+			last_error_kept kept;
+			audio_data_source_impl::reset();
+			if (initialized) ma_decoder_uninit(&*decoder);
 			decoder.reset();
 			ds_vfs.reset();
 			cursor.reset();
+			if (datastream_ref == ds) datastream_ref = nullptr;
 			ds->release();
-		} else {
-			cursor->opening = false;
-			datastream_ref = ds;
-			hold_decoder(&*decoder, seekable);
-			set_ma_data_source((ma_data_source*)&*decoder);
+			throw;
 		}
 		return g_soundsystem_last_error == MA_SUCCESS;
 	}
@@ -2815,7 +2837,12 @@ public:
 			ds->release();
 			return false;
 		}
-		if (get_active()) close();
+		try {
+			if (get_active()) close();
+		} catch (...) { // Out of memory closing the one open: the script's reference to the stream, given to this function, isn't kept either.
+			ds->release();
+			throw;
+		}
 		unique_lock<mutex> lock = lock_writes();
 		if (!lock || get_active()) {
 			g_soundsystem_last_error = MA_BUSY;
@@ -4167,7 +4194,9 @@ public:
 		unique_lock<mutex> lock(spatialization_params_mutex);
 		if (spatializer) {
 			spatializer->forget_mixer(); // A spatializer the script kept must not read this mixer once it is gone.
-			node_chain->remove_node(spatializer);
+			try {
+				node_chain->remove_node(spatializer);
+			} catch (...) {} // Out of memory rewiring around it: left in the chain, which goes with this mixer, rather than the program ended from a destructor.
 			spatializer->release();
 		}
 		if (node_chain)
@@ -4992,6 +5021,18 @@ class sound_impl final : public mixer_impl, public virtual sound {
 		snd = std::move(made);
 		reset_cone_and_gain_range(); // As a sound loaded anew had MiniAudio's defaults.
 	}
+	// Runs postload() for a sound just adopted, closing it should that throw, as attaching it running out of memory: the sound read as loaded while attached to nothing, playing nothing.
+	template <class F> void loaded_or_closed(F postloading) {
+		try {
+			postloading();
+		} catch (...) {
+			last_error_kept kept;
+			try {
+				close();
+			} catch (...) {}
+			throw;
+		}
+	}
 	inline void postload(const string& filename, bool async_load = false) {
 		loaded_filename = filename;
 		node = (ma_node_base *)&*snd;
@@ -5023,7 +5064,9 @@ public:
 	~sound_impl() {
 		last_error_kept kept;
 		track_shape(false);
-		close();
+		try {
+			close();
+		} catch (...) {} // Out of memory closing it, as reserving its reap: what close() didn't get to is left, rather than the program ended from a destructor.
 	}
 	inline void release() override {
 		if (asAtomicDec(refcount) < 1) {
@@ -5031,8 +5074,13 @@ public:
 			else {
 				should_autoclose = false;
 				duplicate();
-				unique_lock<mutex> lock(g_inlined_sounds_mutex);
-				g_inlined_sounds.insert(this); // Freed with garbage_collect_inline_sounds();
+				bool kept = false;
+				try {
+					unique_lock<mutex> lock(g_inlined_sounds_mutex);
+					g_inlined_sounds.insert(this); // Freed with garbage_collect_inline_sounds();
+					kept = true;
+				} catch (...) {} // Out of memory: freed now, cut off, rather than thrown out of AngelScript's release and kept playing for good.
+				if (!kept && asAtomicDec(refcount) < 1) delete this;
 			}
 		}
 	}
@@ -5246,7 +5294,12 @@ public:
 			claimed_name = triplet;
 			claimed_manager = manager;
 			adopt_sound(std::move(made));
-			postload(filename, (flags & MA_SOUND_FLAG_ASYNC) && !(flags & MA_SOUND_FLAG_STREAM) && !wait_for_load);
+			try {
+				loaded_or_closed([&]() { postload(filename, (flags & MA_SOUND_FLAG_ASYNC) && !(flags & MA_SOUND_FLAG_STREAM) && !wait_for_load); });
+			} catch (...) {
+				g_sound_service->cleanup_triplet(triplet); // As below, which the throw skips.
+				throw;
+			}
 		}
 		else let_go_of_buffer_name(manager, triplet);
 		// Sound service has to store data pertaining to our triplet, and this is the earliest point at which it's safe to clean that up.
@@ -5330,18 +5383,23 @@ public:
 			if ((g_soundsystem_last_error = made_queue->init(format, channels, buffer_size)) != MA_SUCCESS) return false;
 			if (snd) close_to_reload();
 			if (!sample_rate) sample_rate = get_engine()->get_sample_rate();
-			// As load_special() makes a sound: not attached by MiniAudio, so without the graph lock, and handed to snd once made. Before the queue is the sound's: running out of memory making it left the queue with no sound to read it, taken by every later stream_pcm() for one running, which then refused or timed out.
+			// As load_special() makes a sound: not attached by MiniAudio, so without the graph lock, and handed to snd once made. The queue is the sound's only once the sound is made: before, running out of memory making the sound, or the view it reads the queue through, left a queue with no sound to read it, taken by every later stream_pcm() for one running, which then refused or timed out.
 			held_sound_ptr made(new held_sound());
-			pcm_stream = std::move(made_queue);
-			ma_pcm_rb_set_sample_rate(&pcm_stream->rb, sample_rate);
-			if ((g_soundsystem_last_error = ma_sound_init_from_data_source(get_engine()->get_ma_engine(), float_source(&pcm_stream->base, view, get_engine()->get_channels()), MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT, nullptr, &*made)) != MA_SUCCESS) {
+			ma_pcm_rb_set_sample_rate(&made_queue->rb, sample_rate);
+			ma_data_source* reading;
+			try {
+				reading = float_source(&made_queue->base, view, get_engine()->get_channels());
+			} catch (...) {
 				view.reset();
-				pcm_stream->uninit();
-				pcm_stream.reset();
-				return false;
+				throw;
 			}
+			if ((g_soundsystem_last_error = ma_sound_init_from_data_source(get_engine()->get_ma_engine(), reading, MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT, nullptr, &*made)) != MA_SUCCESS) {
+				view.reset();
+				return false; // The queue freed with made_queue.
+			}
+			pcm_stream = std::move(made_queue);
 			adopt_sound(std::move(made));
-			postload(":pcm", false);
+			loaded_or_closed([&]() { postload(":pcm", false); });
 			play(true);
 		}
 		if (!pcm_stream) { // No sample type to start one with, as for an array of a type that isn't one.
@@ -5424,9 +5482,14 @@ public:
 			ds->release();
 			return false;
 		}
+		// The script's reference is this sound's from here, let go of on a throw too, as on running out of memory, and the source's looping put back once chain_source() set it aside: kept, the source was never freed.
+		ma_bool32 looped = MA_FALSE;
+		bool looping_read = false;
+		try {
 		if (snd) close_to_reload();
 		audio_data_source_impl::prepare_length_of(ds); // Before the sound reads it.
-		const ma_bool32 looped = ma_data_source_is_looping(ds->get_ma_data_source()); // Before chain_source() sets it aside.
+		looped = ma_data_source_is_looping(ds->get_ma_data_source()); // Before chain_source() sets it aside.
+		looping_read = true;
 		held_sound_ptr made(new held_sound()); // As load_special() makes a sound.
 		if ((g_soundsystem_last_error = ma_sound_init_from_data_source(get_engine()->get_ma_engine(), float_source(chain_source(ds->get_ma_data_source(), get_engine(), chain), view, get_engine()->get_channels()), MA_SOUND_FLAG_NO_DEFAULT_ATTACHMENT, nullptr, &*made)) != MA_SUCCESS) {
 			view.reset();
@@ -5436,11 +5499,19 @@ public:
 			return false;
 		}
 		adopt_sound(std::move(made));
+		} catch (...) {
+			last_error_kept kept;
+			view.reset();
+			chain.reset();
+			if (looping_read) ma_data_source_set_looping(ds->get_ma_data_source(), looped);
+			ds->release();
+			throw;
+		}
 		source_looped = looped;
 		datasource = ds;
 		datasource_opened = true;
 		audio_data_source_impl::add_user(ds); // So it can't be closed while this sound reads it.
-		postload(":datasource", false);
+		loaded_or_closed([&]() { postload(":datasource", false); });
 		return true;
 	}
 	bool is_load_completed() const override {
@@ -5482,6 +5553,10 @@ public:
 		} else let_go_of_load_state();
 		if (!snd) {
 			if (!source) std::string().swap(pcm_buffer); // A load_pcm() that failed, with no source left to decode it.
+			if (pcm_stream) { // Nothing reads a queue without a sound.
+				pcm_stream->uninit();
+				pcm_stream.reset();
+			}
 			return nothing_loaded();
 		}
 		if (spatializer) {
