@@ -47,6 +47,11 @@ static unsigned char g_KeysReleased[SDL_SCANCODE_COUNT];
 static unsigned char g_MouseButtonsPressed[32];
 static unsigned char g_MouseButtonsReleased[32];
 std::string g_UserInput = "";
+// The text typed (g_UserInput) and the key names (g_KeyNames, whose strings SDL refers to without a copy) are std::strings and a map
+// that the thread handling the window's events (wait(), refresh_window()) changes while a script thread can read or change them
+// (get_characters(), set_key_name(), get_key_name()): a string appended to while another thread copied and emptied it, and a map
+// inserted into from two threads, corrupt the heap. Both are used under this lock.
+static Poco::FastMutex g_input_text_mutex;
 float g_MouseX = 0, g_MouseY = 0, g_MouseZ = 0;
 float g_MouseAbsX = 0, g_MouseAbsY = 0, g_MouseAbsZ = 0;
 float g_MousePrevX = 0, g_MousePrevY = 0, g_MousePrevZ = 0;
@@ -140,7 +145,10 @@ bool InputEvent(SDL_Event* evt) {
 		g_KeyboardStateChange = true;
 		on_key_release(evt->key.scancode);
 	} else if (evt->type == SDL_EVENT_TEXT_INPUT) {
-		g_UserInput += evt->text.text;
+		{
+			Poco::FastMutex::ScopedLock lock(g_input_text_mutex);
+			g_UserInput += evt->text.text;
+		}
 		on_characters(evt->text.text);
 	}
 	else if (evt->type == SDL_EVENT_MOUSE_MOTION) {
@@ -187,6 +195,7 @@ int GetKeyCode(const std::string& name) {
 std::string GetKeyName(int key) {
 	if (key < 0 || key >= SDL_SCANCODE_COUNT)
 		return "";
+	Poco::FastMutex::ScopedLock lock(g_input_text_mutex); // The name can be one of g_KeyNames, see g_input_text_mutex.
 	const char* result = SDL_GetScancodeName(static_cast<SDL_Scancode>(key));
 	if (!result)
 		return "";
@@ -195,6 +204,7 @@ std::string GetKeyName(int key) {
 bool SetKeyName(int key, const std::string& name) {
 	if (key < 0 || key >= SDL_SCANCODE_COUNT || name.empty())
 		return false;
+	Poco::FastMutex::ScopedLock lock(g_input_text_mutex); // See g_input_text_mutex.
 	g_KeyNames[key] = name;
 	return SDL_SetScancodeName(static_cast<SDL_Scancode>(key), g_KeyNames[key].c_str());
 }
@@ -346,8 +356,9 @@ CScriptArray* keys_released() {
 	return array;
 }
 std::string get_characters() {
-	std::string tmp = g_UserInput;
-	g_UserInput = "";
+	Poco::FastMutex::ScopedLock lock(g_input_text_mutex); // See g_input_text_mutex.
+	std::string tmp;
+	tmp.swap(g_UserInput);
 	return tmp;
 }
 bool MousePressed(unsigned char button) {
