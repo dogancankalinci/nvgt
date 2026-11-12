@@ -5154,6 +5154,22 @@ class sound_impl final : public mixer_impl, public virtual sound {
 		free_reaped(*r);
 		end_reap(manager, network);
 	}
+	// discard_source() for a source load_source() made, handed to a reap on an audio thread, as close() frees a source there: freeing it waits for its decode and the cache's lock, which held the device up on a load's failure. Freed here when no reap can be made.
+	static void discard_made_source(unique_ptr<ma_resource_manager_data_source> &src, ma_resource_manager* manager, bool tree_held = false) {
+		if (src && !tree_held && audio_engine_impl::on_audio_thread()) {
+			unique_ptr<source_reap> late;
+			try {
+				late = make_unique<source_reap>();
+			} catch (...) {}
+			if (late && reserve_reap(manager, true)) {
+				late->manager = manager;
+				late->source = std::move(src);
+				reap(std::move(late));
+				return;
+			}
+		}
+		discard_source(src, tree_held);
+	}
 	std::string pcm_buffer;      // When loading from raw PCM (like TTS) we store the intermediate wav data here so we can take advantage of async loading to return quickly. Makes a substantial difference in the responsiveness of TTS calls.
 	std::string claimed_name; // The name the sound's source was loaded under, claimed in claimed_manager until the source is freed, else empty.
 	ma_resource_manager* claimed_manager = nullptr;
@@ -5348,7 +5364,7 @@ public:
 		on_unwind unwinding([&]() {
 			last_error_kept kept;
 			if (sound_made && made) ma_sound_uninit(&*made);
-			if (made_source) discard_source(made_source);
+			if (made_source) discard_made_source(made_source, manager);
 			if (load_state) {
 				load_state->abandon();
 				load_state = nullptr;
@@ -5415,11 +5431,11 @@ public:
 				try {
 					cfg.pDataSource = float_source(decode_front(&*made_source, made_front), made_view, engine->get_channels(), (flags & MA_SOUND_FLAG_STREAM) != 0);
 				} catch (...) { // The source's load still running: its jobs finished before it goes, under the tree's lock as held here.
-					discard_source(made_source, tree_held);
+					discard_made_source(made_source, manager, tree_held);
 					if (state) state->abandon();
 					throw;
 				}
-				if ((g_soundsystem_last_error = ma_sound_init_ex(engine->get_ma_engine(), &cfg, &*made)) != MA_SUCCESS) discard_source(made_source, tree_held);
+				if ((g_soundsystem_last_error = ma_sound_init_ex(engine->get_ma_engine(), &cfg, &*made)) != MA_SUCCESS) discard_made_source(made_source, manager, tree_held);
 				else if ((sound_made = true), wait_for_load) {
 					{
 						std::unique_lock<std::mutex> lock(state->mtx);
@@ -5429,7 +5445,7 @@ public:
 					if (loaded != MA_SUCCESS) {
 						ma_sound_uninit(&*made);
 						sound_made = false;
-						discard_source(made_source);
+						discard_made_source(made_source, manager);
 						g_soundsystem_last_error = loaded;
 					}
 				}
@@ -5476,7 +5492,7 @@ public:
 			ma_sound_uninit(&*made);
 			made_view.reset();
 			made_front.reset();
-			discard_source(made_source, tree_held);
+			discard_made_source(made_source, manager, tree_held);
 			let_go_of_buffer_name(manager, triplet);
 			g_sound_service->cleanup_triplet(triplet);
 			return load_source(filename, protocol_slot, protocol_directive, filter_slot, filter_directive, (ma_flags & ~MA_SOUND_FLAG_STREAM) | MA_SOUND_FLAG_DECODE, true);
