@@ -265,10 +265,29 @@ bool script_info_box(const std::string& title, const std::string& text, const st
 	return info_box(title, text, value);
 }
 
+// Every window object with a window of its own, under its lock. SDL_Quit() (destroy_window(), the end of the program) destroys every window, and a window the script made itself (game_window(...)) kept the freed pointer: a window made once SDL was back could get that address, and the old object then worked on it and, when let go of, destroyed it (the script's new window, or show_window()'s). game_windows_quit() closes them first.
+static std::recursive_mutex& game_windows_mutex() {
+	static auto* m = new std::recursive_mutex; // never destroyed: a window object can go late in the program's end
+	return *m;
+}
+static std::unordered_set<game_window*>& game_windows() {
+	static auto* s = new std::unordered_set<game_window*>;
+	return *s;
+}
+void game_windows_quit() {
+	std::lock_guard<std::recursive_mutex> lock(game_windows_mutex()); // close() lets go of no script object, so no script code runs under it
+	std::vector<game_window*> open(game_windows().begin(), game_windows().end());
+	for (game_window* w : open) w->close();
+	game_windows().clear();
+}
 game_window::game_window(const std::string& title, unsigned int w, unsigned int h, unsigned int flags) : _window(nullptr), _owns_window(true), _native_window(nullptr), _refcount(1) {
 	if (Poco::Environment::os() == POCO_OS_LINUX) flags |= SDL_WINDOW_FULLSCREEN;
 	_window = SDL_CreateWindow(title.c_str(), (int)w, (int)h, flags);
 	if (!_window) return;
+	{
+		std::lock_guard<std::recursive_mutex> lock(game_windows_mutex());
+		game_windows().insert(this);
+	}
 	// The renderer is created lazily on first graphics use (see ensure_renderer). Creating it here
 	// would make refresh_window present an empty frame every tick, which on Android holds the
 	// SDL ActivityMutex across a blocking eglSwapBuffers and can cause input-dispatch ANRs.
@@ -295,6 +314,8 @@ game_window::~game_window() {
 	close();
 }
 void game_window::close() {
+	std::lock_guard<std::recursive_mutex> lock(game_windows_mutex());
+	game_windows().erase(this);
 	_font = nullptr;
 	_renderer = nullptr;
 	if (_owns_window && _window) {

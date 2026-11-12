@@ -244,6 +244,7 @@ public:
 game_window* ShowNVGTWindow(const std::string& window_title, unsigned int flags = 0);
 bool DestroyNVGTWindow();
 void system_tray_quit(); // before SDL_Quit(), see UI.cpp
+void game_windows_quit(); // likewise
 bool WindowIsFocused();
 int get_window_width();
 int get_window_height();

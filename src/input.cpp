@@ -99,6 +99,7 @@ void InputDestroy() {
 	#endif
 	system_tray_quit(); // SDL_Quit frees every tray, with the menus and entries the script's tray objects point to
 	joysticks_quit(); // and closes every gamepad
+	game_windows_quit(); // and destroys every window
 	SDL_Quit();
 	g_KeysDown = NULL;
 }
