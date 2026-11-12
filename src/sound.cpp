@@ -5389,9 +5389,18 @@ public:
 			{
 				std::shared_lock<std::shared_mutex> shared_tree_lock(g_resource_tree_mutex, std::defer_lock);
 				std::unique_lock<std::shared_mutex> tree_lock(g_resource_tree_mutex, std::defer_lock);
+				bool locked = true;
 				if (!tree_held && !(flags & MA_SOUND_FLAG_STREAM)) {
-					if (flags & MA_SOUND_FLAG_ASYNC) shared_tree_lock.lock();
-					else tree_lock.lock();
+					// Only tried on an audio thread, as in a processing callback, as close() tries it: another thread's load holding it whole, as one tried again without flags, held the device's audio up for as long.
+					const bool audio_thread = audio_engine_impl::on_audio_thread();
+					if (flags & MA_SOUND_FLAG_ASYNC) locked = audio_thread? shared_tree_lock.try_lock() : (shared_tree_lock.lock(), true);
+					else locked = audio_thread? tree_lock.try_lock() : (tree_lock.lock(), true);
+				}
+				if (!locked) {
+					made_source.reset(); // Never initialised.
+					delete state; // Never handed to MiniAudio: both its references are this one's.
+					g_soundsystem_last_error = MA_BUSY;
+					return;
 				}
 				g_soundsystem_last_error = ma_resource_manager_data_source_init_ex(ma_engine_get_resource_manager(engine->get_ma_engine()), &source_cfg, &*made_source);
 			}
@@ -5433,7 +5442,7 @@ public:
 		*/
 		for (int i = 0; i < 10; i++) {
 			attempt_init();
-			if (g_soundsystem_last_error == MA_OUT_OF_MEMORY) {
+			if (g_soundsystem_last_error == MA_OUT_OF_MEMORY && !audio_engine_impl::on_audio_thread()) { // Not slept out on an audio thread, which the device waits for.
 				// See above; this is probably job queue backlog rather than an actual out of memory. Take a break and try again. Not the script's wait(), which can collect garbage, whose destructors could load this very sound meanwhile, its sound then overwritten here while attached to the graph.
 				std::this_thread::sleep_for(std::chrono::milliseconds(5));
 				continue;
