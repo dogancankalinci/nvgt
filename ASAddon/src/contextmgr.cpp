@@ -449,16 +449,23 @@ asIScriptContext *CContextMgr::AddContextForCoRoutine(asIScriptContext *currCtx,
 	coctx->SetUserData(this, CONTEXT_MGR);
 
 	// Find the current context thread info
-	// TODO: Start with the current thread so that we can find the group faster
+	// ALTERED: by the calling context's place in the list, not only at the current position. A yield() its execution hasn't
+	// acted on yet (one called through a function handle or a delegate is only acted on at the next suspend point, see
+	// ExecuteScripts) has already moved the current position on to the next co-routine, and a create_coroutine() called
+	// before that point, in a thread with more than one co-routine, found no thread: the new co-routine was given back and
+	// never ran.
 	bool added = false;
-	for( asUINT n = 0; n < m_threads.size(); n++ )
+	for( asUINT n = 0; n < m_threads.size() && !added; n++ )
 	{
-		if( m_threads[n]->coRoutines[m_threads[n]->currentCoRoutine] == currCtx )
+		for( asUINT c = 0; c < m_threads[n]->coRoutines.size(); c++ )
 		{
-			// Add the coRoutine to the list
-			m_threads[n]->coRoutines.push_back(coctx);
-			added = true;
-			break;
+			if( m_threads[n]->coRoutines[c] == currCtx )
+			{
+				// Add the coRoutine to the list
+				m_threads[n]->coRoutines.push_back(coctx);
+				added = true;
+				break;
+			}
 		}
 	}
 
@@ -482,11 +489,14 @@ void CContextMgr::SetSleeping(asIScriptContext *ctx, asUINT milliSeconds)
 
 	// TODO: Start with the current thread
 
+	// ALTERED: by the context's place in the list, see AddContextForCoRoutine (a pending yield() had moved the current
+	// position on, and the sleep was lost)
 	for( asUINT n = 0; n < m_threads.size(); n++ )
 	{
-		if( m_threads[n]->coRoutines[m_threads[n]->currentCoRoutine] == ctx )
+		for( asUINT c = 0; c < m_threads[n]->coRoutines.size(); c++ )
 		{
-			m_threads[n]->sleepUntil = (m_getTimeFunc ? m_getTimeFunc() : 0) + milliSeconds;
+			if( m_threads[n]->coRoutines[c] == ctx )
+				m_threads[n]->sleepUntil = (m_getTimeFunc ? m_getTimeFunc() : 0) + milliSeconds;
 		}
 	}
 }
