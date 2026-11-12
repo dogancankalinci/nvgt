@@ -1,0 +1,122 @@
+diff --git a/sdk/angelscript/source/as_gc.cpp b/sdk/angelscript/source/as_gc.cpp
+index 8371991..a67040b 100644
+--- a/sdk/angelscript/source/as_gc.cpp
++++ b/sdk/angelscript/source/as_gc.cpp
+@@ -39,6 +39,8 @@
+ #include <stdlib.h>
+ 
+ #include "as_gc.h"
++#include <thread> // ALTERED: see AddScriptObjectToGC
++#include <chrono>
+ #include "as_scriptengine.h"
+ #include "as_scriptobject.h"
+ #include "as_texts.h"
+@@ -61,6 +63,7 @@ asCGarbageCollector::asCGarbageCollector()
+ 	numDetected     = 0;
+ 	numAdded        = 0;
+ 	isProcessing    = false;
++	collectingThread = 0;
+ 
+ 	seqAtSweepStart[0] = 0;
+ 	seqAtSweepStart[1] = 0;
+@@ -80,6 +83,14 @@ asCGarbageCollector::~asCGarbageCollector()
+ 	freeNodes.SetLength(0);
+ }
+ 
++// ALTERED: an address that is different on each thread, to tell the thread collecting from the others without making AngelScript's
++// thread local data for a thread that has none (asThreadCleanup would have to free it)
++static const void *CurrentThreadTag()
++{
++	static thread_local char tag;
++	return &tag;
++}
++
+ int asCGarbageCollector::AddScriptObjectToGC(void *obj, asCObjectType *objType)
+ {
+ 	if( obj == 0 || objType == 0 )
+@@ -97,13 +108,40 @@ int asCGarbageCollector::AddScriptObjectToGC(void *obj, asCObjectType *objType)
+ 	// garbage collector.
+ 	if( engine->ep.autoGarbageCollect && gcNewObjects.GetLength() )
+ 	{
++		// ALTERED: back-pressure. The steps below were skipped whenever another thread was collecting, and a full cycle works only
++		// on the objects that were there when it began: a thread making garbage while another collected let its garbage grow
++		// without bound (two script threads making cyclic garbage reached 3 million objects in 3 seconds). Past a limit, a thread
++		// that isn't the one collecting waits for the collection, a while at most (the collection runs destructors, which may wait
++		// for a lock this thread holds), and then destroys the garbage it can.
++		const asUINT backlogLimit = 10000;
++		bool entered = TRYENTERCRITICALSECTION(gcCollecting);
++		bool backlog = false;
++		if( !entered && gcNewObjects.GetLength() > backlogLimit && collectingThread != CurrentThreadTag() )
++		{
++			for( int n = 0; n < 200 && !entered; n++ )
++			{
++				std::this_thread::sleep_for(std::chrono::milliseconds(1));
++				entered = TRYENTERCRITICALSECTION(gcCollecting);
++			}
++			backlog = entered;
++		}
+ 		// If the GC is already processing in another thread, then don't try this again
+-		if( TRYENTERCRITICALSECTION(gcCollecting) )
++		if( entered )
+ 		{
+ 			// Skip this if the GC is already running in this thread
+ 			if( !isProcessing )
+ 			{
+ 				isProcessing = true;
++				collectingThread = CurrentThreadTag();
++				if( backlog )
++				{
++					while( DestroyNewGarbage() == 1 ) {}
++					if( gcOldObjects.GetLength() )
++					{
++						IdentifyGarbageWithCyclicRefs();
++						DestroyOldGarbage();
++					}
++				}
+ 
+ 				// TODO: The number of iterations should be dynamic, and increase 
+ 				//       if the number of objects in the garbage collector grows high
+@@ -121,6 +159,7 @@ int asCGarbageCollector::AddScriptObjectToGC(void *obj, asCObjectType *objType)
+ 				while( iter-- > 0 )
+ 					DestroyNewGarbage();
+ 
++				collectingThread = 0;
+ 				isProcessing = false;
+ 			}
+ 
+@@ -184,6 +223,7 @@ int asCGarbageCollector::GarbageCollect(asDWORD flags, asUINT iterations)
+ 		}
+ 
+ 		isProcessing = true;
++		collectingThread = CurrentThreadTag(); // ALTERED: see AddScriptObjectToGC
+ 
+ 		bool doDetect  = (flags & asGC_DETECT_GARBAGE)  || !(flags & asGC_DESTROY_GARBAGE);
+ 		bool doDestroy = (flags & asGC_DESTROY_GARBAGE) || !(flags & asGC_DETECT_GARBAGE);
+@@ -234,6 +274,7 @@ int asCGarbageCollector::GarbageCollect(asDWORD flags, asUINT iterations)
+ 			}
+ 
+ 			inFullCycle = false;
++			collectingThread = 0;
+ 			isProcessing = false;
+ 			LEAVECRITICALSECTION(gcCollecting);
+ 			return 0;
+@@ -255,6 +296,7 @@ int asCGarbageCollector::GarbageCollect(asDWORD flags, asUINT iterations)
+ 			}
+ 		}
+ 
++		collectingThread = 0;
+ 		isProcessing = false;
+ 		LEAVECRITICALSECTION(gcCollecting);
+ 	}
+diff --git a/sdk/angelscript/source/as_gc.h b/sdk/angelscript/source/as_gc.h
+index 2acbe3c..f8a634d 100644
+--- a/sdk/angelscript/source/as_gc.h
++++ b/sdk/angelscript/source/as_gc.h
+@@ -152,6 +152,7 @@ protected:
+ 	asUINT                             seqAtSweepStart[3];
+ 	asSMapNode_t                      *gcMapCursor;
+ 	bool                               isProcessing;
++	const void                        *collectingThread; // ALTERED: the thread processing (CurrentThreadTag), see AddScriptObjectToGC
+ 
+ 	// We'll keep a pool of nodes to avoid allocating memory all the time
+ 	asSMapNode_t            *GetNode(void *obj, asSIntTypePair it);

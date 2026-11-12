@@ -155,6 +155,7 @@ vcpkg_from_github(
         fix-refused-template-variadic-registration.patch
         fix-alloc-after-refused-constructor.patch
         fix-mismatched-assignment-without-context.patch
+        fix-gc-backpressure-across-threads.patch
 )
 
 vcpkg_cmake_configure(
