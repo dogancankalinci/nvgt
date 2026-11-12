@@ -145,6 +145,11 @@ public:
 			// A node's output is read at the rate of the graph it goes into, which doesn't resample, so one of another rate, as a no-device engine of its own rate mixed into another or a decoder's node at its file's rate, played at the ratio of the two rates, too fast or slow and out of tune. It goes through a group of the destination's engine instead, which resamples it from its rate.
 			ma_node* target = destination->get_ma_node();
 			unsigned int target_bus = destination_input_bus;
+			// Room for the bus's records before MiniAudio attaches it, for a bus the node has, which MiniAudio refuses otherwise: made after, running out of memory left the node attached with no reference held on its destination and its records saying it wasn't, a data source then sought while the audio thread read it.
+			if (output_bus < ma_node_get_output_bus_count(node)) {
+				if (output_bus >= output_connections.size()) output_connections.resize(output_bus + 1, nullptr);
+				if (output_bus >= rate_bridges.size()) rate_bridges.resize(output_bus + 1, nullptr);
+			}
 			ma_sound* bridge = nullptr;
 			if (from && to && from != to) {
 				// Of the node's own channels in and out, so that one whose channels differ from the destination's is still refused, as straight into it.
@@ -160,8 +165,6 @@ public:
 				if (bridge) rate_bridge_destroy(bridge);
 				return false;
 			}
-			if (output_bus >= output_connections.size()) output_connections.resize(output_bus + 1, nullptr);
-			if (output_bus >= rate_bridges.size()) rate_bridges.resize(output_bus + 1, nullptr);
 			drop_rate_bridge(output_bus); // The one this bus went through before, left without input by the attach.
 			rate_bridges[output_bus] = bridge;
 			previous = output_connections[output_bus];
