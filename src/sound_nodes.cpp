@@ -1240,13 +1240,14 @@ public:
 		// Counted and, for a node that isn't a mixer, sent on before the old one is let go of: one that can't be sent on, as the engine's endpoint or a node whose attach there loops, is refused with this node back on the old reverb, rather than taken with the sends going wherever it already went and success read from the old one's let-go.
 		std::shared_ptr<std::recursive_mutex> send;
 		if (verb) {
-			send = reverb_used(verb); // Can't throw: its entry is made.
-			bool sent = true;
+			bool sent = true, counted = false;
 			try {
+				send = reverb_used(verb); // Its entry is made, but another reverb3d's let-go can take it out meanwhile, outside the topology lock, after which counting makes it anew and can run out of memory: within the try, which puts this node back on the old reverb.
+				counted = true;
 				if (!verb_mixer) sent = send_counted(verb, send);
 			} catch (...) {
 				last_error_kept kept;
-				reverb_uncount(verb);
+				if (counted) reverb_uncount(verb); // Only a count this made: one that threw counted nothing, and taking one back took another reverb3d's.
 				if (reverb) attach_output_bus(0, reverb, 0);
 				else detach_output_bus(0);
 				throw;
