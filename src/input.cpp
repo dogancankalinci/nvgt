@@ -186,7 +186,8 @@ void regained_window_focus() {
 	regained_window_focus_platform();
 }
 bool ScreenKeyboardShown() {
-	return SDL_ScreenKeyboardShown(g_window ? g_window->get_sdl_window() : nullptr);
+	Poco::AutoPtr<game_window> w = game_window_ref(); // read-only: answers on any thread, see game_window::window_state
+	return w && w->screen_keyboard_shown();
 }
 int GetKeyCode(const std::string& name) {
 	if (name.empty())
@@ -400,28 +401,39 @@ void mouse_update() {
 	g_MousePrevZ = g_MouseAbsZ;
 }
 void SetCursorVisible(bool state) {
+	if (!window_thread_free()) return; // SDL's video functions are the window thread's, see game_window::on_thread()
 	state ? SDL_ShowCursor() : SDL_HideCursor();
 }
 bool GetMouseGrab() {
-	return SDL_GetWindowMouseGrab(g_window ? g_window->get_sdl_window() : nullptr);
+	Poco::AutoPtr<game_window> w = game_window_ref(); // see ScreenKeyboardShown()
+	return w && w->get_mouse_grab();
 }
 void SetMouseGrab(bool grabbed) {
-	SDL_SetWindowMouseGrab(g_window ? g_window->get_sdl_window() : nullptr, grabbed);
+	SDL_SetWindowMouseGrab(window_thread_sdl_window(), grabbed);
+	if (Poco::AutoPtr<game_window> w = game_window_ref()) w->update_state(); // on the window's thread, see there
+}
+// SDL's lists of keyboards, mice and touch devices change on the window's thread with no lock of SDL's (a device plugged in or out as it handles events; all freed by destroy_window()): read on another thread, they could be reallocated or freed meanwhile. There they are empty, as with SDL's video subsystem down (see game_window::on_thread()).
+static CScriptArray* no_devices(const char* array_decl) {
+	asITypeInfo* array_type = get_array_type(array_decl);
+	return array_type ? CScriptArray::Create(array_type) : nullptr;
 }
 CScriptArray* GetKeyboards() {
+	if (!window_thread_free()) return no_devices("uint[]");
 	return GetDevices(SDL_GetKeyboards);
 }
 std::string GetKeyboardName(unsigned int id) {
+	if (!window_thread_free()) return ""; // See no_devices().
 	const char* result = SDL_GetKeyboardNameForID((SDL_KeyboardID)id);
 	if (!result)
 		return "";
 	return result;
 }
 CScriptArray* GetMice() {
+	if (!window_thread_free()) return no_devices("uint[]");
 	return GetDevices(SDL_GetMice);
 }
 std::string GetMouseName(unsigned int id) {
-	if (!SDL_WasInit(SDL_INIT_VIDEO)) return ""; // See get_touch_device_name().
+	if (!SDL_WasInit(SDL_INIT_VIDEO) || !window_thread_free()) return ""; // See get_touch_device_name() and no_devices().
 	const char* result = SDL_GetMouseNameForID((SDL_MouseID)id);
 	if (!result)
 		return "";
@@ -868,6 +880,7 @@ void process_keyhook_commands() {}
 
 // Low level touch interface
 CScriptArray* get_touch_devices() {
+	if (!window_thread_free()) return no_devices("uint64[]");
 	asITypeInfo* array_type = get_array_type("uint64[]");
 	if (!array_type)
 		return nullptr;
@@ -889,14 +902,14 @@ CScriptArray* get_touch_devices() {
 }
 // SDL looks an id it doesn't know up on the video device, which is null until the video subsystem starts with the first window or input call: these crashed in a script that had neither, as did get_mouse_name(4294967295).
 std::string get_touch_device_name(uint64_t device_id) {
-	if (!SDL_WasInit(SDL_INIT_VIDEO)) return "";
+	if (!SDL_WasInit(SDL_INIT_VIDEO) || !window_thread_free()) return ""; // and see no_devices()
 	const char* result = SDL_GetTouchDeviceName((SDL_TouchID)device_id);
 	if (!result)
 		return "";
 	return result;
 }
 int get_touch_device_type(uint64_t device_id) {
-	if (!SDL_WasInit(SDL_INIT_VIDEO)) return SDL_TOUCH_DEVICE_INVALID;
+	if (!SDL_WasInit(SDL_INIT_VIDEO) || !window_thread_free()) return SDL_TOUCH_DEVICE_INVALID; // and see no_devices()
 	return SDL_GetTouchDeviceType((SDL_TouchID)device_id);
 }
 CScriptArray* query_touch_device(uint64_t device_id) {
@@ -908,7 +921,7 @@ CScriptArray* query_touch_device(uint64_t device_id) {
 		return nullptr;
 	if (!device_id && g_TouchLastDevice)
 		device_id = g_TouchLastDevice;
-	if (!device_id || !SDL_WasInit(SDL_INIT_VIDEO))
+	if (!device_id || !SDL_WasInit(SDL_INIT_VIDEO) || !window_thread_free()) // and see no_devices()
 		return array;
 	int finger_count;
 	SDL_Finger** fingers = SDL_GetTouchFingers(device_id, &finger_count);
@@ -922,19 +935,23 @@ CScriptArray* query_touch_device(uint64_t device_id) {
 }
 
 bool StartTextInput() {
+	if (!window_thread_free()) return false; // as SDL fails there, and before VoiceOver's direct interaction is changed for text input that doesn't start (see game_window::on_thread())
 	#if defined(TARGET_OS_IOS) && TARGET_OS_IOS
 		ios_set_direct_interaction(false);
 	#endif
 	// SDL copies the properties into the window: the set made here was never destroyed, a leak (about 240 bytes) with every call.
 	SDL_PropertiesID props = SDL_CreateProperties();
 	SDL_SetNumberProperty(props, SDL_PROP_TEXTINPUT_CAPITALIZATION_NUMBER, SDL_CAPITALIZE_NONE);
-	bool result = SDL_StartTextInputWithProperties(g_window ? g_window->get_sdl_window() : nullptr, props);
+	bool result = SDL_StartTextInputWithProperties(window_thread_sdl_window(), props);
 	if (props) SDL_DestroyProperties(props);
+	if (Poco::AutoPtr<game_window> w = game_window_ref()) w->update_state();
 	return result;
 }
 
 bool StopTextInput() {
-	bool result = SDL_StopTextInput(g_window ? g_window->get_sdl_window() : nullptr);
+	if (!window_thread_free()) return false; // see StartTextInput()
+	bool result = SDL_StopTextInput(window_thread_sdl_window());
+	if (Poco::AutoPtr<game_window> w = game_window_ref()) w->update_state();
 	#if defined(TARGET_OS_IOS) && TARGET_OS_IOS
 		ios_set_direct_interaction(true);
 	#endif
@@ -942,7 +959,8 @@ bool StopTextInput() {
 }
 
 bool TextInputActive() {
-	return SDL_TextInputActive(g_window ? g_window->get_sdl_window() : nullptr);
+	Poco::AutoPtr<game_window> w = game_window_ref(); // see ScreenKeyboardShown()
+	return w && w->text_input_active();
 }
 
 // Helper functions for joystick_power_info struct

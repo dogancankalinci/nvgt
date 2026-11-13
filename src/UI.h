@@ -39,6 +39,7 @@ typedef void* native_window_t;
 #include <angelscript.h>
 #include <scriptarray.h>
 #include <Poco/AutoPtr.h>
+#include <mutex>
 #include <string>
 #include <vector>
 #include <SDL3/SDL.h>
@@ -60,81 +61,105 @@ class game_window {
 	native_window_t _native_window;
 	Poco::AutoPtr<graphics_renderer> _renderer;
 	Poco::AutoPtr<text_font> _font;
+	thread_id_t _thread; // the thread that made the object, see on_thread()
 	mutable int _refcount;
+	SDL_Window* win() const { return on_thread() ? _window : nullptr; }
+	// What the window's thread last saw of the window (see update_state()), which the read-only queries answer on other threads: they give what the same query gave on the window's thread at that moment, for a closed window too.
+	struct window_state {
+		std::string title;
+		unsigned int id = 0, pixel_format = 0, progress_state = 0;
+		uint64_t flags = 0;
+		float pixel_density = 0, display_scale = 0, opacity = 0, progress_value = 0, min_aspect = 0, max_aspect = 0;
+		int x = 0, y = 0, w = 0, h = 0, pixel_w = 0, pixel_h = 0, min_w = 0, min_h = 0, max_w = 0, max_h = 0, top = 0, left = 0, bottom = 0, right = 0, surface_vsync = 0;
+		bool position_ok = false, size_ok = false, pixels_ok = false, min_ok = false, max_ok = false, aspect_ok = false, borders_ok = false, surface_vsync_ok = false;
+		bool keyboard_grab = false, mouse_grab = false, has_surface = false, focused = false, text_input_active = false, screen_keyboard_shown = false;
+		native_window_t native_window = nullptr;
+	};
+	mutable std::mutex _state_mutex;
+	window_state _state;
+	window_state state() const { std::lock_guard<std::mutex> lock(_state_mutex); return _state; }
+	bool changed(bool result) { update_state(); return result; } // after a call that can change the window, see update_state()
 public:
 	game_window(const std::string& title, unsigned int w, unsigned int h, unsigned int flags);
 	game_window(SDL_Window* window);
 	~game_window();
 	void close(); // Destroys the SDL window (when this object made it) and lets go of the renderer and font, whoever holds this object.
 	void duplicate() { asAtomicInc(_refcount); }
-	void release() { if (asAtomicDec(_refcount) < 1) delete this; }
-	SDL_Window* get_sdl_window() const { return _window; }
-	native_window_t get_native_window() const { return _native_window; }
+	void release(); // see game_windows_collect() in UI.cpp
+	// SDL's windows, and the renderers and textures made for them, are for the thread that made them (SDL documents its video functions as main-thread only), which can also close the window at any time. A script thread using a window object made on another thread passed SDL a window that thread was destroying (a crash), and the calls SDL makes a message to the window's thread (set_title(), set_size()) waited for as long as that thread didn't handle its messages (in a join()). On any other thread the object acts as a closed window: what the script reaches fails as SDL's functions do for a null window, and its renderer and font are null.
+	bool on_thread() const { return _thread == thread_current_thread_id(); }
+	// On the window's thread, reads the window into what the read-only queries answer on other threads, see window_state. That thread calls it as it handles the window's events (handle_sdl_event()), after each of its own calls that can change the window, and as the window is made and closed; elsewhere it does nothing.
+	void update_state();
+	SDL_Window* get_sdl_window() const { return _window; } // NVGT's own use, on the window's thread (or with a check of its own)
+	native_window_t get_native_window() const { return on_thread() ? _native_window : state().native_window; }
+	bool is_focused() const { return on_thread() ? _window && _window == SDL_GetKeyboardFocus() : state().focused; } // is_window_active()
+	bool text_input_active() const { return on_thread() ? SDL_TextInputActive(_window) : state().text_input_active; }
+	bool screen_keyboard_shown() const { return on_thread() ? SDL_ScreenKeyboardShown(_window) : state().screen_keyboard_shown; }
 	graphics_renderer* ensure_renderer(); // lazily create the renderer on first graphics use, so audio-only games never present an empty frame (avoids the Android eglSwapBuffers/ActivityMutex ANR)
 	graphics_renderer* peek_renderer() { return _renderer.get(); } // non-creating; used by the per-frame present check so it does not itself trigger renderer creation
 	graphics_renderer* get_renderer() { return ensure_renderer(); }
-	text_font* get_font() { return _font.get(); }
+	text_font* get_font() { return on_thread() ? _font.get() : nullptr; }
 	bool show() {
-		bool was_hidden = (SDL_GetWindowFlags(_window) & SDL_WINDOW_HIDDEN) != 0;
-		bool ok = SDL_ShowWindow(_window);
+		bool was_hidden = (SDL_GetWindowFlags(win()) & SDL_WINDOW_HIDDEN) != 0;
+		bool ok = SDL_ShowWindow(win());
 		if (ok && was_hidden && _renderer) _renderer->require_initial_frame();
-		return ok;
+		return changed(ok);
 	}
-	bool hide() { return SDL_HideWindow(_window); }
-	bool raise() { return SDL_RaiseWindow(_window); }
-	bool maximize() { return SDL_MaximizeWindow(_window); }
-	bool minimize() { return SDL_MinimizeWindow(_window); }
-	bool restore() { return SDL_RestoreWindow(_window); }
-	bool sync() { return SDL_SyncWindow(_window); }
-	bool set_fullscreen(bool fullscreen) { return SDL_SetWindowFullscreen(_window, fullscreen); }
-	bool set_title(const std::string& title) { return SDL_SetWindowTitle(_window, title.c_str()); }
-	std::string get_title() const { return from_cstr(SDL_GetWindowTitle(_window)); }
-	unsigned int get_id() const { return SDL_GetWindowID(_window); }
-	uint64_t get_flags() const { return SDL_GetWindowFlags(_window); }
-	float get_pixel_density() const { return SDL_GetWindowPixelDensity(_window); }
-	float get_display_scale() const { return SDL_GetWindowDisplayScale(_window); }
-	unsigned int get_pixel_format() const { return (unsigned int)SDL_GetWindowPixelFormat(_window); }
-	bool set_bordered(bool bordered) { return SDL_SetWindowBordered(_window, bordered); }
-	bool set_resizable(bool resizable) { return SDL_SetWindowResizable(_window, resizable); }
-	bool set_always_on_top(bool on_top) { return SDL_SetWindowAlwaysOnTop(_window, on_top); }
-	bool set_fill_document(bool fill) { return SDL_SetWindowFillDocument(_window, fill); }
-	bool set_modal(bool modal) { return SDL_SetWindowModal(_window, modal); }
-	bool set_focusable(bool focusable) { return SDL_SetWindowFocusable(_window, focusable); }
-	bool set_keyboard_grab(bool grabbed) { return SDL_SetWindowKeyboardGrab(_window, grabbed); }
-	bool get_keyboard_grab() const { return SDL_GetWindowKeyboardGrab(_window); }
-	bool set_mouse_grab(bool grabbed) { return SDL_SetWindowMouseGrab(_window, grabbed); }
-	bool get_mouse_grab() const { return SDL_GetWindowMouseGrab(_window); }
-	bool set_opacity(float opacity) { return SDL_SetWindowOpacity(_window, opacity); }
-	float get_opacity() const { return SDL_GetWindowOpacity(_window); }
-	bool flash(unsigned int operation) { return SDL_FlashWindow(_window, (SDL_FlashOperation)operation); }
-	bool show_system_menu(int x, int y) { return SDL_ShowWindowSystemMenu(_window, x, y); }
-	bool set_icon(graphic* icon) { return icon && SDL_SetWindowIcon(_window, icon->get_surface()); }
-	// &out parameters, set on every path: see graphics.cpp's getters.
-	bool get_position(int& x, int& y) const { x = y = 0; return SDL_GetWindowPosition(_window, &x, &y); }
-	bool set_position(int x, int y) { return SDL_SetWindowPosition(_window, x, y); }
-	bool get_size(int& w, int& h) const { w = h = 0; return SDL_GetWindowSize(_window, &w, &h); }
-	bool set_size(int w, int h) { return SDL_SetWindowSize(_window, w, h); }
-	bool get_size_in_pixels(int& w, int& h) const { w = h = 0; return SDL_GetWindowSizeInPixels(_window, &w, &h); }
-	bool get_minimum_size(int& w, int& h) const { return SDL_GetWindowMinimumSize(_window, &w, &h); }
-	bool set_minimum_size(int w, int h) { return SDL_SetWindowMinimumSize(_window, w, h); }
-	bool get_maximum_size(int& w, int& h) const { return SDL_GetWindowMaximumSize(_window, &w, &h); }
-	bool set_maximum_size(int w, int h) { return SDL_SetWindowMaximumSize(_window, w, h); }
-	bool get_aspect_ratio(float& min_aspect, float& max_aspect) const { return SDL_GetWindowAspectRatio(_window, &min_aspect, &max_aspect); }
-	bool set_aspect_ratio(float min_aspect, float max_aspect) { return SDL_SetWindowAspectRatio(_window, min_aspect, max_aspect); }
-	bool get_borders_size(int& top, int& left, int& bottom, int& right) const { return SDL_GetWindowBordersSize(_window, &top, &left, &bottom, &right); }
-	bool has_surface() const { return SDL_WindowHasSurface(_window); }
-	bool update_surface() { return SDL_UpdateWindowSurface(_window); }
-	bool destroy_surface() { return SDL_DestroyWindowSurface(_window); }
-	bool set_surface_vsync(int vsync) { return SDL_SetWindowSurfaceVSync(_window, vsync); }
-	bool get_surface_vsync(int& vsync) const { return SDL_GetWindowSurfaceVSync(_window, &vsync); }
-	bool set_progress_state(unsigned int state) { return SDL_SetWindowProgressState(_window, (SDL_ProgressState)state); }
-	unsigned int get_progress_state() const { return (unsigned int)SDL_GetWindowProgressState(_window); }
-	bool set_progress_value(float value) { return SDL_SetWindowProgressValue(_window, value); }
-	float get_progress_value() const { return SDL_GetWindowProgressValue(_window); }
-	void set_font(text_font* font) { if (font) font->duplicate(); _font = font; }
+	bool hide() { return changed(SDL_HideWindow(win())); }
+	bool raise() { return changed(SDL_RaiseWindow(win())); }
+	bool maximize() { return changed(SDL_MaximizeWindow(win())); }
+	bool minimize() { return changed(SDL_MinimizeWindow(win())); }
+	bool restore() { return changed(SDL_RestoreWindow(win())); }
+	bool sync() { return changed(SDL_SyncWindow(win())); }
+	bool set_fullscreen(bool fullscreen) { return changed(SDL_SetWindowFullscreen(win(), fullscreen)); }
+	bool set_title(const std::string& title) { return changed(SDL_SetWindowTitle(win(), title.c_str())); }
+	std::string get_title() const { return on_thread() ? from_cstr(SDL_GetWindowTitle(_window)) : state().title; }
+	unsigned int get_id() const { return on_thread() ? SDL_GetWindowID(_window) : state().id; }
+	uint64_t get_flags() const { return on_thread() ? SDL_GetWindowFlags(_window) : state().flags; }
+	float get_pixel_density() const { return on_thread() ? SDL_GetWindowPixelDensity(_window) : state().pixel_density; }
+	float get_display_scale() const { return on_thread() ? SDL_GetWindowDisplayScale(_window) : state().display_scale; }
+	unsigned int get_pixel_format() const { return on_thread() ? (unsigned int)SDL_GetWindowPixelFormat(_window) : state().pixel_format; }
+	bool set_bordered(bool bordered) { return changed(SDL_SetWindowBordered(win(), bordered)); }
+	bool set_resizable(bool resizable) { return changed(SDL_SetWindowResizable(win(), resizable)); }
+	bool set_always_on_top(bool on_top) { return changed(SDL_SetWindowAlwaysOnTop(win(), on_top)); }
+	bool set_fill_document(bool fill) { return changed(SDL_SetWindowFillDocument(win(), fill)); }
+	bool set_modal(bool modal) { return changed(SDL_SetWindowModal(win(), modal)); }
+	bool set_focusable(bool focusable) { return changed(SDL_SetWindowFocusable(win(), focusable)); }
+	bool set_keyboard_grab(bool grabbed) { return changed(SDL_SetWindowKeyboardGrab(win(), grabbed)); }
+	bool get_keyboard_grab() const { return on_thread() ? SDL_GetWindowKeyboardGrab(_window) : state().keyboard_grab; }
+	bool set_mouse_grab(bool grabbed) { return changed(SDL_SetWindowMouseGrab(win(), grabbed)); }
+	bool get_mouse_grab() const { return on_thread() ? SDL_GetWindowMouseGrab(_window) : state().mouse_grab; }
+	bool set_opacity(float opacity) { return changed(SDL_SetWindowOpacity(win(), opacity)); }
+	float get_opacity() const { return on_thread() ? SDL_GetWindowOpacity(_window) : state().opacity; }
+	bool flash(unsigned int operation) { return SDL_FlashWindow(win(), (SDL_FlashOperation)operation); }
+	bool show_system_menu(int x, int y) { return SDL_ShowWindowSystemMenu(win(), x, y); }
+	bool set_icon(graphic* icon) { return icon && SDL_SetWindowIcon(win(), icon->get_surface()); }
+	// &out parameters, set on every path: see graphics.cpp's getters. Defined in UI.cpp, see window_state.
+	bool get_position(int& x, int& y) const;
+	bool set_position(int x, int y) { return changed(SDL_SetWindowPosition(win(), x, y)); }
+	bool get_size(int& w, int& h) const;
+	bool set_size(int w, int h) { return changed(SDL_SetWindowSize(win(), w, h)); }
+	bool get_size_in_pixels(int& w, int& h) const;
+	bool get_minimum_size(int& w, int& h) const;
+	bool set_minimum_size(int w, int h) { return changed(SDL_SetWindowMinimumSize(win(), w, h)); }
+	bool get_maximum_size(int& w, int& h) const;
+	bool set_maximum_size(int w, int h) { return changed(SDL_SetWindowMaximumSize(win(), w, h)); }
+	bool get_aspect_ratio(float& min_aspect, float& max_aspect) const;
+	bool set_aspect_ratio(float min_aspect, float max_aspect) { return changed(SDL_SetWindowAspectRatio(win(), min_aspect, max_aspect)); }
+	bool get_borders_size(int& top, int& left, int& bottom, int& right) const;
+	bool has_surface() const { return on_thread() ? SDL_WindowHasSurface(_window) : state().has_surface; }
+	bool update_surface() { return changed(SDL_UpdateWindowSurface(win())); }
+	bool destroy_surface() { return changed(SDL_DestroyWindowSurface(win())); }
+	bool set_surface_vsync(int vsync) { return changed(SDL_SetWindowSurfaceVSync(win(), vsync)); }
+	bool get_surface_vsync(int& vsync) const;
+	bool set_progress_state(unsigned int state) { return changed(SDL_SetWindowProgressState(win(), (SDL_ProgressState)state)); }
+	unsigned int get_progress_state() const { return on_thread() ? (unsigned int)SDL_GetWindowProgressState(_window) : state().progress_state; }
+	bool set_progress_value(float value) { return changed(SDL_SetWindowProgressValue(win(), value)); }
+	float get_progress_value() const { return on_thread() ? SDL_GetWindowProgressValue(_window) : state().progress_value; }
+	void set_font(text_font* font) { if (!on_thread()) return; if (font) font->duplicate(); _font = font; }
 	// high-level drawing, Much of this is heavily enspired and/or copied with permission from @aryanchoudharypro's NVGT graphics plugin at https://github.com/aryanchoudharypro/power-plugins-for-nvgt
 	bool clear(unsigned int r, unsigned int g, unsigned int b);
-	bool present() { return _renderer && _renderer->present(); }
+	bool present() { return on_thread() && _renderer && _renderer->present(); }
 	void draw_text(const std::string& text, float x, float y, unsigned int r, unsigned int g, unsigned int b);
 	uint64_t measure_text(const std::string& text) const;
 	void draw_text_wrapped(const std::string& text, float x, float y, int wrap_width, unsigned int r, unsigned int g, unsigned int b);
@@ -147,6 +172,11 @@ public:
 };
 
 extern Poco::AutoPtr<game_window> g_window;
+Poco::AutoPtr<game_window> game_window_ref(); // g_window with a reference of its own, on any thread: for the read-only queries (see game_window::window_state)
+SDL_Window* window_thread_sdl_window(); // g_window's SDL window when the calling thread made it, else null (see game_window::on_thread())
+bool window_thread_free(); // false on a thread other than the one that made g_window
+bool sdl_window_on_this_thread(SDL_Window* window); // whether window is a game window the calling thread made, for graphics_renderer()
+void game_windows_collect(); // see there
 
 enum system_tray_menu_item_type { SYSTEM_TRAY_ITEM, SYSTEM_TRAY_CHECKBOX, SYSTEM_TRAY_SEPARATOR, SYSTEM_TRAY_SUBMENU };
 
@@ -243,6 +273,7 @@ public:
 
 game_window* ShowNVGTWindow(const std::string& window_title, unsigned int flags = 0);
 bool DestroyNVGTWindow();
+bool DestroyNVGTWindowAtExit(); // see there
 void system_tray_quit(); // before SDL_Quit(), see UI.cpp
 void game_windows_quit(); // likewise
 bool WindowIsFocused();

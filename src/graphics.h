@@ -20,6 +20,7 @@
 #include <scriptarray.h>
 #include <SDL3/SDL.h>
 #include <SDL3_ttf/SDL_ttf.h>
+#include <thread.h>
 
 class game_window;
 class pack_interface;
@@ -70,22 +71,26 @@ class graphics_texture {
 	int _height;
 	int _refcount;
 	friend class graphics_renderer;
+	friend void graphics_collect();
 	graphics_renderer* _owner = nullptr; // the renderer that made it, see graphics_renderer::detach()
+	thread_id_t _thread; // the thread of its renderer, see game_window::on_thread()
+	SDL_Texture* tex() const { return on_thread() ? _texture : nullptr; }
 public:
 	graphics_texture(SDL_Texture* texture);
 	~graphics_texture();
 	void duplicate() { asAtomicInc(_refcount); }
-	void release() { if (asAtomicDec(_refcount) < 1) delete this; }
+	void release(); // see graphics_collect()
+	bool on_thread() const { return _thread == thread_current_thread_id(); }
 	int get_width() const { return _width; }
 	int get_height() const { return _height; }
-	bool is_valid() const { return _texture != nullptr; }
+	bool is_valid() const { return tex() != nullptr; }
 	bool set_color_mod(unsigned int r, unsigned int g, unsigned int b);
 	bool get_color_mod(unsigned int& r, unsigned int& g, unsigned int& b) const;
 	bool set_alpha_mod(unsigned int alpha);
 	unsigned int get_alpha_mod() const;
 	bool set_blend_mode(unsigned int mode);
 	unsigned int get_blend_mode() const;
-	SDL_Texture* get_texture() const { return _texture; }
+	SDL_Texture* get_texture() const { return tex(); }
 };
 
 class text_font {
@@ -162,7 +167,10 @@ class graphics_renderer {
 	bool _dirty;
 	bool _presented_once;
 	friend class graphics_texture;
+	friend void graphics_collect();
 	std::unordered_set<graphics_texture*> _textures; // made by create_texture() and not let go of yet
+	thread_id_t _thread; // the thread that made it, which is its window's (see game_window::on_thread()): on any other thread it acts as a renderer of a closed window
+	SDL_Renderer* rend() const { return on_thread() ? _renderer : nullptr; }
 public:
 	// SDL destroys a window's renderer, and every texture made by it, with the window: a renderer or texture the script still held kept the freed pointer, and a renderer or texture made later (show_window() again) could get its address, which the old object then drew on and, when let go of, destroyed. game_window::close() has every renderer of its window let go of its SDL renderer and textures first.
 	void detach();
@@ -171,26 +179,27 @@ public:
 	graphics_renderer(game_window* window);
 	~graphics_renderer();
 	void duplicate() { asAtomicInc(_refcount); }
-	void release() { if (asAtomicDec(_refcount) < 1) delete this; }
-	bool is_valid() const { return _renderer != nullptr; }
+	void release(); // see graphics_collect()
+	bool on_thread() const { return _thread == thread_current_thread_id(); }
+	bool is_valid() const { return rend() != nullptr; }
 	bool has_presented() const { return _presented_once; }
 	bool has_pending_frame() const { return _dirty; }
 	void require_initial_frame() { _presented_once = false; }
 	void mark_dirty() { _dirty = true; }
-	std::string get_name() const { return from_cstr(SDL_GetRendererName(_renderer)); }
-	bool clear() { bool ok = SDL_RenderClear(_renderer); if (ok) mark_dirty(); return ok; }
-	bool present() { bool ok = SDL_RenderPresent(_renderer); if (ok) { _dirty = false; _presented_once = true; } return ok; }
+	std::string get_name() const { return from_cstr(SDL_GetRendererName(rend())); }
+	bool clear() { bool ok = SDL_RenderClear(rend()); if (ok) mark_dirty(); return ok; }
+	bool present() { bool ok = SDL_RenderPresent(rend()); if (ok) { _dirty = false; _presented_once = true; } return ok; }
 	bool present_if_dirty() { return !_dirty || present(); }
-	bool draw_point(float x, float y) { bool ok = SDL_RenderPoint(_renderer, x, y); if (ok) mark_dirty(); return ok; }
-	bool draw_line(float x1, float y1, float x2, float y2) { bool ok = SDL_RenderLine(_renderer, x1, y1, x2, y2); if (ok) mark_dirty(); return ok; }
-	bool set_draw_color(unsigned int r, unsigned int g, unsigned int b, unsigned int a) { return SDL_SetRenderDrawColor(_renderer, (Uint8)r, (Uint8)g, (Uint8)b, (Uint8)a); }
-	bool set_scale(float sx, float sy) { return SDL_SetRenderScale(_renderer, sx, sy); }
-	bool set_vsync(int vsync) { return SDL_SetRenderVSync(_renderer, vsync); }
-	bool flush() { return _renderer && SDL_FlushRenderer(_renderer); } // Without a window there is no renderer, and unlike the other calls SDL_FlushRenderer() doesn't check for that.
-	bool set_color_scale(float scale) { return SDL_SetRenderColorScale(_renderer, scale); }
-	bool set_draw_blend_mode(unsigned int mode) { return SDL_SetRenderDrawBlendMode(_renderer, (SDL_BlendMode)mode); }
-	bool viewport_set() const { return SDL_RenderViewportSet(_renderer); }
-	bool clip_enabled() const { return SDL_RenderClipEnabled(_renderer); }
+	bool draw_point(float x, float y) { bool ok = SDL_RenderPoint(rend(), x, y); if (ok) mark_dirty(); return ok; }
+	bool draw_line(float x1, float y1, float x2, float y2) { bool ok = SDL_RenderLine(rend(), x1, y1, x2, y2); if (ok) mark_dirty(); return ok; }
+	bool set_draw_color(unsigned int r, unsigned int g, unsigned int b, unsigned int a) { return SDL_SetRenderDrawColor(rend(), (Uint8)r, (Uint8)g, (Uint8)b, (Uint8)a); }
+	bool set_scale(float sx, float sy) { return SDL_SetRenderScale(rend(), sx, sy); }
+	bool set_vsync(int vsync) { return SDL_SetRenderVSync(rend(), vsync); }
+	bool flush() { SDL_Renderer* r = rend(); return r && SDL_FlushRenderer(r); } // Without a window there is no renderer, and unlike the other calls SDL_FlushRenderer() doesn't check for that.
+	bool set_color_scale(float scale) { return SDL_SetRenderColorScale(rend(), scale); }
+	bool set_draw_blend_mode(unsigned int mode) { return SDL_SetRenderDrawBlendMode(rend(), (SDL_BlendMode)mode); }
+	bool viewport_set() const { return SDL_RenderViewportSet(rend()); }
+	bool clip_enabled() const { return SDL_RenderClipEnabled(rend()); }
 	bool get_draw_color(unsigned int& r, unsigned int& g, unsigned int& b, unsigned int& a) const;
 	bool get_scale(float& sx, float& sy) const;
 	bool get_vsync(int& vsync) const;
@@ -211,7 +220,8 @@ public:
 	bool get_viewport(int& x, int& y, int& w, int& h) const;
 	bool set_clip_rect(int x, int y, int w, int h);
 	bool get_clip_rect(int& x, int& y, int& w, int& h) const;
-	SDL_Renderer* get_renderer() const { return _renderer; }
+	SDL_Renderer* get_renderer() const { return rend(); }
 };
+void graphics_collect(); // see there
 
 void RegisterGraphics(asIScriptEngine* engine);

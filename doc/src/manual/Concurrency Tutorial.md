@@ -272,6 +272,17 @@ On the thread object there are a few other things you can do as well, such as ch
 
 Do not change the priority of a thread unless you absolutely have to. Messing around with the thread priority of a thread -- particularly with threads which do a lot of computationally expensive work -- can cause your entire system to hang and have other undesireable side-effects!
 
+### Windows, input and graphics on threads
+
+A window, and the renderer and textures used to draw on it, belong to the thread that made the window: usually the main thread, with `show_window()`. The operating system and SDL only allow that thread to work with them, and it can close the window at any moment. On any other thread:
+
+* Everything that only reads the window answers as it would on the window's thread: `get_window_width()`, `get_window_height()`, `get_window_text()`, `is_window_hidden()`, `is_window_active()`, `get_window_os_handle()`, `is_screen_keyboard_shown()`, `text_input_active()` and the `mouse_grab` property, and the read-only properties and getters of a `game_window` (its title, id, flags, size, position, display scale and the like). The answer is what the window's thread last saw: it follows the window's events as that thread handles them in `wait()`, and that thread's own changes to the window at once.
+* Everything that changes the window or draws on it fails as it does for a closed window (false, 0, an empty string or null), and nothing is drawn: the other methods of a `game_window`, every method of its `graphics_renderer` and its `graphics_texture` objects, `destroy_window()`, `hide_window()`, `focus_window()` and `set_window_fullscreen()`. `show_window()` returns null while another thread's window is open. A window's renderer and font are null there.
+* Mouse grabbing, starting and stopping text input and hiding or showing the mouse cursor do nothing, and the lists of keyboards, mice and touch devices, their names and the touch fingers are empty.
+* `get_window()` still returns the window object.
+
+So do your window, input and drawing work on the thread that showed the window, and pass what other threads need (or produce) through variables protected by the synchronization primitives above. A window object, renderer or texture that another thread lets go of last is destroyed at its own thread's next `wait()`, or when the window or the program ends.
+
 ### Golden rules of threads
 
 When using threads, always remember:

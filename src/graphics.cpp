@@ -101,7 +101,7 @@ graphic* create_surface(int width, int height, unsigned int pixel_format) {
 	return s ? new graphic(s) : nullptr;
 }
 
-graphics_texture::graphics_texture(SDL_Texture* texture) : _texture(texture), _refcount(1), _width(0), _height(0) {
+graphics_texture::graphics_texture(SDL_Texture* texture) : _texture(texture), _refcount(1), _width(0), _height(0), _thread(thread_current_thread_id()) {
 	if (_texture) {
 		float w, h;
 		SDL_GetTextureSize(_texture, &w, &h);
@@ -111,6 +111,63 @@ graphics_texture::graphics_texture(SDL_Texture* texture) : _texture(texture), _r
 }
 
 static std::recursive_mutex& graphics_renderers_mutex(); // see graphics_renderer
+// Renderers and textures let go of last on a thread other than the one that made them, with their SDL object still there, kept for that thread to destroy, as game_window::release() keeps windows: graphics_collect() destroys them at that thread's next wait() or refresh_window(), or anywhere once their window has closed (its renderers then let go of their SDL objects, see graphics_renderer::window_closing()).
+static std::vector<graphics_texture*>& graphics_textures_deferred() {
+	static auto* v = new std::vector<graphics_texture*>;
+	return *v;
+}
+static std::vector<graphics_renderer*>& graphics_renderers_deferred() {
+	static auto* v = new std::vector<graphics_renderer*>;
+	return *v;
+}
+void graphics_texture::release() {
+	if (asAtomicDec(_refcount) > 0) return;
+	if (!on_thread()) {
+		std::lock_guard<std::recursive_mutex> lock(graphics_renderers_mutex());
+		if (_texture) {
+			graphics_textures_deferred().push_back(this);
+			return;
+		}
+	}
+	delete this;
+}
+void graphics_renderer::release() {
+	if (asAtomicDec(_refcount) > 0) return;
+	if (!on_thread()) {
+		std::lock_guard<std::recursive_mutex> lock(graphics_renderers_mutex());
+		if (_renderer) {
+			graphics_renderers_deferred().push_back(this);
+			return;
+		}
+	}
+	delete this;
+}
+void graphics_collect() {
+	std::vector<graphics_renderer*> renderers;
+	std::vector<graphics_texture*> textures;
+	{
+		std::lock_guard<std::recursive_mutex> lock(graphics_renderers_mutex());
+		std::vector<graphics_renderer*>& dr = graphics_renderers_deferred();
+		for (size_t i = 0; i < dr.size();) {
+			if (dr[i]->on_thread() || !dr[i]->_renderer) {
+				renderers.push_back(dr[i]);
+				dr.erase(dr.begin() + i);
+			} else i++;
+		}
+	}
+	for (graphics_renderer* r : renderers) delete r; // their textures let go of their SDL objects with them
+	{
+		std::lock_guard<std::recursive_mutex> lock(graphics_renderers_mutex());
+		std::vector<graphics_texture*>& dt = graphics_textures_deferred();
+		for (size_t i = 0; i < dt.size();) {
+			if (dt[i]->on_thread() || !dt[i]->_texture) {
+				textures.push_back(dt[i]);
+				dt.erase(dt.begin() + i);
+			} else i++;
+		}
+	}
+	for (graphics_texture* t : textures) delete t;
+}
 graphics_texture::~graphics_texture() {
 	SDL_Texture* texture;
 	{
@@ -123,33 +180,33 @@ graphics_texture::~graphics_texture() {
 }
 
 bool graphics_texture::set_color_mod(unsigned int r, unsigned int g, unsigned int b) {
-	return SDL_SetTextureColorMod(_texture, (Uint8)r, (Uint8)g, (Uint8)b);
+	return SDL_SetTextureColorMod(tex(), (Uint8)r, (Uint8)g, (Uint8)b);
 }
 
 bool graphics_texture::get_color_mod(unsigned int& r, unsigned int& g, unsigned int& b) const {
 	Uint8 rv = 0, gv = 0, bv = 0;
-	bool ok = SDL_GetTextureColorMod(_texture, &rv, &gv, &bv);
+	bool ok = SDL_GetTextureColorMod(tex(), &rv, &gv, &bv);
 	r = rv; g = gv; b = bv;
 	return ok;
 }
 
 bool graphics_texture::set_alpha_mod(unsigned int alpha) {
-	return SDL_SetTextureAlphaMod(_texture, (Uint8)alpha);
+	return SDL_SetTextureAlphaMod(tex(), (Uint8)alpha);
 }
 
 unsigned int graphics_texture::get_alpha_mod() const {
 	Uint8 alpha = 255;
-	SDL_GetTextureAlphaMod(_texture, &alpha);
+	SDL_GetTextureAlphaMod(tex(), &alpha);
 	return (unsigned int)alpha;
 }
 
 bool graphics_texture::set_blend_mode(unsigned int mode) {
-	return SDL_SetTextureBlendMode(_texture, (SDL_BlendMode)mode);
+	return SDL_SetTextureBlendMode(tex(), (SDL_BlendMode)mode);
 }
 
 unsigned int graphics_texture::get_blend_mode() const {
 	SDL_BlendMode mode = SDL_BLENDMODE_NONE;
-	SDL_GetTextureBlendMode(_texture, &mode);
+	SDL_GetTextureBlendMode(tex(), &mode);
 	return (unsigned int)mode;
 }
 
@@ -287,10 +344,10 @@ static std::unordered_set<graphics_renderer*>& graphics_renderers() {
 	static auto* s = new std::unordered_set<graphics_renderer*>;
 	return *s;
 }
-graphics_renderer::graphics_renderer() : _renderer(nullptr), _refcount(1), _dirty(false), _presented_once(false) {
-	// Default renderer attaches to whichever window SDL currently considers the focused one, if any.
+graphics_renderer::graphics_renderer() : _renderer(nullptr), _refcount(1), _dirty(false), _presented_once(false), _thread(thread_current_thread_id()) {
+	// Default renderer attaches to whichever window SDL currently considers the focused one, if any, when the calling thread made it (see game_window::on_thread()).
 	SDL_Window* win = SDL_GetKeyboardFocus();
-	if (win) {
+	if (win && sdl_window_on_this_thread(win)) {
 		#ifdef __ANDROID__
 		android_renderer_creation_guard pause_guard; // A pause must not reach SDL while it creates the renderer, see android.h.
 		#endif
@@ -305,7 +362,7 @@ graphics_renderer::graphics_renderer() : _renderer(nullptr), _refcount(1), _dirt
 	}
 }
 
-graphics_renderer::graphics_renderer(game_window* window) : _renderer(nullptr), _refcount(1), _dirty(false), _presented_once(false) {
+graphics_renderer::graphics_renderer(game_window* window) : _renderer(nullptr), _refcount(1), _dirty(false), _presented_once(false), _thread(thread_current_thread_id()) {
 	if (window) {
 		#ifdef __ANDROID__
 		android_renderer_creation_guard pause_guard; // A pause must not reach SDL while it creates the renderer, see android.h.
@@ -349,63 +406,63 @@ void graphics_renderer::window_closing(SDL_Window* window) {
 
 bool graphics_renderer::get_draw_color(unsigned int& r, unsigned int& g, unsigned int& b, unsigned int& a) const {
 	Uint8 rv = 0, gv = 0, bv = 0, av = 0;
-	bool ok = SDL_GetRenderDrawColor(_renderer, &rv, &gv, &bv, &av);
+	bool ok = SDL_GetRenderDrawColor(rend(), &rv, &gv, &bv, &av);
 	r = rv; g = gv; b = bv; a = av;
 	return ok;
 }
 
 bool graphics_renderer::get_scale(float& sx, float& sy) const {
 	sx = sy = 0;
-	return SDL_GetRenderScale(_renderer, &sx, &sy);
+	return SDL_GetRenderScale(rend(), &sx, &sy);
 }
 
 bool graphics_renderer::get_vsync(int& vsync) const {
 	vsync = 0;
-	return SDL_GetRenderVSync(_renderer, &vsync);
+	return SDL_GetRenderVSync(rend(), &vsync);
 }
 
 float graphics_renderer::get_color_scale() const {
 	float scale = 1.0f;
-	SDL_GetRenderColorScale(_renderer, &scale);
+	SDL_GetRenderColorScale(rend(), &scale);
 	return scale;
 }
 
 unsigned int graphics_renderer::get_draw_blend_mode() const {
 	SDL_BlendMode mode = SDL_BLENDMODE_NONE;
-	SDL_GetRenderDrawBlendMode(_renderer, &mode);
+	SDL_GetRenderDrawBlendMode(rend(), &mode);
 	return (unsigned int)mode;
 }
 
 bool graphics_renderer::get_output_size(int& w, int& h) const {
 	w = h = 0;
-	return SDL_GetRenderOutputSize(_renderer, &w, &h);
+	return SDL_GetRenderOutputSize(rend(), &w, &h);
 }
 
 bool graphics_renderer::get_current_output_size(int& w, int& h) const {
 	w = h = 0;
-	return SDL_GetCurrentRenderOutputSize(_renderer, &w, &h);
+	return SDL_GetCurrentRenderOutputSize(rend(), &w, &h);
 }
 
 bool graphics_renderer::draw_rect(float x, float y, float w, float h) {
 	SDL_FRect r = {x, y, w, h};
-	bool ok = SDL_RenderRect(_renderer, &r);
+	bool ok = SDL_RenderRect(rend(), &r);
 	if (ok) mark_dirty();
 	return ok;
 }
 
 bool graphics_renderer::fill_rect(float x, float y, float w, float h) {
 	SDL_FRect r = {x, y, w, h};
-	bool ok = SDL_RenderFillRect(_renderer, &r);
+	bool ok = SDL_RenderFillRect(rend(), &r);
 	if (ok) mark_dirty();
 	return ok;
 }
 
 bool graphics_renderer::render_graphic(graphic* gfx, float dst_x, float dst_y) {
 	if (!gfx || !gfx->get_surface()) return false;
-	SDL_Texture* tex = SDL_CreateTextureFromSurface(_renderer, gfx->get_surface());
+	SDL_Texture* tex = SDL_CreateTextureFromSurface(rend(), gfx->get_surface());
 	if (!tex) return false;
 	SDL_FRect dst = {dst_x, dst_y, (float)gfx->get_width(), (float)gfx->get_height()};
-	bool ok = SDL_RenderTexture(_renderer, tex, nullptr, &dst);
+	bool ok = SDL_RenderTexture(rend(), tex, nullptr, &dst);
 	SDL_DestroyTexture(tex);
 	if (ok) mark_dirty();
 	return ok;
@@ -413,11 +470,11 @@ bool graphics_renderer::render_graphic(graphic* gfx, float dst_x, float dst_y) {
 
 bool graphics_renderer::render_graphic_ex(graphic* gfx, float src_x, float src_y, float src_w, float src_h, float dst_x, float dst_y, float dst_w, float dst_h) {
 	if (!gfx || !gfx->get_surface()) return false;
-	SDL_Texture* tex = SDL_CreateTextureFromSurface(_renderer, gfx->get_surface());
+	SDL_Texture* tex = SDL_CreateTextureFromSurface(rend(), gfx->get_surface());
 	if (!tex) return false;
 	SDL_FRect src = {src_x, src_y, src_w, src_h};
 	SDL_FRect dst = {dst_x, dst_y, dst_w, dst_h};
-	bool ok = SDL_RenderTexture(_renderer, tex, &src, &dst);
+	bool ok = SDL_RenderTexture(rend(), tex, &src, &dst);
 	SDL_DestroyTexture(tex);
 	if (ok) mark_dirty();
 	return ok;
@@ -425,7 +482,7 @@ bool graphics_renderer::render_graphic_ex(graphic* gfx, float src_x, float src_y
 
 graphics_texture* graphics_renderer::create_texture(graphic* gfx) {
 	if (!gfx || !gfx->get_surface()) return nullptr;
-	SDL_Texture* tex = SDL_CreateTextureFromSurface(_renderer, gfx->get_surface());
+	SDL_Texture* tex = SDL_CreateTextureFromSurface(rend(), gfx->get_surface());
 	if (!tex) return nullptr;
 	graphics_texture* t = new graphics_texture(tex);
 	std::lock_guard<std::recursive_mutex> lock(graphics_renderers_mutex());
@@ -437,7 +494,7 @@ graphics_texture* graphics_renderer::create_texture(graphic* gfx) {
 bool graphics_renderer::render_texture(graphics_texture* tex, float dst_x, float dst_y) {
 	if (!tex || !tex->get_texture()) return false;
 	SDL_FRect dst = {dst_x, dst_y, (float)tex->get_width(), (float)tex->get_height()};
-	bool ok = SDL_RenderTexture(_renderer, tex->get_texture(), nullptr, &dst);
+	bool ok = SDL_RenderTexture(rend(), tex->get_texture(), nullptr, &dst);
 	if (ok) mark_dirty();
 	return ok;
 }
@@ -446,43 +503,43 @@ bool graphics_renderer::render_texture_ex(graphics_texture* tex, float src_x, fl
 	if (!tex || !tex->get_texture()) return false;
 	SDL_FRect src = {src_x, src_y, src_w, src_h};
 	SDL_FRect dst = {dst_x, dst_y, dst_w, dst_h};
-	bool ok = SDL_RenderTexture(_renderer, tex->get_texture(), &src, &dst);
+	bool ok = SDL_RenderTexture(rend(), tex->get_texture(), &src, &dst);
 	if (ok) mark_dirty();
 	return ok;
 }
 
 bool graphics_renderer::set_logical_presentation(int w, int h, unsigned int mode) {
-	return SDL_SetRenderLogicalPresentation(_renderer, w, h, (SDL_RendererLogicalPresentation)mode);
+	return SDL_SetRenderLogicalPresentation(rend(), w, h, (SDL_RendererLogicalPresentation)mode);
 }
 
 bool graphics_renderer::get_logical_presentation(int& w, int& h, unsigned int& mode) const {
 	w = h = 0;
 	SDL_RendererLogicalPresentation m = SDL_LOGICAL_PRESENTATION_DISABLED;
-	bool ok = SDL_GetRenderLogicalPresentation(_renderer, &w, &h, &m);
+	bool ok = SDL_GetRenderLogicalPresentation(rend(), &w, &h, &m);
 	mode = (unsigned int)m;
 	return ok;
 }
 
 bool graphics_renderer::set_viewport(int x, int y, int w, int h) {
 	SDL_Rect r = {x, y, w, h};
-	return SDL_SetRenderViewport(_renderer, &r);
+	return SDL_SetRenderViewport(rend(), &r);
 }
 
 bool graphics_renderer::get_viewport(int& x, int& y, int& w, int& h) const {
 	SDL_Rect r = {0, 0, 0, 0};
-	bool ok = SDL_GetRenderViewport(_renderer, &r);
+	bool ok = SDL_GetRenderViewport(rend(), &r);
 	x = r.x; y = r.y; w = r.w; h = r.h;
 	return ok;
 }
 
 bool graphics_renderer::set_clip_rect(int x, int y, int w, int h) {
 	SDL_Rect r = {x, y, w, h};
-	return SDL_SetRenderClipRect(_renderer, &r);
+	return SDL_SetRenderClipRect(rend(), &r);
 }
 
 bool graphics_renderer::get_clip_rect(int& x, int& y, int& w, int& h) const {
 	SDL_Rect r = {0, 0, 0, 0};
-	bool ok = SDL_GetRenderClipRect(_renderer, &r);
+	bool ok = SDL_GetRenderClipRect(rend(), &r);
 	x = r.x; y = r.y; w = r.w; h = r.h;
 	return ok;
 }

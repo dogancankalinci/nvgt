@@ -87,7 +87,7 @@ int message_box(const std::string& title, const std::string& text, const std::ve
 		sdlbtn.buttonID = i + 1;
 		sdlbtn.text = buttons[i].c_str() + skip;
 	}
-	SDL_MessageBoxData box = {mb_flags, g_window ? g_window->get_sdl_window() : nullptr, title.c_str(), text.c_str(), int(sdlbuttons.size()), sdlbuttons.data(), NULL};
+	SDL_MessageBoxData box = {mb_flags, window_thread_sdl_window(), title.c_str(), text.c_str(), int(sdlbuttons.size()), sdlbuttons.data(), NULL};
 	int ret;
 	if (!SDL_ShowMessageBox(&box, &ret)) return -1;
 	return ret;
@@ -182,7 +182,7 @@ std::string simple_file_dialog(const std::string& filters, const std::string& de
 	end.name = nullptr;
 	end.pattern = nullptr;
 	nvgt_file_dialog_info fdi;
-	SDL_Window* parent_window = g_window ? g_window->get_sdl_window() : nullptr;
+	SDL_Window* parent_window = window_thread_sdl_window();
 #ifdef _WIN32
 	parent_window = nullptr; // Passing nullptr for the parent window on Windows prevents the OS from attaching the background thread's input queue to the main thread's, And it seems to fix the extreme lag in the open and save as dialogs As the wait(5); doesn't effect the dialogs. 
 #endif
@@ -209,6 +209,7 @@ void next_keyboard_layout() {
 	ActivateKeyboardLayout((HKL)HKL_NEXT, 0);
 	#endif
 }
+static game_window* window_here(); // see there
 std::string input_box(const std::string& title, const std::string& text, const std::string& default_value) {
 	#ifdef _WIN32
 	std::wstring titleU, textU, defaultU;
@@ -222,11 +223,11 @@ std::string input_box(const std::string& title, const std::string& text, const s
 	}
 	std::string resultA;
 	Poco::UnicodeConverter::convert(r, resultA);
-	if (g_window) g_window->raise();
+	if (game_window* w = window_here()) w->raise();
 	return resultA;
 	#elif defined(__APPLE__)
 	std::string r = apple_input_box(title, text, default_value, false, false);
-	if (g_window) g_window->raise();
+	if (game_window* w = window_here()) w->raise();
 	if (r == "\xff") {
 		g_LastError = -12;
 		return "";
@@ -274,13 +275,76 @@ static std::unordered_set<game_window*>& game_windows() {
 	static auto* s = new std::unordered_set<game_window*>;
 	return *s;
 }
-void game_windows_quit() {
-	std::lock_guard<std::recursive_mutex> lock(game_windows_mutex()); // close() lets go of no script object, so no script code runs under it
-	std::vector<game_window*> open(game_windows().begin(), game_windows().end());
-	for (game_window* w : open) w->close();
-	game_windows().clear();
+// Window objects let go of last on a thread other than the one that made them, with their window still open, kept for that thread to destroy (see game_window::on_thread()): SDL destroys a window, renderer or texture only on its own thread (on Windows, DestroyWindow() fails on any other one and the window stays on screen). game_windows_collect() destroys them at that thread's next wait() or refresh_window(), game_windows_quit() at the latest.
+static std::vector<game_window*>& game_windows_deferred() {
+	static auto* v = new std::vector<game_window*>;
+	return *v;
 }
-game_window::game_window(const std::string& title, unsigned int w, unsigned int h, unsigned int flags) : _window(nullptr), _owns_window(true), _native_window(nullptr), _refcount(1) {
+void game_window::release() {
+	if (asAtomicDec(_refcount) > 0) return;
+	if (!on_thread()) {
+		std::lock_guard<std::recursive_mutex> lock(game_windows_mutex());
+		if (_window) {
+			game_windows_deferred().push_back(this);
+			return;
+		}
+	}
+	delete this;
+}
+void game_windows_collect() {
+	std::vector<game_window*> mine;
+	{
+		std::lock_guard<std::recursive_mutex> lock(game_windows_mutex());
+		std::vector<game_window*>& deferred = game_windows_deferred();
+		for (size_t i = 0; i < deferred.size();) {
+			if (deferred[i]->on_thread() || !deferred[i]->get_sdl_window()) {
+				mine.push_back(deferred[i]);
+				deferred.erase(deferred.begin() + i);
+			} else i++;
+		}
+	}
+	for (game_window* w : mine) delete w;
+	graphics_collect();
+}
+void game_windows_quit() {
+	std::vector<game_window*> gone;
+	{
+		std::lock_guard<std::recursive_mutex> lock(game_windows_mutex()); // close() lets go of no script object, so no script code runs under it
+		std::vector<game_window*> open(game_windows().begin(), game_windows().end());
+		for (game_window* w : open) w->close();
+		game_windows().clear();
+		gone.swap(game_windows_deferred()); // closed now
+	}
+	for (game_window* w : gone) delete w;
+	graphics_collect(); // every window's renderers and textures let go of their SDL objects with it
+}
+// g_window when the calling thread made it, else null, as when there is none (see game_window::on_thread()). g_window is set and cleared under game_windows_mutex(), only by the thread that made it; that thread can go on using what this returns.
+static game_window* window_here() {
+	std::lock_guard<std::recursive_mutex> lock(game_windows_mutex());
+	return g_window && g_window->on_thread() ? g_window.get() : nullptr;
+}
+// g_window with a reference of its own, on whatever thread, for the read-only queries (see game_window::window_state). The reference is added under the lock g_window is cleared under.
+Poco::AutoPtr<game_window> game_window_ref() {
+	std::lock_guard<std::recursive_mutex> lock(game_windows_mutex());
+	return g_window;
+}
+SDL_Window* window_thread_sdl_window() {
+	game_window* w = window_here();
+	return w ? w->get_sdl_window() : nullptr;
+}
+bool window_thread_free() {
+	std::lock_guard<std::recursive_mutex> lock(game_windows_mutex());
+	return !g_window || g_window->on_thread();
+}
+bool sdl_window_on_this_thread(SDL_Window* window) {
+	if (!window) return false;
+	std::lock_guard<std::recursive_mutex> lock(game_windows_mutex());
+	for (game_window* w : game_windows()) {
+		if (w->get_sdl_window() == window) return w->on_thread();
+	}
+	return false;
+}
+game_window::game_window(const std::string& title, unsigned int w, unsigned int h, unsigned int flags) : _window(nullptr), _owns_window(true), _native_window(nullptr), _thread(thread_current_thread_id()), _refcount(1) {
 	if (Poco::Environment::os() == POCO_OS_LINUX) flags |= SDL_WINDOW_FULLSCREEN;
 	_window = SDL_CreateWindow(title.c_str(), (int)w, (int)h, flags);
 	if (!_window) return;
@@ -301,14 +365,121 @@ game_window::game_window(const std::string& title, unsigned int w, unsigned int 
 	SDL_RaiseWindow(_window);
 	voice_over_window_created(this);
 	#endif
+	update_state();
 }
-game_window::game_window(SDL_Window* window) : _window(window), _owns_window(false), _native_window(nullptr), _refcount(1) {
+game_window::game_window(SDL_Window* window) : _window(window), _owns_window(false), _native_window(nullptr), _thread(thread_current_thread_id()), _refcount(1) {
 	if (!_window) return;
 	// Renderer created lazily on first graphics use; see ensure_renderer().
 	SDL_PropertiesID props = SDL_GetWindowProperties(_window);
 	#ifdef NATIVE_WINDOW_SDL_PROP
 	_native_window = (native_window_t)SDL_GetPointerProperty(props, NATIVE_WINDOW_SDL_PROP, nullptr);
 	#endif
+	update_state();
+}
+void game_window::update_state() {
+	if (_window && !on_thread()) return; // see window_state; a closed window reads as one anywhere, below
+	// The same calls the queries make on the window's thread, so that the answers are the same; with no window, SDL's answers for a null one.
+	window_state s;
+	SDL_Window* w = _window;
+	s.title = from_cstr(SDL_GetWindowTitle(w));
+	s.id = SDL_GetWindowID(w);
+	s.flags = SDL_GetWindowFlags(w);
+	s.pixel_density = SDL_GetWindowPixelDensity(w);
+	s.display_scale = SDL_GetWindowDisplayScale(w);
+	s.pixel_format = (unsigned int)SDL_GetWindowPixelFormat(w);
+	s.keyboard_grab = SDL_GetWindowKeyboardGrab(w);
+	s.mouse_grab = SDL_GetWindowMouseGrab(w);
+	s.opacity = SDL_GetWindowOpacity(w);
+	s.position_ok = SDL_GetWindowPosition(w, &s.x, &s.y);
+	s.size_ok = SDL_GetWindowSize(w, &s.w, &s.h);
+	s.pixels_ok = SDL_GetWindowSizeInPixels(w, &s.pixel_w, &s.pixel_h);
+	s.min_ok = SDL_GetWindowMinimumSize(w, &s.min_w, &s.min_h);
+	s.max_ok = SDL_GetWindowMaximumSize(w, &s.max_w, &s.max_h);
+	s.aspect_ok = SDL_GetWindowAspectRatio(w, &s.min_aspect, &s.max_aspect);
+	s.borders_ok = SDL_GetWindowBordersSize(w, &s.top, &s.left, &s.bottom, &s.right);
+	s.has_surface = SDL_WindowHasSurface(w);
+	s.surface_vsync_ok = SDL_GetWindowSurfaceVSync(w, &s.surface_vsync);
+	s.progress_state = (unsigned int)SDL_GetWindowProgressState(w);
+	s.progress_value = SDL_GetWindowProgressValue(w);
+	s.focused = w && w == SDL_GetKeyboardFocus();
+	s.text_input_active = SDL_TextInputActive(w);
+	s.screen_keyboard_shown = SDL_ScreenKeyboardShown(w);
+	s.native_window = _native_window;
+	std::lock_guard<std::mutex> lock(_state_mutex);
+	_state = std::move(s);
+}
+bool game_window::get_position(int& x, int& y) const {
+	x = y = 0;
+	if (on_thread()) return SDL_GetWindowPosition(_window, &x, &y);
+	window_state s = state();
+	x = s.x;
+	y = s.y;
+	return s.position_ok;
+}
+bool game_window::get_size(int& w, int& h) const {
+	w = h = 0;
+	if (on_thread()) return SDL_GetWindowSize(_window, &w, &h);
+	window_state s = state();
+	w = s.w;
+	h = s.h;
+	return s.size_ok;
+}
+bool game_window::get_size_in_pixels(int& w, int& h) const {
+	w = h = 0;
+	if (on_thread()) return SDL_GetWindowSizeInPixels(_window, &w, &h);
+	window_state s = state();
+	w = s.pixel_w;
+	h = s.pixel_h;
+	return s.pixels_ok;
+}
+bool game_window::get_minimum_size(int& w, int& h) const {
+	if (on_thread()) return SDL_GetWindowMinimumSize(_window, &w, &h);
+	window_state s = state();
+	w = s.min_w;
+	h = s.min_h;
+	return s.min_ok;
+}
+bool game_window::get_maximum_size(int& w, int& h) const {
+	if (on_thread()) return SDL_GetWindowMaximumSize(_window, &w, &h);
+	window_state s = state();
+	w = s.max_w;
+	h = s.max_h;
+	return s.max_ok;
+}
+bool game_window::get_aspect_ratio(float& min_aspect, float& max_aspect) const {
+	if (on_thread()) return SDL_GetWindowAspectRatio(_window, &min_aspect, &max_aspect);
+	window_state s = state();
+	min_aspect = s.min_aspect;
+	max_aspect = s.max_aspect;
+	return s.aspect_ok;
+}
+bool game_window::get_borders_size(int& top, int& left, int& bottom, int& right) const {
+	if (on_thread()) return SDL_GetWindowBordersSize(_window, &top, &left, &bottom, &right);
+	window_state s = state();
+	top = s.top;
+	left = s.left;
+	bottom = s.bottom;
+	right = s.right;
+	return s.borders_ok;
+}
+bool game_window::get_surface_vsync(int& vsync) const {
+	if (on_thread()) return SDL_GetWindowSurfaceVSync(_window, &vsync);
+	window_state s = state();
+	vsync = s.surface_vsync;
+	return s.surface_vsync_ok;
+}
+// The windows the calling thread made: the one an event is for (by its id), or all of them for 0. See game_window::update_state().
+static void update_window_states(SDL_WindowID id) {
+	std::vector<Poco::AutoPtr<game_window>> mine;
+	{
+		std::lock_guard<std::recursive_mutex> lock(game_windows_mutex());
+		for (game_window* w : game_windows()) {
+			if (!w->on_thread() || (id && SDL_GetWindowID(w->get_sdl_window()) != id)) continue;
+			w->duplicate();
+			mine.emplace_back(w, false);
+		}
+	}
+	for (auto& w : mine) w->update_state();
 }
 game_window::~game_window() {
 	close();
@@ -324,12 +495,17 @@ void game_window::close() {
 	}
 	_window = nullptr;
 	_native_window = nullptr;
+	update_state(); // a closed window's, on any thread
 }
 graphics_renderer* game_window::ensure_renderer() {
 	// Create the SDL renderer the first time graphics are actually drawn. Until then get_renderer()
 	// stays null so refresh_window's per-frame present() (via peek_renderer) is skipped entirely,
 	// which is what keeps audio-only games off the Android eglSwapBuffers/ActivityMutex ANR path.
-	if (!_renderer && _window) _renderer = new graphics_renderer(this);
+	if (!on_thread()) return nullptr; // see on_thread()
+	if (!_renderer && _window) {
+		_renderer = new graphics_renderer(this);
+		update_state(); // a renderer can give the window a surface
+	}
 	return _renderer.get();
 }
 bool game_window::clear(unsigned int r, unsigned int g, unsigned int b) {
@@ -343,7 +519,7 @@ void game_window::draw_text(const std::string& text, float x, float y, unsigned 
 	if (surf && surf->is_valid()) _renderer->render_graphic(surf.get(), x, y);
 }
 uint64_t game_window::measure_text(const std::string& text) const {
-	if (!_font) return 0;
+	if (!on_thread() || !_font) return 0;
 	int w = 0, h = 0;
 	_font->get_string_size(text, w, h);
 	return ((uint64_t)w << 32) | (uint32_t)h;
@@ -354,7 +530,7 @@ void game_window::draw_text_wrapped(const std::string& text, float x, float y, i
 	if (surf && surf->is_valid()) _renderer->render_graphic(surf.get(), x, y);
 }
 uint64_t game_window::measure_text_wrapped(const std::string& text, int wrap_width) const {
-	if (!_font) return 0;
+	if (!on_thread() || !_font) return 0;
 	int w = 0, h = 0;
 	_font->get_string_size_wrapped(text, wrap_width, w, h);
 	return ((uint64_t)w << 32) | (uint32_t)h;
@@ -445,39 +621,54 @@ void game_window::draw_menu(CScriptArray* items, float x, float y) {
 	}
 }
 
-Poco::AutoPtr<game_window> g_window;
-thread_id_t g_WindowThreadId = 0;
+Poco::AutoPtr<game_window> g_window; // set and cleared under game_windows_mutex(), see window_here()
 
 static std::vector<SDL_Event> post_events; // holds events that should be processed after the next wait() call.
 bool set_application_name(const std::string& name) {
 	return SDL_SetHintWithPriority(SDL_HINT_APP_NAME, name.c_str(), SDL_HINT_OVERRIDE);
 }
 game_window* ShowNVGTWindow(const std::string& window_title, unsigned int flags) {
-	if (g_window) {
-		g_window->set_title(window_title);
-		if (g_window->get_flags() & SDL_WINDOW_HIDDEN) {
-			g_window->show();
-			g_window->raise();
+	game_window* shown;
+	{
+		std::lock_guard<std::recursive_mutex> lock(game_windows_mutex());
+		if (g_window && !g_window->on_thread()) return nullptr; // another thread's window, see game_window::on_thread()
+		shown = g_window.get();
+	}
+	if (shown) {
+		shown->set_title(window_title);
+		if (shown->get_flags() & SDL_WINDOW_HIDDEN) {
+			shown->show();
+			shown->raise();
 		}
-		g_window->duplicate();
-		return g_window.get();
+		shown->duplicate();
+		return shown;
 	}
 	InputInit();
 	TTF_Init();
-	g_window = new game_window(window_title, 640, 640, flags);
-	if (!g_window->get_sdl_window()) {
-		g_window = nullptr;
+	Poco::AutoPtr<game_window> made(new game_window(window_title, 640, 640, flags));
+	if (!made->get_sdl_window()) {
+		TTF_Quit();
 		return nullptr;
 	}
-	g_WindowThreadId = thread_current_thread_id();
+	bool set = false;
+	{
+		std::lock_guard<std::recursive_mutex> lock(game_windows_mutex());
+		if (!g_window) {
+			g_window = made;
+			set = true;
+		}
+	}
+	if (!set) { // another thread showed its window meanwhile: this one goes with made
+		TTF_Quit();
+		return nullptr;
+	}
 	#ifdef __APPLE__
-	voice_over_game_window(g_window.get());
+	voice_over_game_window(made.get());
 	#endif
-	g_window->duplicate();
-	return g_window.get();
+	made->duplicate();
+	return made.get();
 }
-bool DestroyNVGTWindow() {
-	if (!g_window) return false;
+static bool destroy_game_window(game_window* w) {
 	#ifdef __APPLE__
 	voice_over_game_window(nullptr);
 	#endif
@@ -490,57 +681,91 @@ bool DestroyNVGTWindow() {
 	// game_window show_window() returned: letting go of g_window alone left it alive through SDL_VideoQuit (the deadlock above), and the
 	// held object destroyed it later, possibly after show_window() had made a new window at the same address, which it then destroyed.
 	// The held object stays valid, with no window: its methods fail as SDL's do for a null window.
-	g_window->close();
-	g_window = nullptr;
+	w->close();
+	{
+		std::lock_guard<std::recursive_mutex> lock(game_windows_mutex());
+		g_window = nullptr;
+	}
 	InputQuitVideo();
 	TTF_Quit();
 	return true;
 }
+bool DestroyNVGTWindow() {
+	game_window* w = window_here();
+	if (!w) return false; // none, or another thread's (see game_window::on_thread())
+	return destroy_game_window(w);
+}
+// The program's end (nvgt.cpp's uninitialize()) destroys the window whichever thread made it, before SDL quits (see destroy_game_window()), after the script has ended. exit() is no sign of that: it sets g_shutting_down while script threads still run.
+bool DestroyNVGTWindowAtExit() {
+	game_window* w;
+	{
+		std::lock_guard<std::recursive_mutex> lock(game_windows_mutex());
+		w = g_window.get();
+	}
+	if (!w) return false;
+	return destroy_game_window(w);
+}
 bool HideNVGTWindow() {
-	if (!g_window) return false;
-	g_window->hide();
+	game_window* w = window_here();
+	if (!w) return false;
+	w->hide();
 	return true;
 }
 bool FocusNVGTWindow() {
-	if (!g_window) return false;
-	g_window->raise();
+	game_window* w = window_here();
+	if (!w) return false;
+	w->raise();
 	return true;
 }
+// The read-only queries below answer on any thread, see game_window::window_state.
 bool WindowIsFocused() {
 #ifdef __ANDROID__
 	return android_is_window_active();
 #else
-	return g_window && g_window->get_sdl_window() == SDL_GetKeyboardFocus();
+	Poco::AutoPtr<game_window> w = game_window_ref();
+	return w && w->is_focused();
 #endif
 }
 bool WindowIsHidden() {
-	return g_window && (g_window->get_flags() & SDL_WINDOW_HIDDEN) != 0;
+	Poco::AutoPtr<game_window> w = game_window_ref();
+	return w && (w->get_flags() & SDL_WINDOW_HIDDEN) != 0;
 }
 bool set_window_fullscreen(bool fullscreen) {
-	return g_window && g_window->set_fullscreen(fullscreen);
+	game_window* w = window_here();
+	return w && w->set_fullscreen(fullscreen);
 }
 int get_window_width() {
-	if (!g_window) return 0;
+	Poco::AutoPtr<game_window> win = game_window_ref();
+	if (!win) return 0;
 	int w, h;
-	g_window->get_size(w, h);
+	win->get_size(w, h);
 	return w;
 }
 int get_window_height() {
-	if (!g_window) return 0;
+	Poco::AutoPtr<game_window> win = game_window_ref();
+	if (!win) return 0;
 	int w, h;
-	g_window->get_size(w, h);
+	win->get_size(w, h);
 	return h;
 }
 std::string get_window_text() {
-	return g_window ? g_window->get_title() : "";
+	Poco::AutoPtr<game_window> w = game_window_ref();
+	return w ? w->get_title() : "";
 }
 // Returned as the script's uint64: as a void*, a 32-bit target returned 4 bytes and the script read the other 4 from whatever the
 // function left in the register next to them.
 asQWORD get_window_os_handle() {
-	return g_window ? asQWORD(uintptr_t(reinterpret_cast<void*>(g_window->get_native_window()))) : 0;
+	Poco::AutoPtr<game_window> w = game_window_ref();
+	return w ? asQWORD(uintptr_t(reinterpret_cast<void*>(w->get_native_window()))) : 0;
 }
-game_window* get_window() { return g_window.get(); }
+// The reference is added under the lock g_window is cleared under: as a game_window@+ return, AngelScript added it after this returned, when the window thread could have let go of the object meanwhile. On another thread than the window's, the object's read-only queries answer from what the window's thread last saw and the rest act as on a closed window (see game_window::on_thread()).
+game_window* get_window() {
+	return game_window_ref().duplicate();
+}
 void handle_sdl_event(SDL_Event* evt) {
+	// What the read-only queries answer on other threads follows the window's events, see game_window::window_state.
+	if (evt->type >= SDL_EVENT_WINDOW_FIRST && evt->type <= SDL_EVENT_WINDOW_LAST) update_window_states(evt->window.windowID);
+	else if ((evt->type >= SDL_EVENT_DISPLAY_FIRST && evt->type <= SDL_EVENT_DISPLAY_LAST) || evt->type == SDL_EVENT_SCREEN_KEYBOARD_SHOWN || evt->type == SDL_EVENT_SCREEN_KEYBOARD_HIDDEN) update_window_states(0);
 	if (InputEvent(evt)) return;
 	else if (evt->type == SDL_EVENT_WINDOW_FOCUS_LOST) lost_window_focus();
 	else if (evt->type == SDL_EVENT_WINDOW_FOCUS_GAINED) regained_window_focus();
@@ -551,7 +776,13 @@ void refresh_window() {
 	// script thread's loop, an async call), SDL_PumpEvents() and the renderer's present() ran away from the thread SDL's video and the
 	// renderer belong to, and the events were handled into the input state (g_UserInput, the key arrays) and post_events at the same
 	// time as the window thread's own wait() handled others there, which no lock guards.
-	if (g_window && g_WindowThreadId != thread_current_thread_id()) return;
+	game_window* win;
+	{
+		std::lock_guard<std::recursive_mutex> lock(game_windows_mutex());
+		if (g_window && !g_window->on_thread()) return;
+		win = g_window.get(); // the window stays, as only this thread clears g_window
+	}
+	game_windows_collect();
 	#ifdef _WIN32
 	process_keyhook_commands();
 	#endif
@@ -561,15 +792,15 @@ void refresh_window() {
 	// games never enter Android's eglSwapBuffers-under-ActivityMutex path. Using get_renderer() here
 	// would lazily create the renderer and defeat the purpose. Desktop Linux is the exception: Wayland
 	// shows a window only after its first buffer, so there even an audio-only game needs that one frame.
-	if (g_window && !(g_window->get_flags() & SDL_WINDOW_HIDDEN)) {
+	if (win && !(win->get_flags() & SDL_WINDOW_HIDDEN)) {
 		#if defined(__linux__) && !defined(__ANDROID__)
-		graphics_renderer* renderer = g_window->get_renderer();
+		graphics_renderer* renderer = win->get_renderer();
 		#else
-		graphics_renderer* renderer = g_window->peek_renderer();
+		graphics_renderer* renderer = win->peek_renderer();
 		#endif
 		if (renderer && renderer->is_valid()) {
 			// Wayland needs one buffer before a new window appears. Let existing drawing be that first frame.
-			if (!renderer->has_presented() && !renderer->has_pending_frame()) g_window->clear(0, 0, 0);
+			if (!renderer->has_presented() && !renderer->has_pending_frame()) win->clear(0, 0, 0);
 			if (renderer->has_pending_frame()) {
 				#ifdef __APPLE__
 				apple_wait_for_display_refresh(); // Keeps answering VoiceOver instead of blocking in present, see apple.mm.
@@ -577,13 +808,13 @@ void refresh_window() {
 				renderer->present();
 			}
 		}
-	} else if (g_window) {
+	} else if (win) {
 		// A hidden window isn't presented, and SDL keeps every drawing command queued until its renderer presents or flushes: a script
 		// drawing while its window was hidden (hide_window() with the game loop going on, a window made hidden) grew SDL's queue by
 		// every frame's drawing for as long as it stayed hidden, until the program ran out of memory (an outlined circle of radius 3000
 		// is about 17000 queued points). The commands are carried out each frame instead, on the window's back buffer, which shows
 		// nothing; the frame is still presented once the window is shown.
-		graphics_renderer* renderer = g_window->peek_renderer();
+		graphics_renderer* renderer = win->peek_renderer();
 		if (renderer && renderer->is_valid() && renderer->has_pending_frame()) renderer->flush();
 	}
 	SDL_Event evt;
@@ -607,11 +838,18 @@ void refresh_window() {
 bool thread_is_main(); // threading.cpp
 void wait(int ms) {
 	anticheat_check();
-	if (!g_window || g_WindowThreadId != thread_current_thread_id()) {
+	bool have_window, mine;
+	{
+		std::lock_guard<std::recursive_mutex> lock(game_windows_mutex());
+		have_window = !g_window.isNull();
+		mine = have_window && g_window->on_thread();
+	}
+	if (!mine) {
+		game_windows_collect(); // window objects this thread made and another let go of, see there
 		// Mode 2 collects every wait() cycle on the main thread, as the documentation has it, with or without a window: without one
 		// wait() only slept, so a console script (or one before show_window()) waiting in a loop never had NVGT's steps run, and
 		// cyclic garbage made before the loop stayed until AngelScript's own steps ran as more objects were made.
-		if (!g_window && thread_is_main()) {
+		if (!have_window && thread_is_main()) {
 			while (ms >= 0) {
 				int MS = (ms > 25 ? 25 : ms);
 				if (g_GCMode == 2)
@@ -1143,7 +1381,7 @@ void RegisterUI(asIScriptEngine* engine) {
 	engine->RegisterGlobalFunction("int get_window_width()", asFUNCTION(get_window_width), asCALL_CDECL);
 	engine->RegisterGlobalFunction("int get_window_height()", asFUNCTION(get_window_height), asCALL_CDECL);
 	engine->RegisterGlobalFunction("string get_window_text()", asFUNCTION(get_window_text), asCALL_CDECL);
-	engine->RegisterGlobalFunction("game_window@+ get_window() property", asFUNCTION(get_window), asCALL_CDECL);
+	engine->RegisterGlobalFunction("game_window@ get_window() property", asFUNCTION(get_window), asCALL_CDECL);
 	engine->RegisterGlobalFunction("uint64 get_window_os_handle()", asFUNCTION(get_window_os_handle), asCALL_CDECL);
 	engine->RegisterGlobalFunction("void refresh_window()", asFUNCTION(refresh_window), asCALL_CDECL);
 	engine->RegisterGlobalFunction("void wait(int ms)", asFUNCTIONPR(wait, (int), void), asCALL_CDECL);
