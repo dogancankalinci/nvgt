@@ -29,7 +29,9 @@
 #include <scriptarray.h>
 #include <scriptdictionary.h>
 
+#include <atomic>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <unordered_map>
 
@@ -2317,6 +2319,14 @@ public:
 };
 
 // Blocking subscriber implementation
+// The subscription runs on a thread of its own (run()) while the script reads and sets the object on its own thread:
+// - the last error was a string the thread wrote as the script read it (get_last_error() polled while the connection failed), so it is
+//   kept under m_error_mutex;
+// - the thread used the host, port and password the script could set meanwhile, so subscribe() hands it copies;
+// - a thread that ended on its own (no server, a failed AUTH, the connection reset) left the object "running": subscribe() refused
+//   ("Already running") until stop(), whose stop event then stayed set (nothing waited on it any more), so the next subscription ended
+//   as soon as it had subscribed. Running now means the thread runs, the event is reset as a subscription starts, and the thread
+//   disconnects on every way out (a client left connected by a failed AUTH made the next connect() fail its assertion).
 class blocking_redis_subscriber : public plugin_refcounted<Client>, public Runnable {
 private:
 	Thread m_thread;
@@ -2324,11 +2334,18 @@ private:
 	std::string m_host;
 	int m_port;
 	std::string m_password;
+	std::string m_run_host, m_run_password; // what run() connects with, see above
+	int m_run_port = 6379;
 	std::string m_last_error;
+	mutable std::mutex m_error_mutex;
 	std::vector<std::string> m_channels;
 	std::unordered_map<std::string, std::vector<std::string>> m_messages;
 	Mutex m_messages_mutex;
-	bool m_running;
+	bool m_running; // started by subscribe() and not yet joined
+	void set_error(const std::string& error) {
+		std::lock_guard<std::mutex> lock(m_error_mutex);
+		m_last_error = error;
+	}
 
 public:
 	blocking_redis_subscriber() : plugin_refcounted(new Client()), m_host("localhost"), m_port(6379), m_running(false) {}
@@ -2362,24 +2379,32 @@ public:
 	std::string get_password() const { return m_password; }
 	void set_password(const std::string& pwd) { m_password = pwd; }
 
-	std::string get_last_error() const { return m_last_error; }
+	std::string get_last_error() const {
+		std::lock_guard<std::mutex> lock(m_error_mutex);
+		return m_last_error;
+	}
 
-	bool is_running() const { return m_running; }
+	bool is_running() const { return m_running && m_thread.isRunning(); }
 
 	bool subscribe(CScriptArray* channels) {
 		if (!channels || channels->GetSize() == 0) {
-			m_last_error = "No channels specified";
+			set_error("No channels specified");
 			return false;
 		}
-		if (m_running) {
-			m_last_error = "Already running";
+		if (is_running()) {
+			set_error("Already running");
 			return false;
 		}
+		stop(); // a thread that ended on its own is joined first
 		m_channels.clear();
 		for (uint32_t i = 0; i < channels->GetSize(); ++i) {
 			std::string* channel = static_cast<std::string*>(channels->At(i));
 			m_channels.push_back(*channel);
 		}
+		m_run_host = m_host;
+		m_run_port = m_port;
+		m_run_password = m_password;
+		m_stop_event.reset();
 		m_running = true;
 		m_thread.start(*this);
 		return true;
@@ -2415,14 +2440,20 @@ public:
 	}
 
 	void run() {
+		run_subscription();
+		try {
+			if (ptr->isConnected()) ptr->disconnect(); // see the class
+		} catch (...) {}
+	}
+	void run_subscription() {
 		try {
 			Timespan connect_timeout(5 * 1000 * 1000);  // 5 seconds in microseconds
-			ptr->connect(m_host, m_port, connect_timeout);
+			ptr->connect(m_run_host, m_run_port, connect_timeout);
 			Timespan receive_timeout(500 * 1000);  // 500ms in microseconds
 			ptr->setReceiveTimeout(receive_timeout);
-			if (!m_password.empty()) {
+			if (!m_run_password.empty()) {
 				Array cmd;
-				cmd.add("AUTH").add(m_password);
+				cmd.add("AUTH").add(m_run_password);
 				ptr->execute<std::string>(cmd);
 			}
 			Array cmd;
@@ -2436,8 +2467,8 @@ public:
 					// Each subscription confirmation is an array: ["subscribe", channel_name, subscription_count]
 					// We don't need to process it, just consume it
 				} catch (const Exception& e) {
-					m_last_error = "Failed to subscribe: " + e.displayText();
-					throw;
+					set_error("Failed to subscribe: " + e.displayText()); // the outer handler replaced it with the bare message
+					return;
 				}
 			}
 			// Read messages with timeout handling
@@ -2463,11 +2494,11 @@ public:
 					// Just continue the loop to check stop event
 				} catch (const Poco::Net::ConnectionResetException&) {
 					// Connection was reset, exit gracefully
-					m_last_error = "Connection reset by server";
+					set_error("Connection reset by server");
 					break;
 				} catch (const Exception& e) {
 					// Log error but continue trying
-					m_last_error = e.displayText();
+					set_error(e.displayText());
 				}
 			}
 			// Clean disconnect only if still connected
@@ -2482,9 +2513,9 @@ public:
 				}
 			}
 		} catch (const Exception& e) {
-			m_last_error = e.displayText();
+			set_error(e.displayText());
 		} catch (...) {
-			m_last_error = "Unknown error in subscriber thread";
+			set_error("Unknown error in subscriber thread");
 		}
 	}
 };
