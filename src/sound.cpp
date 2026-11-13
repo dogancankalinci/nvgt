@@ -5389,6 +5389,8 @@ public:
 	bool load_source(const std::string &filename, const size_t protocol_slot, directive_t protocol_directive, const size_t filter_slot, directive_t filter_directive, ma_uint32 ma_flags, bool whole_in_pages) {
 		// Not a load that waits for its whole decode, as load_memory()'s, on an audio thread, as in a processing callback, which held the device's audio up for as long as the sound took to decode: refused before the sound loaded goes, as engines and microphones are refused there. A short stream loaded again whole (whole_in_pages) waits only for its few frames.
 		if (!(ma_flags & (MA_SOUND_FLAG_ASYNC | MA_SOUND_FLAG_STREAM)) && !whole_in_pages && audio_engine_impl::on_audio_thread()) return (g_soundsystem_last_error = MA_INVALID_OPERATION) == MA_SUCCESS;
+		// Nor a URL's stream, which waits for the server's name to be looked up, the connection and its first pages, as long as a network takes, up to Poco's timeout of about a minute.
+		if ((ma_flags & MA_SOUND_FLAG_UNKNOWN_LENGTH) && audio_engine_impl::on_audio_thread()) return (g_soundsystem_last_error = MA_INVALID_OPERATION) == MA_SUCCESS;
 		garbage_collect_inline_sounds();
 		if (snd)
 			close_to_reload();

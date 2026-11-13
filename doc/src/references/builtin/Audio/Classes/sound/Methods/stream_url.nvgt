@@ -7,6 +7,8 @@
 		Bool: True if the URL was successfully loaded; false otherwise.
 	## Remarks:
 		This function should currently be considered beta.
+
+		It waits for the server's connection and the stream's first pages, so it is refused with AUDIO_ERROR_STATE_INVALID_OPERATION in an engine's processing_callback, whose device would wait as long.
 */
 
 // Example:
