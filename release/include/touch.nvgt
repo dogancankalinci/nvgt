@@ -12,41 +12,52 @@
  * 3. This notice may not be removed or altered from any source distribution.
 */
 
-array<touch_gesture_manager@>@ _g_active_touch_managers = null;
+// The managers touch events go to, held weakly: a strong handle here kept every manager alive for good (the destructor that unregisters it
+// never ran), so each manager a game made stayed registered and kept being handed the touch events.
+array<weakref<touch_gesture_manager>>@ _g_active_touch_managers = null;
+bool _g_touch_events_hooked = false;
+
+// Drops the managers that are gone (and mgr, if given), and stops listening to touch events when none is left.
+void _touch_managers_prune(touch_gesture_manager@ mgr = null) {
+	if (@_g_active_touch_managers == null) return;
+	for (int i = int(_g_active_touch_managers.length()) - 1; i >= 0; i--) {
+		touch_gesture_manager@ m = _g_active_touch_managers[i].get();
+		if (@m == null or (@mgr != null and m is mgr)) _g_active_touch_managers.remove_at(i);
+	}
+	if (_g_active_touch_managers.length() == 0 and _g_touch_events_hooked) {
+		on_touch_finger_down -= _touch_evt_down;
+		on_touch_finger_up -= _touch_evt_up;
+		on_touch_finger_move -= _touch_evt_move;
+		on_touch_finger_cancel -= _touch_evt_cancel;
+		_g_touch_events_hooked = false;
+	}
+}
 
 void _touch_manager_register(touch_gesture_manager@ mgr) {
 	if (@_g_active_touch_managers == null) {
-		@_g_active_touch_managers = array<touch_gesture_manager@>();
+		@_g_active_touch_managers = array<weakref<touch_gesture_manager>>();
 	}
-	_g_active_touch_managers.insert_last(mgr);
-	
-	if (_g_active_touch_managers.length() == 1) {
+	_touch_managers_prune();
+	_g_active_touch_managers.insert_last(weakref<touch_gesture_manager>(mgr));
+	if (!_g_touch_events_hooked) {
 		on_touch_finger_down += _touch_evt_down;
 		on_touch_finger_up += _touch_evt_up;
 		on_touch_finger_move += _touch_evt_move;
 		on_touch_finger_cancel += _touch_evt_cancel;
+		_g_touch_events_hooked = true;
 	}
 }
 
 void _touch_manager_unregister(touch_gesture_manager@ mgr) {
-	if (@_g_active_touch_managers != null) {
-		int idx = _g_active_touch_managers.find(mgr);
-		if (idx > -1) _g_active_touch_managers.remove_at(idx);
-
-		if (_g_active_touch_managers.length() == 0) {
-			on_touch_finger_down -= _touch_evt_down;
-			on_touch_finger_up -= _touch_evt_up;
-			on_touch_finger_move -= _touch_evt_move;
-			on_touch_finger_cancel -= _touch_evt_cancel;
-		}
-	}
+	_touch_managers_prune(mgr); // from the destructor mgr's weak reference is already empty: the pruning of empty ones removes it
 }
 
 bool _touch_evt_down(uint64 device, const touch_finger&inout finger) {
 	if (@_g_active_touch_managers == null) return true;
 	uint64 now = ticks();
 	for(int i = int(_g_active_touch_managers.length()) - 1; i >= 0; i--) {
-		touch_gesture_manager@ m = _g_active_touch_managers[i];
+		touch_gesture_manager@ m = _g_active_touch_managers[i].get();
+		if (@m == null) continue;
 		if (now - m.last_monitor_call_time < 250) {
 			m.internal_on_down(finger);
 		}
@@ -58,7 +69,8 @@ bool _touch_evt_up(uint64 device, const touch_finger&inout finger) {
 	if (@_g_active_touch_managers == null) return true;
 	uint64 now = ticks();
 	for(int i = int(_g_active_touch_managers.length()) - 1; i >= 0; i--) {
-		touch_gesture_manager@ m = _g_active_touch_managers[i];
+		touch_gesture_manager@ m = _g_active_touch_managers[i].get();
+		if (@m == null) continue;
 		if (now - m.last_monitor_call_time < 250 || m.current_finger_count > 0) {
 			m.internal_on_up(finger);
 		}
@@ -70,7 +82,8 @@ bool _touch_evt_move(uint64 device, const touch_finger&inout finger, float dx, f
 	if (@_g_active_touch_managers == null) return true;
 	uint64 now = ticks();
 	for(int i = int(_g_active_touch_managers.length()) - 1; i >= 0; i--) {
-		touch_gesture_manager@ m = _g_active_touch_managers[i];
+		touch_gesture_manager@ m = _g_active_touch_managers[i].get();
+		if (@m == null) continue;
 		if (now - m.last_monitor_call_time < 250) {
 			m.internal_on_move(finger, dx, dy);
 		}
@@ -81,7 +94,8 @@ bool _touch_evt_move(uint64 device, const touch_finger&inout finger, float dx, f
 bool _touch_evt_cancel(uint64 device, const touch_finger&inout finger) {
 	if (@_g_active_touch_managers == null) return true;
 	for(int i = int(_g_active_touch_managers.length()) - 1; i >= 0; i--) {
-		_g_active_touch_managers[i].internal_on_cancel(finger);
+		touch_gesture_manager@ m = _g_active_touch_managers[i].get();
+		if (@m != null) m.internal_on_cancel(finger);
 	}
 	return true;
 }
