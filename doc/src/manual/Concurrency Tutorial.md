@@ -281,6 +281,8 @@ A window, and the renderer and textures used to draw on it, belong to the thread
 * Mouse grabbing, starting and stopping text input and hiding or showing the mouse cursor do nothing, and the lists of keyboards, mice and touch devices, their names and the touch fingers are empty.
 * `get_window()` still returns the window object.
 
+A `text_font` is for the thread that made it: SDL_ttf, which NVGT uses for text, lets one thread at a time use a font. `get_font()` gives each thread fonts of its own (the same font again on the same thread), which it keeps until the thread ends. A font you share between threads on purpose, by passing its handle to another thread, must be used by one thread at a time: guard every use of it, measuring and rendering text included, with a lock of your own.
+
 So do your window, input and drawing work on the thread that showed the window, and pass what other threads need (or produce) through variables protected by the synchronization primitives above. A window object, renderer or texture that another thread lets go of last is destroyed at its own thread's next `wait()`, or when the window or the program ends.
 
 ### Golden rules of threads

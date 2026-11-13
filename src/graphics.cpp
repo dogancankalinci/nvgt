@@ -13,6 +13,7 @@
 #include <mutex>
 #include "graphics.h"
 #include "UI.h"
+#include "nvgt.h" // g_shutting_down
 #include "nvgt_plugin.h"
 #include <memory>
 #include <sstream>
@@ -301,13 +302,28 @@ bool text_font::measure_string(const std::string& text, int max_width, int& meas
 
 // font free functions
 
-static std::unordered_map<std::string, text_font*> g_font_cache;
+// get_font()'s cache, one per thread, whose fonts it lets go of as the thread ends. get_font() is called on any script thread: one map for
+// all of them was found in and added to by two at once with no lock (a heap corruption), and handed the same font to every thread that
+// asked for the same name, size and style, which then measured and drew text with it at the same time. SDL_ttf has a font used on the
+// thread that made it (its glyph caches have no lock), and text is measured and drawn into a graphic on any thread, not only the window's.
+struct font_cache {
+	std::unordered_map<std::string, text_font*> fonts;
+	~font_cache() {
+		if (g_shutting_down) return; // exit() or the program's end: SDL may be gone already, and the fonts go with the process as they always did
+		for (auto& f : fonts) f.second->release();
+	}
+};
+static font_cache& thread_font_cache() {
+	static thread_local font_cache cache;
+	return cache;
+}
 
 text_font* get_font(const std::string& name, float size, unsigned int initial_style, bool allow_caching) {
 	if (allow_caching) {
+		std::unordered_map<std::string, text_font*>& cache = thread_font_cache().fonts;
 		std::string key = name + "|" + std::to_string(size) + "|" + std::to_string(initial_style);
-		auto it = g_font_cache.find(key);
-		if (it != g_font_cache.end()) {
+		auto it = cache.find(key);
+		if (it != cache.end()) {
 			it->second->duplicate();
 			return it->second;
 		}
@@ -316,7 +332,7 @@ text_font* get_font(const std::string& name, float size, unsigned int initial_st
 		// failure would keep handing back the unusable object for the rest of the process.
 		if (!font->is_valid()) return font;
 		font->duplicate(); // held by cache
-		g_font_cache[key] = font;
+		cache[key] = font;
 		return font; // refcount=2: one for cache, one for caller
 	}
 	return new text_font(name, size, initial_style);
