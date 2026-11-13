@@ -512,38 +512,40 @@ std::string string_to_upper_case(std::string s) {
 }
 
 //Following function originally from https://stackoverflow.com/questions/642213/how-to-implement-a-natural-sort-algorithm-in-c
+// Compares as before (runs of digits by their value, other characters case-insensitively at the first that differs), but:
+// - equal strings compare false: both ending together returned true, so x < x held, which a sort's comparison must never give;
+// - a run of digits is compared whatever its length: read into an int, a longer one failed to parse, compared equal to any other such run
+//   and lost the rest of the string (a99999999999b and a100000000000a were "equal" and both then empty);
+// - the rest of the string after a number was read with getline(), which stopped at a newline and dropped what followed;
+// - isdigit() was given negative values for bytes above 127 (UTF-8), which is undefined.
+static bool natural_is_digit(char c) { return c >= '0' && c <= '9'; }
 bool natural_number_sort(const std::string& first, const std::string& second) {
-	std::string a = first, b = second;
+	size_t i = 0, j = 0;
+	const size_t m = first.size(), n = second.size();
 	while (true) {
-		if (a.empty())
-			return true;
-		if (b.empty())
-			return false;
-		if (isdigit(a[0]) && !isdigit(b[0]))
-			return true;
-		if (!isdigit(a[0]) && isdigit(b[0]))
-			return false;
-		if (!isdigit(a[0]) && !isdigit(b[0])) {
-			if (a[0] != b[0])
-				return (string_to_upper_case(a) < string_to_upper_case(b));
-			size_t i = 1;
-			while (i < a.size() && i < b.size() && !isdigit(a[i]) && a[i] == b[i]) i++;
-			a.erase(0, i);
-			b.erase(0, i);
+		if (i >= m) return j < n;
+		if (j >= n) return false;
+		bool da = natural_is_digit(first[i]), db = natural_is_digit(second[j]);
+		if (da && !db) return true;
+		if (!da && db) return false;
+		if (!da) {
+			if (first[i] != second[j])
+				return string_to_upper_case(first.substr(i)) < string_to_upper_case(second.substr(j));
+			i++;
+			j++;
 			continue;
 		}
-		std::istringstream issa(a);
-		std::istringstream issb(b);
-		int ia, ib;
-		issa >> ia;
-		issb >> ib;
-		if (ia != ib)
-			return ia < ib;
-		std::string anew, bnew;
-		std::getline(issa, anew);
-		std::getline(issb, bnew);
-		a = anew;
-		b = bnew;
+		size_t ea = i, eb = j;
+		while (ea < m && natural_is_digit(first[ea])) ea++;
+		while (eb < n && natural_is_digit(second[eb])) eb++;
+		size_t za = i, zb = j; // the value's first significant digit
+		while (za < ea - 1 && first[za] == '0') za++;
+		while (zb < eb - 1 && second[zb] == '0') zb++;
+		if (ea - za != eb - zb) return ea - za < eb - zb;
+		int c = first.compare(za, ea - za, second, zb, eb - zb);
+		if (c) return c < 0;
+		i = ea;
+		j = eb;
 	}
 }
 
