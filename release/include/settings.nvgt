@@ -99,7 +99,7 @@ class settings_helper {
 		return "";
 	}
 	double read_number(const string&in key) {
-		return parse_float(this.read_string(key));
+		return parse_double(this.read_string(key)); // parse_float kept 24 bits: 16777217 read back as 16777216, a time in milliseconds lost seconds
 	}
 	bool read_bool(const string&in key) {
 		return false;
@@ -351,8 +351,8 @@ class nvgt_settings_helper: settings_helper {
 	}
 	double read_number(const string&in key) {
 		if (!this.active) return 0;
-		double ret;
-		this.config.get(key, ret);
+		double ret = 0;
+		if (!this.config.get(key, ret)) return 0; // a value of another type: get() leaves the out value undefined then
 		return ret;
 	}
 	bool write_bool(const string&in key, bool value) {
@@ -362,8 +362,8 @@ class nvgt_settings_helper: settings_helper {
 	}
 	bool read_bool(const string&in key) {
 		if (!this.active) return false;
-		bool r;
-		this.config.get(key, r);
+		bool r = false;
+		if (!this.config.get(key, r)) return false; // see read_number()
 		return r;
 	}
 	bool exists(const string&in key) {
@@ -447,21 +447,32 @@ class settings {
 		if (!this.exists(key)) return default_value;
 		return this.data_helper.read_bool(key);
 	}
+	// The directory a path is in, by either separator ("" for none). The directories were found by splitting the path and joining the
+	// pieces again: split at "/" alone, a Windows path (backslashes) stayed one piece, so has_other_products() was always false there; split
+	// at both with empty pieces dropped (remove_product()), an absolute path outside Windows lost its leading "/" and became relative.
+	private string parent_directory(const string&in path) {
+		int sep = path.find_last_of("/\\");
+		return sep < 0 ? "" : path.substr(0, sep);
+	}
 	bool has_other_products() {
 		if (!this.active) return false;
-		string[]@ path = this.data_helper.get_data_path().split("/");
-		path.remove_range(path.length() - 2, path.length() - 1);
-		string final_path = join(path, "/");
-		return find_directories(final_path + "/*").length() > 1;
+		string company_dir = this.parent_directory(this.parent_directory(this.data_helper.get_data_path()));
+		if (company_dir.empty()) return false;
+		return find_directories(company_dir + "/*").length() > 1;
 	}
+	// Deletes the product's directory, and the company's when nothing else is left in it. The company directory was deleted with everything
+	// in it when the company HAD other products (where has_other_products() saw them), the opposite of what the documentation says, and
+	// the other games' data went with it. It is now only removed when empty, so that a company directory holding anything else, or one
+	// that isn't the company's own (a local path such as "."), stays.
 	bool remove_product() {
 		if (!this.active) return false;
 		string file_path = this.data_helper.get_data_path();
 		if (!file_delete(file_path)) return false;
-		string[]@ path = file_path.split("/\\", false);
-		path.remove_at(path.length() - 1);
-		if (this.has_other_products()) path.remove_at(path.length() - 1);
-		return directory_delete(join(path, "/"));
+		string product_dir = this.parent_directory(file_path);
+		if (product_dir.empty() or !directory_delete(product_dir)) return false;
+		string company_dir = this.parent_directory(product_dir);
+		if (!company_dir.empty()) directory_delete(company_dir, false);
+		return true;
 	}
 	bool clear(bool completely = true) {
 		if (!this.active) return false;

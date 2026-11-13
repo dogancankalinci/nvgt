@@ -7,4 +7,4 @@ This method removes the current product.
 bool: true on success, false on failure
 
 ## Remarks:
-This method will delete the directory of the current product if there are other products in the company. Otherwise, the company directory will be deleted.
+This method deletes the current product's directory and everything in it. The company directory is then deleted too if nothing is left in it (the company had no other products); one that still holds anything, such as another product's directory, is kept.
