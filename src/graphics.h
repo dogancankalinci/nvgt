@@ -17,6 +17,7 @@
 #include <unordered_set>
 #include <vector>
 #include <angelscript.h>
+#include <cmath>
 #include <scriptarray.h>
 #include <SDL3/SDL.h>
 #include <SDL3_ttf/SDL_ttf.h>
@@ -107,9 +108,11 @@ public:
 	bool add_fallback_font(text_font* font);
 	bool remove_fallback_font(text_font* font);
 	void clear_fallback_fonts();
-	bool set_size(float ptsize) { if (!_font) return false; return TTF_SetFontSize(_font, ptsize); }
+	// A size that isn't a finite number above 0 (or a negative DPI) is refused: SDL_ttf took NaN and infinity, and the font then
+	// measured and rendered every text as a few pixels until another size was set.
+	bool set_size(float ptsize) { if (!_font || !(ptsize > 0) || !std::isfinite(ptsize)) return false; return TTF_SetFontSize(_font, ptsize); }
 	float get_size() const { if (!_font) return 0.0f; return TTF_GetFontSize(_font); }
-	bool set_size_dpi(float ptsize, int hdpi, int vdpi) { if (!_font) return false; return TTF_SetFontSizeDPI(_font, ptsize, hdpi, vdpi); }
+	bool set_size_dpi(float ptsize, int hdpi, int vdpi) { if (!_font || !(ptsize > 0) || !std::isfinite(ptsize) || hdpi < 0 || vdpi < 0) return false; return TTF_SetFontSizeDPI(_font, ptsize, hdpi, vdpi); }
 	bool get_dpi(int& hdpi, int& vdpi) const;
 	void set_style(unsigned int style) { if (!_font) return; TTF_SetFontStyle(_font, (TTF_FontStyleFlags)style); }
 	unsigned int get_style() const { if (!_font) return 0; return TTF_GetFontStyle(_font); }
