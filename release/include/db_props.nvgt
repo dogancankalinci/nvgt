@@ -675,7 +675,7 @@ class database_double : database_property {
 	void opAssign(database_property@ other) {
 		database_double@ n = cast < database_double@ > (other);
 		if (@n != null) opAssign(n.get()); // Must use a custom get function here or else multiple opAssigns according to compiler.
-		else opAssign(parse_float(other.text()));
+		else opAssign(parse_double(other.text())); // parse_float kept 24 bits: an int property's 123456789 became 123456792
 	}
 	bool opEquals(double val) {
 		fetch();
