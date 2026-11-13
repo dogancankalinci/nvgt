@@ -156,6 +156,7 @@ vcpkg_from_github(
         fix-alloc-after-refused-constructor.patch
         fix-mismatched-assignment-without-context.patch
         fix-gc-backpressure-across-threads.patch
+        fix-gc-wait-once-per-collection.patch
 )
 
 vcpkg_cmake_configure(

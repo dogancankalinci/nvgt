@@ -1,0 +1,85 @@
+diff --git a/sdk/angelscript/source/as_gc.cpp b/sdk/angelscript/source/as_gc.cpp
+index a67040b..94da241 100644
+--- a/sdk/angelscript/source/as_gc.cpp
++++ b/sdk/angelscript/source/as_gc.cpp
+@@ -64,6 +64,7 @@ asCGarbageCollector::asCGarbageCollector()
+ 	numAdded        = 0;
+ 	isProcessing    = false;
+ 	collectingThread = 0;
++	collectionSerial = 1; // ALTERED: see AddScriptObjectToGC; 0 is no collection
+ 
+ 	seqAtSweepStart[0] = 0;
+ 	seqAtSweepStart[1] = 0;
+@@ -91,6 +92,13 @@ static const void *CurrentThreadTag()
+ 	return &tag;
+ }
+ 
++// ALTERED: the collection (its collectionSerial) this thread last waited for in vain, see AddScriptObjectToGC
++static asUINT &CollectionWaitedInVain()
++{
++	static thread_local asUINT serial = 0;
++	return serial;
++}
++
+ int asCGarbageCollector::AddScriptObjectToGC(void *obj, asCObjectType *objType)
+ {
+ 	if( obj == 0 || objType == 0 )
+@@ -116,7 +124,11 @@ int asCGarbageCollector::AddScriptObjectToGC(void *obj, asCObjectType *objType)
+ 		const asUINT backlogLimit = 10000;
+ 		bool entered = TRYENTERCRITICALSECTION(gcCollecting);
+ 		bool backlog = false;
+-		if( !entered && gcNewObjects.GetLength() > backlogLimit && collectingThread != CurrentThreadTag() )
++		// ALTERED: once a wait ran out, the thread doesn't wait again for the same collection. The collection may be held up by
++		// this very thread (a destructor waiting for a lock it holds), and it waited the whole while again for each object it made
++		// after that: a thread making 70 objects while holding a lock a destructor in a full collection wanted took 15 seconds.
++		const asUINT serial = collectionSerial;
++		if( !entered && gcNewObjects.GetLength() > backlogLimit && collectingThread != CurrentThreadTag() && CollectionWaitedInVain() != serial )
+ 		{
+ 			for( int n = 0; n < 200 && !entered; n++ )
+ 			{
+@@ -124,6 +136,8 @@ int asCGarbageCollector::AddScriptObjectToGC(void *obj, asCObjectType *objType)
+ 				entered = TRYENTERCRITICALSECTION(gcCollecting);
+ 			}
+ 			backlog = entered;
++			if( !entered )
++				CollectionWaitedInVain() = serial;
+ 		}
+ 		// If the GC is already processing in another thread, then don't try this again
+ 		if( entered )
+@@ -133,6 +147,7 @@ int asCGarbageCollector::AddScriptObjectToGC(void *obj, asCObjectType *objType)
+ 			{
+ 				isProcessing = true;
+ 				collectingThread = CurrentThreadTag();
++				NextCollectionSerial(); // ALTERED: see AddScriptObjectToGC
+ 				if( backlog )
+ 				{
+ 					while( DestroyNewGarbage() == 1 ) {}
+@@ -224,6 +239,7 @@ int asCGarbageCollector::GarbageCollect(asDWORD flags, asUINT iterations)
+ 
+ 		isProcessing = true;
+ 		collectingThread = CurrentThreadTag(); // ALTERED: see AddScriptObjectToGC
++		NextCollectionSerial();
+ 
+ 		bool doDetect  = (flags & asGC_DETECT_GARBAGE)  || !(flags & asGC_DESTROY_GARBAGE);
+ 		bool doDestroy = (flags & asGC_DESTROY_GARBAGE) || !(flags & asGC_DETECT_GARBAGE);
+diff --git a/sdk/angelscript/source/as_gc.h b/sdk/angelscript/source/as_gc.h
+index f8a634d..c41a30f 100644
+--- a/sdk/angelscript/source/as_gc.h
++++ b/sdk/angelscript/source/as_gc.h
+@@ -40,6 +40,7 @@
+ #ifndef AS_GC_H
+ #define AS_GC_H
+ 
++#include <atomic> // ALTERED: see collectionSerial
+ #include "as_config.h"
+ #include "as_array.h"
+ #include "as_map.h"
+@@ -153,6 +154,8 @@ protected:
+ 	asSMapNode_t                      *gcMapCursor;
+ 	bool                               isProcessing;
+ 	const void                        *collectingThread; // ALTERED: the thread processing (CurrentThreadTag), see AddScriptObjectToGC
++	std::atomic<asUINT>                collectionSerial; // ALTERED: a number for each time a thread starts processing (never 0), see AddScriptObjectToGC
++	void                               NextCollectionSerial() { asUINT next = collectionSerial + 1; collectionSerial = next ? next : 1; } // in gcCollecting
+ 
+ 	// We'll keep a pool of nodes to avoid allocating memory all the time
+ 	asSMapNode_t            *GetNode(void *obj, asSIntTypePair it);
