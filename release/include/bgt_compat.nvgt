@@ -33,8 +33,9 @@ string string_trim_left(const string& in str, uint count) {
 	return str.substr(count);
 }
 string string_trim_right(const string& in str, uint count) {
-	if (str == "") return str;
-	if (count > 0 and str.length() == 1) return "";
+	// Trimming all of it or more gives "", as in BGT: slice(0, 0) is the whole string (string_trim_right("abc", 3) gave "abc"), and a count
+	// past the end wrapped round ("abc", 5 gave "a").
+	if (count >= str.length()) return "";
 	return str.slice(0, str.length() - count);
 }
 string string_mid(const string& in str, uint start, int count) {
@@ -256,6 +257,7 @@ bool set_sound_storage(const string&in filename, bool reset = false) {
 	if (reset and filename.is_empty()) {
 		@sound_default_pack = null;
 		sound_storage = "";
+		return true; // the storage was cleared, as asked (this went on to open "" and returned false)
 	}
 	pack@p = open_pack(filename);
 	if (@p == null) return false;
@@ -283,6 +285,7 @@ bool set_sound_storage(const string&in filename, const string&in key = "", bool 
 	if (reset and filename.is_empty()) {
 		@sound_default_pack = null;
 		sound_storage = "";
+		return true; // the storage was cleared, as asked (this went on to open "" and returned false)
 	}
 	pack_file@p = open_pack(filename, key, force_encryption);
 	if(@p == null) return false;
