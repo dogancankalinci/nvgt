@@ -178,6 +178,7 @@ public:
 	bool pov_centered(int pov);
 	bool refresh_joystick_list();
 	bool set(int index);
+	bool set_locked(int index); // set()'s part under the joysticks' lock
 
 	// Additional modern methods
 	bool set_led(unsigned char red, unsigned char green, unsigned char blue);

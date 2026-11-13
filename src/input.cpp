@@ -603,28 +603,33 @@ void joystick::set_preferred_joystick(int index) {
 }
 
 int joystick::get_x() const {
+	Poco::FastMutex::ScopedLock lock(g_joysticks_mutex); // see set()
 	if (!stick || axis_values.size() <= SDL_GAMEPAD_AXIS_LEFTX) return 0;
 	// Convert from SDL range (-32768 to 32767) to BGT range (0 to 65535)
 	return axis_values[SDL_GAMEPAD_AXIS_LEFTX] + 32768;
 }
 
 int joystick::get_y() const {
+	Poco::FastMutex::ScopedLock lock(g_joysticks_mutex); // see set()
 	if (!stick || axis_values.size() <= SDL_GAMEPAD_AXIS_LEFTY) return 0;
 	return axis_values[SDL_GAMEPAD_AXIS_LEFTY] + 32768;
 }
 
 int joystick::get_z() const {
+	Poco::FastMutex::ScopedLock lock(g_joysticks_mutex); // see set()
 	if (!stick || axis_values.size() <= SDL_GAMEPAD_AXIS_RIGHTY) return 0;
 	// Use right stick Y as Z axis for BGT compatibility
 	return axis_values[SDL_GAMEPAD_AXIS_RIGHTY] + 32768;
 }
 
 int joystick::get_r_x() const {
+	Poco::FastMutex::ScopedLock lock(g_joysticks_mutex); // see set()
 	if (!stick || axis_values.size() <= SDL_GAMEPAD_AXIS_RIGHTX) return 0;
 	return axis_values[SDL_GAMEPAD_AXIS_RIGHTX] + 32768;
 }
 
 int joystick::get_r_y() const {
+	Poco::FastMutex::ScopedLock lock(g_joysticks_mutex); // see set()
 	if (!stick || axis_values.size() <= SDL_GAMEPAD_AXIS_RIGHTY) return 0;
 	return axis_values[SDL_GAMEPAD_AXIS_RIGHTY] + 32768;
 }
@@ -635,32 +640,38 @@ int joystick::get_r_z() const {
 }
 
 int joystick::get_slider_1() const {
+	Poco::FastMutex::ScopedLock lock(g_joysticks_mutex); // see set()
 	if (!stick || axis_values.size() <= SDL_GAMEPAD_AXIS_LEFT_TRIGGER) return 0;
 	// Triggers range from 0 to 32767, scale to 0 to 65535
 	return axis_values[SDL_GAMEPAD_AXIS_LEFT_TRIGGER] * 2;
 }
 
 int joystick::get_slider_2() const {
+	Poco::FastMutex::ScopedLock lock(g_joysticks_mutex); // see set()
 	if (!stick || axis_values.size() <= SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) return 0;
 	return axis_values[SDL_GAMEPAD_AXIS_RIGHT_TRIGGER] * 2;
 }
 
 int joystick::get_pov_1() const {
+	Poco::FastMutex::ScopedLock lock(g_joysticks_mutex); // see set()
 	if (!js_handle || hat_values.empty()) return -1;
 	return hat_values[0];
 }
 
 int joystick::get_pov_2() const {
+	Poco::FastMutex::ScopedLock lock(g_joysticks_mutex); // see set()
 	if (!js_handle || hat_values.size() < 2) return -1;
 	return hat_values[1];
 }
 
 int joystick::get_pov_3() const {
+	Poco::FastMutex::ScopedLock lock(g_joysticks_mutex); // see set()
 	if (!js_handle || hat_values.size() < 3) return -1;
 	return hat_values[2];
 }
 
 int joystick::get_pov_4() const {
+	Poco::FastMutex::ScopedLock lock(g_joysticks_mutex); // see set()
 	if (!js_handle || hat_values.size() < 4) return -1;
 	return hat_values[3];
 }
@@ -721,11 +732,13 @@ int joystick::touchpads() const {
 }
 
 bool joystick::button_down(int button) {
+	Poco::FastMutex::ScopedLock lock(g_joysticks_mutex); // see set()
 	if (!stick || button < 0 || button >= (int)button_states.size()) return false;
 	return button_states[button];
 }
 
 bool joystick::button_pressed(int button) {
+	Poco::FastMutex::ScopedLock lock(g_joysticks_mutex); // see set()
 	if (!stick || button < 0 || button >= (int)button_pressed_states.size()) return false;
 	bool result = button_pressed_states[button];
 	button_pressed_states[button] = false; // Clear after reading
@@ -733,6 +746,7 @@ bool joystick::button_pressed(int button) {
 }
 
 bool joystick::button_released(int button) {
+	Poco::FastMutex::ScopedLock lock(g_joysticks_mutex); // see set()
 	if (!stick || button < 0 || button >= (int)button_released_states.size()) return false;
 	bool result = button_released_states[button];
 	button_released_states[button] = false; // Clear after reading
@@ -747,6 +761,7 @@ CScriptArray* joystick::buttons_down() {
 	asITypeInfo* array_type = get_array_type("int[]");
 	if (!array_type) return nullptr;
 	CScriptArray* array = CScriptArray::Create(array_type);
+	Poco::FastMutex::ScopedLock lock(g_joysticks_mutex); // see set()
 	if (!array || !stick) return array;
 	for (int i = 0; i < (int)button_states.size(); i++) {
 		if (button_states[i])
@@ -759,6 +774,7 @@ CScriptArray* joystick::buttons_pressed() {
 	asITypeInfo* array_type = get_array_type("int[]");
 	if (!array_type) return nullptr;
 	CScriptArray* array = CScriptArray::Create(array_type);
+	Poco::FastMutex::ScopedLock lock(g_joysticks_mutex); // see set()
 	if (!array || !stick) return array;
 	for (int i = 0; i < (int)button_pressed_states.size(); i++) {
 		if (button_pressed_states[i]) {
@@ -773,6 +789,7 @@ CScriptArray* joystick::buttons_released() {
 	asITypeInfo* array_type = get_array_type("int[]");
 	if (!array_type) return nullptr;
 	CScriptArray* array = CScriptArray::Create(array_type);
+	Poco::FastMutex::ScopedLock lock(g_joysticks_mutex); // see set()
 	if (!array || !stick) return array;
 	for (int i = 0; i < (int)button_released_states.size(); i++) {
 		if (button_released_states[i]) {
@@ -787,6 +804,7 @@ CScriptArray* joystick::buttons_up() {
 	asITypeInfo* array_type = get_array_type("int[]");
 	if (!array_type) return nullptr;
 	CScriptArray* array = CScriptArray::Create(array_type);
+	Poco::FastMutex::ScopedLock lock(g_joysticks_mutex); // see set()
 	if (!array || !stick) return array;
 	for (int i = 0; i < (int)button_states.size(); i++) {
 		if (!button_states[i])
@@ -813,6 +831,7 @@ CScriptArray* joystick::list_joysticks() {
 }
 
 bool joystick::pov_centered(int pov) {
+	Poco::FastMutex::ScopedLock lock(g_joysticks_mutex); // see set()
 	if (!js_handle || pov < 0 || pov >= (int)hat_values.size()) return true;
 	return hat_values[pov] == SDL_HAT_CENTERED;
 }
@@ -824,6 +843,20 @@ bool joystick::refresh_joystick_list() {
 }
 
 bool joystick::set(int index) {
+	// A joystick object can be used on any script thread, while the window's thread runs update() on every one (update_joysticks(),
+	// under g_joysticks_mutex): set() closed and replaced the gamepad and resized the state vectors as update() wrote them (hat_values
+	// grows for a gamepad with more hats), and the button state readers below clear bits of the same vector<bool> words update() sets.
+	// All of that state changes and is read under the same lock.
+	if (!set_locked(index)) return false;
+	// Pump to get most up-to-date info, where this thread may pump events (see wait() in UI.cpp): set() is called on any thread, and SDL_PumpEvents() on another one than the window's handled the window's events away from its thread.
+	if (window_thread_free()) {
+		video_lock lock; // see ClipboardGetText() in UI.cpp
+		SDL_PumpEvents();
+	}
+	return true;
+}
+bool joystick::set_locked(int index) {
+	Poco::FastMutex::ScopedLock lock(g_joysticks_mutex);
 	// Close current gamepad if open
 	if (stick) {
 		SDL_CloseGamepad(stick);
@@ -852,11 +885,6 @@ bool joystick::set(int index) {
 	if (js_handle) {
 		int num_hats = SDL_GetNumJoystickHats(js_handle);
 		hat_values.resize(num_hats < 4 ? num_hats : 4, SDL_HAT_CENTERED);
-	}
-	// Pump to get most up-to-date info, where this thread may pump events (see wait() in UI.cpp): set() is called on any thread, and SDL_PumpEvents() on another one than the window's handled the window's events away from its thread.
-	if (window_thread_free()) {
-		video_lock lock; // see ClipboardGetText() in UI.cpp
-		SDL_PumpEvents();
 	}
 	return true;
 }
