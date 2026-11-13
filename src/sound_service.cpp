@@ -154,6 +154,9 @@ class sound_service_impl : public sound_service {
 				}
 #endif
 				return stream;
+			} catch (const std::bad_alloc&) {
+				t_open_error = MA_OUT_OF_MEMORY; // Not asked of the file, which opens and read as "Unknown error".
+				return NULL;
 			} catch (std::exception &) {
 				t_open_error = read_open_failure(uri); // Why, for the load to report: MiniAudio's VFS open had only MA_ERROR, "Unknown error", even for the most common failure, a file that isn't there.
 				return NULL;
@@ -632,6 +635,7 @@ static ma_result url_open_failure(const Poco::Exception& e) {
 	if (dynamic_cast<const Poco::Net::DNSException*>(&e)) return MA_NO_HOST;
 	if (dynamic_cast<const Poco::TimeoutException*>(&e)) return MA_TIMEOUT;
 	if (dynamic_cast<const Poco::UnknownURISchemeException*>(&e)) return MA_PROTOCOL_NOT_SUPPORTED;
+	if (dynamic_cast<const Poco::OutOfMemoryException*>(&e)) return MA_OUT_OF_MEMORY;
 	if (dynamic_cast<const Poco::Net::HTTPException*>(&e)) { // By the reason, which is what Poco keeps of the response, at the start of its message, the URL following it: searched for in the whole message, a URL with one of these words in it gave that error for any response. In any case and wording, as servers phrase it their own way, "File not found" among them.
 		std::string reason = e.message().substr(0, e.message().find(": "));
 		for (char& c : reason) c = (char)std::tolower((unsigned char)c);
@@ -653,6 +657,8 @@ std::istream *netstream_protocol::open_uri(const char *uri, const directive_t di
 		}
 	} catch (const Poco::Exception& e) {
 		t_open_error = url_open_failure(e);
+	} catch (const std::bad_alloc&) {
+		t_open_error = MA_OUT_OF_MEMORY; // As the other protocols' opens tell it, rather than "Unknown error".
 	} catch (std::exception&) {} // Again figure out how to let user see exception details.
 	return nullptr;
 }
