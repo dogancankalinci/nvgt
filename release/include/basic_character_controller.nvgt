@@ -122,15 +122,16 @@ shared abstract class basic_character_controller {
 
 	void rotate_left_by(const float degree, const float step = 2.8125, const bool snap = false) final {
 		const float temp_yaw = yaw - degree;
-		float snapped = snap ? float(round(double(temp_yaw / step), 5)) * step : temp_yaw;
+		// Snapped to a whole number of steps: rounded to 5 decimal places of a step, as it was, the angle didn't move (100 by 90 gave 99.9999).
+		float snapped = snap ? float(round(double(temp_yaw / step), 0)) * step : temp_yaw;
 		if (snapped < 0.0) snapped += 360.0;
 		target_yaw = fmod(snapped, 360.0);
 		update_running_state();
 	}
 
-	void rotate_right_by(const float degree, const float step = 2.8125, const bool snap = true) final {
+	void rotate_right_by(const float degree, const float step = 2.8125, const bool snap = false) final { // snap false by default, as documented and as rotate_left_by
 		const float temp_yaw = yaw + degree;
-		float snapped = snap ? float(round(double(temp_yaw / step), 5)) * step : temp_yaw;
+		float snapped = snap ? float(round(double(temp_yaw / step), 0)) * step : temp_yaw; // see rotate_left_by
 		if (snapped < 0.0) snapped += 360.0;
 		target_yaw = fmod(snapped, 360.0);
 		update_running_state();
@@ -580,6 +581,7 @@ shared string translate_yaw_to_direction(const float yaw) {
 }
 
 shared float snap_to_degree(const float deg, const float[] snaps) {
+	if (snaps.length() < 1) return deg; // nothing to snap to (snaps[0] threw)
 	float result = snaps[0];
 	float min_distance = 360.0;
 	const auto len = snaps.length();
@@ -598,6 +600,6 @@ shared float snap_to_degree(const float deg, const float[] snaps) {
 }
 
 shared float nearest_compass_point(const float deg, const float step = 2.8125) {
-	const float raw = float(round(double(deg / step), 5)) * step;
+	const float raw = float(round(double(deg / step), 0)) * step; // the nearest whole step (5 decimal places of a step left deg as it was)
 	return raw - 360.0 * floorf(raw / 360.0);
 }
