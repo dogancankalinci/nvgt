@@ -3135,6 +3135,7 @@ class audio_wav_encoder_impl : public audio_encoder_impl, public virtual audio_w
 		std::unique_ptr<std::ostream> file; // A file the encoder writes to, opened by NVGT rather than by MiniAudio, whose file writes, the sizes and padding closing writes included, went unchecked: see open_impl().
 		std::string header; // What the encoder writes while it opens, held until then: see open_impl().
 		bool holding_header = false;
+		bool header_lost = false; // Out of memory holding the header (see open_impl()).
 		bool failed = false; // A write the stream refused, which close() reports: a seek it refuses is expected of a stream that can't seek (see mark_sizes_unknown()), not a failure.
 		std::streamoff at = 0, end = 0; // Where the encoder writes and how far it wrote, from base.
 		bool moved = false; // Whether it sought back, after which close_impl() puts the stream back at the end.
@@ -3157,7 +3158,12 @@ class audio_wav_encoder_impl : public audio_encoder_impl, public virtual audio_w
 		stream_output *out = static_cast<stream_output *>(pEncoder->pUserData);
 		*pBytesWritten = 0;
 		if (out->holding_header) {
-			out->header.append(static_cast<const char*>(pBufferIn), bytesToWrite);
+			try {
+				out->header.append(static_cast<const char*>(pBufferIn), bytesToWrite);
+			} catch (...) { // Not thrown through MiniAudio's encoder, which left its WAV writer allocated and never freed.
+				out->header_lost = true;
+				return MA_OUT_OF_MEMORY;
+			}
 			*pBytesWritten = bytesToWrite;
 			return MA_SUCCESS;
 		}
@@ -3259,6 +3265,11 @@ protected:
 			output.header.clear();
 			output.holding_header = true;
 			g_soundsystem_last_error = ma_encoder_init(stream_write, stream_seek, &output, &cfg, &*encoder);
+			// MiniAudio's WAV writer doesn't check its writes: opened with its header cut short, it wrote a WAV no reader could read. Closed while the header is still held, so that what closing writes goes nowhere.
+			if (g_soundsystem_last_error == MA_SUCCESS && output.header_lost) {
+				ma_encoder_uninit(&*encoder);
+				g_soundsystem_last_error = MA_OUT_OF_MEMORY;
+			}
 			output.holding_header = false;
 			if (g_soundsystem_last_error == MA_SUCCESS) {
 				mark_sizes_unknown(output.header);
