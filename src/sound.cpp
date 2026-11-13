@@ -2041,6 +2041,7 @@ static ma_result cursor_no_frame_maps_to(ma_data_source* source, ma_uint64* curs
 ma_result nvgt_file_seek(const ma_data_source_vtable* vtable, ma_data_source* file, ma_uint64 frame, ma_bool32 can_seek);
 ma_uint64 nvgt_file_delay(const ma_data_source_vtable* vtable, ma_data_source* file);
 bool nvgt_file_length_counted(const ma_data_source_vtable* vtable, ma_data_source* file);
+ma_uint64 nvgt_file_most_frames_per_byte(const ma_data_source_vtable* vtable);
 static bool pcm_fits_in_wav(unsigned int size, ma_format format, int channels);
 static int pcm_frame_size(ma_format format, int channels);
 extern "C" ma_bool32 nvgt_channel_weights(const ma_channel* map_in, ma_uint32 channels_in, const ma_channel* map_out, ma_uint32 channels_out, float** weights);
@@ -2076,7 +2077,7 @@ static held_file* file_held(ma_data_source* backend) {
 	const ma_data_source_vtable* vtable = backend? ((ma_data_source_base*)backend)->vtable : nullptr;
 	return vtable && vtable->onSeek == held_file_seek? const_cast<held_file*>(reinterpret_cast<const held_file*>(vtable)) : nullptr;
 }
-// Whether a decoder's file claims more frames than its bytes can hold, 16384 a byte where the sparsest format, silence in FLAC or Opus, makes about 3000: a damaged or crafted count in a header. Asked of the file's own count, as a decoder's at another rate can wrap to a small one. A file whose size can't be told, as a stream's, isn't known to.
+// Whether a decoder's file claims more frames than its bytes can hold in its format (see nvgt_file_most_frames_per_byte()), 16384 a byte where the sparsest, silence in FLAC or Opus, makes about 3000: a damaged or crafted count in a header. Asked of the file's own count, as a decoder's at another rate can wrap to a small one. A file whose size can't be told, as a stream's, isn't known to.
 // Nor one whose count is made by reading it through to its end, an MP3's without one in a header, as each frame counted has its bytes: asked for, it was read through once more on the calling thread, a URL's to the network stream's end, which a radio never reaches, after which a stream past what its start keeps couldn't seek back to play.
 static bool file_length_impossible(ma_decoder* decoder) {
 	if (!decoder->pBackend) return false;
@@ -2086,7 +2087,7 @@ static bool file_length_impossible(ma_decoder* decoder) {
 	ma_file_info info{};
 	if (!decoder->data.vfs.pVFS || ma_vfs_info(decoder->data.vfs.pVFS, decoder->data.vfs.file, &info) != MA_SUCCESS || !info.sizeInBytes) return false; // Before the length is asked.
 	ma_uint64 frames = 0;
-	return ma_data_source_get_length_in_pcm_frames(decoder->pBackend, &frames) == MA_SUCCESS && frames / 16384 > info.sizeInBytes;
+	return ma_data_source_get_length_in_pcm_frames(decoder->pBackend, &frames) == MA_SUCCESS && frames / nvgt_file_most_frames_per_byte(vtable) > info.sizeInBytes;
 }
 static ma_result held_file_seek(ma_data_source* backend, ma_uint64 frame) {
 	held_file* file = file_held(backend);
