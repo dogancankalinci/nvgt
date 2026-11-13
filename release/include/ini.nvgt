@@ -434,7 +434,7 @@ shared class ini {
 	bool set_double(const string& in section, const string& in key, double value) {
 		ini_section@ tmp = this.get_section_verified(section, key, false, "set double");
 		if (@tmp != null)
-			tmp.set_string(key, value);
+			tmp.set_string(key, INI_DOUBLE_TO_STRING(value));
 		return @tmp != null;
 	}
 
@@ -508,7 +508,7 @@ shared class ini {
 			return false;
 		string raw_list;
 		for (uint i = 0; i < value.length(); i++) {
-			raw_list += value[i];
+			raw_list += INI_DOUBLE_TO_STRING(value[i]);
 			if (i < value.length() - 1)
 				raw_list += sep;
 		}
@@ -653,6 +653,13 @@ shared string INI_UNESCAPE_STRING(const string&in value) {
 // Splits a raw list value at each "," or ":" that isn't escaped, that is, after an even number of backslashes; the items keep their escapes.
 // Looking only at the character before it, an item that ended in a backslash ("C:\games\", stored "C\:\\games\\") took the separator
 // after it for an escaped one, and the next item with it.
+// A double as text that reads back as the same double: the usual conversion keeps 15 significant digits, which most values
+// need, and the rest get all 17 a double can need, so a value read back with get_double() is the one that was set.
+shared string INI_DOUBLE_TO_STRING(double value) {
+	string text = "" + value;
+	if (parse_double(text) == value) return text;
+	return format_float(value, "e", 0, 16);
+}
 shared string[]@ INI_SPLIT_LIST(const string&in raw) {
 	string[] items;
 	uint start = 0, backslashes = 0;
