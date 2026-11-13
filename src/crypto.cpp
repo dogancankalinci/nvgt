@@ -67,9 +67,7 @@ std::string string_aes_encrypt(const std::string& original_text, std::string key
 }
 std::string string_aes_encrypt_r(const std::string& text, std::string& key) {
 	// Sorry I know this seems pointless, ran into some sort of issue with constant strings and Angelscript function registration 2 years ago when this was implemented. I probably know enough now to get rid of this redundant function but don't want to risk breaking something at the time of writing this comment, so later.
-	std::string t = text;
-	string_aes_encrypt(t, key);
-	return t;
+	return string_aes_encrypt(text, key); // the encrypted copy (this returned the plain text: the result was dropped)
 }
 std::string string_aes_decrypt(const std::string& original_text, std::string key) {
 	if (original_text.empty() || original_text.size() % 16 != 0) return "";
@@ -91,9 +89,7 @@ std::string string_aes_decrypt(const std::string& original_text, std::string key
 	return text;
 }
 std::string string_aes_decrypt_r(const std::string& text, std::string& key) {
-	std::string t = text;
-	string_aes_decrypt(t, key);
-	return t;
+	return string_aes_decrypt(text, key); // the decrypted copy, see string_aes_encrypt_r()
 }
 
 std::string random_bytes(asUINT len) {
