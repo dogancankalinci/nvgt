@@ -44,6 +44,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include "filesystem.h" // path_has_nul
 #include "datastreams.h"
 #include "nvgt.h"          // subsystems.
 #include "crypto.h" //Custom asset encryption stream.
@@ -58,6 +59,7 @@ void sdl_file_stream_buf::open(const std::string& path, const std::string& mode)
 	resetBuffers();
 	_owns_handle = true;
 	_path = path;
+	if (path_has_nul(path)) throw FileException("Cannot open file: " + path.substr(0, path.find('\0'))); // see path_has_nul()
 	_handle = SDL_IOFromFile(path.c_str(), mode.c_str());
 	if (!_handle) throw FileException("Cannot open file: " + path);
 	// Parse the mode string just to the extent that we can disable read or write features on the bidirectional buffer depending on stream type.
@@ -944,6 +946,8 @@ bool file_stream_open(datastream* ds, const std::string& path, const std::string
 	}
 	if ((m & std::ios::in) == 0 && (m & std::ios::out) == 0)
 		return false; // invalid mode.
+	if (path_has_nul(path))
+		return false; // see path_has_nul(): file.open("save\0.txt", "wb") emptied "save"
 	check_stream_encoding(encoding); // See stream_encoding_known(); before a file opened for writing is emptied.
 	try {
 		std::iostream* iostr = new FileStream(path, m);

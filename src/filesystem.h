@@ -14,6 +14,9 @@
 #include <angelscript.h>
 #include <string>
 
+// A path with a NUL in it names no file: every C and OS call under the file functions stops at the NUL, so they acted on the part before
+// it (file_put_contents("save\0.txt") wrote "save" and returned true, directory_exists(dir + "\0anything") was true). They refuse it.
+inline bool path_has_nul(const std::string& path) { return path.find('\0') != std::string::npos; }
 bool DirectoryExists(const std::string& path);
 bool FileCopy(const std::string& source, const std::string& target, bool overwrite);
 bool FileMove(const std::string& source, const std::string& target);

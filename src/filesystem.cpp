@@ -39,6 +39,7 @@ using namespace Poco;
 #include <string.h>
 
 bool FileHardLink(const std::string& source, const std::string& target) {
+	if (path_has_nul(source) || path_has_nul(target)) return false;
 	try {
 		Poco::File(source).linkTo(target, Poco::File::LINK_HARD);
 	} catch (Poco::Exception) {
@@ -155,6 +156,7 @@ CScriptArray* FindFiles(const string& path) {
 
 	// Create the array object
 	CScriptArray* array = CScriptArray::Create(arrayType);
+	if (path_has_nul(path)) return array;
 
 	#if defined(_WIN32)
 	// Windows uses UTF16 so it is necessary to convert the string
@@ -248,6 +250,7 @@ CScriptArray* FindDirectories(const string& path) {
 
 	// Create the array object
 	CScriptArray* array = CScriptArray::Create(arrayType);
+	if (path_has_nul(path)) return array;
 
 	#if defined(_WIN32)
 	// Windows uses UTF16 so it is necessary to convert the string
@@ -395,7 +398,7 @@ CScriptArray* script_glob(const string& pattern, int options) {
 	// Expected to have been called from a script.
 	CScriptArray* array = CScriptArray::Create(get_array_type("array<string>"));
 	set<string> files;
-	if (glob_pattern_too_wild(pattern)) return array;
+	if (glob_pattern_too_wild(pattern) || path_has_nul(pattern)) return array;
 	try {
 		Glob::glob(pattern, files, options);
 	} catch(Exception&) {}
@@ -407,6 +410,7 @@ CScriptArray* script_glob(const string& pattern, int options) {
 	return array;
 }
 bool DirectoryExists(const string& path) {
+	if (path_has_nul(path)) return false;
 	try {
 		File f(path);
 		if (f.exists()) return f.isDirectory();
@@ -420,6 +424,7 @@ bool DirectoryExists(const string& path) {
 }
 
 bool FileExists(const string& path) {
+	if (path_has_nul(path)) return false;
 	#ifdef _WIN32
 	// Windows uses UTF16 so it is necessary to convert the string
 	std::wstring bufUTF16;
@@ -449,6 +454,7 @@ bool FileExists(const string& path) {
 }
 
 asINT64 FileGetSize(const string& path) {
+	if (path_has_nul(path)) return -1;
 	#if defined(_WIN32)
 	// Windows uses UTF16 so it is necessary to convert the string
 	std::wstring bufUTF16;
@@ -479,6 +485,7 @@ asINT64 FileGetSize(const string& path) {
 }
 
 bool DirectoryCreate(const string& path) {
+	if (path_has_nul(path)) return false;
 	try {
 		Poco::File(path).createDirectories();
 	} catch (Poco::Exception& e) {
@@ -541,6 +548,7 @@ void file_remove_tree(const std::string& path) {
 	#endif
 }
 bool DirectoryDelete(const string& path, bool recursive) {
+	if (path_has_nul(path)) return false;
 	try {
 		if (recursive) file_remove_tree(path);
 		else File(path).remove(false);
@@ -553,6 +561,7 @@ bool FileDelete(const string& path) {
 }
 
 bool FileCopy(const string& source, const string& target, bool overwrite) {
+	if (path_has_nul(source) || path_has_nul(target)) return false;
 	try {
 		File(source).copyTo(target, !overwrite? File::OPT_FAIL_ON_OVERWRITE : 0);
 		return true;
@@ -561,21 +570,26 @@ bool FileCopy(const string& source, const string& target, bool overwrite) {
 
 // As declared in filesystem.h and to the script: the two paths only (a moved file never replaces an existing one).
 bool FileMove(const string& source, const string& target) {
+	if (path_has_nul(source) || path_has_nul(target)) return false;
 	try {
 		File(source).renameTo(target, File::OPT_FAIL_ON_OVERWRITE);
 		return true;
 	} catch(Exception& e) { return false; }
 }
 
+// These raise for a file that isn't there (FileNotFoundException), as one with a NUL in its name can't be.
 Timestamp FileGetCreated(const string& path) {
+	if (path_has_nul(path)) throw FileNotFoundException(path.substr(0, path.find('\0')));
 	return File(path).created();
 }
 
 Timestamp FileGetModified(const string& path) {
+	if (path_has_nul(path)) throw FileNotFoundException(path.substr(0, path.find('\0')));
 	return File(path).getLastModified();
 }
 
 std::string get_preferences_path(const std::string& org, const std::string& app) {
+	if (path_has_nul(org) || path_has_nul(app)) return ""; // as for a name SDL refuses
 	char* p = SDL_GetPrefPath(org.c_str(), app.c_str());
 	if (!p) return "";
 	std::string result = p;
@@ -583,6 +597,7 @@ std::string get_preferences_path(const std::string& org, const std::string& app)
 	return result;
 }
 std::string file_get_contents(const std::string& filename) {
+	if (path_has_nul(filename)) return "";
 	SDL_IOStream* stream = SDL_IOFromFile(filename.c_str(), "rb");
 	if (!stream) return ""; // sigh we really need to figure out a get_last_error situation or something here.
 	std::array<char, 4096> buffer;
@@ -601,6 +616,7 @@ std::string file_get_contents(const std::string& filename) {
 	return result;
 }
 bool file_put_contents(const std::string& filename, const std::string& contents, bool append) {
+	if (path_has_nul(filename)) return false;
 	SDL_IOStream* stream = SDL_IOFromFile(filename.c_str(), append? "ab" : "wb");
 	if (!stream) return false;
 	bool result = SDL_WriteIO(stream, contents.data(), contents.size()) == contents.size();
@@ -610,6 +626,7 @@ bool file_put_contents(const std::string& filename, const std::string& contents,
 }
 
 bool FileTouch(const string& filePath, const Timestamp& newTime) {
+	if (path_has_nul(filePath)) return false;
 	try {
 		Poco::File file(filePath);
 		if (!file.exists()) return false;
