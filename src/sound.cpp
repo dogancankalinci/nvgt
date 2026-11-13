@@ -5509,8 +5509,10 @@ public:
 		I'll raise an issue with MA to see if he'd be okay with this change. For now we'll just wait a few milliseconds for the backlog to clear and fail permanently if we see multiple MA_OUT_OF_MEMORY conditions back  to back. This should give the job queue time
 		*/
 		for (int i = 0; i < 10; i++) {
+			const unsigned int opens_out_of_memory = sound_service::opens_out_of_memory();
 			attempt_init();
-			if (g_soundsystem_last_error == MA_OUT_OF_MEMORY && !audio_engine_impl::on_audio_thread()) { // Not slept out on an audio thread, which the device waits for.
+			// Not when an open ran out of memory meanwhile, which MiniAudio reports the same way: the file's open itself rather than a full job queue, each try of which opened a URL again with another request to its server.
+			if (g_soundsystem_last_error == MA_OUT_OF_MEMORY && !audio_engine_impl::on_audio_thread() && sound_service::opens_out_of_memory() == opens_out_of_memory) { // Not slept out on an audio thread, which the device waits for.
 				// See above; this is probably job queue backlog rather than an actual out of memory. Take a break and try again. Not the script's wait(), which can collect garbage, whose destructors could load this very sound meanwhile, its sound then overwritten here while attached to the graph.
 				std::this_thread::sleep_for(std::chrono::milliseconds(5));
 				continue;

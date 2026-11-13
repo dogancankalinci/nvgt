@@ -83,6 +83,8 @@ quiet_file_errors::~quiet_file_errors() {}
 #endif
 // Why a protocol couldn't open what it was asked for, for the VFS open to report, on the thread that opens it.
 static thread_local ma_result t_open_error = MA_ERROR;
+static std::atomic<unsigned int> g_opens_out_of_memory{0}; // See sound_service::opens_out_of_memory().
+unsigned int sound_service::opens_out_of_memory() { return g_opens_out_of_memory.load(); }
 // Why a file couldn't be opened to read, as the encoders tell for the files they write: SDL, which opens it, keeps no errno, so that every failure but a missing file read "Unknown error". It's opened again as SDL opens it, where SDL looked for it, for the system's error; a directory is told first, as POSIX opens one to read. Opened through Poco instead, which shares writing, a file another program was writing opened there, and read as unknown again.
 static ma_result read_open_failure(const char* uri) {
 	std::string path = uri;
@@ -437,11 +439,13 @@ private:
 		try {
 			file = vfs->service->open_triplet(pFilePath);
 		} catch (const std::bad_alloc&) {
+			g_opens_out_of_memory.fetch_add(1);
 			return MA_OUT_OF_MEMORY;
 		} catch (...) {
 			return MA_ERROR;
 		}
 		if (file == NULL) {
+			if (t_open_error == MA_OUT_OF_MEMORY) g_opens_out_of_memory.fetch_add(1);
 			// Not found, as the file protocol tells, or not permitted, etc. Never as a decoder's failure, INVALID_FILE or NO_BACKEND: a load takes those as said of a file it read, retries it without flags and unregisters the name from MiniAudio's cache, which for a name never read in returns without unlocking that cache, so that every later load hung.
 			return t_open_error == MA_INVALID_FILE || t_open_error == MA_NO_BACKEND? MA_ERROR : t_open_error;
 		}

@@ -129,6 +129,8 @@ public:
 	// The VFS is how Miniaudio itself communicates with this.
 	virtual sound_service_vfs *get_vfs() = 0;
 	static std::unique_ptr<sound_service> make();
+	// How many opens through the VFS ran out of memory so far, on any thread: a load MiniAudio refuses with MA_OUT_OF_MEMORY, which it gives for a full job queue too, tells by it whether an open did, as on the job thread a stream's and a waited load's open runs on.
+	static unsigned int opens_out_of_memory();
 };
 
 // filters and protocols
