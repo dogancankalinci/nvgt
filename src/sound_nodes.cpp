@@ -1752,10 +1752,13 @@ public:
 		if (panner) {
 			remove_node(panner); // Which takes it off the graph and waits for the audio thread, so it can lose its pointer back here: a replaced component the script kept passes audio through.
 			panner->forget_spatializer();
+			drop_node_hold(static_cast<audio_node*>(this), panner); // This spatializer's own, as below.
 			release_later(panner);
 		}
 		panner = new_panner;
 		if (panner) {
+			// Held by this spatializer as well as by its chain, which a script can take a component out of by hand, the spatializer being reachable through internal_node_chain: with only the chain's hold recorded, a loop closed through the component passed the loop check (see claim_node_hold()), keeping every node on it, and their engine with its device and job threads, for good. As a mixer records its spatializer.
+			record_node_hold(static_cast<audio_node*>(this), panner);
 			if (reverb_attachment && reverb_placement == prepan) add_node(panner, reverb_attachment, 0);
 			else add_node(panner, nullptr, 0);
 		}
@@ -1765,10 +1768,12 @@ public:
 		if (attenuator) {
 			remove_node(attenuator);
 			attenuator->forget_spatializer();
+			drop_node_hold(static_cast<audio_node*>(this), attenuator); // As for the panner.
 			release_later(attenuator);
 		}
 		attenuator = new_attenuator;
 		if (attenuator) {
+			record_node_hold(static_cast<audio_node*>(this), attenuator); // As for the panner.
 			if (panner && (!reverb_attachment || reverb_placement != postpan)) add_node(attenuator, panner, 0);
 			else if (reverb_attachment && reverb_placement == postpan) add_node(attenuator, reverb_attachment, 0);
 			else if (!panner && reverb_attachment && reverb_placement == prepan) add_node(attenuator, reverb_attachment, 0);
