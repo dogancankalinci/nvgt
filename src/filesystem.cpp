@@ -22,6 +22,7 @@
 #include <Poco/Glob.h>
 #include <Poco/Path.h>
 #include <Poco/TextIterator.h>
+#include <Poco/Thread.h>
 #include <Poco/UTF8Encoding.h>
 #include <Poco/Timestamp.h>
 #include <Poco/UnicodeConverter.h>
@@ -486,9 +487,63 @@ bool DirectoryCreate(const string& path) {
 	return true;
 }
 
+#ifdef _WIN32
+// Poco's File::remove(true) goes into every directory it finds, a junction or a directory symbolic link too, as File::isLink() is false for
+// those on Windows, and deleted what they pointed to, wherever that was, before the link itself: directory_delete() of a folder that held
+// a junction emptied the junction's target, and directory_delete() of the junction did too. Here a directory that names another place is
+// removed as the link it is (RemoveDirectoryW takes a junction or directory link away and leaves its target alone), and only a directory
+// whose contents are its own is gone into. A reparse point that isn't a name for another place (a OneDrive placeholder, for one) holds its
+// own contents and is gone into as before.
+static bool directory_is_own(const string& path) {
+	std::wstring upath;
+	UnicodeConverter::toUTF16(path, upath);
+	// The path as Poco's File converts it, so that this reaches every directory Poco does.
+	if (upath.size() > MAX_PATH - 12 && (upath[0] == '\\' || upath[1] == ':') && upath.compare(0, 4, L"\\\\?\\", 4) != 0) {
+		if (upath[1] == '\\') upath.insert(0, L"\\\\?\\UNC\\", 8);
+		else upath.insert(0, L"\\\\?\\", 4);
+	}
+	DWORD attributes = GetFileAttributesW(upath.c_str());
+	if (attributes == INVALID_FILE_ATTRIBUTES) return false;
+	if (!(attributes & FILE_ATTRIBUTE_REPARSE_POINT)) return true;
+	HANDLE handle = CreateFileW(upath.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+	if (handle == INVALID_HANDLE_VALUE) return false; // Not known to be its own: removed as it is, which fails if it isn't empty.
+	FILE_ATTRIBUTE_TAG_INFO info;
+	bool known = GetFileInformationByHandleEx(handle, FileAttributeTagInfo, &info, sizeof(info));
+	CloseHandle(handle);
+	return known && !IsReparseTagNameSurrogate(info.ReparseTag);
+}
+static void remove_tree(File& f) {
+	if (f.isLink() || !f.isDirectory() || !directory_is_own(f.path())) {
+		f.remove(false);
+		return;
+	}
+	std::vector<File> files;
+	f.list(files);
+	for (File& child : files) remove_tree(child);
+	// As Poco's remove(true) does: a deleted file can stay in its directory for a moment, until whatever has it open closes it.
+	for (int retry = 8, wait = 10;; wait *= 2) {
+		try {
+			f.remove(false);
+			return;
+		} catch (DirectoryNotEmptyException&) {
+			if (--retry == 0) throw;
+			Poco::Thread::sleep(wait);
+		}
+	}
+}
+#endif
+void file_remove_tree(const std::string& path) {
+	File f(path);
+	#ifdef _WIN32
+	remove_tree(f);
+	#else
+	f.remove(true); // Poco's File::isLink() sees every symbolic link here (lstat), so remove(true) doesn't go through one.
+	#endif
+}
 bool DirectoryDelete(const string& path, bool recursive) {
 	try {
-		File(path).remove(recursive);
+		if (recursive) file_remove_tree(path);
+		else File(path).remove(false);
 		return true;
 	} catch(Exception& e) { return false; }
 }
@@ -533,15 +588,24 @@ std::string file_get_contents(const std::string& filename) {
 	std::array<char, 4096> buffer;
 	std::string result;
 	Sint64 size;
-	while ((size = SDL_ReadIO(stream, buffer.data(), buffer.size())) > 0) result.append(buffer.begin(), buffer.begin() + size);
+	try {
+		while ((size = SDL_ReadIO(stream, buffer.data(), buffer.size())) > 0) result.append(buffer.begin(), buffer.begin() + size);
+	} catch (...) { // A file too big for memory: the stream is closed before the exception goes on to the script.
+		SDL_CloseIO(stream);
+		throw;
+	}
+	// A read that failed part way gave the start of the file as if it were all of it; that is a failure, which gives "" as documented.
+	bool failed = SDL_GetIOStatus(stream) == SDL_IO_STATUS_ERROR;
 	SDL_CloseIO(stream);
+	if (failed) return "";
 	return result;
 }
 bool file_put_contents(const std::string& filename, const std::string& contents, bool append) {
 	SDL_IOStream* stream = SDL_IOFromFile(filename.c_str(), append? "ab" : "wb");
 	if (!stream) return false;
 	bool result = SDL_WriteIO(stream, contents.data(), contents.size()) == contents.size();
-	SDL_CloseIO(stream);
+	// Outside Windows the stream is a FILE whose buffer is written out when it closes, so a full disk shows only there.
+	if (!SDL_CloseIO(stream)) result = false;
 	return result;
 }
 

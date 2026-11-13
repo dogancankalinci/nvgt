@@ -257,7 +257,7 @@ static string make_unique_temp_path(const string& suffix) {
 	TemporaryFile tmp;
 	string path = tmp.path() + suffix;
 	if (File(tmp.path()).exists()) File(tmp.path()).remove();
-	if (File(path).exists()) File(path).remove(true);
+	if (File(path).exists()) file_remove_tree(path);
 	return path;
 }
 // --- Custom application icon helpers (shared by every platform bundler) ---
@@ -865,7 +865,7 @@ public:
 		string outpath_str = config.getString("build.output_basename", format("%s", Path(input_file).setExtension("").makeAbsolute().toString()));
 		replaceInPlace(outpath_str, "$platform"s, platform);
 		outpath_str = Path(outpath_str).makeAbsolute().toString();
-		if (DirectoryExists(outpath_str)) File(outpath_str).remove(true);
+		if (DirectoryExists(outpath_str)) file_remove_tree(outpath_str);
 		outpath = outpath_str;
 		File(outpath.parent()).createDirectories();
 		alter_output_path(outpath);
@@ -945,7 +945,7 @@ protected:
 		set_status("bundling assets...");
 		for (const game_asset& g : g_game_assets) {
 			Path p = Path(g.bundled_path).makeAbsolute(g.flags & GAME_ASSET_DOCUMENT? document_path : resource_path);
-			if (File(p).exists()) File(p).remove(true);
+			if (File(p).exists()) file_remove_tree(p.toString());
 			if (!File(p.parent()).exists()) File(p.parent()).createDirectories();
 			File(Path(g.filesystem_path).makeAbsolute(Path(get_input_file()).makeParent()).toString()).copyTo(p.toString());
 			if (File(p).isDirectory()) remove_finder_metadata(File(p));
@@ -957,7 +957,7 @@ protected:
 		File libpathF(libpath);
 		// Determine whether to create, replace, or update shared libraries.
 		if (!libpathF.exists()) libpathF.createDirectories();
-		else if(config.hasOption("build.shared_library_recopy")) libpathF.remove(true);
+		else if(config.hasOption("build.shared_library_recopy")) file_remove_tree(libpathF.path());
 		string source = get_nvgt_lib_directory(g_platform);
 		set<string> libs;
 		Glob::glob(Path(source).append("*").toString(), libs, Glob::GLOB_DOT_SPECIAL | Glob::GLOB_FOLLOW_SYMLINKS | Glob::GLOB_CASELESS);
@@ -1186,7 +1186,7 @@ protected:
 			workplace = Path(workplace_tmp->path()).append(Path(output_path).makeFile().getFileName()).setExtension("app");
 		} else if(bundle_mode > 0) {
 			workplace = Path(output_path).makeFile().setExtension("app");
-			if (workplace.exists() && workplace.isDirectory()) workplace.remove(true); // both MacOS and IOS create .app bundles, if we don't construct them from scratch and someone compiles for IOS after MacOS, the bundles might clash without valid output basename set.
+			if (workplace.exists() && workplace.isDirectory()) file_remove_tree(workplace.path()); // both MacOS and IOS create .app bundles, if we don't construct them from scratch and someone compiles for IOS after MacOS, the bundles might clash without valid output basename set.
 		}
 		if (bundle_mode) {
 			Path tmp = Path(workplace.path()).append("Contents/Resources");
@@ -1267,7 +1267,7 @@ protected:
 			#ifdef __APPLE__
 				string sout, serr;
 				File dmg_out = Path(final_output_path).makeFile().setExtension("dmg").toString();
-				if (dmg_out.exists()) dmg_out.remove(true);
+				if (dmg_out.exists()) file_remove_tree(dmg_out.path());
 				if (!system_command("hdiutil", {"create", "-srcfolder", bundle_mode != 2? workplace.path() : Path(workplace.path()).makeParent().toString(), "-volname", Path(workplace.path()).makeFile().getBaseName(), dmg_out.path()}, sout, serr)) throw Exception(format("Unable to execute hdiutil for .dmg generation: %s", serr));
 				output_path = dmg_out.path();
 			#else
@@ -1356,7 +1356,7 @@ class nvgt_compilation_output_ios : public nvgt_compilation_output_impl {
 				out.close();
 			}
 			File stale(Path(bin).makeParent().append("_CodeSignature").toString());
-			if (stale.exists()) stale.remove(true);
+			if (stale.exists()) file_remove_tree(stale.path());
 		}
 		vector<File> entries;
 		dir.list(entries);
@@ -1370,7 +1370,7 @@ protected:
 			workplace = Path(workplace_tmp->path()).append("Payload").append(Path(output_path).makeFile().getFileName()).setExtension("app");
 		} else if(bundle_mode > 0) {
 			workplace = Path(output_path).makeFile().setExtension("app");
-			if (workplace.exists() && workplace.isDirectory()) workplace.remove(true); // both MacOS and IOS create .app bundles, if we don't construct them from scratch and someone compiles for IOS after MacOS, the bundles might clash without valid output basename set.
+			if (workplace.exists() && workplace.isDirectory()) file_remove_tree(workplace.path()); // both MacOS and IOS create .app bundles, if we don't construct them from scratch and someone compiles for IOS after MacOS, the bundles might clash without valid output basename set.
 		}
 		if (bundle_mode) {
 			File(workplace.path()).createDirectories();

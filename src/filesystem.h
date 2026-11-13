@@ -19,6 +19,9 @@ bool FileCopy(const std::string& source, const std::string& target, bool overwri
 bool FileMove(const std::string& source, const std::string& target);
 bool FileExists(const std::string& path);
 bool FileDelete(const std::string& path);
+// Poco::File(path).remove(true), but a directory link or junction inside is removed as a link, never gone through (Poco's goes through
+// those on Windows and deletes what is in their target). Throws as remove(true) does.
+void file_remove_tree(const std::string& path);
 asINT64 FileGetSize(const std::string& path);
 std::string file_get_contents(const std::string& filename);
 void RegisterScriptFileSystemFunctions(asIScriptEngine* engine);
