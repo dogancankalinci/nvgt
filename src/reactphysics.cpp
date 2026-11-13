@@ -232,7 +232,12 @@ static void check_in_world(const PhysicsWorld& world, const Body* body) {
 	if (found == g_physics_bodies.end() || found->second != &world) throw runtime_error("body isn't a body of this world; it may have been destroyed already");
 }
 
+// A script can leave a callback null (set_callbacks(on_contact, null) is the usual form when only contacts matter), and reactphysics3d
+// still reports what it has: the trigger callback on every update that has any contact pair. A null one ran Prepare(null), whose engine
+// message NVGT keeps (the message callback adds a runtime message to what it shows after a failed build, and clears it only then):
+// about a hundred bytes more for every such update for as long as the game ran.
 void simple_void_callback(asIScriptFunction* callback, const void* data) {
+	if (!callback) return;
 	physics_callback_scope in_callback;
 	asIScriptContext* ACtx = asGetActiveContext();
 	if (script_callbacks_stopped(ACtx)) return; // exit() was called since the script called into the physics world, by the callback for an earlier contact or by another thread: no more callbacks.
@@ -259,6 +264,7 @@ public:
 	asIScriptFunction* callback;
 	raycast_callback(asIScriptFunction* callback) : callback(callback) {}
 	decimal notifyRaycastHit(const RaycastInfo& info) override {
+		if (!callback) return 0; // see simple_void_callback(): 0 ends the raycast, as the failed Prepare(null) did
 		asIScriptContext* ACtx = asGetActiveContext();
 		if (script_callbacks_stopped(ACtx)) return 0; // exit() was called since the raycast began: 0 ends it.
 		bool new_context = ACtx == NULL || ACtx->PushState() < 0;
