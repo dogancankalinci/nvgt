@@ -486,16 +486,23 @@ float range_convert_midpoint(float old_value, float old_min, float old_midpoint,
 std::string float_to_bytes(float f) {
 	return std::string((char*)&f, 4);
 }
+// Copied out of the string: read in place through a float or double pointer, the bytes of a short string (kept inside the string
+// object, at an odd address with libc++) were read with an instruction that needs an aligned address, ldrd for a double on
+// armeabi-v7a, which faults there unless the kernel fixes the access up (AArch32 tasks on arm64 kernels before 6.1 got SIGBUS).
 float bytes_to_float(const std::string& s) {
 	if (s.size() != 4) return 0;
-	return *((float*)&s[0]);
+	float f;
+	memcpy(&f, s.data(), sizeof(f));
+	return f;
 }
 std::string double_to_bytes(double d) {
 	return std::string((char*)&d, 8);
 }
 double bytes_to_double(const std::string& s) {
 	if (s.size() != 8) return 0;
-	return *((double*)&s[0]);
+	double d;
+	memcpy(&d, s.data(), sizeof(d)); // see bytes_to_float()
+	return d;
 }
 
 std::string string_to_upper_case(std::string s) {
