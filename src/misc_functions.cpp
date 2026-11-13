@@ -95,9 +95,22 @@ asQWORD timestamp() {
 std::string get_command_line() {
 	return g_CommandLine;
 }
+// To more places than the type can hold, n * P (or P itself, from 10^309 for a double) overflowed: round(1e300, 20) gave infinity and
+// round(1.5, 400) NaN, where nothing is lost and the number is the answer. To a place beyond the type's range (p < -308) the answer is
+// 0, where P was infinite and n / P * P NaN. std::abs(INT_MIN) was undefined.
 template <typename T> T GenericRound(T n, int p) {
-	T P = std::pow(static_cast<T>(10), std::abs(p));
-	T result = (p > 0)? (std::round(n * P) / P) : (p < 0)? (std::round(n / P) * P) : std::round(n);
+	if (!std::isfinite(n)) return n;
+	T P = std::pow(static_cast<T>(10), static_cast<T>(std::abs(static_cast<long long>(p))));
+	T result;
+	if (p > 0) {
+		T scaled = n * P;
+		if (!std::isfinite(scaled)) return n;
+		result = std::round(scaled) / P;
+	} else if (p < 0) {
+		if (!std::isfinite(P)) return static_cast<T>(0);
+		result = std::round(n / P) * P;
+		if (!std::isfinite(result)) return n;
+	} else result = std::round(n);
 	return (result == static_cast<T>(0)) ? static_cast<T>(0) : result;
 }
 float fRound(float n, int p)   { return GenericRound<float>(n, p); }
