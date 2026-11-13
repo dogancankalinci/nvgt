@@ -264,7 +264,11 @@ public:
 	bool connect() {
 		try {
 			Timespan timeout(Timespan::TimeDiff(m_timeout_ms) * 1000);  // microseconds, in 64 bits: in int, 2147484 ms or more overflowed
-			ptr->connect(m_host, m_port, timeout);
+			// A timeout of 0 or less connects with the system's own limit: given to Poco, a negative one became an endless wait (Poco 1.14
+			// passes it to epoll_wait/poll/WSAPoll, which take a negative time as none, so an unreachable host hung the script for good)
+			// and 0 timed out at once.
+			if (m_timeout_ms > 0) ptr->connect(m_host, m_port, timeout);
+			else ptr->connect(m_host, m_port);
 			// Authenticate if password is set
 			if (!m_password.empty()) {
 				Array cmd;
