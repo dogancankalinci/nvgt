@@ -1349,6 +1349,7 @@ asIScriptContext* RequestContextCallback(asIScriptEngine *engine, void* /*param*
 	return ctx;
 }
 void ReturnContextCallback(asIScriptEngine *engine, asIScriptContext *ctx, void* /*param*/) {
+	if (!ctx) return; // What RequestContext() gave when there was no memory for a context, handed back by a failure path (async<T>'s): it was used, where the engine's own ReturnContext() checks for it.
 	// A context ExecuteString prepared with a function it built (a default value of script_function.call() or async<T>) holds that function, which is released once the context is unprepared, under the build lock: see EXECUTESTRING_CONTEXT_USER_DATA.
 	asIScriptFunction* execute_string_func = static_cast<asIScriptFunction*>(ctx->SetUserData(nullptr, EXECUTESTRING_CONTEXT_USER_DATA));
 	// A context given back suspended can't be unprepared, and pooled like that, every later request got a context Prepare() refused; aborting it lets it be. One still running, as when exit() makes the manager give back the context calling it, can't be either way, and is pooled to be prepared again once it has stopped.

@@ -229,7 +229,8 @@ public:
 		ctx = engine->RequestContext();
 		if (!ctx || ctx->Prepare(func) < 0) {
 			aCtx->SetException("Async can't prepare calling context");
-			engine->ReturnContext(ctx);
+			if (ctx) engine->ReturnContext(ctx); // A null one (no memory for a new context) was handed to the pool's callback, which used it.
+			ctx = nullptr;
 			return false;
 		}
 		ref_values.assign(func->GetParamCount(), 0);
