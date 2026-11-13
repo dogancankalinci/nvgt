@@ -662,7 +662,10 @@ public:
 		bool authorize = false;
 		int tries = _max_retries;
 		string download_buffer(1024 * 32, '\0'); // Should the user be able to configure this, larger buffer = faster download?
-		while (tries && !tryWait(poco_ms(_retry_delay))) { // See poco_ms() in threading.cpp.
+		// retry_delay is the wait before each retry (a redirect followed, the request sent again with credentials): it was also waited before the first attempt, so every request with a retry delay set started that much later. The first attempt only checks for a cancel (reset() or the object going).
+		bool first = true;
+		while (tries && !tryWait(first ? 0 : poco_ms(_retry_delay))) { // See poco_ms() in threading.cpp.
+			first = false;
 			tries--;
 			try {
 				string path = _url.getPathAndQuery();
