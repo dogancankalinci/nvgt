@@ -518,29 +518,34 @@ public:
 		}
 		Array cmd;
 		cmd.add("MSET");
+		// A value is sent as its text: a string as it is, a number in digits and a bool as true/false, as a string conversion writes
+		// them. Any value but a string set its key to "" and mset still succeeded (a number too: {"score", 10} stored an empty score);
+		// a value of another type now refuses the dictionary, with nothing sent. The handle test that was here (type id ==
+		// asTYPEID_OBJHANDLE, a flag, never a whole id) matched nothing.
 		CScriptDictionary::CIterator it = key_value_dict->begin();
 		while (it != key_value_dict->end()) {
 			const std::string& key = it.GetKey();
 			const void* value_ptr = it.GetAddressOfValue();
 			int type_id = it.GetTypeId();
 			cmd.add(key);
-			if (type_id == asTYPEID_OBJHANDLE) {
-				std::string* str_ptr = static_cast<std::string*>(const_cast<void*>(value_ptr));
-				if (str_ptr)
-					cmd.add(*str_ptr);
-				else
-					cmd.add("");
-			} else {
-				// For other types, try to convert to string
-				// Gross and likely not reliable - need to look up how to check implcasts?
-				asIScriptContext* ctx = asGetActiveContext();
-				asIScriptEngine* engine = ctx->GetEngine();
-				asITypeInfo* type_info = engine->GetTypeInfoById(type_id);
-				if (type_info && std::string(type_info->GetName()) == "string") {
-					std::string* str_ptr = static_cast<std::string*>(const_cast<void*>(value_ptr));
-					cmd.add(str_ptr ? *str_ptr : "");
-				} else
-					cmd.add("");
+			switch (value_ptr ? type_id : 0) {
+				case asTYPEID_BOOL: cmd.add(*static_cast<const bool*>(value_ptr) ? "true" : "false"); break;
+				case asTYPEID_INT8: cmd.add(NumberFormatter::format(int(*static_cast<const Int8*>(value_ptr)))); break;
+				case asTYPEID_INT16: cmd.add(NumberFormatter::format(int(*static_cast<const Int16*>(value_ptr)))); break;
+				case asTYPEID_INT32: cmd.add(NumberFormatter::format(*static_cast<const Int32*>(value_ptr))); break;
+				case asTYPEID_INT64: cmd.add(NumberFormatter::format(*static_cast<const Int64*>(value_ptr))); break;
+				case asTYPEID_UINT8: cmd.add(NumberFormatter::format(unsigned(*static_cast<const UInt8*>(value_ptr)))); break;
+				case asTYPEID_UINT16: cmd.add(NumberFormatter::format(unsigned(*static_cast<const UInt16*>(value_ptr)))); break;
+				case asTYPEID_UINT32: cmd.add(NumberFormatter::format(*static_cast<const UInt32*>(value_ptr))); break;
+				case asTYPEID_UINT64: cmd.add(NumberFormatter::format(*static_cast<const UInt64*>(value_ptr))); break;
+				case asTYPEID_FLOAT: cmd.add(NumberFormatter::format(*static_cast<const float*>(value_ptr))); break;
+				case asTYPEID_DOUBLE: cmd.add(NumberFormatter::format(*static_cast<const double*>(value_ptr))); break;
+				default:
+					if (type_id != g_StringTypeid || !value_ptr) {
+						m_last_error = "The value of '" + key + "' is not a string, number or bool";
+						return false;
+					}
+					cmd.add(*static_cast<const std::string*>(value_ptr));
 			}
 			++it;
 		}
