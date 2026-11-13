@@ -4490,13 +4490,22 @@ public:
 			return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS;
 		}
 		new_shape_obj->set_position(position);
+		try {
+			track_shape(true); // Before the shape is in place: an insert that ran out of memory left it in place, with no listener's move placing the mixer in it again.
+		} catch (...) { // Without a shape, at the position the script set, as for a null one.
+			new_shape_obj->release();
+			if (snd) {
+				unique_lock<mutex> lock(spatialization_params_mutex);
+				ma_sound_set_position(&*snd, position.x, position.y, position.z);
+			}
+			throw;
+		}
 		{
 			unique_lock<mutex> lock(spatialization_params_mutex);
 			shape = new_shape_obj;
 			shape_anchor = position;
 		}
 		shape_handle = new_shape;
-		track_shape(true);
 		g_soundsystem_last_error = MA_SUCCESS;
 		if (snd && get_spatialization_enabled()) set_position_3d(position.x, position.y, position.z); // Applied now rather than at the next set_position_3d(), for a sound already placed, which set_position_3d() would otherwise make spatialized.
 		return true;
