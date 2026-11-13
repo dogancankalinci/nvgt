@@ -84,10 +84,8 @@ class choice_input_field: input_field {
 	bool configure() {
 		this.control_id = this.parent.main_form.create_list(this.label, 0, false, false);
 		for (uint i = 0; i < this.choices.length(); i += 1) {
-			if (!this.parent.main_form.add_list_item(this.control_id, this.choices[i])) {
-				break;
-				return false;
-			}
+			if (!this.parent.main_form.add_list_item(this.control_id, this.choices[i]))
+				return false; // was after a break, so a choice that couldn't be added still gave true
 		}
 		return true;
 	}
@@ -152,7 +150,7 @@ class number_text_field: text_field {
 		return true;
 	}
 	bool set_value(dictionary@d) {
-		d.set(this.name, parse_float(this.parent.main_form.get_text(this.control_id)));
+		d.set(this.name, parse_double(this.parent.main_form.get_text(this.control_id))); // parse_float kept 24 bits: 123456789 came back as 123456792
 		return true;
 	}
 }
