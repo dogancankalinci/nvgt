@@ -150,13 +150,25 @@ void lost_window_focus_platform() {}
 void regained_window_focus_platform() {}
 #endif
 
+// Whether path names a file; a name that doesn't make a valid path (Poco throws for it) names none.
+static bool font_file_exists(const std::string& path) {
+	try {
+		File f(path);
+		return f.exists() && f.isFile();
+	} catch (...) {
+		return false;
+	}
+}
 std::string get_font_path(const std::string& name) {
-	// If the name already ends in .ttf, treat it as a path directly.
-	if (name.size() >= 4 && name.substr(name.size() - 4) == ".ttf") return name;
-	// See if name+".ttf" already exists as a relative or absolute path.
-	std::string with_ext = name + ".ttf";
-	if (File(with_ext).exists()) return with_ext;
-	// Search platform system font directories.
+	// A font file of that name or path is used as it is, whatever its extension. Only a name ending in ".ttf" was, and every other one
+	// got ".ttf" added: no .otf or .ttc font (a collection, as most of macOS's and Windows' CJK fonts are) or ".TTF" file could be
+	// opened, and on Windows such a path was then joined to the font folder, which made get_font() throw "Bad path syntax".
+	static const char* extensions[] = {".ttf", ".otf", ".ttc"};
+	if (font_file_exists(name)) return name;
+	for (const char* ext : extensions) {
+		if (font_file_exists(name + ext)) return name + ext;
+	}
+	// A bare name (no folder in it) is looked for in the platform's system font folders.
 	static const char* font_dirs[] = {
 		#ifdef _WIN32
 		"C:/Windows/Fonts/",
@@ -174,12 +186,18 @@ std::string get_font_path(const std::string& name) {
 		#endif
 		nullptr
 	};
-	for (int i = 0; font_dirs[i]; i++) {
-		std::string candidate = std::string(font_dirs[i]) + name + ".ttf";
-		if (File(candidate).exists()) return candidate;
+	if (name.find('/') == std::string::npos && name.find('\\') == std::string::npos) {
+		for (int i = 0; font_dirs[i]; i++) {
+			std::string candidate = std::string(font_dirs[i]) + name;
+			if (font_file_exists(candidate)) return candidate;
+			for (const char* ext : extensions) {
+				if (font_file_exists(candidate + ext)) return candidate + ext;
+			}
+		}
 	}
-	// Couldn't resolve — return name+".ttf" and let the caller handle the error.
-	return with_ext;
+	// Couldn't resolve: as before, the name with ".ttf" (unless it has it), and the caller handles the error.
+	if (name.size() >= 4 && name.substr(name.size() - 4) == ".ttf") return name;
+	return name + ".ttf";
 }
 
 // Anything below this point is function registrations.
