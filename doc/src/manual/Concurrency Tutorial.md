@@ -285,6 +285,10 @@ A `text_font` is for the thread that made it: SDL_ttf, which NVGT uses for text,
 
 So do your window, input and drawing work on the thread that showed the window, and pass what other threads need (or produce) through variables protected by the synchronization primitives above. A window object, renderer or texture that another thread lets go of last is destroyed at its own thread's next `wait()`, or when the window or the program ends.
 
+### Physics on threads
+
+The physics objects (`physics_world` and the bodies, colliders, shapes, meshes, joints and loggers made for it) can be used on any thread, also a world made on one thread and updated on another. Physics calls made on several threads at once run one after the other: one lock is held through each of them, and a world's `update()`, `raycast()`, `test_collision()` and `test_overlap()` hold it while they run your callbacks. So a physics callback, or the destructor of an object a body's user data holds (which runs when the body or its user data goes), must never wait for another thread that uses physics: that thread is itself waiting for the callback's call to return, and both stop for good.
+
 ### Golden rules of threads
 
 When using threads, always remember:

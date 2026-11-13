@@ -15,6 +15,7 @@
 #include <cmath>
 #include <initializer_list>
 #include <memory>
+#include <mutex>
 #include <shared_mutex>
 #include <stdexcept>
 #include <string>
@@ -35,6 +36,23 @@ using namespace std;
 using namespace reactphysics3d;
 
 class event_listener;
+
+// One lock for all of physics, held through every call a script makes into it: a world's update(), raycasts and collision tests with
+// the callbacks they run included, so that a world made on one thread can be used and stepped on another. Every world, shape and mesh
+// comes from the one PhysicsCommon below, whose memory allocators and lists of worlds, shapes and meshes every create and destroy
+// changes, and NVGT's registries below change with them: neither had a lock, and two threads each with a world of its own corrupted the
+// heap. Recursive, as a callback calls into physics on the thread holding it. A physics callback (and a destructor run by letting go of
+// a body's user data) must therefore not wait for another thread that uses physics: that thread waits for this lock meanwhile.
+static std::recursive_mutex& physics_mutex() {
+	static auto* m = new std::recursive_mutex; // never destroyed: physics objects can go late in the program's end
+	return *m;
+}
+struct physics_lock {
+	physics_lock() { physics_mutex().lock(); }
+	~physics_lock() { physics_mutex().unlock(); }
+	physics_lock(const physics_lock&) = delete;
+	physics_lock& operator=(const physics_lock&) = delete;
+};
 
 PhysicsCommon g_physics;
 unordered_map<PhysicsWorld*, event_listener*> g_physics_event_listeners;  // These need to be kept alive while the world exists, and the PhysicsWorld class has no user data.
@@ -168,28 +186,43 @@ static void check_live(const void* object) {
 template <class F> struct live;
 template <class C, class R, class... A> struct live<R (C::*)(A...)> {
 	template <R (C::*method)(A...)> static R call(C* object, A... args) {
+		physics_lock lock;
 		check_live(object);
 		return (object->*method)(std::forward<A>(args)...);
 	}
 };
 template <class C, class R, class... A> struct live<R (C::*)(A...) const> {
 	template <R (C::*method)(A...) const> static R call(const C* object, A... args) {
+		physics_lock lock;
 		check_live(object);
 		return (object->*method)(std::forward<A>(args)...);
 	}
 };
 template <class C, class R, class... A> struct live<R (*)(C*, A...)> {
 	template <R (*function)(C*, A...)> static R call(C* object, A... args) {
+		physics_lock lock;
 		check_live(object);
 		return function(object, std::forward<A>(args)...);
 	}
 };
 template <class C, class R, class... A> struct live<R (*)(C&, A...)> {
 	template <R (*function)(C&, A...)> static R call(C& object, A... args) {
+		physics_lock lock;
 		check_live(&object);
 		return function(object, std::forward<A>(args)...);
 	}
 };
+// A value a method returns by reference lies in the world's component arrays, which another thread's call on the world can move; the
+// script read it once the call had returned and the lock gone, so these copy it under the lock.
+template <class F> struct live_copy;
+template <class C, class R> struct live_copy<const R& (C::*)() const> {
+	template <const R& (C::*method)() const> static R call(const C* object) {
+		physics_lock lock;
+		check_live(object);
+		return (object->*method)();
+	}
+};
+#define asLIVECOPY(c, m) asFUNCTION((live_copy<decltype(&c::m)>::template call<&c::m>))
 #define asLIVE(c, m) asFUNCTION((live<decltype(&c::m)>::template call<&c::m>))
 #define asLIVEPR(c, m, p, r) asFUNCTION((live<r (c::*) p>::template call<static_cast<r (c::*) p>(&c::m)>))
 #define asLIVEF(f) asFUNCTION((live<decltype(&f)>::template call<&f>))
@@ -502,6 +535,7 @@ void world_set_callbacks(PhysicsWorld* world, asIScriptFunction* on_contact, asI
 // reactphysics3d requires a collision shape to outlive every collider that uses it, but from script the shape can be destroyed while a body still holds it; the dangling pointer is then dereferenced when the world (or PhysicsCommon at exit) tears its colliders down. PhysicsCommon keeps its world list private, so we track the worlds we create and scan their colliders before destroying a shape.
 static std::unordered_set<PhysicsWorld*> g_physics_worlds;
 PhysicsWorld* world_create(const PhysicsWorld::WorldSettings& settings) {
+	physics_lock lock;
 	PhysicsWorld* world = g_physics.createPhysicsWorld(settings);
 	if (world) {
 		g_physics_worlds.insert(world);
@@ -542,6 +576,7 @@ static void body_forget(Body* body) {
 	for (uint32 c = 0; c < body->getNbColliders(); c++) collider_forget(body->getCollider(c));
 }
 void world_destroy(PhysicsWorld* world) {
+	physics_lock lock;
 	if (!world || !g_physics_worlds.count(world)) return;
 	check_not_in_physics_callback("a world");
 	world_destroy_listener(world);
@@ -563,6 +598,7 @@ void world_destroy(PhysicsWorld* world) {
 
 // Shape destruction functions
 void sphere_shape_destroy(SphereShape* shape) {
+	physics_lock lock;
 	if (!shape) return;
 	check_shape_destroyable(shape);
 	g_physics_shapes.erase(shape);
@@ -571,6 +607,7 @@ void sphere_shape_destroy(SphereShape* shape) {
 }
 
 void box_shape_destroy(BoxShape* shape) {
+	physics_lock lock;
 	if (!shape) return;
 	check_shape_destroyable(shape);
 	g_physics_shapes.erase(shape);
@@ -579,6 +616,7 @@ void box_shape_destroy(BoxShape* shape) {
 }
 
 void capsule_shape_destroy(CapsuleShape* shape) {
+	physics_lock lock;
 	if (!shape) return;
 	check_shape_destroyable(shape);
 	g_physics_shapes.erase(shape);
@@ -587,6 +625,7 @@ void capsule_shape_destroy(CapsuleShape* shape) {
 }
 
 void convex_mesh_shape_destroy(ConvexMeshShape* shape) {
+	physics_lock lock;
 	if (!shape) return;
 	check_shape_destroyable(shape);
 	g_physics_shapes.erase(shape);
@@ -595,6 +634,7 @@ void convex_mesh_shape_destroy(ConvexMeshShape* shape) {
 }
 
 void height_field_shape_destroy(HeightFieldShape* shape) {
+	physics_lock lock;
 	if (!shape) return;
 	check_shape_destroyable(shape);
 	g_physics_shapes.erase(shape);
@@ -603,6 +643,7 @@ void height_field_shape_destroy(HeightFieldShape* shape) {
 }
 
 void concave_mesh_shape_destroy(ConcaveMeshShape* shape) {
+	physics_lock lock;
 	if (!shape) return;
 	check_shape_destroyable(shape);
 	g_physics_shapes.erase(shape);
@@ -621,14 +662,17 @@ static bool mesh_can_be_destroyed(const void* mesh) {
 }
 
 void convex_mesh_destroy(ConvexMesh* mesh) {
+	physics_lock lock;
 	if (mesh && mesh_can_be_destroyed(mesh)) g_physics.destroyConvexMesh(mesh);
 }
 
 void triangle_mesh_destroy(TriangleMesh* mesh) {
+	physics_lock lock;
 	if (mesh && mesh_can_be_destroyed(mesh)) g_physics.destroyTriangleMesh(mesh);
 }
 
 void height_field_destroy(HeightField* heightField) {
+	physics_lock lock;
 	if (heightField && mesh_can_be_destroyed(heightField)) g_physics.destroyHeightField(heightField);
 }
 
@@ -650,24 +694,28 @@ void convex_mesh_shape_set_scale(ConvexMeshShape& shape, const Vector3& scale) {
 	shape.setScale(scale);
 }
 SphereShape* sphere_shape_create(float radius) {
+	physics_lock lock;
 	SphereShape* shape = g_physics.createSphereShape(radius);
 	g_physics_shapes[shape] = nullptr;
 	live_add(shape);
 	return shape;
 }
 BoxShape* box_shape_create(const Vector3& half_extents) {
+	physics_lock lock;
 	BoxShape* shape = g_physics.createBoxShape(half_extents);
 	g_physics_shapes[shape] = nullptr;
 	live_add(shape);
 	return shape;
 }
 CapsuleShape* capsule_shape_create(float radius, float height) {
+	physics_lock lock;
 	CapsuleShape* shape = g_physics.createCapsuleShape(radius, height);
 	g_physics_shapes[shape] = nullptr;
 	live_add(shape);
 	return shape;
 }
 ConvexMeshShape* convex_mesh_shape_create(ConvexMesh* mesh, const Vector3& scaling) {
+	physics_lock lock;
 	check_scaling(scaling);
 	ConvexMeshShape* shape = g_physics.createConvexMeshShape(live_mesh(mesh), scaling);
 	g_physics_shapes[shape] = mesh;
@@ -675,6 +723,7 @@ ConvexMeshShape* convex_mesh_shape_create(ConvexMesh* mesh, const Vector3& scali
 	return shape;
 }
 ConcaveMeshShape* concave_mesh_shape_create(TriangleMesh* mesh, const Vector3& scaling) {
+	physics_lock lock;
 	check_scaling(scaling);
 	ConcaveMeshShape* shape = g_physics.createConcaveMeshShape(live_mesh(mesh), scaling);
 	g_physics_shapes[shape] = mesh;
@@ -682,6 +731,7 @@ ConcaveMeshShape* concave_mesh_shape_create(TriangleMesh* mesh, const Vector3& s
 	return shape;
 }
 HeightFieldShape* height_field_shape_create(HeightField* height_field, const Vector3& scaling) {
+	physics_lock lock;
 	check_scaling(scaling);
 	HeightFieldShape* shape = g_physics.createHeightFieldShape(live_mesh(height_field), scaling);
 	g_physics_shapes[shape] = height_field;
@@ -713,10 +763,16 @@ static script_material& collider_get_material(Collider& collider) {
 static void collider_set_material(Collider& collider, const script_material& material) { collider.setMaterial(material.get()); }
 template <class F> struct material_call;
 template <class R, class... A> struct material_call<R (Material::*)(A...)> {
-	template <R (Material::*method)(A...)> static R call(script_material* material, A... args) { return (material->get().*method)(std::forward<A>(args)...); }
+	template <R (Material::*method)(A...)> static R call(script_material* material, A... args) {
+		physics_lock lock;
+		return (material->get().*method)(std::forward<A>(args)...);
+	}
 };
 template <class R, class... A> struct material_call<R (Material::*)(A...) const> {
-	template <R (Material::*method)(A...) const> static R call(const script_material* material, A... args) { return (material->get().*method)(std::forward<A>(args)...); }
+	template <R (Material::*method)(A...) const> static R call(const script_material* material, A... args) {
+		physics_lock lock;
+		return (material->get().*method)(std::forward<A>(args)...);
+	}
 };
 #define asMATERIAL(m) asFUNCTION((material_call<decltype(&Material::m)>::template call<&Material::m>))
 
@@ -737,6 +793,7 @@ static void collider_forget(const Collider* collider) {
 
 // A second destroy freed the logger again, and one still set as the current logger was written to by every world created after.
 static void default_logger_destroy(DefaultLogger* logger) {
+	physics_lock lock;
 	if (!logger || !g_physics_loggers.erase(logger)) return;
 	live_remove(logger);
 	if (PhysicsCommon::getLogger() == logger) PhysicsCommon::setLogger(nullptr);
@@ -750,6 +807,7 @@ static void default_logger_destroy(DefaultLogger* logger) {
  * destroying shapes.
 */
 void physics_shape_destroy(CollisionShape* shape) {
+	physics_lock lock;
 	if (!shape)
 		return;
 	if (!g_physics_shapes.count(shape)) throw runtime_error("collision shape was destroyed already");
@@ -1119,6 +1177,7 @@ void concave_mesh_shape_get_triangle_vertices_normals(const ConcaveMeshShape& sh
 }
 
 TriangleMesh* create_triangle_mesh_from_managed(ManagedTriangleData* managedArray) {
+	physics_lock lock;
 	managed_data_hold<ManagedTriangleData> hold{managedArray};
 	if (!managedArray || !managedArray->array)
 		throw std::runtime_error("Invalid managed triangle data");
@@ -1134,6 +1193,7 @@ TriangleMesh* create_triangle_mesh_from_managed(ManagedTriangleData* managedArra
 }
 
 ConvexMesh* create_convex_mesh_from_managed_vertex_array(ManagedVertexData* managedArray) {
+	physics_lock lock;
 	managed_data_hold<ManagedVertexData> hold{managedArray};
 	if (!managedArray || !managedArray->array)
 		throw std::runtime_error("Invalid managed vertex data");
@@ -1163,6 +1223,7 @@ static bool polygon_mesh_is_closed(const ManagedPolygonData* data) {
 	return true;
 }
 ConvexMesh* create_convex_mesh_from_polygon_data(ManagedPolygonData* managedArray) {
+	physics_lock lock;
 	managed_data_hold<ManagedPolygonData> hold{managedArray};
 	if (!managedArray || !managedArray->array)
 		throw std::runtime_error("Invalid managed polygon data");
@@ -1320,6 +1381,7 @@ static uint32 height_field_size(int nbGridColumns, int nbGridRows, CScriptArray*
 }
 
 static HeightField* register_height_field(HeightField* heightField) {
+	physics_lock lock;
 	if (heightField) {
 		g_physics_meshes.insert(heightField);
 		live_add(heightField);
@@ -1328,6 +1390,7 @@ static HeightField* register_height_field(HeightField* heightField) {
 }
 
 HeightField* create_height_field_float(int nbGridColumns, int nbGridRows, CScriptArray* heightData, decimal integerHeightScale) {
+	physics_lock lock;
 	if (!heightData) throw std::runtime_error("Height data array cannot be null");
 	uint32 expectedSize = height_field_size(nbGridColumns, nbGridRows, heightData);
 	std::vector<float> heightBuffer(expectedSize);
@@ -1340,6 +1403,7 @@ HeightField* create_height_field_float(int nbGridColumns, int nbGridRows, CScrip
 }
 
 HeightField* create_height_field_int(int nbGridColumns, int nbGridRows, CScriptArray* heightData, decimal integerHeightScale) {
+	physics_lock lock;
 	if (!heightData) throw std::runtime_error("Height data array cannot be null");
 	uint32 expectedSize = height_field_size(nbGridColumns, nbGridRows, heightData);
 	std::vector<int> heightBuffer(expectedSize);
@@ -1351,6 +1415,7 @@ HeightField* create_height_field_int(int nbGridColumns, int nbGridRows, CScriptA
 }
 
 HeightField* create_height_field_double(int nbGridColumns, int nbGridRows, CScriptArray* heightData, decimal integerHeightScale) {
+	physics_lock lock;
 	if (!heightData) throw std::runtime_error("Height data array cannot be null");
 	uint32 expectedSize = height_field_size(nbGridColumns, nbGridRows, heightData);
 	std::vector<double> heightBuffer(expectedSize);
@@ -1363,6 +1428,7 @@ HeightField* create_height_field_double(int nbGridColumns, int nbGridRows, CScri
 }
 
 DefaultLogger* create_default_logger() {
+	physics_lock lock;
 	DefaultLogger* logger = g_physics.createDefaultLogger();
 	if (logger) {
 		g_physics_loggers.insert(logger);
@@ -1377,10 +1443,12 @@ Logger* default_logger_to_logger(DefaultLogger* defaultLogger) {
 
 // Logger get/set wrappers (static methods)
 Logger* get_current_logger() {
+	physics_lock lock;
 	return PhysicsCommon::getLogger();
 }
 
 void set_current_logger(Logger* logger) {
+	physics_lock lock;
 	if (logger) check_live(logger);
 	PhysicsCommon::setLogger(logger);
 }
@@ -1411,6 +1479,14 @@ void default_logger_add_file_destination(DefaultLogger* logger, const std::strin
 void default_logger_remove_all_destinations(DefaultLogger* logger) {
 	if (logger)
 		logger->removeAllDestinations();
+}
+
+// The shapes went to reactphysics3d unchecked, a destroyed one read where it had been.
+static void triangle_shape_compute_smooth_triangle_mesh_contact(const CollisionShape* shape1, const CollisionShape* shape2, Vector3& local_contact_point_shape1, Vector3& local_contact_point_shape2, const Transform& shape1_to_world, const Transform& shape2_to_world, decimal penetration_depth, Vector3& out_smooth_vertex_normal) {
+	physics_lock lock;
+	check_live(shape1);
+	check_live(shape2);
+	TriangleShape::computeSmoothTriangleMeshContact(shape1, shape2, local_contact_point_shape1, local_contact_point_shape2, shape1_to_world, shape2_to_world, penetration_depth, out_smooth_vertex_normal);
 }
 
 // Registration templates
@@ -1474,7 +1550,7 @@ void RegisterPhysicsBody(asIScriptEngine* engine, const string& type) {
 	engine->RegisterObjectMethod(type.c_str(), "physics_entity get_entity() const property", asLIVE(T, getEntity), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "bool get_is_active() const property", asLIVE(T, isActive), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "void set_is_active(bool is_active) property", asLIVE(T, setIsActive), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "const physics_transform& get_transform() const property", asLIVE(T, getTransform), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "physics_transform get_transform() const property", asLIVECOPY(T, getTransform), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "void set_transform(const physics_transform&in transform) property", asLIVEF(body_set_transform<T>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(
 	    type.c_str(),
@@ -1794,7 +1870,7 @@ void RegisterPhysicsEntities(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("physics_collider", "physics_collision_shape@ get_collision_shape() property", asLIVEPR(Collider, getCollisionShape, (), CollisionShape*), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_collider", "const physics_collision_shape@ get_collision_shape() const property", asLIVEPR(Collider, getCollisionShape, () const, const CollisionShape*), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_collider", "physics_body@ get_body() const property", asLIVE(Collider, getBody), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_collider", "const physics_transform& get_local_to_body_transform() const property", asLIVE(Collider, getLocalToBodyTransform), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_collider", "physics_transform get_local_to_body_transform() const property", asLIVECOPY(Collider, getLocalToBodyTransform), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_collider", "void set_local_to_body_transform(const physics_transform&in transform) property", asLIVEF(collider_set_local_to_body_transform), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_collider", "const physics_transform get_local_to_world_transform() const", asLIVE(Collider, getLocalToWorldTransform), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_collider", "const aabb get_world_aabb() const property", asLIVE(Collider, getWorldAABB), asCALL_CDECL_OBJFIRST);
@@ -1825,9 +1901,9 @@ void RegisterPhysicsBodies(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("physics_rigid_body", "void set_linear_velocity(const vector&in linear_velocity) property", asLIVE(RigidBody, setLinearVelocity), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_rigid_body", "vector get_angular_velocity() const property", asLIVE(RigidBody, getAngularVelocity), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_rigid_body", "void set_angular_velocity(const vector&in angular_velocity) property", asLIVE(RigidBody, setAngularVelocity), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_rigid_body", "const vector& get_local_inertia_tensor() const property", asLIVE(RigidBody, getLocalInertiaTensor), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_rigid_body", "vector get_local_inertia_tensor() const property", asLIVECOPY(RigidBody, getLocalInertiaTensor), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_rigid_body", "void set_local_inertia_tensor(const vector&in local_inertia_tensor) property", asLIVE(RigidBody, setLocalInertiaTensor), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_rigid_body", "const vector& get_local_center_of_mass() const property", asLIVE(RigidBody, getLocalCenterOfMass), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_rigid_body", "vector get_local_center_of_mass() const property", asLIVECOPY(RigidBody, getLocalCenterOfMass), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_rigid_body", "void set_local_center_of_mass(const vector&in local_center_of_mass) property", asLIVE(RigidBody, setLocalCenterOfMass), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_rigid_body", "void update_local_center_of_mass_from_colliders()", asLIVE(RigidBody, updateLocalCenterOfMassFromColliders), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_rigid_body", "void update_local_inertia_tensor_from_colliders()", asLIVE(RigidBody, updateLocalInertiaTensorFromColliders), asCALL_CDECL_OBJFIRST);
@@ -1842,9 +1918,9 @@ void RegisterPhysicsBodies(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("physics_rigid_body", "void set_linear_damping(float linear_damping) property", asLIVE(RigidBody, setLinearDamping), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_rigid_body", "float get_angular_damping() const property", asLIVE(RigidBody, getAngularDamping), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_rigid_body", "void set_angular_damping(float angular_damping) property", asLIVE(RigidBody, setAngularDamping), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_rigid_body", "const vector& get_linear_lock_axis_factor() const property", asLIVE(RigidBody, getLinearLockAxisFactor), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_rigid_body", "vector get_linear_lock_axis_factor() const property", asLIVECOPY(RigidBody, getLinearLockAxisFactor), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_rigid_body", "void set_linear_lock_axis_factor(const vector&in linear_lock_axis_factor) property", asLIVE(RigidBody, setLinearLockAxisFactor), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_rigid_body", "const vector& get_angular_lock_axis_factor() const property", asLIVE(RigidBody, getAngularLockAxisFactor), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_rigid_body", "vector get_angular_lock_axis_factor() const property", asLIVECOPY(RigidBody, getAngularLockAxisFactor), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_rigid_body", "void set_angular_lock_axis_factor(const vector&in angular_lock_axis_factor) property", asLIVE(RigidBody, setAngularLockAxisFactor), asCALL_CDECL_OBJFIRST);
 }
 
@@ -1868,7 +1944,7 @@ void RegisterCollisionShapes(asIScriptEngine* engine) {
 	RegisterConvexPolyhedronShape<TriangleShape>(engine, "physics_triangle_shape");
 	engine->RegisterObjectMethod("physics_triangle_shape", "physics_triangle_raycast_side get_raycast_test_type() const property", asLIVE(TriangleShape, getRaycastTestType), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_triangle_shape", "void set_raycast_test_type(physics_triangle_raycast_side test_type) property", asLIVE(TriangleShape, setRaycastTestType), asCALL_CDECL_OBJFIRST);
-	engine->RegisterGlobalFunction("void physics_triangle_shape_compute_smooth_triangle_mesh_contact(const physics_collision_shape &in shape1, const physics_collision_shape &in shape2, vector & local_contact_point_shape1, vector & local_contact_point_shape2, const physics_transform &in shape1_to_world, const physics_transform &in shape2_to_world, float penitration_depth, vector & out_smooth_vertex_normal)", asFUNCTION(TriangleShape::computeSmoothTriangleMeshContact), asCALL_CDECL);
+	engine->RegisterGlobalFunction("void physics_triangle_shape_compute_smooth_triangle_mesh_contact(const physics_collision_shape &in shape1, const physics_collision_shape &in shape2, vector & local_contact_point_shape1, vector & local_contact_point_shape2, const physics_transform &in shape1_to_world, const physics_transform &in shape2_to_world, float penitration_depth, vector & out_smooth_vertex_normal)", asFUNCTION(triangle_shape_compute_smooth_triangle_mesh_contact), asCALL_CDECL);
 	RegisterConvexPolyhedronShape<ConvexMeshShape>(engine, "physics_convex_mesh_shape");
 	engine->RegisterObjectMethod("physics_convex_mesh_shape", "vector& get_scale() const property", asLIVE(ConvexMeshShape, getScale), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_convex_mesh_shape", "void set_scale(vector& scale) const property", asLIVEF(convex_mesh_shape_set_scale), asCALL_CDECL_OBJFIRST);
