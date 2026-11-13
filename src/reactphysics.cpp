@@ -223,6 +223,34 @@ template <class C, class R> struct live_copy<const R& (C::*)() const> {
 	}
 };
 #define asLIVECOPY(c, m) asFUNCTION((live_copy<decltype(&c::m)>::template call<&c::m>))
+// A world's methods that are given callbacks by handle, and a body's set_user_data(), own those references, and the check above threw
+// before the method could let go of them: each call on a destroyed world or body leaked its callbacks or its any (a delegate keeps its
+// object alive, as an any does what it holds, whose destructor then never ran). This check lets go of them when it refuses.
+static void release_if_callback(asIScriptFunction* callback) { if (callback) callback->Release(); }
+static void release_if_callback(CScriptAny* any) { if (any) any->Release(); }
+template <class T> static void release_if_callback(const T&) {}
+template <class F> struct live_callbacks;
+template <class C, class R, class... A> struct live_callbacks<R (*)(C&, A...)> {
+	template <R (*function)(C&, A...)> static R call(C& object, A... args) {
+		physics_lock lock;
+		if (!is_live(&object)) {
+			(release_if_callback(args), ...);
+			throw runtime_error("this physics object was destroyed");
+		}
+		return function(object, std::forward<A>(args)...);
+	}
+};
+template <class C, class R, class... A> struct live_callbacks<R (*)(C*, A...)> {
+	template <R (*function)(C*, A...)> static R call(C* object, A... args) {
+		physics_lock lock;
+		if (!is_live(object)) {
+			(release_if_callback(args), ...);
+			throw runtime_error("this physics object was destroyed");
+		}
+		return function(object, std::forward<A>(args)...);
+	}
+};
+#define asLIVECB(f) asFUNCTION((live_callbacks<decltype(&f)>::template call<&f>))
 #define asLIVE(c, m) asFUNCTION((live<decltype(&c::m)>::template call<&c::m>))
 #define asLIVEPR(c, m, p, r) asFUNCTION((live<r (c::*) p>::template call<static_cast<r (c::*) p>(&c::m)>))
 #define asLIVEF(f) asFUNCTION((live<decltype(&f)>::template call<&f>))
@@ -1577,7 +1605,7 @@ void RegisterPhysicsBody(asIScriptEngine* engine, const string& type) {
 	engine->RegisterObjectMethod(type.c_str(), "vector get_local_vector(const vector&in world_vector) const", asLIVE(T, getLocalVector), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "bool get_is_debug_enabled() const property", asLIVE(T, isDebugEnabled), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "void set_debug_enabled(bool enabled) property", asLIVE(T, setIsDebugEnabled), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "void set_user_data(any@ userData)", asLIVEF(body_set_user_data), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "void set_user_data(any@ userData)", asLIVECB(body_set_user_data), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "any@ get_user_data() const", asLIVEF(body_get_user_data), asCALL_CDECL_OBJFIRST);
 }
 
@@ -2134,12 +2162,12 @@ void RegisterPhysicsWorldAndCallbacks(asIScriptEngine* engine) {
 	engine->RegisterObjectBehaviour("physics_world", asBEHAVE_ADDREF, "void f()", asFUNCTION(no_refcount), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectBehaviour("physics_world", asBEHAVE_RELEASE, "void f()", asFUNCTION(no_refcount), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_world", "bool test_overlap(physics_body@ body1, physics_body@ body2)", asLIVEF(world_test_overlap_bodies), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_world", "void raycast(const ray&in ray, physics_raycast_callback@ callback, uint16 category_mask = 0xffff)", asLIVEF(world_raycast), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_world", "void test_overlap(physics_body@ body, physics_overlap_callback@ callback)", asLIVEF(world_test_overlap_body), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_world", "void test_overlap(physics_overlap_callback@ callback)", asLIVEF(world_test_overlap), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_world", "void test_collision(physics_body@ body1, physics_body@ body2, physics_collision_callback@ callback)", asLIVEF(world_test_collision_bodies), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_world", "void test_collision(physics_body@ body, physics_collision_callback@ callback)", asLIVEF(world_test_collision_body), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_world", "void test_collision(physics_collision_callback@ callback)", asLIVEF(world_test_collision), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "void raycast(const ray&in ray, physics_raycast_callback@ callback, uint16 category_mask = 0xffff)", asLIVECB(world_raycast), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "void test_overlap(physics_body@ body, physics_overlap_callback@ callback)", asLIVECB(world_test_overlap_body), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "void test_overlap(physics_overlap_callback@ callback)", asLIVECB(world_test_overlap), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "void test_collision(physics_body@ body1, physics_body@ body2, physics_collision_callback@ callback)", asLIVECB(world_test_collision_bodies), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "void test_collision(physics_body@ body, physics_collision_callback@ callback)", asLIVECB(world_test_collision_body), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "void test_collision(physics_collision_callback@ callback)", asLIVECB(world_test_collision), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_world", "aabb get_world_aabb(const physics_collider@ collider) const", asLIVEF(world_get_aabb), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_world", "const string& get_name() const property", asLIVE(PhysicsWorld, getName), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_world", "void update(float time_step)", asLIVEF(world_update), asCALL_CDECL_OBJFIRST);
@@ -2164,7 +2192,7 @@ void RegisterPhysicsWorldAndCallbacks(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("physics_world", "void set_sleep_angular_velocity(float sleep_angular_velocity) property", asLIVE(PhysicsWorld, setSleepAngularVelocity), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_world", "float get_time_before_sleep() const property", asLIVE(PhysicsWorld, getTimeBeforeSleep), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_world", "void set_time_before_sleep(float time_before_sleep) property", asLIVE(PhysicsWorld, setTimeBeforeSleep), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("physics_world", "void set_callbacks(physics_collision_callback@ collision_callback, physics_overlap_callback@ trigger_callback)", asLIVEF(world_set_callbacks), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("physics_world", "void set_callbacks(physics_collision_callback@ collision_callback, physics_overlap_callback@ trigger_callback)", asLIVECB(world_set_callbacks), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_world", "uint get_nb_rigid_bodies() const property", asLIVE(PhysicsWorld, getNbRigidBodies), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_world", "const physics_rigid_body& get_rigid_body(uint index) const", asLIVEF(world_get_rigid_body), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("physics_world", "physics_rigid_body& get_rigid_body(uint index)", asLIVEF(world_get_rigid_body), asCALL_CDECL_OBJFIRST);
