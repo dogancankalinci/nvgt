@@ -37,7 +37,7 @@ class music_track {
 	music_track(string data, music_manager@ parent = null) {
 		@this.parent = @parent;
 		string[]@ vars = data.split("; ");
-		if (vars[0].find("=") > -1) return;
+		if (vars.length() < 1 or vars[0].find("=") > -1) return; // "" splits into no piece at all: vars[0] threw (music.play(""))
 		this.main_filename = vars[0];
 		vars.remove_at(0);
 		for (uint i = 0; i < vars.length(); i++) {
@@ -104,7 +104,7 @@ class music_track {
 		if (track.active) {
 			track.pitch = track_pitch;
 			track.volume = track_volume;
-			track.seek(start_position * 1000);
+			track.seek(start_position); // in milliseconds already (startpos is read as seconds * 1000): * 1000 again sought 1000 times too far
 		}
 	}
 	bool get_playing() property {
