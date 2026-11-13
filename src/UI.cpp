@@ -421,7 +421,10 @@ game_window::game_window(const std::string& title, unsigned int w, unsigned int 
 		video_lock lock; // SDL's list of windows, which the clipboard reads on Windows, see ClipboardGetText()
 		_window = SDL_CreateWindow(title.c_str(), (int)w, (int)h, flags);
 	}
-	if (!_window) return;
+	if (!_window) {
+		update_state(); // a closed window's answers for other threads, see window_state
+		return;
+	}
 	{
 		std::lock_guard<std::recursive_mutex> lock(game_windows_mutex());
 		game_windows().insert(this);
@@ -442,7 +445,10 @@ game_window::game_window(const std::string& title, unsigned int w, unsigned int 
 	update_state();
 }
 game_window::game_window(SDL_Window* window) : _window(window), _owns_window(false), _native_window(nullptr), _thread(thread_current_thread_id()), _refcount(1) {
-	if (!_window) return;
+	if (!_window) {
+		update_state(); // a closed window's answers for other threads, see window_state
+		return;
+	}
 	// Renderer created lazily on first graphics use; see ensure_renderer().
 	SDL_PropertiesID props = SDL_GetWindowProperties(_window);
 	#ifdef NATIVE_WINDOW_SDL_PROP
@@ -1024,7 +1030,14 @@ std::string sdl_get_hint(const std::string& hint) {
 	return from_cstr(SDL_GetHint(hint.c_str()));
 }
 
-static game_window* game_window_factory(const std::string& title, unsigned int w, unsigned int h, unsigned int flags) { return new game_window(title, w, h, flags); }
+// A script thread other than the window's gets a closed window while another thread's window is open, as show_window() returns null
+// there (see game_window::on_thread()): its window was made on that thread, whose events nobody handled, and the window thread's
+// destroy_window() then destroyed it from the wrong thread with every other window (on Windows DestroyWindow() fails there, leaving a
+// window whose SDL data was freed).
+static game_window* game_window_factory(const std::string& title, unsigned int w, unsigned int h, unsigned int flags) {
+	if (!window_thread_free()) return new game_window(nullptr);
+	return new game_window(title, w, h, flags);
+}
 
 // The tray wrappers are garbage-collected types. The collector reads their references (enum_references) on a thread of its own with garbage_collect_mode 3 while the script's thread changes them, so the reference fields change and are read under this lock, which is never held while script code runs. It also guards the entry registry below.
 static std::recursive_mutex& system_tray_gc_mutex() {
