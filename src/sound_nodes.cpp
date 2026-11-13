@@ -1243,6 +1243,7 @@ public:
 			bool kept = false;
 			parent_kept(mixer* m) : mix(m), parent(m? m->get_mixer() : nullptr) { if (parent) parent->duplicate(); }
 			~parent_kept() {
+				last_error_kept error; // The refusal's: putting back a mixer that never left its parent, or one moved, succeeds, which read as success after the refused set_reverb(), a property with no other way to tell.
 				if (mix && !kept) {
 					try {
 						mix->set_mixer(parent);
