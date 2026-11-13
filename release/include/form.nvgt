@@ -956,7 +956,7 @@ class audio_form {
 			form_error = form_error_invalid_control;
 			return false;
 		}
-		if (position > c_form[control_index].list_length) {
+		if ((position < 0) || (position > c_form[control_index].list_length)) { // a negative one edited an item counted from the end, or threw on an empty list
 			form_error = form_error_invalid_list_index;
 			return false;
 		}
@@ -981,7 +981,7 @@ class audio_form {
 			form_error = form_error_invalid_control;
 			return false;
 		}
-		if (position > c_form[control_index].list_length) {
+		if ((position < 0) || (position > c_form[control_index].list_length)) { // a negative one edited an item counted from the end, or threw on an empty list
 			form_error = form_error_invalid_list_index;
 			return false;
 		}
@@ -1146,7 +1146,9 @@ class audio_form {
 			c_form[control_index].list.remove_at(current_delete);
 			c_form[control_index].list_length--;
 		}
-		if (reset_cursor)
+		// As delete_list_item(): a list left empty has no position. It got position 0, so the spoken status (and any later read of the
+		// focused item) indexed an empty list.
+		if (reset_cursor or c_form[control_index].list.length() < 1)
 			c_form[control_index].list_position = -1;
 		else {
 			if (c_form[control_index].list_position > c_form[control_index].list_length)
@@ -1438,7 +1440,7 @@ class audio_form {
 			form_error = form_error_invalid_control;
 			return false;
 		}
-		if (item_index > c_form[control_index].list_length) {
+		if ((item_index < 0) || (item_index > c_form[control_index].list_length)) { // see edit_list_item()
 			form_error = form_error_invalid_list_index;
 			return false;
 		}
@@ -1795,7 +1797,11 @@ class audio_form {
 		}
 		if (position == -1)
 			position = c_form[control_index].text.length();
-		c_form[control_index].add_silent(new_text, position);
+		// What add_silent() answers: it refuses text past the box's maximum length and a position before the start, and this said true.
+		if (!c_form[control_index].add_silent(new_text, position)) {
+			form_error = form_error_invalid_value;
+			return false;
+		}
 		return true;
 	}
 	bool edit_text(int control_index, string new_text, int position, int edit_mode = edit_mode_trim_to_length) {
@@ -1816,7 +1822,10 @@ class audio_form {
 			form_error = form_error_invalid_control;
 			return false;
 		}
-		c_form[control_index].edit_silent(new_text, position, edit_mode);
+		if (!c_form[control_index].edit_silent(new_text, position, edit_mode)) { // as add_text(): its refusal was answered with true
+			form_error = form_error_invalid_value;
+			return false;
+		}
 		return true;
 	}
 	int get_line_number(int control_index) {
@@ -2054,11 +2063,14 @@ class audio_form {
 			form_error = form_error_invalid_control;
 			return false;
 		}
-		if ((min > -1 || max > -1) && max < min) {
+		// Both -1 (the defaults) keep the range; any other pair is the new range. A bound of -1 or below was ignored (the range was set
+		// only when both were above -1), so a slider couldn't be given a range below zero here, and the call still succeeded.
+		bool set_range = min != -1 || max != -1;
+		if (set_range && max < min) {
 			form_error = form_error_invalid_value;
 			return false;
 		}
-		if (min > -1 && max > -1) {
+		if (set_range) {
 			c_form[control_index].slider_minimum_value = min;
 			c_form[control_index].slider_maximum_value = max;
 		}
@@ -2429,7 +2441,7 @@ class audio_form {
 			}
 			bool ralt = true;
 			int current_form_focus = current_form.get_current_focus();
-			if (audioform_input_disable_ralt && current_form_focus > -1 and current_form_focus < current_form.get_control_count() and current_form.get_control_type(current_form_focus) == ct_input and !c_form[control_focus].read_only)
+			if (audioform_input_disable_ralt && current_form_focus > -1 and current_form_focus < current_form.get_control_count() and current_form.get_control_type(current_form_focus) == ct_input and !current_form.is_read_only(current_form_focus)) // the focused input's own setting (c_form[control_focus] was this form's control, the subform itself when one is focused)
 				ralt = false;
 			if ((key_down(KEY_LALT) || ralt && key_down(KEY_RALT)) && (key_repeating(c_form[counter].hotkey))) {
 				if (!for_subform)
@@ -2863,13 +2875,13 @@ class control {
 				move_right();
 			}
 			if (key_repeating(KEY_UP)) {
-				if ((key_down(KEY_LSHIFT)) || (key_down(KEY_RSHIFT)) && password_mask == "")
+				if ((key_down(KEY_LSHIFT) || key_down(KEY_RSHIFT)) && password_mask == "") // && bound tighter than ||: left Shift highlighted in a password box
 					highlight_up();
 				else
 					previous_line();
 			}
 			if (key_repeating(KEY_DOWN)) {
-				if ((key_down(KEY_LSHIFT)) || (key_down(KEY_RSHIFT)) && password_mask == "")
+				if ((key_down(KEY_LSHIFT) || key_down(KEY_RSHIFT)) && password_mask == "") // see highlight_up() above
 					highlight_down();
 				else
 					next_line();
@@ -3162,6 +3174,9 @@ class control {
 		return true;
 	}
 	bool search(const string& in text, int dir = 1, bool silent = false) {
+		// One step at a time, forwards or backwards: in a list a dir of 0 never moved (an endless loop when nothing was focused and nothing
+		// matched), and a larger step could skip over the focused item it stops at, going round for good.
+		dir = dir < 0 ? -1 : 1;
 		if (type == ct_list) {
 			if (list.length() < 1) return false;
 			string[] nav_items(list.length());
@@ -3324,6 +3339,14 @@ class control {
 		cursor = 0;
 		speak_selected(text);
 	}
+	// As speak_selected(), for text taken out of the selection: the line highlights spoke it as it was, so after Shift+Home in a password
+	// box, left Shift+Down (see the key handling) said the password followed by "Unselected".
+	private void speak_unselected(const string& in unselection) {
+		if (unselection.length() >= 1024 || password_mask != "")
+			speak(unselection.length() + " characters " + highlight_unselection_speech_text);
+		else
+			speak(unselection + " " + highlight_unselection_speech_text, true, null);
+	}
 	private void speak_selected(const string& in selection) {
 		if (selection.length() >= 1024 || password_mask != "")
 			speak(selection.length() + " characters " + highlight_selection_speech_text);
@@ -3478,15 +3501,20 @@ class control {
 	}
 	void paste_text() {
 		string paste = clipboard_get_text();
-		string[]@ paste_single = paste.split("\r\n", false);
-		if (!multiline)
-			paste = paste_single[0];
+		if (!multiline) {
+			// The first line: split with empty pieces dropped, an empty clipboard gives no piece at all, and indexing it threw "Index out of
+			// bounds" out of the form's monitor() (Ctrl+V in a single-line box with nothing copied ended the script).
+			string[]@ paste_single = paste.split("\r\n", false);
+			paste = paste_single.length() > 0 ? paste_single[0] : "";
+		}
 		paste = paste.replace("\r", "", true);
 		if (paste == "") {
 			speak("clipboard empty", true);
 			return;
 		}
-		if ((max_length > 0) && ((text + paste).length() - (sel_end - sel_start) > max_length)) {
+		// What the selection gives back is sel_end - sel_start + 1 characters (sel_end is the selection's last one), one more than counted.
+		int selected = sel_start > -1 && sel_end > -1 ? sel_end - sel_start + 1 : 0;
+		if ((max_length > 0) && (int((text + paste).length()) - selected > max_length)) {
 			speak("clipboard data can't fit", true);
 			return;
 		}
@@ -3830,7 +3858,7 @@ class control {
 				return;
 			} else if (cursor == sel_end || cursor - 1 == sel_end) {
 				sel_end = pos - 1;
-				if (speak_selection_status) speak(text.substr(pos, cursor - 1 - pos) + " " + highlight_unselection_speech_text, true, null);
+				if (speak_selection_status) speak_unselected(text.substr(pos, cursor - 1 - pos));
 				else speak(text.substr(pos, cursor - 1 - pos), true, null);
 				cursor = pos;
 				return;
@@ -3879,7 +3907,7 @@ class control {
 				cursor = new_word;
 				return;
 			} else if (cursor == sel_start || cursor - 1 == sel_start) {
-				if (speak_selection_status) speak(text.substr(sel_start, new_word - sel_start) + " " + highlight_unselection_speech_text, true, null);
+				if (speak_selection_status) speak_unselected(text.substr(sel_start, new_word - sel_start));
 				else speak(text.substr(sel_start, new_word - sel_start), true, null);
 				sel_start = new_word;
 				cursor = new_word;
@@ -3974,7 +4002,7 @@ class control {
 			cursor = sel_start;
 		} else if (cursor == sel_end || cursor - 1 == sel_end) {
 			sel_end = line_start;
-			speak(text.substr(sel_end, cursor - sel_end) + " " + highlight_unselection_speech_text, true, null);
+			speak_unselected(text.substr(sel_end, cursor - sel_end));
 			cursor = sel_end;
 		}
 		if (sel_end < sel_start) {
@@ -3994,8 +4022,10 @@ class control {
 			if (!continuation)
 				return;
 			else {
-				if (text[line_end] == "\r") line_end += 2;
-				else if (text[line_end] == "\n") line_end += 1;
+				// line_end is the text's length when the line is the last one (the selection already reaching it, as after Shift+Home from
+				// the end in a single-line box): text[line_end] was out of range, an exception out of the form's monitor.
+				if (line_end < text.length() && text[line_end] == "\r") line_end += 2;
+				else if (line_end < text.length() && text[line_end] == "\n") line_end += 1;
 				for (line_end; line_end < text.length(); line_end++) {
 					if (text[line_end] == "\r" || text[line_end] == "\n")
 						break;
@@ -4012,7 +4042,7 @@ class control {
 			speak_selected(text.substr(old_cursor, sel_end - old_cursor));
 		} else if (cursor == sel_start || cursor - 1 == sel_start) {
 			sel_start = line_end;
-			speak(text.substr(cursor, line_end - cursor) + " " + highlight_unselection_speech_text, true, null);
+			speak_unselected(text.substr(cursor, line_end - cursor));
 			cursor = line_end;
 		}
 		if (sel_end < sel_start) {
