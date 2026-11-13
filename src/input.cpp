@@ -250,6 +250,7 @@ bool KeyReleased(int key) {
 	if (r && keys_down[key] == 1)
 		return false;
 	g_KeysReleased[key] = 0;
+	if (r) g_KeyboardStateChange = true; // total_keys_down() counts the releases not yet read here: its cached count included this one after it was read, until the next key event
 	return r;
 }
 bool key_up(int key) {
@@ -264,6 +265,7 @@ bool insure_key_up(int key) {
 	else
 		return false;
 	g_KeysForced[key] = false;
+	g_KeyboardStateChange = true; // see KeyReleased()
 	return true;
 }
 inline bool post_key_event(int key, SDL_EventType evt_type) {
