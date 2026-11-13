@@ -294,52 +294,51 @@ bool timer_queue::loop(int max_timers, int max_catchup) {
 	return !open_tick;
 }
 
-void update_tm() {
+// The local date and time, worked out once a second and shared by every thread. The getters read it with no lock while the first
+// caller of a new second rewrote it under the lock: assigning the timestamp sets the UTC fields, makeLocal() then the local ones, so a
+// script thread reading meanwhile got the hour in UTC, or the day of one value and the month of the other at midnight. Each getter now
+// takes a copy under the lock.
+static Poco::DateTime local_time() {
 	Timestamp ts;
-	if (g_time_cache_initialized && ts.epochTime() == g_time_cache.epochTime())
-		return;
 	FastMutex::ScopedLock l(g_time_mutex);
-	g_time_cache = ts;
-	g_time_values = ts;
-	g_time_values.makeLocal(Poco::Timezone::tzd());
-	g_time_cache_initialized = true;
+	if (!g_time_cache_initialized || ts.epochTime() != g_time_cache.epochTime()) {
+		g_time_cache = ts;
+		g_time_values = ts;
+		g_time_values.makeLocal(Poco::Timezone::tzd());
+		g_time_cache_initialized = true;
+	}
+	return g_time_values;
+}
+void update_tm() {
+	local_time();
 }
 
 int get_date_year() {
-	update_tm();
-	return g_time_values.year();
+	return local_time().year();
 }
 int get_date_month() {
-	update_tm();
-	return g_time_values.month();
+	return local_time().month();
 }
 std::string get_date_month_name() {
-	update_tm();
-	return DateTimeFormat::MONTH_NAMES[g_time_values.month() - 1];
+	return DateTimeFormat::MONTH_NAMES[local_time().month() - 1];
 }
 int get_date_day() {
-	update_tm();
-	return g_time_values.day();
+	return local_time().day();
 }
 int get_date_weekday() {
-	update_tm();
-	return g_time_values.dayOfWeek() + 1;
+	return local_time().dayOfWeek() + 1;
 }
 std::string get_date_weekday_name() {
-	update_tm();
-	return DateTimeFormat::WEEKDAY_NAMES[g_time_values.dayOfWeek()];
+	return DateTimeFormat::WEEKDAY_NAMES[local_time().dayOfWeek()];
 }
 int get_time_hour() {
-	update_tm();
-	return g_time_values.hour();
+	return local_time().hour();
 }
 int get_time_minute() {
-	update_tm();
-	return g_time_values.minute();
+	return local_time().minute();
 }
 int get_time_second() {
-	update_tm();
-	return g_time_values.second();
+	return local_time().second();
 }
 
 bool speedhack_protection = true;
