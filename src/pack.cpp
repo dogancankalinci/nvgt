@@ -391,6 +391,9 @@ std::istream* pack::get_file(const std::string& filename) const {
 		if (!key.empty())
 			fis = &(new chacha_istream(*fis, key))->own_source(true);
 		return new section_istream(*fis, entry->offset, entry->size);
+	} catch (const std::bad_alloc&) {
+		delete fis;
+		throw; // Reported as running out of memory, as by the sound system's loads (see onOpen() in sound_service.cpp), rather than as a file that couldn't be opened, which a load read as "Unknown error".
 	} catch (std::exception&) {
 		delete fis;
 		return nullptr;
