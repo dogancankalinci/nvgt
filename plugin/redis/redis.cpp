@@ -479,10 +479,14 @@ public:
 		}
 		Array reply;
 		if (execute_command(cmd, reply)) {
-			for (size_t i = 0; i < reply.size(); ++i) {
-				BulkString bs = reply.get<BulkString>(i);
-				std::string str = bs.isNull() ? "" : bs.value();
-				result->InsertLast(&str);
+			try { // a reply element of an unexpected type: Array::get<T>() throws BadCastException, which left the result array behind
+				for (size_t i = 0; i < reply.size(); ++i) {
+					BulkString bs = reply.get<BulkString>(i);
+					std::string str = bs.isNull() ? "" : bs.value();
+					result->InsertLast(&str);
+				}
+			} catch (const Exception& e) {
+				m_last_error = e.displayText();
 			}
 		}
 		return result;
@@ -688,12 +692,16 @@ public:
 		}
 		Array reply;
 		if (execute_command(make_command("LRANGE", key, start, stop), reply)) {
-			for (size_t i = 0; i < reply.size(); ++i) {
-				BulkString bs = reply.get<BulkString>(i);
-				if (!bs.isNull()) {
-					std::string str = bs.value();
-					result->InsertLast(&str);
+			try { // see mget()
+				for (size_t i = 0; i < reply.size(); ++i) {
+					BulkString bs = reply.get<BulkString>(i);
+					if (!bs.isNull()) {
+						std::string str = bs.value();
+						result->InsertLast(&str);
+					}
 				}
+			} catch (const Exception& e) {
+				m_last_error = e.displayText();
 			}
 		}
 		return result;
@@ -810,13 +818,17 @@ public:
 		Array reply;
 		if (execute_command(make_command("HGETALL", key), reply)) {
 			// HGETALL returns field,value,field,value...
-			for (size_t i = 0; i + 1 < reply.size(); i += 2) {
-				BulkString field = reply.get<BulkString>(i);
-				BulkString value = reply.get<BulkString>(i + 1);
-				if (!field.isNull() && !value.isNull()) {
-					std::string val = value.value();
-					dict->Set(field.value(), &val, g_StringTypeid);
+			try { // see mget()
+				for (size_t i = 0; i + 1 < reply.size(); i += 2) {
+					BulkString field = reply.get<BulkString>(i);
+					BulkString value = reply.get<BulkString>(i + 1);
+					if (!field.isNull() && !value.isNull()) {
+						std::string val = value.value();
+						dict->Set(field.value(), &val, g_StringTypeid);
+					}
 				}
+			} catch (const Exception& e) {
+				m_last_error = e.displayText();
 			}
 		}
 		return dict;
@@ -831,12 +843,16 @@ public:
 		}
 		Array reply;
 		if (execute_command(make_command("HKEYS", key), reply)) {
-			for (size_t i = 0; i < reply.size(); ++i) {
-				BulkString bs = reply.get<BulkString>(i);
-				if (!bs.isNull()) {
-					std::string str = bs.value();
-					result->InsertLast(&str);
+			try { // see mget()
+				for (size_t i = 0; i < reply.size(); ++i) {
+					BulkString bs = reply.get<BulkString>(i);
+					if (!bs.isNull()) {
+						std::string str = bs.value();
+						result->InsertLast(&str);
+					}
 				}
+			} catch (const Exception& e) {
+				m_last_error = e.displayText();
 			}
 		}
 		return result;
@@ -851,12 +867,16 @@ public:
 		}
 		Array reply;
 		if (execute_command(make_command("HVALS", key), reply)) {
-			for (size_t i = 0; i < reply.size(); ++i) {
-				BulkString bs = reply.get<BulkString>(i);
-				if (!bs.isNull()) {
-					std::string str = bs.value();
-					result->InsertLast(&str);
+			try { // see mget()
+				for (size_t i = 0; i < reply.size(); ++i) {
+					BulkString bs = reply.get<BulkString>(i);
+					if (!bs.isNull()) {
+						std::string str = bs.value();
+						result->InsertLast(&str);
+					}
 				}
+			} catch (const Exception& e) {
+				m_last_error = e.displayText();
 			}
 		}
 		return result;
@@ -950,12 +970,16 @@ public:
 		}
 		Array reply;
 		if (execute_command(make_command("SMEMBERS", key), reply)) {
-			for (size_t i = 0; i < reply.size(); ++i) {
-				BulkString bs = reply.get<BulkString>(i);
-				if (!bs.isNull()) {
-					std::string str = bs.value();
-					result->InsertLast(&str);
+			try { // see mget()
+				for (size_t i = 0; i < reply.size(); ++i) {
+					BulkString bs = reply.get<BulkString>(i);
+					if (!bs.isNull()) {
+						std::string str = bs.value();
+						result->InsertLast(&str);
+					}
 				}
+			} catch (const Exception& e) {
+				m_last_error = e.displayText();
 			}
 		}
 		return result;
@@ -1002,12 +1026,16 @@ public:
 		}
 		Array reply;
 		if (execute_command(make_command("SRANDMEMBER", key, count), reply)) {
-			for (size_t i = 0; i < reply.size(); ++i) {
-				BulkString bs = reply.get<BulkString>(i);
-				if (!bs.isNull()) {
-					std::string str = bs.value();
-					result->InsertLast(&str);
+			try { // see mget()
+				for (size_t i = 0; i < reply.size(); ++i) {
+					BulkString bs = reply.get<BulkString>(i);
+					if (!bs.isNull()) {
+						std::string str = bs.value();
+						result->InsertLast(&str);
+					}
 				}
+			} catch (const Exception& e) {
+				m_last_error = e.displayText();
 			}
 		}
 		return result;
@@ -1030,12 +1058,16 @@ public:
 		}
 		Array reply;
 		if (execute_command(cmd, reply)) {
-			for (size_t i = 0; i < reply.size(); ++i) {
-				BulkString bs = reply.get<BulkString>(i);
-				if (!bs.isNull()) {
-					std::string str = bs.value();
-					result->InsertLast(&str);
+			try { // see mget()
+				for (size_t i = 0; i < reply.size(); ++i) {
+					BulkString bs = reply.get<BulkString>(i);
+					if (!bs.isNull()) {
+						std::string str = bs.value();
+						result->InsertLast(&str);
+					}
 				}
+			} catch (const Exception& e) {
+				m_last_error = e.displayText();
 			}
 		}
 		return result;
@@ -1058,12 +1090,16 @@ public:
 		}
 		Array reply;
 		if (execute_command(cmd, reply)) {
-			for (size_t i = 0; i < reply.size(); ++i) {
-				BulkString bs = reply.get<BulkString>(i);
-				if (!bs.isNull()) {
-					std::string str = bs.value();
-					result->InsertLast(&str);
+			try { // see mget()
+				for (size_t i = 0; i < reply.size(); ++i) {
+					BulkString bs = reply.get<BulkString>(i);
+					if (!bs.isNull()) {
+						std::string str = bs.value();
+						result->InsertLast(&str);
+					}
 				}
+			} catch (const Exception& e) {
+				m_last_error = e.displayText();
 			}
 		}
 		return result;
@@ -1086,12 +1122,16 @@ public:
 		}
 		Array reply;
 		if (execute_command(cmd, reply)) {
-			for (size_t i = 0; i < reply.size(); ++i) {
-				BulkString bs = reply.get<BulkString>(i);
-				if (!bs.isNull()) {
-					std::string str = bs.value();
-					result->InsertLast(&str);
+			try { // see mget()
+				for (size_t i = 0; i < reply.size(); ++i) {
+					BulkString bs = reply.get<BulkString>(i);
+					if (!bs.isNull()) {
+						std::string str = bs.value();
+						result->InsertLast(&str);
+					}
 				}
+			} catch (const Exception& e) {
+				m_last_error = e.displayText();
 			}
 		}
 		return result;
@@ -1170,12 +1210,16 @@ public:
 			cmd.add("WITHSCORES");
 		Array reply;
 		if (execute_command(cmd, reply)) {
-			for (size_t i = 0; i < reply.size(); ++i) {
-				BulkString bs = reply.get<BulkString>(i);
-				if (!bs.isNull()) {
-					std::string str = bs.value();
-					result->InsertLast(&str);
+			try { // see mget()
+				for (size_t i = 0; i < reply.size(); ++i) {
+					BulkString bs = reply.get<BulkString>(i);
+					if (!bs.isNull()) {
+						std::string str = bs.value();
+						result->InsertLast(&str);
+					}
 				}
+			} catch (const Exception& e) {
+				m_last_error = e.displayText();
 			}
 		}
 		return result;
@@ -1193,12 +1237,16 @@ public:
 			cmd.add("WITHSCORES");
 		Array reply;
 		if (execute_command(cmd, reply)) {
-			for (size_t i = 0; i < reply.size(); ++i) {
-				BulkString bs = reply.get<BulkString>(i);
-				if (!bs.isNull()) {
-					std::string str = bs.value();
-					result->InsertLast(&str);
+			try { // see mget()
+				for (size_t i = 0; i < reply.size(); ++i) {
+					BulkString bs = reply.get<BulkString>(i);
+					if (!bs.isNull()) {
+						std::string str = bs.value();
+						result->InsertLast(&str);
+					}
 				}
+			} catch (const Exception& e) {
+				m_last_error = e.displayText();
 			}
 		}
 		return result;
@@ -1261,12 +1309,16 @@ public:
 			cmd.add("LIMIT").add(NumberFormatter::format(offset)).add(NumberFormatter::format(count));
 		Array reply;
 		if (execute_command(cmd, reply)) {
-			for (size_t i = 0; i < reply.size(); ++i) {
-				BulkString bs = reply.get<BulkString>(i);
-				if (!bs.isNull()) {
-					std::string str = bs.value();
-					result->InsertLast(&str);
+			try { // see mget()
+				for (size_t i = 0; i < reply.size(); ++i) {
+					BulkString bs = reply.get<BulkString>(i);
+					if (!bs.isNull()) {
+						std::string str = bs.value();
+						result->InsertLast(&str);
+					}
 				}
+			} catch (const Exception& e) {
+				m_last_error = e.displayText();
 			}
 		}
 		return result;
@@ -1589,8 +1641,11 @@ public:
 		}
 		Array reply;
 		if (execute_command(make_command("SCRIPT", "EXISTS", sha1), reply) && reply.size() > 0) {
-			Int64 exists = reply.get<Int64>(0);
-			return exists > 0;
+			try { // see mget()
+				return reply.get<Int64>(0) > 0;
+			} catch (const Exception& e) {
+				m_last_error = e.displayText();
+			}
 		}
 		return false;
 	}
@@ -1681,23 +1736,27 @@ public:
 		if (count > 0) cmd.add("COUNT").add(NumberFormatter::format(count));
 		Array reply;
 		if (execute_command(cmd, reply)) {
-			for (size_t i = 0; i < reply.size(); ++i) {
-				if (withcoord || withdist || withhash) {
-					// Complex response, return as JSON-like string
-					Array item = reply.get<Array>(i);
-					BulkString name = item.get<BulkString>(0);
-					if (!name.isNull()) {
-						std::string str = name.value();
-						result->InsertLast(&str);
-					}
-				} else {
-					// Simple response, just member names
-					BulkString member = reply.get<BulkString>(i);
-					if (!member.isNull()) {
-						std::string str = member.value();
-						result->InsertLast(&str);
+			try { // see mget()
+				for (size_t i = 0; i < reply.size(); ++i) {
+					if (withcoord || withdist || withhash) {
+						// Complex response, return as JSON-like string
+						Array item = reply.get<Array>(i);
+						BulkString name = item.get<BulkString>(0);
+						if (!name.isNull()) {
+							std::string str = name.value();
+							result->InsertLast(&str);
+						}
+					} else {
+						// Simple response, just member names
+						BulkString member = reply.get<BulkString>(i);
+						if (!member.isNull()) {
+							std::string str = member.value();
+							result->InsertLast(&str);
+						}
 					}
 				}
+			} catch (const Exception& e) {
+				m_last_error = e.displayText();
 			}
 		}
 		return result;
@@ -1717,21 +1776,25 @@ public:
 		if (count > 0) cmd.add("COUNT").add(NumberFormatter::format(count));
 		Array reply;
 		if (execute_command(cmd, reply)) {
-			for (size_t i = 0; i < reply.size(); ++i) {
-				if (withcoord || withdist || withhash) {
-					Array item = reply.get<Array>(i);
-					BulkString name = item.get<BulkString>(0);
-					if (!name.isNull()) {
-						std::string str = name.value();
-						result->InsertLast(&str);
-					}
-				} else {
-					BulkString member = reply.get<BulkString>(i);
-					if (!member.isNull()) {
-						std::string str = member.value();
-						result->InsertLast(&str);
+			try { // see mget()
+				for (size_t i = 0; i < reply.size(); ++i) {
+					if (withcoord || withdist || withhash) {
+						Array item = reply.get<Array>(i);
+						BulkString name = item.get<BulkString>(0);
+						if (!name.isNull()) {
+							std::string str = name.value();
+							result->InsertLast(&str);
+						}
+					} else {
+						BulkString member = reply.get<BulkString>(i);
+						if (!member.isNull()) {
+							std::string str = member.value();
+							result->InsertLast(&str);
+						}
 					}
 				}
+			} catch (const Exception& e) {
+				m_last_error = e.displayText();
 			}
 		}
 		return result;
@@ -1744,9 +1807,13 @@ public:
 		}
 		Array reply;
 		if (execute_command(make_command("GEOHASH", key, member), reply) && reply.size() > 0) {
-			BulkString hash = reply.get<BulkString>(0);
-			if (!hash.isNull())
-				return hash.value();
+			try { // see mget()
+				BulkString hash = reply.get<BulkString>(0);
+				if (!hash.isNull())
+					return hash.value();
+			} catch (const Exception& e) {
+				m_last_error = e.displayText();
+			}
 		}
 		return "";
 	}
@@ -2040,13 +2107,17 @@ public:
 		Array reply;
 		if (execute_command(make_command("CONFIG", "GET", parameter), reply)) {
 			// CONFIG GET returns array of [param1, value1, param2, value2, ...]
-			for (size_t i = 0; i + 1 < reply.size(); i += 2) {
-				BulkString param = reply.get<BulkString>(i);
-				BulkString value = reply.get<BulkString>(i + 1);
-				if (!param.isNull() && !value.isNull()) {
-					std::string val = value.value();
-					dict->Set(param.value(), &val, g_StringTypeid);
+			try { // see mget()
+				for (size_t i = 0; i + 1 < reply.size(); i += 2) {
+					BulkString param = reply.get<BulkString>(i);
+					BulkString value = reply.get<BulkString>(i + 1);
+					if (!param.isNull() && !value.isNull()) {
+						std::string val = value.value();
+						dict->Set(param.value(), &val, g_StringTypeid);
+					}
 				}
+			} catch (const Exception& e) {
+				m_last_error = e.displayText();
 			}
 		}
 		return dict;
@@ -2152,12 +2223,16 @@ public:
 		}
 		Array reply;
 		if (execute_command(make_command("ACL", "LIST"), reply)) {
-			for (size_t i = 0; i < reply.size(); ++i) {
-				BulkString user = reply.get<BulkString>(i);
-				if (!user.isNull()) {
-					std::string str = user.value();
-					result->InsertLast(&str);
+			try { // see mget()
+				for (size_t i = 0; i < reply.size(); ++i) {
+					BulkString user = reply.get<BulkString>(i);
+					if (!user.isNull()) {
+						std::string str = user.value();
+						result->InsertLast(&str);
+					}
 				}
+			} catch (const Exception& e) {
+				m_last_error = e.displayText();
 			}
 		}
 		return result;
