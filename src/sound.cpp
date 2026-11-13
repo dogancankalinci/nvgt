@@ -798,6 +798,19 @@ public:
 	bool set_time(unsigned long long local_time) override { return engine->set_time_in_frames(local_time); }
 };
 // Miniaudio objects must be allocated on the heap as nvgt's API introduces the concept of an uninitialized sound, which a stack based system would make more difficult to implement.
+// What MiniAudio's resource managers couldn't allocate, counted on whatever thread did: MiniAudio reports a full job queue as MA_OUT_OF_MEMORY too, which needs no allocation, so a load refused with it while no allocation failed is the queue's backlog, which load_source() waits out and tries again. Refused while one did, as for a decoded buffer too large for memory, it was tried ten times over, each time opening and decoding the file again.
+static std::atomic<unsigned int> g_resource_allocations_failed{0};
+static void* resource_malloc(size_t size, void*) {
+	void* p = ma_malloc(size, nullptr);
+	if (!p && size) g_resource_allocations_failed.fetch_add(1);
+	return p;
+}
+static void* resource_realloc(void* p, size_t size, void*) {
+	void* q = ma_realloc(p, size, nullptr);
+	if (!q && size) g_resource_allocations_failed.fetch_add(1);
+	return q;
+}
+static void resource_free(void* p, void*) { ma_free(p, nullptr); }
 class audio_engine_impl final : public audio_node_impl, public virtual audio_engine {
 	std::unique_ptr<ma_engine> engine;
 	std::unique_ptr<ma_resource_manager> resource_manager;
@@ -911,6 +924,7 @@ public:
 			ma_resource_manager_config cfg = ma_resource_manager_config_init();
 			// Attach the resource manager to the sound service so that it can receive audio from custom sources.
 			cfg.pVFS = g_sound_service->get_vfs();
+			cfg.allocationCallbacks = {nullptr, resource_malloc, resource_realloc, resource_free}; // Counted (see g_resource_allocations_failed).
 			// This is the sample rate that sounds will be resampled to if necessary during loading. We set this equal to whatever sample rate the device got. This is maximally efficient as long as the user doesn't switch devices to one that runs at a different rate. When they do, a single resampler kicks in.
 			cfg.decodedSampleRate = sample_rate? sample_rate : device? device->playback.internalSampleRate : no_device_sample_rate; // An engine without a device runs at its own: as 0, sounds kept their files' rates, and MiniAudio's unfiltered linear resampler converted them as they played, aliasing a 96 kHz file's 30 kHz into the audible band at its full level.
 			// Set the resampler used during decoding to a high quality one. At the time of writing this, this is relying on support that I added to MiniAudio myself and has not yet been merged upstream.
@@ -5519,10 +5533,10 @@ public:
 		I'll raise an issue with MA to see if he'd be okay with this change. For now we'll just wait a few milliseconds for the backlog to clear and fail permanently if we see multiple MA_OUT_OF_MEMORY conditions back  to back. This should give the job queue time
 		*/
 		for (int i = 0; i < 10; i++) {
-			const unsigned int opens_out_of_memory = sound_service::opens_out_of_memory();
+			const unsigned int opens_out_of_memory = sound_service::opens_out_of_memory(), allocations_failed = g_resource_allocations_failed.load();
 			attempt_init();
-			// Not when an open ran out of memory meanwhile, which MiniAudio reports the same way: the file's open itself rather than a full job queue, each try of which opened a URL again with another request to its server.
-			if (g_soundsystem_last_error == MA_OUT_OF_MEMORY && !audio_engine_impl::on_audio_thread() && sound_service::opens_out_of_memory() == opens_out_of_memory) { // Not slept out on an audio thread, which the device waits for.
+			// Not when an open or an allocation of MiniAudio's ran out of memory meanwhile, which MiniAudio reports the same way: memory short rather than a full job queue, each try of which opened the file again, a URL with another request to its server, and decoded it again.
+			if (g_soundsystem_last_error == MA_OUT_OF_MEMORY && !audio_engine_impl::on_audio_thread() && sound_service::opens_out_of_memory() == opens_out_of_memory && g_resource_allocations_failed.load() == allocations_failed) { // Not slept out on an audio thread, which the device waits for.
 				// See above; this is probably job queue backlog rather than an actual out of memory. Take a break and try again. Not the script's wait(), which can collect garbage, whose destructors could load this very sound meanwhile, its sound then overwritten here while attached to the graph.
 				std::this_thread::sleep_for(std::chrono::milliseconds(5));
 				continue;
