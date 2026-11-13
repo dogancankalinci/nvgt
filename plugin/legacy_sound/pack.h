@@ -59,11 +59,13 @@ class legacy_pack {
 	pack_open_mode open_mode;
 	std::string pack_ident;
 	uint64_t file_offset; // Offset into opened file where pack is contained, used for embedding packs into executables.
+	uint64_t mptr_size; // How much of the pack mptr holds (what could be read of it, which a damaged pack's items can claim more than).
 	int RefCount;
 	// stream_open/stream_close mutate pack_streams from whichever thread creates or frees a sound (the
 	// deferred BASS teardown runs on its own thread), so the registry needs a lock. Reads of an already
 	// opened stream do not touch the map and stay lock-free.
 	std::mutex streams_mutex;
+	pack_stream* find_stream(unsigned int idx);
 public:
 	unsigned int next_stream_idx;
 	bool delay_close;
@@ -102,13 +104,15 @@ public:
 	bool stream_close_script(unsigned int idx);
 	unsigned int stream_open_script(const std::string& pack_filename, unsigned int offset = 0);
 	unsigned int stream_pos_script(unsigned int idx) {
-		return pack_streams.find(idx) != pack_streams.end() ? pack_streams[idx]->offset : 0xffffffff;
+		pack_stream* stream = find_stream(idx);
+		return stream ? stream->offset : 0xffffffff;
 	}
 	unsigned int stream_read_script(unsigned int idx, unsigned char* buffer, unsigned int size);
 	std::string stream_read_string(unsigned int idx, unsigned int size);
 	bool stream_seek_script(unsigned int idx, int offset, int origen = SEEK_SET);
 	unsigned int stream_size_script(unsigned int idx) {
-		return pack_streams.find(idx) != pack_streams.end() ? pack_streams[idx]->filesize : 0;
+		pack_stream* stream = find_stream(idx);
+		return stream ? stream->filesize : 0;
 	}
 	unsigned int size() {
 		return pack_items.size();

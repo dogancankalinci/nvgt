@@ -34,14 +34,34 @@ using namespace std;
 // A global property that allows a scripter to set the pack identifier for all subsequently created packs.
 static std::string g_pack_ident = "NVPK";
 
+#ifdef _WIN32
+// A path as UTF-16. NVGT's strings are UTF-8, and fopen/CreateFileA read a path in the ANSI code page: one with any other character (a
+// user folder with a Turkish or German name, say) didn't open, and a new pack got a garbled name. The fixed 1024-character buffer this
+// replaces was left without its terminator by a longer path, which GetFileAttributesW then read past.
+static std::wstring pack_wide_path(const string& path) {
+	int n = path.empty() ? 0 : MultiByteToWideChar(CP_UTF8, 0, path.data(), (int)path.size(), NULL, 0);
+	std::wstring result(n > 0 ? n : 0, L'\0');
+	if (n > 0) MultiByteToWideChar(CP_UTF8, 0, path.data(), (int)path.size(), &result[0], n);
+	return result;
+}
+#endif
+static FILE* pack_fopen(const string& path, const char* mode) {
+	if (path.empty()) return NULL;
+	#ifdef _WIN32
+	std::wstring wide_mode(mode, mode + strlen(mode));
+	FILE* f = _wfopen(pack_wide_path(path).c_str(), wide_mode.c_str());
+	// An existing file found by its ANSI name, as before (only to open one: a new file gets its right name).
+	if (!f && mode[0] == 'r') f = fopen(path.c_str(), mode);
+	return f;
+	#else
+	return fopen(path.c_str(), mode);
+	#endif
+}
+
 bool NVGTFileExists(const string& path) {
 	#ifdef _WIN32
-	// Windows uses UTF16 so it is necessary to convert the string
-	wchar_t bufUTF16[1024];
-	MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, bufUTF16, 1024);
-
 	// Check if the path exists and is a directory
-	DWORD attrib = GetFileAttributesW(bufUTF16);
+	DWORD attrib = GetFileAttributesW(pack_wide_path(path).c_str());
 	if (attrib == INVALID_FILE_ATTRIBUTES || (attrib & FILE_ATTRIBUTE_DIRECTORY))
 		return false;
 	return true;
@@ -69,6 +89,7 @@ legacy_pack::legacy_pack() {
 	open_mode = PACK_OPEN_MODE_NONE;
 	delay_close = false;
 	file_offset = 0;
+	mptr_size = 0;
 	RefCount = 1;
 }
 void legacy_pack::AddRef() {
@@ -96,27 +117,44 @@ bool legacy_pack::open(const string& filename_in, pack_open_mode mode, bool meml
 		}
 	if (mode <= PACK_OPEN_MODE_NONE || mode >= PACK_OPEN_MODES_TOTAL)
 		return false; // Invalid mode.
+	// Every failure leaves the pack closed. The handle was closed but kept: is_active() was true after a failed open, the next open or
+	// the pack's release closed it again (a double fclose: heap corruption where fclose frees the FILE, and on Windows, where the CRT
+	// reuses it, the closing of whichever file was opened next, another pack's for one), and the offset of an embedded pack stayed for
+	// the next open.
+	auto fail = [this]() {
+		if (fptr) fclose(fptr);
+		fptr = NULL;
+		pack_items.clear();
+		pack_filenames.clear();
+		file_offset = 0;
+		return false;
+	};
 	string filename = filename_in;
 	uint64_t pack_size;
-	if (find_embedded_pack(filename, file_offset, pack_size) && mode != PACK_OPEN_MODE_READ) return false;
+	file_offset = 0;
+	if (find_embedded_pack(filename, file_offset, pack_size) && mode != PACK_OPEN_MODE_READ) return fail();
 	if (mode == PACK_OPEN_MODE_APPEND && !NVGTFileExists(filename))
 		mode = PACK_OPEN_MODE_CREATE;
 	if (mode == PACK_OPEN_MODE_CREATE) {
-		fptr = fopen(filename.c_str(), "wb");
+		// Read and write: delete_file() reads the items after the one it removes to move them, which a "wb" handle couldn't, so in a
+		// pack being created it (and add_file()/add_memory() replacing an item) failed after forgetting the item, and the pack closed
+		// with the last item's place given to the deleted one.
+		fptr = pack_fopen(filename, "wb+");
 		if (fptr == NULL)
-			return false;
+			return fail();
 		pack_header h;
 		memset(&h, 0, sizeof(pack_header));
 		memcpy(&h, &pack_ident[0], 8);
 		h.filecount = 0;
-		fwrite(&h, sizeof(pack_header), 1, fptr);
+		if (fwrite(&h, sizeof(pack_header), 1, fptr) != 1)
+			return fail();
 		current_filename = filename;
 		open_mode = mode;
 		return true;
 	} else if (mode == PACK_OPEN_MODE_APPEND || mode == PACK_OPEN_MODE_READ) {
-		fptr = fopen(filename.c_str(), mode == PACK_OPEN_MODE_APPEND ? "rb+" : "rb");
+		fptr = pack_fopen(filename, mode == PACK_OPEN_MODE_APPEND ? "rb+" : "rb");
 		if (!fptr)
-			return false;
+			return fail();
 		unsigned int total_size = 0;
 		#ifdef _WIN32
 		total_size = filelength(fileno(fptr));
@@ -130,30 +168,21 @@ bool legacy_pack::open(const string& filename_in, pack_open_mode mode, bool meml
 			total_size = pack_size;
 		}
 		pack_header h;
-		if (!fread(&h, sizeof(pack_header), 1, fptr)) {
-			fclose(fptr);
-			return false;
-		}
-		if (memcmp(h.ident, &pack_ident[0], 8) != 0) {
-			fclose(fptr);
-			return false;
-		}
+		if (!fread(&h, sizeof(pack_header), 1, fptr))
+			return fail();
+		if (memcmp(h.ident, &pack_ident[0], 8) != 0)
+			return fail();
 		for (unsigned int c = 0; c < h.filecount; c++) {
 			pack_item i;
 			memset(&i, 0, sizeof(pack_item));
-			if (fread(&i, sizeof(unsigned int), 3, fptr) < 3) {
-				pack_items.clear();
-				pack_filenames.clear();
-				fclose(fptr);
-				return false;
-			}
+			if (fread(&i, sizeof(unsigned int), 3, fptr) < 3)
+				return fail();
+			// The sizes are checked before the name gets room: a damaged header's length allocated up to 4 GB first.
+			if ((i.filesize * i.namelen * 2) != i.magic || i.namelen > total_size || i.filesize > total_size)
+				return fail();
 			string fn(i.namelen, '\0');
-			if ((i.filesize * i.namelen * 2) != i.magic || i.namelen > total_size || i.filesize > total_size || fread(&fn[0], 1, i.namelen, fptr) < i.namelen) {
-				pack_items.clear();
-				pack_filenames.clear();
-				fclose(fptr);
-				return false;
-			}
+			if (fread(&fn[0], 1, i.namelen, fptr) < i.namelen)
+				return fail();
 			i.offset = ftell(fptr) - file_offset;
 			pack_items[fn] = i;
 			pack_filenames.push_back(fn);
@@ -162,11 +191,12 @@ bool legacy_pack::open(const string& filename_in, pack_open_mode mode, bool meml
 		// Perform any extra read/append initialization
 		if (mode == PACK_OPEN_MODE_READ && memload) {
 			mptr = (unsigned char*)malloc(total_size);
-			FILE* mtmp;
-			mtmp = fopen(filename.c_str(), "rb+");
-			if (mtmp && mptr) {
+			// Read only ("rb+" left a read-only pack out of memory), and only what was read counts: the reads from memory stop there
+			// as the reads from the file stop at its end.
+			FILE* mtmp = mptr ? pack_fopen(filename, "rb") : NULL;
+			if (mtmp) {
 				fseek(mtmp, file_offset, SEEK_SET);
-				fread(mptr, 1, total_size, mtmp);
+				mptr_size = fread(mptr, 1, total_size, mtmp);
 				fclose(mtmp);
 			} else {
 				free(mptr);
@@ -196,8 +226,9 @@ bool legacy_pack::close() {
 		ret = fwrite(&h, sizeof(pack_header), 1, fptr) == 1;
 	} else
 		ret = true;
-	if (fptr)
-		fclose(fptr);
+	// For a pack being written, what was left in the FILE's buffer reaches the disk here (a full disk fails only now).
+	if (fptr && fclose(fptr) != 0 && open_mode != PACK_OPEN_MODE_READ)
+		ret = false;
 	pack_items.clear();
 	pack_filenames.clear();
 	pack_streams.clear();
@@ -209,6 +240,7 @@ bool legacy_pack::close() {
 	if (mptr)
 		free(mptr);
 	mptr = NULL;
+	mptr_size = 0;
 	return ret;
 }
 
@@ -226,11 +258,7 @@ bool legacy_pack::add_file(const string& disk_filename, const string& pack_filen
 		else
 			return false;
 	}
-	#ifdef _UNICODE
-	FILE* dptr = _wfopen(disk_filename.c_str(), L"rb");
-	#else
-	FILE* dptr = fopen(disk_filename.c_str(), "rb");
-	#endif
+	FILE* dptr = pack_fopen(disk_filename, "rb");
 	if (!dptr)
 		return false;
 	unsigned int cur_pos = ftell(fptr);
@@ -255,7 +283,11 @@ bool legacy_pack::add_file(const string& disk_filename, const string& pack_filen
 			break;
 		for (unsigned int j = 0; j < dataread; j++)
 			read_buffer[j] = pack_char_encrypt(read_buffer[j], i.filesize + j, i.namelen);
-		fwrite(read_buffer, 1, dataread, fptr);
+		if (fwrite(read_buffer, 1, dataread, fptr) != dataread) { // a full disk: the item would claim data that isn't there
+			fclose(dptr);
+			fseek(fptr, cur_pos, SEEK_SET);
+			return false;
+		}
 		i.filesize += dataread;
 		if (dataread < 4096)
 			break;
@@ -265,8 +297,7 @@ bool legacy_pack::add_file(const string& disk_filename, const string& pack_filen
 	i.magic = i.filesize * i.namelen * 2;
 	if (fwrite(&i, sizeof(unsigned int), 3, fptr) < 3) {
 		fseek(fptr, cur_pos, SEEK_SET);
-		fclose(dptr);
-		return false;
+		return false; // dptr is closed already (it was closed a second time here)
 	}
 	fseek(fptr, 0, SEEK_END);
 	pack_items[pack_filename] = i;
@@ -363,19 +394,16 @@ bool legacy_pack::delete_file(const string& pack_filename) {
 	}
 	// This sucks...
 	//new_eof-=oldblock-oldsize;
+	fflush(fptr); // the moved items are in the file before it is cut
 	#ifdef _WIN32
-	HANDLE hFile = CreateFileA(current_filename.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-	if (!hFile)
+	HANDLE hFile = CreateFileW(pack_wide_path(current_filename).c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (hFile == INVALID_HANDLE_VALUE) // what CreateFile returns on failure (this tested for NULL)
 		return true; // At this point the operation has completed, but we couldn't set the new eof. Hopefully a new file being added to the pack gets a chance to overwrite the new existing deleted data...
 	SetFilePointer(hFile, new_eof, NULL, FILE_BEGIN);
 	SetEndOfFile(hFile);
 	CloseHandle(hFile);
 	fclose(fptr);
-	#ifndef _UNICODE
-	fptr = fopen(current_filename.c_str(), "rb+");
-	#else
-	fptr = _wfopen(current_filename.c_str(), L"rb+");
-	#endif
+	fptr = pack_fopen(current_filename, "rb+");
 	if (!fptr) {
 		close(); // We couldn't reopen the file after delete, and so we must entirely close the pack in this unfortunate case.
 		return false;
@@ -445,7 +473,12 @@ unsigned int legacy_pack::read_file(const string& pack_filename, unsigned int of
 	if (!buffer)
 		return bytes_to_read;
 	if (open_mode == PACK_OPEN_MODE_READ && mptr) {
-		memcpy(buffer, mptr + pack_items[pack_filename].offset + offset, bytes_to_read);
+		// A pack shorter than its items say (cut off while it was copied) has less in memory than they claim, and the copy read past
+		// the end of the allocation: only what is there, as a read from the file gives.
+		uint64_t start = (uint64_t)pack_items[pack_filename].offset + offset;
+		if (start >= mptr_size) return 0;
+		if (bytes_to_read > mptr_size - start) bytes_to_read = (unsigned int)(mptr_size - start);
+		memcpy(buffer, mptr + start, bytes_to_read);
 		for (unsigned int i = 0; i < bytes_to_read; i++)
 			buffer[i] = pack_char_decrypt(buffer[i], offset + i, pack_items[pack_filename].namelen);
 		return bytes_to_read;
@@ -481,7 +514,7 @@ bool legacy_pack::raw_seek(int offset) {
 	if (offset < 0)
 		return fseek(fptr, offset, SEEK_END) == 0;
 	else
-		return fseek(fptr, offset, SEEK_SET);
+		return fseek(fptr, offset, SEEK_SET) == 0; // fseek's 0 is success: this returned false for every seek that worked
 }
 
 // Closes an opened stream, basically freeing it's structure of data.
@@ -504,10 +537,18 @@ bool legacy_pack::stream_close(pack_stream* stream, bool while_reading) {
 	Release();
 	return ret;
 }
+// The script's calls find their stream under the streams lock: stream_open() and stream_close() change the map from the threads that
+// load and free sounds, and a lookup during that walked it unlocked.
+pack_stream* legacy_pack::find_stream(unsigned int idx) {
+	std::lock_guard<std::mutex> g(streams_mutex);
+	auto it = pack_streams.find(idx);
+	return it == pack_streams.end() ? NULL : it->second;
+}
 bool legacy_pack::stream_close_script(unsigned int idx) {
-	if (pack_streams.find(idx) == pack_streams.end())
+	pack_stream* stream = find_stream(idx);
+	if (!stream)
 		return false;
-	return stream_close(pack_streams[idx]);
+	return stream_close(stream);
 }
 
 // Creates a pack_stream structure for the given filename at the given offset. Pack streams are simple structures meant to expidite the process of sequentially reading from a file in the pack. Returns 0xffffffff on failure.
@@ -528,9 +569,11 @@ pack_stream* legacy_pack::stream_open(const string& pack_filename, unsigned int 
 	s->reading = false;
 	s->close = false;
 	if (!mptr) {
-		s->reader = fopen(current_filename.c_str(), "rb");
-		if (!s->reader)
+		s->reader = pack_fopen(current_filename, "rb");
+		if (!s->reader) {
+			delete s; // was left allocated
 			return NULL;
+		}
 	} else
 		s->reader = NULL;
 	{
@@ -577,7 +620,10 @@ unsigned int legacy_pack::stream_read_fast(pack_stream* stream, unsigned char* b
 		return bytes_to_read;
 	unsigned int dataread = 0;
 	if (open_mode == PACK_OPEN_MODE_READ && mptr) {
-		memcpy(buffer, mptr + stream->item_offset + offset, bytes_to_read);
+		uint64_t start = (uint64_t)stream->item_offset + offset; // only what is in memory, as in read_file()
+		if (start >= mptr_size) return 0;
+		if (bytes_to_read > mptr_size - start) bytes_to_read = (unsigned int)(mptr_size - start);
+		memcpy(buffer, mptr + start, bytes_to_read);
 		dataread = bytes_to_read;
 	} else {
 		// Only ever the stream's own handle: this path runs without the streams lock, while
@@ -597,15 +643,16 @@ unsigned int legacy_pack::stream_read_fast(pack_stream* stream, unsigned char* b
 	return dataread;
 }
 unsigned int legacy_pack::stream_read_script(unsigned int idx, unsigned char* buffer, unsigned int size) {
-	if (pack_streams.find(idx) == pack_streams.end())
+	pack_stream* stream = find_stream(idx);
+	if (!stream)
 		return 0xffffffff;
-	return stream_read(pack_streams[idx], buffer, size);
+	return stream_read(stream, buffer, size);
 }
 std::string legacy_pack::stream_read_string(unsigned int idx, unsigned int size) {
-	if (pack_streams.find(idx) == pack_streams.end())
+	pack_stream* stream = find_stream(idx);
+	if (!stream)
 		return ""; // nothing for a stream that isn't open
 	// Only as much room as is left in the stream (a count of 0xffffffff, "the rest", allocated 4 GB first).
-	pack_stream* stream = pack_streams[idx];
 	unsigned int left = stream->offset < stream->filesize ? stream->filesize - stream->offset : 0;
 	std::string result(size < left ? size : left, '\0');
 	unsigned int actual_size = stream_read(stream, (unsigned char*)result.data(), (unsigned int)result.size());
@@ -635,9 +682,10 @@ bool legacy_pack::stream_seek(pack_stream* stream, long long offset, int origin)
 	return true;
 }
 bool legacy_pack::stream_seek_script(unsigned int idx, int offset, int origin) {
-	if (pack_streams.find(idx) == pack_streams.end())
+	pack_stream* stream = find_stream(idx);
+	if (!stream)
 		return false;
-	return stream_seek(pack_streams[idx], offset, origin);
+	return stream_seek(stream, offset, origin);
 }
 
 bool pack_set_global_identifier(const std::string& identifier) {
