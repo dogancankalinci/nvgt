@@ -29,7 +29,7 @@ void ShowAngelscriptMessages();
 int PreconfigureEngine(asIScriptEngine* engine);
 int ConfigureEngine(asIScriptEngine* engine);
 void ConfigureEngineOptions(asIScriptEngine* engine);
-int ExecuteScript(asIScriptEngine* engine, const std::string& scriptFile);
+bool ExecuteScript(asIScriptEngine* engine, const std::string& scriptFile, int& exit_code); // see there
 #ifndef NVGT_STUB
 	int               CompileScript(asIScriptEngine* engine, const std::string& scriptFile);
 	int SaveCompiledScript(asIScriptEngine* engine, unsigned char** output);

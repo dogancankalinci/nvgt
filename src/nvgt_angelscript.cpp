@@ -1042,11 +1042,16 @@ static void discard_module(asIScriptEngine *engine, asIScriptModule *mod) {
 	for (asIScriptContext *pooled : g_ctxPool) pooled->Release();
 	g_ctxPool.clear();
 }
-int ExecuteScript(asIScriptEngine *engine, const string &scriptFile) {
+// False when the script couldn't run or failed (an exception nothing caught, a failed start), for the caller to report; true when it ended
+// with a code of its own, which goes in exit_code. That code is any int: exit(-1) and int main() returning -1 were taken for a failure,
+// the program ended with EXIT_SOFTWARE (or EXIT_DATAERR when compiled) instead of the code the script gave, after the script messages
+// gathered at run time were shown as a failed build's.
+bool ExecuteScript(asIScriptEngine *engine, const string &scriptFile, int &exit_code) {
+	exit_code = 0;
 	auto_chdir();
 	asIScriptModule *mod = engine->GetModule("nvgt_game", asGM_ONLY_IF_EXISTS);
 	if (!mod)
-		return -1;
+		return false;
 	mod->SetAccessMask(NVGT_SUBSYSTEM_EVERYTHING);
 	asIScriptFunction *func = mod->GetFunctionByDecl("int main()");
 	if (!func)
@@ -1054,36 +1059,41 @@ int ExecuteScript(asIScriptEngine *engine, const string &scriptFile) {
 	if (!func) {
 		g_scriptMessagesInfo = "";
 		engine->WriteMessage(scriptFile.c_str(), 0, 0, asMSGTYPE_ERROR, "No entry point found (either 'int main()' or 'void main()'.)");
-		return -1;
+		return false;
 	}
 	asIScriptFunction *prefunc = mod->GetFunctionByDecl("bool preglobals()");
 	asIScriptContext *ctx = engine->RequestContext();
 	if (!ctx)
-		return -1;
+		return false;
 	if (prefunc) {
 		int r = ctx->Prepare(prefunc) < 0? -1 : ctx->Execute();
 		if (r == asEXECUTION_EXCEPTION) report_unhandled_exception(ctx); // As an exception in main() is, rather than reading the missing return value as false and ending silently.
 		if (r < 0 || r == asEXECUTION_EXCEPTION) {
 			engine->ReturnContext(ctx);
-			return -1;
+			return false;
 		}
 		if (!ctx->GetReturnByte()) {
 			engine->ReturnContext(ctx);
-			return g_exit_called ? g_retcode : 0; // exit() called by preglobals() before it returned false, which it can't abort (see below): its code, as on the other paths.
+			exit_code = g_exit_called ? g_retcode : 0; // exit() called by preglobals() before it returned false, which it can't abort (see below): its code, as on the other paths.
+			return true;
 		}
 		engine->ReturnContext(ctx);
-		if (g_exit_called) return g_retcode; // exit() ends the script before main(), which it can't abort, as preglobals() doesn't run under the context manager.
+		if (g_exit_called) { // exit() ends the script before main(), which it can't abort, as preglobals() doesn't run under the context manager.
+			exit_code = g_retcode;
+			return true;
+		}
 	}
 	if (mod->ResetGlobalVars(0) < 0) {
 		// In this case any extra information is printed as an info message, we usually filter those out.
 		g_scriptMessagesErr += g_scriptMessagesInfo;
 		// The globals made before the failure are released now, as after a run, rather than when the script engine shuts down, after the window, sound and screen reader support are gone.
 		discard_module(engine, mod);
-		return -1;
+		return false;
 	}
 	if (g_exit_called) { // Called while the globals were made, which nothing aborts either.
 		discard_module(engine, mod);
-		return g_retcode;
+		exit_code = g_retcode;
+		return true;
 	}
 	ShowAngelscriptMessages(); // Display any warnings or extra info if the user has asked for it.
 	g_initialising_globals = false;
@@ -1092,7 +1102,7 @@ int ExecuteScript(asIScriptEngine *engine, const string &scriptFile) {
 		g_scriptMessagesInfo = "";
 		engine->WriteMessage(scriptFile.c_str(), 0, 0, asMSGTYPE_ERROR, "Unable to prepare the entry point for execution (does it need more stack than scripting.max_stack_size allows?)");
 		discard_module(engine, mod);
-		return -1;
+		return false;
 	}
 	#ifndef NVGT_STUB
 	if (g_dbg) {
@@ -1105,15 +1115,16 @@ int ExecuteScript(asIScriptEngine *engine, const string &scriptFile) {
 		;
 	int r = ctx->GetState();
 	int retcode = 0;
+	bool failed = false;
 	if (r != asEXECUTION_FINISHED) {
 		if (r == asEXECUTION_EXCEPTION) {
 			report_unhandled_exception(ctx);
-			retcode = -1;
+			failed = true;
 		} else if (r == asEXECUTION_ABORTED || g_exit_called) // exit() from a script thread before main() first ran aborts the context the manager hasn't executed yet, whose state stays prepared.
 			retcode = g_retcode;
 		else {
 			alert("script terminated", "script terminated unexpectedly");
-			retcode = -1;
+			failed = true;
 		}
 	} else {
 		if (func->GetReturnTypeId() == asTYPEID_INT32)
@@ -1130,7 +1141,12 @@ int ExecuteScript(asIScriptEngine *engine, const string &scriptFile) {
 			;
 	}
 	discard_module(engine, mod);
-	return g_exit_called? g_retcode : retcode; // Also from on_exit(), a destructor or a thread still running once main() returned.
+	if (g_exit_called) { // Also from on_exit(), a destructor or a thread still running once main() returned.
+		exit_code = g_retcode;
+		return true;
+	}
+	exit_code = retcode;
+	return !failed;
 }
 
 #ifndef NVGT_STUB

@@ -324,7 +324,7 @@ protected:
 			}
 		}
 		int retcode = Application::EXIT_OK;
-		if (mode == NVGT_RUN && (retcode = ExecuteScript(g_ScriptEngine, scriptfile.c_str())) < 0 || mode == NVGT_COMPILE && CompileExecutable(g_ScriptEngine, scriptfile)) {
+		if (mode == NVGT_RUN && !ExecuteScript(g_ScriptEngine, scriptfile.c_str(), retcode) || mode == NVGT_COMPILE && CompileExecutable(g_ScriptEngine, scriptfile)) {
 			ShowAngelscriptMessages();
 			return Application::EXIT_SOFTWARE;
 		}
@@ -336,7 +336,7 @@ protected:
 		std::string path_tmp;
 		g_command_line_args->InsertAt(0, (void*)&path_tmp);
 		int retcode = Application::EXIT_OK;
-		if (LoadCompiledExecutable(g_ScriptEngine) < 0 || (retcode = ExecuteScript(g_ScriptEngine, commandName().c_str())) < 0) {
+		if (LoadCompiledExecutable(g_ScriptEngine) < 0 || !ExecuteScript(g_ScriptEngine, commandName().c_str(), retcode)) {
 			ShowAngelscriptMessages();
 			return Application::EXIT_DATAERR;
 		}
