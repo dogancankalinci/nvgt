@@ -5536,11 +5536,12 @@ public:
 				file = encryption_filter::source_of(file); // An encrypted URL's, which otherwise kept up to 16 MiB to come back to for as long as it played.
 				if (auto url_stream = dynamic_cast<prebuffer_istream*>(file)) url_stream->opened(); // Open, so that it needn't keep so much to come back to.
 			}
+			std::string name = triplet; // Copied first, as copying can run out of memory: copied once the sound held its source, a throw left a source with no sound, which close() passed over, never freeing it, its decode still running.
 			unwinding.armed = false; // This sound's from here, closed by loaded_or_closed() should postload() throw.
 			source = std::move(made_source);
 			view = std::move(made_view);
 			front = std::move(made_front);
-			claimed_name = triplet;
+			claimed_name = std::move(name);
 			claimed_manager = manager;
 			adopt_sound(std::move(made));
 			try {
