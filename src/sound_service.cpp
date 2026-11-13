@@ -560,6 +560,8 @@ std::istream *encryption_filter::wrap(std::istream &source, const directive_t di
 		return &source;
 	try {
 		return &(new chacha_istream(source, *key))->own_source(true);
+	} catch (const std::bad_alloc&) {
+		throw; // Reported as running out of memory (see onOpen()): taken as a file not encrypted, its encrypted bytes went to the decoders and the load failed as a file in no format, which reads as the wrong key.
 	} catch (std::exception &) {
 		// Not encrypted or not valid.
 		return nullptr;
