@@ -14,6 +14,7 @@
 #ifdef __APPLE__
 #include <TargetConditionals.h>
 #endif
+#include <atomic>
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_power.h>
 #include <angelscript.h>
@@ -47,6 +48,7 @@ static int g_KeysDownArrayLen = 0;
 static unsigned char g_KeysReleased[SDL_SCANCODE_COUNT];
 static unsigned char g_MouseButtonsPressed[32];
 static unsigned char g_MouseButtonsReleased[32];
+static std::atomic<unsigned int> g_MouseButtonsDown{0}; // A bit per button, kept by the window's thread as it handles the mouse's events: mouse_down() off that thread, see there.
 std::string g_UserInput = "";
 // The text typed (g_UserInput) and the key names (g_KeyNames, whose strings SDL refers to without a copy) are std::strings and a map
 // that the thread handling the window's events (wait(), refresh_window()) changes while a script thread can read or change them
@@ -127,6 +129,7 @@ void InputQuitVideo() {
 	system_tray_quit();
 	game_windows_quit();
 	SDL_QuitSubSystem(SDL_INIT_VIDEO);
+	g_MouseButtonsDown = 0;
 	g_sdl_quit_pending = true;
 	if (!(SDL_WasInit(0) & SDL_INIT_VIDEO)) g_KeysDown = NULL; // InputInit() fetches it again once it starts the video subsystem again
 }
@@ -160,9 +163,11 @@ bool InputEvent(SDL_Event* evt) {
 	} else if (evt->type == SDL_EVENT_MOUSE_BUTTON_DOWN && evt->button.button < 32) {
 		g_MouseButtonsPressed[evt->button.button] = 1;
 		g_MouseButtonsReleased[evt->button.button] = 0;
+		g_MouseButtonsDown |= 1u << evt->button.button;
 	} else if (evt->type == SDL_EVENT_MOUSE_BUTTON_UP && evt->button.button < 32) {
 		g_MouseButtonsPressed[evt->button.button] = 0;
 		g_MouseButtonsReleased[evt->button.button] = 1;
+		g_MouseButtonsDown &= ~(1u << evt->button.button);
 	} else if (evt->type == SDL_EVENT_MOUSE_WHEEL) g_MouseAbsZ += evt->wheel.y;
 	else if (evt->type == SDL_EVENT_FINGER_DOWN) {
 		g_TouchLastDevice = evt->tfinger.touchID;
@@ -180,6 +185,10 @@ bool InputEvent(SDL_Event* evt) {
 	return true;
 }
 
+// SDL's keyboard state is changed by the thread that handles the window's events (see game_window::on_thread() in UI.h): SDL_ResetKeyboard(), registered as it was, ran on any script thread, changing the key states and sending key up events while the window's thread did the same as it handled its events. Elsewhere it does nothing, as the other calls that change SDL's state.
+static void reset_keyboard() {
+	if (window_thread_free()) SDL_ResetKeyboard();
+}
 void lost_window_focus() {
 	SDL_ResetKeyboard();
 	lost_window_focus_platform();
@@ -382,6 +391,10 @@ bool mouse_down(unsigned char button) {
 		return false;
 	if (!g_KeysDown)
 		return false;
+	// SDL's mouse state is the window thread's: read on a script thread, its list of mice could be reallocated by that thread's event
+	// handling (a mouse plugged in), and the position was written here as that thread wrote it too. There the buttons the window's
+	// thread has seen go down, as the other read-only queries answer (see game_window::window_state in UI.h).
+	if (!window_thread_free()) return (g_MouseButtonsDown.load() & (1u << button)) != 0;
 	return (SDL_GetMouseState(&g_MouseAbsX, &g_MouseAbsY) & SDL_BUTTON_MASK(button)) != 0;
 }
 bool MouseReleased(unsigned char button) {
@@ -1050,7 +1063,7 @@ void RegisterInput(asIScriptEngine* engine) {
 	engine->RegisterGlobalFunction(_O("int[]@ keys_released()"), asFUNCTION(keys_released), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("key_modifier get_keyboard_modifiers() property"), asFUNCTION(get_keyboard_modifiers), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("void set_keyboard_modifiers(key_modifier modifier) property"), asFUNCTION(set_keyboard_modifiers), asCALL_CDECL);
-	engine->RegisterGlobalFunction(_O("void reset_keyboard()"), asFUNCTION(SDL_ResetKeyboard), asCALL_CDECL);
+	engine->RegisterGlobalFunction(_O("void reset_keyboard()"), asFUNCTION(reset_keyboard), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("bool mouse_pressed(uint8 button)"), asFUNCTION(MousePressed), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("bool mouse_down(uint8 button)"), asFUNCTION(mouse_down), asCALL_CDECL);
 	engine->RegisterGlobalFunction(_O("bool mouse_released(uint8 button)"), asFUNCTION(MouseReleased), asCALL_CDECL);
