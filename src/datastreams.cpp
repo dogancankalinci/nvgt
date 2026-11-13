@@ -634,28 +634,21 @@ datastream& datastream::write(T value) {
 std::string datastream::read_until(const std::string& text, bool require_full) {
 	if (!_istr || text.empty())
 		return "";
-	std::string final_output;
-	while (_istr->good()) {
+	if (!require_full || text.size() == 1) {
 		std::string result;
 		std::getline(*_istr, result, text[0]);
 		if (_istr->good())
 			result += text[0];
-		if (!require_full || text.size() == 1)
-			return result;
-		final_output += result;
-		int search_cursor = 0;
-		while (_istr->good() && search_cursor > -1 && ++search_cursor < text.length()) {
-			char c = _istr->get();
-			final_output += c;
-			if (c == text[search_cursor])
-				continue;
-			else
-				search_cursor = -1; // break out of both this and parent loop
-		}
-		if (search_cursor < 0 || !_istr->good())
-			continue; // try getline again
-		else
-			break; // string located
+		return result;
+	}
+	// The whole text: a character at a time until what was read ends with it. The search after the first character went on from the
+	// character that broke a partial match, which it had already used up, so a text whose first character came twice ("ab" in "aab",
+	// CRLF CRLF after a stray CR) was missed and everything to the end of the stream came back.
+	std::string final_output;
+	for (int c; (c = _istr->get()) != std::char_traits<char>::eof();) {
+		final_output += char(c);
+		if (final_output.size() >= text.size() && final_output.compare(final_output.size() - text.size(), text.size(), text) == 0)
+			break;
 	}
 	return final_output;
 }
