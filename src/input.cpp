@@ -100,6 +100,7 @@ void InputInit() {
 static void joysticks_quit();
 static bool g_sdl_quit_pending = false; // InputQuitVideo() left SDL itself up, with no subsystem perhaps: InputDestroy() still quits it.
 void InputDestroy() {
+	video_lock lock; // see ClipboardGetText() in UI.cpp; before game_windows_quit()'s lock, as everywhere
 	if (SDL_WasInit(0) == 0 && !g_sdl_quit_pending) return;
 	#ifdef _WIN32
 	uninstall_keyhook();
@@ -118,6 +119,7 @@ void InputDestroy() {
 // application name, the script's own sdl_set_hint() calls). Those now stay until InputDestroy() at the program's end. The windows
 // still go before the video subsystem does, for the Android order DestroyNVGTWindow() explains.
 void InputQuitVideo() {
+	video_lock lock; // see ClipboardGetText() in UI.cpp
 	if (!(SDL_WasInit(0) & SDL_INIT_VIDEO)) return;
 	#ifdef _WIN32
 	uninstall_keyhook();
@@ -851,8 +853,11 @@ bool joystick::set(int index) {
 		int num_hats = SDL_GetNumJoystickHats(js_handle);
 		hat_values.resize(num_hats < 4 ? num_hats : 4, SDL_HAT_CENTERED);
 	}
-	// Pump to get most up-to-date info
-	SDL_PumpEvents();
+	// Pump to get most up-to-date info, where this thread may pump events (see wait() in UI.cpp): set() is called on any thread, and SDL_PumpEvents() on another one than the window's handled the window's events away from its thread.
+	if (window_thread_free()) {
+		video_lock lock; // see ClipboardGetText() in UI.cpp
+		SDL_PumpEvents();
+	}
 	return true;
 }
 

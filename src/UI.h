@@ -274,6 +274,13 @@ public:
 game_window* ShowNVGTWindow(const std::string& window_title, unsigned int flags = 0);
 bool DestroyNVGTWindow();
 bool DestroyNVGTWindowAtExit(); // see there
+// SDL's video subsystem against script threads, see UI.cpp. Taken around the clipboard calls, destroy_window() (InputQuitVideo()), InputDestroy()'s SDL_Quit() and the window thread's event pumping.
+struct video_lock {
+	video_lock();
+	~video_lock();
+	video_lock(const video_lock&) = delete;
+	video_lock& operator=(const video_lock&) = delete;
+};
 void system_tray_quit(); // before SDL_Quit(), see UI.cpp
 void game_windows_quit(); // likewise
 bool WindowIsFocused();

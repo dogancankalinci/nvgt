@@ -280,6 +280,7 @@ A window, and the renderer and textures used to draw on it, belong to the thread
 * Everything that changes the window or draws on it fails as it does for a closed window (false, 0, an empty string or null), and nothing is drawn: the other methods of a `game_window`, every method of its `graphics_renderer` and its `graphics_texture` objects, `destroy_window()`, `hide_window()`, `focus_window()` and `set_window_fullscreen()`. `show_window()` returns null while another thread's window is open. A window's renderer and font are null there.
 * Mouse grabbing, starting and stopping text input and hiding or showing the mouse cursor do nothing, and the lists of keyboards, mice and touch devices, their names and the touch fingers are empty.
 * `get_window()` still returns the window object.
+* The clipboard (`clipboard_get_text()`, `clipboard_set_text()`) works on every thread.
 
 A `text_font` is for the thread that made it: SDL_ttf, which NVGT uses for text, lets one thread at a time use a font. `get_font()` gives each thread fonts of its own (the same font again on the same thread), which it keeps until the thread ends. A font you share between threads on purpose, by passing its handle to another thread, must be used by one thread at a time: guard every use of it, measuring and rendering text included, with a lock of your own.
 

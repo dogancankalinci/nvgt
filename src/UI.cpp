@@ -45,6 +45,8 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <mutex>
+#include <condition_variable>
+#include <thread>
 #include <vector>
 #include <Poco/StringTokenizer.h>
 #include <Poco/SynchronizedObject.h>
@@ -117,7 +119,70 @@ void message(const std::string& text, const std::string& header) { // Usually us
 		return;
 	} else printf("%s\n", tmp.c_str());
 }
+// The clipboard functions are called on any thread. SDL's clipboard lives in its video device, which destroy_window() (SDL_VideoQuit())
+// frees, and their InputInit() starts the video subsystem, whose counts SDL changes with no lock: a script thread reading or setting the
+// clipboard as the window's thread destroyed the window used the device as it was freed. SDL also changes the clipboard's state (the
+// data and its types) as the window's thread handles events: on Windows when the window gains the focus, on macOS and iOS when another
+// program changes the clipboard, on X11 and Wayland as other programs ask for it. So the clipboard calls, destroy_window(), the end of the
+// program and the window thread's event pumping all take this lock.
+// On Windows a clipboard call can wait for the window's thread: EmptyClipboard() sends WM_DESTROYCLIPBOARD to the window that owns the
+// clipboard, which is the window SDL set it with before, and waits until its thread handles it. A thread that waits for this lock handles
+// the messages sent to its windows meanwhile, or the window's thread, waiting here, never would. The lock goes to its waiters in turn, so
+// that a script thread calling the clipboard in a loop can't keep the window's thread from its events.
+namespace {
+struct video_mutex_state {
+	std::mutex mutex;
+	std::condition_variable released;
+	unsigned long long next_ticket = 0, now_serving = 0;
+	std::thread::id owner;
+	int depth = 0;
+	#ifdef _WIN32
+	HANDLE released_event = CreateEventW(nullptr, TRUE, FALSE, nullptr); // set as the lock goes, reset by the waiter whose turn it is
+	#endif
+};
+video_mutex_state& video_mutex() {
+	static auto* state = new video_mutex_state; // never destroyed: script threads can still use the clipboard at the program's end
+	return *state;
+}
+}
+video_lock::video_lock() {
+	video_mutex_state& state = video_mutex();
+	std::unique_lock<std::mutex> lock(state.mutex);
+	if (state.depth && state.owner == std::this_thread::get_id()) {
+		state.depth++;
+		return;
+	}
+	const unsigned long long ticket = state.next_ticket++;
+	while (state.now_serving != ticket) {
+		#ifdef _WIN32
+		lock.unlock();
+		MsgWaitForMultipleObjects(1, &state.released_event, FALSE, 10, QS_SENDMESSAGE);
+		MSG msg;
+		PeekMessageW(&msg, nullptr, 0, 0, PM_NOREMOVE | PM_QS_SENDMESSAGE);
+		lock.lock();
+		#else
+		state.released.wait(lock);
+		#endif
+	}
+	state.owner = std::this_thread::get_id();
+	state.depth = 1;
+	#ifdef _WIN32
+	ResetEvent(state.released_event);
+	#endif
+}
+video_lock::~video_lock() {
+	video_mutex_state& state = video_mutex();
+	std::lock_guard<std::mutex> lock(state.mutex);
+	if (--state.depth) return;
+	state.owner = std::thread::id();
+	state.now_serving++;
+	state.released.notify_all();
+	#ifdef _WIN32
+	SetEvent(state.released_event);
+	#endif
+}
 std::string ClipboardGetText() {
+	video_lock lock;
 	InputInit();
 	char* r = SDL_GetClipboardText();
 	std::string cb_text(r);
@@ -125,6 +190,7 @@ std::string ClipboardGetText() {
 	return cb_text;
 }
 bool ClipboardSetText(const std::string& text) {
+	video_lock lock; // see ClipboardGetText()
 	InputInit();
 	// SDL3 returns true on success here, unlike the SDL2 convention of 0, so comparing against 0 reported failure for
 	// every clipboard write that actually went through.
@@ -189,7 +255,12 @@ std::string simple_file_dialog(const std::string& filters, const std::string& de
 	if (type == DIALOG_TYPE_OPEN) SDL_ShowOpenFileDialog(nvgt_file_dialog_callback, &fdi, parent_window, filter_objects.data(), filter_objects.size() - 1, default_location.empty() ? nullptr : default_location.c_str(), false);
 	else if (type == DIALOG_TYPE_SAVE) SDL_ShowSaveFileDialog(nvgt_file_dialog_callback, &fdi, parent_window, filter_objects.data(), filter_objects.size() - 1, default_location.empty() ? nullptr : default_location.c_str());
 	else if (type == DIALOG_TYPE_FOLDER) SDL_ShowOpenFolderDialog(nvgt_file_dialog_callback, &fdi, parent_window, default_location.empty() ? nullptr : default_location.c_str(), false);
-	while (!fdi.tryWait(5)) SDL_PumpEvents();
+	// Events are pumped by the thread that may (see wait()): on another one SDL_PumpEvents() handled the window's events away from its thread, as the window's own did.
+	while (!fdi.tryWait(5)) {
+		if (!window_thread_free()) continue;
+		video_lock lock; // see ClipboardGetText()
+		SDL_PumpEvents();
+	}
 	return fdi.data;
 }
 std::string simple_file_open_dialog(const std::string& filters, const std::string& default_location) {
@@ -346,7 +417,10 @@ bool sdl_window_on_this_thread(SDL_Window* window) {
 }
 game_window::game_window(const std::string& title, unsigned int w, unsigned int h, unsigned int flags) : _window(nullptr), _owns_window(true), _native_window(nullptr), _thread(thread_current_thread_id()), _refcount(1) {
 	if (Poco::Environment::os() == POCO_OS_LINUX) flags |= SDL_WINDOW_FULLSCREEN;
-	_window = SDL_CreateWindow(title.c_str(), (int)w, (int)h, flags);
+	{
+		video_lock lock; // SDL's list of windows, which the clipboard reads on Windows, see ClipboardGetText()
+		_window = SDL_CreateWindow(title.c_str(), (int)w, (int)h, flags);
+	}
 	if (!_window) return;
 	{
 		std::lock_guard<std::recursive_mutex> lock(game_windows_mutex());
@@ -485,6 +559,7 @@ game_window::~game_window() {
 	close();
 }
 void game_window::close() {
+	video_lock vlock; // SDL's list of windows, see the constructor; taken before game_windows_mutex() wherever both are
 	std::lock_guard<std::recursive_mutex> lock(game_windows_mutex());
 	game_windows().erase(this);
 	_font = nullptr;
@@ -643,7 +718,10 @@ game_window* ShowNVGTWindow(const std::string& window_title, unsigned int flags)
 		shown->duplicate();
 		return shown;
 	}
-	InputInit();
+	{
+		video_lock lock; // see ClipboardGetText()
+		InputInit();
+	}
 	TTF_Init();
 	Poco::AutoPtr<game_window> made(new game_window(window_title, 640, 640, flags));
 	if (!made->get_sdl_window()) {
@@ -669,6 +747,7 @@ game_window* ShowNVGTWindow(const std::string& window_title, unsigned int flags)
 	return made.get();
 }
 static bool destroy_game_window(game_window* w) {
+	video_lock lock; // see ClipboardGetText()
 	#ifdef __APPLE__
 	voice_over_game_window(nullptr);
 	#endif
@@ -786,7 +865,10 @@ void refresh_window() {
 	#ifdef _WIN32
 	process_keyhook_commands();
 	#endif
-	SDL_PumpEvents();
+	{
+		video_lock lock; // see ClipboardGetText()
+		SDL_PumpEvents();
+	}
 	update_joysticks(); // Update all active joystick instances
 	// peek_renderer (non-creating): only present once graphics have actually been drawn, so audio-only
 	// games never enter Android's eglSwapBuffers-under-ActivityMutex path. Using get_renderer() here
@@ -819,7 +901,11 @@ void refresh_window() {
 	}
 	SDL_Event evt;
 	std::unordered_set<int> keys_pressed_this_frame;
-	while (SDL_PollEvent(&evt)) {
+	for (;;) {
+		{
+			video_lock lock; // see ClipboardGetText(); SDL_PollEvent() pumps events when it has none
+			if (!SDL_PollEvent(&evt)) break;
+		}
 		bool evt_handled = false;
 		// If a key_down and then a key_up from the same key gets received in one frame, we need to move the key_up to the next frame to make sure that nvgt code can detect the keydown between calls to wait.
 		if (evt.type == SDL_EVENT_KEY_DOWN) keys_pressed_this_frame.insert(evt.key.scancode);
@@ -872,7 +958,10 @@ void wait(int ms) {
 		#else
 		Poco::Thread::sleep(MS);
 		#endif
-		SDL_PumpEvents();
+		{
+			video_lock lock; // see ClipboardGetText()
+			SDL_PumpEvents();
+		}
 		ms -= MS;
 		if (ms < 1) break;
 	}
