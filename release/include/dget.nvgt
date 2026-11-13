@@ -26,9 +26,7 @@ string[] dgetsl_default(0);
 string[] dgetsl(dictionary@ d, const string& in key, string[] def = dgetsl_default) {
 	string[] sl;
 	if (@d == null) return def;
-	if (!d.exists(key)) return def;
-	string v;
-	d.get(key, sl);
+	if (!d.get(key, sl)) return def; // a missing key, or one holding something else (that gave an empty list, not the default)
 	return sl;
 }
 bool dgetb(dictionary@ d, const string& in key, bool def = false) {
