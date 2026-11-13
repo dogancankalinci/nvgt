@@ -548,7 +548,10 @@ poco_shared<Dynamic::Var>* poco_json_array::query(const std::string& path) const
 }
 poco_json_array& poco_json_array::extend(poco_json_array* array) {
 	if (!array) return *this;
-	for (const auto i : *array->ptr) ptr->add(i);
+	// The elements are copied first: extended with itself (a.extend(a)), adding to the array being walked moved its storage under the
+	// walk, which then read freed memory (an access violation on nvgt.exe).
+	std::vector<Dynamic::Var> items(array->ptr->begin(), array->ptr->end());
+	for (const auto& i : items) ptr->add(i);
 	return *this;
 }
 poco_json_array* poco_json_array::get_array(unsigned int index) const {
