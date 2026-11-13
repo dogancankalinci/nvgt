@@ -11,6 +11,7 @@
 */
 
 #include <mutex>
+#include <unordered_set>
 #include "graphics.h"
 #include "UI.h"
 #include "nvgt.h" // g_shutting_down
@@ -230,6 +231,19 @@ text_font::~text_font() {
 
 bool text_font::add_fallback_font(text_font* font) {
 	if (!_font || !font || !font->_font) return false;
+	// SDL_ttf follows a font's fallbacks, and theirs, until it comes back to the font it began with: a cycle that doesn't pass through that
+	// font (a -> b, b -> c, c -> b, then a asked for a glyph none of them has) recursed until the stack overflowed, which ended the program.
+	// And a font that was its own fallback, or one in a cycle, held itself and was never freed. A fallback that would close a cycle (this
+	// font among those it reaches, itself included) is refused.
+	std::vector<const text_font*> pending{font};
+	std::unordered_set<const text_font*> seen;
+	while (!pending.empty()) {
+		const text_font* f = pending.back();
+		pending.pop_back();
+		if (f == this) return false;
+		if (!seen.insert(f).second) continue;
+		for (const text_font* next : f->_fallback_fonts) pending.push_back(next);
+	}
 	font->duplicate();
 	_fallback_fonts.push_back(font);
 	return TTF_AddFallbackFont(_font, font->_font);
