@@ -337,7 +337,9 @@ void MessageCallback(const asSMessageInfo *msg, void* param) {
 	else if (msg->type == asMSGTYPE_ERROR) {
 		if (msg->row != 0)
 			g_scriptMessagesErr += g_scriptMessagesInfo + buffer;
-		else
+		// The engine also writes here while the script runs (a failed Prepare(), a misused call), and nothing empties this buffer but a
+		// failed build's report: a message written every frame grew it for as long as the game ran. Its start is what that report shows.
+		else if (g_scriptMessagesLine0.size() < 65536)
 			g_scriptMessagesLine0 += g_scriptMessagesInfo + buffer;
 	} else
 		g_scriptMessagesWarn += g_scriptMessagesInfo + buffer;
