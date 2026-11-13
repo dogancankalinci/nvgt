@@ -84,8 +84,14 @@ shared class ini {
 	bool load_string(string data, const string& in filename = "*") {
 		// By the way, this is going to be very messy. I'll try to explain what I'm doing but I don't want there to be more comments than code here!
 		this.reset(false);
+		// Lines end in CRLF, as this writes them. Data with no CRLF at all is split at LF (editors outside Windows), or at CR if it has
+		// no LF either: only CRLF was split, so a file with LF line endings loaded "successfully" with every key after a section header
+		// lost and a sectionless value running into the lines after it. Only then, as a value this wrote may hold a lone LF or CR.
 		data.replace_this("\r\n\r\n", "\r\n \r\n");
-		string[]@ ln = data.split("\r\n");
+		string eol = "\r\n";
+		if (data.find("\r\n") < 0)
+			eol = data.find("\n") > -1 ? "\n" : "\r";
+		string[]@ ln = data.split(eol);
 		ini_section@ tmp_section = ini_section(""); // handle to the temporary session currently being loaded, starting with sectionless keys at the top.
 		for (uint i = 0; i < ln.length(); i++) {
 			string l = ln[i]; // for convenience
@@ -110,7 +116,7 @@ shared class ini {
 			// Now do the same for the end of the line.
 			int line_end_pos = -1;
 			for (uint j = l.length() - 1; j >= 0; j--) {
-				if (l[j] == " " and (j > 0 and (l[j - 1] == " " or l[j - 1] != "\\")))
+				if ((l[j] == " " or l[j] == "\t") and j > 0 and l[j - 1] != "\\") // a tab too, as at the start; a space after a backslash is escaped
 					continue;
 				line_end_pos = j;
 				break;
@@ -473,7 +479,9 @@ shared class ini {
 			if (i < value.length() - 1)
 				raw_list += sep;
 		}
-		tmp.set_string(key, raw_list);
+		// Raw: the items are escaped already. Escaped a second time, get_string_list() gave back an item with a comma, colon, semicolon or
+		// backslash still escaped until the ini was saved and loaded again.
+		tmp.set_string(key, raw_list, true);
 		return true;
 	}
 
@@ -484,16 +492,11 @@ shared class ini {
 		ini_section@ tmp = get_section_verified(section, key, true, "get string list");
 		if (@tmp == null)
 			return result;
-		string raw = tmp.get_string(key, true) + ","; // We add a cama here to avoid extra annoying code during parsing.
-		int last_item_start_pos = 0;
-		for (uint c = 0; c < raw.length(); c++) {
-			if ((raw[c] == "," or raw[c] == ":") and (c < 1 or raw[c - 1] != "\\") or c == raw.length() - 1) {
-				int item_len = c - last_item_start_pos;
-				string val = INI_UNESCAPE_STRING(raw.substr(last_item_start_pos, item_len));
-				if (val != "")
-					result.insert_last(val);
-				last_item_start_pos = c + 1;
-			}
+		string[]@ items = INI_SPLIT_LIST(tmp.get_string(key, true));
+		for (uint i = 0; i < items.length(); i++) {
+			string val = INI_UNESCAPE_STRING(items[i]);
+			if (val != "")
+				result.insert_last(val);
 		}
 		return result;
 	}
@@ -509,7 +512,7 @@ shared class ini {
 			if (i < value.length() - 1)
 				raw_list += sep;
 		}
-		tmp.set_string(key, raw_list);
+		tmp.set_string(key, raw_list, true); // raw, see set_string_list(): the file has the separators as they are, as it always had
 		return true;
 	}
 
@@ -519,15 +522,12 @@ shared class ini {
 		ini_section@ tmp = get_section_verified(section, key, true, "get double list");
 		if (@tmp == null)
 			return result;
-		string raw = tmp.get_string(key, true) + ",";
-		int last_item_start_pos = 0;
-		for (uint c = 0; c < raw.length(); c++) {
-			if ((raw[c] == "," or raw[c] == ":") and (c < 1 or raw[c - 1] != "\\") or c == raw.length() - 1) {
-				int item_len = c - last_item_start_pos;
-				result.insert_last(parse_double(INI_UNESCAPE_STRING(raw.substr(last_item_start_pos, item_len))));
-				last_item_start_pos = c + 1;
-			}
-		}
+		string raw = tmp.get_string(key, true);
+		if (raw.length() == 0)
+			return result; // an empty list, which gave one 0
+		string[]@ items = INI_SPLIT_LIST(raw);
+		for (uint i = 0; i < items.length(); i++)
+			result.insert_last(parse_double(INI_UNESCAPE_STRING(items[i])));
 		return result;
 	}
 
@@ -542,7 +542,7 @@ shared class ini {
 			if (i < value.length() - 1)
 				raw_list += sep;
 		}
-		tmp.set_string(key, raw_list);
+		tmp.set_string(key, raw_list, true); // raw, see set_string_list()
 		return true;
 	}
 
@@ -552,16 +552,13 @@ shared class ini {
 		ini_section@ tmp = get_section_verified(section, key, true, "get bool list");
 		if (@tmp == null)
 			return result;
-		string raw = tmp.get_string(key, true) + ",";
-		int last_item_start_pos = 0;
+		string raw = tmp.get_string(key, true);
+		if (raw.length() == 0)
+			return result; // an empty list, which gave one false
 		string[] is_true = {"1", "t", "true", "on", "enabled", "yes"};
-		for (uint c = 0; c < raw.length(); c++) {
-			if ((raw[c] == "," or raw[c] == ":") and (c < 1 or raw[c - 1] != "\\") or c == raw.length() - 1) {
-				int item_len = c - last_item_start_pos;
-				result.insert_last(is_true.find(INI_UNESCAPE_STRING(raw.substr(last_item_start_pos, item_len)).lower()) > -1);
-				last_item_start_pos = c + 1;
-			}
-		}
+		string[]@ items = INI_SPLIT_LIST(raw);
+		for (uint i = 0; i < items.length(); i++)
+			result.insert_last(is_true.find(INI_UNESCAPE_STRING(items[i]).lower()) > -1);
 		return result;
 	}
 
@@ -617,7 +614,7 @@ shared class ini_section {
 	string dump(bool indent = false) {
 		string output = this.name != "" ? "[" + this.name + "]\r\n" : "";
 		for (uint i = 0; i < key_names.length(); i++)
-			output += (indent and this.name != "" ? "\t" : "") + key_names[i] + "=" + this.get_string(key_names[i]) + "\r\n";
+			output += (indent and this.name != "" ? "\t" : "") + key_names[i] + "=" + this.get_string(key_names[i], true) + "\r\n"; // as stored, escaped: unescaped, a semicolon started a comment when the file was loaded again (the rest of the value was lost), a trailing backslash was dropped and two backslashes became one
 		return output;
 	}
 
@@ -653,6 +650,27 @@ shared string INI_UNESCAPE_STRING(const string&in value) {
 }
 
 // Verify an identifier to make sure keys and section names with invalid characters aren't permitted. A blank string returned means that the identifier is OK, anything else is error text.
+// Splits a raw list value at each "," or ":" that isn't escaped, that is, after an even number of backslashes; the items keep their escapes.
+// Looking only at the character before it, an item that ended in a backslash ("C:\games\", stored "C\:\\games\\") took the separator
+// after it for an escaped one, and the next item with it.
+shared string[]@ INI_SPLIT_LIST(const string&in raw) {
+	string[] items;
+	uint start = 0, backslashes = 0;
+	for (uint c = 0; c < raw.length(); c++) {
+		if (raw[c] == "\\") {
+			backslashes++;
+			continue;
+		}
+		if ((raw[c] == "," or raw[c] == ":") and backslashes % 2 == 0) {
+			items.insert_last(raw.substr(start, int(c - start)));
+			start = c + 1;
+		}
+		backslashes = 0;
+	}
+	items.insert_last(raw.substr(start));
+	return items;
+}
+
 shared string INI_VERIFY_IDENT(const string& in identifier) {
 	if (identifier.length() == 0)
 		return "";
