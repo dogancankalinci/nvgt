@@ -6446,7 +6446,17 @@ public:
 		if (had_device) {
 			ma_device_stop(&*capture_device);
 			uninit_device(&*capture_device);
+			capture_device.reset(); // Not kept should opening another throw, as on running out of memory: get_device() read the closed device's index, and asking for that one again found it open.
 		}
+		// Left without a device, as when opening one throws, a microphone meant to record reads stopped, as when none opens, rather than its node reading as recording.
+		struct stopped_without_device {
+			microphone_impl* mic;
+			~stopped_without_device() {
+				if (mic->capture_device || !mic->wants_recording) return;
+				last_error_kept kept;
+				mic->audio_node_impl::set_state(ma_node_state_stopped);
+			}
+		} stopped{this};
 		ma_result error;
 		if (open_capture(device > -1? &requested_id : nullptr)) {
 			// A microphone the script stopped stays stopped on the new device, as set_state() starts it, dropping what it held then; one meant to record records on it, as again after a spell without a device.
