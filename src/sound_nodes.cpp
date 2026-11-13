@@ -1524,7 +1524,7 @@ struct swept_spatializers {
 	std::vector<audio_spatializer_impl*> taken;
 	~swept_spatializers(); // After audio_spatializer_impl.
 };
-static void sweep_tracked_spatializers(swept_spatializers &swept, bool panner, int id, bool enabled); // After audio_spatializer_impl.
+static void sweep_tracked_spatializers(swept_spatializers &swept, bool panner, int id, bool enabled, std::atomic<bool> &flag); // After audio_spatializer_impl.
 
 int register_audio_panner(spatializer_component_node_factory factory, bool default_enabled) {
 	int id = g_next_panner_id++;
@@ -1571,7 +1571,7 @@ void set_audio_panner_enabled(int id, bool enabled) {
 	if (it != g_audio_panners.end()) {
 		bool was_enabled = it->second.enabled;
 		it->second.enabled = enabled;
-		if (was_enabled != enabled) sweep_tracked_spatializers(swept, true, id, enabled);
+		if (was_enabled != enabled) sweep_tracked_spatializers(swept, true, id, enabled, it->second.enabled);
 	}
 }
 
@@ -1583,7 +1583,7 @@ void set_audio_attenuator_enabled(int id, bool enabled) {
 	if (it != g_audio_attenuators.end()) {
 		bool was_enabled = it->second.enabled;
 		it->second.enabled = enabled;
-		if (was_enabled != enabled) sweep_tracked_spatializers(swept, false, id, enabled);
+		if (was_enabled != enabled) sweep_tracked_spatializers(swept, false, id, enabled, it->second.enabled);
 	}
 }
 
@@ -1640,16 +1640,16 @@ bool sound_set_spatialization(int panner, int attenuator, bool disable_previous,
 	}
 	if (panner_it != g_audio_panners.end()) {
 		if (!panner_it->second.enabled) set_audio_panner_enabled(panner, true);
+		if (panner != prev_panner && disable_previous && set_default) set_audio_panner_enabled(prev_panner, false); // Only one this replaced as the default: kept the default, a disabled one left newly positioned sounds on whichever enabled component came first. Before the default changes, which nothing it rewires reads: should it throw, as on running out of memory, the call asked again disables it, rather than finding the default already the new one and disabling nothing.
 		if (set_default) sound_set_default_3d_panner(panner);
 		panner_success = true;
-		if (panner != prev_panner && disable_previous && set_default) set_audio_panner_enabled(prev_panner, false); // Only one this replaced as the default: kept the default, a disabled one left newly positioned sounds on whichever enabled component came first.
 	}
 	auto attenuator_it = g_audio_attenuators.find(attenuator);
 	if (attenuator_it != g_audio_attenuators.end()) {
 		if (!attenuator_it->second.enabled) set_audio_attenuator_enabled(attenuator, true);
+		if (attenuator != prev_attenuator && disable_previous && set_default) set_audio_attenuator_enabled(prev_attenuator, false); // As above.
 		if (set_default) sound_set_default_3d_attenuator(attenuator);
 		attenuator_success = true;
-		if (attenuator != prev_attenuator && disable_previous && set_default) set_audio_attenuator_enabled(prev_attenuator, false); // As above.
 	}
 	if (panner_success && attenuator_success) g_soundsystem_last_error = MA_SUCCESS; // As a call that succeeded reads.
 	return panner_success && attenuator_success;
@@ -1969,16 +1969,29 @@ public:
 };
 audio_spatializer* audio_spatializer::create(mixer* mixer, audio_engine* engine) { return new audio_spatializer_impl(mixer, engine); }
 // Rewires each spatializer for a panner or attenuator turned on or off, with a reference taken to each under g_tracked_spatializers_mutex and the rewiring done after it: done under it, a spatializer made or destroyed meanwhile, as by a processing callback placing a sound or letting one go, waited for the whole sweep, 60 ms for 700 spatializers. One whose last reference already went is passed over, its destructor taking it out. The references are let go of by swept.
-static void sweep_tracked_spatializers(swept_spatializers &swept, bool panner, int id, bool enabled) {
-	{
-		std::lock_guard<std::mutex> lock(g_tracked_spatializers_mutex);
-		swept.taken.reserve(g_tracked_spatializers.size());
-		for (audio_spatializer_impl* spatializer : g_tracked_spatializers)
-			if (spatializer->duplicate_if_alive()) swept.taken.push_back(spatializer);
-	}
-	for (audio_spatializer_impl* spatializer : swept.taken) {
-		if (panner) spatializer->on_panner_enabled_changed(id, enabled);
-		else spatializer->on_attenuator_enabled_changed(id, enabled);
+// flag is the component's enabled flag, already set to enabled: a sweep that throws, as on running out of memory taking the references or rewiring a spatializer, puts it back and then the spatializers, rather than leaving them half swept with the flag changed, which a call asking for it again found unchanged and swept no further.
+static void sweep_tracked_spatializers(swept_spatializers &swept, bool panner, int id, bool enabled, std::atomic<bool> &flag) {
+	try {
+		{
+			std::lock_guard<std::mutex> lock(g_tracked_spatializers_mutex);
+			swept.taken.reserve(g_tracked_spatializers.size());
+			for (audio_spatializer_impl* spatializer : g_tracked_spatializers)
+				if (spatializer->duplicate_if_alive()) swept.taken.push_back(spatializer);
+		}
+		for (audio_spatializer_impl* spatializer : swept.taken) {
+			if (panner) spatializer->on_panner_enabled_changed(id, enabled);
+			else spatializer->on_attenuator_enabled_changed(id, enabled);
+		}
+	} catch (...) {
+		last_error_kept kept;
+		flag = !enabled; // First: a spatializer put back on the component makes it only while it is enabled.
+		for (audio_spatializer_impl* spatializer : swept.taken) { // Each one not yet swept already is as it was.
+			try {
+				if (panner) spatializer->on_panner_enabled_changed(id, !enabled);
+				else spatializer->on_attenuator_enabled_changed(id, !enabled);
+			} catch (...) {}
+		}
+		throw;
 	}
 }
 swept_spatializers::~swept_spatializers() {
