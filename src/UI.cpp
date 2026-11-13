@@ -258,7 +258,7 @@ std::string simple_file_dialog(const std::string& filters, const std::string& de
 	// Events are pumped by the thread that may (see wait()): on another one SDL_PumpEvents() handled the window's events away from its thread, as the window's own did.
 	while (!fdi.tryWait(5)) {
 		if (!window_thread_free()) continue;
-		video_lock lock; // see ClipboardGetText()
+		pump_lock lock; // see ClipboardGetText()
 		SDL_PumpEvents();
 	}
 	return fdi.data;
@@ -872,7 +872,7 @@ void refresh_window() {
 	process_keyhook_commands();
 	#endif
 	{
-		video_lock lock; // see ClipboardGetText()
+		pump_lock lock; // see ClipboardGetText()
 		SDL_PumpEvents();
 	}
 	update_joysticks(); // Update all active joystick instances
@@ -909,7 +909,7 @@ void refresh_window() {
 	std::unordered_set<int> keys_pressed_this_frame;
 	for (;;) {
 		{
-			video_lock lock; // see ClipboardGetText(); SDL_PollEvent() pumps events when it has none
+			pump_lock lock; // see ClipboardGetText(); SDL_PollEvent() pumps events when it has none
 			if (!SDL_PollEvent(&evt)) break;
 		}
 		bool evt_handled = false;
@@ -965,7 +965,7 @@ void wait(int ms) {
 		Poco::Thread::sleep(MS);
 		#endif
 		{
-			video_lock lock; // see ClipboardGetText()
+			pump_lock lock; // see ClipboardGetText()
 			SDL_PumpEvents();
 		}
 		ms -= MS;

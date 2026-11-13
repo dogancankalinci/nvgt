@@ -863,7 +863,7 @@ bool joystick::set(int index) {
 	if (!set_locked(index)) return false;
 	// Pump to get most up-to-date info, where this thread may pump events (see wait() in UI.cpp): set() is called on any thread, and SDL_PumpEvents() on another one than the window's handled the window's events away from its thread.
 	if (window_thread_free()) {
-		video_lock lock; // see ClipboardGetText() in UI.cpp
+		pump_lock lock; // see ClipboardGetText() in UI.cpp
 		SDL_PumpEvents();
 	}
 	return true;

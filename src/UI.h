@@ -281,6 +281,14 @@ struct video_lock {
 	video_lock(const video_lock&) = delete;
 	video_lock& operator=(const video_lock&) = delete;
 };
+// What the window thread's event pumping takes (and the other places that pump events). On Android SDL changes the clipboard's state on
+// Java's UI thread, not in the pump, so the lock protects nothing there, and SDL_PumpEvents() waits inside while the app is paused
+// (SDL_HINT_ANDROID_BLOCK_ON_PAUSE): held there, it kept every clipboard call on other threads waiting until the app came back.
+#ifdef __ANDROID__
+struct pump_lock {};
+#else
+typedef video_lock pump_lock;
+#endif
 void system_tray_quit(); // before SDL_Quit(), see UI.cpp
 void game_windows_quit(); // likewise
 bool WindowIsFocused();
