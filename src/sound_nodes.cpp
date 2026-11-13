@@ -281,6 +281,13 @@ static void drop_output_for_reverb(const audio_node* node) {
 	if (it == g_output_owners.end() || it->second.chain) return;
 	if (--it->second.reverb_uses <= 0) g_output_owners.erase(it);
 }
+// Refuses with MA_ALREADY_IN_USE a node whose output a chain, reverb3ds or the node itself rewires (see g_output_owners), for what attaches that output once to its own input, a chain's source and a reverb3d attachment's dry input: taken, a sound or mixer skipped its effects, spatializer and parent, and the owner's next rewiring took the output back, leaving the taker without input for good. A chain that is no other's node is not refused, as attaching its output sets its endpoint, which it keeps.
+static bool refuse_owned_output(const audio_node* node) {
+	std::lock_guard<std::mutex> lock(g_node_holds_mutex);
+	if (!g_output_owners.count(node)) return false;
+	g_soundsystem_last_error = MA_ALREADY_IN_USE;
+	return true;
+}
 // Drops a claim of a node's output unless the change it was made for goes through (see hold_claim).
 struct output_claim {
 	const audio_node* node;
@@ -319,10 +326,12 @@ protected:
 	}
 public:
 	audio_node_chain_impl(audio_node* source, audio_node* to, audio_engine* e) : passthrough_node_impl(e), endpoint(nullptr) {
-		bool fed = source && source->attach_output_bus(0, this, 0);
+		bool fed = source && !refuse_owned_output(source) && source->attach_output_bus(0, this, 0); // One refused leaves the chain unfed, as one whose attach fails.
+		const ma_result unfed = g_soundsystem_last_error; // Why, when it is: the endpoint's attach that succeeds read as success after it.
+		bool ended = true;
 		// A throw attaching the endpoint, as on running out of memory, runs no destructor and frees this chain, which the source's attachment holds: taken off it first, and what the endpoint took let go of.
 		try {
-			if (to) attach_output_bus(0, to, 0);
+			if (to) ended = attach_output_bus(0, to, 0);
 		} catch (...) {
 			last_error_kept kept;
 			if (fed) source->detach_output_bus(0);
@@ -331,6 +340,7 @@ public:
 			endpoint = nullptr;
 			throw;
 		}
+		if (source && !fed && ended) g_soundsystem_last_error = unfed;
 	}
 	~audio_node_chain_impl() {
 		drop_node_holds(static_cast<audio_node*>(this));
@@ -1368,6 +1378,7 @@ public:
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return nullptr;
 		}
+		if (dry_input && refuse_owned_output(dry_input)) return nullptr;
 		splitter_node* splitter = splitter_node::create(get_engine(), get_output_channels(0));
 		try { // A throw attaching it, as on running out of memory, lets go of it too: kept, it held this reverb3d and the dry output, mixing for good.
 			if (dry_output && !splitter->attach_output_bus(0, dry_output, 0)) {
