@@ -10,6 +10,7 @@
  * 3. This notice may not be removed or altered from any source distribution.
 */
 
+#include <mutex>
 #include <obfuscate.h>
 #include "nvgt_angelscript.h" // get_array_type
 #include "network.h"
@@ -23,11 +24,14 @@ ENetPeer* network::get_peer(asQWORD peer_id) {
 	return i->second;
 }
 
+// Network objects are made on any script thread: two made at once both found ENet uninitialized and initialized it twice, writing the
+// flag at the same time.
+static std::once_flag g_enet_init_once;
 network::network() {
-	if (!g_enet_initialized) {
+	std::call_once(g_enet_init_once, [] {
 		enet_initialize();
 		g_enet_initialized = true;
-	}
+	});
 	host = NULL;
 	next_peer = 1;
 	channel_count = 0;
