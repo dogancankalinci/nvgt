@@ -210,7 +210,7 @@ template <class T> void RegisterNameValueCollection(asIScriptEngine* engine, con
 	engine->RegisterObjectMethod(type.c_str(), "void set_opIndex(const string&in name, const string&in value) property", asMETHOD(T, set), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "void set(const string&in name, const string&in value)", asMETHOD(T, set), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "void add(const string&in name, const string&in value)", asMETHOD(T, add), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "const string& get(const string&in name, const string&in default_value = \"\") const", asMETHODPR(T, get, (const string&, const string&) const, string), asCALL_THISCALL);
+	engine->RegisterObjectMethod(type.c_str(), "string get(const string&in name, const string&in default_value = \"\") const", asMETHODPR(T, get, (const string&, const string&) const, string), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "bool exists(const string&in name) const", asMETHOD(T, has), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "bool empty() const", asMETHOD(T, empty), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "uint64 size() const", asFUNCTION(name_value_collection_size<T>), asCALL_CDECL_OBJFIRST);
@@ -245,11 +245,11 @@ template <class T, class P> void RegisterHTTPMessage(asIScriptEngine* engine, co
 	engine->RegisterObjectMethod(type.c_str(), "int64 get_content_length() const property", asMETHOD(T, getContentLength64), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "bool get_has_content_length() const property", asMETHOD(T, hasContentLength), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "void set_transfer_encoding(const string&in encoding) property", asMETHOD(T, setTransferEncoding), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "const string& get_transfer_encoding() const property", asMETHOD(T, getTransferEncoding), asCALL_THISCALL);
+	engine->RegisterObjectMethod(type.c_str(), "string get_transfer_encoding() const property", asMETHODPR(T, getTransferEncoding, () const, std::string), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "void set_chunked_transfer_encoding(bool enabled) property", asMETHOD(T, setChunkedTransferEncoding), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "bool get_chunked_transfer_encoding() const property", asMETHOD(T, getChunkedTransferEncoding), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "void set_content_type(const string&in media_type) property", asMETHODPR(T, setContentType, (const string&), void), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "const string& get_content_type() const property", asMETHOD(T, getContentType), asCALL_THISCALL);
+	engine->RegisterObjectMethod(type.c_str(), "string get_content_type() const property", asMETHODPR(T, getContentType, () const, std::string), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "void set_keep_alive(bool enabled) property", asMETHOD(T, setKeepAlive), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "bool get_keep_alive() const property", asMETHOD(T, getKeepAlive), asCALL_THISCALL);
 }
