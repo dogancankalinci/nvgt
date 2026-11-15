@@ -461,7 +461,7 @@ public:
 		nodes.erase(it);
 		input_buses.erase(input_buses.begin() + index);
 		removed = node;
-		bool detached = node->detach_output_bus(0);
+		bool detached = !node->get_output_bus_count() || node->detach_output_bus(0); // A node with no output, as a plugin's can be, which MiniAudio refuses to detach, has nothing to detach: refused, the removal it had made read as failed.
 		drop_node_hold(static_cast<audio_node*>(this), node); // After the last call into it (see nodes).
 		drop_output_for_chain(node, static_cast<audio_node*>(this));
 		return detached;
@@ -479,7 +479,7 @@ public:
 		hold_destination(this);
 		bool success = audio_node_impl::detach_output_bus(0);
 		for (audio_node* node : nodes) {
-			if (success && detach_nodes) {
+			if (success && detach_nodes && node->get_output_bus_count()) { // As in take_out(), a node with no output is already detached.
 				hold_destination(node);
 				success = node->detach_output_bus(0);
 			}
