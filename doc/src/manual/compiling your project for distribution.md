@@ -104,9 +104,6 @@ Within that folder you should have a subfolder that is called "lib" (or "Framewo
 
 At time of writing, the files are:
 * bass.dll, bassmix.dll and bass_fx.dll are used only by the legacy_sound plugin, which brings back NVGT's older BASS based sound system. If your script does not include the line #pragma plugin legacy_sound, you don't need them, nor legacy_sound.dll itself. The built-in sound, mixer and tts_voice objects play through miniaudio, which is part of NVGT and needs no separate dll.
-* nvdaControllerClient64.dll used to speak and Braille through the NVDA screen reader.
-* SAAPI64.dll used to speak and Braille through the System Access screen reader.
-* ZDSRAPI.dll used to speak and Braille through the ZDSR screen reader.
 * git2.dll is the libgit2 library which allows people to programmatically access git repositories (can be good for adding version control to your online game's map world for example). You don't usually need it.
 * git2nvgt.dll is the plugin for nvgt itself that wraps git2. So if your script does not include the line #pragma plugin git2nvgt, then you don't need either of the git2 dlls.
 * nvgt_curl.dll is another plugin that wraps the libcurl library. It used to be the only way to do http requests, but it's now being phased out in favor of more portable options. It's only required if your script includes the line #pragma plugin nvgt_curl

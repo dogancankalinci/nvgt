@@ -27,9 +27,7 @@
 #include <ctime>
 #include <iomanip>
 #include <stdexcept>
-#include <Poco/AtomicFlag.h>
 #include <Poco/UnicodeConverter.h>
-#include <UniversalSpeech.h>
 #include "win.h"
 
 using namespace std;
@@ -186,70 +184,6 @@ bool sapi5_engine::set_voice(int voice) {
 }
 bool sapi5_engine::reset_voice() { bool result = false; run([&] { result = sb_sapi_reset_voice(inst); }); return result; }
 int sapi5_engine::get_current_voice() { int result = -1; run([&] { result = sb_sapi_get_voice(inst); }); return result; }
-
-// Under a lock, so a second thread waits for the first to turn native speech off rather than being told support is loaded before that. A Poco::AtomicFlag sets itself when tested, so testing one marked support loaded as soon as the first call began.
-static std::mutex g_sr_mutex;
-static bool g_sr_loaded = false;
-static Poco::AtomicFlag g_sr_available;
-bool screen_reader_load() {
-	std::lock_guard<std::mutex> lock(g_sr_mutex);
-	if (g_sr_loaded) return true;
-	speechSetValue(SP_ENABLE_NATIVE_SPEECH, 0);
-	g_sr_available.set();
-	g_sr_loaded = true;
-	return true;
-}
-void screen_reader_unload() {
-	std::lock_guard<std::mutex> lock(g_sr_mutex);
-	g_sr_loaded = false;
-}
-std::string screen_reader_detect() {
-	if (!screen_reader_load()) return "";
-	int engine = speechGetValue(SP_ENGINE);
-	if (engine < 0) return "";
-	const wchar_t* srname = speechGetString(SP_ENGINE + engine); // Null for an index that names no engine.
-	if (!srname) return "";
-	std::string result;
-	Poco::UnicodeConverter::convert(std::wstring(srname), result);
-	return result;
-}
-bool screen_reader_has_speech() {
-	if (!screen_reader_load()) return false;
-	return speechGetValue(SP_ENGINE) > -1;
-}
-bool screen_reader_has_braille() {
-	if (!screen_reader_load()) return false;
-	return speechGetValue(SP_ENGINE) > -1;
-}
-bool screen_reader_is_speaking() {
-	if (!screen_reader_load()) return false;
-	return speechGetValue(SP_BUSY) != 0;
-}
-bool screen_reader_output(const std::string& text, bool interrupt) {
-	if (!screen_reader_load()) return false;
-	std::wstring textW;
-	Poco::UnicodeConverter::convert(tts_valid_utf8(text), textW); // See tts_valid_utf8: a NUL would end the text.
-	// Both are always tried, so braille still gets the text when speech fails, and the text counts as output when either took it, so a screen reader that speaks it but can't braille it doesn't make the call look failed.
-	bool spoken = speechSay(textW.c_str(), interrupt) != 0;
-	bool brailled = brailleDisplay(textW.c_str()) != 0;
-	return spoken || brailled;
-}
-bool screen_reader_speak(const std::string& text, bool interrupt) {
-	if (!screen_reader_load()) return false;
-	std::wstring textW;
-	Poco::UnicodeConverter::convert(tts_valid_utf8(text), textW); // See tts_valid_utf8: a NUL would end the text.
-	return speechSay(textW.c_str(), interrupt) != 0;
-}
-bool screen_reader_braille(const std::string& text) {
-	if (!screen_reader_load()) return false;
-	std::wstring textW;
-	Poco::UnicodeConverter::convert(tts_valid_utf8(text), textW); // See tts_valid_utf8: a NUL would end the text.
-	return brailleDisplay(textW.c_str()) != 0;
-}
-bool screen_reader_silence() {
-	if (!screen_reader_load()) return false;
-	return speechStop();
-}
 
 // Thanks Quentin Cosendey (Universal Speech) for this jaws keyboard hook code as well as to male-srdiecko and silak for various improvements and fixes that have taken place since initial implementation.
 bool altPressed = false;

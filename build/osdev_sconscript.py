@@ -53,8 +53,7 @@ set_osdev_paths(env)
 # of these they need at link time (-lbass) and at bundle time (nvgt_bundle_shared_library), but nothing declares where the
 # prebuilt library itself comes from, hence this list. It lives on env so that every target stages the same set: the
 # android build installs these per ABI out of droidev/<abi>/lib rather than maintaining its own list.
-env["NVGT_OSDEV_REDIST_LIBS"] = ["archive", "bass", "bass_fx", "bassmix", "git2", "plist-2.0", "phonon"]
-if env["NVGT_TARGET"] == "windows": env["NVGT_OSDEV_REDIST_LIBS"] += ["GPUUtilities", "nvdaControllerClient64", "SAAPI64", "TrueAudioNext", "zdsrapi"]
+env["NVGT_OSDEV_REDIST_LIBS"] = ["archive", "bass", "bass_fx", "bassmix", "git2", "plist-2.0"]
 
 # Copy dynamic libraries to the release/lib directory. Usually these are contained in osdev/bin or osdev/lib, but the entire libpath is searched. Later we may consider doing this only on a successful NVGT build, but this could cause it to happen too infrequently.
 def copy_osdev_libraries(env):

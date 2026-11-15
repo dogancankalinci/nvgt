@@ -38,7 +38,7 @@
 #include <Poco/Timestamp.h>
 #include <sstream>
 #include <Poco/UnbufferedStreamBuf.h>
-#include <Poco/zlib.h>
+#include <zlib.h>
 #include <Poco/Util/Application.h>
 #include <SDL3/SDL.h>
 #include "nvgt_angelscript.h"

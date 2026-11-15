@@ -65,7 +65,7 @@ elif env["NVGT_TARGET"] == "ios":
 	env["ENV"]["SDKROOT"] = subprocess.check_output(["xcrun", "-sdk", "iphoneos", "--show-sdk-path"]).decode().strip()
 	# The deployment target belongs here, before plugin_env is cloned below, so plugin objects and dylibs carry the same
 	# minimum OS as the stubs that load them instead of defaulting to whatever SDK the build machine has.
-	env.Append(CCFLAGS = ["-arch", "arm64", "-xobjective-c++", "-miphoneos-version-min=16.0"], LINKFLAGS = ["-arch", "arm64", "-miphoneos-version-min=16.0"], LIBS=["mysofa", "pffft"])
+	env.Append(CCFLAGS = ["-arch", "arm64", "-xobjective-c++", "-miphoneos-version-min=16.0"], LINKFLAGS = ["-arch", "arm64", "-miphoneos-version-min=16.0"])
 	env["FRAMEWORKPREFIX"] = "-weak_framework"
 elif env["NVGT_TARGET"] == "linux":
 	# enable the gold linker, strip the resulting binaries, and add /usr/local/lib to the libpath because it seems we aren't finding libraries unless we do manually.
@@ -74,7 +74,7 @@ elif env["NVGT_TARGET"] == "linux":
 elif env["NVGT_TARGET"] == "android":
 	SConscript("build/android_sconscript.py", exports = ["env"])
 	env.Append(LIBS = common_libs + ["z", "GLESv1_CM", "GLESv2", "OpenSLES", "log", "android"])
-env.Append(CPPDEFINES = ["POCO_STATIC", "POCO_NO_AUTOMATIC_LIBS", "UNIVERSAL_SPEECH_STATIC", "DEBUG" if ARGUMENTS.get("debug", "0") == "1" else "NDEBUG", "UNICODE"])
+env.Append(CPPDEFINES = ["POCO_STATIC", "POCO_NO_AUTOMATIC_LIBS", "PRISM_STATIC", "DEBUG" if ARGUMENTS.get("debug", "0") == "1" else "NDEBUG", "UNICODE"])
 env.Append(CPPPATH = ["#ASAddon/include", "#dep"], LIBPATH = ["#build/lib"])
 # Output directory for NVGT's own static libs (deps, ASAddon, per-plugin). The android build overrides this per ABI so the
 # plugin static libs from each ABI's SConscript pass don't collide on one hardcoded path.
@@ -371,8 +371,10 @@ if  ARGUMENTS.get("no_plugins", "0") == "0":
 # Android does not use NVGT's own prebuilt static libs (deps/ASAddon) or the shared libpath here — its build loop compiles
 # those sources directly per ABI and replaces LIBS/LIBPATH with a clean per-ABI set. Everyone else links them as usual.
 if env["NVGT_TARGET"] != "android":
-	env.Append(LIBS = ["deps"] + common_libs + ["zs" if env["NVGT_TARGET"] == "windows" else "z", "SDL3", "phonon", "ASAddon"])
-if env["NVGT_TARGET"] == "windows": env.Append(LIBS = ["UniversalSpeechStatic"])
+	env.Append(LIBS = ["deps"] + common_libs + ["zs" if env["NVGT_TARGET"] == "windows" else "z", "SDL3", "phonon", "pffft", "mysofa", "ASAddon"])
+if env["NVGT_TARGET"] in ("windows", "macos", "linux"): env.Append(LIBS = ["prism", "fmt", "simdutf", "hwy_contrib", "hwy"])
+if env["NVGT_TARGET"] == "windows": env.Append(LIBS = ["runtimeobject", "uiautomationcore", "rpcrt4", "powrprof", "xaudio2"])
+elif env["NVGT_TARGET"] == "linux": env.Append(LIBS = ["dbus-1"])
 
 # nvgt itself
 sources = [str(i)[4:] for i in Glob("src/*.cpp")]
@@ -402,15 +404,15 @@ VariantDir("build/obj_src", "src", duplicate = 0)
 env.Append(CPPDEFINES = ["NVGT_BUILDING", "NO_OBFUSCATE"])
 if env["NVGT_TARGET"] == "windows":
 	deb_rel_flags = ["/DEBUG", "/INCREMENTAL:NO"] if ARGUMENTS.get("debug", "0") == "1" else ["/OPT:ICF=3"]
-	env.Append(CPPDEFINES = ["_SILENCE_CXX20_OLD_SHARED_PTR_ATOMIC_SUPPORT_DEPRECATION_WARNING"], LINKFLAGS = ["/ignore:4099", "/delayload:phonon.dll"] + deb_rel_flags)
+	env.Append(CPPDEFINES = ["_SILENCE_CXX20_OLD_SHARED_PTR_ATOMIC_SUPPORT_DEPRECATION_WARNING"], LINKFLAGS = ["/ignore:4099"] + deb_rel_flags)
 elif env["NVGT_TARGET"] in ("macos", "ios"):
 	sources.append("apple.mm")
 	# We must link Apple frameworks here rather than above in the system libraries section to insure that they don't get linked with random plugins.
 	env.Append(FRAMEWORKS = ["AudioToolbox", "AVFoundation", "CoreAudio", "CoreFoundation", "CoreHaptics", "CoreMedia", "CoreVideo", "GameController", "IOKit", "Metal", "QuartzCore", "Security"])
 	if env["NVGT_TARGET"] == "macos":
 		env.Append(CPPDEFINES = ["NVGT_NO_IAP"])
-		env.Append(FRAMEWORKS = ["AppKit", "Carbon", "Cocoa", "ForceFeedback", "UniformTypeIdentifiers"])
-		env.Append(LINKFLAGS = ["-Wl,-rpath,'@loader_path',-rpath,'@loader_path/lib',-rpath,'@loader_path/../Frameworks',-dead_strip_dylibs", "-mmacosx-version-min=14.0"])
+		env.Append(FRAMEWORKS = ["AppKit", "Carbon", "Cocoa", "CoreServices", "ForceFeedback", "UniformTypeIdentifiers"])
+		env.Append(LINKFLAGS = ["-Wl,-rpath,'@loader_path',-rpath,'@loader_path/lib',-rpath,'@loader_path/../Frameworks',-dead_strip_dylibs", "-mmacosx-version-min=14.0", "-fexperimental-library"])
 	else:
 		sources.append("iap_apple.mm")
 		env.Append(FRAMEWORKS = ["CoreBluetooth", "CoreGraphics", "CoreMotion", "Foundation", "OpenGLES", "StoreKit", "UIKit"])
@@ -544,7 +546,7 @@ elif env["NVGT_TARGET"] == "android":
 	# bundler can drop them into the APK next to the plugin that needs them. Stage the same set every other target stages
 	# into release/lib, minus the ones already installed beside each native lib in jni/libs below, minus whatever this dev
 	# package doesn't build for android (there are no archive/plist builds in droidev, for instance).
-	android_redist_libs = [l for l in env["NVGT_OSDEV_REDIST_LIBS"] if l not in ("SDL3", "phonon")]
+	android_redist_libs = [l for l in env["NVGT_OSDEV_REDIST_LIBS"] if l != "SDL3"]
 	# Static plugin embedding, honoring the exact same switches as desktop (user/static_plugins and
 	# static_<plugname>_plugin=1): each requested plugin's per-ABI static lib plus a per-ABI build of the nvgt_plugins.cpp
 	# registration object are linked into every native lib below — libmain.so (runner) and libgame.so (both stubs) — so a
@@ -560,12 +562,13 @@ elif env["NVGT_TARGET"] == "android":
 		# which shared libraries their archives depend on.
 	# NVGT's own code compiled directly into every native lib (the old ndk-build LOCAL_SRC_FILES_COMMON): AngelScript addons,
 	# a selected set of dep/ C/C++ sources, and all of src/. It is NOT linked as prebuilt static libs (those are arm64-only);
-	# only the per-ABI droidev deps + SDL3/phonon + Android system libs are linked below.
+	# only the per-ABI droidev deps + SDL3 + Android system libs are linked below.
 	asaddon_srcs = [str(f).replace(os.path.sep, "/") for f in Glob("ASAddon/src/*.cpp")]
 	dep_srcs = ["dep/" + s for s in ["entities.cpp", "ma_reverb_node.c", "micropather.cpp", "miniaudio_libopus.c", "miniaudio_libvorbis.c", "miniaudio_phonon.c", "miniaudio_wdl_resampler.cpp", "monocypher.c", "resample.cpp", "rng_get_bytes.c", "singleheader.cpp", "sonic.c", "tonar.c", "uncompr.c"]]
-	# Clean per-ABI link set: droidev static deps + SDL3/phonon shared + Android system libs. No NVGT static libs; static
-	# plugins requested via android_static_plugins are prepended per ABI below.
-	android_link_libs = common_libs + ["z", "SDL3", "phonon", "GLESv1_CM", "GLESv2", "OpenSLES", "log", "android", "m"]
+	# Clean per-ABI link set: droidev static deps (Steam Audio's phonon with its pffft and libmysofa among them) + SDL3
+	# shared + Android system libs. No NVGT static libs; static plugins requested via android_static_plugins are prepended
+	# per ABI below.
+	android_link_libs = common_libs + ["z", "SDL3", "phonon", "pffft", "mysofa", "GLESv1_CM", "GLESv2", "OpenSLES", "log", "android", "m"]
 	for abi, (clang_triple, libcxx_dir) in env["ANDROID_ABIS"].items():
 		abi_dev = os.path.join(osdev_base, abi)
 		abi_env = env.Clone()
@@ -612,11 +615,11 @@ elif env["NVGT_TARGET"] == "android":
 			write_static_plugins_source(static_plugins_path + ".cpp", android_static_plugins)
 			shared_objs.append(abi_env.Object(f"build/obj_android/{abi}/nvgt_plugins", static_plugins_path + ".cpp", CPPPATH = abi_env["CPPPATH"] + ["#src"]))
 		# libc++_shared has to be the first shared library libgame and libmain depend on. The dynamic linker binds every
-		# symbol to the first library in that list which defines it, and libphonon.so ships a statically linked copy of
-		# libc++ and libc++abi that it exports. With phonon ahead of libc++_shared, which the compiler driver appends last,
-		# the exception runtime, the std::exception type information and part of std::string were taken from phonon's copy
-		# while the rest came from libc++_shared, and a C++ exception crossing into a script could crash inside phonon's
-		# personality routine. lld resolves shared libraries independently of their position, so moving it changes
+		# symbol to the first library in that list which defines it, so a shared library listed earlier that exports its own
+		# copy of libc++ would supply the exception runtime and the std::exception type information to the whole process.
+		# The prebuilt libphonon.so did exactly that until Steam Audio was linked statically, and a C++ exception crossing
+		# into a script could then crash inside its personality routine; keeping libc++_shared first rules that out for
+		# any shared library added later. lld resolves shared libraries independently of their position, so this changes
 		# nothing but the order recorded in the binary.
 		abi_env.Prepend(LIBS = ["c++_shared"])
 		# The three variants differ only by their defines: runner + regular stub disable IAP, the IAP stub enables it.
@@ -639,7 +642,6 @@ elif env["NVGT_TARGET"] == "android":
 			android_deps.append(lib)
 			android_deps.extend(env.Install(dest, libcxx_path))
 			android_deps.extend(env.Install(dest, os.path.join(abi_dev, "lib/libSDL3.so")))
-			android_deps.extend(env.Install(dest, os.path.join(abi_dev, "lib/libphonon.so")))
 	# `scons android_apk` groups the native libs; gradle packaging (assemble*Release) stays a separate manual/CI step (see d260d85).
 	def run_gradle(target, source, env):
 		import subprocess

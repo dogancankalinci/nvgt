@@ -343,67 +343,6 @@ std::string speechd_engine::get_voice_language(int index) {
 
 void register_native_tts() { tts_engine_register("speechd", []() -> shared_ptr<tts_engine> { return make_shared<speechd_engine>(); }); }
 
-// Speech Dispatcher's one voice, made on first use. Script threads can use it while the program shuts down and lets it go, so each call takes a reference of its own, under the lock, which also keeps two threads speaking for the first time at once from each making a voice; once it has been let go, it isn't made again, as nothing would let the new one go.
-static tts_voice* g_screen_reader_voice = nullptr;
-static bool g_screen_reader_unloaded = false;
-static std::mutex g_screen_reader_mutex;
-class screen_reader_voice {
-	tts_voice *voice;
-public:
-	screen_reader_voice(bool make = true) {
-		std::lock_guard<std::mutex> lock(g_screen_reader_mutex);
-		if (!g_screen_reader_voice && make && !g_screen_reader_unloaded) g_screen_reader_voice = new tts_voice("speechd");
-		voice = g_screen_reader_voice;
-		if (voice) voice->AddRef();
-	}
-	~screen_reader_voice() { if (voice) voice->Release(); }
-	screen_reader_voice(const screen_reader_voice &) = delete;
-	screen_reader_voice &operator=(const screen_reader_voice &) = delete;
-	tts_voice *operator->() const { return voice; }
-	// Speech Dispatcher counts as a screen reader when NVGT could connect to it, which is what its one voice stands for and which is tried once per run, for any speech. Every call answers the same: the voice list is built the first time.
-	bool usable() const { return voice && voice->get_voice_count() > 0; }
-};
-
-bool screen_reader_is_speaking() {
-	screen_reader_voice voice(false);
-	return voice.usable() && voice->get_speaking();
-}
-
-bool screen_reader_load() { return screen_reader_voice().usable(); }
-
-void screen_reader_unload() {
-	tts_voice *voice;
-	{
-		std::lock_guard<std::mutex> lock(g_screen_reader_mutex);
-		voice = g_screen_reader_voice;
-		g_screen_reader_voice = nullptr;
-		g_screen_reader_unloaded = true;
-	}
-	if (voice) voice->Release();
-}
-
-std::string screen_reader_detect() { return screen_reader_voice().usable()? "Speech Dispatcher" : ""; }
-
-bool screen_reader_has_speech() { return screen_reader_voice().usable(); }
-
-bool screen_reader_has_braille() { return false; }
-
-bool screen_reader_speak(const std::string& text, bool interrupt) {
-	screen_reader_voice voice;
-	if (!voice.usable()) return false;
-	if (text.empty()) return !interrupt || voice->stop(); // As on the other platforms, empty text only interrupts.
-	return voice->speak(text, interrupt);
-}
-
-bool screen_reader_output(const std::string& text, bool interrupt) { return screen_reader_speak(text, interrupt); }
-
-bool screen_reader_braille(const std::string& text) { return false; }
-
-bool screen_reader_silence() {
-	screen_reader_voice voice;
-	return voice.usable() && voice->stop();
-}
-
 unsigned long long system_running_milliseconds() {
 	struct timespec ts;
 	if (clock_gettime(CLOCK_BOOTTIME, &ts) != 0) return 0;
