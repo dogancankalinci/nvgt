@@ -5677,6 +5677,8 @@ public:
 			}
 			unique_ptr<pcm_queue> made_queue = make_unique<pcm_queue>(); // Made before the sound loaded goes: a queue MiniAudio refuses, as one too big, closed it before refusing, as no other refusal here does.
 			if ((g_soundsystem_last_error = made_queue->init(format, channels, buffer_size)) != MA_SUCCESS) return false;
+			// A first chunk more than the new queue holds, on an audio thread, where nothing waits for room (see below): refused here, before the sound loaded goes, rather than after it was closed for a queue that then took none of it. A chunk that fits always fits the empty queue.
+			if (audio_engine_impl::on_audio_thread() && ma_pcm_rb_available_write(&made_queue->rb) < size_in_frames) return (g_soundsystem_last_error = MA_TOO_BIG) == MA_SUCCESS;
 			if (snd) close_to_reload();
 			if (!sample_rate) sample_rate = get_engine()->get_sample_rate();
 			// As load_special() makes a sound: not attached by MiniAudio, so without the graph lock, and handed to snd once made. The queue is the sound's only once the sound is made: before, running out of memory making the sound, or the view it reads the queue through, left a queue with no sound to read it, taken by every later stream_pcm() for one running, which then refused or timed out.
