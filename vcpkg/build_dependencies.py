@@ -5,10 +5,14 @@
 # license: zlib
 import os
 import hashlib
+import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 
 # Bump a platform's number whenever a change to this script alters what its package contains or how it is laid out (a
 # new library rename, a different directory structure, another duplicate removed). CI keys each platform's dependency
@@ -27,6 +31,40 @@ def bootstrap_vcpkg():
 		subprocess.check_output(vcpkg_path.parent / "bootstrap-vcpkg.bat")
 	else:
 		subprocess.check_output(vcpkg_path.parent / "bootstrap-vcpkg.sh")
+def prefetch_github_api_downloads():
+	"""Fetches the files that ports download from api.github.com, using the CI's token, before vcpkg asks for them itself.
+	vcpkg sends those requests without credentials, and GitHub answers an address only 60 of them an hour. The hosted
+	runners share their addresses, so the pcre2 port's lookup of its sljit submodule came back 403 and stopped the whole
+	build. A file is written only when it has the exact SHA512 the port expects, which makes vcpkg take it as already
+	downloaded; without a token, or when the port no longer looks like this, vcpkg downloads it as before."""
+	token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+	if not token: return
+	port = vcpkg_path.parent / "ports" / "pcre2"
+	try:
+		version = json.loads((port / "vcpkg.json").read_text(encoding = "utf-8"))["version"]
+		portfile = (port / "portfile.cmake").read_text(encoding = "utf-8")
+	except (OSError, KeyError, ValueError): return
+	expected = re.search(r"set\(sljit_gitlink_hash SHA512 ([0-9a-f]{128})\)", portfile)
+	shape = ['set(pcre2_ref "pcre2-${VERSION}")', 'URLS "https://api.github.com/repos/PCRE2Project/pcre2/contents/deps/sljit?ref=${pcre2_ref}"', 'FILENAME "pcre2-${pcre2_ref}-sljit-gitlink.json"']
+	if not expected or not all(line in portfile for line in shape): return
+	ref = f"pcre2-{version}"
+	target = Path(os.environ.get("VCPKG_DOWNLOADS") or vcpkg_path.parent / "downloads") / f"pcre2-{ref}-sljit-gitlink.json"
+	if target.exists(): return
+	# The API indents its JSON for a curl user agent and compacts it for others, and the port's hash is of what curl, which
+	# vcpkg downloads with, receives.
+	request = urllib.request.Request(f"https://api.github.com/repos/PCRE2Project/pcre2/contents/deps/sljit?ref={ref}", headers = {"Authorization": f"Bearer {token}", "User-Agent": "curl/8"})
+	try:
+		with urllib.request.urlopen(request, timeout = 60) as response: data = response.read()
+	except (urllib.error.URLError, OSError) as e:
+		print(f"note: could not prefetch {target.name} ({e}), leaving it to vcpkg")
+		return
+	if hashlib.sha512(data).hexdigest() != expected.group(1):
+		print(f"note: {target.name} from the GitHub API does not have the hash the pcre2 port expects, leaving it to vcpkg")
+		return
+	target.parent.mkdir(parents = True, exist_ok = True)
+	partial = target.with_name(target.name + ".part")
+	partial.write_bytes(data)
+	partial.replace(target)
 def build(triplet = "", do_archive = False, out_dir = ""):
 	if not triplet:
 		# Try to determine, logic probably could be improved
@@ -39,6 +77,7 @@ def build(triplet = "", do_archive = False, out_dir = ""):
                         triplet = "arm64-linux"
 		else: sys.exit("unable to determine platform, please pass a triplet explicitly.")
 	bootstrap_vcpkg()
+	prefetch_github_api_downloads()
 	try: subprocess.run([vcpkg_path, "install", "--triplet", triplet, "--x-manifest-root", vcpkg_path.parents[1]], check=True)
 	except subprocess.CalledProcessError as cpe: sys.exit(f"Building packages for {triplet} failed with error code {cpe.returncode}.")
 	dev_basename = ""

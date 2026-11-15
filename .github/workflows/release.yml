@@ -95,6 +95,8 @@ jobs:
     - id: build_macos
       name: build macos dependencies
       if: ${{ steps.cache_macos.outputs.cache-hit != 'true' }}
+      env:
+        GITHUB_TOKEN: ${{ github.token }} # build_dependencies.py fetches the port downloads GitHub's API limits by address with it.
       run: python3 vcpkg/build_dependencies.py --archive
     - name: save macos dependencies cache
       if: ${{ steps.cache_macos.outputs.cache-hit != 'true' }}
@@ -112,6 +114,8 @@ jobs:
         key: vcpkg-binaries-mac-${{ steps.depkey.outputs.macos }}-${{ steps.depkey.outputs.ios }}-macos
     - name: build ios dependencies
       if: ${{ steps.cache_ios.outputs.cache-hit != 'true' }}
+      env:
+        GITHUB_TOKEN: ${{ github.token }} # build_dependencies.py fetches the port downloads GitHub's API limits by address with it.
       run: python3 vcpkg/build_dependencies.py arm64-ios --archive
     - name: save ios dependencies cache
       if: ${{ steps.cache_ios.outputs.cache-hit != 'true' }}
@@ -203,6 +207,8 @@ jobs:
       id: cache
     - name: build dependencies
       if: ${{ steps.cache.outputs.cache-hit != 'true' }}
+      env:
+        GITHUB_TOKEN: ${{ github.token }} # build_dependencies.py fetches the port downloads GitHub's API limits by address with it.
       run: |
         sudo apt update
         sudo apt full-upgrade -y
@@ -296,6 +302,8 @@ jobs:
       id: cache
     - name: build dependencies
       if: ${{ steps.cache.outputs.cache-hit != 'true' }}
+      env:
+        GITHUB_TOKEN: ${{ github.token }} # build_dependencies.py fetches the port downloads GitHub's API limits by address with it.
       run: |
         python3 vcpkg/build_dependencies.py --archive arm64-android
         python3 vcpkg/build_dependencies.py --archive armv7-android
@@ -415,6 +423,8 @@ jobs:
       id: cache
     - name: build dependencies
       if: ${{ steps.cache.outputs.cache-hit != 'true' }}
+      env:
+        GITHUB_TOKEN: ${{ github.token }} # build_dependencies.py fetches the port downloads GitHub's API limits by address with it.
       run: python3 vcpkg/build_dependencies.py --archive
     - name: save dependencies cache
       if: ${{ steps.cache.outputs.cache-hit != 'true' }}
