@@ -138,6 +138,7 @@ public:
 	bool autoflush; // If set to true, flush() is called after every write. Useful for pipes and process stdio where buffering would otherwise prevent the data from being delivered.
 	bool skip_eof; // If true, the read function will clear all error bits if the eof bit is set on read, useful for streams rather than finite data areas where new data could come in at any time.
 	bool sync_rw_cursors; // If true (the default) and if this is an iostream, sink the write and read cursor so that they appear as one cursor.
+	bool appending = false; // Opened for appending, as a file opened with "a": every write goes to the stream's end, wherever it was sought to, which a seek the stream takes doesn't tell. Set by the open that made it so, and cleared by every other.
 	// Empty constructor (internal stream is nonexistent/closed).
 	datastream() : r(nullptr), w(nullptr), _istr(nullptr), _ostr(nullptr), ds(nullptr), user(nullptr), close_cb(nullptr), no_close(false), binary(true), autoflush(false), skip_eof(false), sync_rw_cursors(true) {}
 	// Low level constructor (Allows passing separate shared pointers to input and output stream).

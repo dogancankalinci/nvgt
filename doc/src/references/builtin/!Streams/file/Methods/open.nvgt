@@ -9,7 +9,7 @@
 	## Remarks:
 		While on some operating systems (mostly windows) both the slash(`/`), and the backslash(`\`) can be used to specify the filename, it is very strongly recommended to use the / character for greatest cross platform compatibility.
 		The following is a list of valid open modes.
-		* a: append.
+		* a: append. Every write goes to the end of the file, even after a seek.
 		* w: write.
 		* r: read.
 		* r+: read and write.

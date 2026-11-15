@@ -3157,6 +3157,7 @@ class audio_wav_encoder_impl : public audio_encoder_impl, public virtual audio_w
 		std::unique_ptr<std::ostream> file; // A file the encoder writes to, opened by NVGT rather than by MiniAudio, whose file writes, the sizes and padding closing writes included, went unchecked: see open_impl().
 		std::string header; // What the encoder writes while it opens, held until then: see open_impl().
 		bool holding_header = false;
+		bool appending = false; // A datastream opened for appending, whose writes all go to its end wherever it is sought to (see datastream::appending): it takes a seek, and the sizes closing wrote over the header's went after the audio instead, where a reader played them, while the header kept sizes unknown and close() reported success. Taken as a stream that can't seek, whose WAV keeps sizes unknown (see mark_sizes_unknown()).
 		bool header_lost = false; // Out of memory holding the header (see open_impl()).
 		bool failed = false; // A write the stream refused, which close() reports: a seek it refuses is expected of a stream that can't seek (see mark_sizes_unknown()), not a failure.
 		std::streamoff at = 0, end = 0; // Where the encoder writes and how far it wrote, from base.
@@ -3225,7 +3226,7 @@ class audio_wav_encoder_impl : public audio_encoder_impl, public virtual audio_w
 	static ma_result stream_seek(ma_encoder *pEncoder, ma_int64 offset, ma_seek_origin origin) {
 		if (origin != ma_seek_origin_start) return MA_NOT_IMPLEMENTED;
 		stream_output *out = static_cast<stream_output *>(pEncoder->pUserData);
-		if (out->holding_header) return MA_ERROR;
+		if (out->holding_header || out->appending) return MA_ERROR;
 		std::unique_lock<std::recursive_mutex> held_open;
 		std::ostream *stream = out->file.get();
 		if (!stream) {
@@ -3273,6 +3274,7 @@ protected:
 		if (output.file || ds && ds->can_write()) {
 			if (!output.file) {
 				output.ds = ds;
+				output.appending = ds->appending;
 				std::streampos start;
 				try {
 					start = ds->get_ostr()->tellp(); // As seekp() can, see seek_output(): the stream couldn't write out what the script wrote to it.

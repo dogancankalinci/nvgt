@@ -260,6 +260,7 @@ bool datastream::open(std::istream* istr, std::ostream* ostr, const std::string&
 		return false; // This stream cannot be reopened.
 	// Each stream opened on another goes through it by recursion, and is let go of the same way: 10000 streams opened one on the other overflowed the native stack when the last handle went, which ends the program with no exception to catch. See can_open_on().
 	if (obj && !can_open_on(obj)) return false;
+	appending = false; // See file_stream_open(), which sets it once open.
 	if (r || w)
 		close();
 	if (!istr && !ostr)
@@ -944,7 +945,9 @@ bool file_stream_open(datastream* ds, const std::string& path, const std::string
 	check_stream_encoding(encoding); // See stream_encoding_known(); before a file opened for writing is emptied.
 	try {
 		std::iostream* iostr = new FileStream(path, m);
-		return ds->open((m & std::ios::in) != 0 ? iostr : nullptr, (m & std::ios::out) != 0 ? iostr : nullptr, p_streamargs, nullptr);
+		if (!ds->open((m & std::ios::in) != 0 ? iostr : nullptr, (m & std::ios::out) != 0 ? iostr : nullptr, p_streamargs, nullptr)) return false;
+		ds->appending = (m & std::ios::app) != 0;
+		return true;
 	} catch (FileException& e) {
 		return false; // Todo: get_last_error or similar.
 	}
