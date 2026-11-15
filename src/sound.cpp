@@ -798,7 +798,7 @@ public:
 	bool set_time(unsigned long long local_time) override { return engine->set_time_in_frames(local_time); }
 };
 // Miniaudio objects must be allocated on the heap as nvgt's API introduces the concept of an uninitialized sound, which a stack based system would make more difficult to implement.
-// What MiniAudio's resource managers couldn't allocate, counted on whatever thread did: MiniAudio reports a full job queue as MA_OUT_OF_MEMORY too, which needs no allocation, so a load refused with it while no allocation failed is the queue's backlog, which load_source() waits out and tries again. Refused while one did, as for a decoded buffer too large for memory, it was tried ten times over, each time opening and decoding the file again.
+// What MiniAudio's resource managers and engines couldn't allocate, counted on whatever thread did, a sound's own node and processing cache going through its engine's: MiniAudio reports a full job queue as MA_OUT_OF_MEMORY too, which needs no allocation, so a load refused with it while no allocation failed is the queue's backlog, which load_source() waits out and tries again. Refused while one did, as for a decoded buffer too large for memory, it was tried ten times over, each time opening and decoding the file again.
 static std::atomic<unsigned int> g_resource_allocations_failed{0};
 static void* resource_malloc(size_t size, void*) {
 	void* p = ma_malloc(size, nullptr);
@@ -948,6 +948,7 @@ public:
 		cfg.monoExpansionMode = ma_mono_expansion_mode_stereo_only; // A mono sound that isn't spatialized plays from the front pair, as on a stereo engine, rather than from every channel, its LFE included, at full level each.
 		cfg.pContext = &g_sound_context;
 		cfg.pResourceManager = &*resource_manager;
+		cfg.allocationCallbacks = {nullptr, resource_malloc, resource_realloc, resource_free}; // Counted, as the resource manager's (see g_resource_allocations_failed): a load whose sound couldn't be allocated read as the job queue's backlog, tried ten times, its file decoded again each time.
 		cfg.noAutoStart = (flags & NO_AUTO_START) ? MA_TRUE : MA_FALSE;
 		cfg.periodSizeInFrames = SOUNDSYSTEM_FRAMESIZE; // Steam Audio requires fixed sized updates. We can make this not be a magic constant if anyone has some reason for wanting to change it.
 		if ((flags & NO_DEVICE) == 0) cfg.pDevice = &*device;
