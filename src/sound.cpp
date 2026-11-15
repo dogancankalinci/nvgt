@@ -4511,18 +4511,22 @@ public:
 		}
 		shape_handle = CScriptHandle();
 		if (old_shape) old_shape->release();
-		if (!new_shape.GetRef()) { // A null shape clears it, which is done, back at the position the script set.
+		// Without a shape, back at the position the script set.
+		auto unshaped = [&]() {
 			track_shape(false);
 			if (snd && get_spatialization_enabled()) set_position_3d(position.x, position.y, position.z);
 			else if (snd) { // Back at the script's position without spatializing it, rather than left at the shape's point, which the position read and the sound played from once spatialized.
 				unique_lock<mutex> lock(spatialization_params_mutex);
 				ma_sound_set_position(&*snd, position.x, position.y, position.z);
 			}
+		};
+		if (!new_shape.GetRef()) { // A null shape clears it, which is done.
+			unshaped();
 			return (g_soundsystem_last_error = MA_SUCCESS) == MA_SUCCESS; // As a call that succeeded reads, rather than an earlier refusal.
 		}
 		sound_shape* new_shape_obj = g_sound_shape_setup_callbacks[ot](this, &new_shape);
-		if (!new_shape_obj) {
-			track_shape(false);
+		if (!new_shape_obj) { // The old shape already let go of, as for a null one: left at its point, the sound played from where no shape was any more.
+			unshaped();
 			return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS;
 		}
 		new_shape_obj->set_position(position);
