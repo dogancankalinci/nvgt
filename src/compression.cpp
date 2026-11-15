@@ -20,7 +20,7 @@
 #include <Poco/InflatingStream.h>
 #include <Poco/DeflatingStream.h>
 #include <Poco/Exception.h>
-#include <Poco/zlib.h> // as nvgt_angelscript.cpp
+#include <zlib.h> // as nvgt_angelscript.cpp
 #include "compression.h"
 #include <istream>
 #include <ostream>
