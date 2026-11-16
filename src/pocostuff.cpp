@@ -922,10 +922,10 @@ void RegisterPocostuff(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("var", "bool get_is_boolean() const property", asMETHOD(Dynamic::Var, isBoolean), asCALL_THISCALL, 0, asOFFSET(poco_shared<Dynamic::Var>, ptr), true);
 	engine->RegisterObjectMethod("var", "bool get_is_string() const property", asMETHOD(Dynamic::Var, isString), asCALL_THISCALL, 0, asOFFSET(poco_shared<Dynamic::Var>, ptr), true);
 	engine->RegisterObjectBehaviour("var", asBEHAVE_FACTORY, "var @v(const json_object&in value)", asFUNCTION(poco_var_factory_value_shared<JSON::Object>), asCALL_CDECL);
-	engine->RegisterObjectMethod("var", "var& opAssign(const json_object&in value) const", asFUNCTION(poco_var_assign_shared<JSON::Object>), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("var", "var& opAssign(const json_object&in value)", asFUNCTION(poco_var_assign_shared<JSON::Object>), asCALL_CDECL_OBJFIRST); // Not const: it changes the var, and declared const it let a const var@ be assigned to.
 	engine->RegisterObjectMethod("var", "json_object@ opImplCast() const", asFUNCTION(poco_var_extract_shared<JSON::Object>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectBehaviour("var", asBEHAVE_FACTORY, "var @v(const json_array&in value)", asFUNCTION(poco_var_factory_value_shared<JSON::Array>), asCALL_CDECL);
-	engine->RegisterObjectMethod("var", "var& opAssign(const json_array&in value) const", asFUNCTION(poco_var_assign_shared<JSON::Array>), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("var", "var& opAssign(const json_array&in value)", asFUNCTION(poco_var_assign_shared<JSON::Array>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("var", "json_array@ opImplCast() const", asFUNCTION(poco_var_extract_shared<JSON::Array>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectBehaviour("json_object", asBEHAVE_FACTORY, "json_object @o()", asFUNCTION(poco_json_object_factory), asCALL_CDECL);
 	engine->RegisterObjectBehaviour("json_object", asBEHAVE_FACTORY, "json_object @o(json_object@+ other)", asFUNCTION(poco_json_object_copy_factory), asCALL_CDECL);
