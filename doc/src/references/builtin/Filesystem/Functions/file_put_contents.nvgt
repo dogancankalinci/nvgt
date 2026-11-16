@@ -7,6 +7,8 @@
 		* bool append = false: specifies whether the current contents of the file should be overwritten when writing.
 	## Returns:
 		bool: true on success, false on failure.
+	## Remarks:
+		On Android, a relative name is written in the app's internal storage (DIRECTORY_APPDATA), not in the current working directory as the other filesystem functions take it (the root of the device's filesystem there, which an app can't write to). file_get_contents finds the file again by the same name, but file_exists, a file object and the other filesystem functions don't; build the full path from DIRECTORY_APPDATA when a file is used with them too.
 */
 
 // Example:
