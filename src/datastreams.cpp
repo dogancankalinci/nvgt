@@ -525,16 +525,33 @@ std::string datastream::read_line() {
 	if (!result.empty() && result.back() == '\r') result.pop_back();
 	return result;
 }
+// Poco's read7BitEncoded() shifts each byte's 7 bits left by 7 more than the byte before, for as long as bytes have their top bit set: from
+// the 11th byte of a 64-bit value (the 6th of a 32-bit one) the shift is past the type's width, which C++ leaves undefined (x86 takes it
+// modulo the width, so those bits came back into the low ones), and a run of such bytes was read up to the end of the stream. This reads
+// what Poco reads for every value a writer of T writes, and at most the bytes T takes (10 or 5): more than that is no value of T, and the
+// stream is failed there.
+template <class T> static void read_7bit_encoded_value(BinaryReader& reader, T& value) {
+	constexpr int most_bytes = int((sizeof(T) * 8 + 6) / 7);
+	std::istream& in = reader.stream();
+	value = 0;
+	for (int i = 0; i < most_bytes; i++) {
+		char c = 0;
+		in.read(&c, 1);
+		value |= T((unsigned char)c & 0x7F) << (7 * i);
+		if (!((unsigned char)c & 0x80)) return;
+	}
+	in.setstate(std::ios::failbit);
+}
 UInt64 datastream::read_7bit_encoded() {
 	if (!_istr) return 0;
 	UInt64 integer;
-	r->read7BitEncoded(integer);
+	read_7bit_encoded_value(*r, integer);
 	return integer;
 }
 void datastream::read_7bit_encoded(UInt64& integer) {
 	integer = 0; // An &out parameter, see read(T&).
 	if (_istr)
-		r->read7BitEncoded(integer);
+		read_7bit_encoded_value(*r, integer);
 }
 void datastream::write_7bit_encoded(UInt64 integer) {
 	if (_ostr)
@@ -581,7 +598,7 @@ unsigned int datastream::write(const std::string& data) {
 // stream's encoding as Poco converts them.
 void datastream::read_binary_string(std::string& value) {
 	UInt32 size = 0;
-	r->read7BitEncoded(size);
+	read_7bit_encoded_value(*r, size); // see there
 	value.clear();
 	if (!_istr->good()) return;
 	while (value.size() < size) {
