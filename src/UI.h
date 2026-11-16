@@ -184,8 +184,14 @@ class system_tray_menu_item;
 class system_tray_menu;
 class system_tray;
 
+// SDL's tray functions are for the thread that made the tray (SDL makes one on its main thread only): on Windows that thread's messages run
+// the menus, walking the entries that SDL_InsertTrayEntryAt() reallocates and SDL_RemoveTrayEntry() frees, and on macOS and Linux the
+// toolkit isn't thread-safe. So on any other thread a tray, its menus and their items act as invalid ones, as a window does on a thread
+// other than its own (see game_window::on_thread()); the wrappers' own state, the garbage collector's behaviours and the last release
+// work on any thread.
 class system_tray_menu_item {
 	SDL_TrayEntry* _entry;
+	thread_id_t _thread; // the tray's, see above
 	Poco::AutoPtr<system_tray_menu> _submenu; // lazily created when get_submenu() is first called on a SYSTEM_TRAY_SUBMENU item
 	asIScriptFunction* _callback;
 	system_tray_menu_item_type _type;
@@ -195,6 +201,7 @@ class system_tray_menu_item {
 public:
 	system_tray_menu_item(SDL_TrayEntry* entry, system_tray_menu_item_type type);
 	~system_tray_menu_item(); // defined in .cpp so that system_tray_menu is complete there
+	bool on_thread() const { return _thread == thread_current_thread_id(); }
 	void duplicate() { _gc_flag = false; asAtomicInc(_refcount); }
 	void release(); // see get_weakref_flag()
 	// The garbage collector's behaviours (see system_tray_gc_mutex() in UI.cpp): a tray holds its menu, a menu its items, an item its callback (often a delegate of the object that holds the tray) and its submenu, a cycle the collector couldn't see while these weren't its types, so such an object was never freed (its destructor never ran, its tray stayed in the notification area) once the script let go of it.
@@ -205,17 +212,17 @@ public:
 	void release_all_references(asIScriptEngine* engine);
 	// The entry registry (system_tray_items() in UI.cpp) is a weak link to the item, which a click turns strong. The collector marks this flag dead once it has found the item to be garbage, before it breaks the cycle one object at a time: a click meanwhile ran the item's callback on objects the collector was emptying. Made when first asked for, under system_tray_gc_mutex().
 	asILockableSharedBool* get_weakref_flag();
-	SDL_TrayEntry* get_sdl_entry() const { return _entry; }
-	bool is_valid() const { return _entry != nullptr; }
+	SDL_TrayEntry* get_sdl_entry() const { return on_thread() ? _entry : nullptr; }
+	bool is_valid() const { return get_sdl_entry() != nullptr; }
 	void invalidate(); // called by system_tray_menu::remove_entry and system_tray_menu::invalidate
 	system_tray_menu_item_type get_type() const { return _type; }
-	void set_label(const std::string& label) { if (_entry) SDL_SetTrayEntryLabel(_entry, label.c_str()); }
-	std::string get_label() const { return _entry ? from_cstr(SDL_GetTrayEntryLabel(_entry)) : ""; }
-	void set_checked(bool checked) { if (_entry) SDL_SetTrayEntryChecked(_entry, checked); }
-	bool get_checked() const { return _entry && SDL_GetTrayEntryChecked(_entry); }
-	void set_enabled(bool enabled) { if (_entry) SDL_SetTrayEntryEnabled(_entry, enabled); }
-	bool get_enabled() const { return _entry && SDL_GetTrayEntryEnabled(_entry); }
-	void click() { if (_entry) SDL_ClickTrayEntry(_entry); }
+	void set_label(const std::string& label) { if (SDL_TrayEntry* entry = get_sdl_entry()) SDL_SetTrayEntryLabel(entry, label.c_str()); }
+	std::string get_label() const { SDL_TrayEntry* entry = get_sdl_entry(); return entry ? from_cstr(SDL_GetTrayEntryLabel(entry)) : ""; }
+	void set_checked(bool checked) { if (SDL_TrayEntry* entry = get_sdl_entry()) SDL_SetTrayEntryChecked(entry, checked); }
+	bool get_checked() const { SDL_TrayEntry* entry = get_sdl_entry(); return entry && SDL_GetTrayEntryChecked(entry); }
+	void set_enabled(bool enabled) { if (SDL_TrayEntry* entry = get_sdl_entry()) SDL_SetTrayEntryEnabled(entry, enabled); }
+	bool get_enabled() const { SDL_TrayEntry* entry = get_sdl_entry(); return entry && SDL_GetTrayEntryEnabled(entry); }
+	void click() { if (SDL_TrayEntry* entry = get_sdl_entry()) SDL_ClickTrayEntry(entry); }
 	void set_callback(asIScriptFunction* func);
 	void invoke_callback();
 	system_tray_menu* get_submenu(); // returns nullptr unless type is SYSTEM_TRAY_SUBMENU
@@ -223,12 +230,14 @@ public:
 
 class system_tray_menu {
 	SDL_TrayMenu* _menu;
+	thread_id_t _thread; // the tray's, see system_tray_menu_item
 	std::vector<Poco::AutoPtr<system_tray_menu_item>> _items;
 	mutable int _refcount;
 	bool _gc_flag = false;
 	system_tray_menu_item* make_entry(int pos, const char* label, SDL_TrayEntryFlags flags, system_tray_menu_item_type type);
 public:
 	system_tray_menu(SDL_TrayMenu* menu);
+	bool on_thread() const { return _thread == thread_current_thread_id(); }
 	void duplicate() { _gc_flag = false; asAtomicInc(_refcount); }
 	void release() { _gc_flag = false; if (asAtomicDec(_refcount) < 1) delete this; }
 	int get_ref_count() { return _refcount; } // the garbage collector's behaviours, see system_tray_menu_item
@@ -236,7 +245,7 @@ public:
 	bool get_gc_flag() { return _gc_flag; }
 	void enum_references(asIScriptEngine* engine);
 	void release_all_references(asIScriptEngine* engine);
-	SDL_TrayMenu* get_sdl_menu() const { return _menu; }
+	SDL_TrayMenu* get_sdl_menu() const { return on_thread() ? _menu : nullptr; }
 	system_tray_menu_item* insert_item(const std::string& label, asIScriptFunction* callback = nullptr, bool disabled = false, int pos = -1);
 	system_tray_menu_item* insert_checkbox(const std::string& label, bool checked = false, asIScriptFunction* callback = nullptr, bool disabled = false, int pos = -1);
 	system_tray_menu_item* insert_submenu(const std::string& label, bool disabled = false, int pos = -1);
@@ -250,6 +259,7 @@ public:
 
 class system_tray {
 	SDL_Tray* _tray;
+	thread_id_t _thread; // the thread that made it, see system_tray_menu_item
 	Poco::AutoPtr<system_tray_menu> _menu; // lazily created when get_menu() is first called
 	mutable int _refcount;
 	bool _gc_flag = false;
@@ -257,6 +267,7 @@ class system_tray {
 public:
 	system_tray(const std::string& tooltip, graphic* icon);
 	~system_tray();
+	bool on_thread() const { return _thread == thread_current_thread_id(); }
 	void duplicate() { _gc_flag = false; asAtomicInc(_refcount); }
 	void release() { _gc_flag = false; if (asAtomicDec(_refcount) < 1) delete this; }
 	int get_ref_count() { return _refcount; } // the garbage collector's behaviours, see system_tray_menu_item
@@ -264,10 +275,10 @@ public:
 	bool get_gc_flag() { return _gc_flag; }
 	void enum_references(asIScriptEngine* engine);
 	void release_all_references(asIScriptEngine* engine);
-	bool is_valid() const { return _tray != nullptr; }
+	bool is_valid() const { return _tray && on_thread(); }
 	SDL_Tray* detach_sdl(); // see system_tray_quit()
-	void set_icon(graphic* icon) { if (_tray) SDL_SetTrayIcon(_tray, icon ? icon->get_surface() : nullptr); }
-	void set_tooltip(const std::string& tooltip) { if (_tray) SDL_SetTrayTooltip(_tray, tooltip.empty() ? nullptr : tooltip.c_str()); }
+	void set_icon(graphic* icon) { if (is_valid()) SDL_SetTrayIcon(_tray, icon ? icon->get_surface() : nullptr); }
+	void set_tooltip(const std::string& tooltip) { if (is_valid()) SDL_SetTrayTooltip(_tray, tooltip.empty() ? nullptr : tooltip.c_str()); }
 	system_tray_menu* get_menu();
 };
 

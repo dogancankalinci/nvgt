@@ -1169,7 +1169,7 @@ static void SDLCALL tray_entry_sdl_callback(void* userdata, SDL_TrayEntry* entry
 	item->invoke_callback();
 	item->release();
 }
-system_tray_menu_item::system_tray_menu_item(SDL_TrayEntry* entry, system_tray_menu_item_type type) : _entry(entry), _callback(nullptr), _type(type), _refcount(1) {
+system_tray_menu_item::system_tray_menu_item(SDL_TrayEntry* entry, system_tray_menu_item_type type) : _entry(entry), _thread(thread_current_thread_id()), _callback(nullptr), _type(type), _refcount(1) {
 	std::lock_guard<std::recursive_mutex> lock(system_tray_gc_mutex());
 	if (_entry) system_tray_items()[_entry] = this;
 }
@@ -1244,6 +1244,7 @@ void system_tray_menu::invalidate() {
 	_menu = nullptr;
 }
 void system_tray_menu_item::set_callback(asIScriptFunction* func) {
+	if (!on_thread()) return; // see the class
 	if (func) func->AddRef();
 	asIScriptFunction* previous;
 	{
@@ -1283,7 +1284,7 @@ void system_tray_menu_item::invoke_callback() {
 	else pop_nested_state(ctx);
 }
 system_tray_menu* system_tray_menu_item::get_submenu() {
-	if (_type != SYSTEM_TRAY_SUBMENU) return nullptr;
+	if (_type != SYSTEM_TRAY_SUBMENU || !on_thread()) return nullptr;
 	if (_submenu) return _submenu.get();
 	if (!_entry) return nullptr;
 	SDL_TrayMenu* menu = SDL_GetTraySubmenu(_entry);
@@ -1297,8 +1298,9 @@ system_tray_menu* system_tray_menu_item::get_submenu() {
 }
 
 // system_tray_menu implementation
-system_tray_menu::system_tray_menu(SDL_TrayMenu* menu) : _menu(menu), _refcount(1) {}
+system_tray_menu::system_tray_menu(SDL_TrayMenu* menu) : _menu(menu), _thread(thread_current_thread_id()), _refcount(1) {}
 system_tray_menu_item* system_tray_menu::make_entry(int pos, const char* label, SDL_TrayEntryFlags flags, system_tray_menu_item_type type) {
+	if (!on_thread()) return nullptr; // see system_tray_menu_item
 	SDL_TrayEntry* entry = SDL_InsertTrayEntryAt(_menu, pos, label, flags);
 	if (!entry) return nullptr;
 	system_tray_menu_item* item = new system_tray_menu_item(entry, type);
@@ -1344,7 +1346,7 @@ system_tray_menu_item* system_tray_menu::find_item(SDL_TrayEntry* entry) {
 	return nullptr;
 }
 void system_tray_menu::remove_entry(system_tray_menu_item* item) {
-	if (!item) return;
+	if (!item || !on_thread()) return; // see system_tray_menu_item
 	SDL_TrayEntry* entry = item->get_sdl_entry();
 	item->invalidate(); // With its submenu, which SDL frees with the entry.
 	SDL_RemoveTrayEntry(entry);
@@ -1356,7 +1358,7 @@ void system_tray_menu::remove_entry(system_tray_menu_item* item) {
 }
 int system_tray_menu::get_entry_count() const {
 	int count = 0;
-	SDL_GetTrayEntries(_menu, &count);
+	if (SDL_TrayMenu* menu = get_sdl_menu()) SDL_GetTrayEntries(menu, &count);
 	return count;
 }
 CScriptArray* system_tray_menu::get_entries() {
@@ -1380,7 +1382,7 @@ static std::unordered_set<system_tray*>& system_tray_live() {
 	static auto* trays = new std::unordered_set<system_tray*>;
 	return *trays;
 }
-system_tray::system_tray(const std::string& tooltip, graphic* icon) : _tray(nullptr), _refcount(1) {
+system_tray::system_tray(const std::string& tooltip, graphic* icon) : _tray(nullptr), _thread(thread_current_thread_id()), _refcount(1) {
 	_tray = SDL_CreateTray(icon ? icon->get_surface() : nullptr, tooltip.empty() ? nullptr : tooltip.c_str());
 	std::lock_guard<std::recursive_mutex> lock(system_tray_gc_mutex());
 	if (_tray) system_tray_live().insert(this);
@@ -1423,6 +1425,7 @@ void system_tray::enum_references(asIScriptEngine* engine) {
 }
 void system_tray::release_all_references(asIScriptEngine* engine) { teardown(); } // a tray that is garbage goes now, menus first
 system_tray_menu* system_tray::get_menu() {
+	if (!on_thread()) return nullptr; // see system_tray_menu_item
 	if (_menu) return _menu.get();
 	if (!_tray) return nullptr;
 	SDL_TrayMenu* menu = SDL_GetTrayMenu(_tray);
