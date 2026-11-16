@@ -109,6 +109,8 @@ unsigned int crc32(const std::string& data) {
 	c.update(data);
 	return c.checksum();
 }
+// An empty string gives 0, as it always has in NVGT, although the Adler-32 algorithm itself starts at, and gives, 1 for no data: checksums
+// stored from earlier versions stay valid. See adler32.md in the documentation.
 unsigned int adler32(const std::string& data) {
 	if (data == "")
 		return 0;
