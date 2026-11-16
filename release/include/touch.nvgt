@@ -55,8 +55,11 @@ void _touch_manager_unregister(touch_gesture_manager@ mgr) {
 bool _touch_evt_down(uint64 device, const touch_finger&inout finger) {
 	if (@_g_active_touch_managers == null) return true;
 	uint64 now = ticks();
-	for(int i = int(_g_active_touch_managers.length()) - 1; i >= 0; i--) {
-		touch_gesture_manager@ m = _g_active_touch_managers[i].get();
+	// The managers as they are now: a handler a manager runs (a tap opening another screen) can make or let go of managers, and the list
+	// shrank under the loop, which then read past its end ("Index out of bounds" out of the event) or gave the event to a manager twice.
+	array<weakref<touch_gesture_manager>> managers = _g_active_touch_managers;
+	for(int i = int(managers.length()) - 1; i >= 0; i--) {
+		touch_gesture_manager@ m = managers[i].get();
 		if (@m == null) continue;
 		if (now - m.last_monitor_call_time < 250) {
 			m.internal_on_down(finger);
@@ -68,8 +71,9 @@ bool _touch_evt_down(uint64 device, const touch_finger&inout finger) {
 bool _touch_evt_up(uint64 device, const touch_finger&inout finger) {
 	if (@_g_active_touch_managers == null) return true;
 	uint64 now = ticks();
-	for(int i = int(_g_active_touch_managers.length()) - 1; i >= 0; i--) {
-		touch_gesture_manager@ m = _g_active_touch_managers[i].get();
+	array<weakref<touch_gesture_manager>> managers = _g_active_touch_managers; // see _touch_evt_down()
+	for(int i = int(managers.length()) - 1; i >= 0; i--) {
+		touch_gesture_manager@ m = managers[i].get();
 		if (@m == null) continue;
 		if (now - m.last_monitor_call_time < 250 || m.current_finger_count > 0) {
 			m.internal_on_up(finger);
@@ -81,8 +85,9 @@ bool _touch_evt_up(uint64 device, const touch_finger&inout finger) {
 bool _touch_evt_move(uint64 device, const touch_finger&inout finger, float dx, float dy) {
 	if (@_g_active_touch_managers == null) return true;
 	uint64 now = ticks();
-	for(int i = int(_g_active_touch_managers.length()) - 1; i >= 0; i--) {
-		touch_gesture_manager@ m = _g_active_touch_managers[i].get();
+	array<weakref<touch_gesture_manager>> managers = _g_active_touch_managers; // see _touch_evt_down()
+	for(int i = int(managers.length()) - 1; i >= 0; i--) {
+		touch_gesture_manager@ m = managers[i].get();
 		if (@m == null) continue;
 		if (now - m.last_monitor_call_time < 250) {
 			m.internal_on_move(finger, dx, dy);
@@ -93,8 +98,9 @@ bool _touch_evt_move(uint64 device, const touch_finger&inout finger, float dx, f
 
 bool _touch_evt_cancel(uint64 device, const touch_finger&inout finger) {
 	if (@_g_active_touch_managers == null) return true;
-	for(int i = int(_g_active_touch_managers.length()) - 1; i >= 0; i--) {
-		touch_gesture_manager@ m = _g_active_touch_managers[i].get();
+	array<weakref<touch_gesture_manager>> managers = _g_active_touch_managers; // see _touch_evt_down()
+	for(int i = int(managers.length()) - 1; i >= 0; i--) {
+		touch_gesture_manager@ m = managers[i].get();
 		if (@m != null) m.internal_on_cancel(finger);
 	}
 	return true;
