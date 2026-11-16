@@ -5406,6 +5406,11 @@ public:
 	bool load_special(const std::string &filename, const size_t protocol_slot = 0, directive_t protocol_directive = nullptr, const size_t filter_slot = 0, directive_t filter_directive = nullptr, ma_uint32 ma_flags = MA_SOUND_FLAG_DECODE) override {
 		return load_source(filename, protocol_slot, protocol_directive, filter_slot, filter_directive, ma_flags, false);
 	}
+	// Marks a load that closed what the sound had and left it with nothing, as one that failed, complete: nothing is left to decode, as a load of a missing file always read, and a script waiting on it rather than on the call's result goes on.
+	struct complete_if_failed {
+		sound_impl* s;
+		~complete_if_failed() { if (!s->snd) s->load_completed.test_and_set(); }
+	};
 	// whole_in_pages is set for a stream loaded again as a buffer because it fitted in its two pages (see below), whose rate isn't checked again: the buffer takes no more than the pages it filled, and the stream itself wasn't refused. Its length is, as a short file's header can claim any. Its buffer is shared with no other sound, so the file is read as it is now, as a stream reads it, rather than taken as another sound loaded it before it changed.
 	bool load_source(const std::string &filename, const size_t protocol_slot, directive_t protocol_directive, const size_t filter_slot, directive_t filter_directive, ma_uint32 ma_flags, bool whole_in_pages) {
 		// Not a load that waits for its whole decode, as load_memory()'s, on an audio thread, as in a processing callback, which held the device's audio up for as long as the sound took to decode: refused before the sound loaded goes, as engines and microphones are refused there. A short stream loaded again whole (whole_in_pages) waits only for its few frames.
@@ -5417,11 +5422,7 @@ public:
 			close_to_reload();
 		// This load's, rather than what an earlier one left: a failed load, whose done notification MiniAudio signals at once, left it set, so that the next asynchronous load read complete at once while it still decoded, its length read short.
 		load_completed.clear();
-		// A load that fails reads complete, as nothing is left to decode, as one of a missing file always did: a script waiting on it rather than on this result goes on.
-		struct complete_if_failed {
-			sound_impl* s;
-			~complete_if_failed() { if (!s->snd) s->load_completed.test_and_set(); }
-		} failed{this};
+		complete_if_failed failed{this};
 		// Made here and handed to snd only once it loaded, under the lock the audio thread reads snd under, so the audio thread never reads a sound half made or freed after a failed load.
 		held_sound_ptr made(new held_sound());
 		// The sound service converts our file name into a "tripplet" which includes information about the origin an asset is expected to come from. This guarantees that we don't mistake assets from different origins as the same just because they have the same name.
@@ -5632,6 +5633,7 @@ public:
 	bool load_string_async(const std::string &data) override {
 		// Same as load_pcm, but without the setup. A loaded sound is closed first, since closing empties pcm_buffer, which the directive points into.
 		if (snd) close_to_reload();
+		complete_if_failed failed{this}; // As in load_source(), should building the load throw.
 		pcm_buffer = data;
 		if (load_special(":quickstring", g_memory_protocol_slot, memory_protocol::directive(&pcm_buffer[0], pcm_buffer.size()), sound_service::null_filter_slot, nullptr, MA_SOUND_FLAG_DECODE | MA_SOUND_FLAG_ASYNC)) return true;
 		std::string().swap(pcm_buffer); // Not kept for a load that failed, until the sound loaded again or went.
@@ -5645,6 +5647,7 @@ public:
 		if (!pcm_fits_in_wav(size, format, channels)) return false; // Refused before the sound loaded goes, as for any other refusal here.
 		if (snd)
 			close_to_reload();
+		complete_if_failed failed{this}; // As in load_source(), should writing the WAV it loads throw.
 		pcm_buffer.clear();
 		// At least for now, the strat here is just to write the PCM to wav and then load it the normal way.
 		// Should optimization become necessary (this does result in a couple of copies), a protocol could be written that simulates its input having a RIFF header on it.
@@ -5697,6 +5700,7 @@ public:
 			// A first chunk more than the new queue holds, on an audio thread, where nothing waits for room (see below): refused here, before the sound loaded goes, rather than after it was closed for a queue that then took none of it. A chunk that fits always fits the empty queue.
 			if (audio_engine_impl::on_audio_thread() && ma_pcm_rb_available_write(&made_queue->rb) < size_in_frames) return (g_soundsystem_last_error = MA_TOO_BIG) == MA_SUCCESS;
 			if (snd) close_to_reload();
+			complete_if_failed failed{this}; // As in load_source(): a queue whose sound couldn't be made, as on running out of memory.
 			if (!sample_rate) sample_rate = get_engine()->get_sample_rate();
 			// As load_special() makes a sound: not attached by MiniAudio, so without the graph lock, and handed to snd once made. The queue is the sound's only once the sound is made: before, running out of memory making the sound, or the view it reads the queue through, left a queue with no sound to read it, taken by every later stream_pcm() for one running, which then refused or timed out.
 			held_sound_ptr made(new held_sound());
@@ -5802,6 +5806,7 @@ public:
 		bool looping_read = false;
 		try {
 		if (snd) close_to_reload();
+		complete_if_failed failed{this}; // As in load_source().
 		audio_data_source_impl::prepare_length_of(ds); // Before the sound reads it.
 		looped = ma_data_source_is_looping(ds->get_ma_data_source()); // Before chain_source() sets it aside.
 		looping_read = true;
