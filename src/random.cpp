@@ -150,8 +150,8 @@ void RegisterScriptRandom(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod(_O("random_interface"), _O("uint next()"), asMETHOD(random_interface, next), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("random_interface"), _O("float nextf()"), asMETHOD(random_interface, nextf), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("random_interface"), _O("int range(int min, int max)"), asMETHOD(random_interface, range), asCALL_THISCALL);
-	engine->RegisterObjectMethod(_O("random_interface"), _O("void seed(uint s)"), asMETHOD(random_interface, seed), asCALL_THISCALL);
-	engine->RegisterObjectMethod(_O("random_interface"), _O("void seed64(uint64 s)"), asMETHOD(random_interface, seed64), asCALL_THISCALL);
+	engine->RegisterObjectMethod(_O("random_interface"), _O("void seed(uint s = random_seed())"), asMETHOD(random_interface, seed), asCALL_THISCALL);
+	engine->RegisterObjectMethod(_O("random_interface"), _O("void seed64(uint64 s = random_seed64())"), asMETHOD(random_interface, seed64), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("random_interface"), _O("string get_state() const"), asMETHOD(random_interface, get_state), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("random_interface"), _O("bool set_state(const string &in state)"), asMETHOD(random_interface, set_state), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("random_interface"), _O("bool next_bool(int percent = 50)"), asMETHOD(random_interface, next_bool), asCALL_THISCALL);
@@ -182,7 +182,7 @@ void RegisterScriptRandom(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod(_O("random_pcg"), _O("uint next()"), asMETHOD(random_pcg, next), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("random_pcg"), _O("float nextf()"), asMETHOD(random_pcg, nextf), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("random_pcg"), _O("int range(int min, int max)"), asMETHOD(random_pcg, range), asCALL_THISCALL);
-	engine->RegisterObjectMethod(_O("random_pcg"), _O("void seed(uint s)"), asMETHOD(random_pcg, seed), asCALL_THISCALL);
+	engine->RegisterObjectMethod(_O("random_pcg"), _O("void seed(uint s = random_seed())"), asMETHOD(random_pcg, seed), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("random_pcg"), _O("string get_state() const"), asMETHOD(random_pcg, get_state), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("random_pcg"), _O("bool set_state(const string &in state)"), asMETHOD(random_pcg, set_state), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("random_pcg"), _O("bool next_bool(int percent = 50)"), asMETHOD(random_pcg, next_bool), asCALL_THISCALL);
@@ -197,7 +197,7 @@ void RegisterScriptRandom(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod(_O("random_well"), _O("uint next()"), asMETHOD(random_well, next), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("random_well"), _O("float nextf()"), asMETHOD(random_well, nextf), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("random_well"), _O("int range(int min, int max)"), asMETHOD(random_well, range), asCALL_THISCALL);
-	engine->RegisterObjectMethod(_O("random_well"), _O("void seed(uint s)"), asMETHOD(random_well, seed), asCALL_THISCALL);
+	engine->RegisterObjectMethod(_O("random_well"), _O("void seed(uint s = random_seed())"), asMETHOD(random_well, seed), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("random_well"), _O("string get_state() const"), asMETHOD(random_well, get_state), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("random_well"), _O("bool set_state(const string &in state)"), asMETHOD(random_well, set_state), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("random_well"), _O("bool next_bool(int percent = 50)"), asMETHOD(random_well, next_bool), asCALL_THISCALL);
@@ -212,7 +212,7 @@ void RegisterScriptRandom(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod(_O("random_gamerand"), _O("uint next()"), asMETHOD(random_gamerand, next), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("random_gamerand"), _O("float nextf()"), asMETHOD(random_gamerand, nextf), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("random_gamerand"), _O("int range(int min, int max)"), asMETHOD(random_gamerand, range), asCALL_THISCALL);
-	engine->RegisterObjectMethod(_O("random_gamerand"), _O("void seed(uint s)"), asMETHOD(random_gamerand, seed), asCALL_THISCALL);
+	engine->RegisterObjectMethod(_O("random_gamerand"), _O("void seed(uint s = random_seed())"), asMETHOD(random_gamerand, seed), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("random_gamerand"), _O("string get_state() const"), asMETHOD(random_gamerand, get_state), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("random_gamerand"), _O("bool set_state(const string &in state)"), asMETHOD(random_gamerand, set_state), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("random_gamerand"), _O("bool next_bool(int percent = 50)"), asMETHOD(random_gamerand, next_bool), asCALL_THISCALL);
@@ -229,8 +229,8 @@ void RegisterScriptRandom(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod(_O("random_xorshift"), _O("float nextf()"), asMETHOD(random_xorshift, nextf), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("random_xorshift"), _O("int64 next64()"), asMETHOD(random_xorshift, next64), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("random_xorshift"), _O("int range(int min, int max)"), asMETHOD(random_xorshift, range), asCALL_THISCALL);
-	engine->RegisterObjectMethod(_O("random_xorshift"), _O("void seed(uint s)"), asMETHOD(random_xorshift, seed), asCALL_THISCALL);
-	engine->RegisterObjectMethod(_O("random_xorshift"), _O("void seed64(uint64 s)"), asMETHOD(random_xorshift, seed64), asCALL_THISCALL);
+	engine->RegisterObjectMethod(_O("random_xorshift"), _O("void seed(uint s = random_seed())"), asMETHOD(random_xorshift, seed), asCALL_THISCALL);
+	engine->RegisterObjectMethod(_O("random_xorshift"), _O("void seed64(uint64 s = random_seed64())"), asMETHOD(random_xorshift, seed64), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("random_xorshift"), _O("string get_state() const"), asMETHOD(random_xorshift, get_state), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("random_xorshift"), _O("bool set_state(const string &in state)"), asMETHOD(random_xorshift, set_state), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("random_xorshift"), _O("bool next_bool(int percent = 50)"), asMETHOD(random_xorshift, next_bool), asCALL_THISCALL);
