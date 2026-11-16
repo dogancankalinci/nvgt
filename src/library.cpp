@@ -16,6 +16,7 @@
 #include <Poco/Exception.h>
 #include <Poco/UnicodeConverter.h>
 #include <SDL3/SDL.h>
+#include <cctype>
 #include <cstdint>
 #include <sstream>
 #include "library.h"
@@ -41,6 +42,10 @@ static const std::unordered_map<std::string, ffi_type*> g_ffi_types = {
 	// C's long, as the other names here are C's: 64 bits on Linux, macOS, iOS and Android arm64, 32 on Windows and 32-bit
 	// targets. It was always 32 bits, so a long argument above them was cut down and a long result lost its upper half.
 	{"long",   &ffi_type_slong},  {"ulong",  &ffi_type_ulong},
+	// C's own spellings of these, which were unknown names and so taken for pointers.
+	{"unsigned", &ffi_type_uint32}, {"unsigned int", &ffi_type_uint32}, {"signed char", &ffi_type_sint8}, {"unsigned char", &ffi_type_uint8},
+	{"unsigned short", &ffi_type_uint16}, {"unsigned long", &ffi_type_ulong}, {"long long", &ffi_type_sint64}, {"unsigned long long", &ffi_type_uint64},
+	{"size_t", sizeof(size_t) == 8 ? &ffi_type_uint64 : &ffi_type_uint32},
 };
 
 static std::string str_trim(const std::string& s) {
@@ -50,6 +55,44 @@ static std::string str_trim(const std::string& s) {
 	return s.substr(a, b - a + 1);
 }
 
+// A type as a signature writes it, in the one form the names here are compared in: const and volatile left out (they change nothing in
+// a call), one space between words and none before a *, wchar_t* as wchar*, and a parameter's name dropped when what is before it is a
+// type named here or a pointer. Only the exact forms were known: "int count" and "double x" were taken for pointers (an unknown name is
+// one, as for a HANDLE), so the value went in the wrong register or with the wrong size; "const char*" and "char *" results came back as
+// a number instead of the string, and "const wchar*" or "wchar *" arguments were passed as UTF-8 to a function reading UTF-16.
+static bool ffi_is_identifier(const std::string& s) {
+	if (s.empty() || !(isalpha((unsigned char)s[0]) || s[0] == '_')) return false;
+	for (char c : s) if (!(isalnum((unsigned char)c) || c == '_')) return false;
+	return true;
+}
+static std::string normalize_ffi_type(const std::string& type_str, bool may_have_name) {
+	std::vector<std::string> tokens;
+	std::string word;
+	for (char c : type_str + " ") {
+		if (isalnum((unsigned char)c) || c == '_') word += c;
+		else {
+			if (!word.empty() && word != "const" && word != "volatile") tokens.push_back(word);
+			word.clear();
+			if (c == '*') tokens.push_back("*");
+			else if (!isspace((unsigned char)c)) tokens.push_back(std::string(1, c));
+		}
+	}
+	auto join = [&](size_t count) {
+		std::string t;
+		for (size_t i = 0; i < count; i++) {
+			if (!t.empty() && tokens[i] != "*") t += ' ';
+			t += tokens[i];
+		}
+		return t;
+	};
+	std::string t = join(tokens.size());
+	if (may_have_name && tokens.size() > 1 && !g_ffi_types.count(t) && ffi_is_identifier(tokens.back())) {
+		std::string before = join(tokens.size() - 1);
+		if (before.back() == '*' || g_ffi_types.count(before)) t = before;
+	}
+	if (t == "wchar_t*") t = "wchar*";
+	return t;
+}
 static ffi_type* resolve_ffi_type(const std::string& type_str) {
 	std::string t = str_trim(type_str);
 	if (!t.empty() && t.back() == '*') return &ffi_type_pointer;
@@ -69,14 +112,19 @@ library_function::library_function(const std::string& sig, SDL_SharedObject* so)
 	size_t last_space = before.rfind(' ');
 	if (last_space == std::string::npos)
 		throw Poco::InvalidArgumentException("invalid signature: cannot separate return type from function name");
-	rtype_string = str_trim(before.substr(0, last_space));
-	rtype = resolve_ffi_type(rtype_string);
+	std::string rtype_part = before.substr(0, last_space);
 	std::string func_name = str_trim(before.substr(last_space + 1));
+	while (!func_name.empty() && func_name[0] == '*') { // "char *name": the * is the type's
+		rtype_part += '*';
+		func_name = str_trim(func_name.substr(1));
+	}
+	rtype_string = normalize_ffi_type(rtype_part, false);
+	rtype = resolve_ffi_type(rtype_string);
 	if (!args_part.empty() && args_part != "void") {
 		std::istringstream ss(args_part);
 		std::string token;
 		while (std::getline(ss, token, ',')) {
-			std::string arg = str_trim(token);
+			std::string arg = normalize_ffi_type(token, true);
 			if (!arg.empty()) {
 				arg_type_strings.push_back(arg);
 				arg_types.push_back(resolve_ffi_type(arg));
