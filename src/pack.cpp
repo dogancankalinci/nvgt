@@ -594,8 +594,11 @@ bool find_embedded_pack(std::string& filename, uint64_t& file_offset, uint64_t& 
 	if (filename.empty() || filename[0] != '*') return false;
 	#ifndef NVGT_STUB
 	// If running from nvgt's compiler the packs are not actually embedded, translate the user input back to a valid filename.
-	if (filename == "*" && embedding_packs.size() > 0) filename = embedding_packs.begin()->second; // BGT compatibility
-	else filename = embedding_packs[filename.substr(1)];
+	// Looked up without operator[], which added every name that wasn't embedded to the map: a write to a global from pack_file.open(),
+	// which script threads can call at once, and a later open("*") could pick that empty entry.
+	const auto it = filename == "*" ? embedding_packs.begin() : embedding_packs.find(filename.substr(1)); // "*": BGT compatibility
+	if (it == embedding_packs.end()) return false;
+	filename = it->second;
 	return true;
 	#else
 	const auto& it = filename == "*" ? embedded_packs.begin() : embedded_packs.find(filename.substr(1));
