@@ -123,6 +123,10 @@ bool pack::read_mode_internals::load() {
 		if (!check.good())
 			return false;
 		reader->read7BitEncoded(entry.size);
+		// Every file ends inside the data block before the table of contents. The sizes were only summed, and the sum wraps: a size of
+		// 2^64 - 1 followed by another file opened, with the first file reading as size -1 (missing) and the second starting inside the header.
+		if (entry.size > toc_offset - current_offset)
+			return false;
 		current_offset += entry.size;
 		toc[entry.filename] = entry;
 		// We may now be EOF, which indicates successful parsing of TOC.
