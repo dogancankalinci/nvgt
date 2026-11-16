@@ -191,8 +191,11 @@ class sound_pool_item {
 			true_z = delta_lower;
 		else if (listener_z >= delta_upper)
 			true_z = delta_upper;
-		rotation -= theta;
-		while (rotation < 0) rotation += 2 * pi;
+		// In one step: the loop adding 2 pi never ended for a rotation of about -1e17 or less, or -infinity. An infinite or NaN rotation
+		// or theta gives NaN, which would reach the sound as its position: 0 then. is_nan(), as NaN compares true with >= here.
+		rotation = fmod(rotation - theta, float(2 * pi));
+		if (is_nan(rotation)) rotation = 0;
+		else if (rotation < 0) rotation += 2 * pi;
 		//if(theta!=0)
 		//speak("old_listener="+listener_x+", "+listener_y+". new_listener="+r_listener.x+", "+r_listener.y+". pivit="+pivit.x+", "+pivit.y);
 		handle.set_position(r_listener.x, y_is_elevation == false ? r_listener.y : listener_z, y_is_elevation == false ? listener_z : r_listener.y, true_x, y_is_elevation == false ? true_y : true_z, y_is_elevation == false ? true_z : true_y, rotation, pan_step, volume_step);
