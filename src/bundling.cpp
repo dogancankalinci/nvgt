@@ -260,6 +260,36 @@ static string make_unique_temp_path(const string& suffix) {
 	if (File(path).exists()) file_remove_tree(path);
 	return path;
 }
+// Whether the folder at dir is an earlier build of this bundler, which a new build may delete and make again: it is empty, or
+// holds the executable the bundler wrote there (<name>.exe or <name> in a Windows or Linux folder bundle, Contents/MacOS/<name>
+// with Contents/Resources/exec in a macOS .app, <name> with exec in an iOS .app). Anything else there may be the developer's
+// own files, such as a "game" folder of sounds beside game.nvgt, which a build must never delete.
+static bool is_bundler_file(const Path& p) {
+	try {
+		File f(p);
+		return f.exists() && !f.isLink() && f.isFile();
+	} catch (Exception&) { return false; }
+}
+static bool is_previous_build_output(const string& dir) {
+	try {
+		File d(dir);
+		if (!d.exists() || d.isLink() || !d.isDirectory()) return false;
+		vector<string> entries;
+		d.list(entries);
+		if (entries.empty()) return true;
+	} catch (Exception&) { return false; }
+	Path folder = Path(dir).makeDirectory();
+	string name = Path(dir).makeFile().getBaseName();
+	if (name.empty()) return false;
+	if (is_bundler_file(Path(folder, name + ".exe")) || is_bundler_file(Path(folder, name))) return true;
+	if (is_bundler_file(Path(folder).pushDirectory("Contents").pushDirectory("MacOS").setFileName(name)) && is_bundler_file(Path(folder).pushDirectory("Contents").pushDirectory("Resources").setFileName("exec"))) return true;
+	return is_bundler_file(Path(folder, name)) && is_bundler_file(Path(folder, "exec"));
+}
+// Deletes an earlier build at dir before a new one is made there; a folder this bundler didn't make stops the build instead.
+static void remove_previous_build_output(const string& dir) {
+	if (!is_previous_build_output(dir)) throw Exception(format("%s is a folder that NVGT didn't build, so it was left alone; move or rename it, or set build.output_basename to build somewhere else", dir));
+	file_remove_tree(dir);
+}
 // --- Custom application icon helpers (shared by every platform bundler) ---
 // Read the whole file at path into a string (raw bytes).
 static string read_file_bytes(const string& path) {
@@ -865,7 +895,7 @@ public:
 		string outpath_str = config.getString("build.output_basename", format("%s", Path(input_file).setExtension("").makeAbsolute().toString()));
 		replaceInPlace(outpath_str, "$platform"s, platform);
 		outpath_str = Path(outpath_str).makeAbsolute().toString();
-		if (DirectoryExists(outpath_str)) file_remove_tree(outpath_str);
+		if (DirectoryExists(outpath_str)) remove_previous_build_output(outpath_str);
 		outpath = outpath_str;
 		File(outpath.parent()).createDirectories();
 		alter_output_path(outpath);
@@ -1188,7 +1218,7 @@ protected:
 			workplace = Path(workplace_tmp->path()).append(Path(output_path).makeFile().getFileName()).setExtension("app");
 		} else if(bundle_mode > 0) {
 			workplace = Path(output_path).makeFile().setExtension("app");
-			if (workplace.exists() && workplace.isDirectory()) file_remove_tree(workplace.path()); // both MacOS and IOS create .app bundles, if we don't construct them from scratch and someone compiles for IOS after MacOS, the bundles might clash without valid output basename set.
+			if (workplace.exists() && workplace.isDirectory()) remove_previous_build_output(workplace.path()); // both MacOS and IOS create .app bundles, if we don't construct them from scratch and someone compiles for IOS after MacOS, the bundles might clash without valid output basename set.
 		}
 		if (bundle_mode) {
 			Path tmp = Path(workplace.path()).append("Contents/Resources");
@@ -1372,7 +1402,7 @@ protected:
 			workplace = Path(workplace_tmp->path()).append("Payload").append(Path(output_path).makeFile().getFileName()).setExtension("app");
 		} else if(bundle_mode > 0) {
 			workplace = Path(output_path).makeFile().setExtension("app");
-			if (workplace.exists() && workplace.isDirectory()) file_remove_tree(workplace.path()); // both MacOS and IOS create .app bundles, if we don't construct them from scratch and someone compiles for IOS after MacOS, the bundles might clash without valid output basename set.
+			if (workplace.exists() && workplace.isDirectory()) remove_previous_build_output(workplace.path()); // both MacOS and IOS create .app bundles, if we don't construct them from scratch and someone compiles for IOS after MacOS, the bundles might clash without valid output basename set.
 		}
 		if (bundle_mode) {
 			File(workplace.path()).createDirectories();

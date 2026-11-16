@@ -129,7 +129,7 @@ This section contains options that are directly related to the compiling/bundlin
 * mac_bundle = integer default 2: 0 no bundle, 1 .app, 2 .dmg/.zip, 3 both .app and .dmg/.zip
 * microphone_usage_description = string: on macOS and iOS, the explanation the system shows when your app first requests microphone access (also settable with `#pragma microphone_usage_description`)
 * no_success_message: specifically hides the compilation success message if defined
-* output_basename = string default set from input filename: the output file or directory name of the final compiled package without an extension
+* output_basename = string default set from input filename: the output file or directory name of the final compiled package without an extension. A folder already there with this name (or this name plus .app on macOS and iOS) is deleted before the build only when it is an earlier build, that is empty or holding the executable NVGT writes there; if it holds anything else, such as a folder of game files named like the script, the build stops with an error and deletes nothing
 * precommand = string: a custom system command that will be executed before the build begins if no platform specific command is set
 * `precommand_<platform>` = string: allows the execution of custom prebuild commands on a per-platform basis
 * `precommand_<platform>_<debug or release>` = string: allows the execution of custom prebuild commands on a per-platform basis  with the condition of only exicuting on debug or release builds
