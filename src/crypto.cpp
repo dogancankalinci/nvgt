@@ -114,6 +114,8 @@ chacha_ostreambuf::chacha_ostreambuf(std::ostream &sink, const std::string &key,
 	crypto_blake2b(this->key, 32, (uint8_t *)key.data(), key.size());
 	memcpy(this->nonce, nonce.data(), 24);
 	keystream_pos = 0;
+	written = 0;
+	sink_start = sink.fail() ? -1 : std::streamoff(sink.tellp());
 	// Put the nonce directly into the sink in cleartext.
 	sink.write((const char *)this->nonce, nonce_length);
 	// Encrypt the magic asset identifier:
@@ -150,25 +152,31 @@ std::streamsize chacha_ostreambuf::writeToDevice(const char *buffer, std::stream
 		keystream_pos = (keystream_pos + 1) % 64;
 	}
 	sink->write((const char *)work, length);
+	written += length;
 	// Q: what am I expected to return here? The Poco docs don't say. A: count of bytes written... but why is the return type shorter than the length argument?
 	return (int)length;
 }
 std::streampos chacha_ostreambuf::seekoff(std::streamoff off, std::ios_base::seekdir dir, std::ios_base::openmode which) {
-	// Support 0 cur to enable tellp().
+	// Support 0 cur to enable tellp(). Counted from what went through the stream, as the sink's own position, less the nonce, left out
+	// what was still in the buffer and counted the asset header and whatever the sink held before: an asset_encryptor's pos read 0 after
+	// 10 bytes and 64 after 110, so a write's count (see datastream::write()) was wrong too.
 	if (dir == std::ios_base::cur && off == 0)
-
-		return sink->tellp() + std::streampos(in_avail() - nonce_length);
+		return std::streamoff(written) + (pptr() - pbase()) - std::streamoff(sizeof(chacha_iostream_magic));
 	if (dir == std::ios_base::beg && off == 0)
 		return seekpos(0);
 	return -1;
 }
 std::streampos chacha_ostreambuf::seekpos(std::streampos pos, std::ios_base::openmode which) {
 	// Only support returning to 0.
-	if (pos != 0)
+	if (pos != 0 || sink_start < 0)
 		return -1;
 	this->sync();
-	// Seek the sink back to just after the nonce:
-	sink->seekp(nonce_length);
+	// Seek the sink back to just after the nonce, which is after whatever the sink held before the stream: an absolute nonce_length
+	// overwrote that data for a sink that didn't start empty.
+	sink->seekp(sink_start + nonce_length);
+	if (sink->fail())
+		return -1;
+	written = 0;
 	// Now rewrite the magic and reset the counter.
 	counter = 0;
 	keystream_pos = 0;
@@ -293,6 +301,10 @@ std::streampos chacha_istreambuf::seek_block(std::streampos pos) {
 	We also have to tell ChaCha which block number we're going back to or it won't decrypt our data correctly.
 	Finally, we need to take the asset header (four bytes) into account.
 	*/
+	// A position before the start fails before anything moves: from -4 to -1 it went into the asset header, so a decryptor's
+	// seek_relative(-2) at 0 succeeded and read the decrypted magic number.
+	if (std::streamoff(pos) < 0)
+		return -1;
 	pos += 4;
 	counter = (uint64_t)pos / 64;
 	// Final seek to the target block boundary. Don't forget about the arbitrary source offset that needs to be taken into account as well (at least the 24-byte nonce, and maybe even another sum of arbitrary data that could have come before the start of our stream).

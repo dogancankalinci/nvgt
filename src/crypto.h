@@ -36,6 +36,8 @@ class chacha_ostreambuf : public Poco::BasicBufferedStreamBuf<char, std::char_tr
 	int keystream_pos;
 	uint64_t counter;
 	bool owns_sink;
+	std::streamoff sink_start; // Where the sink was when the stream began (the nonce goes there), -1 if it couldn't tell.
+	uint64_t written; // Bytes given to the sink since the start or the last return to 0, the asset header included.
 
 public:
 	chacha_ostreambuf(std::ostream &sink, const std::string &key, const std::string &nonce);
