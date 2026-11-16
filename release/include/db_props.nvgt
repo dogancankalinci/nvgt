@@ -51,14 +51,16 @@ class database_object {
 	string get_schema() property {
 		if (table == "" or properties.length() < 1) return "";
 		string r = "CREATE TABLE IF NOT EXISTS '" + table + "' (";
+		bool first = true; // the separator goes before each column but the first: after each but the last left "x, )" when the last property was rowid, oid or _rowid_, which are skipped
 		for (uint i = 0; i < properties.length(); i++) {
 			if (properties[i].column_name == "rowid" or properties[i].column_name == "oid" or properties[i].column_name == "_rowid_") continue;
+			if (!first) r += ", ";
+			first = false;
 			r += properties[i].column_name;
 			string t = properties[i].type;
 			if (t != "") r += " " + t;
 			if (primary_column == properties[i].column_name) r += " PRIMARY KEY";
 			if (properties[i].type_extra != "") r += " " + properties[i].type_extra;
-			if (i < properties.length() - 1) r += ", ";
 		}
 		r += ");";
 		return r;
@@ -74,7 +76,7 @@ class database_object {
 			_last_query_error = "unknown row filter";
 			return false;
 		}
-		bool ret = database.execute("DELETE FROM " + table + " WHERE " + filter + ";") == SQLITE_OK;
+		bool ret = database.execute("DELETE FROM '" + table + "' WHERE " + filter + ";") == SQLITE_OK; // quoted as the other statements quote it: a table name that needs quoting (a space, a keyword) was created and written but never dropped
 		if (!ret) {
 			_last_query_error = "db: " + database.get_last_error_text();
 			return false;
@@ -379,7 +381,7 @@ class database_list : database_property {
 	bool retrieve(sqlite3statement@ s, int idx, sqlite3@ db) {
 		string tmp_val = s.column_blob(idx);
 		retrieved = db.get_last_error() == SQLITE_ROW;
-		if (retrieved and tmp_val != "") val = tmp_val.split(delimiter);
+		if (retrieved) val = tmp_val != "" ? tmp_val.split(delimiter) : string[](); // an empty value is an empty list: the list read before was kept
 		return retrieved;
 	}
 	string text() { return string(value); }
@@ -388,7 +390,7 @@ class database_list : database_property {
 	void remove_last() { modified = true; value.remove_last(); }
 	void remove_at(uint pos) { modified = true; value.remove_at(pos); }
 	void remove_range(uint start, uint count) { modified = true; value.remove_range(start, count); }
-	void reserve(uint count) { value.resize(count); }
+	void reserve(uint count) { value.reserve(count); } // it resized the list, adding empty items, unmarked
 	void resize(uint count) { modified = true; value.resize(count); }
 	void reverse() { modified = true; value.reverse(); }
 	bool is_empty() { return value.is_empty(); }
@@ -396,7 +398,7 @@ class database_list : database_property {
 	int find(const string& in v) { return value.find(v); }
 	int find(int start, const string& in v) { return value.find(start, v); }
 	string get_opIndex(int idx) property { return value[idx]; }
-	void set_opIndex(int idx, const string& in v) property { modified = true; val[idx] = v; }
+	void set_opIndex(int idx, const string& in v) property { string[]@ list = value; modified = true; list[idx] = v; } // the list is fetched first: val was written before it was retrieved, and the item was then committed into an empty list
 	string[]@ opImplCast() {
 		if (!retrieved and !modified and !retrieve()) return {};
 		return @val;
@@ -437,12 +439,9 @@ class database_int : database_property {
 		super(column_name);
 	}
 	bool bind(sqlite3statement@ s, int idx) {
-		bool ret;
-		if (val > 0xffffffff)
-			ret = s.bind_int64(idx, val) == SQLITE_OK;
-		else
-			ret = s.bind_int(idx, val) == SQLITE_OK;
-		return ret;
+		// Always as 64 bits: bind_int() takes a 32-bit int, and every value from 2147483648 to 4294967295, and every one below
+		// -2147483648, went through it (the test was val > 0xffffffff) and was stored cut to 32 bits (3000000000 as -1294967296).
+		return s.bind_int64(idx, val) == SQLITE_OK;
 	}
 	bool retrieve(sqlite3statement@ s, int idx, sqlite3@ db) {
 		val = s.column_int64(idx);
