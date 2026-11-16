@@ -1113,6 +1113,7 @@ uint64_t idle_ticks() {
 			int64_t idleTimeNanoSeconds = 0;
 			CFNumberGetValue(obj, kCFNumberSInt64Type, &idleTimeNanoSeconds);
 			CFRelease(obj);
+			IOObjectRelease(entry); // let go of on this path too: each call that read the idle time leaked the registry entry (a Mach port)
 			return idleTimeNanoSeconds / 1000000;
 		}
 		IOObjectRelease(entry);
