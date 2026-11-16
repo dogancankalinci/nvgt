@@ -3981,7 +3981,7 @@ class control {
 		if (cursor == 0)
 			return;
 		sel_start = 0;
-		sel_end = cursor;
+		sel_end = cursor - 1; // the last byte before the cursor: sel_end = cursor took the letter after the cursor into the selection too, so Shift+Home then Delete deleted it as well
 		cursor = 0;
 		speak_selected(text.substr(0, selection_end()));
 	}
