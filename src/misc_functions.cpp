@@ -447,14 +447,46 @@ static process* run_script(CScriptArray* args, int flags = 0, const std::string&
 	return run(vargs, flags, workdir);
 }
 
-bool run(const std::string& filename, const std::string& cmdline, bool wait_for_completion, bool background) {
+// The arguments of a command line as Windows programs read theirs (CommandLineToArgvW): split at spaces and tabs outside double quotes,
+// which group and are taken off; backslashes are literal except before a quote, where each pair is one backslash and an odd one left over
+// makes the quote literal. The line was split at every space, so a quoted path with a space in it ("C:\My Games\save.dat") reached the
+// program as two arguments with the quotes in them.
+static std::vector<std::string> split_command_line(const std::string& cmdline) {
 	std::vector<std::string> args;
-	args.push_back(filename);
-	if (!cmdline.empty()) {
-		std::istringstream iss(cmdline);
-		std::string token;
-		while (iss >> token) args.push_back(token);
+	std::string arg;
+	bool in_arg = false, quoted = false;
+	for (size_t i = 0; i < cmdline.size(); i++) {
+		char c = cmdline[i];
+		if (c == '\\') {
+			size_t n = 0;
+			while (i < cmdline.size() && cmdline[i] == '\\') { n++; i++; }
+			if (i < cmdline.size() && cmdline[i] == '"') {
+				arg.append(n / 2, '\\');
+				if (n % 2) arg += '"';
+				else quoted = !quoted;
+			} else {
+				arg.append(n, '\\');
+				i--;
+			}
+			in_arg = true;
+		} else if (c == '"') {
+			quoted = !quoted;
+			in_arg = true;
+		} else if (!quoted && (c == ' ' || c == '\t' || c == '\r' || c == '\n')) {
+			if (in_arg) args.push_back(arg);
+			arg.clear();
+			in_arg = false;
+		} else {
+			arg += c;
+			in_arg = true;
+		}
 	}
+	if (in_arg) args.push_back(arg);
+	return args;
+}
+bool run(const std::string& filename, const std::string& cmdline, bool wait_for_completion, bool background) {
+	std::vector<std::string> args = split_command_line(cmdline);
+	args.insert(args.begin(), filename);
 	int flags = (wait_for_completion ? PROCESS_WAIT : 0) | (background ? PROCESS_BACKGROUND : 0);
 	Poco::AutoPtr<process> proc(run(args, flags, ""));
 	return proc != nullptr;
