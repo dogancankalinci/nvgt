@@ -1735,14 +1735,14 @@ public:
 		ma_uint64 begin = 0, cursor = 0;
 		ma_data_source_get_range_in_pcm_frames(src->pDataSource, &begin, nullptr);
 		if (start_frame > begin) {
-			get_length_frames(); // Worked out, for a decoder's whole length.
+			const unsigned long long ranged = get_length_frames(); // Worked out too, for a decoder's whole length.
 			const unsigned long long whole = whole_length_frames();
 			// A start past a known end, as seek_frames() refuses one: MiniAudio's seek there failed and a held file took it as made (see held_file_seek()), so that the cursor and a sound's position read past the length, and the range read nothing even once its start was moved back, MiniAudio's later changes moving the cursor only by the range's end.
 			if (whole && start_frame > whole) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS;
-			// MiniAudio ignores its seek into the new range failing: a start past the end of a source of unknown length reported as set, reading on outside it. So it's made first, for a source that says a seek is past its end, whatever range it had: one with an end has a length of its own, which tells nothing of where the source ends.
-			if (!whole && ma_data_source_get_cursor_in_pcm_frames(src->pDataSource, &cursor) == MA_SUCCESS && begin + cursor < start_frame && seek_whole_or_keep_place(src->pDataSource, start_frame) == MA_INVALID_ARGS) {
-				g_soundsystem_last_error = MA_INVALID_ARGS;
-				return false;
+			// MiniAudio ignores its seek into the new range failing: a start past the end of a source of unknown length reported as set, reading on outside it. So it's made first, for a source that says a seek is past its end. For one that can seek, whatever range it had, seeking the whole source: a range with an end has a length of its own, which tells nothing of where the source ends. One that can't seek is tried only without such a range, as before: tried past it, the try read the stream on to its end, and refused, the old range was kept with the cursor past its length; MiniAudio's own seek reads it on there, as decided for every seek of a stream that can't seek.
+			if (!whole && ma_data_source_get_cursor_in_pcm_frames(src->pDataSource, &cursor) == MA_SUCCESS && begin + cursor < start_frame) {
+				const ma_result tried = can_seek_source()? seek_whole_or_keep_place(src->pDataSource, start_frame) : !ranged? seek_or_keep_place(src->pDataSource, start_frame - begin) : MA_SUCCESS;
+				if (tried == MA_INVALID_ARGS) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS;
 			}
 		}
 		return (g_soundsystem_last_error = ma_data_source_set_range_in_pcm_frames(src->pDataSource, start_frame, end_frame)) == MA_SUCCESS;
