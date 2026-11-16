@@ -55,10 +55,21 @@ using namespace std;
 using namespace Poco;
 using namespace Poco::Net;
 
+// The decoder works on C strings: input with a 0 byte in it was cut there ("x\0y&amp;z" gave "x"). Each run between 0 bytes is decoded on
+// its own, and the length the decoder returns is used rather than the first 0 byte of its output.
 string html_entities_decode(const string& input) {
-	vector<char> buffer(input.size() + 1, '\0');
-	decode_html_entities_utf8(buffer.data(), input.c_str());
-	return string(buffer.data());
+	string result;
+	size_t start = 0;
+	for (;;) {
+		const size_t nul = input.find('\0', start);
+		const string part = input.substr(start, nul == string::npos ? string::npos : nul - start);
+		vector<char> buffer(part.size() + 1, '\0');
+		result.append(buffer.data(), decode_html_entities_utf8(buffer.data(), part.c_str()));
+		if (nul == string::npos) break;
+		result += '\0';
+		start = nul + 1;
+	}
+	return result;
 }
 
 string url_encode(const string& url, const string& reserved) {

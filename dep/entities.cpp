@@ -340,6 +340,11 @@ static bool parse_entity(
                 errno = errno_save;
                 if(fail) return 0;
 
+                /* NVGT: 0 and the surrogates are no characters: written as they were, they gave a 0 byte (which ended the text, see
+                   html_entities_decode in internet.cpp) or an encoded surrogate, invalid UTF-8. They are U+FFFD, as HTML5 decodes them;
+                   its three bytes fit in the four or more the entity took. */
+                if(cp == 0 || (cp >= 0xD800ul && cp <= 0xDFFFul)) cp = 0xFFFDul;
+
                 *to += putc_utf8(cp, *to);
                 *from = end + 1;
 
