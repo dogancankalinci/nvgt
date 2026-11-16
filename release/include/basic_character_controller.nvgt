@@ -157,10 +157,13 @@ shared abstract class basic_character_controller {
 		if (target_yaw < 0.0) target_yaw += 360.0;
 		if (target_yaw >= 360.0) target_yaw -= 360.0;
 		const float max_step = ((rotation_speed * 180.0) / PI) * dt;
-		float diff = target_yaw - yaw;
-		while (diff < -180.)
+		// In one step: the loops adding or taking 360 never ended for a difference of about 1e9 or more (360 is below a float's precision
+		// there), an infinite one, or NaN, which AngelScript compares as greater than any number, so a NaN yaw hung the game.
+		float diff = fmod(target_yaw - yaw, 360.0f);
+		if (diff != diff) diff = 0; // NaN
+		if (diff < -180.)
 			diff += 360.0;
-		while (diff > 180.)
+		else if (diff > 180.)
 			diff -= 360.0;
 		if (abs(diff) <= max_step)
 			yaw = target_yaw;
