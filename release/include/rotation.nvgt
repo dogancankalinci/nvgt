@@ -34,14 +34,8 @@ shared vector move(double x, double y, double z, double deg, double dir) {
 	return move(x, y, z, deg, 0, dir, 0);
 }
 shared vector move(double x, double y, double z, double deg, double zdeg, double dir, double zdir) {
-	deg += dir;
-	while (deg >= 360)
-		deg -= 360;
-	if (zdir != 0.0) {
-		zdeg += zdir;
-		while (zdeg >= 360)
-			zdeg -= 360;
-	}
+	deg = degree_limit(deg + dir);
+	zdeg = degree_limit(zdeg + zdir);
 	double theta = calculate_theta(deg);
 	vector reflection;
 	if (deg != 180) reflection.x = sin(theta);
@@ -90,20 +84,19 @@ double snapright(double deg, int direction, double inc = 45) {
 	return d;
 }
 shared double turnleft(double deg, double inc) {
-	deg -= inc;
-	while (deg < 0)
-		deg += 360;
-	return deg;
+	return degree_limit(deg - inc);
 }
 shared double turnright(double deg, double inc) {
-	deg += inc;
-	while (deg >= 360)
-		deg -= 360;
-	return deg;
+	return degree_limit(deg + inc);
 }
+// An angle from 0 up to but not including 360. It added or took 360 in a loop, one turn at a time: an angle of 1e18 (or an increment
+// that large) took about 3e15 turns, one of 1e19 or more never changed by 360 as that is below its precision, and an infinite one
+// never got there, so the script hung. fmod() gives the same result in one step; an infinite or NaN angle, which has none, gives 0.
 shared double degree_limit(double deg) {
-	while (deg < 0) deg += 360;
-	while (deg >= 360) deg -= 360; // was > 359: anything between 359 and 360 came back negative (359.5 gave -0.5, and so did -0.5)
+	deg = fmod(deg, 360.0);
+	if (deg != deg) return 0; // NaN
+	if (deg < 0) deg += 360;
+	if (deg >= 360) deg = 0; // a negative angle too small to count against 360 (-1e-20) comes to 360 when added to it
 	return deg;
 }
 string dir_to_string(int direction, bool more_detail = true) {
@@ -157,10 +150,7 @@ shared double calculate_x_y_angle(double x1, double y1, double x2, double y2, do
 	if (x == 0 and y == 0)
 		return 0;
 	double rad = atan2(x, y);
-	double fdeg = rad * (180.0 / pi);
-	fdeg -= deg;
-	while (fdeg < 0)
-		fdeg += 360;
+	double fdeg = degree_limit(rad * (180.0 / pi) - deg); // see degree_limit(): a loop adding 360 hung on a facing of 1e19, and a negative facing gave 360 or more
 	if (floor_deg)
 		fdeg = floor(fdeg);
 	return fdeg;
@@ -181,11 +171,8 @@ shared double calculate_clamped_x_y_angle(vector current, vector min, vector max
 		return 0;
 	// Calculate the angle in radians, convert to degrees, and adjust by `deg`
 	double rad = atan2(x, y);
-	double fdeg = rad * (180.0 / pi);
-	fdeg -= deg;
-	// Normalize the angle to be within 0 to 360 degrees
-	while (fdeg < 0)
-		fdeg += 360;
+	// Normalize the angle to be within 0 to 360 degrees, see degree_limit()
+	double fdeg = degree_limit(rad * (180.0 / pi) - deg);
 	// Apply flooring if specified
 	if (floor_deg)
 		fdeg = floor(fdeg);
