@@ -690,7 +690,10 @@ class touch_gesture_manager {
 		string[]@ known_keys = this.finger_map.get_keys();
 		for(uint i=0; i<known_keys.length(); i++) {
 			touch_screen_finger@ finger;
-			this.finger_map.get(known_keys[i], @finger);
+			// A finger can be gone by now: a long press or hold handler that runs a loop of its own (wait() or refresh_window(), a menu
+			// it opens) handles the touch events meanwhile, and a lifted finger is taken out of finger_map. Its handle was null then,
+			// and this raised a null pointer exception out of monitor().
+			if (!this.finger_map.get(known_keys[i], @finger) || @finger == null) continue;
 			
 			if (!finger.has_swiped && !finger.is_moving_too_much_for_hold) {
 				if (finger.get_active_time() >= this.long_press_time) {
