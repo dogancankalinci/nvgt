@@ -3406,14 +3406,24 @@ class control {
 		}
 	}
 	void edit(string character) {
-		if ((max_length > 0) && (audioform_character_count(text) > max_length))
+		// Overwrite mode. What is typed takes the place of as many characters at the cursor, whole UTF-8 sequences both, and the cursor moves
+		// past it, as in insert mode; at the end of the text it is added. text[cursor] = character wrote only the first byte of what was typed
+		// over the first byte there (typing or overwriting ç left half a letter), the cursor stayed where it was, so each letter typed went
+		// over the one before, and at the end of the text (an empty box too) typing did nothing at all.
+		if (cursor >= text.length()) {
+			add(character);
 			return;
-		if (text.length() == 0)
+		}
+		int end = cursor;
+		for (int n = audioform_character_count(character); n > 0 && end < int(text.length()); n--)
+			end = utf8next(text, end);
+		string new_text = text.substr(0, cursor) + character + text.substr(end);
+		if ((max_length > 0) && (audioform_character_count(new_text) > max_length))
 			return;
-		if (cursor >= text.length())
-			return;
-		if (read_only == false)
-			text[cursor] = character;
+		if (read_only == false) {
+			text = new_text;
+			cursor += character.length();
+		}
 		if (echo_flag == textflag_characters || echo_flag == textflag_characters_words)
 			speak(input_box_speak(find_appropriate_character(character)), true);
 		if (audioform_word_separators .find(character) > -1 && (echo_flag == textflag_words || echo_flag == textflag_characters_words)) {
