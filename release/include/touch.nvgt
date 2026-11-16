@@ -497,10 +497,14 @@ class touch_gesture_manager {
 
 	void clear_touch_interfaces() { this.interfaces.resize(0); }
 
+	// The loops that call a touch_interface's handlers go over the interfaces as they were when the event came: a handler may change
+	// them (a tap that opens another screen calls set_touch_interfaces() or clear_touch_interfaces()), and the loop then read past the
+	// end of the shorter array, an index out of bounds exception out of monitor() or the event, with allow_passthrough interfaces.
 	void dispatch_release(touch_screen_finger@ finger) {
-		uint len = this.interfaces.length();
+		touch_interface@[] ifaces = this.interfaces;
+		uint len = ifaces.length();
 		for (int i = len - 1; i >= 0; i--) {
-			touch_interface@ iface = this.interfaces[i];
+			touch_interface@ iface = ifaces[i];
 			bool in_bounds = !iface.coordinated || iface.in_bounds(finger.start_pos.x, finger.start_pos.y);
 			
 			if (in_bounds) {
@@ -566,10 +570,11 @@ class touch_gesture_manager {
 			touch_screen_finger@ finger;
 			this.finger_map.get(key, @finger);
 			
-			uint len = this.interfaces.length();
+			touch_interface@[] ifaces = this.interfaces; // see dispatch_release()
+			uint len = ifaces.length();
 			
 			for (int i = len - 1; i >= 0; i--) {
-				touch_interface@ iface = this.interfaces[i];
+				touch_interface@ iface = ifaces[i];
 				bool in_bounds = !iface.coordinated || iface.in_bounds(finger.start_pos.x, finger.start_pos.y);
 				
 				if (in_bounds) {
@@ -648,9 +653,10 @@ class touch_gesture_manager {
 							
 							float velocity = (finger.current_pos - finger.start_pos).length() / time_s;
 							
-							len = this.interfaces.length();
+							touch_interface@[] ifaces = this.interfaces; // see dispatch_release()
+							len = ifaces.length();
 							for (int i = len - 1; i >= 0; i--) {
-								touch_interface@ iface = this.interfaces[i];
+								touch_interface@ iface = ifaces[i];
 								bool in_bounds = !iface.coordinated || iface.in_bounds(finger.start_pos.x, finger.start_pos.y);
 								
 								if (in_bounds) {
@@ -682,9 +688,10 @@ class touch_gesture_manager {
 			
 			if (!finger.has_swiped && !finger.is_moving_too_much_for_hold) {
 				if (finger.get_active_time() >= this.long_press_time) {
-					uint len = this.interfaces.length();
+					touch_interface@[] ifaces = this.interfaces; // see dispatch_release()
+					uint len = ifaces.length();
 					for (int k = len - 1; k >= 0; k--) {
-						touch_interface@ iface = this.interfaces[k];
+						touch_interface@ iface = ifaces[k];
 						if ((!iface.coordinated || iface.in_bounds(finger.start_pos.x, finger.start_pos.y))) {
 							this._last_input_time = ticks();
 							if (!finger.is_long_press_triggered) {
