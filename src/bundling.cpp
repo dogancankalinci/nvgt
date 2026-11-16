@@ -18,6 +18,7 @@
 #include "xplatform.h"
 #if !defined(NVGT_STUB) && !defined(NVGT_MOBILE)
 #include <algorithm>
+#include <climits>
 #include <cstdint>
 #include <cstring>
 #include <sstream>
@@ -1952,13 +1953,17 @@ class nvgt_compilation_output_android : public nvgt_compilation_output_impl {
 		*out_cert = nullptr;
 		*out_chain = nullptr;
 		auto load_pkcs12 = [&](const string& path, const string& password) -> bool {
-			FILE* fp = fopen(path.c_str(), "rb");
-			if (!fp) {
+			// Read through Poco, which takes the UTF-8 path on Windows too: fopen() took it in the ANSI code page there, so a keystore in a
+			// folder with a letter outside it couldn't be opened, nor the temporary one exported below when the user's name had one.
+			string data;
+			try {
+				data = read_file_bytes(path);
+			} catch (const exception&) {
 				std_err = format("Unable to open signing keystore %s", path);
 				return false;
 			}
-			PKCS12* p12 = d2i_PKCS12_fp(fp, nullptr);
-			fclose(fp);
+			const unsigned char* p12_data = reinterpret_cast<const unsigned char*>(data.data());
+			PKCS12* p12 = data.size() <= size_t(LONG_MAX) ? d2i_PKCS12(nullptr, &p12_data, long(data.size())) : nullptr;
 			if (!p12) return false;
 			bool ok = PKCS12_parse(p12, password.c_str(), out_key, out_cert, out_chain) == 1;
 			if (!ok) {
