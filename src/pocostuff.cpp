@@ -211,7 +211,7 @@ std::string string_escape(std::string* str, bool strict_json) {
 	return UTF8::escape(*str, strict_json);
 }
 std::string string_unescape(std::string* str) {
-	return UTF8::escape(*str);
+	return UTF8::unescape(*str); // It called escape(), so unescape() escaped the text a second time ("a\\nb" gave "a\\\\nb").
 }
 std::string string_trim_whitespace_left(std::string* str) {
 	return trimLeft<std::string>(*str);
