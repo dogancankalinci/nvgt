@@ -127,8 +127,7 @@ void InputQuitVideo() {
 	uninstall_keyhook();
 	#endif
 	system_tray_quit();
-	game_windows_quit();
-	SDL_QuitSubSystem(SDL_INIT_VIDEO);
+	if (game_windows_quit_own()) SDL_QuitSubSystem(SDL_INIT_VIDEO); // else another script thread's window keeps it up, see there
 	g_MouseButtonsDown = 0;
 	g_sdl_quit_pending = true;
 	if (!(SDL_WasInit(0) & SDL_INIT_VIDEO)) g_KeysDown = NULL; // InputInit() fetches it again once it starts the video subsystem again

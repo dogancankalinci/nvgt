@@ -478,6 +478,34 @@ void game_windows_quit() {
 	for (game_window* w : gone) delete w;
 	graphics_collect(); // every window's renderers and textures let go of their SDL objects with it
 }
+// destroy_window() (InputQuitVideo()) closes the windows of the calling thread only. A window another script thread made (game_window(...),
+// when no other thread's window was open) is that thread's to destroy: closed here, SDL_DestroyWindow() ran off its thread (on Windows
+// DestroyWindow() fails there, so the window stayed on screen with SDL's data for it freed, which that thread's next event pumping handed
+// to SDL's window procedure). Such windows stay open, and so does SDL's video subsystem, which would destroy every window as it went:
+// this returns false while one is open, and InputQuitVideo() then leaves the subsystem up (to the next destroy_window() with none left
+// open, or the program's end). Window objects of this thread that another let go of go now, as game_windows_collect() lets them.
+bool game_windows_quit_own() {
+	std::vector<game_window*> gone;
+	bool others_open = false;
+	{
+		std::lock_guard<std::recursive_mutex> lock(game_windows_mutex()); // close() lets go of no script object, so no script code runs under it
+		std::vector<game_window*> open(game_windows().begin(), game_windows().end());
+		for (game_window* w : open) {
+			if (w->on_thread()) w->close();
+			else others_open = true;
+		}
+		std::vector<game_window*>& deferred = game_windows_deferred();
+		for (size_t i = 0; i < deferred.size();) {
+			if (deferred[i]->on_thread() || !deferred[i]->get_sdl_window()) {
+				gone.push_back(deferred[i]);
+				deferred.erase(deferred.begin() + i);
+			} else i++;
+		}
+	}
+	for (game_window* w : gone) delete w;
+	graphics_collect();
+	return !others_open;
+}
 // g_window when the calling thread made it, else null, as when there is none (see game_window::on_thread()). g_window is set and cleared under game_windows_mutex(), only by the thread that made it; that thread can go on using what this returns.
 static game_window* window_here() {
 	std::lock_guard<std::recursive_mutex> lock(game_windows_mutex());

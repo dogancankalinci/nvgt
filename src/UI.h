@@ -302,6 +302,7 @@ typedef video_lock pump_lock;
 #endif
 void system_tray_quit(); // before SDL_Quit(), see UI.cpp
 void game_windows_quit(); // likewise
+bool game_windows_quit_own(); // destroy_window(), see UI.cpp
 bool WindowIsFocused();
 int get_window_width();
 int get_window_height();
