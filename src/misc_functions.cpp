@@ -58,9 +58,18 @@
 #include <fast_float/fast_float.h>
 #include <system_error>
 
+// On Windows the path is UTF-8 like every other one a script gives: _chdir() took it in the ANSI code page, so a folder with a letter
+// outside it (C:\Users\Çağrı\game) could never be changed to, by chdir() or by auto_chdir() for a script or game kept there.
 bool ChDir(const std::string& d) {
+	if (d.find('\0') != std::string::npos) return false; // a name the system would cut at the NUL
 	#ifdef _WIN32
-	return _chdir(d.c_str()) == 0;
+	std::wstring wide;
+	try {
+		Poco::UnicodeConverter::toUTF16(d, wide);
+	} catch (const std::exception&) {
+		return false;
+	}
+	return _wchdir(wide.c_str()) == 0;
 	#else
 	return chdir(d.c_str()) == 0;
 	#endif
@@ -78,10 +87,9 @@ std::string base32_normalize(const std::string& unnorm) {
 	for (char c : unnorm) {
 		if (c == ' ' || c == '\n' || c == '-') {
 			// skip separators
-		} else if (std::islower(c)) {
+		} else if (c >= 'a' && c <= 'z') { // std::islower() and std::toupper() were given negative chars for UTF-8 bytes, which is undefined
 			// make uppercase
-			char u = std::toupper(c);
-			ret.push_back(u);
+			ret.push_back(c - 'a' + 'A');
 		} else
 			ret.push_back(c);
 	}
