@@ -17,6 +17,7 @@
 #include <vector>
 #include <angelscript.h> // the actual Angelscript header
 #include <scriptarray.h>
+#include <Poco/DirectoryIterator.h>
 #include <Poco/Exception.h>
 #include <Poco/File.h>
 #include <Poco/Glob.h>
@@ -509,6 +510,16 @@ bool DirectoryCreate(const string& path) {
 }
 
 #ifdef _WIN32
+// The path as Poco's File converts it, so that what takes it reaches every directory Poco does.
+static std::wstring windows_file_path(const string& path) {
+	std::wstring upath;
+	UnicodeConverter::toUTF16(path, upath);
+	if (upath.size() > MAX_PATH - 12 && (upath[0] == '\\' || upath[1] == ':') && upath.compare(0, 4, L"\\\\?\\", 4) != 0) {
+		if (upath[1] == '\\') upath.insert(0, L"\\\\?\\UNC\\", 8);
+		else upath.insert(0, L"\\\\?\\", 4);
+	}
+	return upath;
+}
 // Poco's File::remove(true) goes into every directory it finds, a junction or a directory symbolic link too, as File::isLink() is false for
 // those on Windows, and deleted what they pointed to, wherever that was, before the link itself: directory_delete() of a folder that held
 // a junction emptied the junction's target, and directory_delete() of the junction did too. Here a directory that names another place is
@@ -516,13 +527,7 @@ bool DirectoryCreate(const string& path) {
 // whose contents are its own is gone into. A reparse point that isn't a name for another place (a OneDrive placeholder, for one) holds its
 // own contents and is gone into as before.
 static bool directory_is_own(const string& path) {
-	std::wstring upath;
-	UnicodeConverter::toUTF16(path, upath);
-	// The path as Poco's File converts it, so that this reaches every directory Poco does.
-	if (upath.size() > MAX_PATH - 12 && (upath[0] == '\\' || upath[1] == ':') && upath.compare(0, 4, L"\\\\?\\", 4) != 0) {
-		if (upath[1] == '\\') upath.insert(0, L"\\\\?\\UNC\\", 8);
-		else upath.insert(0, L"\\\\?\\", 4);
-	}
+	std::wstring upath = windows_file_path(path);
 	DWORD attributes = GetFileAttributesW(upath.c_str());
 	if (attributes == INVALID_FILE_ATTRIBUTES) return false;
 	if (!(attributes & FILE_ATTRIBUTE_REPARSE_POINT)) return true;
@@ -574,10 +579,60 @@ bool FileDelete(const string& path) {
 	return DirectoryDelete(path, false);
 }
 
+// What tells a directory apart from every other one, whatever name it is reached by (a link, a junction): the device and inode, or on
+// Windows the volume and file index. False when the system doesn't say.
+static bool directory_identity(const string& path, std::pair<Poco::UInt64, Poco::UInt64>& id) {
+	#ifdef _WIN32
+	HANDLE handle = CreateFileW(windows_file_path(path).c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+	if (handle == INVALID_HANDLE_VALUE) return false;
+	BY_HANDLE_FILE_INFORMATION info;
+	bool known = GetFileInformationByHandle(handle, &info);
+	CloseHandle(handle);
+	if (!known) return false;
+	id = {info.dwVolumeSerialNumber, (Poco::UInt64(info.nFileIndexHigh) << 32) | info.nFileIndexLow};
+	#else
+	struct stat st;
+	if (stat(path.c_str(), &st) != 0) return false;
+	id = {Poco::UInt64(st.st_dev), Poco::UInt64(st.st_ino)};
+	#endif
+	return true;
+}
+// Copies the directory src to dest as Poco's File::copyDirectory does, going through links as it does (a link to a directory is copied as
+// the directory it names), but a directory met again inside itself fails the copy: a link to the directory being copied or one above it,
+// or the copy itself when the destination is inside the source. Poco went round such a loop for ever, writing a deeper copy each time,
+// until the path grew too long for the system. open_dirs holds the source and destination directories of the copies under way.
+static void copy_directory_checked(const File& src, const string& dest, int options, vector<std::pair<Poco::UInt64, Poco::UInt64>>& open_dirs) {
+	std::pair<Poco::UInt64, Poco::UInt64> src_id, dest_id;
+	bool src_known = directory_identity(src.path(), src_id);
+	if (src_known && std::find(open_dirs.begin(), open_dirs.end(), src_id) != open_dirs.end()) throw FileException("directory copied into itself", src.path());
+	File(dest).createDirectories();
+	size_t open_size = open_dirs.size();
+	if (src_known) open_dirs.push_back(src_id);
+	if (directory_identity(dest, dest_id)) open_dirs.push_back(dest_id);
+	for (DirectoryIterator it(src.path()), end; it != end; ++it) {
+		if (it->isDirectory()) copy_directory_checked(*it, Path(dest).makeDirectory().setFileName(it.name()).toString(), options, open_dirs);
+		else it->copyTo(dest, options); // into the directory dest, under its own name
+	}
+	open_dirs.resize(open_size);
+}
 bool FileCopy(const string& source, const string& target, bool overwrite) {
 	if (path_has_nul(source) || path_has_nul(target)) return false;
 	try {
-		File(source).copyTo(target, !overwrite? File::OPT_FAIL_ON_OVERWRITE : 0);
+		int options = !overwrite? File::OPT_FAIL_ON_OVERWRITE : 0;
+		File src(source);
+		if (!src.isDirectory()) {
+			src.copyTo(target, options);
+			return true;
+		}
+		// Where File::copyTo puts a directory: into a directory already at target (or a target ending in a separator), else at target.
+		Path dest(target);
+		File dest_file(target);
+		if ((dest_file.exists() && dest_file.isDirectory()) || dest.isDirectory()) {
+			dest.makeDirectory();
+			dest.setFileName(Path(src.path()).getFileName());
+		}
+		vector<std::pair<Poco::UInt64, Poco::UInt64>> open_dirs;
+		copy_directory_checked(src, dest.toString(), options, open_dirs);
 		return true;
 	} catch(Exception& e) { return false; }
 }
