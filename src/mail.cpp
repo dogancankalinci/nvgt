@@ -67,6 +67,10 @@ private:
 	bool m_has_html_content;
 	std::string m_html_content;
 	std::string m_plain_content;
+	std::string m_text_content; // See set_content().
+	std::string m_text_type;
+	bool m_has_text_content = false; // set_content() was called
+	bool m_text_pending = false; // and its part isn't in m_message yet
 
 	friend class smtp_client;
 
@@ -133,22 +137,19 @@ public:
 		return m_message.getSubject();
 	}
 
+	// The content is kept here and added to the message as a part when it is sent (see finalize_html_content()), as HTML content is. It was
+	// added as a part at once: content then read back "" (so did a message from parse_email_message()), and each call added another part,
+	// so a message whose content was set twice was sent with both.
 	void set_content(const std::string& content, const std::string& content_type = "text/plain") {
-		// For messages with attachments, we need to use addContent instead of setContent
-		// to properly create a multipart message
-		try {
-			m_message.addContent(new StringPartSource(content, content_type));
-			m_last_error.clear();
-		} catch (const Exception& e) {
-			// If addContent fails (e.g., content already set), fall back to setContent
-			m_message.setContentType(content_type);
-			m_message.setContent(content);
-			m_last_error.clear();
-		}
+		m_text_content = content;
+		m_text_type = content_type;
+		m_has_text_content = true;
+		m_text_pending = true;
+		m_last_error.clear();
 	}
 
 	std::string get_content() const {
-		return m_message.getContent();
+		return m_has_text_content ? m_text_content : m_message.getContent();
 	}
 
 	void set_html_content(const std::string& html, const std::string& plain_alternative = "") {
@@ -340,8 +341,20 @@ public:
 		}
 	}
 
-	// Finalize HTML content for sending
+	// Finalize the content and the HTML content for sending, each added once.
 	void finalize_html_content() {
+		if (m_text_pending) {
+			// For messages with attachments, we need to use addContent instead of setContent
+			// to properly create a multipart message
+			try {
+				m_message.addContent(new StringPartSource(m_text_content, m_text_type));
+			} catch (const Exception& e) {
+				// If addContent fails (e.g., content already set), fall back to setContent
+				m_message.setContentType(m_text_type);
+				m_message.setContent(m_text_content);
+			}
+			m_text_pending = false;
+		}
 		if (!m_has_html_content) return;
 		try {
 			// Create multipart/alternative for HTML and plain text
@@ -494,8 +507,7 @@ public:
 		}
 		try {
 			// Handle HTML content if set
-			if (msg->m_has_html_content)
-				msg->finalize_html_content();
+			msg->finalize_html_content(); // adds the content too, see there
 			m_session->sendMessage(msg->get_message());
 			m_last_error.clear();
 			return true;
@@ -572,8 +584,7 @@ public:
 				mail_message* msg = *(mail_message**)messages->At(i);
 				if (msg) {
 					// Handle HTML content if set
-					if (msg->m_has_html_content)
-						msg->finalize_html_content();
+					msg->finalize_html_content(); // adds the content too, see there
 					m_session->sendMessage(msg->get_message());
 				}
 			}
