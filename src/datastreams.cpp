@@ -967,8 +967,8 @@ bool file_stream_open(datastream* ds, const std::string& path, const std::string
 			m |= std::ios::out | std::ios::trunc;
 		else if (c == 'a')
 			m |= std::ios::out | std::ios::app;
-		else if (c == '+')
-			m |= std::ios::out | std::ios::ate;
+		else if (c == '+') // read and write, as C's fopen() takes it: "r+" from the start of the file, "a+" reading anywhere and writing at the end. It was out | ate, so "r+" started at the end (a read gave nothing and a write went after the old contents) and "a+" couldn't read.
+			m |= std::ios::in | std::ios::out;
 	}
 	if ((m & std::ios::in) == 0 && (m & std::ios::out) == 0)
 		return false; // invalid mode.

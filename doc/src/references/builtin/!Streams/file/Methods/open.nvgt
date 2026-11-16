@@ -12,7 +12,9 @@
 		* a: append. Every write goes to the end of the file, even after a seek.
 		* w: write.
 		* r: read.
-		* r+: read and write.
+		* r+: read and write, starting at the beginning of the file.
+		* w+: read and write, emptying the file first.
+		* a+: read and write; reading can happen anywhere, but every write goes to the end of the file.
 		For backwards compatibility with code that used a version of the file object from when there was a difference between text and binary file open modes, a b character is also accepted (for example rb) to indicate binary. The current stream implementation ignores this character other than to gracefully accept it rather than complaining that it is an invalid mode. You can use other text encoding APIs such as string_recode and the line_converting_reader if you really need to try recreating something similar to the old behavior.
 		The file will be created if the file does not exist if opened in either write or append mode. When opened in read mode, the file must exist in order to be successful.
 */
