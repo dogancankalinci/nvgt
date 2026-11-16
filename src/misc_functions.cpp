@@ -518,11 +518,6 @@ double bytes_to_double(const std::string& s) {
 	return d;
 }
 
-std::string string_to_upper_case(std::string s) {
-	for (int i = 0; i < (int)s.length(); i++)
-		s[i] = toupper(s[i]);
-	return s;
-}
 
 //Following function originally from https://stackoverflow.com/questions/642213/how-to-implement-a-natural-sort-algorithm-in-c
 // Compares as before (runs of digits by their value, other characters case-insensitively at the first that differs), but:
@@ -531,7 +526,12 @@ std::string string_to_upper_case(std::string s) {
 //   and lost the rest of the string (a99999999999b and a100000000000a were "equal" and both then empty);
 // - the rest of the string after a number was read with getline(), which stopped at a newline and dropped what followed;
 // - isdigit() was given negative values for bytes above 127 (UTF-8), which is undefined.
+// - a letter differing only in case compared the rest of both strings as plain text, upper-cased: "a10" came before "A9", which is equal
+//   to "a9", which comes before "a10", so the order wasn't one a sort can rely on (whether "a10" or "a9" came first depended on what
+//   else was sorted); and the upper-casing gave toupper() negative values for UTF-8 bytes. Letters are now compared one by one,
+//   ASCII ones without case, and the comparison goes on as it does past letters that are the same.
 static bool natural_is_digit(char c) { return c >= '0' && c <= '9'; }
+static unsigned char natural_fold(char c) { return c >= 'a' && c <= 'z' ? c - 'a' + 'A' : static_cast<unsigned char>(c); }
 bool natural_number_sort(const std::string& first, const std::string& second) {
 	size_t i = 0, j = 0;
 	const size_t m = first.size(), n = second.size();
@@ -542,8 +542,8 @@ bool natural_number_sort(const std::string& first, const std::string& second) {
 		if (da && !db) return true;
 		if (!da && db) return false;
 		if (!da) {
-			if (first[i] != second[j])
-				return string_to_upper_case(first.substr(i)) < string_to_upper_case(second.substr(j));
+			unsigned char ca = natural_fold(first[i]), cb = natural_fold(second[j]);
+			if (ca != cb) return ca < cb;
 			i++;
 			j++;
 			continue;
