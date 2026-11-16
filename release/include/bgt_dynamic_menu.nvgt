@@ -119,7 +119,9 @@ class dynamic_menu {
 		int item_count = item_list.length();
 		if (item_count == 0)
 			return -1;
-		if (start_position > item_count)
+		// A negative start position is refused too: it ran with that position, and as arrays take negative indexes the arrow keys
+		// spoke items counted from the end and enter returned a negative item number.
+		if (start_position < 0 || start_position > item_count)
 			return -1;
 		menu_position = start_position;
 		bool speak_item = false;
