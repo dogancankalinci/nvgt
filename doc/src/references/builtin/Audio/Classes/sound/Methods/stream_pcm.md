@@ -18,3 +18,5 @@ Audio at another rate than the engine's is resampled as a sound's pitch is, line
 The first call closes whatever the sound had loaded, makes the queue and starts playing. Later calls must give the same sample type as the first, and any sample rate or channel count they give must be the stream's, or they are refused with AUDIO_ERROR_STATE_INVALID_ARGS.
 
 When the queue is full, the call waits for the sound to play room free. It gives up with AUDIO_ERROR_STATE_TIMEOUT when nothing has made room for a second, having queued part of the audio. A sound that isn't playing, one fading out to a pause from pause_fade(), and a call from a processing callback, take all of the audio or none of it, refusing with AUDIO_ERROR_STATE_BUSY, or AUDIO_ERROR_STATE_TOO_BIG for more than the whole queue holds.
+
+A stream has no place in a file to tell, so its position, position_in_frames and position_in_milliseconds read 0, with AUDIO_ERROR_STATE_NOT_IMPLEMENTED, as its length reads 0.
