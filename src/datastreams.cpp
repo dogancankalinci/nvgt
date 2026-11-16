@@ -623,6 +623,25 @@ void datastream::read_binary_string(std::string& value) {
 		std::swap(value, converted);
 	}
 }
+// In text mode an int8 or uint8 (registered on char and unsigned char) is a number, as every other integer is: the stream's char
+// overloads wrote and read it as a character, so cout << uint8(200) printed the byte 200 instead of "200", and reading "65" gave '6'
+// (54) and left the 5 for the next read. A number outside the type's range fails the read as it does for the other types.
+template <typename T> static constexpr bool is_byte_number = std::is_same<T, char>::value || std::is_same<T, unsigned char>::value;
+template <typename T> static void read_text_byte(std::istream& in, T& value) {
+	long long n = 0;
+	in >> n;
+	constexpr long long lo = std::is_same<T, char>::value ? -128 : 0, hi = std::is_same<T, char>::value ? 127 : 255; // char is int8 to the script, whether or not it is signed here
+	if (in.fail()) n = 0;
+	else if (n < lo || n > hi) {
+		in.setstate(std::ios::failbit);
+		n = n < lo ? lo : hi;
+	}
+	value = T(n);
+}
+template <typename T> static void write_text_byte(std::ostream& out, T value) {
+	if constexpr(std::is_same<T, char>::value) out << int(static_cast<signed char>(value));
+	else out << unsigned(value);
+}
 // value is an &out parameter, which AngelScript hands over uninitialized and copies into the script's variable whatever happens: a
 // stream that isn't open, or binary data that ended, left it as it was, so ds >> x at the end of the data gave x whatever the
 // temporary held (a stale value, or stack bytes). It reads as 0 then, as read_int() and the others do.
@@ -634,6 +653,12 @@ datastream& datastream::read(T& value) {
 	if constexpr(std::is_same<T, std::string>::value) {
 		if (binary) {
 			read_binary_string(value);
+			return *this;
+		}
+	}
+	if constexpr(is_byte_number<T>) {
+		if (!binary) {
+			read_text_byte(*_istr, value);
 			return *this;
 		}
 	}
@@ -653,6 +678,12 @@ T datastream::read() {
 			return value;
 		}
 	}
+	if constexpr(is_byte_number<T>) {
+		if (!binary) {
+			read_text_byte(*_istr, value);
+			return value;
+		}
+	}
 	binary ? (*r) >> value : (*_istr) >> value;
 	return value;
 }
@@ -660,7 +691,10 @@ template <typename T>
 datastream& datastream::write(T value) {
 	if (!can_write())
 		return *this;
-	binary ? (*w) << value : (*_ostr) << value;
+	if constexpr(is_byte_number<T>) {
+		if (!binary) write_text_byte(*_ostr, value);
+		else (*w) << value;
+	} else binary ? (*w) << value : (*_ostr) << value;
 	if (autoflush) flush();
 	return *this;
 }
