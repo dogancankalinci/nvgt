@@ -14,6 +14,7 @@
  */
 
 #include <algorithm>
+#include <limits>
 #include <cstdint>
 #include <exception>
 #include <stdexcept>
@@ -430,12 +431,18 @@ bool datastream::seek(unsigned long long offset) {
 	if (_ostr) write_moved = seek_stream(*_ostr, [&] { _ostr->seekp(offset, std::ios::beg); });
 	return r && read_moved || w && write_moved;
 }
+// seek_end(offset) and its r/w forms move offset bytes back from the end, the only place an unsigned offset can mean: it was given to
+// seekg/seekp as a forward offset from the end, so on a string datastream any offset but 0 failed, and a file went past its end (a write
+// there left a gap of zero bytes). An offset past the start fails and leaves the stream where it was, as every seek does.
+static std::streamoff back_from_end(unsigned long long offset) {
+	return -std::streamoff(std::min<unsigned long long>(offset, (unsigned long long)std::numeric_limits<std::streamoff>::max()));
+}
 bool datastream::seek_end(unsigned long long offset) {
 	if (!r && !w)
 		return false;
 	bool read_moved = false, write_moved = false;
-	if (_istr) read_moved = seek_stream(*_istr, [&] { _istr->seekg(offset, std::ios::end); });
-	if (_ostr) write_moved = seek_stream(*_ostr, [&] { _ostr->seekp(offset, std::ios::end); });
+	if (_istr) read_moved = seek_stream(*_istr, [&] { _istr->seekg(back_from_end(offset), std::ios::end); });
+	if (_ostr) write_moved = seek_stream(*_ostr, [&] { _ostr->seekp(back_from_end(offset), std::ios::end); });
 	return r && read_moved || w && write_moved;
 }
 bool datastream::seek_relative(long long offset) {
@@ -450,7 +457,7 @@ bool datastream::rseek(unsigned long long offset) {
 	return _istr && seek_stream(*_istr, [&] { _istr->seekg(offset, std::ios::beg); });
 }
 bool datastream::rseek_end(unsigned long long offset) {
-	return _istr && seek_stream(*_istr, [&] { _istr->seekg(offset, std::ios::end); });
+	return _istr && seek_stream(*_istr, [&] { _istr->seekg(back_from_end(offset), std::ios::end); });
 }
 bool datastream::rseek_relative(long long offset) {
 	return _istr && seek_stream(*_istr, [&] { _istr->seekg(offset, std::ios::cur); });
@@ -459,7 +466,7 @@ bool datastream::wseek(unsigned long long offset) {
 	return _ostr && seek_stream(*_ostr, [&] { _ostr->seekp(offset, std::ios::beg); });
 }
 bool datastream::wseek_end(unsigned long long offset) {
-	return _ostr && seek_stream(*_ostr, [&] { _ostr->seekp(offset, std::ios::end); });
+	return _ostr && seek_stream(*_ostr, [&] { _ostr->seekp(back_from_end(offset), std::ios::end); });
 }
 bool datastream::wseek_relative(long long offset) {
 	return _ostr && seek_stream(*_ostr, [&] { _ostr->seekp(offset, std::ios::cur); });
