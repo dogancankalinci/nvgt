@@ -5415,6 +5415,13 @@ public:
 		garbage_collect_inline_sounds();
 		if (snd)
 			close_to_reload();
+		// This load's, rather than what an earlier one left: a failed load, whose done notification MiniAudio signals at once, left it set, so that the next asynchronous load read complete at once while it still decoded, its length read short.
+		load_completed.clear();
+		// A load that fails reads complete, as nothing is left to decode, as one of a missing file always did: a script waiting on it rather than on this result goes on.
+		struct complete_if_failed {
+			sound_impl* s;
+			~complete_if_failed() { if (!s->snd) s->load_completed.test_and_set(); }
+		} failed{this};
 		// Made here and handed to snd only once it loaded, under the lock the audio thread reads snd under, so the audio thread never reads a sound half made or freed after a failed load.
 		held_sound_ptr made(new held_sound());
 		// The sound service converts our file name into a "tripplet" which includes information about the origin an asset is expected to come from. This guarantees that we don't mistake assets from different origins as the same just because they have the same name.
@@ -5532,7 +5539,10 @@ public:
 			}
 			if (!state) return;
 			if (g_soundsystem_last_error == MA_SUCCESS && !wait_for_load) load_state = state;
-			else state->abandon(); // The notification's reference stays with MiniAudio in case it still signals.
+			else {
+				state->abandon(); // The notification's reference stays with MiniAudio in case it still signals.
+				if (g_soundsystem_last_error != MA_SUCCESS) load_completed.clear(); // Set by this attempt's failure, signalled before it was abandoned: kept, a later attempt that succeeds, as after the job queue's backlog, read complete while it decoded. None can set it once abandoned.
+			}
 		};
 		/*
 		MiniAudio currently returns an error code of MA_OUT_OF_MEMORY (-4) if sound initialization fails due to the job queue being at capacity.
@@ -5868,6 +5878,7 @@ public:
 				pcm_stream->uninit();
 				pcm_stream.reset();
 			}
+			load_completed.clear(); // As for a sound closed after loading: a load that failed left it set.
 			return nothing_loaded();
 		}
 		if (spatializer) {
