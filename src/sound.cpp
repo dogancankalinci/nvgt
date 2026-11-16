@@ -1731,12 +1731,17 @@ public:
 		if (queue_refuses(start_frame != 0 || end_frame != ~0ull)) return false;
 		if (!src || in_use()) return refused_now();
 		if (end_frame < start_frame) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // As MiniAudio refuses it, before the seek below moves the source.
-		// MiniAudio ignores its seek into the new range failing: a start past the end of a source of unknown length reported as set, reading on outside it. So it's made first, for a source that says a seek is past its end.
 		ma_uint64 begin = 0, cursor = 0;
 		ma_data_source_get_range_in_pcm_frames(src->pDataSource, &begin, nullptr);
-		if (start_frame > begin && !get_length_frames() && ma_data_source_get_cursor_in_pcm_frames(src->pDataSource, &cursor) == MA_SUCCESS && begin + cursor < start_frame && seek_or_keep_place(src->pDataSource, start_frame - begin) == MA_INVALID_ARGS) {
-			g_soundsystem_last_error = MA_INVALID_ARGS;
-			return false;
+		if (start_frame > begin) {
+			const unsigned long long ranged = get_length_frames(), whole = whole_length_frames(); // Worked out by the first, for a decoder.
+			// A start past a known end, as seek_frames() refuses one: MiniAudio's seek there failed and a held file took it as made (see held_file_seek()), so that the cursor and a sound's position read past the length, and the range read nothing even once its start was moved back, MiniAudio's later changes moving the cursor only by the range's end.
+			if (whole && start_frame > whole) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS;
+			// MiniAudio ignores its seek into the new range failing: a start past the end of a source of unknown length reported as set, reading on outside it. So it's made first, for a source that says a seek is past its end.
+			if (!ranged && ma_data_source_get_cursor_in_pcm_frames(src->pDataSource, &cursor) == MA_SUCCESS && begin + cursor < start_frame && seek_or_keep_place(src->pDataSource, start_frame - begin) == MA_INVALID_ARGS) {
+				g_soundsystem_last_error = MA_INVALID_ARGS;
+				return false;
+			}
 		}
 		return (g_soundsystem_last_error = ma_data_source_set_range_in_pcm_frames(src->pDataSource, start_frame, end_frame)) == MA_SUCCESS;
 	}
