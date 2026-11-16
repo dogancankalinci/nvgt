@@ -737,6 +737,30 @@ void pool_stop_all(ThreadPool* pool) {
 	std::unique_lock<std::shared_mutex> lock(pool_stop_lock(pool));
 	pool->stopAll();
 }
+// A thread_pool's arguments are checked here. Poco checks them with assertions, whose exception named the condition and the build
+// machine's source file ("Assertion violation: minCapacity >= 1 && maxCapacity >= minCapacity && idleTime > 0 in file D:\a\nvgt\...
+// ThreadPool.cpp, line 231") rather than the argument; add_capacity() added to the capacity as an int without a check, so
+// add_capacity(2147483647) overflowed (undefined) and failed the same way; and a negative stack size was kept, after which every new
+// thread of the pool failed to start on Windows ("cannot create thread") and got the smallest stack the system allows elsewhere.
+static ThreadPool* thread_pool_factory(int min_capacity, int max_capacity, int idle_time, int stack_size) {
+	if (min_capacity < 1) throw InvalidArgumentException("thread_pool's min_capacity must be at least 1");
+	if (max_capacity < min_capacity) throw InvalidArgumentException("thread_pool's max_capacity must be at least its min_capacity");
+	if (idle_time < 1) throw InvalidArgumentException("thread_pool's idle_time must be at least 1 second");
+	if (stack_size < 0) throw InvalidArgumentException("thread_pool's stack_size can't be negative");
+	return angelscript_refcounted_factory<ThreadPool, int, int, int, int>(min_capacity, max_capacity, idle_time, stack_size);
+}
+static void thread_pool_add_capacity(ThreadPool* pool, int modifier) {
+	if (modifier > 0 && pool->capacity() > INT_MAX - modifier) throw InvalidArgumentException("thread_pool's capacity can't go past 2147483647");
+	try {
+		pool->addCapacity(modifier);
+	} catch (const AssertionViolationException&) { // Checked under the pool's lock before anything changes.
+		throw InvalidArgumentException("thread_pool's capacity can't go below its min_capacity");
+	}
+}
+static void thread_pool_set_stack_size(ThreadPool* pool, int size) {
+	if (size < 0) throw InvalidArgumentException("thread_pool's stack_size can't be negative");
+	pool->setStackSize(size);
+}
 // ThreadPool throws, if at all, before it hands the runnable to a worker, so a failed start can always discard it.
 template <class F> void pooled_thread_start(ThreadPool* pool, asIScriptFunction* func, CScriptDictionary* args, F start) {
 	if (!func) {
@@ -1207,10 +1231,10 @@ void RegisterThreading(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod(_O("thread_event"), _O("bool try_wait(uint ms)"), asFUNCTION(event_try_wait), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(_O("thread_event"), _O("void reset()"), asMETHOD(Event, reset), asCALL_THISCALL);
 	angelscript_refcounted_register<ThreadPool>(engine, "thread_pool");
-	engine->RegisterObjectBehaviour("thread_pool", asBEHAVE_FACTORY, format("thread_pool@ p(int min_capacity = 2, int max_capacity = 16, int idle_time = 60, int stack_size = %d)", POCO_THREAD_STACK_SIZE).c_str(), asFUNCTION((angelscript_refcounted_factory<ThreadPool, int, int, int, int>)), asCALL_CDECL);
-	engine->RegisterObjectMethod("thread_pool", "void add_capacity(int modifier)", asMETHOD(ThreadPool, addCapacity), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour("thread_pool", asBEHAVE_FACTORY, format("thread_pool@ p(int min_capacity = 2, int max_capacity = 16, int idle_time = 60, int stack_size = %d)", POCO_THREAD_STACK_SIZE).c_str(), asFUNCTION(thread_pool_factory), asCALL_CDECL);
+	engine->RegisterObjectMethod("thread_pool", "void add_capacity(int modifier)", asFUNCTION(thread_pool_add_capacity), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("thread_pool", "int get_capacity() const property", asMETHOD(ThreadPool, capacity), asCALL_THISCALL);
-	engine->RegisterObjectMethod("thread_pool", "void set_stack_size(int size) property", asMETHOD(ThreadPool, setStackSize), asCALL_THISCALL);
+	engine->RegisterObjectMethod("thread_pool", "void set_stack_size(int size) property", asFUNCTION(thread_pool_set_stack_size), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("thread_pool", "int get_stack_size() const property", asMETHOD(ThreadPool, getStackSize), asCALL_THISCALL);
 	engine->RegisterObjectMethod("thread_pool", "int get_used() const property", asMETHOD(ThreadPool, used), asCALL_THISCALL);
 	engine->RegisterObjectMethod("thread_pool", "int get_allocated() const property", asMETHOD(ThreadPool, allocated), asCALL_THISCALL);
