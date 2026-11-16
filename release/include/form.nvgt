@@ -1756,7 +1756,15 @@ class audio_form {
 			form_error = form_error_invalid_control;
 			return false;
 		}
-		c_form[control_index].text = new_text.replace("\r", "", true);
+		new_text = new_text.replace("\r", "", true);
+		// An input box's maximum length, as create_input_box() applies it to the default text: set_text() put any length in the box, past
+		// which typing was then refused.
+		int max_length = c_form[control_index].type == ct_input ? c_form[control_index].max_length : 0;
+		if (max_length > 0 && audioform_character_count(new_text) > max_length) {
+			new_text = new_text.substr(0, audioform_character_offset(new_text, max_length));
+			form_error = form_error_text_too_long;
+		}
+		c_form[control_index].text = new_text;
 		c_form[control_index].cursor = 0;
 		c_form[control_index].sel_start = -1;
 		c_form[control_index].sel_end = -1;
