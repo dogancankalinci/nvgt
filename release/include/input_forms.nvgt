@@ -91,7 +91,8 @@ class choice_input_field: input_field {
 	}
 	bool set_value(dictionary@d) {
 		int pos = this.parent.main_form.get_list_position(this.control_id);
-		if (pos == -1) return false;
+		if (pos == -1) return !this.required; // fill() calls this for every field: an optional choice left unselected made the whole form invalid
+
 		string selected = this.parent.main_form.get_list_item(this.control_id, pos);
 		d.set(this.name, selected);
 		return true;
@@ -135,7 +136,7 @@ class text_field: input_field {
 	}
 	bool is_valid_text() {
 		string text = this.parent.main_form.get_text(this.control_id);
-		if (text.empty() or (this.min_length > 0 and text.length() < this.min_length)) return false;
+		if (text.empty() or (this.min_length > 0 and audioform_character_count(text) < this.min_length)) return false; // in characters, as max_length is: in bytes, two Turkish letters passed a minimum of 3
 		return true;
 	}
 }
@@ -193,7 +194,7 @@ class input_form {
 		if (@field == null) return false;
 		field.secure = secure;
 		this.fields.insert_last(field);
-		if (!disallowed_chars.empty()) field.disallowed_chars = disallowed_chars;
+		if (!disallowed_chars.empty()) field.set_disallowed_chars(disallowed_chars, false); // with the form's description of a refused character, which setting the property alone left empty
 		return true;
 	}
 	bool add_number_field(string name, string label, int default_value = -1, bool required = false) {
