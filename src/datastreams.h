@@ -128,6 +128,7 @@ class datastream : public Poco::RefCountedObject {
 	std::vector<datastream*> also_on; // Streams this one reads or writes through besides the one it was opened on (see opened_on_too()), under children_mutex.
 	std::atomic<int> pins{0}; // Closes of streams this one was opened on under way on other threads, which this one isn't freed under (see ~datastream()).
 	void leave_parents();
+	bool reads_without_end(); // see read()
 	void add_child(datastream* child);
 	void remove_child(datastream* child);
 public:

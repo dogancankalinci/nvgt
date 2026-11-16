@@ -478,6 +478,14 @@ long long datastream::get_rpos() {
 long long datastream::get_wpos() {
 	return _ostr ? (long long)_ostr->tellp() : -1;
 }
+// Whether this stream reads from a random_reader, itself or through the streams it was opened on (a hex_encoder or a deflating_reader of
+// one): that stream never ends, so read(0), which reads what is left, copied it for ever into a string that grew until memory ran out.
+bool datastream::reads_without_end() {
+	for (datastream* s = this; s; s = s->ds) {
+		if (dynamic_cast<RandomInputStream*>(s->_istr)) return true;
+	}
+	return false;
+}
 std::string datastream::read(unsigned int size) {
 	if (!r) return "";
 	if (skip_eof && eof()) stream()->clear();
@@ -488,7 +496,7 @@ std::string datastream::read(unsigned int size) {
 			_istr->seekg(0, std::ios::end);
 			size = _istr->tellg();
 			_istr->seekg(pos, std::ios::beg);
-		}
+		} else if (reads_without_end()) return ""; // the rest of it never comes, see reads_without_end()
 	}
 	try {
 		if (size > 0) {

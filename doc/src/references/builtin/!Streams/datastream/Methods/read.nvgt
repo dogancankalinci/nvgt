@@ -2,7 +2,7 @@
 	Read raw bytes from a stream.
 	string read(uint amount = 0);
 	## Arguments:
-		* uint amount = 0: The number of bytes to read, or 0 to read the entire stream. Only applicable for strings.
+		* uint amount = 0: The number of bytes to read, or 0 to read the entire stream. Only applicable for strings. A stream that never ends (a random_reader, or a stream opened on one) gives an empty string for 0, as there is no end to read up to.
 	## Returns:
 		string: The data that was read from the stream or an empty string on failure.
 	## Remarks:
