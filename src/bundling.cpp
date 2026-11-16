@@ -290,6 +290,12 @@ static void remove_previous_build_output(const string& dir) {
 	if (!is_previous_build_output(dir)) throw Exception(format("%s is a folder that NVGT didn't build, so it was left alone; move or rename it, or set build.output_basename to build somewhere else", dir));
 	file_remove_tree(dir);
 }
+// Called with each folder or file a build writes, just before it is written: a folder found there is cleared as above. Paths the
+// build never writes, such as a game folder beside game.nvgt when the build makes game.zip, are left alone whatever they hold.
+static void clear_previous_build_output(const Path& path) {
+	string p = Path(path).makeFile().toString();
+	if (DirectoryExists(p)) remove_previous_build_output(p);
+}
 // --- Custom application icon helpers (shared by every platform bundler) ---
 // Read the whole file at path into a string (raw bytes).
 static string read_file_bytes(const string& path) {
@@ -895,10 +901,10 @@ public:
 		string outpath_str = config.getString("build.output_basename", format("%s", Path(input_file).setExtension("").makeAbsolute().toString()));
 		replaceInPlace(outpath_str, "$platform"s, platform);
 		outpath_str = Path(outpath_str).makeAbsolute().toString();
-		if (DirectoryExists(outpath_str)) remove_previous_build_output(outpath_str);
 		outpath = outpath_str;
 		File(outpath.parent()).createDirectories();
 		alter_output_path(outpath);
+		clear_previous_build_output(outpath); // the file the stub is copied to, which a mode 0 build writes beside the script
 		string precommand = config.getString("build.precommand_" + g_platform + "_"s + (g_debug? "debug" : "release"), config.getString("build.precommand_" + g_platform, config.getString("build.precommand", "")));
 		if (!precommand.empty()) {
 			set_status("executing prebuild command...");
@@ -1109,8 +1115,10 @@ protected:
 		if (bundle_mode == 2) {
 			workplace_tmp = new TemporaryFile();
 			workplace = *workplace_tmp;
-		} else if(bundle_mode > 0) workplace = Path(output_path).makeFile().setExtension("");
-		else output_path.setExtension("exe");
+		} else if(bundle_mode > 0) {
+			workplace = Path(output_path).makeFile().setExtension("");
+			clear_previous_build_output(workplace.path());
+		} else output_path.setExtension("exe");
 		if (bundle_mode) {
 			workplace.createDirectories();
 			Path tmp = Path(workplace.path()).append(output_path.getBaseName()).makeFile().setExtension("exe");
@@ -1218,7 +1226,7 @@ protected:
 			workplace = Path(workplace_tmp->path()).append(Path(output_path).makeFile().getFileName()).setExtension("app");
 		} else if(bundle_mode > 0) {
 			workplace = Path(output_path).makeFile().setExtension("app");
-			if (workplace.exists() && workplace.isDirectory()) remove_previous_build_output(workplace.path()); // both MacOS and IOS create .app bundles, if we don't construct them from scratch and someone compiles for IOS after MacOS, the bundles might clash without valid output basename set.
+			clear_previous_build_output(workplace.path()); // both MacOS and IOS create .app bundles, if we don't construct them from scratch and someone compiles for IOS after MacOS, the bundles might clash without valid output basename set.
 		}
 		if (bundle_mode) {
 			Path tmp = Path(workplace.path()).append("Contents/Resources");
@@ -1402,7 +1410,7 @@ protected:
 			workplace = Path(workplace_tmp->path()).append("Payload").append(Path(output_path).makeFile().getFileName()).setExtension("app");
 		} else if(bundle_mode > 0) {
 			workplace = Path(output_path).makeFile().setExtension("app");
-			if (workplace.exists() && workplace.isDirectory()) remove_previous_build_output(workplace.path()); // both MacOS and IOS create .app bundles, if we don't construct them from scratch and someone compiles for IOS after MacOS, the bundles might clash without valid output basename set.
+			clear_previous_build_output(workplace.path()); // both MacOS and IOS create .app bundles, if we don't construct them from scratch and someone compiles for IOS after MacOS, the bundles might clash without valid output basename set.
 		}
 		if (bundle_mode) {
 			File(workplace.path()).createDirectories();
@@ -1637,7 +1645,10 @@ protected:
 		if (bundle_mode == 2) {
 			workplace_tmp = new TemporaryFile();
 			workplace = *workplace_tmp;
-		} else if(bundle_mode > 0) workplace = Path(output_path).makeFile().setExtension("");
+		} else if(bundle_mode > 0) {
+			workplace = Path(output_path).makeFile().setExtension("");
+			clear_previous_build_output(workplace.path());
+		}
 		if (bundle_mode) {
 			workplace.createDirectories();
 			Path tmp = Path(workplace.path()).append(output_path.getBaseName()).makeFile();
