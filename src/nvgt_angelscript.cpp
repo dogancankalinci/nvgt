@@ -29,6 +29,7 @@
 #include <Poco/Exception.h>
 #include <Poco/File.h>
 #include <Poco/FileStream.h>
+#include <Poco/StreamCopier.h>
 #include <Poco/Glob.h>
 #include <Poco/Mutex.h>
 #include <Poco/Path.h>
@@ -451,6 +452,20 @@ asUINT GetTimeCallback() {
 	return ticks();
 }
 
+// The text of a compiled script file, read again to look for what the build needs to know (in-app purchases, the microphone). Through
+// Poco, which takes the UTF-8 path on Windows too: std::ifstream took it in the ANSI code page there, so a script in a folder with a
+// letter outside it read as empty, its in-app purchases and microphone weren't noticed, and the game was built with the wrong stub
+// or without the microphone usage description. "" for a section that isn't a file.
+static std::string read_section_source(const std::string& section_name) {
+	try {
+		Poco::FileInputStream sf(section_name);
+		std::string src;
+		Poco::StreamCopier::copyToString(sf, src);
+		return src;
+	} catch (const std::exception&) {
+		return "";
+	}
+}
 // By default, NVGT tries to change the process's current working directory to something sane such as the script or executable's containing folder, the resources directory in a compiled MacOS app etc.
 void auto_chdir() {
 	LayeredConfiguration &config = Application::instance().config();
@@ -751,8 +766,7 @@ int CompileScript(asIScriptEngine *engine, const string &scriptFile) {
 			for (asUINT si = 0; si < builder.GetSectionCount() && !g_script_uses_iap; si++) {
 				std::string section_name = builder.GetSectionName(si);
 				if (section_name.empty()) continue;
-				std::ifstream sf(section_name);
-				std::string src((std::istreambuf_iterator<char>(sf)), std::istreambuf_iterator<char>());
+				std::string src = read_section_source(section_name);
 				const char* p = src.c_str();
 				asUINT rem = (asUINT)src.size();
 				while (rem > 0 && !g_script_uses_iap) {
@@ -772,8 +786,7 @@ int CompileScript(asIScriptEngine *engine, const string &scriptFile) {
 			for (asUINT si = 0; si < builder.GetSectionCount() && !g_script_uses_microphone; si++) {
 				std::string section_name = builder.GetSectionName(si);
 				if (section_name.empty()) continue;
-				std::ifstream sf(section_name);
-				std::string src((std::istreambuf_iterator<char>(sf)), std::istreambuf_iterator<char>());
+				std::string src = read_section_source(section_name);
 				const char* p = src.c_str();
 				asUINT rem = (asUINT)src.size();
 				while (rem > 0 && !g_script_uses_microphone) {
