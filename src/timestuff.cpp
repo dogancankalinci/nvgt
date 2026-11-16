@@ -30,6 +30,7 @@
 #include <ctime>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <string> 
 #include "nvgt.h"
 #include "pocostuff.h"  // angelscript_refcounted
@@ -527,6 +528,138 @@ template <class t> bool add_months(t &dt, asINT32 amount) {
 	return move_to_month(dt, year, int(months - year * 12) + 1);
 }
 /**
+ * 64-bit time arithmetic for scripts. Poco adds, subtracts and scales timestamps and timespans in int64 without a check, and past either
+ * end (undefined, a wrap in practice) gave a time at the far other end: timestamp(MAX) + 1 was the earliest timestamp there is,
+ * timespan(200000000, 0, 0, 0, 0) a negative span, the UTC time of a timestamp about 29000 years from 1970 one in 1970 (and the date made
+ * from it 1970-01-01), and datetime(2000, 1, 1) + timespan(MAX) 1999-12-31. Here sums and differences stop at the end of int64 they pass,
+ * the int totals of a timespan at the end of an int, and a timestamp or span that can't name a date raises "Invalid date/time." where a
+ * date would be made from it.
+*/
+static const Int64 time_max = std::numeric_limits<Int64>::max(), time_min = std::numeric_limits<Int64>::min();
+static const Int64 utc_epoch_microseconds = ((Int64(0x01b21dd2) << 32) + 0x13814000) / 10; // From 1582-10-15, where Poco's UTC time (in 100-nanosecond intervals) starts, to 1970-01-01.
+static Int64 saturating_add(Int64 a, Int64 b) {
+	if (b > 0 && a > time_max - b) return time_max;
+	if (b < 0 && a < time_min - b) return time_min;
+	return a + b;
+}
+static Int64 saturating_sub(Int64 a, Int64 b) {
+	if (b < 0 && a > time_max + b) return time_max;
+	if (b > 0 && a < time_min + b) return time_min;
+	return a - b;
+}
+static Int64 saturating_mul(Int64 a, Int64 b) { // b > 0
+	if (a > time_max / b) return time_max;
+	if (a < time_min / b) return time_min;
+	return a * b;
+}
+// n * unit + rest, with rest smaller than unit (unit > 0): rest is first given the sign of n, so that stopping the product at an end can't be undone by adding it.
+static Int64 saturating_scale_add(Int64 n, Int64 unit, Int64 rest) {
+	if (n > 0 && rest < 0) {
+		n--;
+		rest += unit;
+	} else if (n < 0 && rest > 0) {
+		n++;
+		rest -= unit;
+	}
+	return saturating_add(saturating_mul(n, unit), rest);
+}
+static int saturating_int(Int64 value) { return value > INT_MAX ? INT_MAX : value < INT_MIN ? INT_MIN : int(value); }
+static Timestamp timestamp_add(const Timestamp* ts, Int64 microseconds) { return Timestamp(saturating_add(ts->epochMicroseconds(), microseconds)); }
+static Timestamp timestamp_add_span(const Timestamp* ts, const Timespan& span) { return timestamp_add(ts, span.totalMicroseconds()); }
+static Timestamp timestamp_sub(const Timestamp* ts, Int64 microseconds) { return Timestamp(saturating_sub(ts->epochMicroseconds(), microseconds)); }
+static Timestamp timestamp_sub_span(const Timestamp* ts, const Timespan& span) { return timestamp_sub(ts, span.totalMicroseconds()); }
+static Int64 timestamp_diff(const Timestamp* ts, const Timestamp& other) { return saturating_sub(ts->epochMicroseconds(), other.epochMicroseconds()); }
+static Timestamp& timestamp_add_assign(Timestamp* ts, Int64 microseconds) { return *ts = timestamp_add(ts, microseconds); }
+static Timestamp& timestamp_add_assign_span(Timestamp* ts, const Timespan& span) { return *ts = timestamp_add_span(ts, span); }
+static Timestamp& timestamp_sub_assign(Timestamp* ts, Int64 microseconds) { return *ts = timestamp_sub(ts, microseconds); }
+static Timestamp& timestamp_sub_assign_span(Timestamp* ts, const Timespan& span) { return *ts = timestamp_sub_span(ts, span); }
+static Int64 timestamp_utc_time(const Timestamp* ts) { return saturating_mul(saturating_add(ts->epochMicroseconds(), utc_epoch_microseconds), 10); }
+static Int64 timestamp_elapsed(const Timestamp* ts) {
+	Timestamp now;
+	return timestamp_diff(&now, *ts);
+}
+static bool timestamp_has_elapsed(const Timestamp* ts, Int64 interval) { return timestamp_elapsed(ts) >= interval; }
+static Timestamp timestamp_from_utc_time(Int64 utc) {
+	// Poco subtracts its epoch first, which passed the end below about -27000 years; both values are negative there, so dividing first rounds the same way.
+	if (utc < time_min + utc_epoch_microseconds * 10) return Timestamp(utc / 10 - utc_epoch_microseconds);
+	return Timestamp::fromUtcTime(utc);
+}
+// Whether the UTC time of a timestamp fits in 64 bits, as that of every date does; Poco makes a date from that UTC time.
+static bool timestamp_can_be_date(const Timestamp& ts) {
+	Int64 us = ts.epochMicroseconds();
+	return us <= time_max / 10 - utc_epoch_microseconds && us >= time_min / 10 - utc_epoch_microseconds;
+}
+static DateTime* datetime_from_timestamp(const Timestamp& ts) {
+	if (!timestamp_can_be_date(ts)) {
+		add_out_of_range();
+		return nullptr;
+	}
+	return angelscript_refcounted_factory<DateTime, const Timestamp&>(ts);
+}
+template <class t> t& date_time_assign_timestamp(t* dt, const Timestamp& ts) {
+	if (!timestamp_can_be_date(ts)) {
+		add_out_of_range();
+		return *dt;
+	}
+	return *dt = ts;
+}
+static std::string timestamp_format(const Timestamp* ts, const std::string& fmt, int tzd) {
+	if (!timestamp_can_be_date(*ts)) {
+		add_out_of_range();
+		return "";
+	}
+	return DateTimeFormatter::format(*ts, fmt, tzd);
+}
+// A span longer than the whole range of valid dates raises, as add_units does; Poco raises for any other span that takes a date out of range.
+static bool span_fits_dates(const Timespan& span) {
+	const Timespan::TimeDiff limit = Timespan::TimeDiff(15000) * 366 * Timespan::DAYS;
+	return span.totalMicroseconds() <= limit && span.totalMicroseconds() >= -limit;
+}
+template <class t> t* date_time_add_span(t* dt, const Timespan& span) {
+	if (!span_fits_dates(span)) {
+		add_out_of_range();
+		return nullptr;
+	}
+	return angelscript_refcounted_duplicating_method<t, static_cast<t (t::*)(const Timespan&) const>(&t::operator+), const Timespan&>(dt, span);
+}
+template <class t> t* date_time_sub_span(t* dt, const Timespan& span) {
+	if (!span_fits_dates(span)) {
+		add_out_of_range();
+		return nullptr;
+	}
+	return angelscript_refcounted_duplicating_method<t, static_cast<t (t::*)(const Timespan&) const>(&t::operator-), const Timespan&>(dt, span);
+}
+template <class t> t& date_time_add_assign_span(t* dt, const Timespan& span) {
+	if (!span_fits_dates(span)) {
+		add_out_of_range();
+		return *dt;
+	}
+	return *dt += span;
+}
+template <class t> t& date_time_sub_assign_span(t* dt, const Timespan& span) {
+	if (!span_fits_dates(span)) {
+		add_out_of_range();
+		return *dt;
+	}
+	return *dt -= span;
+}
+static void timespan_construct_parts(void* mem, int days, int hours, int minutes, int seconds, int microseconds) {
+	Int64 rest = Int64(hours) * Timespan::HOURS + Int64(minutes) * Timespan::MINUTES + Int64(seconds) * Timespan::SECONDS + microseconds; // At most about 7.9e18, inside int64.
+	new (mem) Timespan(saturating_scale_add(Int64(days) + rest / Timespan::DAYS, Timespan::DAYS, rest % Timespan::DAYS));
+}
+static Timespan timespan_add(const Timespan* span, Int64 microseconds) { return Timespan(saturating_add(span->totalMicroseconds(), microseconds)); }
+static Timespan timespan_add_span(const Timespan* span, const Timespan& other) { return timespan_add(span, other.totalMicroseconds()); }
+static Timespan timespan_sub(const Timespan* span, Int64 microseconds) { return Timespan(saturating_sub(span->totalMicroseconds(), microseconds)); }
+static Timespan timespan_sub_span(const Timespan* span, const Timespan& other) { return timespan_sub(span, other.totalMicroseconds()); }
+static Timespan& timespan_add_assign(Timespan* span, Int64 microseconds) { return *span = timespan_add(span, microseconds); }
+static Timespan& timespan_add_assign_span(Timespan* span, const Timespan& other) { return *span = timespan_add_span(span, other); }
+static Timespan& timespan_sub_assign(Timespan* span, Int64 microseconds) { return *span = timespan_sub(span, microseconds); }
+static Timespan& timespan_sub_assign_span(Timespan* span, const Timespan& other) { return *span = timespan_sub_span(span, other); }
+static int timespan_total_hours(const Timespan* span) { return saturating_int(span->totalMicroseconds() / Timespan::HOURS); }
+static int timespan_total_minutes(const Timespan* span) { return saturating_int(span->totalMicroseconds() / Timespan::MINUTES); }
+static int timespan_total_seconds(const Timespan* span) { return saturating_int(span->totalMicroseconds() / Timespan::SECONDS); }
+
+/**
  * Computes the difference between two dates either in years, months, days, hours, minutes or seconds.
  * These also match BGT's calendar API.
 */
@@ -544,14 +677,15 @@ template <class t> Timespan make_diff_timespan(t &first, t &second) {
 template <class t> asINT64 diff_days(t &first, t &second) {
 	return make_diff_timespan(first, second).days();
 }
+// From the span's microseconds: Timespan's totalHours(), totalMinutes() and totalSeconds() are int, which cut diff_seconds of dates more than 68 years apart (1900 to 2000 gave -1139293696) and diff_minutes past 4083 years.
 template <class t> asINT64 diff_hours(t &first, t &second) {
-	return make_diff_timespan(first, second).totalHours();
+	return make_diff_timespan(first, second).totalMicroseconds() / Timespan::HOURS;
 }
 template <class t> asINT64 diff_minutes(t &first, t &second) {
-	return make_diff_timespan(first, second).totalMinutes();
+	return make_diff_timespan(first, second).totalMicroseconds() / Timespan::MINUTES;
 }
 template <class t> asINT64 diff_seconds(t &first, t &second) {
-	return (asINT64)make_diff_timespan(first, second).totalSeconds();
+	return make_diff_timespan(first, second).totalMicroseconds() / Timespan::SECONDS;
 }
 /**
  * The given date and time moved to another year, February 29th becoming the 28th in a year that has none, as add_years() moves it.
@@ -783,26 +917,26 @@ void RegisterScriptTimestuffCore(asIScriptEngine *engine) {
 	engine->RegisterObjectMethod("timestamp", "void update()", asMETHOD(Timestamp, update), asCALL_THISCALL);
 	engine->RegisterObjectMethod("timestamp", "bool opEquals(const timestamp&in other) const", asMETHOD(Timestamp, operator==), asCALL_THISCALL);
 	engine->RegisterObjectMethod("timestamp", "int opCmp(const timestamp&in other) const", asFUNCTION((timestuff_opCmp<Timestamp, const Timestamp&>)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("timestamp", "timestamp opAdd(int64 microseconds) const", asMETHODPR(Timestamp, operator+, (Int64) const, Timestamp), asCALL_THISCALL);
-	engine->RegisterObjectMethod("timestamp", "timestamp opAdd(const timespan&in value) const", asMETHODPR(Timestamp, operator+, (const Timespan&) const, Timestamp), asCALL_THISCALL);
-	engine->RegisterObjectMethod("timestamp", "timestamp opSub(int64 microseconds) const", asMETHODPR(Timestamp, operator-, (Int64) const, Timestamp), asCALL_THISCALL);
-	engine->RegisterObjectMethod("timestamp", "timestamp opSub(const timespan&in value) const", asMETHODPR(Timestamp, operator-, (const Timespan&) const, Timestamp), asCALL_THISCALL);
-	engine->RegisterObjectMethod("timestamp", "int64 opSub(const timestamp&in other) const", asMETHODPR(Timestamp, operator-, (const Timestamp&) const, Int64), asCALL_THISCALL);
-	engine->RegisterObjectMethod("timestamp", "timestamp& opAddAssign(int64 microseconds)", asMETHODPR(Timestamp, operator+=, (Int64), Timestamp&), asCALL_THISCALL);
-	engine->RegisterObjectMethod("timestamp", "timestamp& opAddAssign(const timespan&in value)", asMETHODPR(Timestamp, operator+=, (const Timespan&), Timestamp&), asCALL_THISCALL);
-	engine->RegisterObjectMethod("timestamp", "timestamp& opSubAssign(int64 microseconds)", asMETHODPR(Timestamp, operator-=, (Int64), Timestamp&), asCALL_THISCALL);
-	engine->RegisterObjectMethod("timestamp", "timestamp& opSubAssign(const timespan&in value)", asMETHODPR(Timestamp, operator-=, (const Timespan&), Timestamp&), asCALL_THISCALL);
-	engine->RegisterObjectMethod("timestamp", "int64 get_UTC_time() const property", asMETHOD(Timestamp, utcTime), asCALL_THISCALL);
-	engine->RegisterObjectMethod("timestamp", "int64 get_elapsed() const property", asMETHOD(Timestamp, elapsed), asCALL_THISCALL);
-	engine->RegisterObjectMethod("timestamp", "bool has_elapsed(int64 microseconds) const", asMETHOD(Timestamp, isElapsed), asCALL_THISCALL);
+	engine->RegisterObjectMethod("timestamp", "timestamp opAdd(int64 microseconds) const", asFUNCTION(timestamp_add), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("timestamp", "timestamp opAdd(const timespan&in value) const", asFUNCTION(timestamp_add_span), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("timestamp", "timestamp opSub(int64 microseconds) const", asFUNCTION(timestamp_sub), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("timestamp", "timestamp opSub(const timespan&in value) const", asFUNCTION(timestamp_sub_span), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("timestamp", "int64 opSub(const timestamp&in other) const", asFUNCTION(timestamp_diff), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("timestamp", "timestamp& opAddAssign(int64 microseconds)", asFUNCTION(timestamp_add_assign), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("timestamp", "timestamp& opAddAssign(const timespan&in value)", asFUNCTION(timestamp_add_assign_span), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("timestamp", "timestamp& opSubAssign(int64 microseconds)", asFUNCTION(timestamp_sub_assign), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("timestamp", "timestamp& opSubAssign(const timespan&in value)", asFUNCTION(timestamp_sub_assign_span), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("timestamp", "int64 get_UTC_time() const property", asFUNCTION(timestamp_utc_time), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("timestamp", "int64 get_elapsed() const property", asFUNCTION(timestamp_elapsed), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("timestamp", "bool has_elapsed(int64 microseconds) const", asFUNCTION(timestamp_has_elapsed), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("timestamp", "int64 opImplConv() const", asMETHOD(Timestamp, raw), asCALL_THISCALL);
-	engine->RegisterGlobalFunction("timestamp timestamp_from_UTC_time(int64 UTC)", asFUNCTION(Timestamp::fromUtcTime), asCALL_CDECL);
+	engine->RegisterGlobalFunction("timestamp timestamp_from_UTC_time(int64 UTC)", asFUNCTION(timestamp_from_utc_time), asCALL_CDECL);
 	engine->RegisterObjectBehaviour("timespan", asBEHAVE_CONSTRUCT, "void f()", asFUNCTION(timestuff_construct<Timespan>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectBehaviour("timespan", asBEHAVE_CONSTRUCT, "void f(int64 microseconds)", asFUNCTION((timestuff_construct<Timespan, Int64>)), asCALL_CDECL_OBJFIRST);
 	// Taken as the script's int: as long, 8 bytes on 64-bit Linux, macOS, Android and iOS, a negative value arrived zero-extended
 	// (timespan(-5, 0) was 4294967291 seconds) on x86-64, and with garbage in its upper half on 64-bit ARM.
 	engine->RegisterObjectBehaviour("timespan", asBEHAVE_CONSTRUCT, "void f(int seconds, int microseconds)", asFUNCTION((timestuff_construct<Timespan, int, int>)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectBehaviour("timespan", asBEHAVE_CONSTRUCT, "void f(int days, int hours, int minutes, int seconds, int microseconds)", asFUNCTION((timestuff_construct<Timespan, int, int, int, int, int>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectBehaviour("timespan", asBEHAVE_CONSTRUCT, "void f(int days, int hours, int minutes, int seconds, int microseconds)", asFUNCTION(timespan_construct_parts), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectBehaviour("timespan", asBEHAVE_CONSTRUCT, "void f(const timespan&in other)", asFUNCTION(timestuff_copy_construct<Timespan>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectBehaviour("timespan", asBEHAVE_DESTRUCT, "void f()", asFUNCTION(timestuff_destruct<Timespan>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("timespan", "timespan& opAssign(const timespan&in other)", asMETHODPR(Timespan, operator=, (const Timespan&), Timespan&), asCALL_THISCALL);
@@ -811,33 +945,33 @@ void RegisterScriptTimestuffCore(asIScriptEngine *engine) {
 	engine->RegisterObjectMethod("timespan", "bool opEquals(int64 microseconds) const", asMETHODPR(Timespan, operator==, (Int64) const, bool), asCALL_THISCALL);
 	engine->RegisterObjectMethod("timespan", "int opCmp(const timespan&in other) const", asFUNCTION((timestuff_opCmp<Timespan, const Timespan&>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("timespan", "int opCmp(int64 microseconds) const", asFUNCTION((timestuff_opCmp<Timespan, Int64>)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("timespan", "timespan opAdd(int64 microseconds) const", asMETHODPR(Timespan, operator+, (Int64) const, Timespan), asCALL_THISCALL);
-	engine->RegisterObjectMethod("timespan", "timespan opAdd(const timespan&in other) const", asMETHODPR(Timespan, operator+, (const Timespan&) const, Timespan), asCALL_THISCALL);
-	engine->RegisterObjectMethod("timespan", "timespan opSub(int64 microseconds) const", asMETHODPR(Timespan, operator-, (Int64) const, Timespan), asCALL_THISCALL);
-	engine->RegisterObjectMethod("timespan", "timespan opSub(const timespan&in other) const", asMETHODPR(Timespan, operator-, (const Timespan&) const, Timespan), asCALL_THISCALL);
-	engine->RegisterObjectMethod("timespan", "timespan& opAddAssign(int64 microseconds)", asMETHODPR(Timespan, operator+=, (Int64), Timespan&), asCALL_THISCALL);
-	engine->RegisterObjectMethod("timespan", "timespan& opAddAssign(const timespan&in other)", asMETHODPR(Timespan, operator+=, (const Timespan&), Timespan&), asCALL_THISCALL);
-	engine->RegisterObjectMethod("timespan", "timespan& opSubAssign(int64 microseconds)", asMETHODPR(Timespan, operator-=, (Int64), Timespan&), asCALL_THISCALL);
-	engine->RegisterObjectMethod("timespan", "timespan& opSubAssign(const timespan&in other)", asMETHODPR(Timespan, operator-=, (const Timespan&), Timespan&), asCALL_THISCALL);
+	engine->RegisterObjectMethod("timespan", "timespan opAdd(int64 microseconds) const", asFUNCTION(timespan_add), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("timespan", "timespan opAdd(const timespan&in other) const", asFUNCTION(timespan_add_span), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("timespan", "timespan opSub(int64 microseconds) const", asFUNCTION(timespan_sub), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("timespan", "timespan opSub(const timespan&in other) const", asFUNCTION(timespan_sub_span), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("timespan", "timespan& opAddAssign(int64 microseconds)", asFUNCTION(timespan_add_assign), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("timespan", "timespan& opAddAssign(const timespan&in other)", asFUNCTION(timespan_add_assign_span), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("timespan", "timespan& opSubAssign(int64 microseconds)", asFUNCTION(timespan_sub_assign), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("timespan", "timespan& opSubAssign(const timespan&in other)", asFUNCTION(timespan_sub_assign_span), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("timespan", "int get_days() const property", asMETHOD(Timespan, days), asCALL_THISCALL);
 	engine->RegisterObjectMethod("timespan", "int get_hours() const property", asMETHOD(Timespan, hours), asCALL_THISCALL);
-	engine->RegisterObjectMethod("timespan", "int get_total_hours() const property", asMETHOD(Timespan, totalHours), asCALL_THISCALL);
+	engine->RegisterObjectMethod("timespan", "int get_total_hours() const property", asFUNCTION(timespan_total_hours), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("timespan", "int get_minutes() const property", asMETHOD(Timespan, minutes), asCALL_THISCALL);
-	engine->RegisterObjectMethod("timespan", "int get_total_minutes() const property", asMETHOD(Timespan, totalMinutes), asCALL_THISCALL);
+	engine->RegisterObjectMethod("timespan", "int get_total_minutes() const property", asFUNCTION(timespan_total_minutes), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("timespan", "int get_seconds() const property", asMETHOD(Timespan, seconds), asCALL_THISCALL);
-	engine->RegisterObjectMethod("timespan", "int get_total_seconds() const property", asMETHOD(Timespan, totalSeconds), asCALL_THISCALL);
+	engine->RegisterObjectMethod("timespan", "int get_total_seconds() const property", asFUNCTION(timespan_total_seconds), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("timespan", "int get_milliseconds() const property", asMETHOD(Timespan, milliseconds), asCALL_THISCALL);
 	engine->RegisterObjectMethod("timespan", "int64 get_total_milliseconds() const property", asMETHOD(Timespan, totalMilliseconds), asCALL_THISCALL);
 	engine->RegisterObjectMethod("timespan", "int get_microseconds() const property", asMETHOD(Timespan, microseconds), asCALL_THISCALL);
 	engine->RegisterObjectMethod("timespan", "int get_useconds() const property", asMETHOD(Timespan, useconds), asCALL_THISCALL);
 	engine->RegisterObjectMethod("timespan", "int64 get_total_microseconds() const property", asMETHOD(Timespan, totalMicroseconds), asCALL_THISCALL);
 	engine->RegisterObjectBehaviour("datetime", asBEHAVE_FACTORY, "datetime@ f()", asFUNCTION(angelscript_refcounted_factory<DateTime>), asCALL_CDECL);
-	engine->RegisterObjectBehaviour("datetime", asBEHAVE_FACTORY, "datetime@ f(const timestamp&in timestamp)", asFUNCTION((angelscript_refcounted_factory<DateTime, const Timestamp&>)), asCALL_CDECL);
+	engine->RegisterObjectBehaviour("datetime", asBEHAVE_FACTORY, "datetime@ f(const timestamp&in timestamp)", asFUNCTION(datetime_from_timestamp), asCALL_CDECL);
 	engine->RegisterObjectBehaviour("datetime", asBEHAVE_FACTORY, "datetime@ f(double julian_day)", asFUNCTION((angelscript_refcounted_factory<DateTime, double>)), asCALL_CDECL);
 	engine->RegisterObjectBehaviour("datetime", asBEHAVE_FACTORY, "datetime@ f(int year, int month, int day, int hour = 0, int minute = 0, int second = 0, int millisecond = 0, int microsecond = 0)", asFUNCTION((angelscript_refcounted_factory<DateTime, int, int, int, int, int, int, int, int>)), asCALL_CDECL);
 	engine->RegisterObjectBehaviour("datetime", asBEHAVE_FACTORY, "datetime@ f(const datetime&in other)", asFUNCTION((angelscript_refcounted_factory<DateTime, const DateTime&>)), asCALL_CDECL);
 	engine->RegisterObjectMethod("datetime", "datetime& opAssign(const datetime&in other)", asMETHODPR(DateTime, operator=, (const DateTime&), DateTime&), asCALL_THISCALL);
-	engine->RegisterObjectMethod("datetime", "datetime& opAssign(const timestamp&in value)", asMETHODPR(DateTime, operator=, (const Timestamp&), DateTime&), asCALL_THISCALL);
+	engine->RegisterObjectMethod("datetime", "datetime& opAssign(const timestamp&in value)", asFUNCTION(date_time_assign_timestamp<DateTime>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("datetime", "datetime& opAssign(double julian_day)", asMETHODPR(DateTime, operator=, (double), DateTime&), asCALL_THISCALL);
 	engine->RegisterObjectMethod("datetime", "datetime& set(int year, int month, int day, int hour = 0, int minute = 0, int second = 0, int millisecond = 0, int microsecond = 0)", asFUNCTION(date_time_set<DateTime>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("datetime", "int get_year() const property", asMETHOD(DateTime, year), asCALL_THISCALL);
@@ -859,11 +993,11 @@ void RegisterScriptTimestuffCore(asIScriptEngine *engine) {
 	engine->RegisterObjectMethod("datetime", "int64 get_UTC_time() const property", asMETHOD(DateTime, utcTime), asCALL_THISCALL);
 	engine->RegisterObjectMethod("datetime", "bool opEquals(const datetime&in other) const", asMETHOD(DateTime, operator==), asCALL_THISCALL);
 	engine->RegisterObjectMethod("datetime", "int opCmp(const datetime&in other) const", asFUNCTION((timestuff_opCmp<DateTime, const DateTime&>)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("datetime", "datetime@ opAdd(const timespan&in value) const", asFUNCTION((angelscript_refcounted_duplicating_method < DateTime, static_cast<DateTime (DateTime::*)(const Timespan&) const>(&DateTime::operator+), const Timespan& >)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("datetime", "datetime@ opSub(const timespan&in value) const", asFUNCTION((angelscript_refcounted_duplicating_method < DateTime, static_cast<DateTime (DateTime::*)(const Timespan&) const>(&DateTime::operator-), const Timespan& >)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("datetime", "datetime@ opAdd(const timespan&in value) const", asFUNCTION(date_time_add_span<DateTime>), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("datetime", "datetime@ opSub(const timespan&in value) const", asFUNCTION(date_time_sub_span<DateTime>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("datetime", "timespan opSub(const datetime&in other) const", asMETHODPR(DateTime, operator-, (const DateTime&) const, Timespan), asCALL_THISCALL);
-	engine->RegisterObjectMethod("datetime", "datetime& opAddAssign(const timespan&in value)", asMETHODPR(DateTime, operator+=, (const Timespan&), DateTime&), asCALL_THISCALL);
-	engine->RegisterObjectMethod("datetime", "datetime& opSubAssign(const timespan&in value)", asMETHODPR(DateTime, operator-=, (const Timespan&), DateTime&), asCALL_THISCALL);
+	engine->RegisterObjectMethod("datetime", "datetime& opAddAssign(const timespan&in value)", asFUNCTION(date_time_add_assign_span<DateTime>), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("datetime", "datetime& opSubAssign(const timespan&in value)", asFUNCTION(date_time_sub_assign_span<DateTime>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("datetime", "void make_UTC(int timezone_offset)", asMETHOD(DateTime, makeUTC), asCALL_THISCALL);
 	engine->RegisterObjectMethod("datetime", "void make_local(int timezone_offset)", asMETHOD(DateTime, makeLocal), asCALL_THISCALL);
 	engine->RegisterObjectMethod("datetime", "void reset()", asFUNCTION(timestuff_reset<DateTime>), asCALL_CDECL_OBJFIRST);
@@ -876,7 +1010,7 @@ void RegisterScriptTimestuffCore(asIScriptEngine *engine) {
 	engine->RegisterObjectBehaviour("calendar", asBEHAVE_FACTORY, "calendar@ f(const datetime&in value)", asFUNCTION((angelscript_refcounted_factory<LocalDateTime, const DateTime&>)), asCALL_CDECL);
 	engine->RegisterObjectBehaviour("calendar", asBEHAVE_FACTORY, "calendar@ f(const calendar&in other)", asFUNCTION((angelscript_refcounted_factory<LocalDateTime, const LocalDateTime&>)), asCALL_CDECL);
 	engine->RegisterObjectMethod("calendar", "calendar& opAssign(const calendar&in other)", asMETHODPR(LocalDateTime, operator=, (const LocalDateTime&), LocalDateTime&), asCALL_THISCALL);
-	engine->RegisterObjectMethod("calendar", "calendar& opAssign(const timestamp&in value)", asMETHODPR(LocalDateTime, operator=, (const Timestamp&), LocalDateTime&), asCALL_THISCALL);
+	engine->RegisterObjectMethod("calendar", "calendar& opAssign(const timestamp&in value)", asFUNCTION(date_time_assign_timestamp<LocalDateTime>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("calendar", "calendar& opAssign(double julian_day)", asMETHODPR(LocalDateTime, operator=, (double), LocalDateTime&), asCALL_THISCALL);
 	engine->RegisterObjectMethod("calendar", "calendar& set(int year, int month, int day, int hour = 0, int minute = 0, int second = 0, int millisecond = 0, int microsecond = 0)", asFUNCTION(date_time_set<LocalDateTime>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("calendar", "int get_year() const property", asMETHOD(LocalDateTime, year), asCALL_THISCALL);
@@ -900,15 +1034,15 @@ void RegisterScriptTimestuffCore(asIScriptEngine *engine) {
 	engine->RegisterObjectMethod("calendar", "int64 get_UTC_time() const property", asMETHOD(LocalDateTime, utcTime), asCALL_THISCALL);
 	engine->RegisterObjectMethod("calendar", "bool opEquals(const calendar&in other) const", asMETHOD(LocalDateTime, operator==), asCALL_THISCALL);
 	engine->RegisterObjectMethod("calendar", "int opCmp(const calendar&in other) const", asFUNCTION((timestuff_opCmp<LocalDateTime, const LocalDateTime&>)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("calendar", "calendar@ opAdd(const timespan&in value) const", asFUNCTION((angelscript_refcounted_duplicating_method < LocalDateTime, &LocalDateTime::operator+, const Timespan& >)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("calendar", "calendar@ opSub(const timespan&in value) const", asFUNCTION((angelscript_refcounted_duplicating_method < LocalDateTime, static_cast<LocalDateTime(LocalDateTime::*)(const Timespan&) const>(&LocalDateTime::operator-), const Timespan& >)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("calendar", "calendar@ opAdd(const timespan&in value) const", asFUNCTION(date_time_add_span<LocalDateTime>), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("calendar", "calendar@ opSub(const timespan&in value) const", asFUNCTION(date_time_sub_span<LocalDateTime>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("calendar", "timespan opSub(const calendar&in other) const", asMETHODPR(LocalDateTime, operator-, (const LocalDateTime&) const, Timespan), asCALL_THISCALL);
-	engine->RegisterObjectMethod("calendar", "calendar& opAddAssign(const timespan&in value)", asMETHODPR(LocalDateTime, operator+=, (const Timespan&), LocalDateTime&), asCALL_THISCALL);
-	engine->RegisterObjectMethod("calendar", "calendar& opSubAssign(const timespan&in value)", asMETHODPR(LocalDateTime, operator-=, (const Timespan&), LocalDateTime&), asCALL_THISCALL);
+	engine->RegisterObjectMethod("calendar", "calendar& opAddAssign(const timespan&in value)", asFUNCTION(date_time_add_assign_span<LocalDateTime>), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("calendar", "calendar& opSubAssign(const timespan&in value)", asFUNCTION(date_time_sub_assign_span<LocalDateTime>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("calendar", "void reset()", asFUNCTION(timestuff_reset<LocalDateTime>), asCALL_CDECL_OBJFIRST);
 	register_date_time_extensions<LocalDateTime>(engine, "calendar");
 	register_date_time_extensions<DateTime>(engine, "datetime");
-	engine->RegisterObjectMethod("timestamp", "string format(const string&in fmt, int tzd = 0xffff)", asFUNCTIONPR(DateTimeFormatter::format, (const Timestamp&, const std::string&, int), std::string), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("timestamp", "string format(const string&in fmt, int tzd = 0xffff)", asFUNCTION(timestamp_format), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("datetime", "string format(const string&in fmt, int tzd = 0xffff)", asFUNCTIONPR(DateTimeFormatter::format, (const DateTime&, const std::string&, int), std::string), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("calendar", "string format(const string&in fmt)", asFUNCTIONPR(DateTimeFormatter::format, (const LocalDateTime&, const std::string&), std::string), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("timespan", "string format(const string&in fmt = \"%dd %H:%M:%S.%i\")", asFUNCTIONPR(DateTimeFormatter::format, (const Timespan&, const std::string&), std::string), asCALL_CDECL_OBJFIRST);

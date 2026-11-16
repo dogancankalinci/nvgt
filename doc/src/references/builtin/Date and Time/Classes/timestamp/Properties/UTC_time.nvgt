@@ -3,6 +3,7 @@
 	const int64 UTC_time;
 	## Remarks:
 		UTC based time begins on October 15, 1582 at 12 AM and uses an accuracy of 100 nanoseconds.
+		For a timestamp more than about 29000 years before or after 1970, whose UTC time doesn't fit in an int64, this is the largest or smallest int64 value.
 */
 
 // Example:
