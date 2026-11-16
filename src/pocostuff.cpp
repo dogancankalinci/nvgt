@@ -70,6 +70,7 @@ std::string hex_to_string(const std::string& str) {
 	char c;
 	while (dec.get(c))
 		output += c;
+	if (dec.bad()) return ""; // see base64_decode()
 	return output;
 }
 std::string base64_encode(const std::string& str, int options) {
@@ -90,6 +91,10 @@ std::string base64_decode(const std::string& str, int options) {
 	char c;
 	while (dec.get(c))
 		output += c;
+	// The decoder throws at a character it can't decode, which the stream takes for a failure of the read (badbit): what was decoded
+	// before it was returned as the whole result ("aGVs!G8=" gave "hel", a missing pad without STRING_BASE64_PADLESS a group short),
+	// while the documented result of a failure is an empty string.
+	if (dec.bad()) return "";
 	return output;
 }
 std::string base32_encode(const std::string& str) {
@@ -109,6 +114,7 @@ std::string base32_decode(const std::string& str) {
 	char c;
 	while (dec.get(c))
 		output += c;
+	if (dec.bad()) return ""; // see base64_decode()
 	return output;
 }
 std::string string_recode(const std::string& text, const std::string& in_encoding, const std::string& out_encoding, int* errors) {
