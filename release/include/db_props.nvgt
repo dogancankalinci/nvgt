@@ -399,14 +399,17 @@ class database_list : database_property {
 		return retrieved;
 	}
 	string text() { return string(value); }
-	void insert_at(uint pos, const string& in v) { modified = true; value.insert_at(pos, v); }
-	void insert_last(const string& in v) { modified = true; value.insert_last(v); }
-	void remove_last() { modified = true; value.remove_last(); }
-	void remove_at(uint pos) { modified = true; value.remove_at(pos); }
-	void remove_range(uint start, uint count) { modified = true; value.remove_range(start, count); }
+	// Each change reads the list from its row first when it hasn't been read yet, as set_opIndex does: marked as modified first, the
+	// list was no longer read, so one loaded without its column (a SELECT of other columns) was changed as an empty list and written
+	// over the stored items (insert_last("c") on a stored a, b left c; remove_last() raised "Index out of bounds").
+	void insert_at(uint pos, const string& in v) { string[]@ list = value; modified = true; list.insert_at(pos, v); }
+	void insert_last(const string& in v) { string[]@ list = value; modified = true; list.insert_last(v); }
+	void remove_last() { string[]@ list = value; modified = true; list.remove_last(); }
+	void remove_at(uint pos) { string[]@ list = value; modified = true; list.remove_at(pos); }
+	void remove_range(uint start, uint count) { string[]@ list = value; modified = true; list.remove_range(start, count); }
 	void reserve(uint count) { value.reserve(count); } // it resized the list, adding empty items, unmarked
-	void resize(uint count) { modified = true; value.resize(count); }
-	void reverse() { modified = true; value.reverse(); }
+	void resize(uint count) { string[]@ list = value; modified = true; list.resize(count); }
+	void reverse() { string[]@ list = value; modified = true; list.reverse(); }
 	bool is_empty() { return value.is_empty(); }
 	uint length() { return value.length(); }
 	int find(const string& in v) { return value.find(v); }
