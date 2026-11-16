@@ -7,7 +7,9 @@
  This class provides a convenient way of managing sounds in an environment, with 1, 2 and 3 dimensions. The sound_pool_item class holds all the information necessary for one single sound in the game world. Note that you should not make instances of the sound_pool_item class directly but always use the methods and properties provided in the sound_pool class.
 */
 #include "rotation.nvgt"
-#pragma plugin legacy_sound // pack and the legacy sound object come from it: a script including this file without the pragma itself didn't compile
+// pack and the legacy sound object come from the plugin, so that a script including this file needn't load it itself. NVGT's own sound system moves out of the way first, as the plugin's page says: with it in the global namespace, the plugin's sound_default_pack and sound_default_mixer clashed with its own, and the script didn't compile.
+#pragma namespace sound upcoming
+#pragma plugin legacy_sound
 bool sound_pool_default_y_elevation = false;
 class sound_pool_item {
 	sound@ handle;
