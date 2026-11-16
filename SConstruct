@@ -569,6 +569,18 @@ elif env["NVGT_TARGET"] == "android":
 	# shared + Android system libs. No NVGT static libs; static plugins requested via android_static_plugins are prepended
 	# per ABI below.
 	android_link_libs = common_libs + ["z", "SDL3", "phonon", "pffft", "mysofa", "GLESv1_CM", "GLESv2", "OpenSLES", "log", "android", "m"]
+	def prune_android_libs(dest, keep):
+		"""Deletes every .so in dest that this build does not put there. gradle packages the whole directory
+		(jniLibs.srcDirs in jni/build.gradle), and SCons never removes a file it has stopped installing, so a library
+		an earlier build placed here went on shipping in every APK: the prebuilt libphonon.so stayed in each stub
+		after Steam Audio became a static library. The directories are build output only (ignored by git)."""
+		if GetOption("no_exec") or GetOption("help"): return
+		path = Dir("#" + dest).abspath
+		if not os.path.isdir(path): return
+		for name in sorted(os.listdir(path)):
+			if name.endswith(".so") and name not in keep and os.path.isfile(os.path.join(path, name)):
+				os.remove(os.path.join(path, name))
+				print(f"removed {dest}/{name}, which this build no longer produces")
 	for abi, (clang_triple, libcxx_dir) in env["ANDROID_ABIS"].items():
 		abi_dev = os.path.join(osdev_base, abi)
 		abi_env = env.Clone()
@@ -642,6 +654,7 @@ elif env["NVGT_TARGET"] == "android":
 			android_deps.append(lib)
 			android_deps.extend(env.Install(dest, libcxx_path))
 			android_deps.extend(env.Install(dest, os.path.join(abi_dev, "lib/libSDL3.so")))
+			prune_android_libs(dest, {libname + ".so", os.path.basename(libcxx_path), "libSDL3.so"})
 	# `scons android_apk` groups the native libs; gradle packaging (assemble*Release) stays a separate manual/CI step (see d260d85).
 	def run_gradle(target, source, env):
 		import subprocess
