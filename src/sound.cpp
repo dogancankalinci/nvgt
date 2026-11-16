@@ -2220,7 +2220,7 @@ static ma_uint64 read_file_on(ma_data_source* backend, ma_uint64 frames) {
 	}
 	return done;
 }
-// Reads a file of unknown length on from the frame its seek stopped at to the one sought: MiniAudio's FLAC decoder clamps a seek to the file's total, 0 for one that doesn't give it, so that every seek, range start and loop point landed on the file's start, reported as made, the decoder's read point saying otherwise. dr_flac's own seek reads on too. Should the file end first, it's put back where it was, at before, and the seek refused, as one past a length is.
+// Reads a file of unknown length on from the frame its seek stopped at to the one sought, should a decoder report a seek made short of it, the decoder's read point saying otherwise. Should the file end first, it's put back where it was, at before, and the seek refused, as one past a length is. MiniAudio's FLAC decoder, which an earlier MiniAudio clamped to a total of 0 for a file that doesn't give it, now fails a seek past such a file's end instead: see held_decoder_seek().
 static ma_result read_on_to_frame(ma_data_source* backend, ma_uint64 cursor, ma_uint64 frame, ma_uint64 before) {
 	ma_uint64 length = 0;
 	if (ma_data_source_get_length_in_pcm_frames(backend, &length) != MA_SUCCESS || length) return MA_SUCCESS;
@@ -2274,7 +2274,7 @@ static ma_result held_decoder_seek(ma_data_source* source, ma_uint64 frame) {
 	} // Refused by a file that can seek, which a script is told, the decoder reading on from where it was rather than giving silence from the frame (see held_file_seek()).
 	if (result == MA_SUCCESS && file->can_seek && file_cursor(decoder->pBackend, &cursor) && cursor < file_frame && (result = read_on_to_frame(decoder->pBackend, cursor, file_frame, before)) != MA_SUCCESS) {
 		if (t_script_seek) return result;
-		file->finished.store(true); // A loop point past the end of a file that doesn't give its length, which the script can't tell: ended, as a decoder that can't seek back is. MiniAudio takes a seek's failure as a read's, and a looping sound played silence for good, reading the file again each block.
+		file->finished.store(true); // A loop point past the end of a file that doesn't give its length, which the script can't tell: ended, as a decoder that can't seek back is.
 		return MA_SUCCESS;
 	}
 	if (result == MA_SUCCESS) {
@@ -2285,6 +2285,15 @@ static ma_result held_decoder_seek(ma_data_source* source, ma_uint64 frame) {
 		file->finished.store(false);
 		file->ended.store(false);
 		return result;
+	}
+	// Refused by a file that can seek but whose length isn't known, the only one whose refusal held_file_seek() passes on, as a FLAC without its total, whose seek past its end MiniAudio's FLAC decoder fails rather than clamping: past its end, as a script is told of one past a known length, and MiniAudio's own seek, to a loop point or a range's start there, ends the decoder, as at a loop point past the end above. Put back and failed, a looping sound played silence for good, MiniAudio's loop giving up on a failed seek without ending, and decoded the whole file again in every block, to put it back and fail once more, which held the audio thread up.
+	if (file->can_seek && !file->length.load()) {
+		if (t_script_seek) {
+			put_decoder_file_back(decoder, file_rate, before);
+			return result == MA_ERROR? MA_INVALID_ARGS : result;
+		}
+		file->finished.store(true);
+		return MA_SUCCESS;
 	}
 	if (file->can_seek) put_decoder_file_back(decoder, file_rate, before);
 	else if (file_cursor(decoder->pBackend, &cursor) && cursor > cursor_before) { // Refused having read the file on, its end come first, as Opus's short seek forward: nothing is left to read from where it was, so the decoder tells where its file is, rather than a place it no longer reads from.
