@@ -96,7 +96,10 @@ int get_frame_size(float x, float y, float z) {
 }
 
 // An area is put in every frame it touches. A coordinate that is infinite, NaN or past what an int holds (reframe() walks them in ints) walked the frames without end, adding to the map until memory ran out or the heap was corrupted, and an area across much of that range took as long: such an area is refused. 16 million frames are about 10^14 square units with the largest frames.
-static void check_map_area(float minx, float maxx, float miny, float maxy, float minz, float maxz) {
+// The rotation must be finite too: an area turned by an infinite or NaN angle had NaN for every point turned into it, which no bound
+// refuses, so it was found at any point of every frame it was in.
+static void check_map_area(float minx, float maxx, float miny, float maxy, float minz, float maxz, float rotation) {
+	if (!std::isfinite(rotation)) throw std::invalid_argument("coordinate_map area rotation out of range");
 	bool fits = true;
 	for (float v : {minx, maxx, miny, maxy, minz, maxz}) fits = fits && std::isfinite(v) && std::fabs(v) <= 1000000000.0f;
 	if (fits) {
@@ -195,7 +198,7 @@ void map_area::reframe() {
 	framesize = get_frame_size(maxx - minx, maxy - miny, maxz - minz); // Each time, as set() can have changed the size: check_map_area() goes by the size for the area as it is now, and a small area made large by set() kept the smallest frames, up to hundreds of millions of them.
 	Vector3 MIN = Vector3(minx, miny, minz);
 	Vector3 MAX = Vector3(maxx, maxy, maxz);
-	if (rotation > 0) {
+	if (rotation != 0) { // A negative angle turns the area too; it was taken for no rotation here and in is_in_area().
 		Vector3 d = MAX - MIN;
 		std::vector<Vector3> points = {rotate(MIN, center, rotation), rotate(Vector3(MIN.x + d.x, MIN.y, 0), center, rotation), rotate(Vector3(MIN.x, MIN.y + d.y, 0), center, rotation), rotate(Vector3(MIN.x + d.x, MIN.y + d.y, 0), center, rotation)};
 		for (int i = 0; i < points.size(); i++) {
@@ -219,7 +222,7 @@ void map_area::reframe() {
 	framed = true;
 }
 void map_area::set(float minx, float maxx, float miny, float maxy, float minz, float maxz, float rotation) {
-	check_map_area(minx, maxx, miny, maxy, minz, maxz);
+	check_map_area(minx, maxx, miny, maxy, minz, maxz, rotation);
 	bool was_framed = framed;
 	unframe();
 	this->minx = minx;
@@ -249,7 +252,7 @@ bool map_area::is_in_area(float x, float y, float z, float d, asIScriptFunction*
 		return x >= center.x - d - longest && x <= center.x + d + longest && y >= center.y - d - longest && y <= center.y + d + longest && is_unfiltered(filter_callback);
 	}
 	Vector3 border = Vector3(1, 1, 1);
-	if (rotation > 0) {
+	if (rotation != 0) {
 		Vector3 r = rotate(Vector3(x, y, z), center, rotation);
 		x = r.x;
 		y = r.y;
@@ -400,7 +403,7 @@ map_frame* coordinate_map::get_frame(int x, int y, int z, int size, bool create)
 }
 map_area* coordinate_map::add_area(float minx, float maxx, float miny, float maxy, float minz, float maxz, float rotation, CScriptAny* primary_data, const std::string& data1, const std::string& data2, const std::string& data3, int priority, asINT64 flags) {
 	try {
-		check_map_area(minx, maxx, miny, maxy, minz, maxz);
+		check_map_area(minx, maxx, miny, maxy, minz, maxz, rotation);
 	} catch (...) {
 		if (primary_data) primary_data->Release(); // The area was to own it.
 		throw;
