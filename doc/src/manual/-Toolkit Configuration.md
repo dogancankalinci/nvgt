@@ -125,7 +125,7 @@ This section contains options that are directly related to the compiling/bundlin
 * ios_provisioning_profile = string: path to the .mobileprovision provisioning profile used when code signing an iOS app (also settable with `#pragma ios_provisioning_profile`, see the "Publishing your app to the Apple App Store" tutorial)
 * ios_signing_p12 = string: path to the developer .p12 signing identity used to code sign an iOS app (also settable with `#pragma ios_signing_identity`). When set, NVGT produces a signed .ipa; when unset the .ipa is unsigned
 * ios_signing_password = string: the password protecting the .p12 given in ios_signing_p12 (also settable with `#pragma ios_signing_password`)
-* linux_bundle = integer default 2: 0 no bundle, 1 folder, 2 .zip, 3 both folder and .zip
+* linux_bundle = integer default 2: 0 no bundle, 1 folder, 2 .tar.gz, 3 both folder and .tar.gz
 * mac_bundle = integer default 2: 0 no bundle, 1 .app, 2 .dmg/.zip, 3 both .app and .dmg/.zip
 * microphone_usage_description = string: on macOS and iOS, the explanation the system shows when your app first requests microphone access (also settable with `#pragma microphone_usage_description`)
 * no_success_message: specifically hides the compilation success message if defined

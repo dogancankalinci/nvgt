@@ -1641,7 +1641,7 @@ class nvgt_compilation_output_linux : public nvgt_compilation_output_impl {
 protected:
 	bool static_plugin_dependencies_load_at_startup() override { return true; }
 	void alter_output_path(Path& output_path) override {
-		bundle_mode = config.getInt("build.linux_bundle", 2); // 0 no bundle, 1 folder, 2 .zip, 3 both folder and .zip.
+		bundle_mode = config.getInt("build.linux_bundle", 2); // 0 no bundle, 1 folder, 2 .tar.gz, 3 both folder and .tar.gz.
 		if (bundle_mode == 2) {
 			workplace_tmp = new TemporaryFile();
 			workplace = *workplace_tmp;
