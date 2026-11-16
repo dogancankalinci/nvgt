@@ -316,8 +316,11 @@ bool install_keyhook() {
 		if (!g_process_watcher_running.load())
 			start_process_watcher("jhookldr.exe");
 		return true;
-	} else
-		return false;
+	}
+	// As reinstall_keyhook_only() does: left active, a hook that failed to install was put in when the window next got the focus,
+	// after the script had been told it wasn't installed.
+	g_keyhook_active = false;
+	return false;
 }
 void remove_keyhook() {
 	if (!g_keyhook_hHook)
