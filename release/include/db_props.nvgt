@@ -95,6 +95,25 @@ class database_object {
 		exists_in_table = false;
 		return ret;
 	}
+	// Binds the properties a commit writes, in order. One that fails to bind fails the commit: it was skipped, and the statement then
+	// wrote NULL in its column.
+	private bool bind_all(sqlite3statement@ s, database_property@[]@ props) {
+		for (uint i = 0; i < props.length(); i++) {
+			if (props[i].bind(s, i + 1)) continue;
+			_last_query_error = "db bind of " + props[i].column_name + ": " + database.get_last_error_text();
+			return false;
+		}
+		return true;
+	}
+	// The properties a commit wrote are no longer modified, once the row is written. They were marked as written as they were bound,
+	// before the statement ran: a commit that then failed (a constraint, a locked or busy database) left them unmodified, so the next
+	// commit() wrote nothing and returned true, and the object's values were never stored.
+	private void written(database_property@[]@ props) {
+		for (uint i = 0; i < props.length(); i++) {
+			props[i].modified = false;
+			props[i].retrieved = true;
+		}
+	}
 	bool commit() {
 		_last_query_error = "";
 		if (exists_in_table) {
@@ -118,15 +137,13 @@ class database_object {
 				_last_query_error = "db: " + database.get_last_error_text();
 				return false;;
 			}
-			for (uint i = 0; i < updating_props.length(); i++) {
-				if (!updating_props[i].bind(s, i + 1)) continue;
-				updating_props[i].modified = false;
-				updating_props[i].retrieved = true;
-			}
-			bool ret = s.step() == SQLITE_DONE;
-			if (!ret)
+			if (!bind_all(s, updating_props)) return false;
+			if (s.step() != SQLITE_DONE) {
 				_last_query_error = "db step: " + database.get_last_error_text();
-			return ret;
+				return false;
+			}
+			written(updating_props);
+			return true;
 		} else { // this row must be inserted from scratch.
 			database_property@[] updating_props;
 			string statement = "INSERT INTO '" + table + "' (";
@@ -154,19 +171,13 @@ class database_object {
 				_last_query_error = "db: " + database.get_last_error_text();
 				return false;
 			}
-			for (uint i = 0; i < updating_props.length(); i++) {
-				if (!updating_props[i].bind(s, i + 1)) continue;
-				updating_props[i].modified = false;
-				updating_props[i].retrieved = true;
-			}
+			if (!bind_all(s, updating_props)) return false;
 			int r = s.step();
 			if (r == SQLITE_CONSTRAINT and !integer_primary) {
 				// Unless a row with this primary text column already exists, another constraint failed and nothing was written.
 				string constraint_error = "db step: " + database.get_last_error_text();
 				sqlite3statement@ existing = database.prepare("SELECT 1 FROM '" + table + "' WHERE " + row_filter + ";");
 				if (@existing == null or existing.step() != SQLITE_ROW) {
-					for (uint i = 0; i < updating_props.length(); i++)
-						updating_props[i].modified = true;
 					_last_query_error = constraint_error;
 					return false;
 				}
@@ -176,6 +187,7 @@ class database_object {
 				_last_query_error = "db step: " + database.get_last_error_text();
 				return false;
 			}
+			written(updating_props);
 			if (properties[primary_idx].type == "INTEGER") {
 				database_int@ I = cast < database_int@ > (@properties[primary_idx]);
 				if (@I != null and I.autoincrementing)
