@@ -566,8 +566,10 @@ class database_int : database_property {
 	}
 	int64 opPowAssign(int64 val) {
 		fetch();
-		if (val != 0) modified = true;
-		return this.val **= val;
+		int64 old = this.val; // marked when the value changes: **= 0 changed it too, and the change wasn't saved
+		this.val **= val;
+		if (!(this.val == old)) modified = true;
+		return this.val;
 	}
 	int64 opAnd(int64 val) {
 		fetch();
@@ -575,8 +577,10 @@ class database_int : database_property {
 	}
 	int64 opAndAssign(int64 val) {
 		fetch();
-		if (val != 0) modified = true;
-		return this.val &= val;
+		int64 old = this.val; // marked when the value changes: &= 0 changed it too, and the change wasn't saved
+		this.val &= val;
+		if (!(this.val == old)) modified = true;
+		return this.val;
 	}
 	int64 opOr(int64 val) {
 		fetch();
@@ -742,8 +746,10 @@ class database_double : database_property {
 	}
 	double opDivAssign(double val) {
 		fetch();
-		if (val != 0) modified = true;
-		return this.val /= val;
+		double old = this.val; // marked when the value changes: /= 0 changed it too, and the change wasn't saved
+		this.val /= val;
+		if (!(this.val == old)) modified = true;
+		return this.val;
 	}
 	double opMod(double val) {
 		fetch();
@@ -751,8 +757,10 @@ class database_double : database_property {
 	}
 	double opModAssign(double val) {
 		fetch();
-		if (val != 0) modified = true;
-		return this.val %= val;
+		double old = this.val; // marked when the value changes: %= 0 changed it too, and the change wasn't saved
+		this.val %= val;
+		if (!(this.val == old)) modified = true;
+		return this.val;
 	}
 	double opPow(double val) {
 		fetch();
@@ -760,8 +768,10 @@ class database_double : database_property {
 	}
 	double opPowAssign(double val) {
 		fetch();
-		if (val != 0) modified = true;
-		return this.val **= val;
+		double old = this.val; // marked when the value changes: **= 0 changed it too, and the change wasn't saved
+		this.val **= val;
+		if (!(this.val == old)) modified = true;
+		return this.val;
 	}
 }
 class database_bool : database_property {
