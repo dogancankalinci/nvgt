@@ -182,7 +182,7 @@ graphics_texture::~graphics_texture() {
 }
 
 bool graphics_texture::set_color_mod(unsigned int r, unsigned int g, unsigned int b) {
-	return SDL_SetTextureColorMod(tex(), (Uint8)r, (Uint8)g, (Uint8)b);
+	return SDL_SetTextureColorMod(tex(), color_mod_byte(r), color_mod_byte(g), color_mod_byte(b)); // see color_mod_byte() in graphics.h
 }
 
 bool graphics_texture::get_color_mod(unsigned int& r, unsigned int& g, unsigned int& b) const {
@@ -193,7 +193,7 @@ bool graphics_texture::get_color_mod(unsigned int& r, unsigned int& g, unsigned 
 }
 
 bool graphics_texture::set_alpha_mod(unsigned int alpha) {
-	return SDL_SetTextureAlphaMod(tex(), (Uint8)alpha);
+	return SDL_SetTextureAlphaMod(tex(), color_mod_byte(alpha));
 }
 
 unsigned int graphics_texture::get_alpha_mod() const {

@@ -27,7 +27,10 @@ class game_window;
 class pack_interface;
 
 inline std::string from_cstr(const char* str) { return str ? str : ""; }
-inline SDL_Color to_sdl_color(unsigned int r, unsigned int g, unsigned int b) { return {(Uint8)r, (Uint8)g, (Uint8)b, 255}; }
+// A color, alpha or modulation value the script gives as a uint: above 255 it is 255. Each one was cut to its low byte, so 300 was 44 and
+// an alpha of 1000 was 232 (set_color_mod, set_alpha_mod, set_draw_color, text colors).
+inline Uint8 color_mod_byte(unsigned int v) { return Uint8(v > 255 ? 255 : v); }
+inline SDL_Color to_sdl_color(unsigned int r, unsigned int g, unsigned int b) { return {color_mod_byte(r), color_mod_byte(g), color_mod_byte(b), 255}; }
 
 class graphic {
 	SDL_Surface* _surface;
@@ -46,8 +49,8 @@ public:
 	bool save_bmp(const std::string& file) const { return SDL_SaveBMP(_surface, file.c_str()); }
 	bool save_png(const std::string& file) const { return SDL_SavePNG(_surface, file.c_str()); }
 	bool set_rle(bool enabled) { return SDL_SetSurfaceRLE(_surface, enabled); }
-	bool set_color_mod(unsigned int r, unsigned int g, unsigned int b) { return SDL_SetSurfaceColorMod(_surface, (Uint8)r, (Uint8)g, (Uint8)b); }
-	bool set_alpha_mod(unsigned int alpha) { return SDL_SetSurfaceAlphaMod(_surface, (Uint8)alpha); }
+	bool set_color_mod(unsigned int r, unsigned int g, unsigned int b) { return SDL_SetSurfaceColorMod(_surface, color_mod_byte(r), color_mod_byte(g), color_mod_byte(b)); }
+	bool set_alpha_mod(unsigned int alpha) { return SDL_SetSurfaceAlphaMod(_surface, color_mod_byte(alpha)); }
 	bool set_blend_mode(unsigned int mode) { return SDL_SetSurfaceBlendMode(_surface, (SDL_BlendMode)mode); }
 	bool flip(unsigned int mode) { return SDL_FlipSurface(_surface, (SDL_FlipMode)mode); }
 	graphic* convert(unsigned int pixel_format) const { SDL_Surface* s = SDL_ConvertSurface(_surface, (SDL_PixelFormat)pixel_format); return s ? new graphic(s) : nullptr; }
@@ -195,7 +198,7 @@ public:
 	bool present_if_dirty() { return !_dirty || present(); }
 	bool draw_point(float x, float y) { bool ok = SDL_RenderPoint(rend(), x, y); if (ok) mark_dirty(); return ok; }
 	bool draw_line(float x1, float y1, float x2, float y2) { bool ok = SDL_RenderLine(rend(), x1, y1, x2, y2); if (ok) mark_dirty(); return ok; }
-	bool set_draw_color(unsigned int r, unsigned int g, unsigned int b, unsigned int a) { return SDL_SetRenderDrawColor(rend(), (Uint8)r, (Uint8)g, (Uint8)b, (Uint8)a); }
+	bool set_draw_color(unsigned int r, unsigned int g, unsigned int b, unsigned int a) { return SDL_SetRenderDrawColor(rend(), color_mod_byte(r), color_mod_byte(g), color_mod_byte(b), color_mod_byte(a)); }
 	bool set_scale(float sx, float sy) { return SDL_SetRenderScale(rend(), sx, sy); }
 	bool set_vsync(int vsync) { return SDL_SetRenderVSync(rend(), vsync); }
 	bool flush() { SDL_Renderer* r = rend(); return r && SDL_FlushRenderer(r); } // Without a window there is no renderer, and unlike the other calls SDL_FlushRenderer() doesn't check for that.
