@@ -24,6 +24,7 @@
 #include <Poco/Redis/Error.h>
 #include <Poco/Redis/Exception.h>
 #include <Poco/Redis/Type.h>
+#include <Poco/StringTokenizer.h>
 #include <Poco/Thread.h>
 #include <Poco/Timespan.h>
 #include <scriptarray.h>
@@ -2082,7 +2083,10 @@ public:
 			return dict;
 		}
 		redis_value* reply = execute_command_value(make_command("MEMORY", "STATS"));
-		if (reply && reply->is_array()) {
+		if (!reply)
+			return dict;
+		// An error reply (MEMORY STATS refused by an ACL, or unknown to the server) is a reply too: it was never released.
+		if (reply->is_array()) {
 			CScriptArray* arr = reply->get_array();
 			if (arr) {
 				for (uint32_t i = 0; i < arr->GetSize(); i += 2) {
@@ -2103,8 +2107,8 @@ public:
 				}
 				arr->Release();
 			}
-			reply->release();
 		}
+		reply->release();
 		return dict;
 	}
 
@@ -2266,8 +2270,14 @@ public:
 			m_last_error = "Not connected";
 			return false;
 		}
+		// Each rule is an argument of its own, as ACL SETUSER takes them; the rules came as one, so "on >secret ~* +@all" was refused as a
+		// single rule the server didn't know. They are separated by spaces, as in ACL LIST and ACL files.
+		Array cmd = make_command("ACL", "SETUSER", username);
+		StringTokenizer tokens(rules, " \t\r\n", StringTokenizer::TOK_IGNORE_EMPTY);
+		for (const std::string& rule : tokens)
+			cmd.add(rule);
 		std::string reply;
-		return execute_command(make_command("ACL", "SETUSER", username, rules), reply) && reply == "OK";
+		return execute_command(cmd, reply) && reply == "OK";
 	}
 
 	bool acl_deluser(const std::string& username) {
