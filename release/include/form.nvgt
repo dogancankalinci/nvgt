@@ -3477,34 +3477,34 @@ class control {
 		text = new_text;
 		return true;
 	}
+	// edit_mode_trim_to_length and edit_mode_append_to_end write content over the text from position, a character for a character: they
+	// did it a byte for a byte, so a letter of two bytes such as ç written over an ASCII one took two places, and one written over took
+	// only half its place, leaving the other half in the text. Returns the bytes from position that the characters content covers take
+	// in the text, in end, and the bytes of content that fit before the text's end, in used.
+	void overwritten_span(const string&in content, int position, int&out end, int&out used) {
+		end = position;
+		used = 0;
+		while (end < int(text.length()) && used < int(content.length())) {
+			end = utf8next(text, end);
+			used = utf8next(content, used);
+		}
+		if (end > int(text.length())) end = text.length();
+		if (used > int(content.length())) used = content.length();
+	}
 	bool trim_to_length(string content, int position) {
 		if (position >= text.length())
 			return false;
-		for (int counter = position; counter < text.length(); counter++) {
-			if (content == "")
-				break;
-			text[counter] = content[0];
-			content = content.substr(1);
-		}
+		int end, used;
+		overwritten_span(content, position, end, used);
+		text = text.substr(0, position) + content.substr(0, used) + text.substr(end);
 		return true;
 	}
 	bool append_text(string content, int position) {
 		if (position >= text.length())
 			return false;
-		if ((position == 0) && (content.length() > text.length())) {
-			if ((max_length > 0) && (audioform_character_count(content) > max_length))
-				return false;
-			text = content;
-			return true;
-		}
-		string new_text = text;
-		for (int counter = position; counter < new_text.length(); counter++) {
-			if (content == "")
-				break;
-			new_text[counter] = content[0];
-			content = content.substr(1);
-		}
-		new_text += content;
+		int end, used;
+		overwritten_span(content, position, end, used);
+		string new_text = text.substr(0, position) + content + text.substr(end);
 		if ((max_length > 0) && (audioform_character_count(new_text) > max_length))
 			return false;
 		text = new_text;
