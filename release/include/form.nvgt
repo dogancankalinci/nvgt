@@ -310,7 +310,7 @@ class audio_form {
 		c_form[control_counter].sel_start = -1;
 		c_form[control_counter].sel_end = -1;
 		c_form[control_counter].max_length = maximum_length;
-		c_form[control_counter].password_mask = password_mask.substr(0, 1);
+		c_form[control_counter].password_mask = password_mask.substr(0, utf8size(password_mask)); // its first character: substr(0, 1) cut a mask such as • (3 bytes) to a byte that is no character
 		c_form[control_counter].read_only = read_only;
 		c_form[control_counter].multiline = multiline;
 		c_form[control_counter].multiline_enter = multiline_enter;
@@ -3400,7 +3400,9 @@ class control {
 				temp_position--;
 			string word = read_word_from_position(temp_position);
 			if (password_mask != "") {
-				for (uint i = 0; i < word.length(); i++) word[i] = password_mask;
+				string masked; // one mask per character: each byte of the word took the mask's first byte, two or more for a letter such as ç
+				for (int n = audioform_character_count(word); n > 0; n--) masked += password_mask;
+				word = masked;
 			}
 			speak(word, echo_flag != textflag_characters_words);
 		}
