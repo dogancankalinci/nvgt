@@ -4017,80 +4017,83 @@ class control {
 	}
 	void highlight_to_word_end() {
 	}
+	// Shift+Home (and Shift+Up, with continuation): the selection reaches from the start of the caret's line up to the caret, not the
+	// character at the caret, as sel_end is the selection's last byte (see selection_end()); with continuation and the caret at a line's start,
+	// from the start of the line before. A selection to the right of the caret grows to the left; one to its left shrinks, and goes when the
+	// caret passes its start. This set sel_end to the caret, so the letter after the caret was selected too (Delete removed it) and the
+	// speech left the last letter of the line out; it took the line before when the caret was on an empty last line, and dropped the part
+	// of a selection to the caret's right.
 	void highlight_to_line_start(bool continuation = false) {
-		if (cursor == 0)
+		int caret = cursor;
+		if (caret <= 0)
 			return;
-		if (cursor == text.length())
-			cursor -= 1;
-		if (cursor == text.length() - 1 && cursor >= 0 && text[cursor] == "\n" && !continuation)
-			cursor -= 1;
 		int line_start = current_line_start_position();
-		if (cursor <= line_start) {
-			if (!continuation)
-				return;
-			else {
-				int tmp_cursor = cursor;
-				cursor = line_start - 1;
-				line_start = current_line_start_position();
-				if (line_start < 0) line_start = 0;
-				cursor = tmp_cursor;
-			}
-		}
-		if (sel_start < 0 || cursor == sel_start || cursor - 1 == sel_start) {
-			sel_start = line_start;
-			if (!continuation || sel_end == -1)
-				sel_end = cursor;
-			speak_selected(text.substr(sel_start, cursor - sel_start));
-			cursor = sel_start;
-		} else if (cursor == sel_end || cursor - 1 == sel_end) {
-			sel_end = line_start;
-			speak_unselected(text.substr(sel_end, cursor - sel_end));
-			cursor = sel_end;
-		}
-		if (sel_end < sel_start) {
-			sel_start = -1;
-			sel_end = -1;
-		}
-	}
-	void highlight_to_line_end(bool continuation = false) {
-		if (cursor >= text.length() - 1)
+		if (line_start < 0)
 			return;
-		int line_end = cursor + 1;
-		for (line_end; line_end < text.length(); line_end++) {
-			if (text[line_end] == "\r" || text[line_end] == "\n")
-				break;
+		if (caret <= line_start) {
+			if (!continuation || line_start == 0)
+				return;
+			cursor = line_start - 1; // the newline ending the line before
+			line_start = current_line_start_position();
+			cursor = caret;
+			if (line_start < 0) line_start = 0;
 		}
-		if (sel_end == line_end) {
+		if (sel_start < 0 || sel_end < 0) {
+			sel_start = line_start;
+			sel_end = caret - 1;
+			speak_selected(text.substr(line_start, caret - line_start));
+		} else if (sel_start == caret) {
+			sel_start = line_start;
+			speak_selected(text.substr(line_start, caret - line_start));
+		} else if (selection_end() == caret) {
+			int unselected_start = sel_start > line_start ? sel_start : line_start;
+			speak_unselected(text.substr(unselected_start, caret - unselected_start));
+			sel_end = line_start - 1;
+			if (sel_end < sel_start) {
+				sel_start = -1;
+				sel_end = -1;
+			}
+		} else
+			return;
+		cursor = line_start;
+	}
+	// Shift+End (and Shift+Down, with continuation): the selection reaches from the caret to the end of its line, leaving out the line break,
+	// and with continuation and the caret at a line's end, on to the end of the next line. A selection to the left of the caret grows to the
+	// right; one to its right shrinks, and goes when the caret passes its end. This took the line break into the selection (Delete joined
+	// the lines), selected nothing with the caret before the last letter of the text, took the next line too with the caret at a line's
+	// end, and dropped the part of a selection to the caret's left.
+	void highlight_to_line_end(bool continuation = false) {
+		int caret = cursor;
+		if (caret < 0 || caret >= text.length())
+			return;
+		int line_end = caret;
+		while (line_end < text.length() && text[line_end] != "\r" && text[line_end] != "\n")
+			line_end++;
+		if (line_end == caret) {
 			if (!continuation)
 				return;
-			else {
-				// line_end is the text's length when the line is the last one (the selection already reaching it, as after Shift+Home from
-				// the end in a single-line box): text[line_end] was out of range, an exception out of the form's monitor.
-				if (line_end < text.length() && text[line_end] == "\r") line_end += 2;
-				else if (line_end < text.length() && text[line_end] == "\n") line_end += 1;
-				for (line_end; line_end < text.length(); line_end++) {
-					if (text[line_end] == "\r" || text[line_end] == "\n")
-						break;
-				}
-			}
+			line_end += text[line_end] == "\r" && line_end + 1 < text.length() && text[line_end + 1] == "\n" ? 2 : 1;
+			while (line_end < text.length() && text[line_end] != "\r" && text[line_end] != "\n")
+				line_end++;
 		}
-		//line_end-=1;
-		if (sel_start < 0 || cursor == sel_end || cursor - 1 == sel_end) {
-			if (!continuation or sel_start == -1)
-				sel_start = cursor;
-			sel_end = line_end;
-			int old_cursor = cursor;
-			cursor = line_end;
-			speak_selected(text.substr(old_cursor, sel_end - old_cursor));
-		} else if (cursor == sel_start || cursor - 1 == sel_start) {
+		if (sel_start < 0 || sel_end < 0) {
+			sel_start = caret;
+			sel_end = line_end - 1;
+			speak_selected(text.substr(caret, line_end - caret));
+		} else if (selection_end() == caret) {
+			sel_end = line_end - 1;
+			speak_selected(text.substr(caret, line_end - caret));
+		} else if (sel_start == caret) {
+			int unselected_end = selection_end() < line_end ? selection_end() : line_end;
+			speak_unselected(text.substr(caret, unselected_end - caret));
 			sel_start = line_end;
-			speak_unselected(text.substr(cursor, line_end - cursor));
-			cursor = line_end;
-		}
-		if (sel_end < sel_start) {
-			sel_start = -1;
-			sel_end = -1;
-		}
+			if (sel_end < sel_start) {
+				sel_start = -1;
+				sel_end = -1;
+			}
+		} else
+			return;
+		cursor = line_end;
 	}
 	void highlight_up() {
 		highlight_to_line_start(true);
