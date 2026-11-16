@@ -165,7 +165,10 @@ std::string string_reverse(std::string* str, const std::string& encoding) {
 	int wpos = str->size();
 	unsigned char character[4];
 	while (it != end && wpos > 0) {
-		int c = enc->convert(*it, character, 4);
+		// A byte sequence that isn't a character of the encoding comes as -1, which convert() wrote as the byte 0xFF (it takes every value
+		// up to 0x7F for ASCII): "\xff\xfe" reversed to "\xff\xff". It is a '?' as a character the encoding can't write is.
+		const int ch = *it;
+		int c = ch < 0 ? 0 : enc->convert(ch, character, 4);
 		if (!c) {
 			character[0] = '?';
 			c = 1;
