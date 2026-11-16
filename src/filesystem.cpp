@@ -26,6 +26,7 @@
 #include <Poco/UTF8Encoding.h>
 #include <Poco/Timestamp.h>
 #include <Poco/UnicodeConverter.h>
+#include <Poco/UTF8String.h>
 #include <SDL3/SDL.h>
 #include "nvgt_angelscript.h" // nvgt's Angelscript implementation needed for get_array_type
 #include "filesystem.h"
@@ -140,6 +141,17 @@ bool FNMatch(const std::string& file, const std::string& pattern) {
 // Includes below only used for this function, the Angelscript filesystem functions are faster than Poco's directory iterators where we have to repeatedly call GetFileAttributes to determine whether each item is a file or directory.
 #ifdef _WIN32
 #include <windows.h>
+// FindFirstFileEx matches the pattern against each name's short 8.3 form as well, so "*.htm" also found "page.html" (PAGE~1.HTM) and "*.txt"
+// found "notes.txt2" (NOTES~1.TXT). A name found by its short form alone, which doesn't match the pattern itself, is left out; Windows
+// compares names without case.
+static bool found_by_short_name_only(const WIN32_FIND_DATAW& ffd, const string& path) {
+	if (!ffd.cAlternateFileName[0]) return false;
+	size_t slash = path.find_last_of("\\/");
+	string pattern = UTF8::toLower(slash == string::npos ? path : path.substr(slash + 1)), name, short_name;
+	UnicodeConverter::toUTF8(ffd.cFileName, name);
+	UnicodeConverter::toUTF8(ffd.cAlternateFileName, short_name);
+	return !FNMatch(UTF8::toLower(name), pattern) && FNMatch(UTF8::toLower(short_name), pattern);
+}
 #else
 #include <sys/stat.h>
 #include <dirent.h>
@@ -172,6 +184,7 @@ CScriptArray* FindFiles(const string& path) {
 		// Skip directories
 		if ((ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
 			continue;
+		if (found_by_short_name_only(ffd, path)) continue;
 
 		// Convert the file name back to UTF8
 		char bufUTF8[1024];
@@ -201,8 +214,8 @@ CScriptArray* FindFiles(const string& path) {
 		while ((ent = readdir(dir)) != NULL) {
 			const string filename = ent->d_name;
 
-			// Skip . and ..
-			if (filename[0] == '.')
+			// Skip . and .. (names starting with a dot are listed, as on Windows: every one of them was left out here)
+			if (filename == "." || filename == "..")
 				continue;
 
 			// Skip sub directories
@@ -266,6 +279,7 @@ CScriptArray* FindDirectories(const string& path) {
 		// Skip files
 		if (!(ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
 			continue;
+		if (found_by_short_name_only(ffd, path)) continue;
 
 		// Convert the file name back to UTF8
 		char bufUTF8[1024];
@@ -298,8 +312,8 @@ CScriptArray* FindDirectories(const string& path) {
 		while ((ent = readdir(dir)) != NULL) {
 			const string filename = ent->d_name;
 
-			// Skip . and ..
-			if (filename[0] == '.')
+			// Skip . and .. (names starting with a dot are listed, as on Windows: every one of them was left out here)
+			if (filename == "." || filename == "..")
 				continue;
 
 			// Skip files
