@@ -10,5 +10,5 @@
 // Example:
 void main() {
 	datastream ds("Hello there, I am a string wrapped in a sstream!");
-	alert("example", ds.read_int16()); // Will display the first two bytes of the string as an integer.
+	alert("example", "" + ds.read_int16()); // Will display the first two bytes of the string as an integer.
 }

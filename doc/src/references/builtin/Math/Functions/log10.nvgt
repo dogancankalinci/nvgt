@@ -9,5 +9,5 @@
 
 // Example:
 void main() {
-    alert("Example", "The base 10 logarithm of 100 is " + log10(100));
+    alert("Example", "The base 10 logarithm of 100 is " + log10(100.0));
 }

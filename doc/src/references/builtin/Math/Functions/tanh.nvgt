@@ -9,5 +9,5 @@
 
 // Example:
 void main() {
-    alert("Example", "The hyperbolic tangent of 2 is " + tanh(2));
+    alert("Example", "The hyperbolic tangent of 2 is " + tanh(2.0));
 }

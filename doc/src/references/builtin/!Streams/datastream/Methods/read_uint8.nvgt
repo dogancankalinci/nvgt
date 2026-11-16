@@ -10,5 +10,5 @@
 // Example:
 void main() {
 	datastream ds("Hello there, I am a string wrapped in a sstream!");
-	alert("example", ds.read_uint8()); // Will display the first byte of the string as an unsigned integer (72).
+	alert("example", "" + ds.read_uint8()); // Will display the first byte of the string as an unsigned integer (72).
 }

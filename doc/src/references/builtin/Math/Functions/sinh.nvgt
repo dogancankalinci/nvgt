@@ -9,5 +9,5 @@
 
 // Example:
 void main() {
-    alert("Example", "The hyperbolic sine of 2 is " + sinh(2));
+    alert("Example", "The hyperbolic sine of 2 is " + sinh(2.0));
 }

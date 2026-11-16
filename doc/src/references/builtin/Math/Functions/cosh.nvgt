@@ -9,5 +9,5 @@
 
 // Example:
 void main() {
-    alert("Example", "The hyperbolic cosine of 2 is " + cosh(2));
+    alert("Example", "The hyperbolic cosine of 2 is " + cosh(2.0));
 }
