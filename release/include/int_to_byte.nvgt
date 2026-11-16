@@ -28,7 +28,7 @@ string int_to_byte(int the_int, uint8 endian = int_to_byte_little_endian, int co
 		bin = "\0" + bin;
 	//if we are using little endian, we have to reverse the final string.
 	if (endian == int_to_byte_little_endian)
-		bin = string_reverse(bin);
+		bin = bin.reverse_bytes(); // string_reverse() is bgt_compat.nvgt's, which this file doesn't include: on its own it didn't compile
 	return bin;
 }
 
@@ -46,7 +46,7 @@ int byte_to_int(string the_bytes, uint8 endian = int_to_byte_little_endian) {
 	}
 	//If we are using little endian, we must reverse the string.
 	if (endian == int_to_byte_little_endian)
-		the_bytes = string_reverse(the_bytes);
+		the_bytes = the_bytes.reverse_bytes();
 	//Lshift with bitwise.
 	int the_int = 0;
 	for (uint i = 0; i < 4; i++) {
