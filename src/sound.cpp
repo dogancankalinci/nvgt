@@ -1750,7 +1750,16 @@ public:
 		*start_frame = *end_frame = 0;
 		if (src) ma_data_source_get_range_in_pcm_frames(src->pDataSource, start_frame, end_frame);
 	}
-	bool set_loop_point(unsigned long long start_frame, unsigned long long end_frame) override { if (queue_refuses(start_frame != 0 || end_frame != ~0ull)) return false; return src && !in_use()? (g_soundsystem_last_error = ma_data_source_set_loop_point_in_pcm_frames(src->pDataSource, start_frame, end_frame)) == MA_SUCCESS : refused_now(); }
+	bool set_loop_point(unsigned long long start_frame, unsigned long long end_frame) override {
+		if (queue_refuses(start_frame != 0 || end_frame != ~0ull)) return false;
+		if (!src || in_use()) return refused_now();
+		// A start at or past the range's known end, which MiniAudio checks only the end against: each loop back landed past the end (see set_range()), so that a looping sound played once and stopped, its position reading past its length. One of unknown length is taken, as decided.
+		if (start_frame) {
+			const unsigned long long length = get_length_frames();
+			if (length && start_frame >= length) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS;
+		}
+		return (g_soundsystem_last_error = ma_data_source_set_loop_point_in_pcm_frames(src->pDataSource, start_frame, end_frame)) == MA_SUCCESS;
+	}
 	void get_loop_point(unsigned long long* start_frame, unsigned long long* end_frame) const override {
 		*start_frame = *end_frame = 0;
 		if (src) ma_data_source_get_loop_point_in_pcm_frames(src->pDataSource, start_frame, end_frame);
