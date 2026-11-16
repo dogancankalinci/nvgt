@@ -1309,8 +1309,10 @@ public:
 		Array cmd = make_command("ZRANGEBYSCORE", key, min, max);
 		if (withscores)
 			cmd.add("WITHSCORES");
-		if (offset >= 0 && count >= 0)
-			cmd.add("LIMIT").add(NumberFormatter::format(offset)).add(NumberFormatter::format(count));
+		// An offset with the default count is everything from the offset (Redis takes a negative count so): with count >= 0 required too,
+		// zrangebyscore(key, min, max, false, 10) dropped the LIMIT and started at the first element. See bitcount().
+		if (offset >= 0)
+			cmd.add("LIMIT").add(NumberFormatter::format(offset)).add(NumberFormatter::format(count >= 0 ? count : -1));
 		Array reply;
 		if (execute_command(cmd, reply)) {
 			try { // see mget()
@@ -1374,7 +1376,9 @@ public:
 			return 0;
 		}
 		Int64 result = 0;
-		if (start == -1 || end == -1)
+		// -1 is a byte index of its own (the last byte), so only the two defaults together mean the whole value: with ||, a range ending at
+		// the last byte (-2, -1) or starting there was dropped and the whole value counted.
+		if (start == -1 && end == -1)
 			execute_command(make_command("BITCOUNT", key), result);
 		else
 			execute_command(make_command("BITCOUNT", key, start, end), result);
@@ -1407,8 +1411,12 @@ public:
 			return -1;
 		}
 		Int64 result = 0;
-		if (start == -1 || end == -1)
+		// A start given with the default end searches from start to the end of the value (BITPOS key bit start): with ||, every start without
+		// an end, and every range ending at the last byte, was dropped and the search began at byte 0. See bitcount().
+		if (start == -1 && end == -1)
 			execute_command(make_command("BITPOS", key, bit ? 1 : 0), result);
+		else if (end == -1)
+			execute_command(make_command("BITPOS", key, bit ? 1 : 0, start), result);
 		else
 			execute_command(make_command("BITPOS", key, bit ? 1 : 0, start, end), result);
 		return result;
