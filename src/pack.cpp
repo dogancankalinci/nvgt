@@ -77,7 +77,7 @@ public:
 };
 bool pack::read_mode_internals::load() {
 	file->seekg(0, file->end);
-	size_t file_size = file->tellg();
+	const uint64_t file_size = uint64_t(std::streamoff(file->tellg())); // Not size_t: 32 bits on armeabi-v7a, where a pack past 4 GiB was cut to its low bits and refused.
 	file->seekg(0);
 	if (!file->good()) {
 		return false; // Unseekable stream presumably.
@@ -130,7 +130,7 @@ bool pack::read_mode_internals::load() {
 		current_offset += entry.size;
 		toc[entry.filename] = entry;
 		// We may now be EOF, which indicates successful parsing of TOC.
-		if (check.tellg() == file_size)
+		if (uint64_t(std::streamoff(check.tellg())) == file_size)
 			break;
 	}
 	// Getting here means we ingested the TOC successfully. The last steps are to verify the checksum and to make sure the file offsets add up to the entire data block.
