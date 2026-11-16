@@ -387,6 +387,7 @@ Named in honour of the mathematician and logician George Boole, the variables ca
 
 They are extremely powerful and there are quite a few things you can do with them, but most of them don't really make sense without conditionals. Still, we can give a basic example, using not (!), a logical operator:
 ```
+#include "speech.nvgt"
 void main(){
     bool state = true;
     speak("State is: " + state);
