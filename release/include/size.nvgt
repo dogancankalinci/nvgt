@@ -22,6 +22,11 @@ string size_to_string(uint64 size, uint8 round_place = 2) {
 	for (int8 i = SIZE_TO_STRING_UNITS.length() - 1; i >= 0; i--) {
 		if (size >= pow(1024, i) or i == 0) {
 			double rsize = round(size / pow(1024, i), round_place);
+			// Rounded up to a whole next unit (1048575 bytes gave "1024KB"), the size is written in that unit: "1MB".
+			if (rsize >= 1024 and i + 1 < int(SIZE_TO_STRING_UNITS.length())) {
+				i++;
+				rsize = round(size / pow(1024, i), round_place);
+			}
 			return rsize + SIZE_TO_STRING_UNITS[i];
 		}
 	}
