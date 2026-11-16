@@ -847,12 +847,19 @@ public:
 				fail = true;
 				return;
 			}
+			// Freed however write_payload() ends: an exception from it (a write error) left the bytecode allocated.
+			std::unique_ptr<unsigned char, decltype(&free)> code_hold(code, &free);
 			output->write_payload(code, code_size);
-			free(code);
+			code_hold.reset();
 			output->finalize();
 		} catch (Exception &e) {
 			if (!output->get_error_text().empty()) engine->WriteMessage(script_file.c_str(), 0, 0, asMSGTYPE_ERROR, format("failed to compile %s, %s, %s", output->get_output_file(), output->get_error_text(), e.displayText()).c_str());
 			else engine->WriteMessage(script_file.c_str(), 0, 0, asMSGTYPE_ERROR, format("failed to compile %s, %s", output->get_output_file(), e.displayText()).c_str());
+			fail = true;
+		} catch (std::exception& e) {
+			// Not Poco's (std::bad_alloc, a std::string length error): it left this thread through Poco's thread entry, which only reports it,
+			// with fail still false, so a build that stopped part way, with no product, was reported a success.
+			engine->WriteMessage(script_file.c_str(), 0, 0, asMSGTYPE_ERROR, format("failed to compile %s, %s", output->get_output_file(), string(e.what())).c_str());
 			fail = true;
 		}
 	}
