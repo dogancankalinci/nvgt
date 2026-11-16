@@ -10,6 +10,8 @@
  * 3. This notice may not be removed or altered from any source distribution.
 */
 
+#pragma plugin nvgt_sqlite // sqlite3 and sqlite3statement come from it, and the SQLITE_ constants from sqlite3constants.nvgt: a script including this file without both itself didn't compile
+#include "sqlite3constants.nvgt"
 database_object@ __DBO_CONSTRUCTING__;
 class database_object {
 	sqlite3@ database; // Database pointed to should remain open for the lifetime of this object. A null handle or a pointer to an invalid database will lead to completely undefined results.
