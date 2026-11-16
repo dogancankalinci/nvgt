@@ -852,6 +852,17 @@ void apple_run_loop_sleep(int ms) {
 	#endif
 }
 
+// A script thread's alert(), question(), message_box() or urlopen() runs on the main thread on macOS: SDL gives it to the main queue
+// and waits. A main thread waiting meanwhile in join() or a thread_event's or an async's wait() never ran that queue, so both threads
+// waited for ever. Those waits wait in slices on the main thread on Apple platforms (see event_wait_main() in threading.cpp), and run
+// what the main run loop has ready between them with this. It waits for nothing itself, and does nothing on other threads.
+void apple_run_main_loop_once() {
+	if (![NSThread isMainThread]) return;
+	@autoreleasepool {
+		CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0, true);
+	}
+}
+
 void apple_wait_for_display_refresh() {
 	#if TARGET_OS_IOS
 		// The display link is paused while we are in the background; keep the old behaviour there.

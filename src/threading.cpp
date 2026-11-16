@@ -49,6 +49,37 @@
 #endif
 using namespace Poco;
 
+bool thread_is_main();
+#ifdef __APPLE__
+void apple_run_main_loop_once(); // apple.mm
+#endif
+// Waits up to ms (for ever when ms is negative) for event, returning whether it was set. On Apple platforms the main thread waits in slices
+// of 10 ms and runs the main run loop between them, see apple_run_main_loop_once(): a script thread's alert() there waits for the main
+// thread to run it. Everywhere else this is Poco's wait.
+static bool event_wait_main(Event& event, long long ms) {
+	#ifdef __APPLE__
+	if (thread_is_main()) {
+		auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms < 0 ? 0 : ms);
+		for (;;) {
+			long slice = 10;
+			if (ms >= 0) {
+				auto now = std::chrono::steady_clock::now();
+				long long left = now < until ? std::chrono::duration_cast<std::chrono::milliseconds>(until - now).count() : 0;
+				if (left < slice) slice = long(left);
+			}
+			if (event.tryWait(slice)) return true;
+			if (ms >= 0 && std::chrono::steady_clock::now() >= until) return false;
+			apple_run_main_loop_once();
+		}
+	}
+	#endif
+	if (ms < 0) {
+		event.wait();
+		return true;
+	}
+	return event.tryWait(long(std::min<long long>(ms, LONG_MAX - 1)));
+}
+
 // A number, bool or enum given to async for a parameter of another of those types, converted by its value. It was passed by its size: an int for a float parameter arrived as the bits of the int (5 as 7e-45), an int64 for a double and a float for an int likewise, and a value of another size was refused. A number converts as a direct call converts it, a bool to 1 or 0, and to a bool any value but 0 is true; an enum is read and written as its underlying type (enum E : int8 is one byte). Returns false for a type that isn't one of these.
 static asINT64 real_to_int64(double d) {
 	if (d != d) return 0;
@@ -193,7 +224,7 @@ public:
 	}
 	void* get_value() {
 		if (!ctx) throw NullValueException("Object not initialized");
-		progress->wait();
+		event_wait_main(*progress, -1); // see there
 		if (!succeeded) throw Exception(exception);
 		if ((subtypeid & asTYPEID_MASK_OBJECT) && !(subtypeid & asTYPEID_OBJHANDLE))
 			return *(void**)value;
@@ -202,7 +233,7 @@ public:
 	std::string get_exception() { return progress->tryWait(0) ? exception : ""; }
 	void wait() {
 		if (!ctx) throw NullValueException("Object not initialized");
-		progress->wait();
+		event_wait_main(*progress, -1); // see there
 	}
 	bool call(asIScriptGeneric* gen, ThreadPool* pool = nullptr) {
 		asIScriptContext* aCtx = asGetActiveContext();
@@ -634,11 +665,11 @@ static bool script_thread_join(Thread* thread, long long ms) {
 	auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms < 0 ? 0 : ms);
 	int spins = 0;
 	for (;;) {
-		if (ms < 0) life->finished.wait();
+		if (ms < 0) event_wait_main(life->finished, -1);
 		else {
 			auto now = std::chrono::steady_clock::now();
 			long long left = now < until ? std::chrono::duration_cast<std::chrono::milliseconds>(until - now).count() : 0;
-			if (!life->finished.tryWait(long(std::min<long long>(left, LONG_MAX - 1)))) return false;
+			if (!event_wait_main(life->finished, left)) return false;
 		}
 		{
 			std::lock_guard<std::mutex> lock(life->lock);
@@ -654,7 +685,7 @@ static bool script_thread_join(Thread* thread, long long ms) {
 	}
 }
 void thread_join(Thread* thread) {
-	if (auto link = pool_thread_link_of(thread)) link->ended.wait();
+	if (auto link = pool_thread_link_of(thread)) event_wait_main(link->ended, -1);
 	else script_thread_join(thread, -1);
 }
 
@@ -924,17 +955,20 @@ unsigned int thread_current_id() {
 	#endif
 }
 bool thread_try_join(Thread* thread, unsigned int ms) {
-	if (auto link = pool_thread_link_of(thread)) return link->ended.tryWait(poco_ms(ms));
+	if (auto link = pool_thread_link_of(thread)) return event_wait_main(link->ended, poco_ms(ms));
 	return script_thread_join(thread, ms); // See script_thread_life.
 }
+void event_wait(Event* event) {
+	event_wait_main(*event, -1);
+}
 void event_wait_ms(Event* event, unsigned int ms) {
-	event->wait(poco_ms(ms));
+	if (!event_wait_main(*event, poco_ms(ms))) throw TimeoutException(); // as Poco's wait(ms) did
 }
 bool event_try_wait(Event* event, unsigned int ms) {
-	return event->tryWait(poco_ms(ms));
+	return event_wait_main(*event, poco_ms(ms));
 }
 bool async_try_wait(async_result* result, unsigned int ms) {
-	return result->progress->tryWait(poco_ms(ms));
+	return event_wait_main(*result->progress, poco_ms(ms));
 }
 
 // mutex, fast_mutex, named_mutex and spinlock_mutex keep which thread holds them and how many times, so that unlock() by a thread that doesn't hold one (it is unlocked, or another thread locked it) raises on every platform. Poco's unlock() went straight to the system: on Windows, LeaveCriticalSection by another thread while one held the mutex let a third thread in beside the holder, silently, and an unlock of an unlocked one did nothing; POSIX's recursive mutex raised "cannot unlock mutex" for both, and its non-recursive fast mutex unlocked it whoever held it. Locking is Poco's as before: recursive for mutex, and for fast_mutex where the system's is (Windows). named_mutex and spinlock_mutex were Poco's own until round 45: another thread's unlock() of a spinlock_mutex let a third thread in beside the holder, and an unlock() of a named_mutex nobody here held did nothing on Windows but raised the count of the POSIX semaphore behind it, after which two holders got in.
@@ -1168,7 +1202,7 @@ void RegisterThreading(asIScriptEngine* engine) {
 	angelscript_refcounted_register<Event>(engine, "thread_event");
 	engine->RegisterObjectBehaviour("thread_event", asBEHAVE_FACTORY, "thread_event@ e(thread_event_type type = THREAD_EVENT_AUTO_RESET)", asFUNCTION((angelscript_refcounted_factory<Event, Event::EventType>)), asCALL_CDECL);
 	engine->RegisterObjectMethod(_O("thread_event"), _O("void set()"), asMETHOD(Event, set), asCALL_THISCALL);
-	engine->RegisterObjectMethod(_O("thread_event"), _O("void wait()"), asMETHODPR(Event, wait, (), void), asCALL_THISCALL);
+	engine->RegisterObjectMethod(_O("thread_event"), _O("void wait()"), asFUNCTION(event_wait), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(_O("thread_event"), _O("void wait(uint ms)"), asFUNCTION(event_wait_ms), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(_O("thread_event"), _O("bool try_wait(uint ms)"), asFUNCTION(event_try_wait), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(_O("thread_event"), _O("void reset()"), asMETHOD(Event, reset), asCALL_THISCALL);
