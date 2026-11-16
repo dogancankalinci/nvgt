@@ -142,11 +142,63 @@ extern "C" ma_bool32 nvgt_channel_weights(const ma_channel* map_in, ma_uint32 ch
 	}
 	return MA_TRUE;
 }
+// How far past any ID3v2 tag an MP3's first frame is looked for in a stream whose end can't be found, as far as libvorbisfile and opusfile look for their first page: dr_mp3 reads on until it finds one, so that on an endless stream of something else, as an AAC radio or a datastream of other data, the open never returned.
+static const ma_uint64 nvgt_mp3_search_bytes = 65536;
+// The file's own callbacks, wrapped while dr_mp3 opens it (see nvgt_mp3_backend_init()).
+struct nvgt_mp3_open_file {
+	ma_read_proc read;
+	ma_seek_proc seek;
+	ma_tell_proc tell;
+	void* user;
+	bool sized = false; // A seek to its end was made, so that it ends: not bounded.
+	ma_uint64 got = 0; // What was read of it.
+	ma_uint8 head[10] = {}; // Its first bytes, which give an ID3v2 tag's size.
+	ma_uint64 limit = 0; // How far it may be read, once its first bytes are.
+};
+static ma_result nvgt_mp3_open_read(void* user, void* out, size_t bytes, size_t* bytes_read) {
+	nvgt_mp3_open_file* file = (nvgt_mp3_open_file*)user;
+	if (bytes_read) *bytes_read = 0;
+	if (!file->sized && file->got >= sizeof(file->head)) {
+		if (file->got >= file->limit) return MA_AT_END;
+		if (bytes > file->limit - file->got) bytes = (size_t)(file->limit - file->got);
+	}
+	size_t got = 0;
+	ma_result result = file->read(file->user, out, bytes, &got);
+	const ma_uint64 before = file->got;
+	for (size_t i = 0; before + i < sizeof(file->head) && i < got; i++) file->head[before + i] = ((const ma_uint8*)out)[i];
+	file->got += got;
+	if (before < sizeof(file->head) && file->got >= sizeof(file->head)) {
+		const ma_uint8* h = file->head;
+		ma_uint64 tag = 0;
+		if (h[0] == 'I' && h[1] == 'D' && h[2] == '3' && h[3] != 0xFF && h[4] != 0xFF && !((h[6] | h[7] | h[8] | h[9]) & 0x80))
+			tag = 10 + ((ma_uint64)h[6] << 21 | (ma_uint64)h[7] << 14 | (ma_uint64)h[8] << 7 | h[9]) + (h[5] & 0x10? 10 : 0); // With its footer, flagged.
+		file->limit = tag + nvgt_mp3_search_bytes;
+	}
+	if (bytes_read) *bytes_read = got;
+	return result;
+}
+static ma_result nvgt_mp3_open_seek(void* user, ma_int64 offset, ma_seek_origin origin) {
+	nvgt_mp3_open_file* file = (nvgt_mp3_open_file*)user;
+	ma_result result = file->seek(file->user, offset, origin);
+	if (result == MA_SUCCESS && origin == ma_seek_origin_end) file->sized = true;
+	return result;
+}
+static ma_result nvgt_mp3_open_tell(void* user, ma_int64* cursor) {
+	nvgt_mp3_open_file* file = (nvgt_mp3_open_file*)user;
+	return file->tell(file->user, cursor);
+}
 // dr_mp3 skips the frame of a LAME or Xing header by setting its stream cursor to that frame's end, forgetting what it had read past it, so that its clamp at the audio's end, which keeps it out of an ID3v1 tag, let the tag through, and the last MPEG frame, not followed by another, became silence. Put right as an MP3 opens, on every route to it through MiniAudio's table of its backend.
 static ma_result nvgt_mp3_backend_init(void* user_data, ma_read_proc on_read, ma_seek_proc on_seek, ma_tell_proc on_tell, void* read_user_data, const ma_decoding_backend_config* config, const ma_allocation_callbacks* allocation_callbacks, ma_data_source** backend) {
-	ma_result result = ma_decoding_backend_init__mp3(user_data, on_read, on_seek, on_tell, read_user_data, config, allocation_callbacks, backend);
+	// Opened through the wrapped callbacks, which bound its search for a first frame (see nvgt_mp3_search_bytes), then given its own back, as it is read through them for good.
+	nvgt_mp3_open_file wrapped{on_read, on_seek, on_tell, read_user_data};
+	ma_result result = ma_decoding_backend_init__mp3(user_data, nvgt_mp3_open_read, on_seek? nvgt_mp3_open_seek : NULL, on_tell? nvgt_mp3_open_tell : NULL, &wrapped, config, allocation_callbacks, backend);
 	if (result == MA_SUCCESS) {
-		ma_dr_mp3* mp3 = &((ma_mp3*)*backend)->dr;
+		ma_mp3* opened = (ma_mp3*)*backend;
+		opened->onRead = on_read;
+		opened->onSeek = on_seek;
+		opened->onTell = on_tell;
+		opened->pReadSeekTellUserData = read_user_data;
+		ma_dr_mp3* mp3 = &opened->dr;
 		if (mp3->streamCursor == mp3->streamStartOffset) mp3->streamCursor += mp3->dataSize; // What's left of what it read, after a header's frame only: any other read moves the cursor past the start.
 		// An APE tag: dr_mp3 reads its size from reserved bytes, which are 0, so that it trims the 32-byte footer alone, leaving the tag in the audio, whose last frame then wasn't followed by another and became silence. The file is read as it was left; where the footer is, as it was trimmed, is where its audio ends without the rest of the tag.
 		ma_int64 at = 0;
