@@ -207,8 +207,19 @@ public:
 		return m_message.get(name, "");
 	}
 
+	// A header that is set replaces the one there: added (add_header()), the reply_to property set twice gave the message two Reply-To
+	// headers and read back the first, and set_read_receipt() likewise.
+	void set_header(const std::string& name, const std::string& value) {
+		try {
+			m_message.set(name, value);
+			m_last_error.clear();
+		} catch (const Exception& e) {
+			m_last_error = e.displayText();
+		}
+	}
+
 	void set_reply_to(const std::string& address) {
-		add_header("Reply-To", address);
+		set_header("Reply-To", address);
 	}
 
 	std::string get_reply_to() const {
@@ -216,8 +227,8 @@ public:
 	}
 
 	void set_read_receipt(const std::string& address) {
-		add_header("Disposition-Notification-To", address);
-		add_header("Return-Receipt-To", address);
+		set_header("Disposition-Notification-To", address);
+		set_header("Return-Receipt-To", address);
 	}
 
 	std::string get_message_id() const {
