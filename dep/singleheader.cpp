@@ -151,7 +151,7 @@ struct nvgt_mp3_open_file {
 	ma_tell_proc tell;
 	void* user;
 	bool sized = false; // A seek to its end was made, so that it ends: not bounded.
-	ma_uint64 got = 0; // What was read of it.
+	ma_uint64 got = 0; // Where it was read to, from where it started, as its reads and seeks moved it.
 	ma_uint8 head[10] = {}; // Its first bytes, which give an ID3v2 tag's size.
 	ma_uint64 limit = 0; // How far it may be read, once its first bytes are.
 };
@@ -170,8 +170,9 @@ static ma_result nvgt_mp3_open_read(void* user, void* out, size_t bytes, size_t*
 	if (before < sizeof(file->head) && file->got >= sizeof(file->head)) {
 		const ma_uint8* h = file->head;
 		ma_uint64 tag = 0;
-		if (h[0] == 'I' && h[1] == 'D' && h[2] == '3' && h[3] != 0xFF && h[4] != 0xFF && !((h[6] | h[7] | h[8] | h[9]) & 0x80))
-			tag = 10 + ((ma_uint64)h[6] << 21 | (ma_uint64)h[7] << 14 | (ma_uint64)h[8] << 7 | h[9]) + (h[5] & 0x10? 10 : 0); // With its footer, flagged.
+		// As dr_mp3 reads the size of the tag it skips, with no check of the header's other bytes and each size byte's top bit dropped: a tag it skips that this took as none bounded the search from the stream's start, refusing an MP3 whose first frame follows a tag of 64 KB or more.
+		if (h[0] == 'I' && h[1] == 'D' && h[2] == '3')
+			tag = 10 + ((ma_uint64)(h[6] & 0x7F) << 21 | (ma_uint64)(h[7] & 0x7F) << 14 | (ma_uint64)(h[8] & 0x7F) << 7 | (h[9] & 0x7F)) + (h[5] & 0x10? 10 : 0); // With its footer, flagged.
 		file->limit = tag + nvgt_mp3_search_bytes;
 	}
 	if (bytes_read) *bytes_read = got;
@@ -180,9 +181,10 @@ static ma_result nvgt_mp3_open_read(void* user, void* out, size_t bytes, size_t*
 static ma_result nvgt_mp3_open_seek(void* user, ma_int64 offset, ma_seek_origin origin) {
 	nvgt_mp3_open_file* file = (nvgt_mp3_open_file*)user;
 	ma_result result = file->seek(file->user, offset, origin);
-	if (result == MA_SUCCESS) {
+	if (result == MA_SUCCESS) { // Where it now is, the search measured from there: past a tag dr_mp3 skips, so that it stops 64 KB past the tag rather than as far again as the tag claims to be long, and back at the start after the bytes dr_mp3 read to look for one, rather than counting them as searched.
 		if (origin == ma_seek_origin_end) file->sized = true;
-		else if (origin == ma_seek_origin_current && offset > 0) file->got += (ma_uint64)offset; // Skipped, as dr_mp3 skips an ID3v2 tag: counted as read, so that the search for a first frame stops 64 KB past the tag rather than as far again as the tag claims to be long.
+		else if (origin == ma_seek_origin_current) file->got = offset < 0 && (ma_uint64)-offset > file->got? 0 : file->got + offset;
+		else if (origin == ma_seek_origin_start && offset >= 0) file->got = (ma_uint64)offset;
 	}
 	return result;
 }
