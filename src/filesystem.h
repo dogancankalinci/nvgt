@@ -19,7 +19,7 @@
 inline bool path_has_nul(const std::string& path) { return path.find('\0') != std::string::npos; }
 bool DirectoryExists(const std::string& path);
 bool FileCopy(const std::string& source, const std::string& target, bool overwrite);
-bool FileMove(const std::string& source, const std::string& target);
+bool FileMove(const std::string& source, const std::string& target, bool overwrite = false);
 bool FileExists(const std::string& path);
 bool FileDelete(const std::string& path);
 // Poco::File(path).remove(true), but a directory link or junction inside is removed as a link, never gone through (Poco's goes through

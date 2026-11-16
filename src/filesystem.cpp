@@ -568,11 +568,13 @@ bool FileCopy(const string& source, const string& target, bool overwrite) {
 	} catch(Exception& e) { return false; }
 }
 
-// As declared in filesystem.h and to the script: the two paths only (a moved file never replaces an existing one).
-bool FileMove(const string& source, const string& target) {
+// A moved file replaces an existing one only with overwrite, which renames over it in one step where the system can (MoveFileEx with
+// MOVEFILE_REPLACE_EXISTING, rename()): there is never a moment without either file, so writing a temporary file and moving it over the
+// old one (settings.dump(), logger.write()) leaves the old file or the new one whatever stops the program midway.
+bool FileMove(const string& source, const string& target, bool overwrite) {
 	if (path_has_nul(source) || path_has_nul(target)) return false;
 	try {
-		File(source).renameTo(target, File::OPT_FAIL_ON_OVERWRITE);
+		File(source).renameTo(target, overwrite ? 0 : File::OPT_FAIL_ON_OVERWRITE);
 		return true;
 	} catch(Exception& e) { return false; }
 }
@@ -650,7 +652,7 @@ void RegisterScriptFileSystemFunctions(asIScriptEngine* engine) {
 	engine->RegisterGlobalFunction("bool file_delete(const string& in path)", asFUNCTION(FileDelete), asCALL_CDECL);
 	engine->RegisterGlobalFunction("bool file_copy(const string& in source, const string& in destination, bool overwrite)", asFUNCTION(FileCopy), asCALL_CDECL);
 	engine->RegisterGlobalFunction("bool file_hard_link(const string& in source, const string&in destination)", asFUNCTION(FileHardLink), asCALL_CDECL);
-	engine->RegisterGlobalFunction("bool file_move(const string& in source, const string& in destination)", asFUNCTION(FileMove), asCALL_CDECL);
+	engine->RegisterGlobalFunction("bool file_move(const string& in source, const string& in destination, bool overwrite = false)", asFUNCTION(FileMove), asCALL_CDECL);
 	engine->RegisterGlobalFunction("string[]@ find_directories(const string& in pattern)", asFUNCTION(FindDirectories), asCALL_CDECL);
 	engine->RegisterGlobalFunction("string[]@ find_files(const string& in pattern)", asFUNCTION(FindFiles), asCALL_CDECL);
 	engine->RegisterGlobalFunction("string[]@ glob(const string& in pattern, glob_options options = GLOB_DEFAULT)", asFUNCTION(script_glob), asCALL_CDECL);

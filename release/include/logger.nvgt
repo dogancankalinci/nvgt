@@ -49,23 +49,30 @@ class logger {
 		if ((log_file.get_size() <= 0) || (always_include_header == true))
 			include_header = true;
 		log_file.close();
+		// An overwritten log is written to a file beside it that then replaces it in one step, so that what stops the program midway leaves the old log or the new one, never a cut-off one. An appended log is written in place, where a cut leaves the earlier entries whole.
+		string temp_filename = filename + ".tmp";
 		if (overwrite_file == false)
 			active = log_file.open(filename, "ab");
 		else
-			active = log_file.open(filename, "wb");
+			active = log_file.open(temp_filename, "wb");
 		if (active == false) {
 			alert("error", "can't open log file");
 			return false;
 		}
+		string text;
 		if ((include_header == true) && (header_text != ""))
-			log_file.write(header_text + "\r\n");
-		log_file.write(entry);
-		if (reset_text == true) {
-			entry = "";
-			if (footer_text != "")
-				log_file.write(footer_text + "\r\n");
+			text += header_text + "\r\n";
+		text += entry;
+		if (reset_text == true && footer_text != "")
+			text += footer_text + "\r\n";
+		bool written = log_file.write(text) == text.length();
+		if (!log_file.close()) written = false;
+		if (overwrite_file == true && (!written || !file_move(temp_filename, filename, true))) {
+			file_delete(temp_filename);
+			return false;
 		}
-		log_file.close();
+		if (!written) return false;
+		if (reset_text == true) entry = "";
 		return true;
 	}
 

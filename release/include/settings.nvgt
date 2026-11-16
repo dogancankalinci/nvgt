@@ -113,11 +113,18 @@ class settings_helper {
 		string filepath = this.get_data_path();
 		if (!ensure_data_path(filepath, !this.local_path)) return false;
 		string final_data = this.raw_dump();
-		file tempfile;
-		if (!tempfile.open(filepath, "wb")) return false;
 		if (this.encrypt_data) final_data = string_aes_encrypt(final_data, this.encryption_key);
-		tempfile.write(final_data);
-		tempfile.close();
+		// Written to a file beside it that then replaces it in one step: written in place, a crash, a full disk or a power cut midway left
+		// a cut-off settings file and lost every setting in it, and a write that failed still returned true.
+		string temppath = filepath + ".tmp";
+		file tempfile;
+		if (!tempfile.open(temppath, "wb")) return false;
+		bool written = tempfile.write(final_data) == final_data.length();
+		if (!tempfile.close()) written = false;
+		if (!written || !file_move(temppath, filepath, true)) {
+			file_delete(temppath);
+			return false;
+		}
 		return true;
 	}
 }
