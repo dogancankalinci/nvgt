@@ -542,9 +542,11 @@ std::streampos section_istreambuf::seekpos(std::streampos pos, std::ios_base::op
 	source->clear();
 	if (!source->good())
 		return -1;
-	std::streampos true_pos = pos + start;
-	if (true_pos > start + size)
+	// Before the section's start fails too: a pack file's seek_end() or seek_relative() past its start, or seek() to an offset past
+	// 2^63, succeeded at a negative position from which every read was at the end.
+	if (std::streamoff(pos) < 0 || std::streamoff(pos) > size)
 		return -1;
+	std::streampos true_pos = pos + start;
 	source->seekg(true_pos);
 	this->setg(nullptr, nullptr, nullptr);
 	return pos;
