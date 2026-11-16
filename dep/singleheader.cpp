@@ -180,7 +180,10 @@ static ma_result nvgt_mp3_open_read(void* user, void* out, size_t bytes, size_t*
 static ma_result nvgt_mp3_open_seek(void* user, ma_int64 offset, ma_seek_origin origin) {
 	nvgt_mp3_open_file* file = (nvgt_mp3_open_file*)user;
 	ma_result result = file->seek(file->user, offset, origin);
-	if (result == MA_SUCCESS && origin == ma_seek_origin_end) file->sized = true;
+	if (result == MA_SUCCESS) {
+		if (origin == ma_seek_origin_end) file->sized = true;
+		else if (origin == ma_seek_origin_current && offset > 0) file->got += (ma_uint64)offset; // Skipped, as dr_mp3 skips an ID3v2 tag: counted as read, so that the search for a first frame stops 64 KB past the tag rather than as far again as the tag claims to be long.
+	}
 	return result;
 }
 static ma_result nvgt_mp3_open_tell(void* user, ma_int64* cursor) {
