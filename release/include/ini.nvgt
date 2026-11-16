@@ -624,11 +624,13 @@ shared class ini_section {
 // The following are functions meant for internal use by the classes above.
 
 // Internal function used to check whether a character is a valid ini identifier char.
+// The bytes of UTF-8 letters (128 and up) are valid too: they were not, so a key such as "\xC3\xA7ay" (with a Turkish letter) couldn't be
+// set, and in a file being loaded the letter was dropped without a word, the value landing under the key "ay".
 shared bool INI_IS_VALID_IDENT_CHAR(const string& in char) {
 	if (char.length() != 1)
 		return false;
 	uint c = character_to_ascii(char);
-	return c >= 48 and c <= 57 or c >= 65 and c <= 90 or c >= 97 and c <= 122 or c == 36 or c == 39 or c == 42 or c == 45 or c == 46 or c == 58 or c == 95 or c == 126;
+	return c >= 48 and c <= 57 or c >= 65 and c <= 90 or c >= 97 and c <= 122 or c == 36 or c == 39 or c == 42 or c == 45 or c == 46 or c == 58 or c == 95 or c == 126 or c >= 128;
 }
 
 // Escape backslash, cama, colon and semicolon
@@ -684,8 +686,10 @@ shared string INI_VERIFY_IDENT(const string& in identifier) {
 	if (identifier.find("  ") > -1)
 		return "unescaped spaces in identifier";
 	int ident_length = identifier.length();
+	// A backslash is refused, as it always was: the test meant to let it through compared the index with "\\", which never matched. The
+	// loader takes a backslash in a name for an escape and drops it, so a name holding one would come back from a saved file without it.
 	for (uint c = 0; c < ident_length; c++) {
-		if (!INI_IS_VALID_IDENT_CHAR(identifier[c]) and c != "\\" and identifier[c] != " ")
+		if (!INI_IS_VALID_IDENT_CHAR(identifier[c]) and identifier[c] != " ")
 			return "invalid characters in identifier";
 	}
 	return "";
