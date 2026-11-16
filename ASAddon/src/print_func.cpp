@@ -307,6 +307,19 @@ void Print::PrintTemplate(std::ostream & dst, void const* objPtr, int typeId, in
     return;
 }
 
+// A placeholder's digits after %. isdigit() was given the byte after a % as a char, negative for UTF-8 (undefined; the debug runtime
+// on Windows asserts), and atoi() read the number, which past what an int holds is undefined too: a 64-bit long cast back to int
+// came out negative ("%2147483649" picked an argument counted back from the end of the array). The number is taken modulo argc
+// digit by digit, which gives the same argument as number % argc for every number, however long; next is left after the digits.
+static bool format_is_digit(char c) { return c >= '0' && c <= '9'; }
+static int format_argument_index(std::string const& in, size_t& next, int argc)
+{
+	unsigned long long arg = 0;
+	while(next < in.size() && format_is_digit(in[next]))
+		arg = (arg * 10 + (in[next++] - '0')) % (unsigned long long)argc;
+	return int(arg);
+}
+
 void Print::PrintFormat(std::ostream & stream, std::string const& in, asIScriptGeneric * generic, int offset)
 {
 	int argc = generic->GetArgCount() - offset;
@@ -323,12 +336,11 @@ void Print::PrintFormat(std::ostream & stream, std::string const& in, asIScriptG
 
         if(next == std::string::npos) break;
 
-        if(!isdigit(in[++next]))
+        if(!format_is_digit(in[++next]))
             stream << '%';
         else
         {
-            auto arg = atoi(&in[next]) % argc;
-            while(next < in.size() && isdigit(in[next])) ++next;
+            int arg = format_argument_index(in, next, argc);
 
 			Print::PrintTemplate(stream, generic->GetArgAddress(offset+arg), generic->GetArgTypeId(offset+arg), 0);
         }
@@ -351,12 +363,11 @@ void Print::PrintFormatArray(std::ostream & stream, std::string const& in, CScri
 
         if(next == std::string::npos) break;
 
-        if(!isdigit(in[++next]))
+        if(!format_is_digit(in[++next]))
             stream << '%';
         else
         {
-            auto arg = atoi(&in[next]) % argc;
-            while(next < in.size() && isdigit(in[next])) ++next;
+            int arg = format_argument_index(in, next, argc);
 
 			Print::PrintTemplate(stream, array->At(offset+arg), array->GetElementTypeId(), 0);
         }
