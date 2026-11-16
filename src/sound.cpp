@@ -1363,6 +1363,7 @@ static ma_data_source* next_of_self_linked(ma_data_source* source) {
 // The source after source in its chain: itself for one linked to itself.
 static ma_data_source* next_in_chain(ma_data_source* source) { return ma_data_source_get_next_callback(source) == next_of_self_linked? source : ma_data_source_get_next(source); }
 static ma_result seek_or_keep_place(ma_data_source* source, ma_uint64 frame); // See held_file.
+static ma_result seek_whole_or_keep_place(ma_data_source* source, ma_uint64 frame); // As seek_or_keep_place(), to a frame of the whole source.
 class audio_data_source_impl : public audio_node_impl, public virtual audio_data_source {
 	unique_ptr<ma_data_source_node> src;
 	audio_data_source* src_cur;
@@ -1734,11 +1735,12 @@ public:
 		ma_uint64 begin = 0, cursor = 0;
 		ma_data_source_get_range_in_pcm_frames(src->pDataSource, &begin, nullptr);
 		if (start_frame > begin) {
-			const unsigned long long ranged = get_length_frames(), whole = whole_length_frames(); // Worked out by the first, for a decoder.
+			get_length_frames(); // Worked out, for a decoder's whole length.
+			const unsigned long long whole = whole_length_frames();
 			// A start past a known end, as seek_frames() refuses one: MiniAudio's seek there failed and a held file took it as made (see held_file_seek()), so that the cursor and a sound's position read past the length, and the range read nothing even once its start was moved back, MiniAudio's later changes moving the cursor only by the range's end.
 			if (whole && start_frame > whole) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS;
-			// MiniAudio ignores its seek into the new range failing: a start past the end of a source of unknown length reported as set, reading on outside it. So it's made first, for a source that says a seek is past its end.
-			if (!ranged && ma_data_source_get_cursor_in_pcm_frames(src->pDataSource, &cursor) == MA_SUCCESS && begin + cursor < start_frame && seek_or_keep_place(src->pDataSource, start_frame - begin) == MA_INVALID_ARGS) {
+			// MiniAudio ignores its seek into the new range failing: a start past the end of a source of unknown length reported as set, reading on outside it. So it's made first, for a source that says a seek is past its end, whatever range it had: one with an end has a length of its own, which tells nothing of where the source ends.
+			if (!whole && ma_data_source_get_cursor_in_pcm_frames(src->pDataSource, &cursor) == MA_SUCCESS && begin + cursor < start_frame && seek_whole_or_keep_place(src->pDataSource, start_frame) == MA_INVALID_ARGS) {
 				g_soundsystem_last_error = MA_INVALID_ARGS;
 				return false;
 			}
@@ -2326,6 +2328,12 @@ static ma_result start_again(ma_data_source* source) {
 static ma_result seek_or_keep_place(ma_data_source* source, ma_uint64 frame) {
 	script_seek told;
 	return ma_data_source_seek_to_pcm_frame(source, frame);
+}
+// To a frame of the whole source, whatever its range: MiniAudio's seek, within the range, refuses a frame past a range with an end on its own, with an error that doesn't tell whether the source reaches it.
+static ma_result seek_whole_or_keep_place(ma_data_source* source, ma_uint64 frame) {
+	script_seek told;
+	ma_data_source_base* base = (ma_data_source_base*)source;
+	return base->vtable->onSeek? base->vtable->onSeek(source, frame) : MA_NOT_IMPLEMENTED;
 }
 // Gives a decoder made the functions above, and its file its own (see held_file), with the decoder's length when known, before anything reads or seeks it. What it makes is freed by let_go_of_decoder() or uninit_resource_source().
 static void hold_decoder(ma_decoder* decoder, bool can_seek, ma_uint64 length = 0) {
