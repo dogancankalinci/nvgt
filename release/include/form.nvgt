@@ -106,6 +106,19 @@ enum control_event_type {
 }
 //characters that should be considered word boundaries.
 string audioform_word_separators = "_ .,!\\\"/[{()}]=\n";
+// An input box's maximum length counts characters, as create_input_box() documents: it counted the bytes of the text's UTF-8, so a box
+// of 10 took 5 letters such as ç, ğ or ş, and the default text was cut in the middle of one.
+int audioform_character_count(const string&in text) {
+	int count = 0;
+	for (int i = 0; i < int(text.length()); i = utf8next(text, i)) count++;
+	return count;
+}
+// The bytes the first characters of text take, at most all of it.
+int audioform_character_offset(const string&in text, int characters) {
+	int i = 0;
+	for (int n = 0; n < characters && i < int(text.length()); n++) i = utf8next(text, i);
+	return i < int(text.length()) ? i : int(text.length());
+}
 //prespeech callback, if set the given function will be called right before the form speaks.
 funcdef void prespeech_callback(audio_form@ f);
 // Background callback, this method is fired at the top of the monitor function and can return false to abort the forms monitor logic during that iteration. It can be useful when creating UI extension libraries that need to insert logic into any form in an application without modifying every loop that invoques form.monitor in the target application.
@@ -288,8 +301,8 @@ class audio_form {
 		c_form[control_counter].enable_delete = true;
 		set_clipboard_flags(control_counter, true, true, true);
 		c_form[control_counter].speech_output = speech_output;
-		if ((maximum_length > 0) && (default_text.length() > maximum_length)) {
-			default_text = default_text.substr(0, maximum_length);
+		if ((maximum_length > 0) && (audioform_character_count(default_text) > maximum_length)) {
+			default_text = default_text.substr(0, audioform_character_offset(default_text, maximum_length));
 			form_error = form_error_text_too_long;
 		}
 		c_form[control_counter].text = default_text;
@@ -2757,17 +2770,19 @@ class control {
 			speak("Alt+" + hotkey_letter, false);
 		if ((type == ct_input) && (password_mask != "")) {
 			if (text.length() > 0)
-				speak(text.length() + " characters", false);
+				speak(audioform_character_count(text) + " characters", false);
 			else
 				speak("Blank", false);
 		}
 		if ((type == ct_input) && (password_mask == "")) {
 			if (text.length() > 0) {
 				if (sel_start >= 0) {
-					if (sel_end - sel_start >= 1024)
-						speak(highlight_selection_speech_text + " " + (sel_end - sel_start + 1) + " characters", false);
+					string selected_text = text.substr(sel_start, selection_end() - sel_start);
+					int selected_count = audioform_character_count(selected_text);
+					if (selected_count > 1024)
+						speak(highlight_selection_speech_text + " " + selected_count + " characters", false);
 					else
-						speak(highlight_selection_speech_text + " " + text.substr(sel_start, sel_end - sel_start + 1), false);
+						speak(highlight_selection_speech_text + " " + selected_text, false);
 				} else
 					speak(read_line(current_line_start_position()), false);
 			} else
@@ -3235,6 +3250,13 @@ class control {
 		} else
 			return false;
 	}
+	// The byte just past the selection. sel_end is where its last character starts when the selection grows a character at a time (the cursor
+	// moves by whole UTF-8 characters), and its last byte when it grows by words or lines; sel_end + 1 cut a character of more than one byte
+	// (ç, ğ, ş) in two in the first case, so copying put half a character on the clipboard, and deleting or typing over the selection left
+	// the other half in the text. utf8next() gives sel_end + 1 for a single byte and a character's last byte, as before.
+	int selection_end() {
+		return sel_end < 0 ? -1 : utf8next(text, sel_end);
+	}
 	void highlight_left() {
 		if (cursor <= 0)
 			return;
@@ -3359,11 +3381,11 @@ class control {
 		string new_text = text;
 		if (sel_start > -1 && sel_end > -1) {
 			cursor = sel_start;
-			new_text = text.substr(0, cursor) + text.substr(sel_end + 1);
+			new_text = text.substr(0, cursor) + text.substr(selection_end());
 			sel_start = -1;
 			sel_end = -1;
 		}
-		if ((max_length > 0) && (new_text.length() >= max_length))
+		if ((max_length > 0) && (audioform_character_count(new_text) >= max_length))
 			return;
 		new_text = new_text.substr(0, cursor) + character + new_text.substr(cursor);
 		if (read_only == false) {
@@ -3384,7 +3406,7 @@ class control {
 		}
 	}
 	void edit(string character) {
-		if ((max_length > 0) && (text.length() > max_length))
+		if ((max_length > 0) && (audioform_character_count(text) > max_length))
 			return;
 		if (text.length() == 0)
 			return;
@@ -3407,13 +3429,13 @@ class control {
 			return false;
 		if (position == text.length()) {
 			new_text = text + content;
-			if ((max_length > 0) && (new_text.length() > max_length))
+			if ((max_length > 0) && (audioform_character_count(new_text) > max_length))
 				return false;
 			text = new_text;
 			return true;
 		}
 		new_text = text.substr(0, position) + content + text.substr(position);
-		if ((max_length > 0) && (new_text.length() > max_length))
+		if ((max_length > 0) && (audioform_character_count(new_text) > max_length))
 			return false;
 		text = new_text;
 		return true;
@@ -3431,14 +3453,14 @@ class control {
 		if (position >= text.length())
 			return false;
 		if (position == 0) {
-			if ((max_length > 0) && (content.length() > max_length))
+			if ((max_length > 0) && (audioform_character_count(content) > max_length))
 				return false;
 			text = content;
 			return true;
 		}
 		string new_text = text.substr(0, position);
 		new_text += content;
-		if ((max_length > 0) && (new_text.length() > max_length))
+		if ((max_length > 0) && (audioform_character_count(new_text) > max_length))
 			return false;
 		text = new_text;
 		return true;
@@ -3458,7 +3480,7 @@ class control {
 		if (position >= text.length())
 			return false;
 		if ((position == 0) && (content.length() > text.length())) {
-			if ((max_length > 0) && (content.length() > max_length))
+			if ((max_length > 0) && (audioform_character_count(content) > max_length))
 				return false;
 			text = content;
 			return true;
@@ -3471,7 +3493,7 @@ class control {
 			content = content.substr(1);
 		}
 		new_text += content;
-		if ((max_length > 0) && (new_text.length() > max_length))
+		if ((max_length > 0) && (audioform_character_count(new_text) > max_length))
 			return false;
 		text = new_text;
 		return true;
@@ -3481,7 +3503,7 @@ class control {
 			speak("Nothing selected", true);
 			return;
 		}
-		string copy_text = text.substr(0, sel_end + 1).substr(sel_start);
+		string copy_text = text.substr(0, selection_end()).substr(sel_start);
 		speak("Copied to clipboard", true);
 		clipboard_set_text(copy_text);
 	}
@@ -3494,7 +3516,7 @@ class control {
 			speak("Nothing selected", true);
 			return;
 		}
-		string copy_text = text.substr(0, sel_end + 1).substr(sel_start);
+		string copy_text = text.substr(0, selection_end()).substr(sel_start);
 		speak("Cut Selected", true);
 		clipboard_set_text(copy_text);
 		delete_highlighted(0, false);
@@ -3512,9 +3534,9 @@ class control {
 			speak("clipboard empty", true);
 			return;
 		}
-		// What the selection gives back is sel_end - sel_start + 1 characters (sel_end is the selection's last one), one more than counted.
-		int selected = sel_start > -1 && sel_end > -1 ? sel_end - sel_start + 1 : 0;
-		if ((max_length > 0) && (int((text + paste).length()) - selected > max_length)) {
+		// What the selection gives back: the characters from sel_start to the end of the one at sel_end (see selection_end()).
+		int selected = sel_start > -1 && sel_end > -1 ? audioform_character_count(text.substr(sel_start, selection_end() - sel_start)) : 0;
+		if ((max_length > 0) && (audioform_character_count(text) + audioform_character_count(paste) - selected > max_length)) {
 			speak("clipboard data can't fit", true);
 			return;
 		}
@@ -3525,7 +3547,7 @@ class control {
 		string new_text = text;
 		if (sel_start > -1 && sel_end > -1) {
 			cursor = sel_start;
-			new_text = text.substr(0, cursor) + text.substr(sel_end + 1);
+			new_text = text.substr(0, cursor) + text.substr(selection_end());
 			sel_start = -1;
 			sel_end = -1;
 		}
@@ -3552,7 +3574,7 @@ class control {
 			return;
 		if (sel_start > -1 && sel_end > -1 && sel_start <= sel_end) {
 			cursor = sel_start;
-			text = text.substr(0, cursor) + text.substr(sel_end + 1);
+			text = text.substr(0, cursor) + text.substr(selection_end());
 			sel_start = -1;
 			sel_end = -1;
 			if (speak_deleted)
@@ -3804,7 +3826,7 @@ class control {
 		if (temp == "")
 			return "Blank";
 		if (password_mask != "")
-			return temp.length() + " characters";
+			return audioform_character_count(temp) + " characters";
 		return temp;
 	}
 	void line_start() {
@@ -3961,7 +3983,7 @@ class control {
 		sel_start = 0;
 		sel_end = cursor;
 		cursor = 0;
-		speak_selected(text.substr(0, sel_end + 1));
+		speak_selected(text.substr(0, selection_end()));
 	}
 	void highlight_to_field_end() {
 		if (cursor >= text.length())
