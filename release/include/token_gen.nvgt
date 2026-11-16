@@ -27,19 +27,24 @@ string generate_token(int token_length, int mode = TOKEN_CHARACTERS | TOKEN_NUMB
 	return generate_custom_token(token_length, ch);
 }
 
+// token_length values are picked, each added whole: a token of a byte per pick took only the first byte of each, so words ({"ab", "cd"}
+// gave "ccac") and letters of more than one byte came out cut.
 string generate_custom_token(int token_length, const string[] &in values) {
 	if (values.is_empty() || token_length <= 0) return "";
 	string final_token;
-	final_token.resize(token_length);
-	for (uint i = 0; i < token_length; i++)
-		final_token[i] = values[random(0, values.length()-1)];
+	for (int i = 0; i < token_length; i++)
+		final_token += values[random(0, values.length()-1)];
 	return final_token;
 }
+// The characters are UTF-8 letters, each picked whole; split byte by byte, "\xC3\xA7\xC4\x9F" (two Turkish letters) gave random bytes of them.
 string generate_custom_token(int token_length, const string &in characters) {
 	string[] values;
 	if (characters.length() < 1) return "";
-	for (uint i = 0; i < characters.length(); i++) {
-		values.insert_last(characters[i]);
+	for (int i = 0; i < int(characters.length()); ) {
+		int next = utf8next(characters, i);
+		if (next <= i) next = i + 1;
+		values.insert_last(characters.substr(i, next - i));
+		i = next;
 	}
 	return generate_custom_token(token_length, values);
 }

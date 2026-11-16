@@ -3,11 +3,11 @@
 	1. string generate_custom_token(int token_length, string[] values);
 	2. string generate_custom_token(int token_length, string characters);
 	## Arguments (1):
-		* int token_length: the length of the token to generate.
-		* string[] values: an array of possible choices (a list of characters or even words) to generate from.
+		* int token_length: the number of choices to put in the token, each picked at random.
+		* string[] values: an array of possible choices (a list of characters or even words) to generate from; each choice picked is added to the token whole.
 	## Arguments (2):
 		* int token_length: the length of the token to generate.
-		* string characters: a list of characters to generate.
+		* string characters: a list of characters to generate from (UTF-8 characters such as accented letters count as one each).
 	## returns:
 		String: a random token.
 	## Remarks:
