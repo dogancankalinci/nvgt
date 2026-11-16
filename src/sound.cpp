@@ -2161,6 +2161,19 @@ static ma_result held_decoder_read(ma_data_source* source, void* frames_out, ma_
 		}
 		file->finished.store(false); // Its loop or range changed since, as by a script that turned its looping off, so that it reads on.
 	}
+	// Not past its range's end, or its loop's while looping (see at_its_end()). MiniAudio cuts a read to the frames left before that end, which wraps once the read point is already past it, as after a loop point set behind it, looping turned on there or a seek past the loop: the read ran on past the range to the file's end, frames outside the range played, the position read past the length, and a loop came back to its start only after the rest of the file. At or past that end nothing is given, so that MiniAudio's loop goes back to its start and a source that isn't looping ends.
+	{
+		const ma_data_source_base* base = &decoder->ds;
+		ma_uint64 end = base->rangeEndInFrames;
+		if (ma_data_source_is_looping(decoder) && base->loopEndInFrames != ~(ma_uint64)0) end = std::min(end, base->rangeBegInFrames + base->loopEndInFrames);
+		if (end != ~(ma_uint64)0) {
+			if (decoder->readPointerInPCMFrames >= end) {
+				if (frames_read) *frames_read = 0;
+				return MA_AT_END;
+			}
+			frame_count = std::min(frame_count, end - decoder->readPointerInPCMFrames);
+		}
+	}
 	// A header's length below the data ends a decoder there, as it does a load and a stream, rather than its position running on past its length.
 	const ma_uint64 known_length = file? file->length.load() : 0;
 	if (known_length) {
