@@ -633,20 +633,25 @@ public:
 			notify();
 			worker.join();
 		} else worker.tryJoin(0); // A finished request's thread still has to be joined: Poco's start() would otherwise replace it without ever joining it, so it would keep its stack until the process ends.
+		// max_retries and retry_delay are settings like the timeouts, which only reset(true) puts back: every request calls reset(), so
+		// they went back to 10 and 0 before each request started, whatever the script had set. reset(true) gives what the constructor does
+		// (it gave a keepalive_timeout of 30000 ms, the constructor 10000, and kept the user agent).
+		if (configuration) {
+			_max_retries = 10;
+			_retry_delay = 0;
+			_keepalive = false;
+			_connect_timeout = 30000;
+			_send_timeout = _receive_timeout = 60000;
+			_keepalive_timeout = 10000;
+			set_user_agent();
+		}
 		_request_body = _response_body = "";
 		_creds.clear();
 		_request = HTTPRequest(HTTPMessage::HTTP_1_1);
 		_request.setContentLength(0);
 		_request.set("User-Agent", _user_agent);
 		_response.clear();
-		_max_retries = 10;
-		_bytes_downloaded = _retry_delay = 0;
-		if (configuration) {
-			_keepalive = false;
-			_connect_timeout = 30000;
-			_send_timeout = _receive_timeout = 60000;
-			_keepalive_timeout = 30000;
-		}
+		_bytes_downloaded = 0;
 		tryWait(0); // Try making sure the event is not signaled.
 	}
 	bool get(const URI& url, const NameValueCollection* headers, const HTTPCredentials* creds = nullptr) { return request(HTTPRequest::HTTP_GET, url, headers, "", creds); }
@@ -660,7 +665,10 @@ public:
 	bool patch(const URI& url, const string& body, const NameValueCollection* headers = nullptr, const HTTPCredentials* creds = nullptr) { return request(HTTPRequest::HTTP_PATCH, url, headers, body, creds); }
 	void run() {
 		bool authorize = false;
-		int tries = _max_retries;
+		// The attempts, the first included (a redirect followed or the request sent again with credentials is one more). 0 makes the one
+		// attempt, as 1 does: it made none, and the request ended at once with no response. Unsigned: as an int, a value over INT_MAX
+		// was negative and counted down for about 2^32 attempts, so a redirect loop went on for hours.
+		unsigned int tries = _max_retries ? (unsigned int)_max_retries : 1;
 		string download_buffer(1024 * 32, '\0'); // Should the user be able to configure this, larger buffer = faster download?
 		// retry_delay is the wait before each retry (a redirect followed, the request sent again with credentials): it was also waited before the first attempt, so every request with a retry delay set started that much later. The first attempt only checks for a cancel (reset() or the object going).
 		bool first = true;

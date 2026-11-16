@@ -4,6 +4,7 @@
 	## Remarks:
 		This is one of the easiest ways to perform an http request in NVGT without blocking the rest of your code.
 		Simply create an http object, call either it's get, head or post methods, then begin accessing properties on the object such  as progress, status_code or response_body to query and access details of the request.
+		A request that fails, such as a connection that is refused or times out or a host name that can't be found, is not tried again: it ends at once with no response (a status_code of 0). The max_retries and retry_delay properties only apply to the redirects the request follows and to sending it again with credentials after a 401 response. Retry a failed request yourself if your game needs that.
 */
 
 // Example:

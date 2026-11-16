@@ -1,7 +1,10 @@
 /**
-	Resets the http object to the state it was in at the time of it's construction, canceling any requests in progress.
-	void reset();
+	Cancels any request in progress and clears its results, and with configuration set, puts every setting back as well, to the state the http object was in at the time of it's construction.
+	void reset(bool configuration = false);
+	## Arguments:
+		* bool configuration = false: also set max_retries, retry_delay, keepalive, the timeouts and the user agent back to their defaults.
 	## Remarks:
+		Without configuration the settings stay as the script set them. Every request method calls reset() first, so a request's results never mix with the last one's.
 		This method waits for the current request to cancel successfully, which is usually instant. However from time to time you could see a small delay as the request thread runs to the next point where it can check the cancelation event.
 		This method is implicitly called whenever the http object destructs.
 */
