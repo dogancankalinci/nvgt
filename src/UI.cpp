@@ -125,10 +125,10 @@ void message(const std::string& text, const std::string& header) { // Usually us
 // data and its types) as the window's thread handles events: on Windows when the window gains the focus, on macOS and iOS when another
 // program changes the clipboard, on X11 and Wayland as other programs ask for it. So the clipboard calls, destroy_window(), the end of the
 // program and the window thread's event pumping all take this lock.
-// On Windows a clipboard call can wait for the window's thread: EmptyClipboard() sends WM_DESTROYCLIPBOARD to the window that owns the
-// clipboard, which is the window SDL set it with before, and waits until its thread handles it. A thread that waits for this lock handles
-// the messages sent to its windows meanwhile, or the window's thread, waiting here, never would. The lock goes to its waiters in turn, so
-// that a script thread calling the clipboard in a loop can't keep the window's thread from its events.
+// On Windows NVGT doesn't use SDL's clipboard (see ClipboardGetText() below), and its clipboard calls don't take this lock. A thread that
+// waits for this lock on Windows still handles the messages sent to its windows meanwhile: making or destroying a window on one thread
+// can send messages to the windows of another, whose thread, waiting here, would never handle them. The lock goes to its waiters in
+// turn, so that a script thread calling the clipboard in a loop can't keep the window's thread from its events.
 namespace {
 struct video_mutex_state {
 	std::mutex mutex;
@@ -181,6 +181,92 @@ video_lock::~video_lock() {
 	SetEvent(state.released_event);
 	#endif
 }
+#ifdef _WIN32
+// On Windows NVGT reads and writes the clipboard itself, as SDL does it (the text as CF_UNICODETEXT, up to its first NUL character, with
+// every "\n" that doesn't follow a "\r" written as "\r\n"), but opened with no window. SDL opened it with its window, which made that
+// window the clipboard's owner, and every later EmptyClipboard(), of any thread or program, then sent WM_DESTROYCLIPBOARD to the window
+// and waited until the window's thread handled it: a window thread waiting in join() for a script thread that set the clipboard never
+// did, and both hung. With no owner no message goes to a window of NVGT's, and no SDL state is used, so these need no lock and work on
+// any thread, with or without a window or a message pump.
+static bool open_clipboard() {
+	for (int attempt = 0;; attempt++) { // another program may have it open for a moment; SDL tries 3 times too
+		if (OpenClipboard(nullptr)) return true;
+		if (attempt == 2) return false;
+		Sleep(10);
+	}
+}
+// The conversions go in pieces that fit an int, each ending on a whole character.
+static std::string clipboard_utf8(const wchar_t* text, size_t size) {
+	std::string result;
+	while (size) {
+		size_t piece = size < (1u << 30) ? size : (1u << 30);
+		if (piece < size && IS_HIGH_SURROGATE(text[piece - 1])) piece--;
+		int len = WideCharToMultiByte(CP_UTF8, 0, text, int(piece), nullptr, 0, nullptr, nullptr);
+		if (len <= 0) break;
+		size_t at = result.size();
+		result.resize(at + len);
+		WideCharToMultiByte(CP_UTF8, 0, text, int(piece), &result[at], len, nullptr, nullptr);
+		text += piece;
+		size -= piece;
+	}
+	return result;
+}
+static std::wstring clipboard_utf16(const char* text, size_t size) {
+	std::wstring result;
+	while (size) {
+		size_t piece = size < (1u << 30) ? size : (1u << 30);
+		for (int back = 0; piece < size && back < 3 && (text[piece] & 0xC0) == 0x80; back++) piece--;
+		int len = MultiByteToWideChar(CP_UTF8, 0, text, int(piece), nullptr, 0);
+		if (len <= 0) break;
+		size_t at = result.size();
+		result.resize(at + len);
+		MultiByteToWideChar(CP_UTF8, 0, text, int(piece), &result[at], len);
+		text += piece;
+		size -= piece;
+	}
+	return result;
+}
+std::string ClipboardGetText() {
+	std::string text;
+	if (!open_clipboard()) return text;
+	if (HANDLE data = GetClipboardData(CF_UNICODETEXT)) { // Windows makes CF_UNICODETEXT of CF_TEXT and CF_OEMTEXT when that's all there is
+		if (const wchar_t* str = (const wchar_t*)GlobalLock(data)) {
+			text = clipboard_utf8(str, wcsnlen(str, GlobalSize(data) / sizeof(wchar_t)));
+			GlobalUnlock(data);
+		}
+	}
+	CloseClipboard();
+	return text;
+}
+bool ClipboardSetText(const std::string& text) {
+	std::wstring wide = clipboard_utf16(text.c_str(), strlen(text.c_str()));
+	size_t size = wide.size();
+	for (size_t i = 0; i < wide.size(); i++) {
+		if (wide[i] == L'\n' && (i == 0 || wide[i - 1] != L'\r')) size++;
+	}
+	if (!open_clipboard()) return false;
+	EmptyClipboard();
+	bool result = true;
+	if (size) {
+		HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, (size + 1) * sizeof(wchar_t));
+		wchar_t* dst = mem ? (wchar_t*)GlobalLock(mem) : nullptr;
+		if (dst) {
+			for (size_t i = 0; i < wide.size(); i++) {
+				if (wide[i] == L'\n' && (i == 0 || wide[i - 1] != L'\r')) *dst++ = L'\r';
+				*dst++ = wide[i];
+			}
+			*dst = 0;
+			GlobalUnlock(mem);
+		}
+		if (!dst || !SetClipboardData(CF_UNICODETEXT, mem)) { // on success the clipboard owns the memory
+			if (mem) GlobalFree(mem);
+			result = false;
+		}
+	}
+	CloseClipboard();
+	return result;
+}
+#else
 std::string ClipboardGetText() {
 	video_lock lock;
 	InputInit();
@@ -196,9 +282,10 @@ bool ClipboardSetText(const std::string& text) {
 	// every clipboard write that actually went through.
 	return SDL_SetClipboardText(text.c_str());
 }
+#endif
 bool ClipboardSetRawText(const std::string& text) {
 	#ifdef _WIN32
-	if (!OpenClipboard(nullptr))
+	if (!open_clipboard())
 		return false;
 	EmptyClipboard();
 	if (text == "") {
@@ -206,17 +293,19 @@ bool ClipboardSetRawText(const std::string& text) {
 		return true;
 	}
 	HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, text.size() + 1);
-	if (!hMem) {
+	char* cbText = hMem ? (char*)GlobalLock(hMem) : nullptr;
+	if (!cbText) {
+		if (hMem) GlobalFree(hMem);
 		CloseClipboard();
 		return false;
 	}
-	char* cbText = (char*)GlobalLock(hMem);
 	memcpy(cbText, text.c_str(), text.size());
 	cbText[text.size()] = 0;
 	GlobalUnlock(hMem);
-	SetClipboardData(CF_TEXT, hMem);
+	bool result = SetClipboardData(CF_TEXT, hMem) != nullptr; // on success the clipboard owns the memory
+	if (!result) GlobalFree(hMem);
 	CloseClipboard();
-	return true;
+	return result;
 	#else
 	return FALSE;
 	#endif
@@ -418,7 +507,7 @@ bool sdl_window_on_this_thread(SDL_Window* window) {
 game_window::game_window(const std::string& title, unsigned int w, unsigned int h, unsigned int flags) : _window(nullptr), _owns_window(true), _native_window(nullptr), _thread(thread_current_thread_id()), _refcount(1) {
 	if (Poco::Environment::os() == POCO_OS_LINUX) flags |= SDL_WINDOW_FULLSCREEN;
 	{
-		video_lock lock; // SDL's list of windows, which the clipboard reads on Windows, see ClipboardGetText()
+		video_lock lock; // SDL's list of windows, which destroy_window() empties on another thread, see ClipboardGetText()
 		_window = SDL_CreateWindow(title.c_str(), (int)w, (int)h, flags);
 	}
 	if (!_window) {
