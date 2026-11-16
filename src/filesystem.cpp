@@ -566,9 +566,13 @@ void file_remove_tree(const std::string& path) {
 	f.remove(true); // Poco's File::isLink() sees every symbolic link here (lstat), so remove(true) doesn't go through one.
 	#endif
 }
+// Each deletes only what it is documented to: directory_delete() a directory (or a link to one, removed as the link), file_delete() a file
+// (or a link to one). Both removed whatever the path named, so directory_delete() of a name that was a file deleted the file, and
+// file_delete() an empty directory. isDirectory() follows a link (and is true for a junction), and throws for a path that doesn't exist.
 bool DirectoryDelete(const string& path, bool recursive) {
 	if (path_has_nul(path)) return false;
 	try {
+		if (!File(path).isDirectory()) return false;
 		if (recursive) file_remove_tree(path);
 		else File(path).remove(false);
 		return true;
@@ -576,7 +580,13 @@ bool DirectoryDelete(const string& path, bool recursive) {
 }
 
 bool FileDelete(const string& path) {
-	return DirectoryDelete(path, false);
+	if (path_has_nul(path)) return false;
+	try {
+		File f(path);
+		if (f.isDirectory()) return false;
+		f.remove(false);
+		return true;
+	} catch(Exception& e) { return false; }
 }
 
 // What tells a directory apart from every other one, whatever name it is reached by (a link, a junction): the device and inode, or on
