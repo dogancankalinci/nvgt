@@ -1745,7 +1745,15 @@ public:
 				if (tried == MA_INVALID_ARGS) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS;
 			}
 		}
-		return (g_soundsystem_last_error = ma_data_source_set_range_in_pcm_frames(src->pDataSource, start_frame, end_frame)) == MA_SUCCESS;
+		// MiniAudio's new range drops the loop point, which is counted from the range's start, so that a loop set before a range, or before a range changed, was lost with no error. Kept where it still lies within the new range, at the same frames of the source; dropped otherwise, as MiniAudio drops it.
+		ma_uint64 loop_begin = 0, loop_end = ~(ma_uint64)0;
+		ma_data_source_get_loop_point_in_pcm_frames(src->pDataSource, &loop_begin, &loop_end);
+		if ((g_soundsystem_last_error = ma_data_source_set_range_in_pcm_frames(src->pDataSource, start_frame, end_frame)) != MA_SUCCESS) return false;
+		if (loop_begin || loop_end != ~(ma_uint64)0) {
+			const ma_uint64 from = begin + loop_begin, to = loop_end == ~(ma_uint64)0? ~(ma_uint64)0 : begin + loop_end;
+			if (from >= start_frame && from < end_frame && (to == ~(ma_uint64)0 || to <= end_frame)) ma_data_source_set_loop_point_in_pcm_frames(src->pDataSource, from - start_frame, to == ~(ma_uint64)0? ~(ma_uint64)0 : to - start_frame);
+		}
+		return true;
 	}
 	// Without a source, 0 for both, as AngelScript leaves &out values unset.
 	void get_range(unsigned long long* start_frame, unsigned long long* end_frame) const override {
