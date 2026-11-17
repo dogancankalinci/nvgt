@@ -1890,12 +1890,13 @@ audio_data_source* audio_data_source_get(ma_data_source* ptr, audio_engine* engi
 }
 // A ring buffer that the audio thread reads as a data source, as a stream_pcm() sound's and a microphone's are. A ring buffer has one writer and one reader, so dropping what is queued, as starting such a sound or microphone again does, is left to the reader: discard() has the next read skip what is queued now. Resetting the ring buffer from the script's thread moved its positions under the audio thread's read, which then played old frames again.
 // Zeroes the samples that aren't finite, NaN or infinite, as a damaged or crafted float WAV or a script's PCM can hold: kept, one such sample left every filter, delay and reverb it reached giving NaN for good, their state holding it, so that every sound mixed through them after it played NaN too. By the bits, as a build that takes floats to be finite could drop a test of the value.
+static bool non_finite(const float* sample) {
+	ma_uint32 bits;
+	memcpy(&bits, sample, sizeof(bits));
+	return (bits & 0x7F800000u) == 0x7F800000u;
+}
 static void zero_non_finite(float* samples, size_t count) {
-	for (size_t i = 0; i < count; i++) {
-		ma_uint32 bits;
-		memcpy(&bits, samples + i, sizeof(bits));
-		if ((bits & 0x7F800000u) == 0x7F800000u) samples[i] = 0;
-	}
+	for (size_t i = 0; i < count; i++) if (non_finite(samples + i)) samples[i] = 0;
 }
 struct pcm_queue {
 	ma_data_source_base base; // First: MiniAudio passes this struct as the data source.
@@ -2937,7 +2938,7 @@ protected:
 	virtual unsigned int write_impl(const void* buffer, unsigned int size) { return 0; } // Override in subclasses, send given buffer to encoder.
 	// Frames in float, at the encoder's channels and rate, given to write_impl() in its format.
 	vector<char> converted, dc_buffer; // Scratch for write_converted() and write_locked(), under write_mtx.
-	vector<float> finite; // Scratch for write_converted(), under write_mtx.
+	vector<float> finite; // Scratch for write_locked(), under write_mtx.
 	unsigned int write_converted(const void* frames, unsigned int frame_count) {
 		if (output_format == ma_format_f32) return write_impl(frames, frame_count);
 		try {
@@ -2946,19 +2947,8 @@ protected:
 			g_soundsystem_last_error = MA_OUT_OF_MEMORY;
 			return 0;
 		}
-		const float* in = static_cast<const float*>(frames);
+		const float* in = static_cast<const float*>(frames); // Finite (see write_locked()).
 		const size_t samples = (size_t)frame_count * channels;
-		// NaN converted to an integer is undefined, a script's write writing whatever the conversion gave, a full-scale click as a rule: written as silence instead, as the sound system's sources give it (see zero_non_finite()). Infinities clip.
-		if (std::any_of(in, in + samples, [](float v) { return v != v; })) {
-			try {
-				finite.assign(in, in + samples);
-			} catch (...) { // As above.
-				g_soundsystem_last_error = MA_OUT_OF_MEMORY;
-				return 0;
-			}
-			for (float& v : finite) if (v != v) v = 0;
-			in = finite.data();
-		}
 		if (output_format == ma_format_u8) { // To the nearest step: MiniAudio's conversion cuts down, half a step low, which wrote silence as 0x7F.
 			ma_uint8* out = reinterpret_cast<ma_uint8*>(converted.data());
 			for (size_t sample = 0; sample < samples; sample++) out[sample] = (ma_uint8)((std::clamp(in[sample], -1.0f, 1.0f) + 1) * 127.5f + 0.5f);
@@ -3153,6 +3143,21 @@ public:
 		if (!frames_in) g_soundsystem_last_error = MA_INVALID_ARGS;
 		else if (!get_active()) g_soundsystem_last_error = MA_INVALID_OPERATION; // Nothing open to write to, which said nothing.
 		if (!frames_in || !frame_count || !get_active()) return 0;
+		// NaN and infinite samples, as a script's write or a plugin's node can give, are written as silence, as the sound system's sources give them (see zero_non_finite()): before the converter, whose resampler spread one over the frames around it on every channel, an infinity becoming NaN in its filter, and for every format; after it, a float WAV and Opus wrote them, and NaN converted to an integer format is undefined, a full-scale click as a rule.
+		const size_t samples_in = (size_t)frame_count * (dc? dc->channelsIn : channels);
+		for (size_t i = 0; i < samples_in; i++) {
+			if (!non_finite(frames_in + i)) continue;
+			try {
+				finite.assign(frames_in, frames_in + samples_in);
+			} catch (...) { // As in write_converted().
+				if (close_result == MA_SUCCESS) close_result = MA_OUT_OF_MEMORY;
+				g_soundsystem_last_error = MA_OUT_OF_MEMORY;
+				return 0;
+			}
+			zero_non_finite(finite.data(), samples_in);
+			frames_in = finite.data();
+			break;
+		}
 		if (!dc) {
 			unsigned int frames = write_converted(frames_in, frame_count);
 			if (frames < frame_count && close_result == MA_SUCCESS) close_result = g_soundsystem_last_error != MA_SUCCESS? g_soundsystem_last_error : MA_IO_ERROR; // Frames lost, which close() reports: in the graph, the audio thread's error says it to no one.
