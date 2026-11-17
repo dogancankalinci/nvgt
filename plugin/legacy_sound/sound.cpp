@@ -2683,7 +2683,9 @@ plugin_main(nvgt_plugin_shared* shared) {
 	if (!dlsym(RTLD_DEFAULT, "BASS_GetVersion")) return false;
 	#endif
 	g_ScriptEngine = shared->script_engine;
-	CScriptArray::SetMemoryFunctions(std::malloc, std::free);
+	// The engine's memory functions, as the arrays the engine makes use: arrays this plugin makes are freed by the engine and the other
+	// way round, and the C runtime compiled into this plugin isn't always the engine's (a debug Windows build has a heap of its own).
+	CScriptArray::SetMemoryFunctions(asAllocMem, asFreeMem);
 	#ifdef _WIN32
 	setlocale(LC_ALL, ".UTF8");
 	#endif
