@@ -1878,6 +1878,14 @@ audio_data_source* audio_data_source_get(ma_data_source* ptr, audio_engine* engi
 	return new audio_data_source_impl(engine, ptr);
 }
 // A ring buffer that the audio thread reads as a data source, as a stream_pcm() sound's and a microphone's are. A ring buffer has one writer and one reader, so dropping what is queued, as starting such a sound or microphone again does, is left to the reader: discard() has the next read skip what is queued now. Resetting the ring buffer from the script's thread moved its positions under the audio thread's read, which then played old frames again.
+// Zeroes the samples that aren't finite, NaN or infinite, as a damaged or crafted float WAV or a script's PCM can hold: kept, one such sample left every filter, delay and reverb it reached giving NaN for good, their state holding it, so that every sound mixed through them after it played NaN too. By the bits, as a build that takes floats to be finite could drop a test of the value.
+static void zero_non_finite(float* samples, size_t count) {
+	for (size_t i = 0; i < count; i++) {
+		ma_uint32 bits;
+		memcpy(&bits, samples + i, sizeof(bits));
+		if ((bits & 0x7F800000u) == 0x7F800000u) samples[i] = 0;
+	}
+}
 struct pcm_queue {
 	ma_data_source_base base; // First: MiniAudio passes this struct as the data source.
 	ma_pcm_rb rb;
@@ -1941,6 +1949,7 @@ struct pcm_queue {
 			total += frames;
 		}
 		if (frames_out && total < frame_count) ma_silence_pcm_frames(ma_offset_pcm_frames_ptr(frames_out, total, format, channels), frame_count - total, format, channels);
+		if (frames_out && total && format == ma_format_f32) zero_non_finite((float*)frames_out, (size_t)total * channels); // What a script or a capture device queued (see zero_non_finite()).
 		if (frames_read) *frames_read = frame_count;
 		return MA_SUCCESS;
 	}
@@ -2212,6 +2221,7 @@ static ma_result held_decoder_read(ma_data_source* source, void* frames_out, ma_
 		total += count;
 	}
 	if (file) file->ended.store(!total && result == MA_AT_END);
+	if (frames_out && total && decoder->outputFormat == ma_format_f32) zero_non_finite((float*)frames_out, (size_t)total * decoder->outputChannels); // What a float file holds, for a decoder read or played as a node (see zero_non_finite()).
 	if (frames_read) *frames_read = total;
 	return result != MA_SUCCESS && result != MA_AT_END? result : total? MA_SUCCESS : result;
 }
@@ -2916,6 +2926,7 @@ protected:
 	virtual unsigned int write_impl(const void* buffer, unsigned int size) { return 0; } // Override in subclasses, send given buffer to encoder.
 	// Frames in float, at the encoder's channels and rate, given to write_impl() in its format.
 	vector<char> converted, dc_buffer; // Scratch for write_converted() and write_locked(), under write_mtx.
+	vector<float> finite; // Scratch for write_converted(), under write_mtx.
 	unsigned int write_converted(const void* frames, unsigned int frame_count) {
 		if (output_format == ma_format_f32) return write_impl(frames, frame_count);
 		try {
@@ -2924,11 +2935,23 @@ protected:
 			g_soundsystem_last_error = MA_OUT_OF_MEMORY;
 			return 0;
 		}
+		const float* in = static_cast<const float*>(frames);
+		const size_t samples = (size_t)frame_count * channels;
+		// NaN converted to an integer is undefined, a script's write writing whatever the conversion gave, a full-scale click as a rule: written as silence instead, as the sound system's sources give it (see zero_non_finite()). Infinities clip.
+		if (std::any_of(in, in + samples, [](float v) { return v != v; })) {
+			try {
+				finite.assign(in, in + samples);
+			} catch (...) { // As above.
+				g_soundsystem_last_error = MA_OUT_OF_MEMORY;
+				return 0;
+			}
+			for (float& v : finite) if (v != v) v = 0;
+			in = finite.data();
+		}
 		if (output_format == ma_format_u8) { // To the nearest step: MiniAudio's conversion cuts down, half a step low, which wrote silence as 0x7F.
-			const float* in = static_cast<const float*>(frames);
 			ma_uint8* out = reinterpret_cast<ma_uint8*>(converted.data());
-			for (size_t sample = 0, samples = (size_t)frame_count * channels; sample < samples; sample++) out[sample] = (ma_uint8)((std::clamp(in[sample], -1.0f, 1.0f) + 1) * 127.5f + 0.5f);
-		} else ma_pcm_convert(converted.data(), output_format, frames, ma_format_f32, (ma_uint64)frame_count * channels, ma_dither_mode_none);
+			for (size_t sample = 0; sample < samples; sample++) out[sample] = (ma_uint8)((std::clamp(in[sample], -1.0f, 1.0f) + 1) * 127.5f + 0.5f);
+		} else ma_pcm_convert(converted.data(), output_format, in, ma_format_f32, (ma_uint64)samples, ma_dither_mode_none);
 		return write_impl(converted.data(), frame_count);
 	}
 	virtual bool close_impl() { return true; } // override in subclasses, free any encoder state.
@@ -3966,6 +3989,7 @@ static void held_sound_process(ma_node* node, const float** frames_in, ma_uint32
 		h->restart.store(held_sound::restart_none);
 	}
 	take_back_fade(s);
+	zero_non_finite(frames_out[0], (size_t)done * channels); // Every sound's output, whatever its source, before its effects and its mixer (see zero_non_finite()).
 	*frame_count_out = done;
 	h->block_done.store(h->block_at.load());
 }
