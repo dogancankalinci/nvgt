@@ -5,6 +5,7 @@
 #include <stdio.h> // sprintf
 #include <string>
 #include <algorithm> // std::sort
+#include <atomic>
 #include <mutex>
 #include <vector>
 
@@ -152,9 +153,26 @@ static asFREEFUNC_t  userFree  = DefaultFree;
 // buffer therefore share this lock, and the old buffer is only freed once it is no longer installed. Everything else a
 // resize does stays inside memory the array still owns. The lock is never destroyed, as a collection can still run
 // while static objects are being torn down.
-static std::mutex &BufferSwapLock()
+// A shared plugin compiles its own copy of this file (ASAddon/plugin/scriptarray.cpp), and with it had a lock of its own: a
+// plugin growing an array the collector could reach swapped the buffer under its lock while the collector walked the array
+// in the engine's copy under the engine's. RegisterScriptArray() puts the engine's lock in the engine's user data, and every
+// copy uses that one.
+const asPWORD ARRAY_BUFFER_LOCK = 1100;
+static std::mutex &OwnBufferSwapLock()
 {
 	static std::mutex *lock = new std::mutex;
+	return *lock;
+}
+static std::mutex &BufferSwapLock(asIScriptEngine *engine)
+{
+	static std::atomic<std::mutex*> found(nullptr);
+	std::mutex *lock = found.load(std::memory_order_acquire);
+	if( !lock )
+	{
+		lock = engine ? reinterpret_cast<std::mutex*>(engine->GetUserData(ARRAY_BUFFER_LOCK)) : nullptr;
+		if( !lock ) return OwnBufferSwapLock(); // not registered yet (no array can exist then): looked up again next time
+		found.store(lock, std::memory_order_release);
+	}
 	return *lock;
 }
 
@@ -422,6 +440,8 @@ asINT64 CScriptArray_opForValue1(asINT64 iter, const CScriptArray*)
 // Registers the template array type
 void RegisterScriptArray(asIScriptEngine *engine, bool defaultArray)
 {
+	engine->SetUserData(&OwnBufferSwapLock(), ARRAY_BUFFER_LOCK); // see BufferSwapLock()
+
 	if( strstr(asGetLibraryOptions(), "AS_MAX_PORTABILITY") == 0 )
 		RegisterScriptArray_Native(engine);
 	else
@@ -881,7 +901,7 @@ void CScriptArray::Reserve(asUINT maxElements)
 	// tracks can be walked by it.
 	SArrayBuffer *oldBuffer = buffer;
 	{
-		std::unique_lock<std::mutex> guard(BufferSwapLock(), std::defer_lock);
+		std::unique_lock<std::mutex> guard(BufferSwapLock(objType->GetEngine()), std::defer_lock);
 		if( objType->GetFlags() & asOBJ_GC ) guard.lock();
 		buffer = newBuffer;
 	}
@@ -934,7 +954,7 @@ void CScriptArray::RemoveRange(asUINT start, asUINT count)
 	// since we're just copying the pointers to objects and not the actual objects.
 	{
 		// ALTERED: see CollectorReadsElements
-		std::unique_lock<std::mutex> guard(BufferSwapLock(), std::defer_lock);
+		std::unique_lock<std::mutex> guard(BufferSwapLock(objType->GetEngine()), std::defer_lock);
 		if( CollectorReadsElements(objType, subTypeId) ) guard.lock();
 		memmove(buffer->data + start*elementSize, buffer->data + (start + count)*elementSize, (buffer->numElements - start - count)*elementSize);
 		buffer->numElements -= count;
@@ -1034,7 +1054,7 @@ void CScriptArray::Resize(int delta, asUINT at)
 	{
 		// ALTERED: the elements are moved in the installed buffer under the lock when the collector reads them, see
 		// CollectorReadsElements
-		std::unique_lock<std::mutex> guard(BufferSwapLock(), std::defer_lock);
+		std::unique_lock<std::mutex> guard(BufferSwapLock(objType->GetEngine()), std::defer_lock);
 		if( !newBuffer && CollectorReadsElements(objType, subTypeId) ) guard.lock();
 		if( newBuffer )
 			memcpy(newBuffer->data, buffer->data, at*elementSize);
@@ -1056,7 +1076,7 @@ void CScriptArray::Resize(int delta, asUINT at)
 		// tracks can be walked by it.
 		SArrayBuffer *oldBuffer = buffer;
 		{
-			std::unique_lock<std::mutex> guard(BufferSwapLock(), std::defer_lock);
+			std::unique_lock<std::mutex> guard(BufferSwapLock(objType->GetEngine()), std::defer_lock);
 			if( objType->GetFlags() & asOBJ_GC ) guard.lock();
 			buffer = newBuffer;
 		}
@@ -1403,7 +1423,7 @@ void CScriptArray::Reverse()
 	if( size >= 2 )
 	{
 		// ALTERED: see CollectorReadsElements
-		std::unique_lock<std::mutex> guard(BufferSwapLock(), std::defer_lock);
+		std::unique_lock<std::mutex> guard(BufferSwapLock(objType->GetEngine()), std::defer_lock);
 		if( CollectorReadsElements(objType, subTypeId) ) guard.lock();
 
 		asBYTE TEMP[16];
@@ -1795,7 +1815,7 @@ void CScriptArray::Copy(void *dst, void *src)
 void CScriptArray::Swap(void* a, void* b)
 {
 	// ALTERED: see CollectorReadsElements
-	std::unique_lock<std::mutex> guard(BufferSwapLock(), std::defer_lock);
+	std::unique_lock<std::mutex> guard(BufferSwapLock(objType->GetEngine()), std::defer_lock);
 	if( CollectorReadsElements(objType, subTypeId) ) guard.lock();
 	asBYTE tmp[16];
 	Copy(tmp, a);
@@ -2030,7 +2050,7 @@ void CScriptArray::Sort(asUINT startAt, asUINT count, bool asc)
 		if( !changed )
 		{
 			// ALTERED: see CollectorReadsElements
-			std::unique_lock<std::mutex> guard(BufferSwapLock(), std::defer_lock);
+			std::unique_lock<std::mutex> guard(BufferSwapLock(objType->GetEngine()), std::defer_lock);
 			if( CollectorReadsElements(objType, subTypeId) ) guard.lock();
 			memcpy(GetArrayItemPointer(start), items.data(), items.size() * sizeof(void*));
 		}
@@ -2412,7 +2432,7 @@ void CScriptArray::EnumReferences(asIScriptEngine *engine)
 {
 	// The collector may run on another thread than the one using this array, so hold the buffer in place while it
 	// is walked, see BufferSwapLock
-	std::lock_guard<std::mutex> guard(BufferSwapLock());
+	std::lock_guard<std::mutex> guard(BufferSwapLock(engine));
 
 	// If the array is holding handles, then we need to notify the GC of them
 	if( subTypeId & asTYPEID_MASK_OBJECT )
