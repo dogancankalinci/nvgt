@@ -306,6 +306,8 @@ void main(){
 ```
 As you  can see, the value is very close, but not quite right. We even used the double type, with 64 bits of precision, but it wasn't enough.
 
+Some calculations have no numeric result at all, such as subtracting infinity from infinity, and give a special value called NaN (not a number) instead. A NaN is neither equal to, less than nor greater than anything, itself included: every comparison with a NaN is false except !=, which is true, so `x != x` is true exactly when x is a NaN. (Earlier versions of NVGT gave true for > and >= with a NaN, and compared NaN constants as equal; a script compiled with one of them keeps that behaviour until it is compiled again.)
+
 There are several ways to get around this, but we don't need to worry about them for this project, so let's learn about another very useful type of variable: strings!
 
 #### string variables
