@@ -29,6 +29,7 @@
 #include <scriptarray.h>
 #include "nvgt_angelscript.h" // get_array_type()
 
+#include <set>
 #include <sstream>
 #include <vector>
 
@@ -52,6 +53,12 @@ static bool mail_header_name_ok(const std::string& name) {
 		if (c < 33 || c > 126 || c == ':') return false;
 	}
 	return true;
+}
+
+// The recipient types MailMessage writes a header for. Any other number was accepted (the type is an int underneath) and sent an RCPT TO
+// for the address, which then appeared in no header: a hidden recipient, like a Bcc the script never asked for. Such a type is refused.
+static bool mail_recipient_type_ok(int type) {
+	return type == MailRecipient::PRIMARY_RECIPIENT || type == MailRecipient::CC_RECIPIENT || type == MailRecipient::BCC_RECIPIENT;
 }
 
 // Wrapper for mail recipient
@@ -89,6 +96,7 @@ private:
 	std::string m_text_type;
 	bool m_has_text_content = false; // set_content() was called
 	bool m_text_pending = false; // and its part isn't in m_message yet
+	std::set<std::string> m_content_ids; // of the inline attachments, see inline_content_id()
 
 	friend class smtp_client;
 
@@ -97,6 +105,27 @@ private:
 		if (mail_value_ok(value)) return true;
 		m_last_error = std::string("The ") + what + " must not contain CR, LF or NUL characters";
 		return false;
+	}
+	bool type_ok(int type) {
+		if (mail_recipient_type_ok(type)) return true;
+		m_last_error = "Invalid recipient type";
+		return false;
+	}
+	// The Content-ID of an inline attachment, without the angle brackets of the header (one pair around the given ID is taken off), or ""
+	// (with m_last_error set) for an ID that can't be one. With no ID given, one is made from base that no other inline attachment of
+	// this message has: two attachments with the same file name, or two strings, were given the same ID, so both references showed the
+	// same part.
+	std::string inline_content_id(const std::string& content_id, const std::string& base) {
+		std::string cid = content_id;
+		if (cid.size() >= 2 && cid.front() == '<' && cid.back() == '>') cid = cid.substr(1, cid.size() - 2);
+		if (content_id.empty()) {
+			cid = base + "@nvgt.mail";
+			for (int n = 2; m_content_ids.count(cid); n++) cid = base + std::to_string(n) + "@nvgt.mail";
+		} else if (cid.empty() || cid.find_first_of(" \t<>\"") != std::string::npos) {
+			m_last_error = "A content ID must not be empty or contain spaces, tabs, quotes or angle brackets";
+			return "";
+		}
+		return cid;
 	}
 	bool header_ok(const std::string& name, const std::string& value) {
 		if (!mail_header_name_ok(name)) {
@@ -131,7 +160,7 @@ public:
 	}
 
 	void add_recipient(const mail_recipient& recipient) {
-		if (!value_ok(recipient.address, "recipient address") || !value_ok(recipient.real_name, "recipient name")) return;
+		if (!value_ok(recipient.address, "recipient address") || !value_ok(recipient.real_name, "recipient name") || !type_ok(recipient.type)) return;
 		try {
 			m_message.addRecipient(MailRecipient(recipient.type, recipient.address, recipient.real_name));
 			m_last_error.clear();
@@ -141,7 +170,7 @@ public:
 	}
 
 	void add_recipient_simple(const std::string& address, int type = MailRecipient::PRIMARY_RECIPIENT) {
-		if (!value_ok(address, "recipient address")) return;
+		if (!value_ok(address, "recipient address") || !type_ok(type)) return;
 		try {
 			m_message.addRecipient(MailRecipient(static_cast<MailRecipient::RecipientType>(type), address));
 			m_last_error.clear();
@@ -372,11 +401,13 @@ public:
 	std::string add_inline_attachment_file(const std::string& path, const std::string& content_id = "") {
 		if (!value_ok(path, "attachment path") || !value_ok(content_id, "content ID")) return "";
 		try {
-			std::string cid = content_id.empty() ? Path(path).getFileName() + "@nvgt.mail" : content_id;
+			std::string cid = inline_content_id(content_id, Path(path).getFileName());
+			if (cid.empty()) return "";
 			FilePartSource* fps = new FilePartSource(path);
-			// For inline attachments, we use addPart with CONTENT_INLINE disposition
-			// and set the Content-ID header via the part name
+			// The part had no Content-ID header (the ID was only in the part's name), so a cid: reference in the HTML content couldn't find it.
+			fps->headers().set("Content-ID", "<" + cid + ">");
 			m_message.addPart("cid:" + cid, fps, MailMessage::CONTENT_INLINE, MailMessage::ENCODING_BASE64);
+			m_content_ids.insert(cid);
 			m_last_error.clear();
 			return cid;
 		} catch (const Exception& e) {
@@ -388,11 +419,12 @@ public:
 	std::string add_inline_attachment_string(const std::string& content, const std::string& media_type, const std::string& content_id) {
 		if (!value_ok(media_type, "media type") || !value_ok(content_id, "content ID")) return "";
 		try {
-			std::string cid = content_id.empty() ? "inline@nvgt.mail" : content_id;
+			std::string cid = inline_content_id(content_id, "inline");
+			if (cid.empty()) return "";
 			StringPartSource* sps = new StringPartSource(content, media_type);
-			// For inline attachments, we use addPart with CONTENT_INLINE disposition
-			// and set the Content-ID header via the part name
+			sps->headers().set("Content-ID", "<" + cid + ">"); // see add_inline_attachment_file()
 			m_message.addPart("cid:" + cid, sps, MailMessage::CONTENT_INLINE, MailMessage::ENCODING_BASE64);
+			m_content_ids.insert(cid);
 			m_last_error.clear();
 			return cid;
 		} catch (const Exception& e) {
