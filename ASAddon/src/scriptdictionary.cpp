@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <string.h>
+#include <atomic>
 #include <mutex>
 #include <vector>
 #include "scriptdictionary.h"
@@ -14,11 +15,37 @@ using namespace std;
 // and frees nodes. Changing the set of keys and walking it therefore take the dictionary's lock. The locks are shared
 // out by address so that the dictionary object keeps its size, and they are never destroyed, as a collection can
 // still run while static objects are being torn down.
-static std::mutex &StructureLock(const void *dictionary)
+// A shared plugin compiles its own copy of this file (ASAddon/plugin/scriptdictionary.cpp), and with it had locks of its own:
+// a plugin changing a dictionary's keys or values didn't exclude the collector's walk of it in the engine's copy, which took
+// the engine's locks. RegisterScriptDictionary() puts the engine's lock tables in the engine's user data, and every copy uses
+// those (looked up once, from the first dictionary or value that knows its engine).
+const asPWORD DICTIONARY_LOCKS = 1101;
+struct SDictionaryLocks
 {
-	static std::mutex *locks = new std::mutex[64];
+	std::mutex *structure;
+	std::recursive_mutex *value;
+};
+static SDictionaryLocks &OwnDictionaryLocks()
+{
+	static SDictionaryLocks *locks = new SDictionaryLocks{new std::mutex[64], new std::recursive_mutex[64]};
+	return *locks;
+}
+static SDictionaryLocks &DictionaryLocks(asIScriptEngine *engine)
+{
+	static std::atomic<SDictionaryLocks*> found(nullptr);
+	SDictionaryLocks *locks = found.load(std::memory_order_acquire);
+	if( !locks )
+	{
+		locks = engine ? reinterpret_cast<SDictionaryLocks*>(engine->GetUserData(DICTIONARY_LOCKS)) : nullptr;
+		if( !locks ) return OwnDictionaryLocks(); // not registered yet: looked up again next time
+		found.store(locks, std::memory_order_release);
+	}
+	return *locks;
+}
+static std::mutex &StructureLock(asIScriptEngine *engine, const void *dictionary)
+{
 	asPWORD address = reinterpret_cast<asPWORD>(dictionary);
-	return locks[((address >> 4) ^ (address >> 12)) & 63];
+	return DictionaryLocks(engine).structure[((address >> 4) ^ (address >> 12)) & 63];
 }
 
 // ALTERED: a value (a dictionary's entry, or a dictionaryValue of its own) changed in place by a script (d['k'] = v, through
@@ -28,11 +55,10 @@ static std::mutex &StructureLock(const void *dictionary)
 // type or the old value under the new one, and a value object (a ref, a dictionaryValue) that the assignment then freed was
 // given to its type's enumeration (a use after free). The locks are shared out by address, never destroyed (see
 // StructureLock), and recursive: the enumeration of an entry holding a dictionaryValue takes the lock of that value too.
-static std::recursive_mutex &ValueLock(const CScriptDictValue *value)
+static std::recursive_mutex &ValueLock(asIScriptEngine *engine, const CScriptDictValue *value)
 {
-	static std::recursive_mutex *locks = new std::recursive_mutex[64];
 	asPWORD address = reinterpret_cast<asPWORD>(value);
-	return locks[((address >> 4) ^ (address >> 12)) & 63];
+	return DictionaryLocks(engine).value[((address >> 4) ^ (address >> 12)) & 63];
 }
 
 // ALTERED: holds a dictionary while script code runs for it (the copy of a value, see CScriptDictionary::Set), which can let go
@@ -327,7 +353,7 @@ bool CScriptDictionary::GetGCFlag()
 void CScriptDictionary::EnumReferences(asIScriptEngine *inEngine)
 {
 	// The collector may run on another thread than the one using this dictionary, see StructureLock
-	std::lock_guard<std::mutex> guard(StructureLock(this));
+	std::lock_guard<std::mutex> guard(StructureLock(engine, this));
 
 	// Call the gc enum callback for each of the objects
 	dictMap_t::iterator it;
@@ -338,7 +364,7 @@ void CScriptDictionary::EnumReferences(asIScriptEngine *inEngine)
 		// script module that has been discarded since (a script_module's discard(), or the main module at exit while the
 		// dictionary lives on), GetTypeInfoById returned null and reading its flags crashed the collector.
 		// ALTERED: the value and its type are read under the value's lock, see ValueLock
-		std::lock_guard<std::recursive_mutex> valueGuard(ValueLock(&it->second));
+		std::lock_guard<std::recursive_mutex> valueGuard(ValueLock(engine, &it->second));
 		if (it->second.m_valueObj && (it->second.m_typeId & asTYPEID_MASK_OBJECT))
 		{
 			asITypeInfo *subType = engine->GetTypeInfoById(it->second.m_typeId);
@@ -427,7 +453,7 @@ CScriptDictValue *CScriptDictionary::operator[](const dictKey_t &key)
 	dictMap_t::iterator it = dict.find(key);
 	if( it == dict.end() )
 	{
-		std::lock_guard<std::mutex> guard(StructureLock(this));
+		std::lock_guard<std::mutex> guard(StructureLock(engine, this));
 		it = dict.insert(dictMap_t::value_type(key, CScriptDictValue())).first;
 	}
 	CScriptDictValue &val = it->second;
@@ -480,7 +506,7 @@ void CScriptDictionary::Set(const dictKey_t &key, void *value, int typeId)
 	it = dict.find(*k);
 	if (it == dict.end())
 	{
-		std::lock_guard<std::mutex> guard(StructureLock(this));
+		std::lock_guard<std::mutex> guard(StructureLock(engine, this));
 		it = dict.insert(dictMap_t::value_type(*k, CScriptDictValue(engine))).first;
 		iterGuard++;
 	}
@@ -488,7 +514,7 @@ void CScriptDictionary::Set(const dictKey_t &key, void *value, int typeId)
 	// The value and its type are swapped under the dictionary's lock: the collector, which can run on another thread (see
 	// StructureLock), reads both under it, and between the two writes it found the new value under the old type or the
 	// old value under the new one (an integer taken for an object, or an object enumerated as another type).
-	std::lock_guard<std::mutex> guard(StructureLock(this));
+	std::lock_guard<std::mutex> guard(StructureLock(engine, this));
 	asINT64 v = it->second.m_valueInt;
 	int t = it->second.m_typeId;
 	it->second.m_valueInt = made.m_valueInt;
@@ -604,7 +630,7 @@ bool CScriptDictionary::Delete(const dictKey_t &key)
 		CScriptDictValue removed(engine);
 		{
 			// ALTERED: the entry is emptied under the dictionary's lock too, as the collector reads it under that lock
-			std::lock_guard<std::mutex> guard(StructureLock(this));
+			std::lock_guard<std::mutex> guard(StructureLock(engine, this));
 			removed.m_valueInt = it->second.m_valueInt;
 			removed.m_typeId = it->second.m_typeId;
 			it->second.m_valueObj = 0;
@@ -625,7 +651,7 @@ void CScriptDictionary::DeleteAll()
 	// to it or let go of it, and the walk went on through freed nodes.
 	dictMap_t removed;
 	{
-		std::lock_guard<std::mutex> guard(StructureLock(this));
+		std::lock_guard<std::mutex> guard(StructureLock(engine, this));
 		removed.swap(dict);
 	}
 	iterGuard++;
@@ -853,7 +879,7 @@ void CScriptDictValue::FreeValue()
 		void *obj;
 		int typeId;
 		{
-			std::lock_guard<std::recursive_mutex> guard(ValueLock(this));
+			std::lock_guard<std::recursive_mutex> guard(ValueLock(m_engine, this));
 			obj = m_valueObj;
 			typeId = m_typeId;
 			m_valueObj = 0;
@@ -878,7 +904,7 @@ void CScriptDictValue::EnumReferences(asIScriptEngine *inEngine)
 	assert(inEngine == m_engine);
 
 	// ALTERED: the value and its type are read under the value's lock, see ValueLock
-	std::lock_guard<std::recursive_mutex> guard(ValueLock(this));
+	std::lock_guard<std::recursive_mutex> guard(ValueLock(m_engine, this));
 
 	// If we're holding a reference, we'll notify the garbage collector of it
 	if (m_valueObj)
@@ -927,7 +953,7 @@ void CScriptDictValue::Set(void *value, int typeId)
 
 	// ALTERED: swapped under the value's lock, as the collector can be reading it on another thread, see ValueLock (the value
 	// replaced is released after the lock, by made's destructor)
-	std::lock_guard<std::recursive_mutex> guard(ValueLock(this));
+	std::lock_guard<std::recursive_mutex> guard(ValueLock(m_engine, this));
 	asINT64 v = m_valueInt;
 	int t = m_typeId;
 	m_valueInt = made.m_valueInt;
@@ -1508,6 +1534,8 @@ const void* CScriptDictionary::CIterator::GetAddressOfValue() const
 
 void RegisterScriptDictionary(asIScriptEngine *engine)
 {
+	engine->SetUserData(&OwnDictionaryLocks(), DICTIONARY_LOCKS); // see DictionaryLocks()
+
 	if( strstr(asGetLibraryOptions(), "AS_MAX_PORTABILITY") )
 		RegisterScriptDictionary_Generic(engine);
 	else

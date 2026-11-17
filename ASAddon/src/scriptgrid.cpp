@@ -3,6 +3,7 @@
 #include <string.h>
 #include <assert.h>
 #include <stdio.h> // sprintf
+#include <atomic>
 #include <mutex>
 
 #include "scriptgrid.h"
@@ -30,9 +31,25 @@ static asFREEFUNC_t  userFree  = DefaultFree;
 // so EnumReferences can walk a grid that another thread is resizing. Installing the resized buffer and walking the
 // buffer therefore share this lock, and the old buffer is only released once it is no longer installed. The lock is
 // never destroyed, as a collection can still run while static objects are being torn down.
-static std::mutex &BufferSwapLock()
+// A shared plugin compiles its own copy of this file (ASAddon/plugin/scriptgrid.cpp) and had a lock of its own, so its
+// resizes didn't exclude the collector's walk in the engine's copy: RegisterScriptGrid() puts the engine's lock in the
+// engine's user data, and every copy uses that one (as the array add-on does).
+const asPWORD GRID_BUFFER_LOCK = 1102;
+static std::mutex &OwnBufferSwapLock()
 {
 	static std::mutex *lock = new std::mutex;
+	return *lock;
+}
+static std::mutex &BufferSwapLock(asIScriptEngine *engine)
+{
+	static std::atomic<std::mutex*> found(nullptr);
+	std::mutex *lock = found.load(std::memory_order_acquire);
+	if( !lock )
+	{
+		lock = engine ? reinterpret_cast<std::mutex*>(engine->GetUserData(GRID_BUFFER_LOCK)) : nullptr;
+		if( !lock ) return OwnBufferSwapLock(); // not registered yet: looked up again next time
+		found.store(lock, std::memory_order_release);
+	}
 	return *lock;
 }
 
@@ -265,6 +282,7 @@ static bool ScriptGridTemplateCallback(asITypeInfo *ti, bool &dontGarbageCollect
 // Registers the template array type
 void RegisterScriptGrid(asIScriptEngine *engine)
 {
+	engine->SetUserData(&OwnBufferSwapLock(), GRID_BUFFER_LOCK); // see BufferSwapLock()
 	// TODO: Implement the generic calling convention
 	RegisterScriptGrid_Native(engine);
 }
@@ -552,7 +570,7 @@ void CScriptGrid::Resize(asUINT width, asUINT height)
 	// tracks can be walked by it.
 	SGridBuffer *oldBuffer = buffer;
 	{
-		std::unique_lock<std::mutex> guard(BufferSwapLock(), std::defer_lock);
+		std::unique_lock<std::mutex> guard(BufferSwapLock(objType->GetEngine()), std::defer_lock);
 		if( objType->GetFlags() & asOBJ_GC ) guard.lock();
 		buffer = tmpBuffer;
 	}
@@ -841,7 +859,7 @@ void CScriptGrid::EnumReferences(asIScriptEngine *engine)
 {
 	// The collector may run on another thread than the one using this grid, so hold the buffer in place while it is
 	// walked, see BufferSwapLock
-	std::lock_guard<std::mutex> guard(BufferSwapLock());
+	std::lock_guard<std::mutex> guard(BufferSwapLock(engine));
 	if( buffer == 0 ) return;
 
 	// If the grid is holding handles, then we need to notify the GC of them
@@ -881,7 +899,7 @@ void CScriptGrid::ReleaseAllHandles(asIScriptEngine*)
 	// could still reach the grid and its elements being released, see BufferSwapLock
 	SGridBuffer *oldBuffer = buffer;
 	{
-		std::unique_lock<std::mutex> guard(BufferSwapLock(), std::defer_lock);
+		std::unique_lock<std::mutex> guard(BufferSwapLock(objType->GetEngine()), std::defer_lock);
 		if( objType->GetFlags() & asOBJ_GC ) guard.lock();
 		buffer = 0;
 	}
