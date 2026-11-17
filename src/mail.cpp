@@ -17,6 +17,7 @@
 #include <Poco/Net/FilePartSource.h>
 #include <Poco/Net/MailMessage.h>
 #include <Poco/Net/MailRecipient.h>
+#include <Poco/Net/MessageHeader.h>
 #include <Poco/Net/NetException.h>
 #include <Poco/Net/SMTPClientSession.h>
 #include <Poco/Net/SecureSMTPClientSession.h>
@@ -29,6 +30,7 @@
 #include <scriptarray.h>
 #include "nvgt_angelscript.h" // get_array_type()
 
+#include <algorithm>
 #include <set>
 #include <sstream>
 #include <vector>
@@ -53,6 +55,52 @@ static bool mail_header_name_ok(const std::string& name) {
 		if (c < 33 || c > 126 || c == ':') return false;
 	}
 	return true;
+}
+
+// Header text with bytes outside ASCII (UTF-8 text), RFC 2047 encoded as MailMessage requires of a subject and the names of parts: it was
+// sent as raw 8-bit bytes, which mail servers without SMTPUTF8 may refuse or mangle and mail clients show garbled. Base64 encoded words of
+// whole UTF-8 characters, at most 45 bytes (75 characters) each; MailMessage::encodeWord() can split a character between two words, which
+// decoders that decode each word on its own show as garbage. fold puts a header line break between the words (a parameter value, which is
+// quoted, gets none).
+static std::string mail_header_text(const std::string& text, bool fold = true) {
+	bool ascii = true;
+	for (unsigned char c : text) {
+		if (c >= 0x80) {
+			ascii = false;
+			break;
+		}
+	}
+	if (ascii) return text;
+	static const char b64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+	std::string out;
+	size_t i = 0;
+	while (i < text.size()) {
+		size_t end = std::min(text.size(), i + 45);
+		while (end < text.size() && end > i + 1 && (static_cast<unsigned char>(text[end]) & 0xC0) == 0x80) end--; // not inside a character
+		if (!out.empty()) out += fold ? "\r\n " : " ";
+		out += "=?UTF-8?B?";
+		for (size_t j = i; j < end; j += 3) {
+			unsigned int v = static_cast<unsigned char>(text[j]) << 16;
+			if (j + 1 < end) v |= static_cast<unsigned char>(text[j + 1]) << 8;
+			if (j + 2 < end) v |= static_cast<unsigned char>(text[j + 2]);
+			out += b64[(v >> 18) & 63];
+			out += b64[(v >> 12) & 63];
+			out += j + 1 < end ? b64[(v >> 6) & 63] : '=';
+			out += j + 2 < end ? b64[v & 63] : '=';
+		}
+		out += "?=";
+		i = end;
+	}
+	return out;
+}
+// The text of a header MailMessage holds, with the encoded words in it (see mail_header_text()) decoded.
+static std::string mail_header_text_decoded(const std::string& text) {
+	if (text.find("=?") == std::string::npos) return text;
+	try {
+		return MessageHeader::decodeWord(text, "UTF-8");
+	} catch (const Exception&) {
+		return text;
+	}
 }
 
 // The recipient types MailMessage writes a header for. Any other number was accepted (the type is an int underneath) and sent an RCPT TO
@@ -195,12 +243,12 @@ public:
 
 	void set_subject(const std::string& subject) {
 		if (!value_ok(subject, "subject")) return;
-		m_message.setSubject(subject);
+		m_message.setSubject(mail_header_text(subject));
 		m_last_error.clear();
 	}
 
 	std::string get_subject() const {
-		return m_message.getSubject();
+		return mail_header_text_decoded(m_message.getSubject());
 	}
 
 	// The content is kept here and added to the message as a part when it is sent (see finalize_html_content()), as HTML content is. It was
@@ -373,7 +421,10 @@ public:
 	bool add_attachment_file(const std::string& name, const std::string& path) {
 		if (!value_ok(name, "attachment name") || !value_ok(path, "attachment path")) return false; // The file's name is a header parameter.
 		try {
-			m_message.addAttachment(name, new FilePartSource(path));
+			// The name is the part's file name too: that was the file's own name on disk, which mail clients show and save the attachment as,
+			// so the name given here was shown by hardly any client.
+			std::string header_name = mail_header_text(name, false);
+			m_message.addAttachment(header_name, new FilePartSource(path, header_name, "application/octet-stream"));
 			m_last_error.clear();
 			return true;
 		} catch (const Exception& e) {
@@ -385,7 +436,8 @@ public:
 	bool add_attachment_string(const std::string& name, const std::string& content, const std::string& media_type = "application/octet-stream") {
 		if (!value_ok(name, "attachment name") || !value_ok(media_type, "media type")) return false;
 		try {
-			m_message.addAttachment(name, new StringPartSource(content, media_type));
+			std::string header_name = mail_header_text(name, false); // and the part's file name, see add_attachment_file()
+			m_message.addAttachment(header_name, new StringPartSource(content, media_type, header_name));
 			m_last_error.clear();
 			return true;
 		} catch (const Exception& e) {
@@ -403,7 +455,7 @@ public:
 		try {
 			std::string cid = inline_content_id(content_id, Path(path).getFileName());
 			if (cid.empty()) return "";
-			FilePartSource* fps = new FilePartSource(path);
+			FilePartSource* fps = new FilePartSource(path, mail_header_text(Path(path).getFileName(), false), "application/octet-stream");
 			// The part had no Content-ID header (the ID was only in the part's name), so a cid: reference in the HTML content couldn't find it.
 			fps->headers().set("Content-ID", "<" + cid + ">");
 			m_message.addPart("cid:" + cid, fps, MailMessage::CONTENT_INLINE, MailMessage::ENCODING_BASE64);
