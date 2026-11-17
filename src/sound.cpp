@@ -7582,9 +7582,14 @@ plugin_node* nvgt_audio_plugin_node_create(audio_plugin_node_interface* impl, un
 		return nullptr;
 	}
 	plugin_node* node;
+	g_soundsystem_last_error = MA_SUCCESS; // So that a refusal the create made, which sets its own error, is told from a throw that set none.
 	try {
 		node = plugin_node::create(impl, input_bus_count, output_bus_count, flags, engine);
-	} catch (...) {
+	} catch (const std::bad_alloc&) {
+		g_soundsystem_last_error = MA_OUT_OF_MEMORY;
+		return nullptr;
+	} catch (...) { // Rather than null read with an earlier call's result.
+		if (g_soundsystem_last_error == MA_SUCCESS) g_soundsystem_last_error = MA_ERROR;
 		return nullptr;
 	}
 	asIScriptContext* ctx = asGetActiveContext();
