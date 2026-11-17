@@ -1,0 +1,59 @@
+diff --git a/sdk/angelscript/source/as_compiler.cpp b/sdk/angelscript/source/as_compiler.cpp
+index 8187b0f..0ea01dd 100644
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -17692,6 +17692,15 @@ void asCCompiler::CompileComparisonOperator(asCScriptNode *node, asCExprContext
+ 			int b = lctx->type.stackOffset;
+ 			int c = rctx->type.stackOffset;
+ 
++			// CMPf and CMPd give 1 (greater) when either value is NaN, so > and >= were true for a NaN, unlike IEEE 754
++			// and C++, where every ordered comparison with a NaN is false. a > b is compiled as b < a, and a >= b as b <= a:
++			// the same results for every other value, and false for a NaN as < and <= already are (== is false and != true).
++			if( (iCmp == asBC_CMPf || iCmp == asBC_CMPd) && (iT == asBC_TP || iT == asBC_TNS) )
++			{
++				int tmp = b; b = c; c = tmp;
++				iT = (iT == asBC_TP) ? asBC_TS : asBC_TNP;
++			}
++
+ 			ctx->bc.InstrW_W(iCmp, b, c);
+ 			ctx->bc.Instr(iT);
+ 			ctx->bc.InstrSHORT(asBC_CpyRtoV4, (short)a);
+@@ -17739,6 +17748,9 @@ void asCCompiler::CompileComparisonOperator(asCScriptNode *node, asCExprContext
+ 		else
+ 		{
+ 			int i = 0;
++			// A comparison with a NaN constant (made by folding, such as inf - inf) was folded as equal: == was true and
++			// <= and >= too. Every comparison with a NaN is false except !=, as at run time (see above) and in C++.
++			bool unordered = false;
+ 			if( lctx->type.dataType.IsIntegerType() && lctx->type.dataType.GetSizeInMemoryDWords() == 1 )
+ 			{
+ 				int v = int(lctx->type.GetConstantDW()) - int(rctx->type.GetConstantDW());
+@@ -17767,19 +17779,25 @@ void asCCompiler::CompileComparisonOperator(asCScriptNode *node, asCExprContext
+ 			}
+ 			else if( lctx->type.dataType.IsFloatType() )
+ 			{
+-				float v = lctx->type.GetConstantF() - rctx->type.GetConstantF();
++				float l = lctx->type.GetConstantF(), r = rctx->type.GetConstantF();
++				unordered = l != l || r != r;
++				float v = l - r;
+ 				if( v < 0 ) i = -1;
+ 				if( v > 0 ) i = 1;
+ 			}
+ 			else if( lctx->type.dataType.IsDoubleType() )
+ 			{
+-				double v = lctx->type.GetConstantD() - rctx->type.GetConstantD();
++				double l = lctx->type.GetConstantD(), r = rctx->type.GetConstantD();
++				unordered = l != l || r != r;
++				double v = l - r;
+ 				if( v < 0 ) i = -1;
+ 				if( v > 0 ) i = 1;
+ 			}
+ 
+ 
+-			if( op == ttEqual )
++			if( unordered )
++				i = (op == ttNotEqual ? VALUE_OF_BOOLEAN_TRUE : 0);
++			else if( op == ttEqual )
+ 				i = (i == 0 ? VALUE_OF_BOOLEAN_TRUE : 0);
+ 			else if( op == ttNotEqual )
+ 				i = (i != 0 ? VALUE_OF_BOOLEAN_TRUE : 0);
