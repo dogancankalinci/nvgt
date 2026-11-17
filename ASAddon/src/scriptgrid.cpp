@@ -17,9 +17,14 @@ using namespace std;
 BEGIN_AS_NAMESPACE
 
 // Set the default memory routines
-// Use the angelscript engine's memory routines by default
-static asALLOCFUNC_t userAlloc = asAllocMem;
-static asFREEFUNC_t  userFree  = asFreeMem;
+// Use the angelscript engine's memory routines by default. They are called through these two functions rather than stored directly:
+// a shared plugin compiles this file with NVGT_PLUGIN_INCLUDE, where asAllocMem and asFreeMem are function pointers that
+// prepare_plugin() fills in when the plugin is loaded, after this file's statics were initialized. Stored here, they were null, so a
+// plugin that didn't call SetMemoryFunctions() first crashed creating or resizing an array, or letting go of the last reference to one.
+static void *DefaultAlloc(size_t size) { return asAllocMem(size); }
+static void  DefaultFree(void *mem) { asFreeMem(mem); }
+static asALLOCFUNC_t userAlloc = DefaultAlloc;
+static asFREEFUNC_t  userFree  = DefaultFree;
 
 // The garbage collector runs on whichever thread is executing script code when it is due, or on a thread of its own,
 // so EnumReferences can walk a grid that another thread is resizing. Installing the resized buffer and walking the
