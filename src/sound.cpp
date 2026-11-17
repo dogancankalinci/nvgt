@@ -3428,7 +3428,10 @@ public:
 	}
 	unsigned int get_default_open_flags() const override { return audio_encoder_impl::get_default_open_flags() | WAV_S16; }
 	unsigned int open_flag_choices() const override { return WAV_S16 | WAV_S24 | WAV_U8 | WAV_S32 | WAV_F32; }
-	bool flags_in_range(unsigned int flags) const override { return flags & open_flag_choices(); }
+	bool flags_in_range(unsigned int flags) const override { // One format: given several, the first of S16, S24, U8, S32 and F32 was written, with success, which the script couldn't tell from the one it meant.
+		const unsigned int chosen = flags & open_flag_choices();
+		return chosen && !(chosen & (chosen - 1));
+	}
 	string get_format() const override { return "wav"; }
 	ma_format get_wav_format() const override { return !get_active()? ma_format_unknown : get_output_format(); } // Unknown while not open, rather than float, which a closed encoder wrote no more than any other format.
 };
