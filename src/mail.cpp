@@ -12,6 +12,7 @@
 
 #include "mail.h"
 
+#include <Poco/Environment.h>
 #include <Poco/Exception.h>
 #include <Poco/Net/FilePartSource.h>
 #include <Poco/Net/MailMessage.h>
@@ -488,6 +489,10 @@ public:
 	bool connect() {
 		try {
 			close();  // Close any existing connection
+			if (m_port < 1 || m_port > 65535) { // It was cut to 16 bits: port 65561 connected to port 25.
+				m_last_error = "Invalid port";
+				return false;
+			}
 			// With use_ssl, port 465 is TLS from the first byte (RFC 8314), and any other port starts TLS with STARTTLS (RFC 3207) before
 			// anything else is sent; the connection fails when the server refuses it. TLS was started only by login() and only on port 587, and
 			// a refused STARTTLS was ignored, so on any other port, with a server that didn't offer it (or a man in the middle that removed it)
@@ -500,18 +505,21 @@ public:
 				m_session = new SecureSMTPClientSession(m_host, m_port);
 			else
 				m_session = new SMTPClientSession(m_host, m_port);
-			m_session->login(m_host);
+			// The timeout applies to the greeting too: it was set after it, so connect() waited for a server that didn't answer for Poco's
+			// default 30 seconds. Milliseconds to microseconds in 64 bits: in int, 2147484 ms (35.8 minutes) or more overflowed (undefined; in
+			// practice a negative or unrelated timeout).
+			m_session->setTimeout(Poco::Timespan(Poco::Timespan::TimeDiff(m_timeout) * 1000));
+			// EHLO names this computer (Poco's login() sends the local host name, as login(method, ...) does). It named the server
+			// ("EHLO smtp.example.com"), which servers that check the greeting take for a forged one.
+			m_session->login();
 			if (m_use_ssl && !implicit_tls) {
 				if (!static_cast<SecureSMTPClientSession*>(m_session)->startTLS()) {
 					close();
 					m_last_error = "The server refused STARTTLS";
 					return false;
 				}
-				m_session->login(m_host); // The greeting again over TLS: what the server said before it doesn't count (RFC 3207 4.2).
+				m_session->login(); // The greeting again over TLS: what the server said before it doesn't count (RFC 3207 4.2).
 			}
-			// Milliseconds to microseconds in 64 bits: in int, 2147484 ms (35.8 minutes) or more overflowed (undefined; in practice a
-			// negative or unrelated timeout).
-			m_session->setTimeout(Poco::Timespan(Poco::Timespan::TimeDiff(m_timeout) * 1000));
 			m_last_error.clear();
 			return true;
 		} catch (const Exception& e) {
@@ -620,7 +628,7 @@ public:
 		}
 		try {
 			std::string response;
-			m_session->sendCommand("EHLO " + m_host, response);
+			m_session->sendCommand("EHLO " + Poco::Environment::nodeName(), response); // This computer's name, see connect().
 			m_server_capabilities = response;
 			m_last_error.clear();
 			return response;
