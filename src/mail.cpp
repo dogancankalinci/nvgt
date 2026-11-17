@@ -19,6 +19,8 @@
 #include <Poco/Net/NetException.h>
 #include <Poco/Net/SMTPClientSession.h>
 #include <Poco/Net/SecureSMTPClientSession.h>
+#include <Poco/Net/SecureStreamSocket.h>
+#include <Poco/Net/SocketAddress.h>
 #include <Poco/Net/StringPartSource.h>
 #include <Poco/Path.h>
 #include <Poco/RegularExpression.h>
@@ -486,11 +488,27 @@ public:
 	bool connect() {
 		try {
 			close();  // Close any existing connection
-			if (m_use_ssl)
+			// With use_ssl, port 465 is TLS from the first byte (RFC 8314), and any other port starts TLS with STARTTLS (RFC 3207) before
+			// anything else is sent; the connection fails when the server refuses it. TLS was started only by login() and only on port 587, and
+			// a refused STARTTLS was ignored, so on any other port, with a server that didn't offer it (or a man in the middle that removed it)
+			// and for a message sent without login(), the password and the message went out unencrypted although use_ssl was set; port 465
+			// couldn't connect at all.
+			bool implicit_tls = m_use_ssl && m_port == 465;
+			if (implicit_tls)
+				m_session = new SMTPClientSession(SecureStreamSocket(SocketAddress(m_host, static_cast<Poco::UInt16>(m_port)), m_host));
+			else if (m_use_ssl)
 				m_session = new SecureSMTPClientSession(m_host, m_port);
 			else
 				m_session = new SMTPClientSession(m_host, m_port);
 			m_session->login(m_host);
+			if (m_use_ssl && !implicit_tls) {
+				if (!static_cast<SecureSMTPClientSession*>(m_session)->startTLS()) {
+					close();
+					m_last_error = "The server refused STARTTLS";
+					return false;
+				}
+				m_session->login(m_host); // The greeting again over TLS: what the server said before it doesn't count (RFC 3207 4.2).
+			}
 			// Milliseconds to microseconds in 64 bits: in int, 2147484 ms (35.8 minutes) or more overflowed (undefined; in practice a
 			// negative or unrelated timeout).
 			m_session->setTimeout(Poco::Timespan(Poco::Timespan::TimeDiff(m_timeout) * 1000));
@@ -509,12 +527,7 @@ public:
 			return false;
 		}
 		try {
-			// For SSL connections, we might need to start TLS
-			if (m_use_ssl && m_port == 587) {
-				SecureSMTPClientSession* secure = dynamic_cast<SecureSMTPClientSession*>(m_session);
-				if (secure)
-					secure->startTLS();
-			}
+			// With use_ssl, connect() has started TLS already.
 			m_session->login(static_cast<SMTPClientSession::LoginMethod>(auth_method), username, password);
 			m_is_authenticated = true;
 			m_last_error.clear();
@@ -532,12 +545,6 @@ public:
 			return false;
 		}
 		try {
-			// For SSL connections, we might need to start TLS
-			if (m_use_ssl && m_port == 587) {
-				SecureSMTPClientSession* secure = dynamic_cast<SecureSMTPClientSession*>(m_session);
-				if (secure)
-					secure->startTLS();
-			}
 			// OAuth2 uses XOAUTH2 method
 			m_session->login(SMTPClientSession::AUTH_XOAUTH2, username, access_token);
 			m_is_authenticated = true;
