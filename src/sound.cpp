@@ -1455,9 +1455,12 @@ protected:
 			return false;
 		}
 		if (format == ma_format_f32) node = (ma_node_base*)&*src;
-		{
+		try {
 			std::lock_guard<std::mutex> lock(g_data_sources_map_mutex);
 			g_data_sources_map[new_src] = this;
+		} catch (...) { // Out of memory: the node made above uninitialised, as a failed init leaves none, rather than its heap leaked by a constructor that throws, which runs no destructor.
+			reset();
+			throw;
 		}
 		return true;
 	}
