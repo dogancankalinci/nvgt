@@ -36,6 +36,21 @@ using namespace Poco::Net;
 // used as value types that get composed into messages, not long-lived shared objects.
 // The mail_message class manages its own Poco objects internally.
 
+// Header values, names and addresses go into the message (and the sender and recipient addresses into the SMTP commands) unchanged, so a
+// CR or LF in one started a new header line (a Bcc, for instance) or a new SMTP command (an extra RCPT TO: a recipient the script never
+// added). Such values are refused: the setter leaves the message as it was and last_error says why. NUL bytes are refused too.
+static bool mail_value_ok(const std::string& value) {
+	return value.find_first_of(std::string("\r\n\0", 3)) == std::string::npos;
+}
+// A header name is printable ASCII without a colon (RFC 5322 field name).
+static bool mail_header_name_ok(const std::string& name) {
+	if (name.empty()) return false;
+	for (unsigned char c : name) {
+		if (c < 33 || c > 126 || c == ':') return false;
+	}
+	return true;
+}
+
 // Wrapper for mail recipient
 class mail_recipient {
 private:
@@ -74,6 +89,20 @@ private:
 
 	friend class smtp_client;
 
+	// Records the refusal in m_last_error when the value has a CR, LF or NUL byte (see mail_value_ok()).
+	bool value_ok(const std::string& value, const char* what) {
+		if (mail_value_ok(value)) return true;
+		m_last_error = std::string("The ") + what + " must not contain CR, LF or NUL characters";
+		return false;
+	}
+	bool header_ok(const std::string& name, const std::string& value) {
+		if (!mail_header_name_ok(name)) {
+			m_last_error = "Header names must be printable ASCII characters without spaces or colons";
+			return false;
+		}
+		return value_ok(value, "header value");
+	}
+
 public:
 	mail_message() : m_refcount(1), m_has_html_content(false) {}
 
@@ -85,6 +114,7 @@ public:
 	}
 
 	void set_sender(const std::string& address) {
+		if (!value_ok(address, "sender")) return;
 		try {
 			m_message.setSender(address);
 			m_last_error.clear();
@@ -98,6 +128,7 @@ public:
 	}
 
 	void add_recipient(const mail_recipient& recipient) {
+		if (!value_ok(recipient.address, "recipient address") || !value_ok(recipient.real_name, "recipient name")) return;
 		try {
 			m_message.addRecipient(MailRecipient(recipient.type, recipient.address, recipient.real_name));
 			m_last_error.clear();
@@ -107,6 +138,7 @@ public:
 	}
 
 	void add_recipient_simple(const std::string& address, int type = MailRecipient::PRIMARY_RECIPIENT) {
+		if (!value_ok(address, "recipient address")) return;
 		try {
 			m_message.addRecipient(MailRecipient(static_cast<MailRecipient::RecipientType>(type), address));
 			m_last_error.clear();
@@ -130,7 +162,9 @@ public:
 	}
 
 	void set_subject(const std::string& subject) {
+		if (!value_ok(subject, "subject")) return;
 		m_message.setSubject(subject);
+		m_last_error.clear();
 	}
 
 	std::string get_subject() const {
@@ -141,6 +175,7 @@ public:
 	// added as a part at once: content then read back "" (so did a message from parse_email_message()), and each call added another part,
 	// so a message whose content was set twice was sent with both.
 	void set_content(const std::string& content, const std::string& content_type = "text/plain") {
+		if (!value_ok(content_type, "content type")) return;
 		m_text_content = content;
 		m_text_type = content_type;
 		m_has_text_content = true;
@@ -195,6 +230,7 @@ public:
 	}
 
 	void add_header(const std::string& name, const std::string& value) {
+		if (!header_ok(name, value)) return;
 		try {
 			m_message.add(name, value);
 			m_last_error.clear();
@@ -210,6 +246,7 @@ public:
 	// A header that is set replaces the one there: added (add_header()), the reply_to property set twice gave the message two Reply-To
 	// headers and read back the first, and set_read_receipt() likewise.
 	void set_header(const std::string& name, const std::string& value) {
+		if (!header_ok(name, value)) return;
 		try {
 			m_message.set(name, value);
 			m_last_error.clear();
@@ -236,6 +273,7 @@ public:
 	}
 
 	void set_message_id(const std::string& id) {
+		if (!value_ok(id, "message ID")) return;
 		try {
 			m_message.set("Message-ID", id);
 			m_last_error.clear();
@@ -245,6 +283,7 @@ public:
 	}
 
 	void set_in_reply_to(const std::string& message_id) {
+		if (!value_ok(message_id, "In-Reply-To value")) return;
 		try {
 			m_message.set("In-Reply-To", message_id);
 			m_last_error.clear();
@@ -258,6 +297,7 @@ public:
 	}
 
 	void set_references(const std::string& references) {
+		if (!value_ok(references, "References value")) return;
 		try {
 			m_message.set("References", references);
 			m_last_error.clear();
@@ -271,6 +311,7 @@ public:
 	}
 
 	void set_return_receipt_to(const std::string& address) {
+		if (!value_ok(address, "Return-Receipt-To address")) return;
 		try {
 			m_message.set("Return-Receipt-To", address);
 			m_last_error.clear();
@@ -284,6 +325,7 @@ public:
 	}
 
 	void set_disposition_notification_to(const std::string& address) {
+		if (!value_ok(address, "Disposition-Notification-To address")) return;
 		try {
 			m_message.set("Disposition-Notification-To", address);
 			m_last_error.clear();
@@ -297,6 +339,7 @@ public:
 	}
 
 	bool add_attachment_file(const std::string& name, const std::string& path) {
+		if (!value_ok(name, "attachment name") || !value_ok(path, "attachment path")) return false; // The file's name is a header parameter.
 		try {
 			m_message.addAttachment(name, new FilePartSource(path));
 			m_last_error.clear();
@@ -308,6 +351,7 @@ public:
 	}
 
 	bool add_attachment_string(const std::string& name, const std::string& content, const std::string& media_type = "application/octet-stream") {
+		if (!value_ok(name, "attachment name") || !value_ok(media_type, "media type")) return false;
 		try {
 			m_message.addAttachment(name, new StringPartSource(content, media_type));
 			m_last_error.clear();
@@ -323,6 +367,7 @@ public:
 	}
 
 	std::string add_inline_attachment_file(const std::string& path, const std::string& content_id = "") {
+		if (!value_ok(path, "attachment path") || !value_ok(content_id, "content ID")) return "";
 		try {
 			std::string cid = content_id.empty() ? Path(path).getFileName() + "@nvgt.mail" : content_id;
 			FilePartSource* fps = new FilePartSource(path);
@@ -338,6 +383,7 @@ public:
 	}
 
 	std::string add_inline_attachment_string(const std::string& content, const std::string& media_type, const std::string& content_id) {
+		if (!value_ok(media_type, "media type") || !value_ok(content_id, "content ID")) return "";
 		try {
 			std::string cid = content_id.empty() ? "inline@nvgt.mail" : content_id;
 			StringPartSource* sps = new StringPartSource(content, media_type);
