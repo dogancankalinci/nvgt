@@ -161,6 +161,7 @@ vcpkg_from_github(
         fix-foreach-heap-range.patch
         keep-const-method-calls.patch
         fix-constant-comparisons-and-conversions.patch
+        fix-64-bit-switch.patch
 )
 
 vcpkg_cmake_configure(

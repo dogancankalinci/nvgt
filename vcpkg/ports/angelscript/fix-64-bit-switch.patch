@@ -1,0 +1,106 @@
+diff --git a/sdk/angelscript/source/as_compiler.cpp b/sdk/angelscript/source/as_compiler.cpp
+index 5bc0e78..ec2ec20 100644
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -4838,13 +4838,14 @@ void asCCompiler::CompileSwitchStatement(asCScriptNode *snode, bool *hasReturn,
+ 	if( ProcessPropertyGetAccessor(&expr, snode) < 0 )
+ 		return;
+ 
+-	// TODO: Need to support 64bit integers
+-	// Convert the expression to a 32bit variable
++	// Convert the expression to a 32bit variable, or a 64bit one when it is 64 bits: it was cut to 32 bits, so that 4294967299
++	// matched case 3, and two labels that differ by a multiple of 2^32 were duplicates
++	bool is64bit = expr.type.dataType.GetSizeInMemoryDWords() == 2;
+ 	asCDataType to;
+ 	if( expr.type.dataType.IsIntegerType() )
+-		to.SetTokenType(ttInt);
++		to.SetTokenType(is64bit ? ttInt64 : ttInt);
+ 	else if( expr.type.dataType.IsUnsignedType() )
+-		to.SetTokenType(ttUInt);
++		to.SetTokenType(is64bit ? ttUInt64 : ttUInt);
+ 
+ 	// Make sure the value is in a variable
+ 	if( expr.type.dataType.IsReference() )
+@@ -4867,6 +4868,7 @@ void asCCompiler::CompileSwitchStatement(asCScriptNode *snode, bool *hasReturn,
+ 	int defaultLabel = 0;
+ 
+ 	asCArray<int> caseValues;
++	asCArray<asQWORD> caseValues64; // Those of a 64bit switch, which leaves caseValues empty
+ 	asCArray<int> caseLabels;
+ 
+ 	// Compile all case comparisons and make them jump to the right label
+@@ -4894,14 +4896,21 @@ void asCCompiler::CompileSwitchStatement(asCScriptNode *snode, bool *hasReturn,
+ 			{
+ 				ImplicitConversion(&c, to, cnode->firstChild, asIC_IMPLICIT_CONV, true);
+ 
++				// A label that can't be converted, e.g. an enum value of another type, has had its error reported
++				asDWORD v32 = !is64bit ? c.type.GetConstantDW() : 0;
++				asQWORD v64 = is64bit && c.type.dataType.GetSizeInMemoryDWords() == 2 ? c.type.GetConstantQW() : 0;
++
+ 				// Has this case been declared already?
+-				if (caseValues.IndexOf(c.type.GetConstantDW()) >= 0)
++				if (is64bit ? caseValues64.IndexOf(v64) >= 0 : caseValues.IndexOf(v32) >= 0)
+ 					Error(TXT_DUPLICATE_SWITCH_CASE, cnode->firstChild);
+ 
+ 				// TODO: Optimize: We can insert the numbers sorted already
+ 
+ 				// Store constant for later use
+-				caseValues.PushLast(c.type.GetConstantDW());
++				if (is64bit)
++					caseValues64.PushLast(v64);
++				else
++					caseValues.PushLast(v32);
+ 
+ 				// Reserve label for this case
+ 				caseLabels.PushLast(nextLabel++);
+@@ -4925,7 +4934,7 @@ void asCCompiler::CompileSwitchStatement(asCScriptNode *snode, bool *hasReturn,
+ 	}
+ 
+ 	// check for empty switch
+-	if (caseValues.GetLength() == 0)
++	if (caseLabels.GetLength() == 0)
+ 	{
+ 		Error(TXT_EMPTY_SWITCH, snode);
+ 		return;
+@@ -4964,7 +4973,7 @@ void asCCompiler::CompileSwitchStatement(asCScriptNode *snode, bool *hasReturn,
+ 
+ 	// Find ranges of consecutive numbers
+ 	asCArray<int> ranges;
+-	ranges.PushLast(0);
++	if( !is64bit ) ranges.PushLast(0);
+ 	asUINT n;
+ 	for( n = 1; n < caseValues.GetLength(); ++n )
+ 	{
+@@ -4975,13 +4984,27 @@ void asCCompiler::CompileSwitchStatement(asCScriptNode *snode, bool *hasReturn,
+ 			ranges.PushLast(n);
+ 	}
+ 
++	// A 64bit value is compared with each label
++	int tmpOffset;
++	for( n = 0; n < caseValues64.GetLength(); ++n )
++	{
++		tmpOffset = AllocateVariable(asCDataType::CreatePrimitive(ttInt64, false), true);
++		expr.bc.InstrSHORT_QW(asBC_SetV8, (short)tmpOffset, caseValues64[n]);
++		expr.bc.InstrW_W(asBC_CMPi64, offset, tmpOffset);
++		expr.bc.InstrDWORD(asBC_JZ, caseLabels[n]);
++		ReleaseTemporaryVariable(tmpOffset, &expr.bc);
++	}
++
+ 	// If the value is larger than the largest case value, jump to default
+ 	// TODO: optimize: If the largest value is already the max value of int32, i.e. 2147483647, then there is no need to do this check
+-	int tmpOffset = AllocateVariable(asCDataType::CreatePrimitive(ttInt, false), true);
+-	expr.bc.InstrSHORT_DW(asBC_SetV4, (short)tmpOffset, caseValues[caseValues.GetLength()-1]);
+-	expr.bc.InstrW_W(asBC_CMPi, offset, tmpOffset);
+-	expr.bc.InstrDWORD(asBC_JP, defaultLabel);
+-	ReleaseTemporaryVariable(tmpOffset, &expr.bc);
++	if( !is64bit )
++	{
++		tmpOffset = AllocateVariable(asCDataType::CreatePrimitive(ttInt, false), true);
++		expr.bc.InstrSHORT_DW(asBC_SetV4, (short)tmpOffset, caseValues[caseValues.GetLength()-1]);
++		expr.bc.InstrW_W(asBC_CMPi, offset, tmpOffset);
++		expr.bc.InstrDWORD(asBC_JP, defaultLabel);
++		ReleaseTemporaryVariable(tmpOffset, &expr.bc);
++	}
+ 
+ 	// TODO: runtime optimize: We could possibly optimize this even more by doing a
+ 	//                         binary search instead of a linear search through the ranges
