@@ -4706,6 +4706,12 @@ public:
 		if (!spatialization_params_mutex.try_lock()) return last_parameters_valid;
 		// Checked under the lock a sound's loads hand snd over and close() lets go of the spatializer under; without a spatializer there is no rolloff to give, and get_spatializer() would make one, which the audio thread mustn't.
 		if (!snd || !spatializer || !get_spatialization_enabled()) {
+			if (snd) { // Where it then plays as at, for a reverb's send.
+				vector3 listener_pos = get_engine()->get_listener_position(get_listener());
+				params.listener_x = listener_pos.GetX();
+				params.listener_y = listener_pos.GetY();
+				params.listener_z = listener_pos.GetZ();
+			}
 			spatialization_params_mutex.unlock();
 			return last_parameters_valid = false;
 		}

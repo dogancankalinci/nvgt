@@ -1682,7 +1682,7 @@ private:
 	audio_spatialization_parameters spatialization_params; // Written by the audio thread, in process(), once made.
 	// What the script set, copied into spatialization_params by process(): written there by the script too, a rolloff set while the audio thread wrote the parameters back, as the mixer filling them in does, was overwritten with the one before, for good.
 	std::atomic<float> rolloff_set{default_spatializer_rolloff}, directional_attenuation_factor_set{1.0f};
-	bool parameters_valid;
+	bool parameters_valid, parameters_given = false; // The second once they were valid, the listener's position given from then on even while they aren't.
 	int preferred_panner_id, preferred_attenuator_id;
 	int current_panner_id, current_attenuator_id;
 	bool default_panner = false, default_attenuator = false; // Whether the preferred ones are the defaults it was given, which set_global_hrtf() changes, rather than its own.
@@ -1715,7 +1715,17 @@ private:
 	// The reverb's send for the current parameters, with a reverb set, which a reverb3d's attachment handler works out itself.
 	void update_reverb_send(reverb3d* verb) {
 		if (verb->handles_attachments()) {
-			if (parameters_valid) verb->update_attachment(reverb_attachment, spatialization_params);
+			if (!parameters_given) return; // Never positioned: a handler is told of nothing.
+			audio_spatialization_parameters params = spatialization_params;
+			if (!parameters_valid) { // As below.
+				params.listener_distance = 0;
+				params.listener_direction_x = params.listener_direction_y = params.listener_direction_z = 0;
+				params.sound_x = params.listener_x;
+				params.sound_y = params.listener_y;
+				params.sound_z = params.listener_z;
+				params.cone_volume = 1;
+			}
+			verb->update_attachment(reverb_attachment, params);
 		} else reverb_attachment->set_output_bus_volume(1, parameters_valid? reverb_send_volume(verb) : std::min(verb->get_volume_at(0), max_volume_gain)); // Spatialization off, the mixer plays unattenuated, as at the listener: its send is the reverb's there too, rather than kept at what it was when spatialization went off, loud or nearly silent.
 	}
 	bool set_fallback_panner() {
@@ -1748,7 +1758,8 @@ public:
 		spatialization_params.rolloff = default_spatializer_rolloff;
 		spatialization_params.directional_attenuation_factor = 1.0f;
 		spatialization_params.cone_volume = 1.0f;
-		spatialization_params.max_volume = 1.0f; // MiniAudio's maximum gain, so that a reverb's first send, worked out from these before the mixer gives any, is the one at the listener rather than clamped to 0 with an attenuator.
+		spatialization_params.max_volume = 1.0f; // MiniAudio's maximum gain.
+		spatialization_params.attenuator = -1;
 		{ std::lock_guard<std::mutex> lock(g_tracked_spatializers_mutex); g_tracked_spatializers.insert(this); }
 	}
 	~audio_spatializer_impl() {
@@ -1857,7 +1868,7 @@ public:
 			reverb_attachment = attachment;
 			reverb_placement = placement;
 			claim.kept = true;
-			if (attached_mixer && parameters_valid) update_reverb_send(new_reverb);
+			if (attached_mixer) update_reverb_send(new_reverb); // The first send, as at the listener before the mixer gives its parameters, rather than at full volume until the audio thread gets to it.
 			position_reverb();
 		}
 	}
@@ -1966,6 +1977,7 @@ public:
 		if (!chain_lock.owns_lock()) return;
 		if (attached_mixer && (panner || attenuator || reverb)) {
 			parameters_valid = attached_mixer->get_spatialization_parameters(spatialization_params);
+			if (parameters_valid) parameters_given = true;
 			spatialization_params.rolloff = rolloff_set.load(std::memory_order_relaxed);
 			spatialization_params.directional_attenuation_factor = directional_attenuation_factor_set.load(std::memory_order_relaxed);
 			if (reverb) update_reverb_send(reverb);
