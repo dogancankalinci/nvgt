@@ -3027,7 +3027,7 @@ public:
 	bool open_file(const string& filename, unsigned int sample_rate, unsigned int channels, unsigned int flags) override {
 		flags = open_flags(flags);
 		if (!output_in_range(sample_rate, channels, flags)) return false;
-		if (filename.empty()) { // No output to open, which a WAV encoder threw for after closing the one open.
+		if (filename.empty() || !is_valid_utf8(filename, false)) { // No output to open, which a WAV encoder threw for after closing the one open, or a name a load refuses, which Poco opened as another, a character in place of each byte that isn't UTF-8.
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return false;
 		}
