@@ -31,10 +31,150 @@
 #define MA_USE_QUAD_MICROSOFT_CHANNEL_MAP // Four channels are quad, as FLAC's specification says, a WAV without a mask means and Vorbis and Opus order them, rather than MiniAudio's default of left, right, centre and back centre, which took the third to the centre and lost the fourth.
 #define MINIAUDIO_IMPLEMENTATION
 #include <miniaudio.h>
+// A FLAC, with what its reads keep (see nvgt_flac_read()).
+struct nvgt_flac {
+	ma_flac flac; // First: MiniAudio takes this struct for it.
+	bool placed; // A block was read, numbered and sized as below.
+	bool in_order; // A block came right after another by their numbers.
+	bool from_zero; // And at the frame its number gives, as one cut out of a longer file doesn't.
+	ma_uint32 number;
+	ma_uint32 size;
+	ma_uint64 first; // For blocks of varying sizes, which are numbered by their first frame.
+	ma_uint64 silence; // For lost blocks, still to be given ahead of the one read last.
+};
+// The frame the block dr_flac decoded last starts at, by its number, as dr_flac's seeks take it.
+static ma_uint64 nvgt_flac_first(ma_dr_flac* flac) {
+	ma_uint64 first = 0;
+	ma_dr_flac__get_pcm_frame_range_of_current_flac_frame(flac, &first, NULL);
+	return first;
+}
+static void nvgt_flac_place(nvgt_flac* f) {
+	const ma_dr_flac_frame_header& header = f->flac.dr->currentFLACFrame.header;
+	f->placed = true;
+	f->number = header.flacFrameNumber;
+	f->first = header.pcmFrameNumber;
+	f->size = header.blockSizeInPCMFrames;
+}
+// Whether another block was decoded: one that can't be, other than for its checksum, ends dr_flac's read, which goes on from the next block when asked again.
+static bool nvgt_flac_next_block(ma_dr_flac* flac) {
+	for (int tries = 0; tries < 8; tries++) {
+		if (ma_dr_flac__read_and_decode_next_flac_frame(flac)) return true;
+	}
+	return false;
+}
+// dr_flac drops a block whose checksum doesn't match, as of a damaged file, so that everything after it came early by its length, with silence at the file's end to make up for it, and disagreed with where a seek lands: silence in its place, as for a hole in a Vorbis or Opus file. By the blocks' numbers, where they were in order before, as an encoder that numbers them otherwise has none lost.
+static ma_result nvgt_flac_read(ma_data_source* source, void* frames_out, ma_uint64 frame_count, ma_uint64* frames_read) {
+	nvgt_flac* f = (nvgt_flac*)source;
+	ma_dr_flac* flac = f->flac.dr;
+	const ma_uint32 frame_size = ma_get_bytes_per_frame(f->flac.format, flac->channels);
+	ma_uint64 total = 0;
+	ma_result result = MA_SUCCESS;
+	while (total < frame_count) {
+		void* out = frames_out? ma_offset_ptr(frames_out, total * frame_size) : NULL;
+		if (f->silence) {
+			const ma_uint64 count = ma_min(frame_count - total, f->silence);
+			if (out) ma_silence_pcm_frames(out, count, f->flac.format, flac->channels);
+			flac->currentPCMFrame += count;
+			f->silence -= count;
+			total += count;
+			continue;
+		}
+		if (!flac->currentFLACFrame.pcmFramesRemaining) {
+			if (!nvgt_flac_next_block(flac)) break;
+			const ma_dr_flac_frame_header& header = flac->currentFLACFrame.header;
+			ma_uint64 lost = 0;
+			if (f->placed) {
+				if (header.pcmFrameNumber) {
+					const ma_uint64 next = f->first + f->size;
+					if (header.pcmFrameNumber == next) f->in_order = true;
+					else if (header.pcmFrameNumber > next) lost = header.pcmFrameNumber - next;
+				} else if (header.flacFrameNumber > f->number) {
+					if (header.flacFrameNumber == f->number + 1) f->in_order = true;
+					else lost = (ma_uint64)(header.flacFrameNumber - f->number - 1) * f->size;
+				}
+				if (!lost && f->in_order) f->from_zero = nvgt_flac_first(flac) == flac->currentPCMFrame;
+			}
+			nvgt_flac_place(f);
+			// Not past the file's length, nor, without one, more than ten minutes at 192 kHz: a number damaged too.
+			const ma_uint64 most = flac->totalPCMFrameCount? (flac->totalPCMFrameCount > flac->currentPCMFrame? flac->totalPCMFrameCount - flac->currentPCMFrame : 0) : 115200000;
+			if (lost && f->in_order && lost <= most) {
+				f->silence = lost;
+				continue;
+			}
+		}
+		ma_uint64 got = 0;
+		result = ma_flac_read_pcm_frames(&f->flac, out, ma_min(frame_count - total, (ma_uint64)flac->currentFLACFrame.pcmFramesRemaining), &got);
+		total += got;
+		if (result != MA_SUCCESS || !got) break;
+	}
+	if (frames_read) *frames_read = total;
+	return total? MA_SUCCESS : result != MA_SUCCESS? result : MA_AT_END;
+}
+// Before a seek moves it: the silence left is passed over, as dr_flac takes the cursor to be at the block it decoded.
+static void nvgt_flac_pass_silence(nvgt_flac* f) {
+	f->flac.dr->currentPCMFrame += f->silence;
+	f->silence = 0;
+}
+static ma_result nvgt_flac_seek(ma_data_source* source, ma_uint64 frame) {
+	nvgt_flac* f = (nvgt_flac*)source;
+	ma_dr_flac* flac = f->flac.dr;
+	nvgt_flac_pass_silence(f);
+	const ma_uint64 before = flac->currentPCMFrame;
+	const ma_result result = ma_flac_seek_to_pcm_frame(&f->flac, frame);
+	f->placed = false;
+	// A frame of a lost block, which dr_flac refuses, or lands past, in the next block, reporting it made: it is in the silence ahead of that block, as it plays. One refused is read on to from the start.
+	if (result != MA_SUCCESS && frame < flac->totalPCMFrameCount && ma_flac_seek_to_pcm_frame(&f->flac, 0) == MA_SUCCESS) {
+		ma_uint64 passed = 0;
+		nvgt_flac_read(source, NULL, frame, &passed);
+		if (passed == frame) return MA_SUCCESS;
+		f->silence = 0;
+		f->placed = false;
+		ma_flac_seek_to_pcm_frame(&f->flac, before);
+	}
+	ma_dr_flac_frame& block = flac->currentFLACFrame;
+	if (!block.header.blockSizeInPCMFrames || block.pcmFramesRemaining > block.header.blockSizeInPCMFrames) return result;
+	nvgt_flac_place(f);
+	if (result != MA_SUCCESS || flac->currentPCMFrame != frame) return result;
+	const ma_uint64 first = nvgt_flac_first(flac), at = first + (block.header.blockSizeInPCMFrames - block.pcmFramesRemaining);
+	if (at == frame) f->in_order = f->from_zero = true;
+	else if (at > frame && (f->from_zero || flac->totalPCMFrameCount && at - frame <= (ma_uint64)flac->maxBlockSizeInPCMFrames * 16)) { // Unless its numbers don't start at 0, as one's cut out of a longer file don't, told by then or by how far they are off.
+		f->silence = first > frame? first - frame : 0;
+		block.pcmFramesRemaining = block.header.blockSizeInPCMFrames - (ma_uint32)(frame > first? frame - first : 0);
+	}
+	return result;
+}
+static ma_result nvgt_flac_opened(ma_result result, nvgt_flac* f, const ma_allocation_callbacks* allocation_callbacks, ma_data_source** backend) {
+	if (result == MA_SUCCESS) *backend = f;
+	else ma_free(f, allocation_callbacks);
+	return result;
+}
+static ma_result nvgt_flac_backend_init(void* user_data, ma_read_proc on_read, ma_seek_proc on_seek, ma_tell_proc on_tell, void* read_user_data, const ma_decoding_backend_config* config, const ma_allocation_callbacks* allocation_callbacks, ma_data_source** backend) {
+	nvgt_flac* f = (nvgt_flac*)ma_calloc(sizeof(nvgt_flac), allocation_callbacks);
+	if (!f) return MA_OUT_OF_MEMORY;
+	return nvgt_flac_opened(ma_flac_init(on_read, on_seek, on_tell, read_user_data, config, allocation_callbacks, &f->flac), f, allocation_callbacks, backend);
+}
+static ma_result nvgt_flac_backend_init_memory(void* user_data, const void* data, size_t size, const ma_decoding_backend_config* config, const ma_allocation_callbacks* allocation_callbacks, ma_data_source** backend) {
+	nvgt_flac* f = (nvgt_flac*)ma_calloc(sizeof(nvgt_flac), allocation_callbacks);
+	if (!f) return MA_OUT_OF_MEMORY;
+	return nvgt_flac_opened(ma_flac_init_memory(data, size, config, allocation_callbacks, &f->flac), f, allocation_callbacks, backend);
+}
+static ma_result nvgt_flac_backend_init_file(void* user_data, const char* path, const ma_decoding_backend_config* config, const ma_allocation_callbacks* allocation_callbacks, ma_data_source** backend) {
+	nvgt_flac* f = (nvgt_flac*)ma_calloc(sizeof(nvgt_flac), allocation_callbacks);
+	if (!f) return MA_OUT_OF_MEMORY;
+	return nvgt_flac_opened(ma_flac_init_file(path, config, allocation_callbacks, &f->flac), f, allocation_callbacks, backend);
+}
+static ma_result nvgt_flac_backend_init_file_w(void* user_data, const wchar_t* path, const ma_decoding_backend_config* config, const ma_allocation_callbacks* allocation_callbacks, ma_data_source** backend) {
+	nvgt_flac* f = (nvgt_flac*)ma_calloc(sizeof(nvgt_flac), allocation_callbacks);
+	if (!f) return MA_OUT_OF_MEMORY;
+	return nvgt_flac_opened(ma_flac_init_file_w(path, config, allocation_callbacks, &f->flac), f, allocation_callbacks, backend);
+}
+// Every way MiniAudio makes a FLAC's data source, so that each one is the struct above.
+static const bool nvgt_flac_backend_installed = (g_ma_flac_ds_vtable.onRead = nvgt_flac_read, g_ma_flac_ds_vtable.onSeek = nvgt_flac_seek, g_ma_decoding_backend_vtable_flac.onInit = nvgt_flac_backend_init, g_ma_decoding_backend_vtable_flac.onInitMemory = nvgt_flac_backend_init_memory, g_ma_decoding_backend_vtable_flac.onInitFile = nvgt_flac_backend_init_file, g_ma_decoding_backend_vtable_flac.onInitFileW = nvgt_flac_backend_init_file_w, true);
 // Seeks a file a decoder reads, given its data source's own vtable, for what MiniAudio's FLAC decoder gets wrong; here, where their structures are known. See held_file in sound.cpp.
 ma_result nvgt_file_seek(const ma_data_source_vtable* vtable, ma_data_source* file, ma_uint64 frame, ma_bool32 can_seek) {
 	if (vtable == &g_ma_flac_ds_vtable && ((ma_flac*)file)->dr) {
 		ma_dr_flac* flac = ((ma_flac*)file)->dr;
+		nvgt_flac_pass_silence((nvgt_flac*)file);
 		const ma_uint64 at = flac->currentPCMFrame;
 		const ma_uint32 remaining = flac->currentFLACFrame.pcmFramesRemaining;
 		// dr_flac takes a frame behind it within the block it last decoded as still decoded, which a block that failed to decode, as at a file's truncated end, left with no samples: reading them crashed. A block with nothing left to give is taken as spent, which sends the seek through the file.
@@ -47,13 +187,15 @@ ma_result nvgt_file_seek(const ma_data_source_vtable* vtable, ma_data_source* fi
 				flac->currentPCMFrame = frame;
 				return MA_SUCCESS;
 			}
-			ma_uint64 from = at;
+			ma_uint64 from = at, passed = 0;
 			if (frame < at) {
 				if (flac->firstFLACFramePosInBytes > 0x7FFFFFFF || !flac->bs.onSeek(flac->bs.pUserData, (int)flac->firstFLACFramePosInBytes, MA_DR_FLAC_SEEK_SET)) return MA_INVALID_OPERATION; // Before anything changes, so that it reads on from where it was.
 				if (!ma_dr_flac__seek_to_first_frame(flac)) return MA_INVALID_OPERATION;
+				((nvgt_flac*)file)->placed = false;
 				from = 0;
 			}
-			return ma_dr_flac_read_pcm_frames_f32(flac, frame - from, NULL) == frame - from? MA_SUCCESS : MA_INVALID_ARGS;
+			nvgt_flac_read(file, NULL, frame - from, &passed); // With silence for lost blocks, as it plays.
+			return passed == frame - from? MA_SUCCESS : MA_INVALID_ARGS;
 		}
 	}
 	return vtable->onSeek(file, frame);
