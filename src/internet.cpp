@@ -843,7 +843,23 @@ public:
 					_response = tmp_response;
 					bool moved = (_response.getStatus() == HTTPResponse::HTTP_MOVED_PERMANENTLY || _response.getStatus() == HTTPResponse::HTTP_FOUND || _response.getStatus() == HTTPResponse::HTTP_SEE_OTHER || _response.getStatus() == HTTPResponse::HTTP_TEMPORARY_REDIRECT || _response.getStatus() == HTTPResponse::HTTP_PERMANENT_REDIRECT);
 					if (moved) {
+						URI from = _url;
 						_url.resolve(_response.get("Location"));
+						if (_url.getScheme() != "http" && _url.getScheme() != "https") break; // Nothing this can follow.
+						// Another host, or the same one without encryption, isn't sent what was given for the first: the credentials answered its
+						// 401, and the Authorization and Cookie headers went along.
+						if (icompare(from.getHost(), _url.getHost()) != 0 || (from.getScheme() == "https" && _url.getScheme() == "http")) {
+							_creds.clear();
+							_request.erase("Authorization");
+							_request.erase("Cookie");
+						}
+						// 303 refers to what is to be fetched (RFC 9110 15.4.4), such as the page shown after a form was posted: the post was made again there.
+						if (_response.getStatus() == HTTPResponse::HTTP_SEE_OTHER && _request.getMethod() != HTTPRequest::HTTP_GET && _request.getMethod() != HTTPRequest::HTTP_HEAD) {
+							_request.setMethod(HTTPRequest::HTTP_GET);
+							_request.setContentLength(0);
+							_request.erase("Content-Type");
+							_request_body.clear();
+						}
 						authorize = false;
 						delete _session;
 						_session = nullptr;
