@@ -33,6 +33,7 @@ public:
 	asIScriptFunction* callback;
 	std::string callback_data;
 	uint64_t timeout; // The milliseconds set() and set_timeout() take: an int made one of 2^31 or more (about 24.8 days) negative, timeout() returned it sign-extended, and a repeating timer with one was deleted after its first run.
+	uint64_t delay; // What it waits for now: the timeout, or what its callback returned.
 	bool repeating;
 	bool is_scheduled;
 	timer_queue* parent;
@@ -105,6 +106,7 @@ public:
 	void reset();
 	void schedule(timer_queue_item* t, Tick delta) {
 		std::lock_guard<std::recursive_mutex> l(mtx);
+		t->delay = delta;
 		return timers.schedule(t, delta);
 	}
 	int size() {

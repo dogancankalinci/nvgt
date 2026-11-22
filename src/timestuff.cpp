@@ -48,7 +48,7 @@ Poco::FastMutex g_time_mutex;
 static bool g_time_cache_initialized = false;
 
 static asIScriptContext* callback_ctx = NULL;
-timer_queue_item::timer_queue_item(timer_queue *parent, const std::string &id, asIScriptFunction *callback, const std::string &callback_data, uint64_t timeout, bool repeating) : parent(parent), id(id), callback(callback), callback_data(callback_data), timeout(timeout), repeating(repeating), is_scheduled(true) {}
+timer_queue_item::timer_queue_item(timer_queue *parent, const std::string &id, asIScriptFunction *callback, const std::string &callback_data, uint64_t timeout, bool repeating) : parent(parent), id(id), callback(callback), callback_data(callback_data), timeout(timeout), delay(timeout), repeating(repeating), is_scheduled(true) {}
 void timer_queue_item::execute() {
 	asIScriptContext *ACtx = asGetActiveContext();
 	// exit() was called since the script called loop(), by a callback loop() ran (the abort it passes on to the script only takes effect once loop() returns) or by another thread: run no more callbacks. The timer stays due, for a later loop() such as one in on_exit().
@@ -189,7 +189,7 @@ void timer_queue::set(const std::string &id, asIScriptFunction *callback, const 
 		t->repeating = repeating;
 		t->is_scheduled = true;
 		t->cancel();
-		timers.schedule(t, timeout);
+		schedule(t, timeout);
 		gc_ref(callback, 1);
 		gc_ref(old_callback, -1);
 		if (old_callback) old_callback->Release();
@@ -197,21 +197,22 @@ void timer_queue::set(const std::string &id, asIScriptFunction *callback, const 
 	}
 	timer_objects[id] = new timer_queue_item(this, id, callback, callback_data, timeout, repeating);
 	gc_ref(callback, 1);
-	timers.schedule(timer_objects[id], timeout);
+	schedule(timer_objects[id], timeout);
 }
 uint64_t timer_queue::elapsed(const std::string &id) {
 	std::lock_guard<std::recursive_mutex> l(mtx);
 	auto it = timer_objects.find(id);
 	if (it == timer_objects.end()) return 0;
-	// The wheel records the tick a timer is due to fire on, so the time it has been running is its timeout less
-	// whatever is left of the wait. Taking the due tick away from the current one gave back the wait still to come with
+	// The wheel records the tick a timer is due to fire on, so the time it has been running is its wait (its timeout, or the
+	// milliseconds its callback returned, for which this still took the timeout: a timer of 50 ms whose callback returned 400 read 0
+	// for the next 350 ms, and one of 1000 whose callback returned 100 read 900 at once) less whatever is left of it. Taking the due tick away from the current one gave back the wait still to come with
 	// its sign flipped, which as an unsigned value arrived as a number near the top of the range for every timer that
 	// had not fired yet.
 	uint64_t now = timers.now(), due = it->second->scheduled_at();
-	uint64_t timeout = it->second->timeout > 0 ? static_cast<uint64_t>(it->second->timeout) : 0;
-	if (now >= due) return timeout + (now - due);
+	uint64_t delay = it->second->delay;
+	if (now >= due) return delay + (now - due);
 	uint64_t remaining = due - now;
-	return remaining >= timeout ? 0 : timeout - remaining;
+	return remaining >= delay ? 0 : delay - remaining;
 }
 uint64_t timer_queue::timeout(const std::string &id) {
 	std::lock_guard<std::recursive_mutex> l(mtx);
@@ -226,7 +227,7 @@ bool timer_queue::restart(const std::string &id) {
 	it->second->is_scheduled = true;
 	it->second->cancel();
 	// A timeout of 0 (set_timeout()) is a delay of one tick: given 0, the wheel put the timer into the slot of the tick it had already processed, where it came up only when the wheel came round to that slot again, 256 milliseconds later.
-	timers.schedule(it->second, it->second->timeout > 0 ? it->second->timeout : 1);
+	schedule(it->second, it->second->timeout > 0 ? it->second->timeout : 1);
 	return true;
 }
 bool timer_queue::is_repeating(const std::string &id) {
@@ -243,7 +244,7 @@ bool timer_queue::set_timeout(const std::string &id, uint64_t timeout, bool repe
 	it->second->repeating = repeating;
 	if (timeout > 0 || repeating) {
 		it->second->is_scheduled = true;
-		timers.schedule(it->second, timeout > 0 ? timeout : 1); // A timeout of 0 is a delay of one tick, see restart().
+		schedule(it->second, timeout > 0 ? timeout : 1); // A timeout of 0 is a delay of one tick, see restart().
 	}
 	return true;
 }
