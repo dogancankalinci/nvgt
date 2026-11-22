@@ -12,7 +12,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <memory>
+#include <mutex>
+#include <streambuf>
 #include <string>
+#include <unordered_map>
 #include <obfuscate.h>
 #include <Poco/Format.h>
 #include <Poco/NullStream.h>
@@ -124,30 +128,136 @@ template <class T> bool message_header_read(MessageHeader* h, datastream* ds) {
 	} catch (Exception&) { return false; }
 	return true;
 }
-template<class T> datastream* http_client_send_request(T* s, HTTPRequest& req, f_streamargs) {
-	datastream* ds = new datastream(&s->sendRequest(req), p_streamargs);
-	ds->no_close = true;
+// The streams of an http_client's request and response and of an ftp_client's transfer are the session's, which destroys them as it goes
+// on (the request's as the response is received, both with the next request, a transfer's as it ends) and as it goes itself. They were
+// handed to the script as they are, so a datastream used after that used freed memory (one returned by a function whose http_client was
+// a local variable read nothing, or crashed), and the reader or writer each datastream made was never freed. A datastream is given a
+// stream of its own now, which passes everything on for as long as the session's stream is there and then ends, and holds the session.
+struct session_stream {
+	std::mutex mutex;
+	std::streambuf* target; // The session's, null once it is gone.
+	session_stream(std::streambuf* target) : target(target) {}
+	void gone() {
+		std::lock_guard<std::mutex> lock(mutex);
+		target = nullptr;
+	}
+};
+static std::mutex& session_streams_mutex() {
+	static auto* m = new std::mutex; // Never destroyed: a script's last objects can go at the program's end.
+	return *m;
+}
+struct session_stream_pair { std::weak_ptr<session_stream> request, response; }; // A transfer's is the first.
+static std::unordered_map<const void*, session_stream_pair>& session_streams() {
+	static auto* m = new std::unordered_map<const void*, session_stream_pair>;
+	return *m;
+}
+// The session is about to destroy its request's (or transfer's) stream, and the response's when both.
+static void session_streams_gone(const void* session, bool both = true) {
+	std::shared_ptr<session_stream> request, response;
+	{
+		std::lock_guard<std::mutex> lock(session_streams_mutex());
+		auto it = session_streams().find(session);
+		if (it == session_streams().end()) return;
+		request = it->second.request.lock();
+		if (both) response = it->second.response.lock();
+	}
+	if (request) request->gone();
+	if (response) response->gone();
+}
+class session_streambuf : public std::streambuf {
+	std::shared_ptr<const void> session; // Held, and let go of after the stream.
+	std::shared_ptr<session_stream> stream;
+	char buffer[4096];
+protected:
+	int_type underflow() override {
+		std::lock_guard<std::mutex> lock(stream->mutex);
+		if (!stream->target || traits_type::eq_int_type(stream->target->sgetc(), traits_type::eof())) return traits_type::eof();
+		std::streamsize n = std::min<std::streamsize>(std::max<std::streamsize>(stream->target->in_avail(), 1), sizeof(buffer)); // What is there already: more would wait for the network.
+		n = stream->target->sgetn(buffer, n);
+		if (n < 1) return traits_type::eof();
+		setg(buffer, buffer, buffer + n);
+		return traits_type::to_int_type(*gptr());
+	}
+	int_type overflow(int_type c) override {
+		if (traits_type::eq_int_type(c, traits_type::eof())) return traits_type::not_eof(c);
+		std::lock_guard<std::mutex> lock(stream->mutex);
+		return stream->target ? stream->target->sputc(traits_type::to_char_type(c)) : traits_type::eof();
+	}
+	std::streamsize xsputn(const char* data, std::streamsize size) override {
+		std::lock_guard<std::mutex> lock(stream->mutex);
+		return stream->target ? stream->target->sputn(data, size) : 0;
+	}
+	int sync() override {
+		std::lock_guard<std::mutex> lock(stream->mutex);
+		return stream->target ? stream->target->pubsync() : -1;
+	}
+public:
+	session_streambuf(std::shared_ptr<session_stream> stream, std::shared_ptr<const void> session) : session(std::move(session)), stream(std::move(stream)) { setg(buffer, buffer, buffer); }
+};
+// Base is std::istream, std::ostream or std::iostream, whichever the session's stream is.
+template <class Base> class session_proxy_stream : public Base {
+	session_streambuf buf;
+public:
+	session_proxy_stream(std::shared_ptr<session_stream> stream, std::shared_ptr<const void> session) : Base(nullptr), buf(std::move(stream), std::move(session)) { this->rdbuf(&buf); }
+	~session_proxy_stream() { this->rdbuf(nullptr); } // The buffer goes before the base.
+};
+template <class Base, class T> static datastream* session_datastream(T* session, Base& stream, bool response, const std::string& encoding, int byteorder) {
+	auto state = std::make_shared<session_stream>(stream.rdbuf());
+	angelscript_refcounted_duplicate<T>(session);
+	std::shared_ptr<const void> hold(session, [session](const void*) {
+		{
+			std::lock_guard<std::mutex> lock(session_streams_mutex());
+			auto it = session_streams().find(session);
+			if (it != session_streams().end() && it->second.request.expired() && it->second.response.expired()) session_streams().erase(it);
+		}
+		angelscript_refcounted_release<T>(session);
+	});
+	{
+		std::lock_guard<std::mutex> lock(session_streams_mutex());
+		session_stream_pair& streams = session_streams()[session];
+		(response ? streams.response : streams.request) = state;
+	}
+	auto proxy = std::make_unique<session_proxy_stream<Base>>(state, hold);
+	datastream* ds = new datastream(proxy.get(), encoding, byteorder, nullptr);
+	proxy.release(); // The datastream's.
 	return ds;
 }
-template<class T> datastream* http_client_receive_response(T* s, HTTPResponse& response, f_streamargs) {
-	datastream* ds = new datastream(&s->receiveResponse(response), p_streamargs);
-	ds->no_close = true;
-	return ds;
+template<class T> datastream* http_client_send_request(T* s, HTTPRequest& req, const std::string& encoding, int byteorder) {
+	session_streams_gone(s);
+	return session_datastream<std::ostream>(s, s->sendRequest(req), false, encoding, byteorder);
 }
-template<class T> datastream* ftp_client_begin_download(T* s, const std::string& path, f_streamargs) {
-	datastream* ds = new datastream(&s->beginDownload(path), p_streamargs);
-	ds->no_close = true;
-	return ds;
+template<class T> datastream* http_client_receive_response(T* s, HTTPResponse& response, const std::string& encoding, int byteorder) {
+	session_streams_gone(s);
+	return session_datastream<std::istream>(s, s->receiveResponse(response), true, encoding, byteorder);
 }
-template<class T> datastream* ftp_client_begin_upload(T* s, const std::string& path, f_streamargs) {
-	datastream* ds = new datastream(&s->beginUpload(path), p_streamargs);
-	ds->no_close = true;
-	return ds;
+template<class T> void http_client_flush_request(T* s) {
+	session_streams_gone(s, false);
+	s->flushRequest();
 }
-template<class T> datastream* ftp_client_begin_list(T* s, const std::string& path, bool extended, f_streamargs) {
-	datastream* ds = new datastream(&s->beginList(path, extended), p_streamargs);
-	ds->no_close = true;
-	return ds;
+static WebSocket* web_socket_factory(HTTPClientSession& cs, HTTPRequest& request, HTTPResponse& response) {
+	session_streams_gone(&cs); // It makes its request and receives its response on the session.
+	return angelscript_refcounted_factory<WebSocket, HTTPClientSession&, HTTPRequest&, HTTPResponse&>(cs, request, response);
+}
+static WebSocket* web_socket_factory_credentials(HTTPClientSession& cs, HTTPRequest& request, HTTPResponse& response, HTTPCredentials& credentials) {
+	session_streams_gone(&cs);
+	return angelscript_refcounted_factory<WebSocket, HTTPClientSession&, HTTPRequest&, HTTPResponse&, HTTPCredentials&>(cs, request, response, credentials);
+}
+template<class T> datastream* ftp_client_begin_download(T* s, const std::string& path, const std::string& encoding, int byteorder) {
+	session_streams_gone(s);
+	return session_datastream<std::istream>(s, s->beginDownload(path), false, encoding, byteorder);
+}
+template<class T> datastream* ftp_client_begin_upload(T* s, const std::string& path, const std::string& encoding, int byteorder) {
+	session_streams_gone(s);
+	return session_datastream<std::ostream>(s, s->beginUpload(path), false, encoding, byteorder);
+}
+template<class T> datastream* ftp_client_begin_list(T* s, const std::string& path, bool extended, const std::string& encoding, int byteorder) {
+	session_streams_gone(s);
+	return session_datastream<std::istream>(s, s->beginList(path, extended), false, encoding, byteorder);
+}
+// The methods of an ftp_client that end a transfer under way.
+template <class T, auto F, typename... A> static void ftp_client_ending(T* s, A... args) {
+	session_streams_gone(s);
+	(s->*F)(args...);
 }
 
 // Some functions for name_value_collection and derivatives that we can't directly wrap.
@@ -325,7 +435,7 @@ template <class T> void RegisterHTTPClientSession(asIScriptEngine* engine, const
 	engine->RegisterObjectMethod(type.c_str(), "datastream@ send_request(http_request& request, const string&in encoding = \"\", int byteorder = STREAM_BYTE_ORDER_NATIVE)", asFUNCTION(http_client_send_request<T>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "datastream@ receive_response(http_response& response, const string&in encoding = \"\", int byteorder = STREAM_BYTE_ORDER_NATIVE)", asFUNCTION(http_client_receive_response<T>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "bool peek_response(http_response& response)", asMETHOD(T, peekResponse), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "void flush_request()", asMETHOD(T, flushRequest), asCALL_THISCALL);
+	engine->RegisterObjectMethod(type.c_str(), "void flush_request()", asFUNCTION(http_client_flush_request<T>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "void reset()", asMETHOD(T, reset), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "bool get_secure() const property", asMETHOD(T, secure), asCALL_THISCALL);
 }
@@ -335,10 +445,10 @@ template <class T> void RegisterFTPClientSession(asIScriptEngine* engine, const 
 	engine->RegisterObjectBehaviour(type.c_str(), asBEHAVE_FACTORY, format("%s@ f(const string&in host, uint16 port = 21, const string&in username = \"\", const string&in password = \"\", uint16 active_data_port = 0)", type).c_str(), asFUNCTION((angelscript_refcounted_factory<T, const string&, UInt16, const string&, const string&, UInt16>)), asCALL_CDECL);
 	engine->RegisterObjectMethod(type.c_str(), "void set_passive(bool passive, bool use_rfc1738 = true)", asMETHOD(T, setPassive), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "bool get_passive() const property", asMETHOD(T, getPassive), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "void open(const string&in host, uint16 port, const string&in username = \"\", const string&in password = \"\")", asMETHOD(T, open), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "void login(const string&in username, const string&in password)", asMETHOD(T, login), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "void logout()", asMETHOD(T, logout), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type.c_str(), "void close()", asMETHOD(T, close), asCALL_THISCALL);
+	engine->RegisterObjectMethod(type.c_str(), "void open(const string&in host, uint16 port, const string&in username = \"\", const string&in password = \"\")", asFUNCTION((ftp_client_ending<T, static_cast<void (T::*)(const std::string&, Poco::UInt16, const std::string&, const std::string&)>(&T::open), const std::string&, Poco::UInt16, const std::string&, const std::string&>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "void login(const string&in username, const string&in password)", asFUNCTION((ftp_client_ending<T, static_cast<void (T::*)(const std::string&, const std::string&)>(&T::login), const std::string&, const std::string&>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "void logout()", asFUNCTION((ftp_client_ending<T, &T::logout>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "void close()", asFUNCTION((ftp_client_ending<T, &T::close>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "string system_type()", asMETHOD(T, systemType), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "void set_file_type(ftp_file_type type)", asMETHOD(T, setFileType), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "ftp_file_type get_file_type() const property", asMETHOD(T, getFileType), asCALL_THISCALL);
@@ -350,11 +460,11 @@ template <class T> void RegisterFTPClientSession(asIScriptEngine* engine, const 
 	engine->RegisterObjectMethod(type.c_str(), "void create_directory(const string&in path)", asMETHOD(T, createDirectory), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "void remove_directory(const string&in path)", asMETHOD(T, removeDirectory), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "datastream@ begin_download(const string&in path, const string&in encoding = \"\", int byteorder = STREAM_BYTE_ORDER_NATIVE)", asFUNCTION(ftp_client_begin_download<T>), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "void end_download()", asMETHOD(T, endDownload), asCALL_THISCALL);
+	engine->RegisterObjectMethod(type.c_str(), "void end_download()", asFUNCTION((ftp_client_ending<T, &T::endDownload>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "datastream@ begin_upload(const string&in path, const string&in encoding = \"\", int byteorder = STREAM_BYTE_ORDER_NATIVE)", asFUNCTION(ftp_client_begin_upload<T>), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "void end_upload()", asMETHOD(T, endUpload), asCALL_THISCALL);
+	engine->RegisterObjectMethod(type.c_str(), "void end_upload()", asFUNCTION((ftp_client_ending<T, &T::endUpload>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "datastream@ begin_list(const string&in path = \"\", bool extended = false, const string&in encoding = \"\", int byteorder = STREAM_BYTE_ORDER_NATIVE)", asFUNCTION(ftp_client_begin_list<T>), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "void end_list()", asMETHOD(T, endList), asCALL_THISCALL);
+	engine->RegisterObjectMethod(type.c_str(), "void end_list()", asFUNCTION((ftp_client_ending<T, &T::endList>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "void abort()", asMETHOD(T, abort), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "int send_command(const string&in command, string& response)", asMETHODPR(T, sendCommand, (const string&, string&), int), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type.c_str(), "int send_command(const string&in command, const string&in argument, string& response)", asMETHODPR(T, sendCommand, (const string&, const string&, string&), int), asCALL_THISCALL);
@@ -579,8 +689,8 @@ void RegisterWebSocket(asIScriptEngine* engine) {
 	engine->RegisterEnumValue("web_socket_error_codes", "WS_ERR_PAYLOAD_TOO_BIG", WebSocket::WS_ERR_PAYLOAD_TOO_BIG);
 	engine->RegisterEnumValue("web_socket_error_codes", "WS_ERR_INCOMPLETE_FRAME", WebSocket::WS_ERR_INCOMPLETE_FRAME);
 	RegisterStreamSocket<WebSocket>(engine, "web_socket");
-	engine->RegisterObjectBehaviour("web_socket", asBEHAVE_FACTORY, "web_socket@ s(http_client& cs, http_request& request, http_response& response)", asFUNCTION((angelscript_refcounted_factory<WebSocket, HTTPClientSession&, HTTPRequest&, HTTPResponse&>)), asCALL_CDECL);
-	engine->RegisterObjectBehaviour("web_socket", asBEHAVE_FACTORY, "web_socket@ s(http_client& cs, http_request& request, http_response& response, http_credentials& credentials)", asFUNCTION((angelscript_refcounted_factory<WebSocket, HTTPClientSession&, HTTPRequest&, HTTPResponse&, HTTPCredentials&>)), asCALL_CDECL);
+	engine->RegisterObjectBehaviour("web_socket", asBEHAVE_FACTORY, "web_socket@ s(http_client& cs, http_request& request, http_response& response)", asFUNCTION(web_socket_factory), asCALL_CDECL);
+	engine->RegisterObjectBehaviour("web_socket", asBEHAVE_FACTORY, "web_socket@ s(http_client& cs, http_request& request, http_response& response, http_credentials& credentials)", asFUNCTION(web_socket_factory_credentials), asCALL_CDECL);
 	engine->RegisterObjectMethod("web_socket", "int shutdown(uint16 status_code, const string&in status_message = \"\")", asMETHODPR(WebSocket, shutdown, (UInt16, const string&), int), asCALL_THISCALL);
 	engine->RegisterObjectMethod("web_socket", "int send_frame(const string&in data, int flags = WS_FRAME_TEXT)", asFUNCTION(websocket_send_frame), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("web_socket", "string receive_frame(int&out flags)", asFUNCTION(websocket_receive_frame), asCALL_CDECL_OBJFIRST);
