@@ -23,7 +23,12 @@ const asPWORD CONTEXT_MGR = 1002;
 
 struct SContextInfo
 {
-	asUINT                    sleepUntil;
+	// ALTERED: when it was put to sleep and for how long. The time to wake up at, kept instead, wrapped around with the 32-bit clock: a
+	// sleep() of more than it had left until then didn't sleep at all (sleep(4294967295) never did), and once the program had run
+	// for 49.7 days, one due in the clock's last millisecond slept for another 49.7 days.
+	bool                      sleeping;
+	asUINT                    sleepStart;
+	asUINT                    sleepTime;
 	vector<asIScriptContext*> coRoutines;
 	asUINT                    currentCoRoutine;
 	asIScriptContext *        keepCtxAfterExecution;
@@ -181,12 +186,13 @@ int CContextMgr::ExecuteScripts()
 	}
 
 	// Check if the system time is higher than the time set for the contexts
-	asUINT time = m_getTimeFunc ? m_getTimeFunc() : asUINT(-1);
+	asUINT time = m_getTimeFunc ? m_getTimeFunc() : 0;
 	for( m_currentThread = 0; m_currentThread < m_threads.size(); m_currentThread++ )
 	{
 		SContextInfo *thread = m_threads[m_currentThread];
-		if( thread->sleepUntil < time )
+		if( !thread->sleeping || time - thread->sleepStart > thread->sleepTime )
 		{
+			thread->sleeping = false;
 			int currentCoRoutine = thread->currentCoRoutine;
 			asIScriptContext *ctx = thread->coRoutines[currentCoRoutine];
 
@@ -424,7 +430,7 @@ asIScriptContext *CContextMgr::AddContext(asIScriptEngine *engine, asIScriptFunc
 
 	info->coRoutines.push_back(ctx);
 	info->currentCoRoutine      = 0;
-	info->sleepUntil            = 0;
+	info->sleeping              = false;
 	info->keepCtxAfterExecution = keepCtxAfterExec ? ctx : 0;
 	m_threads.push_back(info);
 
@@ -501,7 +507,11 @@ void CContextMgr::SetSleeping(asIScriptContext *ctx, asUINT milliSeconds)
 		for( asUINT c = 0; c < m_threads[n]->coRoutines.size(); c++ )
 		{
 			if( m_threads[n]->coRoutines[c] == ctx )
-				m_threads[n]->sleepUntil = (m_getTimeFunc ? m_getTimeFunc() : 0) + milliSeconds;
+			{
+				m_threads[n]->sleeping   = true;
+				m_threads[n]->sleepStart = m_getTimeFunc ? m_getTimeFunc() : 0;
+				m_threads[n]->sleepTime  = milliSeconds;
+			}
 		}
 	}
 }
