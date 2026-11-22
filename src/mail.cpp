@@ -17,8 +17,11 @@
 #include <Poco/Net/FilePartSource.h>
 #include <Poco/Net/MailMessage.h>
 #include <Poco/Net/MailRecipient.h>
+#include <Poco/Net/MediaType.h>
 #include <Poco/Net/MessageHeader.h>
+#include <Poco/Net/MultipartWriter.h>
 #include <Poco/Net/NetException.h>
+#include <Poco/Net/QuotedPrintableEncoder.h>
 #include <Poco/Net/SMTPClientSession.h>
 #include <Poco/Net/SecureSMTPClientSession.h>
 #include <Poco/Net/SecureStreamSocket.h>
@@ -175,6 +178,16 @@ static std::string mail_address_text(const std::string& value) {
 	return out;
 }
 
+// The media type of a text part. A text type without a charset is US-ASCII text by RFC 2045, but the text is UTF-8: mail clients that go by
+// the type showed the letters outside ASCII garbled.
+static std::string mail_text_type(const std::string& type, const std::string& text) {
+	if (Poco::icompare(type.substr(0, 5), "text/") != 0 || MediaType(type).hasParameter("charset")) return type;
+	for (unsigned char c : text) {
+		if (c >= 0x80) return type + "; charset=utf-8";
+	}
+	return type;
+}
+
 // The recipient types MailMessage writes a header for. Any other number was accepted (the type is an int underneath) and sent an RCPT TO
 // for the address, which then appeared in no header: a hidden recipient, like a Bcc the script never asked for. Such a type is refused.
 static bool mail_recipient_type_ok(int type) {
@@ -212,6 +225,7 @@ private:
 	bool m_has_html_content;
 	std::string m_html_content;
 	std::string m_plain_content;
+	bool m_plain_given = false; // The script gave the plain alternative of the HTML content.
 	std::string m_text_content; // See set_content().
 	std::string m_text_type;
 	bool m_has_text_content = false; // set_content() was called
@@ -343,6 +357,7 @@ public:
 		m_has_html_content = true;
 		m_html_content = html;
 		m_plain_content = plain_alternative.empty() ? "This message requires HTML support to view." : plain_alternative;
+		m_plain_given = !plain_alternative.empty();
 		m_last_error.clear();
 	}
 
@@ -562,6 +577,11 @@ public:
 	// the sending, and the To and Cc it writes from the recipients are written here when a recipient's name needs it.
 	void send(SMTPClientSession& session) {
 		finalize_html_content(); // adds the content too, see there
+		// The parts are read from where the last sending of the message left them, at their end: sent again, it went out with every part empty.
+		for (const auto& part : m_message.parts()) {
+			part.pSource->stream().clear();
+			part.pSource->stream().seekg(0);
+		}
 		MessageHeader header;
 		bool changed = false;
 		for (const auto& h : m_message) {
@@ -607,27 +627,55 @@ public:
 
 	// Finalize the content and the HTML content for sending, each added once.
 	void finalize_html_content() {
-		if (m_text_pending) {
+		if (!m_has_html_content) {
+			if (!m_text_pending) return;
+			std::string type = mail_text_type(m_text_type, m_text_content);
 			// For messages with attachments, we need to use addContent instead of setContent
 			// to properly create a multipart message
 			try {
-				m_message.addContent(new StringPartSource(m_text_content, m_text_type));
+				m_message.addContent(new StringPartSource(m_text_content, type));
 			} catch (const Exception& e) {
 				// If addContent fails (e.g., content already set), fall back to setContent
-				m_message.setContentType(m_text_type);
+				m_message.setContentType(type);
 				m_message.setContent(m_text_content);
 			}
 			m_text_pending = false;
+			return;
 		}
-		if (!m_has_html_content) return;
 		try {
-			// Create multipart/alternative for HTML and plain text
-			m_message.setContentType("multipart/alternative");
-			// Add plain text part
-			if (!m_plain_content.empty())
-				m_message.addContent(new StringPartSource(m_plain_content, "text/plain"));
-			// Add HTML part
-			m_message.addContent(new StringPartSource(m_html_content, "text/html"));
+			// The same text in different formats, the best last: what set_content() gave, the plain alternative, the HTML. Without a plain
+			// alternative of its own, plain text from set_content() is it: the notice that HTML support is required was sent beside it.
+			std::vector<std::pair<std::string, std::string>> alternatives;
+			bool text_is_plain = m_text_pending && Poco::icompare(m_text_type.substr(0, 10), "text/plain") == 0;
+			if (m_text_pending) alternatives.emplace_back(m_text_type, m_text_content);
+			if (m_plain_given || !text_is_plain) alternatives.emplace_back("text/plain", m_plain_content);
+			alternatives.emplace_back("text/html", m_html_content);
+			for (auto& alternative : alternatives) alternative.first = mail_text_type(alternative.first, alternative.second);
+			if (m_message.parts().empty()) {
+				// Create multipart/alternative for HTML and plain text
+				m_message.setContentType("multipart/alternative");
+				for (const auto& alternative : alternatives) m_message.addContent(new StringPartSource(alternative.second, alternative.first));
+			} else {
+				// The attachments were parts of the multipart/alternative, other formats of the text then, of which a mail client shows the last
+				// one it can, the HTML: the attachments were lost on many clients. The formats are one part of a multipart/mixed message
+				// now, beside the attachments (a part that is a multipart has its own parts encoded, not itself, RFC 2045 6.4).
+				std::string boundary = MultipartWriter::createBoundary();
+				std::ostringstream body;
+				MultipartWriter writer(body, boundary);
+				for (const auto& alternative : alternatives) {
+					MessageHeader header;
+					header.set("Content-Type", alternative.first);
+					header.set("Content-Transfer-Encoding", "quoted-printable");
+					header.set("Content-Disposition", "inline");
+					writer.nextPart(header);
+					QuotedPrintableEncoder encoder(writer.stream());
+					encoder << alternative.second;
+					encoder.close();
+				}
+				writer.close();
+				m_message.addContent(new StringPartSource(body.str(), "multipart/alternative; boundary=" + boundary), MailMessage::ENCODING_7BIT);
+			}
+			m_text_pending = false;
 			m_has_html_content = false;  // Prevent double processing
 		} catch (const Exception& e) {
 			m_last_error = e.displayText();
