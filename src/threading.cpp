@@ -1246,11 +1246,15 @@ template <class L, class T> void script_scoped_lock_construct_ms(void* mem, T* t
 	script_scoped_lock_construct<L, T, long>(mem, target, poco_ms(ms));
 }
 bool thread_sleep(unsigned int ms) {
-	if (!Thread::current()) {
-		Thread::sleep(poco_ms(ms));
-		return true;
+	script_wait wait;
+	auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+	for (long long left = poco_ms(ms);;) {
+		long slice = long(std::min<long long>(left, wait.slice()));
+		if (!Thread::current()) Thread::sleep(slice);
+		else if (!Thread::trySleep(slice)) return false;
+		left = std::chrono::duration_cast<std::chrono::milliseconds>(until - std::chrono::steady_clock::now() + std::chrono::microseconds(999)).count(); // Rounded up: never shorter than asked.
+		if (left < 1 || wait.ended()) return true;
 	}
-	return Thread::trySleep(poco_ms(ms));
 }
 // The script's uint fits the OS thread id on every target (a Windows DWORD, a Linux pid_t, an Apple mach port), but Poco returns it
 // as a long, which is 8 bytes on 64-bit Linux and Apple targets. Poco has no implementation for Android (it returns 0 for every

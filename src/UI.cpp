@@ -1060,6 +1060,9 @@ void refresh_window() {
 bool thread_is_main(); // threading.cpp
 void wait(int ms) {
 	anticheat_check();
+	// exit() called on a script thread meanwhile ends the main thread's wait, after which its abort takes effect: the program went on until a wait(60000) was over.
+	bool main = thread_is_main();
+	asPWORD exits = script_exit_count();
 	bool have_window, mine;
 	{
 		std::lock_guard<std::recursive_mutex> lock(game_windows_mutex());
@@ -1073,14 +1076,14 @@ void wait(int ms) {
 		// Mode 2 collects every wait() cycle on the main thread, as the documentation has it, with or without a window: without one
 		// wait() only slept, so a console script (or one before show_window()) waiting in a loop never had NVGT's steps run, and
 		// cyclic garbage made before the loop stayed until AngelScript's own steps ran as more objects were made.
-		if (!have_window && thread_is_main()) {
+		if (!have_window && main) {
 			while (ms >= 0) {
 				int MS = (ms > 25 ? 25 : ms);
 				if (g_GCMode == 2)
 					garbage_collect_action();
 				Poco::Thread::sleep(MS);
 				ms -= MS;
-				if (ms < 1) break;
+				if (ms < 1 || script_exit_count() != exits) break;
 			}
 			return;
 		}
@@ -1101,7 +1104,7 @@ void wait(int ms) {
 			SDL_PumpEvents();
 		}
 		ms -= MS;
-		if (ms < 1) break;
+		if (ms < 1 || (main && script_exit_count() != exits)) break;
 	}
 	refresh_window();
 }
