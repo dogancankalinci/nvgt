@@ -33,6 +33,7 @@ std::string get_call_stack();
 std::string get_call_stack_ctx(asIScriptContext* ctx);
 void pop_nested_state(asIScriptContext* ctx);
 int execute_nested(asIScriptContext* ctx);
+asPWORD script_exit_count(); // How many times exit() was called, see there.
 bool script_callbacks_stopped(asIScriptContext* ctx); // nvgt_angelscript.cpp: exit() was called since ctx (the context calling a registered function) began, so that function must run no more script callbacks.
 asIScriptFunction* get_default_args_function(asIScriptFunction* func); // The function whose default arguments a call of func evaluates: for a delegate, its method's implementation.
 void RegisterScriptstuff(asIScriptEngine* engine);

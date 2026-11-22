@@ -443,6 +443,7 @@ void Exit(int retcode = 0) {
 	ScopedLock<Mutex> l(g_ctxMgrMutex); // Recursive, as the destructors AbortAll() runs on this thread can call exit() again.
 	if (g_ctxMgr) g_ctxMgr->AbortAll(); // Gone once the script ended, while the destructors that discarding its module runs can still call exit(). Called on a script thread, it only aborts what the main thread is executing and leaves the rest to it.
 }
+asPWORD script_exit_count() { return g_exit_count; }
 // Whether a registered function that runs script callbacks one after another, called by ctx, must run no more of them: exit() was called since ctx began (by a callback, by a thread, or by the script), so ctx is ending. Passing the abort on (pop_nested_state) isn't enough to stop them, as the next nested call puts it aside until it returns, and a callback with a context of its own isn't aborted at all. A context taken from the pool after exit() was called, like the one on_exit() or a destructor runs in, runs its callbacks.
 bool script_callbacks_stopped(asIScriptContext* ctx) {
 	asPWORD exits = g_exit_count;

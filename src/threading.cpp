@@ -53,31 +53,52 @@ bool thread_is_main();
 #ifdef __APPLE__
 void apple_run_main_loop_once(); // apple.mm
 #endif
-// Waits up to ms (for ever when ms is negative) for event, returning whether it was set. On Apple platforms the main thread waits in slices
-// of 10 ms and runs the main run loop between them, see apple_run_main_loop_once(): a script thread's alert() there waits for the main
-// thread to run it. Everywhere else this is Poco's wait.
-static bool event_wait_main(Event& event, long long ms) {
-	#ifdef __APPLE__
-	if (thread_is_main()) {
-		auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms < 0 ? 0 : ms);
-		for (;;) {
-			long slice = 10;
-			if (ms >= 0) {
-				auto now = std::chrono::steady_clock::now();
-				long long left = now < until ? std::chrono::duration_cast<std::chrono::milliseconds>(until - now).count() : 0;
-				if (left < slice) slice = long(left);
-			}
-			if (event.tryWait(slice)) return true;
-			if (ms >= 0 && std::chrono::steady_clock::now() >= until) return false;
-			apple_run_main_loop_once();
-		}
-	}
-	#endif
-	if (ms < 0) {
-		event.wait();
+static bool script_thread_aborting();
+// A script's wait that nothing may ever end, for the time it lasts. exit() called on a script thread aborts what the main thread executes,
+// which the main thread only acts on once a wait it is in ends: while it waited for an event, a thread, an async call or a pool that
+// never came, the program never ended. The same goes for what a script thread executes once the script is over (see
+// script_threads_stop()). ended() is true from then on, and the wait returns; the script doesn't see it return, as its context is
+// aborted. A wait begun after that, by a destructor the abort runs, lasts until what it waits for comes, as before.
+class script_wait {
+	bool main = thread_is_main();
+	asPWORD exits = main ? script_exit_count() : 0;
+	bool aborting = !main && script_thread_aborting();
+public:
+	bool ended() {
+		if (main ? script_exit_count() == exits : aborting || !script_thread_aborting()) return false;
+		if (asIScriptContext* ctx = asGetActiveContext()) ctx->Abort();
 		return true;
 	}
-	return event.tryWait(long(std::min<long long>(ms, LONG_MAX - 1)));
+	long slice() const { // The longest the wait lasts between two looks, in milliseconds.
+		#ifdef __APPLE__
+		if (main) return 10; // See event_wait_main().
+		#endif
+		return main ? 20 : 100;
+	}
+};
+// Waits up to ms (for ever when ms is negative) for event, returning whether it was set; see script_wait for when it isn't although ms is
+// negative (or that long hasn't passed). On Apple platforms the main thread runs the main run loop between the slices it waits in, see
+// apple_run_main_loop_once(): a script thread's alert() there waits for the main thread to run it.
+static bool event_wait_main(Event& event, long long ms, bool* ended = nullptr) {
+	script_wait wait;
+	auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms < 0 ? 0 : ms);
+	for (;;) {
+		long slice = wait.slice();
+		if (ms >= 0) {
+			auto now = std::chrono::steady_clock::now();
+			long long left = now < until ? std::chrono::duration_cast<std::chrono::milliseconds>(until - now).count() : 0;
+			if (left < slice) slice = long(left);
+		}
+		if (event.tryWait(slice)) return true;
+		if (ms >= 0 && std::chrono::steady_clock::now() >= until) return false;
+		if (wait.ended()) {
+			if (ended) *ended = true;
+			return false;
+		}
+		#ifdef __APPLE__
+		if (thread_is_main()) apple_run_main_loop_once();
+		#endif
+	}
 }
 
 // A number, bool or enum given to async for a parameter of another of those types, converted by its value. It was passed by its size: an int for a float parameter arrived as the bits of the int (5 as 7e-45), an int64 for a double and a float for an int likewise, and a value of another size was refused. A number converts as a direct call converts it, a bool to 1 or 0, and to a bool any value but 0 is true; an enum is read and written as its underlying type (enum E : int8 is one byte). Returns false for a type that isn't one of these.
@@ -198,6 +219,7 @@ static thread_local script_thread_run* t_script_thread_run = nullptr; // This th
 class script_thread_run {
 	asIScriptContext* ctx = nullptr; // What it executes now.
 	ThreadPool* pool; // The thread_pool it is a task of, null for another thread and once the pool has let go of the task.
+	std::atomic<bool> aborting{false}; // What it executes is being aborted, see script_wait.
 	script_thread_run* previous = nullptr;
 	script_thread_run* next = nullptr;
 	bool counted;
@@ -207,6 +229,7 @@ class script_thread_run {
 	friend void pool_tasks_forget(ThreadPool* pool);
 	friend void pool_join_all(ThreadPool* pool);
 	friend bool pool_owns_run(ThreadPool* pool, script_thread_run* run);
+	friend bool script_thread_aborting();
 public:
 	script_thread_run(ThreadPool* pool = nullptr, script_runnable* task = nullptr) : pool(pool) {
 		script_thread_runs& runs = script_thread_runs_state();
@@ -250,6 +273,7 @@ public:
 		return result;
 	}
 };
+bool script_thread_aborting() { return t_script_thread_run && t_script_thread_run->aborting; }
 // Waits until ready(), which is called with the runs' lock held, returns true, at most until the given time, and returns whether it did.
 template <class F> static bool script_thread_runs_wait(std::unique_lock<std::mutex>& lock, std::chrono::steady_clock::time_point until, F ready) {
 	script_thread_runs& runs = script_thread_runs_state();
@@ -276,6 +300,7 @@ bool script_threads_stop() {
 	bool all_ended = script_thread_runs_wait(lock, until, [&runs] {
 		// Again each time: an abort made just before the context starts executing, or while it calls back into the script, can be dropped.
 		for (script_thread_run* run = runs.first; run; run = run->next) {
+			run->aborting = true;
 			if (run->ctx) run->ctx->Abort();
 		}
 		return !runs.first;
@@ -358,7 +383,7 @@ public:
 	}
 	void* get_value() {
 		if (!ctx) throw NullValueException("Object not initialized");
-		event_wait_main(*progress, -1); // see there
+		if (!event_wait_main(*progress, -1)) return nullptr; // See script_wait: the script is ending, and doesn't use it.
 		if (!succeeded) throw Exception(exception);
 		if ((subtypeid & asTYPEID_MASK_OBJECT) && !(subtypeid & asTYPEID_OBJHANDLE))
 			return *(void**)value;
@@ -805,8 +830,9 @@ static bool script_thread_join(Thread* thread, long long ms) {
 	auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms < 0 ? 0 : ms);
 	int spins = 0;
 	for (;;) {
-		if (ms < 0) event_wait_main(life->finished, -1);
-		else {
+		if (ms < 0) {
+			if (!event_wait_main(life->finished, -1)) return false; // See script_wait.
+		} else {
 			auto now = std::chrono::steady_clock::now();
 			long long left = now < until ? std::chrono::duration_cast<std::chrono::milliseconds>(until - now).count() : 0;
 			if (!event_wait_main(life->finished, left)) return false;
@@ -915,7 +941,9 @@ bool pool_tasks_end(ThreadPool* pool) {
 	if (script_thread_runs_wait(lock, until, [pool] { return !pool_has_tasks(pool); })) return true;
 	return script_thread_runs_wait(lock, std::chrono::steady_clock::now() + std::chrono::milliseconds(250), [&runs, pool] {
 		for (script_thread_run* run = runs.first; run; run = run->next) {
-			if (run->pool == pool && run->ctx) run->ctx->Abort(); // Again each time, see script_threads_stop().
+			if (run->pool != pool) continue;
+			run->aborting = true;
+			if (run->ctx) run->ctx->Abort(); // Again each time, see script_threads_stop().
 		}
 		return !pool_has_tasks(pool);
 	});
@@ -958,13 +986,16 @@ void pool_stop_all(ThreadPool* pool) {
 // waited for ever; so did join_all() on one of the pool's own threads, which waited for itself, and then the end of the program, which
 // waited for the lock. This waits for the pool's tasks without it, those they start included, and on one of the pool's own threads for the others.
 void pool_join_all(ThreadPool* pool) {
+	script_wait wait;
 	int own = t_script_thread_run != nullptr; // See below.
 	for (;;) {
 		{
 			script_thread_runs& runs = script_thread_runs_state();
 			std::unique_lock<std::mutex> lock(runs.mutex);
 			if (own && t_script_thread_run->pool != pool) own = 0;
-			script_thread_runs_wait(lock, std::chrono::steady_clock::time_point::max(), [pool] { return !pool_has_tasks(pool); });
+			bool ended = false;
+			script_thread_runs_wait(lock, std::chrono::steady_clock::time_point::max(), [&, pool] { return !pool_has_tasks(pool) || (ended = wait.ended()); });
+			if (ended) return;
 		}
 		if (pool->used() <= own) break; // A task's thread is free a moment after the task has ended, and used counts it until then.
 		Thread::sleep(1);
@@ -1239,7 +1270,8 @@ void event_wait(Event* event) {
 	event_wait_main(*event, -1);
 }
 void event_wait_ms(Event* event, unsigned int ms) {
-	if (!event_wait_main(*event, poco_ms(ms))) throw TimeoutException(); // as Poco's wait(ms) did
+	bool ended = false;
+	if (!event_wait_main(*event, poco_ms(ms), &ended) && !ended) throw TimeoutException(); // as Poco's wait(ms) did
 }
 bool event_try_wait(Event* event, unsigned int ms) {
 	return event_wait_main(*event, poco_ms(ms));
