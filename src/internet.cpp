@@ -635,12 +635,26 @@ public:
 		if (headers) {
 			for (const auto& header : *headers) _request.set(header.first, header.second);
 		}
-		worker.start(*this);
+		duplicate(); // For the worker, see run().
+		try {
+			worker.start(*this);
+		} catch (...) {
+			release();
+			throw;
+		}
 		return true;
 	}
 	~http() { reset(); }
+	// Letting go of the last handle to an http object whose request is in progress cancels the request, and waited for it: for as long as
+	// the server took to answer or the timeouts are (a minute and a half with the default ones) the script stood still, and so did the
+	// end of the program for an object in a global variable. The worker holds the object too, and lets go of it when it notices.
+	void script_release() {
+		if (referenceCount() == 2 && worker.isRunning()) notify();
+		release();
+	}
 	void reset(bool configuration = false) {
-		if (worker.isRunning()) {
+		if (Thread::current() == &worker); // The worker let go of the object last.
+		else if (worker.isRunning()) {
 			notify();
 			worker.join();
 		} else worker.tryJoin(0); // A finished request's thread still has to be joined: Poco's start() would otherwise replace it without ever joining it, so it would keep its stack until the process ends.
@@ -675,6 +689,12 @@ public:
 	bool connect(const URI& url, const string& body, const NameValueCollection* headers = nullptr, const HTTPCredentials* creds = nullptr) { return request(HTTPRequest::HTTP_CONNECT, url, headers, body, creds); }
 	bool patch(const URI& url, const string& body, const NameValueCollection* headers = nullptr, const HTTPCredentials* creds = nullptr) { return request(HTTPRequest::HTTP_PATCH, url, headers, body, creds); }
 	void run() {
+		try {
+			perform();
+		} catch (...) {} // Nothing of it to report, as of a request that failed.
+		release(); // Can delete this object.
+	}
+	void perform() {
 		bool authorize = false;
 		// The attempts, the first included (a redirect followed or the request sent again with credentials is one more). 0 makes the one
 		// attempt, as 1 does: it made none, and the request ended at once with no response. Unsigned: as an int, a value over INT_MAX
@@ -815,7 +835,7 @@ void RegisterHTTP(asIScriptEngine* engine) {
 	engine->RegisterObjectType("http", 0, asOBJ_REF);
 	engine->RegisterObjectBehaviour("http", asBEHAVE_FACTORY, "http@ f()", asFUNCTION(http_factory), asCALL_CDECL);
 	engine->RegisterObjectBehaviour("http", asBEHAVE_ADDREF, "void f()", asMETHODPR(http, duplicate, () const, void), asCALL_THISCALL);
-	engine->RegisterObjectBehaviour("http", asBEHAVE_RELEASE, "void f()", asMETHODPR(http, release, () const, void), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour("http", asBEHAVE_RELEASE, "void f()", asMETHOD(http, script_release), asCALL_THISCALL); // See there.
 	engine->RegisterObjectMethod("http", "bool get(const spec::uri&in url, const name_value_collection@+ headers = null, const http_credentials@+ creds = null)", asMETHOD(http, get), asCALL_THISCALL);
 	engine->RegisterObjectMethod("http", "bool head(const spec::uri&in url, const name_value_collection@+ headers = null, const http_credentials@+ creds = null)", asMETHOD(http, head), asCALL_THISCALL);
 	engine->RegisterObjectMethod("http", "bool post(const spec::uri&in url, const string&in body, const name_value_collection@+ headers = null, const http_credentials@+ creds = null)", asMETHOD(http, post), asCALL_THISCALL);
