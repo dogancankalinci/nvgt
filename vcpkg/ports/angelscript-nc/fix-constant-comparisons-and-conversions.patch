@@ -1,0 +1,100 @@
+diff --git a/sdk/angelscript/source/as_compiler.cpp b/sdk/angelscript/source/as_compiler.cpp
+index 5b22605..5bc0e78 100644
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -9933,7 +9933,8 @@ void asCCompiler::ImplicitConversionConstant(asCExprContext *from, const asCData
+ 			float fc = from->type.GetConstantF();
+ 			// Some compilers set the value to 0 when converting a negative float to unsigned int.
+ 			// To maintain a consistent behaviour across compilers we convert to int first.
+-			asUINT uic = asUINT(int(fc));
++			// Only a negative one, as a run-time conversion: a constant of 2^31 or more became 2147483648 (uint(3000000000.0))
++			asUINT uic = fc < 0 ? asUINT(int(fc)) : asUINT(fc);
+ 
+ 			if( float(uic) != fc )
+ 			{
+@@ -9950,7 +9951,8 @@ void asCCompiler::ImplicitConversionConstant(asCExprContext *from, const asCData
+ 			double fc = from->type.GetConstantD();
+ 			// Some compilers set the value to 0 when converting a negative double to unsigned int.
+ 			// To maintain a consistent behaviour across compilers we convert to int first.
+-			asUINT uic = asUINT(int(fc));
++			// Only a negative one, as a run-time conversion (see above)
++			asUINT uic = fc < 0 ? asUINT(int(fc)) : asUINT(fc);
+ 
+ 			if( double(uic) != fc )
+ 			{
+@@ -10058,7 +10060,8 @@ void asCCompiler::ImplicitConversionConstant(asCExprContext *from, const asCData
+ 		{
+ 			float fc = from->type.GetConstantF();
+ 			// Convert first to int64 then to uint64 to avoid negative float becoming 0 on gnuc base compilers
+-			asQWORD uic = asQWORD(asINT64(fc));
++			// Only a negative one, as a run-time conversion: a constant of 2^63 or more became 2^63
++			asQWORD uic = fc < 0 ? asQWORD(asINT64(fc)) : asQWORD(fc);
+ 
+ #if !defined(_MSC_VER) || _MSC_VER > 1200 // MSVC++ 6
+ 			// MSVC6 doesn't support this conversion
+@@ -10074,7 +10077,8 @@ void asCCompiler::ImplicitConversionConstant(asCExprContext *from, const asCData
+ 		{
+ 			double fc = from->type.GetConstantD();
+ 			// Convert first to int64 then to uint64 to avoid negative float becoming 0 on gnuc base compilers
+-			asQWORD uic = asQWORD(asINT64(fc));
++			// Only a negative one, as a run-time conversion: a constant of 2^63 or more became 2^63
++			asQWORD uic = fc < 0 ? asQWORD(asINT64(fc)) : asQWORD(fc);
+ 
+ #if !defined(_MSC_VER) || _MSC_VER > 1200 // MSVC++ 6
+ 			// MSVC6 doesn't support this conversion
+@@ -10186,9 +10190,10 @@ void asCCompiler::ImplicitConversionConstant(asCExprContext *from, const asCData
+ 		}
+ 		else if( from->type.dataType.IsUnsignedType() && from->type.dataType.GetSizeInMemoryDWords() == 2 )
+ 		{
+-			float fc = float((asINT64)from->type.GetConstantQW());
++			// Not through a signed integer, as a run-time conversion: a constant of 2^63 or more became negative
++			float fc = float(from->type.GetConstantQW());
+ 
+-			if( asQWORD(fc) != from->type.GetConstantQW())
++			if( fc >= 18446744073709551616.0 || asQWORD(fc) != from->type.GetConstantQW())
+ 			{
+ 				if( convType != asIC_EXPLICIT_VAL_CAST && node ) Warning(TXT_NOT_EXACT, node);
+ 			}
+@@ -10256,9 +10261,10 @@ void asCCompiler::ImplicitConversionConstant(asCExprContext *from, const asCData
+ 		}
+ 		else if( from->type.dataType.IsUnsignedType() && from->type.dataType.GetSizeInMemoryDWords() == 2 )
+ 		{
+-			double fc = double((asINT64)from->type.GetConstantQW());
++			// Not through a signed integer, as a run-time conversion: a constant of 2^63 or more became negative
++			double fc = double(from->type.GetConstantQW());
+ 
+-			if( asQWORD(fc) != from->type.GetConstantQW())
++			if( fc >= 18446744073709551616.0 || asQWORD(fc) != from->type.GetConstantQW())
+ 			{
+ 				if( convType != asIC_EXPLICIT_VAL_CAST && node ) Warning(TXT_NOT_EXACT, node);
+ 			}
+@@ -18064,9 +18070,12 @@ void asCCompiler::CompileComparisonOperator(asCScriptNode *node, asCExprContext
+ 			bool unordered = false;
+ 			if( lctx->type.dataType.IsIntegerType() && lctx->type.dataType.GetSizeInMemoryDWords() == 1 )
+ 			{
+-				int v = int(lctx->type.GetConstantDW()) - int(rctx->type.GetConstantDW());
+-				if( v < 0 ) i = -1;
+-				if( v > 0 ) i = 1;
++				// Compared, not subtracted: the difference of two constants more than 2^31 - 1 apart overflowed, and the
++				// comparison came out the wrong way around (2147483647 > -1 was false, -2000000000 < 2000000000 too).
++				int v1 = int(lctx->type.GetConstantDW());
++				int v2 = int(rctx->type.GetConstantDW());
++				if( v1 < v2 ) i = -1;
++				if( v1 > v2 ) i = 1;
+ 			}
+ 			else if( lctx->type.dataType.IsUnsignedType() && lctx->type.dataType.GetSizeInMemoryDWords() == 1 )
+ 			{
+@@ -18077,9 +18086,10 @@ void asCCompiler::CompileComparisonOperator(asCScriptNode *node, asCExprContext
+ 			}
+ 			else if( lctx->type.dataType.IsIntegerType() && lctx->type.dataType.GetSizeInMemoryDWords() == 2 )
+ 			{
+-				asINT64 v = asINT64(lctx->type.GetConstantQW()) - asINT64(rctx->type.GetConstantQW());
+-				if( v < 0 ) i = -1;
+-				if( v > 0 ) i = 1;
++				asINT64 v1 = asINT64(lctx->type.GetConstantQW()); // As above
++				asINT64 v2 = asINT64(rctx->type.GetConstantQW());
++				if( v1 < v2 ) i = -1;
++				if( v1 > v2 ) i = 1;
+ 			}
+ 			else if( lctx->type.dataType.IsUnsignedType() && lctx->type.dataType.GetSizeInMemoryDWords() == 2 )
+ 			{

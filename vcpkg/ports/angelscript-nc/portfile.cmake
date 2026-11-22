@@ -160,6 +160,7 @@ vcpkg_from_github(
         fix-compound-accessor-lifetime.patch
         fix-foreach-heap-range.patch
         keep-const-method-calls.patch
+        fix-constant-comparisons-and-conversions.patch
 )
 
 vcpkg_cmake_configure(
