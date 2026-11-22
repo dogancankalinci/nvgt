@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <exception>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -68,12 +69,24 @@ int nvgt_register_audio_panner(nvgt_spatializer_component_factory* factory, bool
 int nvgt_register_audio_attenuator(nvgt_spatializer_component_factory* factory, bool default_enabled, nvgt_audio_attenuation_function* attenuation) { return factory ? register_audio_attenuator(factory, default_enabled, attenuation) : -1; }
 float nvgt_get_audio_attenuation(int attenuator_id, const audio_spatialization_parameters* params, float distance) { return params ? get_audio_attenuation(attenuator_id, *params, distance) : 1.0f; }
 spatializer_component_node* nvgt_audio_spatializer_component_create(audio_plugin_spatializer_component_interface* impl, audio_spatializer* spatializer, audio_engine* engine, unsigned int input_channels, unsigned int output_channels) { return create_plugin_spatializer_component(impl, spatializer, engine, input_channels, output_channels); }
-audio_engine* nvgt_get_default_audio_engine() { return init_sound() ? g_audio_engine : nullptr; }
+audio_engine* nvgt_get_default_audio_engine() {
+	try { return init_sound() ? g_audio_engine : nullptr; }
+	catch (const std::exception&) { return nullptr; } // Not through a plugin, which may not take it.
+}
 reverb3d* nvgt_reverb3d_create_with_handler(reverb3d_attachment_handler* handler, audio_node* reverb, mixer* destination, audio_engine* engine) {
 	// reverb3d::create_with_handler() throws for what it refuses (a reverb of another engine, a loop, a reverb in use elsewhere) and frees
 	// the handler itself; a plugin only looks for null.
-	try { return reverb3d::create_with_handler(handler, reverb, destination, engine ? engine : nvgt_get_default_audio_engine()); }
-	catch (const std::exception&) { return nullptr; }
+	std::unique_ptr<reverb3d_attachment_handler> owned(handler); // Freed below too, should what comes before it throw.
+	audio_engine* default_engine = nullptr; // With a reference, as another thread may change the default meanwhile.
+	try {
+		if (!engine) engine = default_engine = acquire_default_engine();
+		reverb3d* made = reverb3d::create_with_handler(owned.release(), reverb, destination, engine);
+		if (default_engine) default_engine->release();
+		return made;
+	} catch (const std::exception&) {
+		if (default_engine) default_engine->release();
+		return nullptr;
+	}
 }
 void notify_nvgt_plugins_shutdown() {
 	while (!plugin_shutdown_callbacks.empty()) {

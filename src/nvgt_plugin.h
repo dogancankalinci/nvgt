@@ -58,7 +58,8 @@ public:
 typedef nvgt_raycast_provider* nvgt_raycast_provider_getter(void* object);
 // Audio for plugins. A plugin can't use NVGT's audio classes beyond their virtual methods, so NVGT creates the nodes a plugin needs and the plugin implements their processing through an interface (see sound_nodes.h).
 // 3d panners and attenuators, the components of a sound's spatializer, are created by factories registered with nvgt_register_audio_panner and nvgt_register_audio_attenuator, which return the id scripts select them by (sound.set_3d_panner and sound.set_3d_attenuator). A factory returns the node made by nvgt_audio_spatializer_component_create for its audio_plugin_spatializer_component_interface. An attenuator can register its distance curve, which nvgt_get_audio_attenuation evaluates for any distance.
-// nvgt_reverb3d_create_with_handler creates a reverb3d whose attachment to each source is made by a handler, see reverb3d_attachment_handler.
+// nvgt_reverb3d_create_with_handler creates a reverb3d whose attachment to each source is made by a handler, see reverb3d_attachment_handler, in the default engine if none is given. It takes the handler whatever it returns.
+// nvgt_get_default_audio_engine gives the default engine without a reference, which duplicate() must be called on before anything else is done with it, as another thread may change the default, or null if the sound system can't be started.
 class audio_node;
 class mixer;
 class reverb3d;
@@ -347,7 +348,7 @@ class pack_interface {
 class audio_plugin_node_interface {
 public:
 	virtual void process(audio_plugin_node_interface* node, const float** frames_in, unsigned int* frame_count_in, float** frames_out, unsigned int* frame_count_out) = 0;
-	virtual void on_node_destroyed(plugin_node* node) {} // Called once when the plugin_node wrapping this implementation is destroyed, after it has been removed from the audio graph so process will never be called again. A plugin that allocated its implementation for the node should free it here, as memory must be released by the module that allocated it.
+	virtual void on_node_destroyed(plugin_node* node) {} // Called once when the plugin_node wrapping this implementation is destroyed, after it has been removed from the audio graph so process will never be called again. A plugin that allocated its implementation for the node should free it here, as memory must be released by the module that allocated it, unless it frees it in release() instead, which is called after this.
 	// Called once, if the node made with this implementation was made with NVGT_AUDIO_PLUGIN_NODE_RELEASE, when the node is destroyed and the audio thread no longer calls process(): from then on the plugin may free this object. When nvgt_audio_plugin_node_create() returns null, no node was made with it and it stays the plugin's.
 	virtual void release() {}
 };
