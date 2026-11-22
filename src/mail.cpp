@@ -26,6 +26,7 @@
 #include <Poco/Net/StringPartSource.h>
 #include <Poco/Path.h>
 #include <Poco/RegularExpression.h>
+#include <Poco/String.h>
 #include <angelscript.h>
 #include <scriptarray.h>
 #include "nvgt_angelscript.h" // get_array_type()
@@ -101,6 +102,77 @@ static std::string mail_header_text_decoded(const std::string& text) {
 	} catch (const Exception&) {
 		return text;
 	}
+}
+
+// A display name in an address header (From, To...): encoded words (see mail_header_text()) when it has bytes outside ASCII, else quoted
+// when it has a character that needs it. MailMessage, which writes To and Cc from the recipients' names, sent the first as raw 8-bit
+// bytes, and quoted a name without escaping the quotes and backslashes in it, so a name with a quote ended the quoting there.
+static std::string mail_display_name(const std::string& name) {
+	std::string encoded = mail_header_text(name);
+	if (encoded != name) return encoded;
+	std::string quoted;
+	MessageHeader::quote(name, quoted, true);
+	if (quoted == name || name.find_first_of("\"\\") == std::string::npos) return quoted;
+	quoted = "\"";
+	for (char c : name) {
+		if (c == '"' || c == '\\') quoted += '\\';
+		quoted += c;
+	}
+	return quoted + '"';
+}
+static bool mail_display_name_special(const std::string& name) {
+	for (unsigned char c : name) {
+		if (c >= 0x80 || c == '"' || c == '\\') return true;
+	}
+	return false;
+}
+// The value of an address header a script set (a sender, Reply-To...), with the display names that have bytes outside ASCII encoded and
+// the addresses left as they are: Name <address>, "Name" <address>, or several of them separated by commas. Anything else is left alone.
+static std::string mail_address_text(const std::string& value) {
+	bool ascii = true;
+	for (unsigned char c : value) {
+		if (c >= 0x80) {
+			ascii = false;
+			break;
+		}
+	}
+	if (ascii) return value;
+	std::string out;
+	for (size_t begin = 0; begin <= value.size();) {
+		// One address, up to a comma that is in neither quotes nor angle brackets.
+		size_t end = begin, open = std::string::npos;
+		bool quotes = false, angle = false;
+		for (; end < value.size(); end++) {
+			char c = value[end];
+			if (quotes && c == '\\') end++;
+			else if (c == '"' && !angle) quotes = !quotes;
+			else if (!quotes && c == '<') {
+				open = end;
+				angle = true;
+			} else if (!quotes && c == '>') angle = false;
+			else if (!quotes && !angle && c == ',') break;
+		}
+		end = std::min(end, value.size());
+		std::string address = value.substr(begin, end - begin);
+		if (open != std::string::npos) {
+			std::string name = Poco::trim(value.substr(begin, open - begin));
+			if (name.size() >= 2 && name.front() == '"' && name.back() == '"') {
+				std::string unquoted;
+				for (size_t i = 1; i < name.size() - 1; i++) {
+					if (name[i] == '\\' && i + 1 < name.size() - 1) i++;
+					unquoted += name[i];
+				}
+				name = unquoted;
+			}
+			std::string encoded = mail_header_text(name);
+			if (encoded != name) address = (begin > 0 ? " " : "") + encoded + " " + value.substr(open, end - open);
+		}
+		out += address;
+		if (end >= value.size()) break;
+		out += ',';
+		begin = end + 1;
+	}
+	return out;
 }
 
 // The recipient types MailMessage writes a header for. Any other number was accepted (the type is an int underneath) and sent an RCPT TO
@@ -485,6 +557,54 @@ public:
 		}
 	}
 
+	// Sends the message over a connected session. Names with bytes outside ASCII go out encoded (see mail_display_name() and
+	// mail_address_text()), while the message keeps what the script gave: the header MailMessage holds is the encoded one for the time of
+	// the sending, and the To and Cc it writes from the recipients are written here when a recipient's name needs it.
+	void send(SMTPClientSession& session) {
+		finalize_html_content(); // adds the content too, see there
+		MessageHeader header;
+		bool changed = false;
+		for (const auto& h : m_message) {
+			std::string value = h.second;
+			for (const char* name : {"From", "Reply-To", "Disposition-Notification-To", "Return-Receipt-To"}) {
+				if (Poco::icompare(h.first, name) == 0) value = mail_address_text(value);
+			}
+			if (value != h.second) changed = true;
+			header.add(h.first, value);
+		}
+		MailMessage::Recipients recipients = m_message.recipients();
+		bool special = false;
+		for (const auto& r : recipients) special = special || mail_display_name_special(r.getRealName());
+		if (!changed && !special) {
+			session.sendMessage(m_message);
+			return;
+		}
+		SMTPClientSession::Recipients addresses;
+		std::string to, cc;
+		for (const auto& r : recipients) {
+			addresses.push_back(r.getAddress());
+			if (r.getType() == MailRecipient::BCC_RECIPIENT) continue;
+			std::string& list = r.getType() == MailRecipient::CC_RECIPIENT ? cc : to;
+			if (!list.empty()) list += ",\r\n\t";
+			if (!r.getRealName().empty()) list += mail_display_name(r.getRealName()) + " ";
+			list += "<" + r.getAddress() + ">";
+		}
+		if (!to.empty()) header.set("To", to);
+		if (!cc.empty()) header.set("Cc", cc);
+		struct restore {
+			MailMessage& message;
+			MessageHeader header;
+			MailMessage::Recipients recipients;
+			~restore() {
+				static_cast<MessageHeader&>(message) = header;
+				message.setRecipients(recipients);
+			}
+		} r{m_message, m_message, recipients};
+		static_cast<MessageHeader&>(m_message) = header;
+		m_message.setRecipients({});
+		session.sendMessage(m_message, addresses);
+	}
+
 	// Finalize the content and the HTML content for sending, each added once.
 	void finalize_html_content() {
 		if (m_text_pending) {
@@ -662,9 +782,7 @@ public:
 			return false;
 		}
 		try {
-			// Handle HTML content if set
-			msg->finalize_html_content(); // adds the content too, see there
-			m_session->sendMessage(msg->get_message());
+			msg->send(*m_session);
 			m_last_error.clear();
 			return true;
 		} catch (const Exception& e) {
@@ -739,9 +857,7 @@ public:
 			for (asUINT i = 0; i < messages->GetSize(); i++) {
 				mail_message* msg = *(mail_message**)messages->At(i);
 				if (msg) {
-					// Handle HTML content if set
-					msg->finalize_html_content(); // adds the content too, see there
-					m_session->sendMessage(msg->get_message());
+					msg->send(*m_session);
 				}
 			}
 			m_last_error.clear();
