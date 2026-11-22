@@ -3,7 +3,7 @@
 # Copyright (c) 2022-2026 Sam Tupy
 # license: zlib
 
-import os, multiprocessing, re, shutil, subprocess, tempfile
+import os, multiprocessing, re, shutil, subprocess
 
 Help("""
 	Available custom build switches for NVGT:
@@ -371,8 +371,9 @@ if  ARGUMENTS.get("no_plugins", "0") == "0":
 			link_static_plugin(env, static_name, plug)
 			static_plugins = [static_name if p in (plugname, static_name) else p for p in static_plugins]
 			static_plugins = list(dict.fromkeys(static_plugins))
-	# Finally generate nvgt_plugins.cpp
-	static_plugins_path = os.path.join(tempfile.gettempdir(), "nvgt_plugins")
+	# Finally generate nvgt_plugins.cpp, in this checkout: in the system's temporary directory, where it was, every checkout shared it and its
+	# object, and one linked the object another had built for other plugins.
+	static_plugins_path = os.path.join(Dir("#build").abspath, "nvgt_plugins")
 	if len(static_plugins) > 0:
 		write_static_plugins_source(static_plugins_path + ".cpp", static_plugins)
 		# The android build never links this base-env object; it compiles its own per-ABI copies instead (see android_static_plugins).

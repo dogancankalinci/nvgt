@@ -16,6 +16,7 @@ __pycache__
 # other intermediet build
 build/config.log
 build/lastbuild
+build/nvgt_plugins.*
 build/windev_path
 src/version.cpp
 .sconf_temp
