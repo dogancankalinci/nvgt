@@ -329,7 +329,7 @@ static ma_result nvgt_mp3_open_tell(void* user, ma_int64* cursor) {
 	nvgt_mp3_open_file* file = (nvgt_mp3_open_file*)user;
 	return file->tell(file->user, cursor);
 }
-// dr_mp3 skips the frame of a LAME or Xing header by setting its stream cursor to that frame's end, forgetting what it had read past it, so that its clamp at the audio's end, which keeps it out of an ID3v1 tag, let the tag through, and the last MPEG frame, not followed by another, became silence. Put right as an MP3 opens, on every route to it through MiniAudio's table of its backend.
+// Opens an MP3, on every route to it through MiniAudio's table of its backend.
 static ma_result nvgt_mp3_backend_init(void* user_data, ma_read_proc on_read, ma_seek_proc on_seek, ma_tell_proc on_tell, void* read_user_data, const ma_decoding_backend_config* config, const ma_allocation_callbacks* allocation_callbacks, ma_data_source** backend) {
 	// Opened through the wrapped callbacks, which bound its search for a first frame (see nvgt_mp3_search_bytes), then given its own back, as it is read through them for good.
 	nvgt_mp3_open_file wrapped{on_read, on_seek, on_tell, read_user_data};
@@ -341,7 +341,6 @@ static ma_result nvgt_mp3_backend_init(void* user_data, ma_read_proc on_read, ma
 		opened->onTell = on_tell;
 		opened->pReadSeekTellUserData = read_user_data;
 		ma_dr_mp3* mp3 = &opened->dr;
-		if (mp3->streamCursor == mp3->streamStartOffset) mp3->streamCursor += mp3->dataSize; // What's left of what it read, after a header's frame only: any other read moves the cursor past the start.
 		// An APE tag: dr_mp3 reads its size from reserved bytes, which are 0, so that it trims the 32-byte footer alone, leaving the tag in the audio, whose last frame then wasn't followed by another and became silence. The file is read as it was left; where the footer is, as it was trimmed, is where its audio ends without the rest of the tag.
 		ma_int64 at = 0;
 		if (mp3->streamLength != MA_UINT64_MAX && mp3->streamLength > mp3->streamStartOffset && on_tell && on_tell(read_user_data, &at) == MA_SUCCESS && on_seek(read_user_data, (ma_int64)mp3->streamLength, ma_seek_origin_start) == MA_SUCCESS) {

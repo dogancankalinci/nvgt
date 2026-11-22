@@ -950,7 +950,7 @@ public:
 		cfg.pResourceManager = &*resource_manager;
 		cfg.allocationCallbacks = {nullptr, resource_malloc, resource_realloc, resource_free}; // Counted, as the resource manager's (see g_resource_allocations_failed): a load whose sound couldn't be allocated read as the job queue's backlog, tried ten times, its file decoded again each time.
 		cfg.noAutoStart = (flags & NO_AUTO_START) ? MA_TRUE : MA_FALSE;
-		cfg.periodSizeInFrames = SOUNDSYSTEM_FRAMESIZE; // Steam Audio requires fixed sized updates. We can make this not be a magic constant if anyone has some reason for wanting to change it.
+		cfg.periodSizeInFrames = SOUNDSYSTEM_FRAMESIZE; // We can make this not be a magic constant if anyone has some reason for wanting to change it.
 		if ((flags & NO_DEVICE) == 0) cfg.pDevice = &*device;
 		else {
 			cfg.noDevice = MA_TRUE;
@@ -4596,7 +4596,7 @@ public:
 			get_spatializer()->set_attenuator_by_id(g_audio_basic_attenuator);
 		}
 	}
-	bool get_hrtf() const override { return get_3d_panner() == g_audio_hrtf_panner && get_3d_attenuator() == g_audio_hrtf_attenuator; } // The components in use, rather than those asked for: one that couldn't be made, as for an engine that isn't stereo or Steam Audio that couldn't start, falls back to the basic one, which read as HRTF though none was heard.
+	bool get_hrtf() const override { return get_3d_panner() == g_audio_hrtf_panner && get_3d_attenuator() == g_audio_hrtf_attenuator; } // The components in use, rather than those asked for: one that couldn't be made, as for an engine that isn't stereo, falls back to the basic one, which read as HRTF though none was heard.
 	bool set_shape(CScriptHandle new_shape) override {
 		// A type no shape is made from leaves the old shape in place.
 		int ot = new_shape.GetTypeId() & ~asTYPEID_OBJHANDLE;
@@ -4947,7 +4947,7 @@ public:
 	}
 	float get_distance_to_listener() const override { return snd && get_spatialization_enabled()? ma_sound_get_distance_to_listener(&*snd) : 0.0; }
 	void set_position_3d(float x, float y, float z) override {
-		if (!snd || !finite_values({x, y, z})) // A NaN or infinite position or direction poisoned a Steam Audio panner's or attenuator's state for good.
+		if (!snd || !finite_values({x, y, z})) // A NaN or infinite position or direction poisons what positions it, for good.
 			return;
 		set_spatialization_enabled(true); // With the default panner and attenuator, the first time.
 		unique_lock<mutex> lock(spatialization_params_mutex); // Which a listener's move places a shaped sound under.
