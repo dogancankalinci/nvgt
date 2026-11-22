@@ -280,6 +280,12 @@ static ma_result nvgt_wav_open(ma_wav* opened, ma_read_proc on_read, ma_seek_pro
 		return MA_INVALID_FILE;
 	}
 	ma_dr_wav* wav = &opened->dr;
+	// The frames its data holds, rather than those an RF64's or a Wave64's own count of them claims, which some writers count for each channel: read past its data, it gave silence, or ended before its data did. An AIFF's count ends data that is padded.
+	const ma_uint32 frame_bytes = ma_dr_wav_get_bytes_per_pcm_frame(wav);
+	if (frame_bytes && (wav->translatedFormatTag == MA_DR_WAVE_FORMAT_PCM || wav->translatedFormatTag == MA_DR_WAVE_FORMAT_IEEE_FLOAT || wav->translatedFormatTag == MA_DR_WAVE_FORMAT_ALAW || wav->translatedFormatTag == MA_DR_WAVE_FORMAT_MULAW)) {
+		const ma_uint64 held = wav->dataChunkDataSize / frame_bytes;
+		if (wav->container != ma_dr_wav_container_aiff || wav->totalPCMFrameCount > held) wav->totalPCMFrameCount = held;
+	}
 	const bool plain = wav->translatedFormatTag == MA_DR_WAVE_FORMAT_PCM || wav->translatedFormatTag == MA_DR_WAVE_FORMAT_IEEE_FLOAT;
 	if (wav->dataChunkDataSize || !plain || !wav->fmt.blockAlign) return result;
 	ma_uint64 size = 0;
