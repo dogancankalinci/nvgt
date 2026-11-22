@@ -15,7 +15,12 @@
 #include "xplatform.h" // NVGT_MOBILE
 #include <Poco/Exception.h>
 #include <new> // std::bad_alloc
+#include <Poco/Net/HTTPClientSession.h>
+#include <Poco/Net/HTTPRequest.h>
+#include <Poco/Net/HTTPResponse.h>
+#include <Poco/Net/HTTPSClientSession.h>
 #include <Poco/Net/NetException.h>
+#include <Poco/URI.h>
 #include <Poco/UnicodeConverter.h>
 #include <SDL3/SDL_filesystem.h>
 #include <SDL3/SDL_system.h>
@@ -657,18 +662,53 @@ static ma_result url_open_failure(const Poco::Exception& e) {
 	if (dynamic_cast<const Poco::TimeoutException*>(&e)) return MA_TIMEOUT;
 	if (dynamic_cast<const Poco::UnknownURISchemeException*>(&e)) return MA_PROTOCOL_NOT_SUPPORTED;
 	if (dynamic_cast<const Poco::OutOfMemoryException*>(&e)) return MA_OUT_OF_MEMORY;
+	if (dynamic_cast<const Poco::TooManyURIRedirectsException*>(&e)) return MA_TOO_MANY_LINKS;
 	if (dynamic_cast<const Poco::Net::HTTPException*>(&e)) { // By the reason, which is what Poco keeps of the response, at the start of its message, the URL following it: searched for in the whole message, a URL with one of these words in it gave that error for any response. In any case and wording, as servers phrase it their own way, "File not found" among them.
 		std::string reason = e.message().substr(0, e.message().find(": "));
 		for (char& c : reason) c = (char)std::tolower((unsigned char)c);
 		auto says = [&reason](const char* words) { return reason.find(words) != std::string::npos; };
 		if (says("not found") || says("gone")) return MA_DOES_NOT_EXIST;
+		if (says("redirect")) return MA_TOO_MANY_LINKS; // As above, with 308, or one that says nowhere to go.
 		if (says("forbidden") || says("unauthorized") || says("denied")) return MA_ACCESS_DENIED;
 	}
 	return MA_ERROR;
 }
+// Where a URL the server moved for good with status 308 goes, which Poco's stream factories don't follow as they do 301, 302, 303 and 307, reporting it by its reason; empty when it isn't one.
+static std::string permanent_redirect(const std::string& uri, const Poco::Net::HTTPException& e) {
+	std::string reason = e.message().substr(0, e.message().find(": "));
+	for (char& c : reason) c = (char)std::tolower((unsigned char)c);
+	if (reason.find("redirect") == std::string::npos) return "";
+	try {
+		Poco::URI from(uri);
+		std::unique_ptr<Poco::Net::HTTPClientSession> session;
+		if (from.getScheme() == "http") session = std::make_unique<Poco::Net::HTTPClientSession>(from.getHost(), from.getPort());
+		else if (from.getScheme() == "https") session = std::make_unique<Poco::Net::HTTPSClientSession>(from.getHost(), from.getPort());
+		else return "";
+		Poco::Net::HTTPRequest request(Poco::Net::HTTPRequest::HTTP_GET, from.getPathAndQuery().empty()? "/" : from.getPathAndQuery(), Poco::Net::HTTPRequest::HTTP_1_1);
+		session->sendRequest(request);
+		Poco::Net::HTTPResponse response;
+		session->receiveResponse(response);
+		if (response.getStatus() != Poco::Net::HTTPResponse::HTTP_PERMANENT_REDIRECT || !response.has("Location")) return "";
+		from.resolve(response.get("Location"));
+		return from.toString();
+	} catch (const Poco::Exception&) {
+		return ""; // Told as the redirect not followed.
+	}
+}
+static std::istream* open_url(std::string uri) {
+	for (int redirects = 0;; redirects++) {
+		try {
+			return Poco::URIStreamOpener::defaultOpener().open(uri);
+		} catch (const Poco::Net::HTTPException& e) {
+			const std::string to = redirects < 10? permanent_redirect(uri, e) : "";
+			if (to.empty()) throw;
+			uri = to;
+		}
+	}
+}
 std::istream *netstream_protocol::open_uri(const char *uri, const directive_t directive) const {
 	try {
-		std::istream *stream = Poco::URIStreamOpener::defaultOpener().open(uri);
+		std::istream *stream = open_url(uri);
 		if (!stream) return nullptr; // Likely invalid URI. Figure out how to provide info about this to user?
 		try {
 			return &(new prebuffer_istream(*stream))->own_source();
