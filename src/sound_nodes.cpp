@@ -951,10 +951,12 @@ public:
 			verb.process(silence.data(), frames_out[0] + (size_t)done * channels, block);
 			done += block;
 		}
+		// What its input holds that isn't finite goes on through its dry path, which the reverb keeps out of its tail.
+		for (size_t i = 0; i < (size_t)frames * channels; i++) if (!std::isfinite(frames_out[0][i])) frames_out[0][i] = 0;
 	}
 	void reset() override { verb.reset(); }
 	float get_tail_length() const override { return verb.get_tail_length(); }
-	#define FDN_REVERB_PROPERTY(type, name, setter, getter) void set_##name(type value) override { verb.setter(value); } type get_##name() const override { return verb.getter(); }
+	#define FDN_REVERB_PROPERTY(type, name, setter, getter) void set_##name(type value) override { if (finite_node_values({(double)value})) verb.setter(value); } type get_##name() const override { return verb.getter(); }
 	FDN_REVERB_PROPERTY(float, wet, set_wet, get_wet)
 	FDN_REVERB_PROPERTY(float, dry, set_dry, get_dry)
 	FDN_REVERB_PROPERTY(float, width, set_width, get_width)

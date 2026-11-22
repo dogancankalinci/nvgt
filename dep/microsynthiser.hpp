@@ -131,7 +131,7 @@ private:
  * mean_free_path (seconds, 0 to 0.5): average time between reflections, controls the perceived room size. 4 * volume / surface_area / speed_of_sound is a good estimate.
  * t60 (seconds, 0 to 100): time for the middle band to decay by 60 db.
  * lf_rolloff, hf_rolloff (0 to 2): the t60 of the low and high bands as a multiple of t60.
- * lf_reference, hf_reference (hz): where the low band ends and where the high band starts.
+ * lf_reference, hf_reference (hz): where the low band ends and where the high band starts, from 20 to 0.45 of the sample rate, the high band starting no lower than where the low one ends.
  * diffusion (0 to 1): how fast the tail goes from discrete echoes to a smooth wash.
  * modulation_depth (seconds, 0 to 0.3) and modulation_frequency (hz, 0.01 to 100): delay line modulation that reduces metallic ringing at the cost of chorusing.
  * late_reflections_delay (seconds, 0 to 0.5): delay before the reverb starts.
@@ -925,14 +925,17 @@ struct fdn_reverb_state {
 	glide delays[LINES], late_delay, diffusion_time;
 	random_sequence modulators[LINES];
 	double applied_depth = -1.0, applied_frequency = -1.0;
-	biquad_coefs low_shelves[LINES], high_shelves[LINES], lowpass, highpass;
-	biquad_state low_states[LINES], high_states[LINES], lowpass_state, highpass_state;
+	// Two equalizers, as the filters of air_absorption_state: a new one starts on its own and is crossfaded to, as a running filter given other coefficients clicks, and one within the loop with a pole near the old one's rang on at many times the level, to infinity and NaN.
+	biquad_coefs low_shelves[2][LINES], high_shelves[2][LINES], lowpass, highpass;
+	biquad_state low_states[2][LINES], high_states[2][LINES], lowpass_state, highpass_state;
+	unsigned int eq = 0, eq_fade_len, eq_fade_pos;
 	float allpass_states[LINES] = {};
 	unsigned int diffuser_min = 0;
 	bool lowpass_on = false, highpass_on = false;
 	ramp wet, dry, width, freeze;
 
 	fdn_reverb_state(unsigned int sample_rate, unsigned int channel_count) : sr(std::max(1u, sample_rate)), channels(std::max(1u, channel_count)), primes((unsigned int)std::ceil(2.0 * MAX_MEAN_FREE_PATH * std::max(1u, sample_rate)) + 1024) {
+		eq_fade_len = eq_fade_pos = scale_samples(sr, 256);
 		unsigned int max_depth = (unsigned int)std::ceil(MAX_MODULATION_DEPTH * sr), frames = next_pow2((unsigned int)std::ceil((2.0 * MAX_MEAN_FREE_PATH + MAX_MODULATION_DEPTH) * sr) + 16);
 		line_mask = frames - 1;
 		max_base_delay = frames - max_depth - 8;
@@ -1000,12 +1003,21 @@ struct fdn_reverb_state {
 
 		/* Decay: a sample travelling through t60 seconds of delay line should lose 60db, so each line attenuates by its length times the per sample decay. The mid band gain is folded into the low shelf; the shelves move the low and high bands from the mid gain to their own. */
 		const double decay_per_sample = -60.0 / (p.t60 + 0.001) / sr;
+		// In order, as bands that overlap, each decaying slower than the middle one, added up to no decay at all.
+		const double lf = clamp(p.lf_reference, 20.0, std::max(20.0, sr * 0.45)), hf = clamp(p.hf_reference, lf, std::max(lf, sr * 0.45));
+		const unsigned int set = snap ? eq : eq ^ 1;
+		bool changed = false;
 		for (unsigned int i = 0; i < LINES; i++) {
 			double mid = clamp((targets[i] + depth * 0.5) * decay_per_sample, MIN_DB, 0.0), low = band_db(mid, p.lf_rolloff), high = band_db(mid, p.hf_rolloff);
-			low_shelves[i] = design_biquad(biquad_type::lowshelf, p.lf_reference, 0.7071067811865476, low - mid, sr);
-			high_shelves[i] = design_biquad(biquad_type::highshelf, p.hf_reference, 0.7071067811865476, high - mid, sr);
+			low_shelves[set][i] = design_biquad(biquad_type::lowshelf, lf, 0.7071067811865476, low - mid, sr);
+			high_shelves[set][i] = design_biquad(biquad_type::highshelf, hf, 0.7071067811865476, high - mid, sr);
 			double g = db_to_gain(mid);
-			low_shelves[i].b0 *= g, low_shelves[i].b1 *= g, low_shelves[i].b2 *= g;
+			low_shelves[set][i].b0 *= g, low_shelves[set][i].b1 *= g, low_shelves[set][i].b2 *= g;
+			if (!snap && !(same_coefs(low_shelves[0][i], low_shelves[1][i]) && same_coefs(high_shelves[0][i], high_shelves[1][i]))) changed = true;
+		}
+		if (changed) {
+			for (unsigned int i = 0; i < LINES; i++) low_states[set][i] = high_states[set][i] = biquad_state();
+			eq_fade_pos = 0;
 		}
 
 		set_glide(late_delay, p.late_reflections_delay * sr);
@@ -1013,10 +1025,18 @@ struct fdn_reverb_state {
 		update_diffuser_delays();
 	}
 
+	static constexpr double LOUDEST = 1e6; // 120 db above full scale, which no audio is.
+	static bool bounded(const float *frame) {
+		for (unsigned int j = 0; j < LINES; j++)
+			if (!(std::fabs(frame[j]) <= LOUDEST)) return false;
+		return true;
+	}
+	static bool same_coefs(const biquad_coefs &a, const biquad_coefs &b) { return a.b0 == b.b0 && a.b1 == b.b1 && a.b2 == b.b2 && a.a1 == b.a1 && a.a2 == b.a2; }
+
 	void clear() {
 		std::fill(lines.begin(), lines.end(), 0.0f);
 		for (auto &d : diffusers) std::fill(d.begin(), d.end(), 0.0f);
-		for (unsigned int i = 0; i < LINES; i++) low_states[i] = high_states[i] = biquad_state(), allpass_states[i] = 0.0f;
+		for (unsigned int i = 0; i < LINES; i++) low_states[0][i] = high_states[0][i] = low_states[1][i] = high_states[1][i] = biquad_state(), allpass_states[i] = 0.0f;
 		lowpass_state = highpass_state = biquad_state();
 	}
 
@@ -1041,7 +1061,7 @@ struct fdn_reverb_state {
 		const float inv_channels = 1.0f / channels;
 		for (unsigned int f = 0; f < frames; f++, input += channels, output += channels) {
 			params np;
-			if (f % CHUNK == 0 && box.poll(np)) {
+			if (f % CHUNK == 0 && eq_fade_pos >= eq_fade_len && box.poll(np)) { // Once the equalizer is at the settings before, which a change made meanwhile waits for.
 				p = np;
 				apply(first);
 			}
@@ -1049,6 +1069,7 @@ struct fdn_reverb_state {
 			float sum = 0.0f;
 			for (unsigned int c = 0; c < channels; c++) sum += input[c];
 			double x = sum * inv_channels;
+			if (!(std::fabs(x) <= LOUDEST)) x = 0.0; // Which the lines kept, giving NaN for good after one such sample.
 			if (lowpass_on) x = lowpass_state.tick(lowpass, x);
 			if (highpass_on) x = highpass_state.tick(highpass, x);
 			const float frozen = freeze.next();
@@ -1067,13 +1088,22 @@ struct fdn_reverb_state {
 			}
 			for (unsigned int j = 0; j < LINES; j++) r[j] = read_line(j, std::max(1.5, delays[j].next() + modulators[j].tick()));
 			// The equalizer keeps running while frozen so that unfreezing doesn't start it from stale state.
+			const bool fading = eq_fade_pos < eq_fade_len;
+			const double fade = fading ? double(++eq_fade_pos) / eq_fade_len : 0.0;
 			for (unsigned int j = 0; j < LINES; j++) {
-				float e = float(high_states[j].tick(high_shelves[j], low_states[j].tick(low_shelves[j], r[j])));
+				double d = high_states[eq][j].tick(high_shelves[eq][j], low_states[eq][j].tick(low_shelves[eq][j], r[j]));
+				if (fading) d += (high_states[eq ^ 1][j].tick(high_shelves[eq ^ 1][j], low_states[eq ^ 1][j].tick(low_shelves[eq ^ 1][j], r[j])) - d) * fade;
+				float e = float(d);
 				r[j] = e + (r[j] - e) * frozen;
 			}
+			if (fading && eq_fade_pos == eq_fade_len) eq ^= 1;
 			hadamard8(r);
 			float *frame = &lines[(pos & line_mask) * LINES];
 			for (unsigned int j = 0; j < LINES; j++) frame[j] = r[j] + v[j];
+			if (f % CHUNK == 0 && !bounded(frame)) { // Nothing gets there with the above, but what does would never leave.
+				clear();
+				std::fill(frame, frame + LINES, 0.0f);
+			}
 			// The diffuser's shortest path already delays the onset, so take it off the output tap to keep late_reflections_delay exact.
 			const double ld = std::max(0.0, late_delay.next() - diffuser_min);
 			const unsigned int li = (unsigned int)ld;
