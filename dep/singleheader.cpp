@@ -224,11 +224,62 @@ static ma_result nvgt_mp3_backend_init(void* user_data, ma_read_proc on_read, ma
 	return result;
 }
 static const bool nvgt_mp3_backend_installed = (g_ma_decoding_backend_vtable_mp3.onInit = nvgt_mp3_backend_init, true);
+// The most of a WAV that is read to find where its data ends, when its end can't be found otherwise: within the 16 MiB a source that can't seek keeps of its start while a decoder opens it (see prebuffer_istreambuf::OPEN_CAP).
+static const ma_uint64 nvgt_wav_count_bytes = 15 * 1024 * 1024;
+// A WAV's own callbacks, wrapped while dr_wav opens it: for a data size of 0xFFFFFFFF, as a WAV written to a pipe or streamed live has, it reads a source whose end it can't seek to until it ends, an endless one for good. Past the bytes above it is refused, as one of a size of 0 is.
+struct nvgt_wav_open_file {
+	ma_read_proc read;
+	ma_seek_proc seek;
+	ma_tell_proc tell;
+	void* user;
+	bool sized = false; // A seek to its end was made, so that it ends.
+	bool endless = false; // It went on past nvgt_wav_count_bytes.
+	ma_uint64 got = 0; // Read since it was last sought from its start, as it is to the data.
+};
+static ma_result nvgt_wav_open_read(void* user, void* out, size_t bytes, size_t* bytes_read) {
+	nvgt_wav_open_file* file = (nvgt_wav_open_file*)user;
+	size_t got = 0;
+	const ma_result result = file->read(file->user, out, bytes, &got);
+	if (!file->sized && file->got >= nvgt_wav_count_bytes && got) {
+		file->endless = true;
+		if (bytes_read) *bytes_read = 0;
+		return MA_AT_END;
+	}
+	file->got += got;
+	if (bytes_read) *bytes_read = got;
+	return result;
+}
+static ma_result nvgt_wav_open_seek(void* user, ma_int64 offset, ma_seek_origin origin) {
+	nvgt_wav_open_file* file = (nvgt_wav_open_file*)user;
+	// A step of 2 GB (see seek_step_in_stream()), which MiniAudio's memory cuts short at its end, reporting it made.
+	const bool step = origin == ma_seek_origin_current && offset >= 0x7FFFFFFF;
+	ma_int64 before = 0, after = 0;
+	if (step && (!file->tell || file->tell(file->user, &before) != MA_SUCCESS)) return MA_BAD_SEEK;
+	const ma_result result = file->seek(file->user, offset, origin);
+	if (step && result == MA_SUCCESS && (file->tell(file->user, &after) != MA_SUCCESS || after - before != offset)) return MA_BAD_SEEK;
+	if (result == MA_SUCCESS && origin == ma_seek_origin_end) file->sized = true;
+	if (result == MA_SUCCESS && origin == ma_seek_origin_start) file->got = 0;
+	return result;
+}
+static ma_result nvgt_wav_open_tell(void* user, ma_int64* cursor) {
+	nvgt_wav_open_file* file = (nvgt_wav_open_file*)user;
+	return file->tell(file->user, cursor);
+}
 // A WAV whose data size is 0, as from a recording that never closed its header, reads to the end of its file, as other players take it, rather than as empty. Only for samples of a fixed size. A source that can't seek is read to its end and come back to, as dr_wav does for a size of 0xFFFFFFFF, which such a source can do within what it keeps of its start; one too long for that, or one that doesn't end, as a live stream, can't be opened, rather than holding its opening for as long as it lasts.
-static ma_result nvgt_wav_backend_init(void* user_data, ma_read_proc on_read, ma_seek_proc on_seek, ma_tell_proc on_tell, void* read_user_data, const ma_decoding_backend_config* config, const ma_allocation_callbacks* allocation_callbacks, ma_data_source** backend) {
-	ma_result result = ma_decoding_backend_init__wav(user_data, on_read, on_seek, on_tell, read_user_data, config, allocation_callbacks, backend);
+// Opens a WAV into the struct given, which is left uninitialized when it can't be.
+static ma_result nvgt_wav_open(ma_wav* opened, ma_read_proc on_read, ma_seek_proc on_seek, ma_tell_proc on_tell, void* read_user_data, const ma_decoding_backend_config* config, const ma_allocation_callbacks* allocation_callbacks) {
+	nvgt_wav_open_file wrapped{on_read, on_seek, on_tell, read_user_data};
+	ma_result result = ma_wav_init(nvgt_wav_open_read, on_seek? nvgt_wav_open_seek : NULL, on_tell? nvgt_wav_open_tell : NULL, &wrapped, config, allocation_callbacks, opened);
 	if (result != MA_SUCCESS) return result;
-	ma_dr_wav* wav = &((ma_wav*)*backend)->dr;
+	opened->onRead = on_read;
+	opened->onSeek = on_seek;
+	opened->onTell = on_tell;
+	opened->pReadSeekTellUserData = read_user_data;
+	if (wrapped.endless) {
+		ma_wav_uninit(opened, allocation_callbacks);
+		return MA_INVALID_FILE;
+	}
+	ma_dr_wav* wav = &opened->dr;
 	const bool plain = wav->translatedFormatTag == MA_DR_WAVE_FORMAT_PCM || wav->translatedFormatTag == MA_DR_WAVE_FORMAT_IEEE_FLOAT;
 	if (wav->dataChunkDataSize || !plain || !wav->fmt.blockAlign) return result;
 	ma_uint64 size = 0;
@@ -237,16 +288,14 @@ static ma_result nvgt_wav_backend_init(void* user_data, ma_read_proc on_read, ma
 		const bool told = on_tell(read_user_data, &end) == MA_SUCCESS;
 		const bool back = on_seek(read_user_data, (ma_int64)wav->dataChunkDataPos, ma_seek_origin_start) == MA_SUCCESS;
 		if (!back) { // Left at the end, it read nothing while it told the length counted.
-			ma_decoding_backend_uninit__wav(user_data, *backend, allocation_callbacks);
-			*backend = NULL;
+			ma_wav_uninit(opened, allocation_callbacks);
 			return MA_INVALID_FILE;
 		}
 		if (!told || (ma_uint64)end <= wav->dataChunkDataPos) return result;
 		size = (ma_uint64)end - wav->dataChunkDataPos;
 	} else {
-		const ma_uint64 most = 15 * 1024 * 1024; // Within the 16 MiB a source that can't seek keeps of its start while a decoder opens it (see prebuffer_istreambuf::OPEN_CAP).
 		bool ended = false;
-		while (!ended && size <= most) { // A read past it too, which sees the end of one of just that size.
+		while (!ended && size <= nvgt_wav_count_bytes) { // A read past it too, which sees the end of one of just that size.
 			ma_uint8 block[4096];
 			size_t got = 0;
 			const ma_result read = on_read(read_user_data, block, sizeof(block), &got);
@@ -254,8 +303,7 @@ static ma_result nvgt_wav_backend_init(void* user_data, ma_read_proc on_read, ma
 			if (read != MA_SUCCESS || got < sizeof(block)) ended = true;
 		}
 		if (!ended || on_seek(read_user_data, (ma_int64)wav->dataChunkDataPos, ma_seek_origin_start) != MA_SUCCESS) {
-			ma_decoding_backend_uninit__wav(user_data, *backend, allocation_callbacks);
-			*backend = NULL;
+			ma_wav_uninit(opened, allocation_callbacks);
 			return MA_INVALID_FILE;
 		}
 	}
@@ -265,7 +313,52 @@ static ma_result nvgt_wav_backend_init(void* user_data, ma_read_proc on_read, ma
 	wav->totalPCMFrameCount = frames;
 	return result;
 }
-static const bool nvgt_wav_backend_installed = (g_ma_decoding_backend_vtable_wav.onInit = nvgt_wav_backend_init, true);
+static ma_result nvgt_wav_backend_init(void* user_data, ma_read_proc on_read, ma_seek_proc on_seek, ma_tell_proc on_tell, void* read_user_data, const ma_decoding_backend_config* config, const ma_allocation_callbacks* allocation_callbacks, ma_data_source** backend) {
+	ma_wav* wav = (ma_wav*)ma_malloc(sizeof(ma_wav), allocation_callbacks);
+	if (!wav) return MA_OUT_OF_MEMORY;
+	const ma_result result = nvgt_wav_open(wav, on_read, on_seek, on_tell, read_user_data, config, allocation_callbacks);
+	if (result == MA_SUCCESS) *backend = wav;
+	else ma_free(wav, allocation_callbacks);
+	return result;
+}
+// One in memory, opened as any other: dr_wav's own, whose seeks stop at its end and report success, took the billions of steps of 2 GB a damaged size makes (see seek_step_in_stream()), and one of a data size of 0 was empty.
+struct nvgt_wav_memory {
+	ma_wav wav; // First: MiniAudio takes this struct for it.
+	const ma_uint8* data;
+	size_t size;
+	size_t at;
+};
+static ma_result nvgt_wav_memory_read(void* user, void* out, size_t bytes, size_t* bytes_read) {
+	nvgt_wav_memory* memory = (nvgt_wav_memory*)user;
+	const size_t got = ma_min(bytes, memory->size - memory->at);
+	if (got) memcpy(out, memory->data + memory->at, got);
+	memory->at += got;
+	if (bytes_read) *bytes_read = got;
+	return got? MA_SUCCESS : MA_AT_END;
+}
+static ma_result nvgt_wav_memory_seek(void* user, ma_int64 offset, ma_seek_origin origin) {
+	nvgt_wav_memory* memory = (nvgt_wav_memory*)user;
+	const ma_int64 from = origin == ma_seek_origin_start? 0 : origin == ma_seek_origin_current? (ma_int64)memory->at : (ma_int64)memory->size;
+	if (offset < -from || offset > (ma_int64)memory->size - from) return MA_BAD_SEEK;
+	memory->at = (size_t)(from + offset);
+	return MA_SUCCESS;
+}
+static ma_result nvgt_wav_memory_tell(void* user, ma_int64* cursor) {
+	*cursor = (ma_int64)((nvgt_wav_memory*)user)->at;
+	return MA_SUCCESS;
+}
+static ma_result nvgt_wav_backend_init_memory(void* user_data, const void* data, size_t size, const ma_decoding_backend_config* config, const ma_allocation_callbacks* allocation_callbacks, ma_data_source** backend) {
+	nvgt_wav_memory* memory = (nvgt_wav_memory*)ma_malloc(sizeof(nvgt_wav_memory), allocation_callbacks);
+	if (!memory) return MA_OUT_OF_MEMORY;
+	memory->data = (const ma_uint8*)data;
+	memory->size = size;
+	memory->at = 0;
+	const ma_result result = nvgt_wav_open(&memory->wav, nvgt_wav_memory_read, nvgt_wav_memory_seek, nvgt_wav_memory_tell, memory, config, allocation_callbacks);
+	if (result == MA_SUCCESS) *backend = memory;
+	else ma_free(memory, allocation_callbacks);
+	return result;
+}
+static const bool nvgt_wav_backend_installed = (g_ma_decoding_backend_vtable_wav.onInit = nvgt_wav_backend_init, g_ma_decoding_backend_vtable_wav.onInitMemory = nvgt_wav_backend_init_memory, true);
 #define RND_IMPLEMENTATION
 #include "rnd.h"
 #define SPEECH_IMPLEMENTATION

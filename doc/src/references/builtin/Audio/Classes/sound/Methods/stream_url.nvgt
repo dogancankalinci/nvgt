@@ -11,6 +11,8 @@
 		It waits for the server's connection and the stream's first pages, so it is refused with AUDIO_ERROR_STATE_INVALID_OPERATION in an engine's processing_callback, whose device would wait as long.
 
 		A stream in a format NVGT can't decode, as an AAC radio, is refused with AUDIO_ERROR_STATE_INVALID_FILE once about its first 64 KB, past any ID3 tag, held no audio it can, rather than read for as long as it plays.
+
+		A WAV whose header doesn't give its length, as one streamed live, is read to its end to find it, and refused with AUDIO_ERROR_STATE_INVALID_FILE once it goes on past 15 MB.
 */
 
 // Example:
