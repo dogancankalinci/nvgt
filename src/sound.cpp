@@ -4766,8 +4766,9 @@ public:
 	bool fade_from_stop = false; // The fade is one a stop with a fade set, as pause_fade() does, rather than one the script set since.
 	// Decibels to the linear volumes MiniAudio fades between, on an engine with PERCENTAGE_ATTRIBUTES; FLT_MAX starts from the current volume.
 	void fade_volumes_to_linear(float &start_volume, float &end_volume) const {
+		if (start_volume == FLT_MAX) start_volume = -1; // On every engine, as documented.
+		else if (get_engine()->get_flags() & audio_engine::PERCENTAGE_ATTRIBUTES) start_volume = ma_volume_db_to_linear(start_volume < -100? -100 : start_volume); // No lower than -100 dB, as volumes are set and read.
 		if (!(get_engine()->get_flags() & audio_engine::PERCENTAGE_ATTRIBUTES)) return;
-		start_volume = start_volume == FLT_MAX ? -1 : ma_volume_db_to_linear(start_volume < -100? -100 : start_volume); // No lower than -100 dB, as volumes are set and read.
 		end_volume = ma_volume_db_to_linear(end_volume < -100? -100 : end_volume);
 	}
 	// MiniAudio keeps a sound or group stopped once its scheduled stop has come, and its fade where the stop left it, until both are cleared, so starting it clears them then. With pending, a stop still to come is cleared too, as one pause_fade() scheduled. The fade is cleared only when that stop set it, so a fade the script set since, such as one to fade back in, is kept.
