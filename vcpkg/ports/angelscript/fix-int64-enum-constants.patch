@@ -1,0 +1,17 @@
+diff --git a/sdk/angelscript/source/as_compiler.cpp b/sdk/angelscript/source/as_compiler.cpp
+index ec2ec20..ecaec5d 100644
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -9946,6 +9946,12 @@ void asCCompiler::ImplicitConversionConstant(asCExprContext *from, const asCData
+ 				from->type.SetConstantQW(asCDataType::CreatePrimitive(ttInt64, true), (asINT16)from->type.GetConstantW());
+ 			else if( from->type.dataType.GetSizeInMemoryBytes() == 4 )
+ 				from->type.SetConstantQW(asCDataType::CreatePrimitive(ttInt64, true), (int)from->type.GetConstantDW());
++			else if( from->type.dataType.GetSizeInMemoryBytes() == 8 )
++			{
++				// A constant of an enum with int64 for its underlying type, which kept the enum's type: it could be neither converted
++				// to int64, nor used where a conversion to it is needed, as in a comparison with a variable of the enum
++				from->type.SetConstantQW(asCDataType::CreatePrimitive(ttInt64, true), from->type.GetConstantQW());
++			}
+ 		}
+ 	}
+ 	else if (to.IsUnsignedType() && to.GetSizeInMemoryDWords() == 1 && !to.IsEnumType())

@@ -161,6 +161,7 @@ vcpkg_from_github(
         keep-const-method-calls.patch
         fix-constant-comparisons-and-conversions.patch
         fix-64-bit-switch.patch
+        fix-int64-enum-constants.patch
 )
 
 vcpkg_cmake_configure(
