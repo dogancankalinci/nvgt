@@ -51,6 +51,20 @@
  * The VFS is the glue between the sound service and MiniAudio.
  * We have an opaque structure -- in this case a pointer to the sound_service implementation -- and a series of callbacks which provide MiniAudio an interface to it.
  */
+bool seek_step_in_stream(std::istream& stream, std::streamoff step) {
+	stream.clear();
+	const std::streampos at = stream.tellg();
+	stream.clear();
+	if (at == std::streampos(-1)) return false;
+	stream.seekg(0, std::ios_base::end);
+	const std::streampos end = stream.fail()? std::streampos(-1) : stream.tellg();
+	stream.clear();
+	stream.seekg(at);
+	const bool back = !stream.fail();
+	stream.clear();
+	return back && end != std::streampos(-1) && step <= end - at;
+}
+
 struct sound_service_vfs {
 	ma_vfs_callbacks callbacks;
 	sound_service *service;
@@ -473,6 +487,7 @@ private:
 	static ma_result onSeek(ma_vfs *pVFS, ma_vfs_file file, ma_int64 offset, ma_seek_origin origin) {
 		file_cast(file);
 		stream->clear();
+		if (origin == ma_seek_origin_current && offset >= 0x7FFFFFFF && !seek_step_in_stream(*stream, offset)) return MA_BAD_SEEK;
 		std::ios_base::seekdir dir;
 		switch (origin) {
 			case ma_seek_origin_start:

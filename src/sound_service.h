@@ -36,6 +36,9 @@ struct vfs_args {
 	size_t filter_slot = 0;
 	directive_t filter_directive;
 };
+// Whether a step forward of 2 GB, as MiniAudio's WAV and FLAC decoders make one after another to where a size in a header sends them, which in a damaged one is up to 2^64 bytes, stays within a stream. A file takes a seek past its end, so that billions of such steps were made, for minutes. One whose end isn't found is taken to end short of it.
+bool seek_step_in_stream(std::istream& stream, std::streamoff step);
+
 class sound_service {
 public:
 	static const size_t fs_protocol_slot = 1;
