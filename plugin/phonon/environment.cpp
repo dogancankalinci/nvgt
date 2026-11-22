@@ -347,6 +347,9 @@ void environment_core::update() { // Script thread.
 	for (environment_source* s : current) {
 		if (!s->direct_source.script || !s->has_position) continue;
 		IPLSimulationInputs in = s->direct_inputs();
+		// Not right at the listener: a ray of no length counts as occluded (see nvgt_raycast_provider), which muted a sound there, as one moved along with the listener, unless its transmission is applied.
+		const IPLVector3 l = shared.listener.origin, p = in.source.origin;
+		if (fabs(p.x - l.x) < 0.01f && fabs(p.y - l.y) < 0.01f && fabs(p.z - l.z) < 0.01f) in.source.origin = {l.x + shared.listener.ahead.x * 0.01f, l.y + shared.listener.ahead.y * 0.01f, l.z + shared.listener.ahead.z * 0.01f};
 		s->direct_source.script->setInputs(IPL_SIMULATIONFLAGS_DIRECT, &in);
 	}
 	direct_simulator->runDirect();
