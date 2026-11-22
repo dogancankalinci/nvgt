@@ -3236,6 +3236,25 @@ class audio_wav_encoder_impl : public audio_encoder_impl, public virtual audio_w
 	unique_ptr<ma_encoder> encoder;
 	// Where a stream's output goes. The stream is looked up on every call, as closing the datastream deletes it while the encoder still holds the datastream, and offsets count from where the stream was when the encoder opened, as it can already hold data.
 	struct stream_output {
+		// The stream written to, or null for a datastream the script closed, which is kept from closing while held is.
+		std::ostream *stream(std::unique_lock<std::recursive_mutex> &held) {
+			if (file) return file.get();
+			if (!ds) return nullptr;
+			held = ds->hold_open(); // On the audio thread too, while the script can close the datastream.
+			return ds->get_ostr();
+		}
+		// Whether the stream took it; close() reports one that didn't, as a datastream closed by the script.
+		bool write(const void *data, size_t size) {
+			std::unique_lock<std::recursive_mutex> held_open;
+			std::ostream *to = stream(held_open);
+			if (to) to->write((const char *)data, size);
+			if (!to || !to->good()) {
+				failed = true;
+				return false;
+			}
+			end += size;
+			return true;
+		}
 		datastream *ds = nullptr;
 		std::streamoff base = 0;
 		std::unique_ptr<std::ostream> file; // A file the encoder writes to, opened by NVGT rather than by MiniAudio, whose file writes, the sizes and padding closing writes included, went unchecked: see open_impl().
@@ -3244,23 +3263,27 @@ class audio_wav_encoder_impl : public audio_encoder_impl, public virtual audio_w
 		bool appending = false; // A datastream opened for appending, whose writes all go to its end wherever it is sought to (see datastream::appending): it takes a seek, and the sizes closing wrote over the header's went after the audio instead, where a reader played them, while the header kept sizes unknown and close() reported success. Taken as a stream that can't seek, whose WAV keeps sizes unknown (see mark_sizes_unknown()).
 		bool header_lost = false; // Out of memory holding the header (see open_impl()).
 		bool failed = false; // A write the stream refused, which close() reports: a seek it refuses is expected of a stream that can't seek (see mark_sizes_unknown()), not a failure.
-		std::streamoff at = 0, end = 0; // Where the encoder writes and how far it wrote, from base.
-		bool moved = false; // Whether it sought back, after which close_impl() puts the stream back at the end.
+		std::streamoff end = 0; // How far it was written, from base.
+		std::streamoff header_size = 0, data_size_at = 0; // The header's size and where it gives the data chunk's, from base; 0 for a header that isn't a WAV's.
+		const void *body = nullptr; // What write_impl() has MiniAudio write, of body_size bytes, while it does.
+		size_t body_size = 0;
 	} output;
 	// A WAV's header gives the RIFF and data chunk sizes, which the encoder writes as nothing at first and over that when it closes, by seeking back to them. A stream that can't seek, such as an encrypting, encoding or compressing one, kept the first ones, so that its WAV read as holding no audio. They are written as 0xFFFFFFFF instead, a length unknown, as a WAV streamed out is written, which readers take as running to the file's end; closing writes the real ones over them where it can.
-	static void mark_sizes_unknown(std::string& header) {
-		if (header.size() < 12 || header.compare(0, 4, "RIFF") || header.compare(8, 4, "WAVE")) return;
+	static std::streamoff mark_sizes_unknown(std::string& header) {
+		if (header.size() < 12 || header.compare(0, 4, "RIFF") || header.compare(8, 4, "WAVE")) return 0;
 		header.replace(4, 4, 4, '\xff');
 		for (size_t at = 12; at + 8 <= header.size();) {
 			if (!header.compare(at, 4, "data")) {
 				header.replace(at + 4, 4, 4, '\xff');
-				return;
+				return at + 4;
 			}
 			ma_uint32 size = ma_uint32(ma_uint8(header[at + 4])) | ma_uint32(ma_uint8(header[at + 5])) << 8 | ma_uint32(ma_uint8(header[at + 6])) << 16 | ma_uint32(ma_uint8(header[at + 7])) << 24;
-			if (size > header.size()) return;
+			if (size > header.size()) return 0;
 			at += 8 + size + (size & 1);
 		}
+		return 0;
 	}
+	// MiniAudio's WAV writer also writes the padding and the sizes in the header, after every write from 0.11.26 on and when it closed before: those go nowhere, as close_impl() writes them, once. After each write they cost a seek there and back, and took an output that can't seek its next write after the padding, within the audio.
 	static ma_result stream_write(ma_encoder *pEncoder, const void *pBufferIn, size_t bytesToWrite, size_t *pBytesWritten) {
 		stream_output *out = static_cast<stream_output *>(pEncoder->pUserData);
 		*pBytesWritten = 0;
@@ -3274,25 +3297,9 @@ class audio_wav_encoder_impl : public audio_encoder_impl, public virtual audio_w
 			*pBytesWritten = bytesToWrite;
 			return MA_SUCCESS;
 		}
-		std::unique_lock<std::recursive_mutex> held_open;
-		std::ostream *stream = out->file.get();
-		if (!stream) {
-			if (!out->ds) return (out->failed = true), MA_ERROR;
-			held_open = out->ds->hold_open(); // On the audio thread too, while the script can close the datastream.
-			stream = out->ds->get_ostr();
-		}
-		if (!stream) { // The datastream, closed by the script: what was to be written is lost, the sizes and padding closing writes too, which close() reported as written.
-			out->failed = true;
-			return MA_ERROR;
-		}
-		stream->write((const char *)pBufferIn, bytesToWrite);
-		if (!stream->good()) {
-			out->failed = true;
-			return MA_ERROR;
-		}
+		const uintptr_t from = (uintptr_t)pBufferIn - (uintptr_t)out->body;
+		if (out->body && from < out->body_size && bytesToWrite <= out->body_size - from && !out->write(pBufferIn, bytesToWrite)) return MA_ERROR;
 		*pBytesWritten = bytesToWrite;
-		out->at += bytesToWrite;
-		out->end = std::max(out->end, out->at);
 		return MA_SUCCESS;
 	}
 	// seekp(), unlike write() and flush(), lets an exception the stream's buffer throws through on libstdc++ and libc++: Poco's file streams, a script's file datastream's too, write out what they hold before they seek, and throw for a write that fails, as on a full disk. It left the encoder's uninit half done, and a destructor that closes the encoder, by terminating. Taken as the stream failing, which it did.
@@ -3307,30 +3314,36 @@ class audio_wav_encoder_impl : public audio_encoder_impl, public virtual audio_w
 			return false;
 		}
 	}
-	static ma_result stream_seek(ma_encoder *pEncoder, ma_int64 offset, ma_seek_origin origin) {
-		if (origin != ma_seek_origin_start) return MA_NOT_IMPLEMENTED;
-		stream_output *out = static_cast<stream_output *>(pEncoder->pUserData);
-		if (out->holding_header || out->appending) return MA_ERROR;
+	static ma_result stream_seek(ma_encoder *pEncoder, ma_int64 offset, ma_seek_origin origin) { return MA_NOT_IMPLEMENTED; } // Only for the sizes, see stream_write().
+	// What closing writes: the byte that pads an odd number of data bytes, as RIFF chunks are, and the sizes into the header, where the stream can seek back to it, which is put back at the end, as what the script writes to a datastream next overwrote the audio from there. close() reports a write or a seek the stream refuses, other than one to where it can't seek.
+	bool finish_output() {
 		std::unique_lock<std::recursive_mutex> held_open;
-		std::ostream *stream = out->file.get();
-		if (!stream) {
-			if (!out->ds) return (out->failed = true), MA_ERROR;
-			held_open = out->ds->hold_open();
-			stream = out->ds->get_ostr();
+		std::ostream *stream = output.stream(held_open);
+		if (!stream) return false; // The datastream, closed by the script: the sizes and the padding are lost, which close() reported as written.
+		const std::streamoff data = output.end - output.header_size;
+		bool written = !(data & 1) || output.write("", 1);
+		if (output.appending || !output.data_size_at) return written;
+		const std::ios_base::iostate was = stream->rdstate();
+		bool moved = false;
+		auto write_size = [&](std::streamoff at, std::streamoff size) {
+			if (!seek_output(stream, output.base + at)) return false;
+			if (!stream->good()) {
+				stream->clear(was); // A stream that can't seek is left as good as it was, for what the script writes to it after the encoder.
+				return true;
+			}
+			moved = true;
+			const ma_uint32 value = size > 0xffffffff? 0xffffffff : (ma_uint32)size;
+			const char bytes[4] = {(char)value, (char)(value >> 8), (char)(value >> 16), (char)(value >> 24)};
+			stream->write(bytes, sizeof(bytes));
+			return stream->good();
+		};
+		if (!write_size(4, output.header_size - 8 + data + (data & 1)) || !write_size(output.data_size_at, data)) written = false;
+		if (moved && !output.file) {
+			const std::ios_base::iostate before = stream->rdstate();
+			if (!seek_output(stream, output.base + output.end)) written = false;
+			else if (!stream->good()) stream->clear(before);
 		}
-		if (!stream) return (out->failed = true), MA_ERROR; // As for a write.
-		std::ios_base::iostate was = stream->rdstate();
-		if (!seek_output(stream, out->base + offset)) {
-			out->failed = true;
-			return MA_ERROR;
-		}
-		if (stream->good()) {
-			out->at = offset;
-			out->moved = true;
-			return MA_SUCCESS;
-		}
-		stream->clear(was); // A stream that can't seek is left as good as it was, for what the script writes to it after the encoder.
-		return MA_ERROR;
+		return written;
 	}
 protected:
 	bool open_impl(const string& filename, datastream* ds, unsigned int sample_rate, unsigned int channels, unsigned int flags) override {
@@ -3380,9 +3393,12 @@ protected:
 			}
 			output.holding_header = false;
 			if (g_soundsystem_last_error == MA_SUCCESS) {
-				mark_sizes_unknown(output.header);
-				size_t written;
-				if ((g_soundsystem_last_error = stream_write(&*encoder, output.header.data(), output.header.size(), &written)) != MA_SUCCESS) ma_encoder_uninit(&*encoder);
+				output.data_size_at = mark_sizes_unknown(output.header);
+				output.header_size = output.header.size();
+				if (!output.write(output.header.data(), output.header.size())) {
+					ma_encoder_uninit(&*encoder);
+					g_soundsystem_last_error = MA_ERROR;
+				}
 			}
 			output.header = std::string();
 		}
@@ -3400,7 +3416,12 @@ protected:
 	}
 	unsigned int write_impl(const void* buffer, unsigned int size) override {
 		ma_uint64 frames_written;
-		if (!encoder || (g_soundsystem_last_error = ma_encoder_write_pcm_frames(&*encoder, buffer, size, &frames_written)) != MA_SUCCESS) return 0;
+		if (!encoder) return 0;
+		output.body = buffer;
+		output.body_size = (size_t)size * ma_get_bytes_per_frame(encoder->config.format, encoder->config.channels);
+		g_soundsystem_last_error = ma_encoder_write_pcm_frames(&*encoder, buffer, size, &frames_written);
+		output.body = nullptr;
+		if (g_soundsystem_last_error != MA_SUCCESS) return 0;
 		if (frames_written < size) g_soundsystem_last_error = MA_IO_ERROR; // MiniAudio gives success for a write its output took less of, as a stream that failed.
 		return frames_written;
 	}
@@ -3408,22 +3429,13 @@ protected:
 		if (!encoder) return false;
 		ma_encoder_uninit(&*encoder);
 		encoder.reset();
+		if (!finish_output()) output.failed = true;
 		if (output.file) { // Written out and closed here, which can fail too, as on a full disk.
 			output.file->flush();
 			if (!output.file->good()) output.failed = true;
 			output.file.reset();
 		}
 		if (output.failed) close_result = MA_IO_ERROR; // A write the output refused, as of the sizes or the padding closing writes, which MiniAudio doesn't report.
-		// Closing wrote the sizes into the header, which left a stream that can seek inside the file, where what the script wrote to it next overwrote the audio: it's put back at the end.
-		if (output.ds && output.moved) {
-			auto held_open = output.ds->hold_open();
-			if (std::ostream* stream = output.ds->get_ostr()) {
-				std::ios_base::iostate was = stream->rdstate();
-				if (!seek_output(stream, output.base + output.end)) {
-					if (close_result == MA_SUCCESS) close_result = MA_IO_ERROR;
-				} else if (!stream->good()) stream->clear(was);
-			}
-		}
 		output = stream_output();
 		return true;
 	}
