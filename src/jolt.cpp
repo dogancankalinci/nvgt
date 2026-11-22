@@ -10,6 +10,7 @@
  * 3. This notice may not be removed or altered from any source distribution.
 */
 
+#include <atomic>
 #include <cstdarg>
 #include <cstdio>
 #include <cmath>
@@ -245,7 +246,7 @@ static void physics_transform_set_rotation(physics_transform& t, const Quat& r) 
 // -- jolt_shape_ref: ref-counted wrapper around a Jolt Shape --
 struct jolt_shape_ref {
 	RefConst<Shape> shape;
-	int refcount = 1;
+	std::atomic<int> refcount = 1; // Shapes are shared between threads, as by sounds and bodies made on them.
 	explicit jolt_shape_ref(RefConst<Shape> s) : shape(move(s)) {}
 	void AddRef() { refcount++; }
 	void Release() { if (--refcount <= 0) delete this; }
