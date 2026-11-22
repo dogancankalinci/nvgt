@@ -1,0 +1,49 @@
+diff --git a/sdk/angelscript/source/as_compiler.cpp b/sdk/angelscript/source/as_compiler.cpp
+index ecaec5d..f38601c 100644
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -7859,6 +7859,29 @@ asUINT asCCompiler::ImplicitConvPrimitiveToPrimitive(asCExprContext *ctx, const
+ 	// Allow implicit conversion between numbers
+ 	if( generateCode )
+ 	{
++		// An explicit cast to an enum is the conversion to its underlying type, whose value the enum then takes. Only the type was
++		// changed for an integer (but for a size up to 32 bits), so a 64-bit enum read 8 bytes where the value had 4, the upper half
++		// being whatever was next to it, and a float or double was converted with instructions of another layout (a broken bytecode).
++		if( to.IsEnumType() && convType == asIC_EXPLICIT_VAL_CAST )
++		{
++			// The value of another enum is one of its underlying type
++			if( ctx->type.dataType.IsEnumType() )
++			{
++				asCDataType value = CastToEnumType(ctx->type.dataType.GetTypeInfo())->enumType;
++				value.MakeReference(ctx->type.dataType.IsReference());
++				value.MakeReadOnly(ctx->type.dataType.IsReadOnly());
++				ctx->type.dataType = value;
++			}
++
++			asCDataType underlying = CastToEnumType(to.GetTypeInfo())->enumType;
++			ImplicitConvPrimitiveToPrimitive(ctx, underlying, node, convType, true);
++
++			ctx->type.dataType.SetTokenType(to.GetTokenType());
++			ctx->type.dataType.SetTypeInfo(to.GetTypeInfo());
++			ctx->type.dataType.MakeReadOnly(to.IsReadOnly());
++			return cost;
++		}
++
+ 		// When generating the code the decision has already been made, so we don't bother determining the cost
+ 
+ 		// Convert smaller types to 32bit first
+@@ -9743,11 +9766,11 @@ void asCCompiler::ImplicitConversionConstant(asCExprContext *from, const asCData
+ 				asINT64 qw;
+ 				
+ 				if (from->type.dataType.GetSizeInMemoryBytes() == 1)
+-					qw = from->type.GetConstantB();
++					qw = (asINT8)from->type.GetConstantB(); // Signed, as a variable is converted: -7 became 249
+ 				else if (from->type.dataType.GetSizeInMemoryBytes() == 2)
+-					qw = from->type.GetConstantW();
++					qw = (asINT16)from->type.GetConstantW();
+ 				else if (from->type.dataType.GetSizeInMemoryBytes() == 4)
+-					qw = from->type.GetConstantDW();
++					qw = (int)from->type.GetConstantDW();
+ 				else
+ 					qw = from->type.GetConstantQW();
+ 			

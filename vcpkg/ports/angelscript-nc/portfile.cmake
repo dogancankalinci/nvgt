@@ -163,6 +163,7 @@ vcpkg_from_github(
         fix-constant-comparisons-and-conversions.patch
         fix-64-bit-switch.patch
         fix-int64-enum-constants.patch
+        fix-cast-to-enum.patch
 )
 
 vcpkg_cmake_configure(
