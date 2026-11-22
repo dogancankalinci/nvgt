@@ -1890,10 +1890,11 @@ audio_data_source* audio_data_source_get(ma_data_source* ptr, audio_engine* engi
 }
 // A ring buffer that the audio thread reads as a data source, as a stream_pcm() sound's and a microphone's are. A ring buffer has one writer and one reader, so dropping what is queued, as starting such a sound or microphone again does, is left to the reader: discard() has the next read skip what is queued now. Resetting the ring buffer from the script's thread moved its positions under the audio thread's read, which then played old frames again.
 // Zeroes the samples that aren't finite, NaN or infinite, as a damaged or crafted float WAV or a script's PCM can hold: kept, one such sample left every filter, delay and reverb it reached giving NaN for good, their state holding it, so that every sound mixed through them after it played NaN too. By the bits, as a build that takes floats to be finite could drop a test of the value.
+// Nor those past 120 dB above full scale, which no audio holds but a float's damaged exponent gives: near the largest float, a filter's state overflowed to infinity on them, and a reverb rang on at them for minutes.
 static bool non_finite(const float* sample) {
 	ma_uint32 bits;
 	memcpy(&bits, sample, sizeof(bits));
-	return (bits & 0x7F800000u) == 0x7F800000u;
+	return (bits & 0x7FFFFFFFu) > 0x49742400u; // The bits of 1000000, which order as the magnitudes they are.
 }
 static void zero_non_finite(float* samples, size_t count) {
 	for (size_t i = 0; i < count; i++) if (non_finite(samples + i)) samples[i] = 0;
