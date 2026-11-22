@@ -570,9 +570,12 @@ public:
 };
 audio_node_chain* audio_node_chain::create(audio_node* source, audio_node* endpoint, audio_engine* engine) { return new audio_node_chain_impl(source, endpoint, engine); }
 
+static void follow_default_components(); // After audio_spatializer_impl.
 bool set_global_hrtf(bool enabled) {
 	// The defaults and the enabled components each time, whatever get_global_hrtf() read before: with one of the defaults changed by hand, or a component disabled, it reads false while the other still positions with HRTF.
-	return sound_set_spatialization(enabled ? g_audio_hrtf_panner : g_audio_basic_panner, enabled ? g_audio_hrtf_attenuator : g_audio_basic_attenuator);
+	const bool set = sound_set_spatialization(enabled ? g_audio_hrtf_panner : g_audio_basic_panner, enabled ? g_audio_hrtf_attenuator : g_audio_basic_attenuator);
+	if (set) follow_default_components(); // Those positioned already too, unless given a panner or attenuator of their own.
+	return set;
 }
 // Whether sounds are positioned with HRTF: its panner and attenuator enabled, and the defaults new sounds take.
 bool get_global_hrtf() { return get_audio_panner_enabled(g_audio_hrtf_panner) && get_audio_attenuator_enabled(g_audio_hrtf_attenuator) && sound_get_default_3d_panner() == g_audio_hrtf_panner && sound_get_default_3d_attenuator() == g_audio_hrtf_attenuator; }
@@ -1682,6 +1685,7 @@ private:
 	bool parameters_valid;
 	int preferred_panner_id, preferred_attenuator_id;
 	int current_panner_id, current_attenuator_id;
+	bool default_panner = false, default_attenuator = false; // Whether the preferred ones are the defaults it was given, which set_global_hrtf() changes, rather than its own.
 	// Its rewiring runs in the chain's rewire_scope, what it lets go of released once the thread's outermost release_scope ends (see release_scope).
 	void position_reverb() {
 		rewire_scope scope(*this);
@@ -1891,6 +1895,7 @@ public:
 		}
 		rewire_scope scope(*this);
 		preferred_panner_id = panner_id;
+		default_panner = false;
 		spatializer_component_node* new_panner = create_audio_panner(panner_id, this, get_engine());
 		if (new_panner) {
 			current_panner_id = panner_id;
@@ -1907,6 +1912,7 @@ public:
 		}
 		rewire_scope scope(*this);
 		preferred_attenuator_id = attenuator_id;
+		default_attenuator = false;
 		spatializer_component_node* new_attenuator = create_audio_attenuator(attenuator_id, this, get_engine());
 		if (new_attenuator) {
 			current_attenuator_id = attenuator_id;
@@ -1914,6 +1920,31 @@ public:
 		} else if (!set_fallback_attenuator()) {
 			current_attenuator_id = -1;
 			set_attenuator(nullptr);
+		}
+	}
+	void use_default_components() override {
+		rewire_scope scope(*this);
+		const int panner_id = sound_get_default_3d_panner(), attenuator_id = sound_get_default_3d_attenuator();
+		if (panner_id >= 0 && preferred_panner_id < 0) {
+			set_panner_by_id(panner_id);
+			default_panner = true;
+		}
+		if (attenuator_id >= 0 && preferred_attenuator_id < 0) {
+			set_attenuator_by_id(attenuator_id);
+			default_attenuator = true;
+		}
+	}
+	// After set_global_hrtf() changed the defaults.
+	void follow_defaults() {
+		rewire_scope scope(*this);
+		const int panner_id = sound_get_default_3d_panner(), attenuator_id = sound_get_default_3d_attenuator();
+		if (default_panner && preferred_panner_id != panner_id) {
+			set_panner_by_id(panner_id);
+			default_panner = true;
+		}
+		if (default_attenuator && preferred_attenuator_id != attenuator_id) {
+			set_attenuator_by_id(attenuator_id);
+			default_attenuator = true;
 		}
 	}
 	int get_current_panner_id() const override { return current_panner_id; }
@@ -2016,6 +2047,26 @@ static void sweep_tracked_spatializers(swept_spatializers &swept, bool panner, i
 		}
 		throw;
 	}
+}
+// As the sweeps above, with references to the spatializers taken first. One that can't be rewired, as on running out of memory, is left as it was, and the others still follow.
+static void follow_default_components() {
+	swept_spatializers swept;
+	std::lock_guard<std::mutex> sweep(g_spatializer_sweep_mutex);
+	{
+		std::lock_guard<std::mutex> lock(g_tracked_spatializers_mutex);
+		swept.taken.reserve(g_tracked_spatializers.size());
+		for (audio_spatializer_impl* spatializer : g_tracked_spatializers)
+			if (spatializer->duplicate_if_alive()) swept.taken.push_back(spatializer);
+	}
+	std::exception_ptr failed;
+	for (audio_spatializer_impl* spatializer : swept.taken) {
+		try {
+			spatializer->follow_defaults();
+		} catch (...) {
+			if (!failed) failed = std::current_exception();
+		}
+	}
+	if (failed) std::rethrow_exception(failed);
 }
 swept_spatializers::~swept_spatializers() {
 	for (audio_spatializer_impl* spatializer : taken) spatializer->release();

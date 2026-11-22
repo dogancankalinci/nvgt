@@ -9,7 +9,7 @@
 	## Remarks:
 		This property is read only. To change it, call `set_sound_global_hrtf()`.
 		HRTF (head related transfer function) processing makes positioned sounds seem to come from a direction around the listener, including in front, behind, above and below, and works best with headphones. When it is disabled, sounds are positioned with simple left and right panning and distance attenuation.
-		Enabling HRTF sets `sound_default_3d_panner` to `audio_panner_hrtf` and `sound_default_3d_attenuator` to `audio_attenuator_hrtf`. The HRTF is NVGT's own, derived from the Synthizer library by Austin Hicks (camlorn). If you'd rather use Steam Audio's HRTF, load the nvgt_phonon plugin and set `sound_default_3d_panner` and `sound_default_3d_attenuator` to its `audio_panner_phonon_hrtf` and `audio_attenuator_phonon` values yourself.
+		Enabling HRTF sets `sound_default_3d_panner` to `audio_panner_hrtf` and `sound_default_3d_attenuator` to `audio_attenuator_hrtf`, and sounds and mixers that are positioned already follow the setting too, unless they were given a panner or attenuator of their own, such as by setting their `hrtf` property. The HRTF is NVGT's own, derived from the Synthizer library by Austin Hicks (camlorn). If you'd rather use Steam Audio's HRTF, load the nvgt_phonon plugin and give its `audio_panner_phonon_hrtf` and `audio_attenuator_phonon` values to `set_sound_default_3d_panner()` and `set_sound_default_3d_attenuator()` yourself.
 */
 
 // Example:

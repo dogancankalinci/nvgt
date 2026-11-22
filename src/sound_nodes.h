@@ -486,6 +486,7 @@ public:
 	virtual void on_panner_enabled_changed(int panner_id, bool enabled) = 0;
 	virtual void on_attenuator_enabled_changed(int attenuator_id, bool enabled) = 0;
 	virtual void forget_mixer() = 0; // Its mixer is letting go of it; one the script kept no longer reads that mixer.
+	virtual void use_default_components() = 0; // The default panner and attenuator, unless it has its own, following set_global_hrtf() from then on.
 	static audio_spatializer* create(mixer* mixer, audio_engine* engine = nullptr);
 };
 
