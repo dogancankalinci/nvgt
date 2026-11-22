@@ -203,7 +203,7 @@ protected:
 	{
 		static char tolower_impl(char c)
 		{
-			return static_cast<char>(std::tolower(c));
+			return static_cast<char>(std::tolower(static_cast<unsigned char>(c))); // Negative for a byte of a UTF-8 character, which tolower isn't defined for.
 		}
 		static std::string str_tolower(std::string s)
 		{
