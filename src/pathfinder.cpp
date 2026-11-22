@@ -12,12 +12,14 @@
 
 #include <cstring>
 #include <algorithm>
-#include <reactphysics3d/reactphysics3d.h>
-#include "pathfinder.h"
 #include "scriptstuff.h"
 #include "nvgt_angelscript.h" // get_array_type()
 #include <cmath>
+#include "jolt.h"
+#include "pathfinder.h"
+
 using namespace std;
+
 static asITypeInfo* VectorArrayType = NULL;
 static asITypeInfo* StringType = nullptr;
 #define NODE_BIT_SIZE 20 // Each axis gets 20 bits (range +/-524288, offset so it's never negative) and the desperation factor (0-10) gets the remaining 4 bits, filling a 64-bit state key exactly.
@@ -301,12 +303,11 @@ CScriptArray* pathfinder::find(int start_x, int start_y, int start_z, int end_x,
 		return array;
 	}
 	array->Reserve(path.size() - 1);
-	reactphysics3d::Vector3 v;
 	int x, y, z;
 	// BGT did not include the starting location here. Changing to match for now; discussion welcome.
 	for (int i = 1; i < path.size(); i++) {
 		decode_state(path[i], &x, &y, &z);
-		v.setAllValues(x, y, z);
+		vector3 v((float)x, (float)y, (float)z);
 		array->InsertLast(&v);
 	}
 	if (must_reset) reset(); // After the states were read back: on 32-bit targets they are indices into the table reset() clears.

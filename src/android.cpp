@@ -18,6 +18,7 @@
 #include <android/asset_manager.h>
 #include <android/asset_manager_jni.h>
 #include <Poco/Exception.h>
+#include <Poco/File.h>
 #include <Poco/Format.h>
 #include <SDL3/SDL.h>
 #include <algorithm>
@@ -585,6 +586,11 @@ static std::string android_preferred_tts_engine() {
 	for (const auto& engine_pkg : installed) register_android_tts_engine(engine_pkg);
 	tts_set_engine_ranking(android_get_ranked_tts_engine_packages());
 	return pkg;
+}
+std::string platform_get_font() {
+	for (const char* dir : {"/system/fonts/", "/system/font/"})
+		for (const char* name : {"Roboto-Regular.ttf", "NotoSans-Regular.ttf", "DroidSans.ttf"}) if (Poco::File(std::string(dir) + name).exists()) return std::string(dir) + name;
+	return "";
 }
 void register_native_tts() {
 	std::vector<std::string> android_engines = android_get_tts_engine_packages();

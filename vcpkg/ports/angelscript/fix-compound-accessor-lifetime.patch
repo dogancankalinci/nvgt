@@ -1,0 +1,54 @@
+diff --git a/sdk/angelscript/source/as_compiler.cpp b/sdk/angelscript/source/as_compiler.cpp
+index 5dfbf97..be66060 100644
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -14904,9 +14904,34 @@ int asCCompiler::ProcessPropertyGetSetAccessor(asCExprContext *ctx, asCExprConte
+ 	bool materializeUnsafeRef = !takeExtraRef && func->objectType && (func->objectType->flags & (asOBJ_VALUE|asOBJ_SCOPED));
+ 	if( takeExtraRef || materializeUnsafeRef )
+ 	{
++		// ALTERED: nothing keeps the object alive for the address held here, so nothing that can destroy it may run between
++		// the two calls. The value is evaluated before the object's address is taken (a primitive one, which is what can be
++		// moved as it leaves nothing on the stack): an array whose element the property belongs to could be resized by a
++		// function the value calls (a[0].x += f()), and the set accessor wrote to freed memory.
++		if( materializeUnsafeRef )
++		{
++			if( ProcessPropertyGetAccessor(rctx, errNode) < 0 )
++				return -1;
++			if( rctx->type.dataType.IsPrimitive() && !rctx->type.isConstant )
++			{
++				ConvertToVariable(rctx);
++				ctx->bc.AddCode(&rctx->bc);
++			}
++		}
++
+ 		// Keep a reference to the object in a local variable
+ 		before.bc.AddCode(&lctx->bc);
+ 
++		// ALTERED: and what the object is part of (the temporary f() returned in f().pos.x += 1) is released after the set
++		// call, with the other deferred expressions below. It was released after the get call, and the set accessor wrote to
++		// freed memory.
++		if( materializeUnsafeRef )
++		{
++			for( asUINT n = 0; n < lctx->deferredParams.GetLength(); n++ )
++				before.deferredParams.PushLast(lctx->deferredParams[n]);
++			lctx->deferredParams.SetLength(0);
++		}
++
+ 		asUINT len = reservedVariables.GetLength();
+ 		rctx->bc.GetVarsUsed(reservedVariables);
+ 		before.bc.GetVarsUsed(reservedVariables);
+@@ -15061,6 +15086,14 @@ int asCCompiler::ProcessPropertyIncDecAccessor(asCExprContext *ctx, eTokenType o
+ 		asCExprContext before(engine);
+ 		before.bc.AddCode(&ctx->bc);
+ 
++		// ALTERED: what the object is part of is released after the set call, see ProcessPropertyGetSetAccessor
++		if( materializeUnsafeRef )
++		{
++			for( asUINT n = 0; n < ctx->deferredParams.GetLength(); n++ )
++				before.deferredParams.PushLast(ctx->deferredParams[n]);
++			ctx->deferredParams.SetLength(0);
++		}
++
+ 		asUINT len = reservedVariables.GetLength();
+ 		before.bc.GetVarsUsed(reservedVariables);
+ 

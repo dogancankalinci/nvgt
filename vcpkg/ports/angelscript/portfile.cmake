@@ -1,8 +1,8 @@
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
-    REPO anjo76/angelscript
-    REF 3fc00a6abc07c7ad2dec4ed14ff6018a194a54d6
-    SHA512 9a70378733240d4236cd2b1e8a0c297650e117862ea792546728c34c9204ac5a68deb26ffb3dc545fc94bec66bdd103c14168cea374594890e44114738ba03c6
+    REPO samtupy/angelscript
+    REF 9d2c181444395b38a4c2691690546df05686bcef
+    SHA512 248a5e8d45d393f859a9e95bb8fe684417119ea3aca3583248cce17d36467914c104737df17672426c398b84706c23dd57d68e15da78dbaa25375aea35b2e630
     HEAD_REF master
     PATCHES
         mark-threads-private.patch
@@ -71,7 +71,6 @@ vcpkg_from_github(
         fix-derived-copy-constructor.patch
         fix-member-copy-temporary.patch
         fix-handle-copy-constructor.patch
-        fix-foreach-item-clean-up.patch
         fix-init-before-argument-release.patch
         fix-reference-return-in-try.patch
         fix-nested-call-exception.patch
@@ -108,7 +107,6 @@ vcpkg_from_github(
         fix-script-object-flag-bytes.patch
         fix-offset-limits.patch
         fix-weak-reference-made-during-last-release.patch
-        fix-return-property-accessor.patch
         fix-call-through-handle-reference.patch
         fix-object-arg-from-handle-reference.patch
         fix-cast-and-call-from-handle-reference.patch
@@ -158,6 +156,9 @@ vcpkg_from_github(
         fix-gc-backpressure-across-threads.patch
         fix-gc-wait-once-per-collection.patch
         fix-nan-comparisons.patch
+        fix-compound-accessor-lifetime.patch
+        fix-foreach-heap-range.patch
+        keep-const-method-calls.patch
 )
 
 vcpkg_cmake_configure(

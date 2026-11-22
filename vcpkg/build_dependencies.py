@@ -11,19 +11,38 @@ import re
 import shutil
 import subprocess
 import sys
-import urllib.error
+import time
 import urllib.request
 
 # Bump a platform's number whenever a change to this script alters what its package contains or how it is laid out (a
 # new library rename, a different directory structure, another duplicate removed). CI keys each platform's dependency
 # cache by this number rather than by this file's content, so an edit made for one platform does not throw away the
 # packages of the others. A change to code every platform runs through (fix_debug, the copy layout) needs every number bumped.
-PACKAGE_LAYOUT_VERSION = {"windev": 1, "macosdev": 1, "lindev": 1, "droidev": 1, "iosdev": 2}
+PACKAGE_LAYOUT_VERSION = {"windev": 2, "macosdev": 1, "lindev": 1, "droidev": 1, "iosdev": 2}
 
 vcpkg_path = Path(__file__, "..", "bin", "vcpkg" if sys.platform != "win32" else "vcpkg.exe").resolve()
 vcpkg_installed_path = Path(__file__, "..", "vcpkg_installed").resolve()
 repo_path = Path(__file__).parents[1]
+GITHUB_PATCH_RE = re.compile(r'URLS\s+"?(https://github\.com/[^/\s]+/[^/\s]+/commit/[0-9a-f]+\.patch[^"\s]*)"?\s+FILENAME\s+"?([^"\s]+)"?')
 
+def prefetch_github_downloads():
+	"""Some ports download from GitHub in ways that fail constantly on shared CI runners: pcre2 queries api.github.com, which only allows 60 unauthenticated requests per hour per IP, and the commit .patch URLs used by ports such as fmt intermittently return 503 while GitHub generates the patch, which outlasts vcpkg's quick retries. If a GITHUB_TOKEN is available, fetch those files into vcpkg's downloads directory with it first, retrying with a backoff. The curl user agent makes GitHub return exactly the bytes vcpkg's own curl download gets, so the ports' pinned SHA512s still match and vcpkg skips its own download."""
+	token = os.environ.get("GITHUB_TOKEN")
+	if not token: return
+	downloads = Path(os.environ.get("VCPKG_DOWNLOADS", vcpkg_path.parent / "downloads"))
+	downloads.mkdir(parents=True, exist_ok=True)
+	pcre2_version = json.loads((vcpkg_path.parent / "ports" / "pcre2" / "vcpkg.json").read_text())["version"]
+	files = [(f"https://api.github.com/repos/PCRE2Project/pcre2/contents/deps/sljit?ref=pcre2-{pcre2_version}", f"pcre2-pcre2-{pcre2_version}-sljit-gitlink.json")]
+	for port in ["fmt"]: files += GITHUB_PATCH_RE.findall((vcpkg_path.parent / "ports" / port / "portfile.cmake").read_text())
+	for url, filename in files:
+		if (downloads / filename).exists(): continue
+		for attempt in range(5):
+			try:
+				with urllib.request.urlopen(urllib.request.Request(url, headers = {"Authorization": f"Bearer {token}", "User-Agent": "curl", "Accept": "*/*"})) as r: (downloads / filename).write_bytes(r.read())
+				break
+			except Exception as e:
+				print(f"warning: could not prefetch {url}: {e}")
+				time.sleep(15 * (attempt + 1))
 def bootstrap_vcpkg():
 	if vcpkg_path.exists() and vcpkg_path.is_file():
 		return
@@ -31,40 +50,6 @@ def bootstrap_vcpkg():
 		subprocess.check_output(vcpkg_path.parent / "bootstrap-vcpkg.bat")
 	else:
 		subprocess.check_output(vcpkg_path.parent / "bootstrap-vcpkg.sh")
-def prefetch_github_api_downloads():
-	"""Fetches the files that ports download from api.github.com, using the CI's token, before vcpkg asks for them itself.
-	vcpkg sends those requests without credentials, and GitHub answers an address only 60 of them an hour. The hosted
-	runners share their addresses, so the pcre2 port's lookup of its sljit submodule came back 403 and stopped the whole
-	build. A file is written only when it has the exact SHA512 the port expects, which makes vcpkg take it as already
-	downloaded; without a token, or when the port no longer looks like this, vcpkg downloads it as before."""
-	token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
-	if not token: return
-	port = vcpkg_path.parent / "ports" / "pcre2"
-	try:
-		version = json.loads((port / "vcpkg.json").read_text(encoding = "utf-8"))["version"]
-		portfile = (port / "portfile.cmake").read_text(encoding = "utf-8")
-	except (OSError, KeyError, ValueError): return
-	expected = re.search(r"set\(sljit_gitlink_hash SHA512 ([0-9a-f]{128})\)", portfile)
-	shape = ['set(pcre2_ref "pcre2-${VERSION}")', 'URLS "https://api.github.com/repos/PCRE2Project/pcre2/contents/deps/sljit?ref=${pcre2_ref}"', 'FILENAME "pcre2-${pcre2_ref}-sljit-gitlink.json"']
-	if not expected or not all(line in portfile for line in shape): return
-	ref = f"pcre2-{version}"
-	target = Path(os.environ.get("VCPKG_DOWNLOADS") or vcpkg_path.parent / "downloads") / f"pcre2-{ref}-sljit-gitlink.json"
-	if target.exists(): return
-	# The API indents its JSON for a curl user agent and compacts it for others, and the port's hash is of what curl, which
-	# vcpkg downloads with, receives.
-	request = urllib.request.Request(f"https://api.github.com/repos/PCRE2Project/pcre2/contents/deps/sljit?ref={ref}", headers = {"Authorization": f"Bearer {token}", "User-Agent": "curl/8"})
-	try:
-		with urllib.request.urlopen(request, timeout = 60) as response: data = response.read()
-	except (urllib.error.URLError, OSError) as e:
-		print(f"note: could not prefetch {target.name} ({e}), leaving it to vcpkg")
-		return
-	if hashlib.sha512(data).hexdigest() != expected.group(1):
-		print(f"note: {target.name} from the GitHub API does not have the hash the pcre2 port expects, leaving it to vcpkg")
-		return
-	target.parent.mkdir(parents = True, exist_ok = True)
-	partial = target.with_name(target.name + ".part")
-	partial.write_bytes(data)
-	partial.replace(target)
 def build(triplet = "", do_archive = False, out_dir = ""):
 	if not triplet:
 		# Try to determine, logic probably could be improved
@@ -77,7 +62,8 @@ def build(triplet = "", do_archive = False, out_dir = ""):
                         triplet = "arm64-linux"
 		else: sys.exit("unable to determine platform, please pass a triplet explicitly.")
 	bootstrap_vcpkg()
-	prefetch_github_api_downloads()
+	if os.environ.get("VCPKG_DEFAULT_BINARY_CACHE"): Path(os.environ["VCPKG_DEFAULT_BINARY_CACHE"]).mkdir(parents=True, exist_ok=True) # vcpkg refuses to run if this directory doesn't exist, and CI points it somewhere that is only populated on a cache hit.
+	prefetch_github_downloads()
 	try: subprocess.run([vcpkg_path, "install", "--triplet", triplet, "--x-manifest-root", vcpkg_path.parents[1]], check=True)
 	except subprocess.CalledProcessError as cpe: sys.exit(f"Building packages for {triplet} failed with error code {cpe.returncode}.")
 	dev_basename = ""
@@ -129,7 +115,7 @@ def macos_fat_binaries(out_dir):
 		subprocess.check_output(["lipo", "-create", vcpkg_path.parent / "installed" / "x64-osx" / "lib" / f, vcpkg_installed_path / "arm64-osx" / "lib" / f, "-output", out_dir / "lib" / f])
 def fix_debug(out_dir):
 	"""Several debug libraries frustratingly have different filenames to their release counterparts, which just makes build scripts more complicated. We'll just fix it here. Usually a d is just tacked on to the end of the filename which we'll get rid of as well as a hifen that sometimes appears."""
-	excludes = ["reactphysics3d", "zstd"]
+	excludes = ["zstd"]
 	for f in (out_dir / "debug" / "lib").iterdir():
 		if not f.stem.lower().endswith("d"): continue
 		exclude = f.stem if not f.stem.startswith("lib") else f.stem[3:]
@@ -152,6 +138,7 @@ def windows_lib_rename(out_dir):
 		("pocoMongoDBmt", "pocoMongoDB"),
 		("pocoNetmt", "pocoNet"),
 		("pocoNetSSLmt", "pocoNetSSL"),
+		("pocoNetSSLWinmt", "pocoNetSSLWin"),
 		("pocoPrometheusmt", "pocoPrometheus"),
 		("pocoRedismt", "pocoRedis"),
 		("pocoSevenZipmt", "pocoSevenZip"),

@@ -2,9 +2,9 @@
 	Load the specified URL.
 	bool sound::stream_url(const string&in url);
 	## Arguments:
-		* string url: the URL to load (should be the direct link to a sound or stream).
+		* const string&in url: the address of the audio, which should lead directly to the audio data rather than to a web page about it.
 	## Returns:
-		Bool: True if the URL was successfully loaded; false otherwise.
+		bool: true if the stream could be opened, false otherwise.
 	## Remarks:
 		This function should currently be considered beta.
 

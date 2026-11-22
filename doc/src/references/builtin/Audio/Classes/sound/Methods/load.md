@@ -8,7 +8,7 @@ Loads a sound file.
 * const pack_interface@+ pack = sound_default_pack: the pack to load the file from; null, or a pack that isn't open, loads it from disk.
 
 ## Returns:
-bool: true if the sound was successfully loaded, false otherwise.
+bool: true if the file was found and could be opened, false otherwise.
 
 ## Remarks:
 A sound already loaded into this object is closed first. When loading fails, SOUNDSYSTEM_LAST_ERROR tells why. A pack open for writing rather than reading can't be loaded from: passing one throws an exception instead, as does load() with sound_default_pack opened for writing since it was assigned. The same goes for stream(), sound_play() and the other functions that load audio from a pack.

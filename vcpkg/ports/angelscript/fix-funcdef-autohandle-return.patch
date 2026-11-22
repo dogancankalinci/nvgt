@@ -1,7 +1,8 @@
 diff --git a/sdk/angelscript/source/as_callfunc.cpp b/sdk/angelscript/source/as_callfunc.cpp
+index b79863d..7a62397 100644
 --- a/sdk/angelscript/source/as_callfunc.cpp
 +++ b/sdk/angelscript/source/as_callfunc.cpp
-@@ -930,7 +930,13 @@
+@@ -930,7 +930,13 @@ int CallSystemFunction(int id, asCContext *context)
  			if (sysFunc->returnAutoHandle && context->m_regs.objectRegister)
  			{
  				asASSERT(!(descr->returnType.GetTypeInfo()->flags & asOBJ_NOCOUNT));
@@ -14,12 +15,13 @@ diff --git a/sdk/angelscript/source/as_callfunc.cpp b/sdk/angelscript/source/as_
 +				else
 +					engine->CallObjectMethod(context->m_regs.objectRegister, CastToObjectType(descr->returnType.GetTypeInfo())->beh.addref);
  			}
- 		}
- 		else if (retPointer)
+ 
+ 			// Clean-up the returned object if there is an exception
 diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+index af4e336..7e6da48 100644
 --- a/sdk/angelscript/source/as_context.cpp
 +++ b/sdk/angelscript/source/as_context.cpp
-@@ -6005,7 +6005,11 @@
+@@ -6005,7 +6005,11 @@ int asCContext::CallGeneric(asCScriptFunction *descr)
  	if (sysFunc->returnAutoHandle && m_engine->ep.genericCallMode == 1 && m_regs.objectRegister)
  	{
  		asASSERT(!(descr->returnType.GetTypeInfo()->flags & asOBJ_NOCOUNT));

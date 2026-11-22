@@ -1,0 +1,25 @@
+diff --git a/sdk/angelscript/source/as_compiler.cpp b/sdk/angelscript/source/as_compiler.cpp
+index 6decf7b..5b22605 100644
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -13774,8 +13774,9 @@ int asCCompiler::CompileFunctionCall(asCScriptNode *node, asCExprContext *ctx, a
+ 		}
+ 		else
+ 		{
+-			if( !objectType && outFunc->objectType && outFunc->IsReadOnly() )
+-				objIsConst = true;
++			// ALTERED: a const method goes on calling the non-const methods of its own object, as it always could. Refused, scripts that
++			// compiled with every earlier version no longer do (bool get_available() const property { return is_available(); } with an
++			// is_available() that isn't const).
+ 
+ 			// The scope can be used to specify the base class
+ 			builder->GetObjectMethodDescriptions(name.AddressOf(), CastToObjectType(lookupResult.type.dataType.GetTypeInfo()), funcs, objIsConst, scope, node, script);
+@@ -13807,7 +13808,7 @@ int asCCompiler::CompileFunctionCall(asCScriptNode *node, asCExprContext *ctx, a
+ 
+ 			objectType = outFunc->objectType;
+ 
+-			asCDataType dt = asCDataType::CreateType(objectType, objIsConst);
++			asCDataType dt = asCDataType::CreateType(objectType, false);
+ 
+ 			// The object pointer is located at stack position 0
+ 			ctx->bc.InstrSHORT(asBC_PSF, 0);

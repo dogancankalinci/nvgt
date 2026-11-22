@@ -532,6 +532,14 @@ bool sdl_window_on_this_thread(SDL_Window* window) {
 	}
 	return false;
 }
+static text_font* default_window_font() { // Gives a window something to draw text with out of the box, or null when the platform has no font to offer in which case the script can still set one.
+	std::string path = platform_get_font();
+	if (path.empty()) return nullptr;
+	text_font* font = new text_font(path, 20);
+	if (font->is_valid()) return font;
+	font->release();
+	return nullptr;
+}
 game_window::game_window(const std::string& title, unsigned int w, unsigned int h, unsigned int flags) : _window(nullptr), _owns_window(true), _native_window(nullptr), _thread(thread_current_thread_id()), _refcount(1) {
 	if (Poco::Environment::os() == POCO_OS_LINUX) flags |= SDL_WINDOW_FULLSCREEN;
 	{
@@ -549,6 +557,7 @@ game_window::game_window(const std::string& title, unsigned int w, unsigned int 
 	// The renderer is created lazily on first graphics use (see ensure_renderer). Creating it here
 	// would make refresh_window present an empty frame every tick, which on Android holds the
 	// SDL ActivityMutex across a blocking eglSwapBuffers and can cause input-dispatch ANRs.
+	_font = default_window_font();
 	if (!SDL_HasScreenKeyboardSupport()) SDL_StartTextInput(_window);
 	SDL_PropertiesID props = SDL_GetWindowProperties(_window);
 	#ifdef NATIVE_WINDOW_SDL_PROP
@@ -567,6 +576,7 @@ game_window::game_window(SDL_Window* window) : _window(window), _owns_window(fal
 		return;
 	}
 	// Renderer created lazily on first graphics use; see ensure_renderer().
+	_font = default_window_font();
 	SDL_PropertiesID props = SDL_GetWindowProperties(_window);
 	#ifdef NATIVE_WINDOW_SDL_PROP
 	_native_window = (native_window_t)SDL_GetPointerProperty(props, NATIVE_WINDOW_SDL_PROP, nullptr);
@@ -586,6 +596,7 @@ void game_window::update_state() {
 	s.pixel_format = (unsigned int)SDL_GetWindowPixelFormat(w);
 	s.keyboard_grab = SDL_GetWindowKeyboardGrab(w);
 	s.mouse_grab = SDL_GetWindowMouseGrab(w);
+	s.mouse_relative_mode = SDL_GetWindowRelativeMouseMode(w);
 	s.opacity = SDL_GetWindowOpacity(w);
 	s.position_ok = SDL_GetWindowPosition(w, &s.x, &s.y);
 	s.size_ok = SDL_GetWindowSize(w, &s.w, &s.h);
@@ -820,6 +831,7 @@ void game_window::draw_menu(CScriptArray* items, float x, float y) {
 }
 
 Poco::AutoPtr<game_window> g_window; // set and cleared under game_windows_mutex(), see window_here()
+static bool system_tray_on_this_thread(); // Whether a live system_tray was made by the calling thread: wait() keeps pumping events for its menu even with no window shown.
 
 static std::vector<SDL_Event> post_events; // holds events that should be processed after the next wait() call.
 bool set_application_name(const std::string& name) {
@@ -863,6 +875,7 @@ game_window* ShowNVGTWindow(const std::string& window_title, unsigned int flags)
 		TTF_Quit();
 		return nullptr;
 	}
+	ApplyMouseRelativeMode(); // the mode the script asked for before there was a window
 	#ifdef __APPLE__
 	voice_over_game_window(made.get());
 	#endif
@@ -1053,7 +1066,9 @@ void wait(int ms) {
 		have_window = !g_window.isNull();
 		mine = have_window && g_window->on_thread();
 	}
-	if (!mine) {
+	// With no window at all, a system_tray this thread made still needs its events pumped (its menu's). With another thread's window
+	// open, pumping is that thread's, see pump_lock.
+	if (!mine && (have_window || !system_tray_on_this_thread())) {
 		game_windows_collect(); // window objects this thread made and another let go of, see there
 		// Mode 2 collects every wait() cycle on the main thread, as the documentation has it, with or without a window: without one
 		// wait() only slept, so a console script (or one before show_window()) waiting in a loop never had NVGT's steps run, and
@@ -1411,7 +1426,16 @@ static std::unordered_set<system_tray*>& system_tray_live() {
 	static auto* trays = new std::unordered_set<system_tray*>;
 	return *trays;
 }
+static bool system_tray_on_this_thread() {
+	std::lock_guard<std::recursive_mutex> lock(system_tray_gc_mutex());
+	for (system_tray* t : system_tray_live()) if (t->on_thread()) return true;
+	return false;
+}
 system_tray::system_tray(const std::string& tooltip, graphic* icon) : _tray(nullptr), _thread(thread_current_thread_id()), _refcount(1) {
+	if (window_thread_free()) { // SDL_PumpEvents only services trays once the video subsystem is initialized, which otherwise doesn't happen until show_window is called.
+		video_lock lock; // see ClipboardGetText()
+		InputInit();
+	}
 	_tray = SDL_CreateTray(icon ? icon->get_surface() : nullptr, tooltip.empty() ? nullptr : tooltip.c_str());
 	std::lock_guard<std::recursive_mutex> lock(system_tray_gc_mutex());
 	if (_tray) system_tray_live().insert(this);
@@ -1553,6 +1577,8 @@ void RegisterUI(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("game_window", "bool get_keyboard_grab() const property", asMETHOD(game_window, get_keyboard_grab), asCALL_THISCALL);
 	engine->RegisterObjectMethod("game_window", "bool set_mouse_grab(bool grabbed)", asMETHOD(game_window, set_mouse_grab), asCALL_THISCALL);
 	engine->RegisterObjectMethod("game_window", "bool get_mouse_grab() const property", asMETHOD(game_window, get_mouse_grab), asCALL_THISCALL);
+	engine->RegisterObjectMethod("game_window", "bool set_mouse_relative_mode(bool enabled)", asMETHOD(game_window, set_mouse_relative_mode), asCALL_THISCALL);
+	engine->RegisterObjectMethod("game_window", "bool get_mouse_relative_mode() const property", asMETHOD(game_window, get_mouse_relative_mode), asCALL_THISCALL);
 	engine->RegisterObjectMethod("game_window", "bool set_opacity(float opacity)", asMETHOD(game_window, set_opacity), asCALL_THISCALL);
 	engine->RegisterObjectMethod("game_window", "float get_opacity() const property", asMETHOD(game_window, get_opacity), asCALL_THISCALL);
 	engine->RegisterObjectMethod("game_window", "bool flash(uint operation)", asMETHOD(game_window, flash), asCALL_THISCALL);

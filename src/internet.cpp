@@ -711,7 +711,7 @@ public:
 				{
 					ScopedLock lock(*this);
 					_response = tmp_response;
-					bool moved = (_response.getStatus() == HTTPResponse::HTTP_MOVED_PERMANENTLY || _response.getStatus() == HTTPResponse::HTTP_FOUND || _response.getStatus() == HTTPResponse::HTTP_SEE_OTHER || _response.getStatus() == HTTPResponse::HTTP_TEMPORARY_REDIRECT);
+					bool moved = (_response.getStatus() == HTTPResponse::HTTP_MOVED_PERMANENTLY || _response.getStatus() == HTTPResponse::HTTP_FOUND || _response.getStatus() == HTTPResponse::HTTP_SEE_OTHER || _response.getStatus() == HTTPResponse::HTTP_TEMPORARY_REDIRECT || _response.getStatus() == HTTPResponse::HTTP_PERMANENT_REDIRECT);
 					if (moved) {
 						_url.resolve(_response.get("Location"));
 						authorize = false;
@@ -733,10 +733,12 @@ public:
 					_bytes_downloaded += count;
 				}
 				break;
-			} catch(Exception& e) {
+			} catch(Exception& e) { // A network error uses up one of the tries and the request is sent again after the retry delay, throwing away whatever part of the body arrived so it isn't duplicated.
 				if (_session) delete _session;
 				_session = nullptr;
-				return;
+				ScopedLock lock(*this);
+				_response_body.clear();
+				_bytes_downloaded = 0;
 			}
 		}
 		if (_session) {

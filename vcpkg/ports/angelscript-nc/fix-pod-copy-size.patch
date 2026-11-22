@@ -1,6 +1,8 @@
+diff --git a/sdk/angelscript/source/as_compiler.cpp b/sdk/angelscript/source/as_compiler.cpp
+index 9f6791a..7857bf1 100644
 --- a/sdk/angelscript/source/as_compiler.cpp
 +++ b/sdk/angelscript/source/as_compiler.cpp
-@@ -1285,7 +1285,8 @@
+@@ -1285,7 +1285,8 @@ int asCCompiler::CallDefaultConstructor(const asCDataType &type, int offset, boo
  				{
  					// For scoped typed we must move the reference from the local
  					// variable rather than copy it as there is no AddRef behaviour
@@ -10,7 +12,7 @@
  
  					// Clear the local variable so the reference isn't released
  					ctx.bc.InstrSHORT(asBC_ClrVPtr, (short)ctx.type.stackOffset);
-@@ -3491,7 +3492,8 @@
+@@ -3491,7 +3492,8 @@ bool asCCompiler::CompileInitialization(asCScriptNode *node, asCByteCode *bc, co
  								{
  									// For scoped typed we must move the reference from the local
  									// variable rather than copy it as there is no AddRef behaviour
@@ -20,7 +22,7 @@
  
  									// Clear the local variable so the reference isn't released
  									ctx.bc.InstrSHORT(asBC_ClrVPtr, (short)ctx.type.stackOffset);
-@@ -3682,7 +3684,8 @@
+@@ -3682,7 +3684,8 @@ bool asCCompiler::CompileInitializationWithAssignment(asCByteCode* bc, const asC
  		{
  			// For scoped typed we must move the reference from the local
  			// variable rather than copy it as there is no AddRef behaviour
@@ -30,7 +32,17 @@
  
  			// Clear the local variable so the reference isn't released
  			bc->InstrSHORT(asBC_ClrVPtr, (short)rexpr->type.stackOffset);
-@@ -7229,7 +7232,10 @@
+@@ -4217,7 +4220,8 @@ void asCCompiler::CompileInitListScopedElement(asCDataType &dt, asCExprContext *
+ 	// the variable so the object isn't released when the variable is freed
+ 	arg->bc.InstrSHORT(asBC_PSF, (short)offset);
+ 	arg->bc.InstrSHORT_DW(asBC_PshListElmnt, bufferVar, bufferSize);
+-	arg->bc.InstrSHORT_DW(asBC_COPY, AS_PTR_SIZE, asTYPEID_OBJHANDLE | engine->GetTypeIdFromDataType(varType));
++	// ALTERED: the size of the reference in bytes (asBC_COPY copies a number of bytes, see asCContext::ExecuteNext)
++	arg->bc.InstrSHORT_DW(asBC_COPY, AS_PTR_SIZE*4, asTYPEID_OBJHANDLE | engine->GetTypeIdFromDataType(varType));
+ 	arg->bc.Instr(asBC_PopPtr);
+ 	arg->bc.InstrSHORT(asBC_ClrVPtr, (short)offset);
+ 	ReleaseTemporaryVariable(offset, &arg->bc);
+@@ -7238,7 +7242,10 @@ int asCCompiler::PerformAssignment(asCExprValue *lvalue, asCExprValue *rvalue, a
  		else
  		{
  			// Default copy operator
@@ -41,7 +53,7 @@
  				!(lvalue->dataType.GetTypeInfo()->flags & asOBJ_POD) )
  			{
  				asCString msg;
-@@ -7240,7 +7246,7 @@
+@@ -7249,7 +7256,7 @@ int asCCompiler::PerformAssignment(asCExprValue *lvalue, asCExprValue *rvalue, a
  
  			// Copy larger data types from a reference
  			// TODO: runtime optimize: COPY should pop both arguments and store the reference in the register.
@@ -50,9 +62,11 @@
  		}
  	}
  	else
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+index 40bdd58..b0930c4 100644
 --- a/sdk/angelscript/source/as_context.cpp
 +++ b/sdk/angelscript/source/as_context.cpp
-@@ -3102,7 +3102,13 @@
+@@ -3102,7 +3102,13 @@ static const void *const dispatch_table[256] = {
  				SetInternalException(TXT_NULL_POINTER_ACCESS);
  				return;
  			}
@@ -67,9 +81,11 @@
  
  			// replace the pointer on the stack with the lvalue
  			*(asPWORD**)l_sp = (asPWORD*)d;
+diff --git a/sdk/angelscript/source/as_restore.cpp b/sdk/angelscript/source/as_restore.cpp
+index ac95007..458ab68 100644
 --- a/sdk/angelscript/source/as_restore.cpp
 +++ b/sdk/angelscript/source/as_restore.cpp
-@@ -3240,20 +3240,22 @@
+@@ -3240,20 +3240,22 @@ void asCReader::TranslateFunction(asCScriptFunction *func)
  			// COPY is used to copy POD types that don't have the opAssign method. It is
  			// also used to copy references to scoped types during variable initializations.
  			// Update the number of dwords to copy as it may be different on the target platform

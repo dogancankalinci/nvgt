@@ -418,6 +418,7 @@ void script_message_callback(const asSMessageInfo* msg, void* param) {
 	if (msg->type == asMSGTYPE_ERROR)
 		messages->InsertLast(&buffer_str);
 }
+const asPWORD SCRIPT_MODULE_STATEMENT_LIMIT_USERDATA = 0x4e565354; // Key for the default statement limit stored directly in a module's user data pointer, so that every script_module object for the same module sees the same value and it needs no cleanup.
 struct script_function_call_data {
 	int max_statement_count;
 	int current_statement_count;
@@ -524,6 +525,7 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 	std::string callstack2 = "";
 	// The engine's messages for this thread (a default value that doesn't compile) go to errors until the call ends, see CScriptMessageSink: the engine's message callback was replaced with one for errors and then cleared, which also gave the messages of other threads' builds to errors (two threads added to it at once) and took NVGT's own callback away.
 	CScriptMessageSink message_sink(script_message_callback, errors);
+	if (max_statement_count == 0 && func->GetModule()) max_statement_count = (int)(asPWORD)func->GetModule()->GetUserData(SCRIPT_MODULE_STATEMENT_LIMIT_USERDATA); // 0 means use the default of the function's module, whereas a negative value means no limit.
 	script_function_call_data call_data {max_statement_count, 0, false, nullptr, false, g_script_function_call};
 	// Every statement run on this thread from here until the results are gathered is the call's, whatever context runs it: the copy constructor or opAssign copying an argument or the result (run on a context of their own, as the call's is already prepared), a default value, a callback run on a context of its own, a script random generator. Only the call's own context and its defaults counted, so a copy that never ended hung the script whatever the limit.
 	script_function_call_scope scope(call_data);
@@ -973,12 +975,10 @@ class script_module {
 	int RefCount;
 	bool exists;
 public:
-	unsigned int max_statement_count;
 	script_module(asIScriptModule* module, bool e) {
 		mod_name = module->GetName();
 		exists = e;
 		RefCount = 1;
-		max_statement_count = 0;
 	}
 	void AddRef() {
 		asAtomicInc(RefCount);
@@ -1127,6 +1127,13 @@ public:
 	// compile_global() was declared without its errors parameter until the errors array was added before line_offset; this keeps
 	// calls written for the old declaration that pass a line offset compiling.
 	int compile_global_at(const std::string& section_name, const std::string& code, asDWORD line_offset) { return compile_global(section_name, code, nullptr, line_offset); }
+	asDWORD get_max_statement_count() {
+		if (!get_mod()) return 0;
+		return (asDWORD)(asPWORD)get_mod()->GetUserData(SCRIPT_MODULE_STATEMENT_LIMIT_USERDATA);
+	}
+	void set_max_statement_count(asDWORD count) {
+		if (get_mod()) get_mod()->SetUserData((void*)(asPWORD)count, SCRIPT_MODULE_STATEMENT_LIMIT_USERDATA);
+	}
 	void discard() {
 		std::lock_guard<std::recursive_mutex> lock(script_module_mutex()); // See script_module_mutex(): the globals' destructors, script code, run with it held.
 		asIScriptModule* mod = get_mod();
@@ -1381,7 +1388,8 @@ void RegisterScripting(asIScriptEngine* engine) {
 	engine->RegisterObjectType(_O("script_module"), 0, asOBJ_REF);
 	engine->RegisterObjectBehaviour(_O("script_module"), asBEHAVE_ADDREF, _O("void f()"), asMETHOD(script_module, AddRef), asCALL_THISCALL);
 	engine->RegisterObjectBehaviour(_O("script_module"), asBEHAVE_RELEASE, _O("void f()"), asMETHOD(script_module, Release), asCALL_THISCALL);
-	engine->RegisterObjectProperty(_O("script_module"), _O("uint max_statement_count"), asOFFSET(script_module, max_statement_count));
+	engine->RegisterObjectMethod(_O("script_module"), _O("uint get_max_statement_count() const property"), asMETHOD(script_module, get_max_statement_count), asCALL_THISCALL);
+	engine->RegisterObjectMethod(_O("script_module"), _O("void set_max_statement_count(uint count) property"), asMETHOD(script_module, set_max_statement_count), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("script_module"), _O("int add_section(const string&in name, const string&in code, uint line_offset=0)"), asMETHOD(script_module, add_section), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("script_module"), _O("int build(string[]@ errors=null)"), asMETHOD(script_module, build), asCALL_THISCALL);
 	engine->RegisterObjectMethod(_O("script_module"), _O("string get_bytecode(bool strip_debug_info)"), asMETHOD(script_module, get_bytecode), asCALL_THISCALL);

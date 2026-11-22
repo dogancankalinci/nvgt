@@ -193,6 +193,7 @@ void InputInit();
 void InputDestroy();
 void InputQuitVideo(); // destroy_window(); InputDestroy() quits the rest of SDL at the program's end
 bool InputEvent(SDL_Event* evt);
+void ApplyMouseRelativeMode();
 void lost_window_focus();
 void regained_window_focus();
 void update_joysticks();

@@ -96,7 +96,7 @@ elif os.path.isfile(apk_path):
 				root_files[entry] = apk.read(entry)
 
 if not os.path.isdir(os.path.join(os.path.dirname(__file__), "..", "release", "stub")): os.mkdir(os.path.join(os.path.dirname(__file__), "..", "release", "stub"))
-stub_filename = "nvgt_android" + ("_debug" if is_debug else "") + ("_iap" if is_iap else "") + ".bin"
+stub_filename = "nvgt_android" + ("_nc" if variant.startswith("stubnc") else "") + ("_debug" if is_debug else "") + ("_iap" if is_iap else "") + ".bin"
 zip_out = zipfile.ZipFile(os.path.join(os.path.dirname(__file__), "..", "release", "stub", stub_filename), "w", zipfile.ZIP_DEFLATED)
 zip_out.write(res_zip_path, "res.zip")
 for arc_path, data in root_files.items():

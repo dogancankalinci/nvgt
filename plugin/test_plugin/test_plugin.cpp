@@ -10,6 +10,7 @@
  * 3. This notice may not be removed or altered from any source distribution.
 */
 
+#include <stdio.h>
 #include <windows.h>
 #include "../../src/nvgt_plugin.h"
 
@@ -20,9 +21,17 @@ void do_exception() {
 	asGetActiveContext()->SetException("It's rare when an exception being thrown is a good thing...");
 }
 
+bool test_plugin_got_sound(void* snd) { return snd != nullptr; }
+
+void on_shutdown() {
+	printf("test_plugin received the shutdown notification\n");
+}
+
 plugin_main(nvgt_plugin_shared* shared) {
 	prepare_plugin(shared);
 	shared->script_engine->RegisterGlobalFunction("void do_test()", asFUNCTION(do_test), asCALL_CDECL);
 	shared->script_engine->RegisterGlobalFunction("void do_exception()", asFUNCTION(do_exception), asCALL_CDECL);
+	if (shared->script_engine->RegisterGlobalFunction("bool test_plugin_got_sound(sound@+ snd)", asFUNCTION(test_plugin_got_sound), asCALL_CDECL) < 0) return false; // Depends on a builtin sound system type, so this verifies that plugins are loaded after the engine is configured.
+	nvgt_register_shutdown_notification(on_shutdown);
 	return true;
 }

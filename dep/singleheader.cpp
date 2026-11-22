@@ -513,3 +513,15 @@ static const bool nvgt_wav_backend_installed = (g_ma_decoding_backend_vtable_wav
 #include "speech.h"
 #define THREAD_IMPLEMENTATION
 #include "thread.h"
+#ifdef _WIN32 // windows.h defines min and max macros, which break std::min and std::max.
+#pragma push_macro("min")
+#pragma push_macro("max")
+#undef min
+#undef max
+#endif
+#define MICROSYNTHISER_IMPL
+#include "microsynthiser.hpp"
+#ifdef _WIN32
+#pragma pop_macro("min")
+#pragma pop_macro("max")
+#endif

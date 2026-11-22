@@ -1,5 +1,5 @@
 # seek
-Seeks to a particular point in the sound.
+Move the sound to a position.
 
 `bool sound::seek(uint64 position);`
 

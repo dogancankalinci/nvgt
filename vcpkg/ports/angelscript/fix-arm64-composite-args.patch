@@ -1,8 +1,8 @@
 diff --git a/sdk/angelscript/source/as_callfunc_arm64.cpp b/sdk/angelscript/source/as_callfunc_arm64.cpp
-index ae4b754..e5a0315 100644
+index e6d1cd4..537d0ac 100644
 --- a/sdk/angelscript/source/as_callfunc_arm64.cpp
 +++ b/sdk/angelscript/source/as_callfunc_arm64.cpp
-@@ -123,21 +123,6 @@ static inline bool IsRegisterHFA(const asCDataType &type)
+@@ -127,27 +127,6 @@ static inline bool IsRegisterHFA(const asCDataType &type)
  	return type.GetSizeInMemoryBytes() <= maxAllowedSize;
  }
  
@@ -15,6 +15,12 @@ index ae4b754..e5a0315 100644
 -	if( !IsRegisterHFA(type) )
 -		return false;
 -
+-#if defined(AS_ARM64_MSVC)
+-	const asCTypeInfo *const typeInfo = type.GetTypeInfo();
+-
+-	if(typeInfo->flags & (asOBJ_APP_CLASS_CONSTRUCTOR | asOBJ_APP_CLASS_DESTRUCTOR | asOBJ_APP_CLASS_ASSIGNMENT | asOBJ_APP_CLASS_DESTRUCTOR))
+-		return false;
+-#endif
 -	const bool doubles = (type.GetTypeInfo()->flags & asOBJ_APP_CLASS_ALIGN8) != 0;
 -	const int registersUsed = type.GetSizeInMemoryDWords() / (doubles ? sizeof(double) : sizeof(float));
 -
@@ -24,7 +30,7 @@ index ae4b754..e5a0315 100644
  #if defined(AS_IPHONE) || defined(AS_MAC)
  static inline void PadAppleStack(asQWORD* const argsArray, asQWORD& numArgs, asQWORD& stackDispositionBytes, asUINT argSize)
  {
-@@ -214,59 +199,94 @@ asQWORD CallSystemFunctionNative(asCContext *context, asCScriptFunction *descr,
+@@ -236,59 +215,99 @@ asQWORD CallSystemFunctionNative(asCContext *context, asCScriptFunction *descr,
  			const asUINT parmDWords = parmType.GetSizeInMemoryDWords();
  			const asUINT parmQWords = (parmDWords >> 1) + (parmDWords & 1);
  
@@ -47,7 +53,12 @@ index ae4b754..e5a0315 100644
 +			// address of a complex object only needs one register, not as many as the object's size.
 +			// The memory of an object larger than 16 bytes is freed with the other arguments after the call
 +			// (AS_LARGE_OBJS_PASSED_BY_REF), as the function may still be reading it.
-+			const bool isHFA = IsRegisterHFA(parmType);
++			bool isHFA = IsRegisterHFA(parmType);
++#if defined(AS_ARM64_MSVC)
++			// Upstream's IsRegisterHFAParameter, which this replaces, didn't count these as HFAs for MSVC
++			if( parmTypeInfo->flags & (asOBJ_APP_CLASS_CONSTRUCTOR | asOBJ_APP_CLASS_DESTRUCTOR | asOBJ_APP_CLASS_ASSIGNMENT) )
++				isHFA = false;
++#endif
 +			if( (parmTypeInfo->flags & COMPLEX_MASK) || (parmQWords > 2 && !isHFA) )
  			{
 +				// Passed by reference
@@ -151,7 +162,7 @@ index ae4b754..e5a0315 100644
  		}
  		else if( parmType.IsFloatType() && !parmType.IsReference() )
  		{
-@@ -356,7 +376,9 @@ asQWORD CallSystemFunctionNative(asCContext *context, asCScriptFunction *descr,
+@@ -378,7 +397,9 @@ asQWORD CallSystemFunctionNative(asCContext *context, asCScriptFunction *descr,
  #if defined(AS_IPHONE) || defined(AS_MAC)
  			if(!fitsInRegisters)
  			{
@@ -163,10 +174,10 @@ index ae4b754..e5a0315 100644
  				memcpy( ((asBYTE*)&argsArray[numArgs]) + stackDispositionBytes, (void*)(args+argsPos), parmBytes);
  				stackDispositionBytes += parmBytes;
 diff --git a/sdk/angelscript/source/as_config.h b/sdk/angelscript/source/as_config.h
-index 2ddfdd0..55be74c 100644
+index 9311938..d314b01 100644
 --- a/sdk/angelscript/source/as_config.h
 +++ b/sdk/angelscript/source/as_config.h
-@@ -1393,6 +1393,13 @@
+@@ -1407,6 +1407,13 @@
  	#define AS_USE_DOUBLE_AS_FLOAT	// use 32bit floats instead of doubles
  #endif
  

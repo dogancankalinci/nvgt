@@ -47,12 +47,15 @@ if ARGUMENTS.get("debug", "0") == "1":
 	Alias('cdb', cdb)
 
 # Platform setup and system libraries
-common_libs = ["PocoJSON", "PocoNet", "PocoNetSSL", "PocoUtil", "PocoXML", "PocoCrypto", "PocoFoundation", "expat", "angelscript", "SDL3_ttf", "freetype", "bz2", "enet", "reactphysics3d", "ssl", "crypto", "utf8proc", "pcre2-8", "vorbisfile", "vorbisenc", "vorbis", "ogg", "opusfile", "opusenc", "opus", "tinyexpr", "tiny-aes-c", "ffi"]
+common_libs = ["PocoJSON", "PocoNet", "PocoNetSSL", "PocoUtil", "PocoXML", "PocoCrypto", "PocoFoundation", "expat", "angelscript", "SDL3_ttf", "freetype", "bz2", "enet", "Jolt", "ssl", "crypto", "utf8proc", "pcre2-8", "vorbisfile", "vorbisenc", "vorbis", "ogg", "opusfile", "opusenc", "opus", "tinyexpr", "tiny-aes-c", "ffi"]
 if env["NVGT_TARGET"] == "windows":
+	# HTTPS uses Windows' own TLS rather than OpenSSL, see vcpkg/triplets/x64-windows.cmake. OpenSSL itself stays on the list for
+	# the iOS signer in src/bundling.cpp, which only the compiler needs: the stubs link it only if they reference it.
+	common_libs = [l for l in common_libs if l not in ("PocoNetSSL", "PocoCrypto")] + ["PocoNetSSLWin"]
 	deb_rel_flags = ["/MTd", "/Od", "/Z7"] if ARGUMENTS.get("debug", "0") == "1" else ["/MT", "/O2"]
 	env.Append(CCFLAGS = ["/EHsc", "/J", "/utf-8", "/Gy", "/std:c++20", "/GF", "/Zc:inline", "/bigobj", "/permissive-", "/W3" if ARGUMENTS.get("warnings", "0") == "1" else "", "/WX" if ARGUMENTS.get("warnings_as_errors", "0") == "1" else ""] + deb_rel_flags)
 	env.Append(LINKFLAGS = ["/NOEXP", "/NOIMPLIB"], no_import_lib = 1)
-	env.Append(LIBS = ["Kernel32", "User32", "imm32", "OneCoreUAP", "dinput8", "dxguid", "gdi32", "winspool", "shell32", "iphlpapi", "ole32", "oleaut32", "delayimp", "uuid", "comdlg32", "advapi32", "netapi32", "winmm", "version", "crypt32", "bcrypt", "normaliz", "wldap32", "ws2_32", "ntdll", "wbemuuid"])
+	env.Append(LIBS = ["Kernel32", "User32", "imm32", "OneCoreUAP", "dinput8", "dxguid", "gdi32", "winspool", "shell32", "iphlpapi", "ole32", "oleaut32", "delayimp", "uuid", "comdlg32", "advapi32", "netapi32", "secur32", "winmm", "version", "crypt32", "bcrypt", "normaliz", "wldap32", "ws2_32", "ntdll", "wbemuuid"])
 	env.Append(CPPDEFINES = ["NVGT_NO_IAP"])
 else:
 	env.Append(CXXFLAGS = ["-fms-extensions", "-std=c++20", "-fpermissive", "-O0" if ARGUMENTS.get("debug", 0) == "1" else "-O3", "-Wno-narrowing", "-Wno-int-to-pointer-cast", "-Wno-delete-incomplete", "-Wno-unused-result", "-g" if ARGUMENTS.get("debug", 0) == "1" else "", "-Wall" if ARGUMENTS.get("warnings", "0") == "1" else "", "-Wextra" if ARGUMENTS.get("warnings", "0") == "1" else "", "-Werror" if ARGUMENTS.get("warnings_as_errors", "0") == "1" else ""], LIBS = ["m"])
@@ -68,8 +71,8 @@ elif env["NVGT_TARGET"] == "ios":
 	env.Append(CCFLAGS = ["-arch", "arm64", "-xobjective-c++", "-miphoneos-version-min=16.0"], LINKFLAGS = ["-arch", "arm64", "-miphoneos-version-min=16.0"])
 	env["FRAMEWORKPREFIX"] = "-weak_framework"
 elif env["NVGT_TARGET"] == "linux":
-	# enable the gold linker, strip the resulting binaries, and add /usr/local/lib to the libpath because it seems we aren't finding libraries unless we do manually.
-	env.Append(CPPPATH = ["lindev/include", "/usr/local/include"], LIBPATH = ["lindev/lib", "/usr/local/lib", "/usr/lib/x86_64-linux-gnu"], LINKFLAGS = ["-fuse-ld=gold", "-g" if ARGUMENTS.get("debug", 0) == "1" else "-s"])
+	# enable the gold linker, drop unused functions and data, strip the resulting binaries, and add /usr/local/lib to the libpath because it seems we aren't finding libraries unless we do manually.
+	env.Append(CPPPATH = ["lindev/include", "/usr/local/include"], LIBPATH = ["lindev/lib", "/usr/local/lib", "/usr/lib/x86_64-linux-gnu"], CCFLAGS = ["-ffunction-sections", "-fdata-sections"], LINKFLAGS = ["-fuse-ld=gold", "-Wl,--gc-sections", "-g" if ARGUMENTS.get("debug", 0) == "1" else "-s"])
 	env.Append(CPPDEFINES = ["NVGT_NO_IAP"])
 elif env["NVGT_TARGET"] == "android":
 	SConscript("build/android_sconscript.py", exports = ["env"])
@@ -359,7 +362,15 @@ if  ARGUMENTS.get("no_plugins", "0") == "0":
 		# Build the plugin.
 		# A list of static libraries NVGT should link with is returned if the plugin generates any.
 		plug = SConscript(s, variant_dir = f"build/obj_plugin{'_ios' if env['NVGT_TARGET'] == 'ios' else ''}/{plugname}", duplicate = 0, exports = {"env": plugin_env, "nvgt_env": env})
-		if plug and plugname in static_plugins: link_static_plugin(env, plugname, plug)
+		if not plug: continue
+		# A plugin registers itself under the name of its static library, which can differ from its directory (plugin/phonon
+		# builds nvgt_phonon), so it is linked statically when either is listed.
+		static_name = next((os.path.splitext(n.name)[0] for n in Flatten([plug]) if not isinstance(n, str)), plugname)
+		if env["NVGT_TARGET"] != "windows" and static_name.startswith("lib"): static_name = static_name[3:]
+		if plugname in static_plugins or static_name in static_plugins:
+			link_static_plugin(env, static_name, plug)
+			static_plugins = [static_name if p in (plugname, static_name) else p for p in static_plugins]
+			static_plugins = list(dict.fromkeys(static_plugins))
 	# Finally generate nvgt_plugins.cpp
 	static_plugins_path = os.path.join(tempfile.gettempdir(), "nvgt_plugins")
 	if len(static_plugins) > 0:
@@ -371,7 +382,7 @@ if  ARGUMENTS.get("no_plugins", "0") == "0":
 # Android does not use NVGT's own prebuilt static libs (deps/ASAddon) or the shared libpath here — its build loop compiles
 # those sources directly per ABI and replaces LIBS/LIBPATH with a clean per-ABI set. Everyone else links them as usual.
 if env["NVGT_TARGET"] != "android":
-	env.Append(LIBS = ["deps"] + common_libs + ["zs" if env["NVGT_TARGET"] == "windows" else "z", "SDL3", "phonon", "pffft", "mysofa", "ASAddon"])
+	env.Append(LIBS = ["deps"] + common_libs + ["zs" if env["NVGT_TARGET"] == "windows" else "z", "SDL3", "ASAddon"])
 if env["NVGT_TARGET"] in ("windows", "macos", "linux"): env.Append(LIBS = ["prism", "fmt", "simdutf", "hwy_contrib", "hwy"])
 if env["NVGT_TARGET"] == "windows": env.Append(LIBS = ["runtimeobject", "uiautomationcore", "rpcrt4", "powrprof", "xaudio2"])
 elif env["NVGT_TARGET"] == "linux": env.Append(LIBS = ["dbus-1"])
@@ -412,7 +423,7 @@ elif env["NVGT_TARGET"] in ("macos", "ios"):
 	if env["NVGT_TARGET"] == "macos":
 		env.Append(CPPDEFINES = ["NVGT_NO_IAP"])
 		env.Append(FRAMEWORKS = ["AppKit", "Carbon", "Cocoa", "CoreServices", "ForceFeedback", "UniformTypeIdentifiers"])
-		env.Append(LINKFLAGS = ["-Wl,-rpath,'@loader_path',-rpath,'@loader_path/lib',-rpath,'@loader_path/../Frameworks',-dead_strip_dylibs", "-mmacosx-version-min=14.0", "-fexperimental-library"])
+		env.Append(LINKFLAGS = ["-Wl,-rpath,'@loader_path',-rpath,'@loader_path/lib',-rpath,'@loader_path/../Frameworks',-dead_strip_dylibs,-dead_strip", "-mmacosx-version-min=14.0", "-fexperimental-library"])
 	else:
 		sources.append("iap_apple.mm")
 		env.Append(FRAMEWORKS = ["CoreBluetooth", "CoreGraphics", "CoreMotion", "Foundation", "OpenGLES", "StoreKit", "UIKit"])
@@ -467,7 +478,7 @@ if env["NVGT_TARGET"] not in ("ios", "android"):
 		# Only on windows we must go through the frustrating hastle of compiling a version of nvgt with no console E. the windows subsystem.
 		# It is at least set up so that we only need to recompile one object
 		if "nvgt.cpp" in sources: sources.remove("nvgt.cpp")
-		if ARGUMENTS.get("debug", "0") == "1": env["PDB"] = "#build/debug/nvgtw.pdb"
+		if ARGUMENTS.get("debug", "0") != "0": env["PDB"] = "#build/debug/nvgtw.pdb"
 		nvgtw = env.Program("release/nvgtw", env.Object([os.path.join("build/obj_src", s) for s in sources]) + [env.Object("build/obj_src/nvgtw", "build/obj_src/nvgt.cpp", CPPDEFINES = ["$CPPDEFINES", "NVGT_WIN_APP"]), extra_objects], LINKFLAGS = ["$LINKFLAGS", "/subsystem:windows"])
 		sources.append("nvgt.cpp")
 		# Todo: Properly implement the install target on other platforms
@@ -564,11 +575,10 @@ elif env["NVGT_TARGET"] == "android":
 	# a selected set of dep/ C/C++ sources, and all of src/. It is NOT linked as prebuilt static libs (those are arm64-only);
 	# only the per-ABI droidev deps + SDL3 + Android system libs are linked below.
 	asaddon_srcs = [str(f).replace(os.path.sep, "/") for f in Glob("ASAddon/src/*.cpp")]
-	dep_srcs = ["dep/" + s for s in ["entities.cpp", "ma_reverb_node.c", "micropather.cpp", "miniaudio_libopus.c", "miniaudio_libvorbis.c", "miniaudio_phonon.c", "miniaudio_wdl_resampler.cpp", "monocypher.c", "resample.cpp", "rng_get_bytes.c", "singleheader.cpp", "sonic.c", "tonar.c", "uncompr.c"]]
-	# Clean per-ABI link set: droidev static deps (Steam Audio's phonon with its pffft and libmysofa among them) + SDL3
-	# shared + Android system libs. No NVGT static libs; static plugins requested via android_static_plugins are prepended
-	# per ABI below.
-	android_link_libs = common_libs + ["z", "SDL3", "phonon", "pffft", "mysofa", "GLESv1_CM", "GLESv2", "OpenSLES", "log", "android", "m"]
+	dep_srcs = ["dep/" + s for s in ["entities.cpp", "ma_reverb_node.c", "micropather.cpp", "miniaudio_libopus.c", "miniaudio_libvorbis.c", "miniaudio_wdl_resampler.cpp", "monocypher.c", "resample.cpp", "rng_get_bytes.c", "singleheader.cpp", "sonic.c", "tonar.c", "uncompr.c"]]
+	# Clean per-ABI link set: droidev static deps + SDL3 shared + Android system libs. No NVGT static libs; static plugins
+	# requested via android_static_plugins are prepended per ABI below (Steam Audio is linked by the phonon plugin).
+	android_link_libs = common_libs + ["z", "SDL3", "GLESv1_CM", "GLESv2", "OpenSLES", "log", "android", "m"]
 	def prune_android_libs(dest, keep):
 		"""Deletes every .so in dest that this build does not put there. gradle packages the whole directory
 		(jniLibs.srcDirs in jni/build.gradle), and SCons never removes a file it has stopped installing, so a library
@@ -610,9 +620,14 @@ elif env["NVGT_TARGET"] == "android":
 			plugname = str(s).split(os.path.sep)[-2]
 			if ARGUMENTS.get(f"no_{plugname}_plugin", "0") == "1": continue
 			plug = SConscript(s, variant_dir = f"build/obj_plugin_android/{abi}/{plugname}", duplicate = 0, exports = {"env": android_plugin_env(abi_env, abi), "nvgt_env": abi_env})
-			if plug and plugname in android_static_plugins:
+			if not plug: continue
+			# A plugin registers under its archive's name, see the desktop build above.
+			static_name = next((os.path.splitext(n.name)[0] for n in Flatten([plug]) if not isinstance(n, str)), plugname)
+			if static_name.startswith("lib"): static_name = static_name[3:]
+			if plugname in android_static_plugins or static_name in android_static_plugins:
 				abi_static_libs.append(plug)
-				plugin_shared_deps[plugname] = [n for n in split_plugin_link_list(plug)[1] if n in env["NVGT_OSDEV_REDIST_LIBS"]]
+				android_static_plugins[:] = list(dict.fromkeys(static_name if p in (plugname, static_name) else p for p in android_static_plugins))
+				plugin_shared_deps[static_name] = [n for n in split_plugin_link_list(plug)[1] if n in env["NVGT_OSDEV_REDIST_LIBS"]]
 		# version + lzfse (bundling.cpp's Assets.car encoder) are arch-specific but variant-independent: build once per ABI.
 		shared_objs = [abi_env.Object(f"build/obj_android/{abi}/version", "src/version.cpp")]
 		shared_objs += [abi_env.Object(f"build/obj_android/{abi}/lzfse/{s}", "dep/lzfse/" + s + ".c") for s in lzfse_srcs]
@@ -655,13 +670,24 @@ elif env["NVGT_TARGET"] == "android":
 			android_deps.extend(env.Install(dest, libcxx_path))
 			android_deps.extend(env.Install(dest, os.path.join(abi_dev, "lib/libSDL3.so")))
 			prune_android_libs(dest, {libname + ".so", os.path.basename(libcxx_path), "libSDL3.so"})
+			# The compiler-less stub (nvgt_android_nc.bin, selected with #pragma stub nc) links the stub's own objects against angelscript_nc.
+			if variant == "stub" and "angelscript" in venv["LIBS"]:
+				nc_env = venv.Clone()
+				nc_env.Replace(LIBS = ["angelscript_nc" if l == "angelscript" else l for l in venv["LIBS"]])
+				nc_dest = f"jni/libs/stub_nc/{abi}"
+				nc_lib = nc_env.SharedLibrary(os.path.join(nc_dest, "libgame"), objs)
+				if android_static_plugins: nc_env.Depends(nc_lib, [n for n in Flatten(abi_static_libs) if not isinstance(n, str)])
+				android_deps.append(nc_lib)
+				android_deps.extend(env.Install(nc_dest, libcxx_path))
+				android_deps.extend(env.Install(nc_dest, os.path.join(abi_dev, "lib/libSDL3.so")))
+				prune_android_libs(nc_dest, {"libgame.so", os.path.basename(libcxx_path), "libSDL3.so"})
 	# `scons android_apk` groups the native libs; gradle packaging (assemble*Release) stays a separate manual/CI step (see d260d85).
 	def run_gradle(target, source, env):
 		import subprocess
 		original_dir = os.getcwd()
 		os.chdir("jni")
 		try:
-			subprocess.check_call(env["GRADLE_CMD"] + ["assembleStubRelease", "assembleStubIapRelease", "assembleRunnerRelease"])
+			subprocess.check_call(env["GRADLE_CMD"] + ["assembleStubRelease", "assembleStubncRelease", "assembleStubIapRelease", "assembleRunnerRelease"])
 		finally:
 			os.chdir(original_dir)
 	apk_alias = env.Alias("android_apk", android_deps)

@@ -11,8 +11,11 @@
  * 3. This notice may not be removed or altered from any source distribution.
 */
 
+#include <algorithm>
+#include <exception>
 #include <string>
 #include <unordered_map>
+#include <vector>
 #include <Poco/BinaryReader.h>
 #include <Poco/BinaryWriter.h>
 #include <Poco/Format.h>
@@ -21,6 +24,7 @@
 #include "datastreams.h"
 #include "nvgt.h"
 #include "nvgt_plugin.h"
+#include "sound_nodes.h"
 #include "UI.h"
 #include "xplatform.h"
 
@@ -31,6 +35,11 @@ std::ios* nvgt_datastream_get_ios(void* stream) { return reinterpret_cast<datast
 // We need a no-op wrapper for nvgt_bundle_shared_library which is only needed on script compilation and thus is not included in stubs or mobile platforms.
 void nvgt_bundle_shared_library(const std::string& libname) {}
 #endif
+#if defined(_WIN32) && defined(_DEBUG)
+// Every module linked with the static debug CRT keeps its own list of heap blocks, so memory such as a std::string's buffer that a plugin allocates and NVGT frees, or the reverse, trips a debug heap assertion. Debug plugins find these with GetProcAddress and route their operator new and delete through NVGT's, see nvgt_plugin.h. Release builds don't need this, as the static CRT allocates from the process heap that every module shares.
+extern "C" __declspec(dllexport) void* nvgt_debug_operator_new(size_t size, size_t alignment) { return alignment ? ::operator new(size, std::align_val_t(alignment)) : ::operator new(size); }
+extern "C" __declspec(dllexport) void nvgt_debug_operator_delete(void* ptr, size_t alignment) { if (alignment) ::operator delete(ptr, std::align_val_t(alignment)); else ::operator delete(ptr); }
+#endif
 typedef struct {
 	nvgt_plugin_entry* e;
 	nvgt_plugin_version_func* v;
@@ -38,6 +47,41 @@ typedef struct {
 std::unordered_map<std::string, SDL_SharedObject*> loaded_plugins; // Contains handles to sdl objects.
 std::unordered_map<std::string, static_plugin_vtable>* static_plugins = NULL; // Contains pointers to static plugin entry points. This doesn't contain entry points for plugins loaded from a dll, rather those that have been linked statically into the executable produced by a custom build of nvgt. This is a pointer because the map is initialized the first time register_static_plugin is called so that we are not trusting in global initialization order.
 std::vector<const char*>* static_plugin_lib_markers = NULL; // Same lifetime rules; see register_static_plugin_libs.
+std::vector<nvgt_plugin_shutdown_callback*> plugin_shutdown_callbacks; // Called in reverse registration order by notify_nvgt_plugins_shutdown.
+
+void nvgt_register_shutdown_notification(nvgt_plugin_shutdown_callback* callback) {
+	if (!callback || std::find(plugin_shutdown_callbacks.begin(), plugin_shutdown_callbacks.end(), callback) != plugin_shutdown_callbacks.end()) return;
+	plugin_shutdown_callbacks.push_back(callback);
+}
+static std::unordered_map<int, nvgt_raycast_provider_getter*> raycast_provider_types; // Keyed by script type id without handle flags.
+void nvgt_register_raycast_provider_type(int type_id, nvgt_raycast_provider_getter* getter) {
+	type_id &= ~(asTYPEID_OBJHANDLE | asTYPEID_HANDLETOCONST);
+	if (getter) raycast_provider_types[type_id] = getter;
+	else raycast_provider_types.erase(type_id);
+}
+nvgt_raycast_provider* nvgt_get_raycast_provider(void* object, int type_id) { // object is the object itself, as returned by CScriptHandle::GetRef, any handle flags in type_id are ignored.
+	if (!object) return nullptr;
+	auto it = raycast_provider_types.find(type_id & ~(asTYPEID_OBJHANDLE | asTYPEID_HANDLETOCONST));
+	return it == raycast_provider_types.end() ? nullptr : it->second(object);
+}
+int nvgt_register_audio_panner(nvgt_spatializer_component_factory* factory, bool default_enabled) { return factory ? register_audio_panner(factory, default_enabled) : -1; }
+int nvgt_register_audio_attenuator(nvgt_spatializer_component_factory* factory, bool default_enabled, nvgt_audio_attenuation_function* attenuation) { return factory ? register_audio_attenuator(factory, default_enabled, attenuation) : -1; }
+float nvgt_get_audio_attenuation(int attenuator_id, const audio_spatialization_parameters* params, float distance) { return params ? get_audio_attenuation(attenuator_id, *params, distance) : 1.0f; }
+spatializer_component_node* nvgt_audio_spatializer_component_create(audio_plugin_spatializer_component_interface* impl, audio_spatializer* spatializer, audio_engine* engine, unsigned int input_channels, unsigned int output_channels) { return create_plugin_spatializer_component(impl, spatializer, engine, input_channels, output_channels); }
+audio_engine* nvgt_get_default_audio_engine() { return init_sound() ? g_audio_engine : nullptr; }
+reverb3d* nvgt_reverb3d_create_with_handler(reverb3d_attachment_handler* handler, audio_node* reverb, mixer* destination, audio_engine* engine) {
+	// reverb3d::create_with_handler() throws for what it refuses (a reverb of another engine, a loop, a reverb in use elsewhere) and frees
+	// the handler itself; a plugin only looks for null.
+	try { return reverb3d::create_with_handler(handler, reverb, destination, engine ? engine : nvgt_get_default_audio_engine()); }
+	catch (const std::exception&) { return nullptr; }
+}
+void notify_nvgt_plugins_shutdown() {
+	while (!plugin_shutdown_callbacks.empty()) {
+		nvgt_plugin_shutdown_callback* callback = plugin_shutdown_callbacks.back();
+		plugin_shutdown_callbacks.pop_back();
+		callback();
+	}
+}
 
 bool load_nvgt_plugin(const std::string& name, std::string* errmsg, void* user) {
 	nvgt_plugin_entry* entry = NULL;
@@ -119,20 +163,15 @@ void list_loaded_nvgt_plugins(std::vector<std::string>& output) {
 	for (auto kv : loaded_plugins) output.push_back(kv.first);
 }
 
-bool load_serialized_nvgt_plugins(Poco::BinaryReader& br) {
+bool read_serialized_nvgt_plugins(Poco::BinaryReader& br, std::vector<std::string>& names) {
 	unsigned short count;
 	br >> count;
-	if (!count) return true;
 	for (int i = 0; i < count; i++) {
 		std::string name;
 		br >> name;
-		std::string errmsg = Poco::format("Unable to load %s, exiting.", name);
-		if (!load_nvgt_plugin(name, &errmsg)) {
-			message(errmsg, "error");
-			return false;
-		}
+		names.push_back(name);
 	}
-	return true;
+	return br.good();
 }
 
 void serialize_nvgt_plugins(Poco::BinaryWriter& bw) {
@@ -143,6 +182,7 @@ void serialize_nvgt_plugins(Poco::BinaryWriter& bw) {
 }
 
 void unload_nvgt_plugins() {
+	notify_nvgt_plugins_shutdown();
 	for (const auto& i : loaded_plugins) {
 		if (i.second) SDL_UnloadObject(i.second);
 	}

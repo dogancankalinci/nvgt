@@ -85,9 +85,6 @@ While the current audio form will always be here for backwards compatibility, it
 ### input_box on Linux and Mobile
 The input_box function is currently only implemented on Windows and MacOS, we need to get it working on all platforms.
 
-### reactphysics3d
-We're working on integrating a physics engine into NVGT for much more advanced games. There are many of these out there, we chose reactphysics3d because it builds on all of our desired platforms, it's not utterly massive, it seems to contain many of the features we can imagine needing, and it does not come with a huge learning curve. Much work has been put into implementing reactphysics, though  most of it is on a different branch at this time called rp3d.
-
 ### package managers
 This is a long-term goal, but consider figuring out how to create an apt repo / get on homebrew / other package managers for easy installs of NVGT.
 

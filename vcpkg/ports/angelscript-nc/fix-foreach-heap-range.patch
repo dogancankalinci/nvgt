@@ -1,0 +1,24 @@
+diff --git a/sdk/angelscript/source/as_compiler.cpp b/sdk/angelscript/source/as_compiler.cpp
+index be66060..6decf7b 100644
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -5640,12 +5640,18 @@ void asCCompiler::CompileForEachStatement(asCScriptNode* node, asCByteCode* bc)
+ 	asCDataType rangeDt = rangeExpr.type.dataType;
+ 	rangeDt.MakeReference(false);
+ 	if (rangeDt.SupportHandles()) rangeDt.MakeHandle(true);
++	// ALTERED: a scoped type has no handles, but a factory's result is one (foreach( int v : range() )), which the variable
++	// took over without a reference of its own, and the loop went on with the released object: it holds a copy instead
++	if (rangeDt.IsObjectHandle() && rangeDt.GetTypeInfo() && (rangeDt.GetTypeInfo()->flags & asOBJ_SCOPED))
++		rangeDt.MakeHandle(false);
+ 	int rangeOffset = AllocateVariable(rangeDt, false);
+ 	if (DeclareVariable("", rangeDt, rangeOffset, &rangeExpr.bc, node) < 0)
+ 		return;
+ 
+ 	// If the range object is stored as a handle then it is necessary to dereference the pointer, otherwise use the variable pointer directly
+-	asEBCInstr rangeLoadInstruction = rangeDt.IsObjectHandle() ? asBC_PshVPtr : asBC_PSF;
++	// ALTERED: also if the range object itself is on the heap, i.e. a scoped type, or a value type flagged asOBJ_APP_CLASS_ALIGN8 (see
++	// AllocateVariable). The address of the variable was taken for the object, and the loop called the methods on the stack's memory.
++	asEBCInstr rangeLoadInstruction = rangeDt.IsObjectHandle() || IsVariableOnHeap(rangeOffset) ? asBC_PshVPtr : asBC_PSF;
+ 
+ 	CompileInitializationWithAssignment(&rangeExpr.bc, rangeDt, rangeNode, rangeOffset, 0, asVGM_VARIABLE, rangeNode, &rangeExpr);
+ 	ProcessDeferredParams(&rangeExpr);

@@ -1,7 +1,8 @@
 diff --git a/sdk/angelscript/source/as_callfunc.cpp b/sdk/angelscript/source/as_callfunc.cpp
+index 7a62397..ca774f4 100644
 --- a/sdk/angelscript/source/as_callfunc.cpp
 +++ b/sdk/angelscript/source/as_callfunc.cpp
-@@ -927,7 +927,25 @@
+@@ -927,7 +927,25 @@ int CallSystemFunction(int id, asCContext *context)
  
  			context->m_regs.objectRegister = (void*)(asPWORD)retQW[0];
  
@@ -28,10 +29,25 @@ diff --git a/sdk/angelscript/source/as_callfunc.cpp b/sdk/angelscript/source/as_
  			{
  				asASSERT(!(descr->returnType.GetTypeInfo()->flags & asOBJ_NOCOUNT));
  				// ALTERED: a funcdef type has no object type behaviours (CastToObjectType returns null for it), so a
+@@ -938,13 +956,6 @@ int CallSystemFunction(int id, asCContext *context)
+ 				else
+ 					engine->CallObjectMethod(context->m_regs.objectRegister, CastToObjectType(descr->returnType.GetTypeInfo())->beh.addref);
+ 			}
+-
+-			// Clean-up the returned object if there is an exception
+-			if( context->m_status == asEXECUTION_EXCEPTION && context->m_regs.objectRegister )
+-			{
+-				engine->CallObjectMethod(context->m_regs.objectRegister, CastToObjectType(descr->returnType.GetTypeInfo())->beh.release);
+-				context->m_regs.objectRegister = 0;
+-			}
+ 		}
+ 		else if (retPointer)
+ 		{
 diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+index e9218f8..dd2408f 100644
 --- a/sdk/angelscript/source/as_context.cpp
 +++ b/sdk/angelscript/source/as_context.cpp
-@@ -6470,6 +6470,7 @@
+@@ -6470,6 +6470,7 @@ int asCContext::CallGeneric(asCScriptFunction *descr)
  	asCGeneric& gen = descr->IsVariadic() ? genVar : genOrdinary;
  
  	m_callingSystemFunction = descr;
@@ -39,7 +55,7 @@ diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_c
  #ifdef AS_NO_EXCEPTIONS
  	func(&gen);
  #else
-@@ -6481,6 +6482,8 @@
+@@ -6481,6 +6482,8 @@ int asCContext::CallGeneric(asCScriptFunction *descr)
  	}
  	catch (...)
  	{
@@ -48,7 +64,7 @@ diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_c
  		// Convert the exception to a script exception so the VM can
  		// properly report the error to the application and then clean up
  		HandleAppException();
-@@ -6492,9 +6495,23 @@
+@@ -6492,9 +6495,23 @@ int asCContext::CallGeneric(asCScriptFunction *descr)
  	m_regs.objectRegister = gen.objectRegister;
  	m_regs.objectType = descr->returnType.GetTypeInfo();
  

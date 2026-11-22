@@ -1,7 +1,8 @@
 diff --git a/sdk/angelscript/source/as_generic.cpp b/sdk/angelscript/source/as_generic.cpp
+index 300dbdc..d431fe4 100644
 --- a/sdk/angelscript/source/as_generic.cpp
 +++ b/sdk/angelscript/source/as_generic.cpp
-@@ -544,6 +544,10 @@
+@@ -544,6 +544,10 @@ int asCGenericVariadic::GetArgCount() const
  
  int asCGenericVariadic::GetArgTypeId(asUINT arg, asDWORD* flags) const
  {
@@ -9,10 +10,10 @@ diff --git a/sdk/angelscript/source/as_generic.cpp b/sdk/angelscript/source/as_g
 +	if (arg >= argCount)
 +		return 0;
 +
+ 	// If the argument index is larger than the number of parameters, then it is a variadic argument
  	asUINT idx = arg;
  	if (idx >= sysFunction->parameterTypes.GetLength() - 1)
- 		idx = sysFunction->parameterTypes.GetLength() - 1;
-@@ -571,6 +575,9 @@
+@@ -572,6 +576,9 @@ int asCGenericVariadic::GetArgTypeId(asUINT arg, asDWORD* flags) const
  
  asBYTE asCGenericVariadic::GetArgByte(asUINT arg)
  {
@@ -22,7 +23,7 @@ diff --git a/sdk/angelscript/source/as_generic.cpp b/sdk/angelscript/source/as_g
  	// Verify that the type is correct
  	asCDataType* dt = GetArgDataType(arg);
  	if ((dt->IsObject() || dt->IsFuncdef()) || dt->IsReference())
-@@ -586,6 +593,9 @@
+@@ -587,6 +594,9 @@ asBYTE asCGenericVariadic::GetArgByte(asUINT arg)
  
  asWORD asCGenericVariadic::GetArgWord(asUINT arg)
  {
@@ -32,7 +33,7 @@ diff --git a/sdk/angelscript/source/as_generic.cpp b/sdk/angelscript/source/as_g
  	// Verify that the type is correct
  	asCDataType* dt = GetArgDataType(arg);
  	if ((dt->IsObject() || dt->IsFuncdef()) || dt->IsReference())
-@@ -601,6 +611,9 @@
+@@ -602,6 +612,9 @@ asWORD asCGenericVariadic::GetArgWord(asUINT arg)
  
  asDWORD asCGenericVariadic::GetArgDWord(asUINT arg)
  {
@@ -42,7 +43,7 @@ diff --git a/sdk/angelscript/source/as_generic.cpp b/sdk/angelscript/source/as_g
  	// Verify that the type is correct
  	asCDataType* dt = GetArgDataType(arg);
  	if ((dt->IsObject() || dt->IsFuncdef()) || dt->IsReference())
-@@ -616,6 +629,9 @@
+@@ -617,6 +630,9 @@ asDWORD asCGenericVariadic::GetArgDWord(asUINT arg)
  
  asQWORD asCGenericVariadic::GetArgQWord(asUINT arg)
  {
@@ -52,7 +53,7 @@ diff --git a/sdk/angelscript/source/as_generic.cpp b/sdk/angelscript/source/as_g
  	// Verify that the type is correct
  	asCDataType* dt = GetArgDataType(arg);
  	if ((dt->IsObject() || dt->IsFuncdef()) || dt->IsReference())
-@@ -631,6 +647,9 @@
+@@ -632,6 +648,9 @@ asQWORD asCGenericVariadic::GetArgQWord(asUINT arg)
  
  float asCGenericVariadic::GetArgFloat(asUINT arg)
  {
@@ -62,7 +63,7 @@ diff --git a/sdk/angelscript/source/as_generic.cpp b/sdk/angelscript/source/as_g
  	// Verify that the type is correct
  	asCDataType* dt = GetArgDataType(arg);
  	if ((dt->IsObject() || dt->IsFuncdef()) || dt->IsReference())
-@@ -646,6 +665,9 @@
+@@ -647,6 +666,9 @@ float asCGenericVariadic::GetArgFloat(asUINT arg)
  
  double asCGenericVariadic::GetArgDouble(asUINT arg)
  {
@@ -72,7 +73,7 @@ diff --git a/sdk/angelscript/source/as_generic.cpp b/sdk/angelscript/source/as_g
  	// Verify that the type is correct
  	asCDataType* dt = GetArgDataType(arg);
  	if ((dt->IsObject() || dt->IsFuncdef()) || dt->IsReference())
-@@ -661,6 +683,9 @@
+@@ -662,6 +684,9 @@ double asCGenericVariadic::GetArgDouble(asUINT arg)
  
  void* asCGenericVariadic::GetArgAddress(asUINT arg)
  {
@@ -82,7 +83,7 @@ diff --git a/sdk/angelscript/source/as_generic.cpp b/sdk/angelscript/source/as_g
  	// Verify that the type is correct
  	asCDataType* dt = GetArgDataType(arg);
  	if (!dt->IsReference() && !dt->IsObjectHandle())
-@@ -673,6 +698,9 @@
+@@ -674,6 +699,9 @@ void* asCGenericVariadic::GetArgAddress(asUINT arg)
  
  void* asCGenericVariadic::GetArgObject(asUINT arg)
  {
@@ -92,7 +93,7 @@ diff --git a/sdk/angelscript/source/as_generic.cpp b/sdk/angelscript/source/as_g
  	// Verify that the type is correct
  	asCDataType* dt = GetArgDataType(arg);
  	if (!dt->IsObject() && !dt->IsFuncdef())
-@@ -685,13 +713,19 @@
+@@ -686,6 +714,9 @@ void* asCGenericVariadic::GetArgObject(asUINT arg)
  
  void* asCGenericVariadic::GetAddressOfArg(asUINT arg)
  {
@@ -102,17 +103,3 @@ diff --git a/sdk/angelscript/source/as_generic.cpp b/sdk/angelscript/source/as_g
  	// Determine the position of the argument
  	int offset = GetArgOffsetOnStack(arg);
  
--	// For object variables it's necessary to dereference the pointer to get the address of the value
--	if (!sysFunction->parameterTypes[arg].IsReference() &&
--		sysFunction->parameterTypes[arg].IsObject() &&
--		!sysFunction->parameterTypes[arg].IsObjectHandle())
-+	// ALTERED: the type of a variadic argument is the last parameter's, but this indexed the parameter list with the
-+	// argument's number, past its end for every variadic argument after the first, and took whatever memory followed
-+	// for the argument's type (an object by value was returned undereferenced, or a value was dereferenced)
-+	asCDataType *dt = GetArgDataType(arg);
-+	if (!dt->IsReference() &&
-+		dt->IsObject() &&
-+		!dt->IsObjectHandle())
- 		return *(void**)&stackPointer[offset];
- 
- 	// Get the address of the value

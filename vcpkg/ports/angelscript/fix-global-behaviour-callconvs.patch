@@ -1,7 +1,8 @@
 diff --git a/sdk/angelscript/source/as_scriptengine.cpp b/sdk/angelscript/source/as_scriptengine.cpp
+index 27a2906..fa57e4e 100644
 --- a/sdk/angelscript/source/as_scriptengine.cpp
 +++ b/sdk/angelscript/source/as_scriptengine.cpp
-@@ -4958,6 +4958,39 @@
+@@ -4976,6 +4976,39 @@ void *asCScriptEngine::CallGlobalFunctionRetPtr(asSSystemFunctionInterface *i, a
  		void* (*f)(void*) = (void* (*)(void*))(i->func);
  		return f(i->auxiliary);
  	}
@@ -41,7 +42,7 @@ diff --git a/sdk/angelscript/source/as_scriptengine.cpp b/sdk/angelscript/source
  	else
  	{
  		asCGeneric gen(const_cast<asCScriptEngine*>(this), s, 0, 0);
-@@ -4990,6 +5023,37 @@
+@@ -5008,6 +5041,37 @@ void *asCScriptEngine::CallGlobalFunctionRetPtr(asSSystemFunctionInterface *i, a
  		void* (*f)(void*,void*) = (void* (*)(void*,void*))(i->func);
  		return f(param1,i->auxiliary);
  	}
@@ -79,7 +80,7 @@ diff --git a/sdk/angelscript/source/as_scriptengine.cpp b/sdk/angelscript/source
  	else
  	{
  		asCGeneric gen(const_cast<asCScriptEngine*>(this), s, 0, (asDWORD*)&param1);
-@@ -5167,6 +5231,49 @@
+@@ -5185,6 +5249,20 @@ bool asCScriptEngine::CallGlobalFunctionRetBool(void *param1, void *param2, asSS
  		func_t f = (func_t)(i->func);
  		return f(param1, param2);
  	}
@@ -97,35 +98,14 @@ diff --git a/sdk/angelscript/source/as_scriptengine.cpp b/sdk/angelscript/source
 +		return f(param1, param2, i->auxiliary);
 +	}
 +#ifndef AS_NO_CLASS_METHODS
-+	else if( i->callConv == ICC_THISCALL || i->callConv == ICC_VIRTUAL_THISCALL )
-+	{
-+#if defined(__GNUC__) || defined(AS_PSVITA)
-+		union
-+		{
-+			asSIMPLEMETHOD_t mthd;
-+			struct
-+			{
-+				asFUNCTION_t func;
-+				asPWORD baseOffset;
-+			} f;
-+		} p;
-+		p.f.func = (asFUNCTION_t)(i->func);
-+		p.f.baseOffset = asPWORD(i->baseOffset);
-+		bool (asCSimpleDummy::*f)(void *, void *) = (bool (asCSimpleDummy::*)(void *, void *))(p.mthd);
-+		return (((asCSimpleDummy*)i->auxiliary)->*f)(param1, param2);
-+#else
-+		union
-+		{
-+			asSIMPLEMETHOD_t mthd;
-+			asFUNCTION_t func;
-+		} p;
-+		p.func = (asFUNCTION_t)(i->func);
-+		bool (asCSimpleDummy::*f)(void *, void *) = (bool (asCSimpleDummy::*)(void *, void *))p.mthd;
-+		void *aux = (void*)(asPWORD(i->auxiliary) + i->baseOffset);
-+		return (((asCSimpleDummy*)aux)->*f)(param1, param2);
-+#endif
-+	}
+ 	else if( i->callConv == ICC_THISCALL || i->callConv == ICC_VIRTUAL_THISCALL )
+ 	{
+ 		// This is asCALL_THISCALL_ASGLOBAL
+@@ -5227,6 +5305,7 @@ bool asCScriptEngine::CallGlobalFunctionRetBool(void *param1, void *param2, asSS
+ 		return (((asCSimpleDummy*)obj)->*f)(param1, param2);
+ #endif
+ 	}
 +#endif
  	else
  	{
- 		// TODO: When simulating a 64bit environment by defining AS_64BIT_PTR on a 32bit platform this code
+ 		asASSERT(i->callConv == ICC_GENERIC_FUNC);

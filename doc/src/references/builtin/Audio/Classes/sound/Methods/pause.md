@@ -1,5 +1,5 @@
 # pause
-Pauses the sound.
+Stop playing the sound, keeping its position so that `play()` continues from where it was.
 
 `bool sound::pause();`
 

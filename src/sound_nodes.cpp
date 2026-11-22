@@ -22,6 +22,7 @@
 #include <ma_reverb_node.h>
 #include "misc_functions.h" // range_convert
 #include "sound_nodes.h"
+#include "microsynthiser.hpp"
 
 using namespace std;
 
@@ -433,6 +434,10 @@ public:
 		audio_node* insert_after = after > -1? nodes[after] : nullptr;
 		return add_node(node, insert_after, input_bus_index);
 	}
+	bool append_node(audio_node* node, unsigned int input_bus_index) override {
+		rewire_scope scope(*this);
+		return add_node(node, nodes.empty()? nullptr : nodes.back(), input_bus_index);
+	}
 	// The removed nodes are let go of once the chain's lock is: the last reference to a node, such as a reverb3d's mixer, can take the send lock of the reverb node its sends go to, which a reverb3d's set_reverb() holds while it takes that node's chain lock, should the reverb node be this chain.
 	bool remove_node(audio_node* node) override {
 		rewire_scope scope(*this);
@@ -565,87 +570,20 @@ public:
 };
 audio_node_chain* audio_node_chain::create(audio_node* source, audio_node* endpoint, audio_engine* engine) { return new audio_node_chain_impl(source, endpoint, engine); }
 
-static IPLAudioSettings g_phonon_audio_settings {44100, SOUNDSYSTEM_FRAMESIZE}; // We will update samplerate later in phonon_init.
-static IPLContext g_phonon_context = nullptr;
-static IPLHRTF g_phonon_hrtf = nullptr;
-
-// Under a lock, as the first Steam Audio components can be made on several threads at once, each of which would otherwise make a context, or find the context made but not yet the HRTF.
-static std::mutex g_phonon_init_mutex;
-bool phonon_init() {
-	std::lock_guard<std::mutex> lock(g_phonon_init_mutex);
-	if (g_phonon_context) return true;
-	audio_engine *engine = acquire_default_engine();
-	if (!engine) return false;
-	g_phonon_audio_settings = {engine->get_sample_rate(), SOUNDSYSTEM_FRAMESIZE};
-	engine->release();
-	IPLContextSettings phonon_context_settings{};
-	phonon_context_settings.version = STEAMAUDIO_VERSION;
-	if (iplContextCreate(&phonon_context_settings, &g_phonon_context) != IPL_STATUS_SUCCESS) return (g_soundsystem_last_error = MA_ERROR) == MA_SUCCESS; // Which said nothing, as the HRTF's failure below didn't.
-	IPLHRTFSettings phonon_hrtf_settings{};
-	phonon_hrtf_settings.type = IPL_HRTFTYPE_DEFAULT;
-	phonon_hrtf_settings.volume = 1.0;
-	if (iplHRTFCreate(g_phonon_context, &g_phonon_audio_settings, &phonon_hrtf_settings, &g_phonon_hrtf) != IPL_STATUS_SUCCESS) {
-		iplContextRelease(&g_phonon_context);
-		g_phonon_context = nullptr;
-		return (g_soundsystem_last_error = MA_FORMAT_NOT_SUPPORTED) == MA_SUCCESS; // Its HRTF works at some rates only, as 44100 and 48000 Hz, and not at others, as 16000 or 96000: the default engine's is then one it can't take.
-	}
-	return true;
-}
-
-// Sets the defaults and the enabled components each time, as the docs say it does, whatever get_global_hrtf() read before: enabling both components by hand left the defaults as they were.
 bool set_global_hrtf(bool enabled) {
-	if (enabled) {
-		if (!phonon_init()) return false;
-		if (!sound_set_spatialization(g_audio_phonon_hrtf_panner, g_audio_phonon_attenuator)) return false;
-	} else {
-		// Basic panning and attenuation first, which the docs say false uses: a script that made HRTF exclusive with sound_set_spatialization() had disabled them, and disabling the phonon components below then left every positioned sound with neither, playing centred at full volume.
-		if (!get_audio_panner_enabled(g_audio_basic_panner)) set_audio_panner_enabled(g_audio_basic_panner, true);
-		if (!get_audio_attenuator_enabled(g_audio_basic_attenuator)) set_audio_attenuator_enabled(g_audio_basic_attenuator, true);
-		g_soundsystem_last_error = MA_SUCCESS; // As the true path reads through sound_set_spatialization().
-		if (sound_get_default_3d_panner() == g_audio_phonon_hrtf_panner) sound_set_default_3d_panner(g_audio_basic_panner);
-		if (sound_get_default_3d_attenuator() == g_audio_phonon_attenuator) sound_set_default_3d_attenuator(g_audio_basic_attenuator);
-		set_audio_panner_enabled(g_audio_phonon_hrtf_panner, false);
-		set_audio_attenuator_enabled(g_audio_phonon_attenuator, false);
-	}
-	return true;
+	// The defaults and the enabled components each time, whatever get_global_hrtf() read before: with one of the defaults changed by hand, or a component disabled, it reads false while the other still positions with HRTF.
+	return sound_set_spatialization(enabled ? g_audio_hrtf_panner : g_audio_basic_panner, enabled ? g_audio_hrtf_attenuator : g_audio_basic_attenuator);
 }
 // Whether sounds are positioned with HRTF: its panner and attenuator enabled, and the defaults new sounds take.
-bool get_global_hrtf() { return get_audio_panner_enabled(g_audio_phonon_hrtf_panner) && get_audio_attenuator_enabled(g_audio_phonon_attenuator) && sound_get_default_3d_panner() == g_audio_phonon_hrtf_panner && sound_get_default_3d_attenuator() == g_audio_phonon_attenuator; }
+bool get_global_hrtf() { return get_audio_panner_enabled(g_audio_hrtf_panner) && get_audio_attenuator_enabled(g_audio_hrtf_attenuator) && sound_get_default_3d_panner() == g_audio_hrtf_panner && sound_get_default_3d_attenuator() == g_audio_hrtf_attenuator; }
 
-class phonon_binaural_node_impl : public audio_node_impl, public virtual phonon_binaural_node {
-	unique_ptr<ma_phonon_binaural_node> bn;
-	public:
-		phonon_binaural_node_impl(audio_engine* e, int channels, int sample_rate, int frame_size = 0) : bn(make_unique<ma_phonon_binaural_node>()), audio_node_impl(nullptr, e) {
-			if (!e) throw_refusal(MA_INVALID_ARGS, "no engine provided");
-			if (!phonon_init()) throw std::runtime_error("Steam Audio was not initialized");
-			// The HRTF's own settings, whatever sample_rate and frame_size say: Steam Audio applied the HRTF, made for blocks of SOUNDSYSTEM_FRAMESIZE frames, at the frame size given, which past it made the output wrong, then garbage at many times full scale, and at 65536 crashed; the sample rate changed nothing.
-			(void)sample_rate;
-			(void)frame_size;
-			ma_phonon_binaural_node_config cfg = ma_phonon_binaural_node_config_init(channels, g_phonon_audio_settings, g_phonon_context, g_phonon_hrtf);
-			if ((g_soundsystem_last_error = ma_phonon_binaural_node_init(ma_engine_get_node_graph(e->get_ma_engine()), &cfg, nullptr, &*bn)) != MA_SUCCESS) throw std::runtime_error("phonon_binaural_node was not created");
-			node = (ma_node_base*)&*bn;
-		}
-		~phonon_binaural_node_impl() {
-			if (bn) {
-				std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); // Uninitializing detaches it from the nodes it is attached to, the same lists other threads attach to and detach from under this lock.
-				ma_phonon_binaural_node_uninit(&*bn, nullptr);
-			}
-		}
-		void set_direction(float x, float y, float z, float distance) override {
-			if (!finite_node_values({x, y, z, distance})) return;
-			// A negative distance made a negative spatial blend, which Steam Audio amplified exponentially: 24 times at -2, then to infinity and NaN, which spoiled the engine's whole mix. It is taken as 0, at the listener, as a negative min_distance is, so that the direction is still set, as one worked out a little under 0 by rounding needs.
-			ma_phonon_binaural_node_set_direction(&*bn, x, y, z, distance < 0? 0 : distance);
-		}
-		void set_direction_vector(const reactphysics3d::Vector3& direction, float distance) override { set_direction(direction.x, direction.y, direction.z, distance); }
-		void set_spatial_blend_max_distance(float max_distance) override { if (finite_node_values({max_distance})) ma_phonon_binaural_node_set_spatial_blend_max_distance(&*bn, max_distance); }
-};
-phonon_binaural_node* phonon_binaural_node::create(audio_engine* e, int channels, int sample_rate, int frame_size) { return new phonon_binaural_node_impl(e, channels, sample_rate, frame_size); }
 
 class splitter_node_impl : public audio_node_impl, public virtual splitter_node {
 	unique_ptr<ma_splitter_node> sn;
 	public:
 	splitter_node_impl(audio_engine* e, int channels) : sn(make_unique<ma_splitter_node>()), audio_node_impl(nullptr, e) {
-		if (channels < 1 || channels > MA_MAX_CHANNELS) { // A node's channel count is kept in 8 bits.
+		if (channels < 1) channels = get_engine()->get_channels(); // The engine's, for 0 or less.
+		if (channels > MA_MAX_CHANNELS) { // A node's channel count is kept in 8 bits.
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			throw std::runtime_error("invalid channel count");
 		}
@@ -832,7 +770,7 @@ class notch_filter_node_impl : public audio_node_impl, public virtual notch_filt
 	}
 	double get_frequency() const override { return cfg.notch.frequency; }
 };
-notch_filter_node* notch_filter_node::create(double q, double frequency, audio_engine* engine) { return new notch_filter_node_impl(q, frequency, engine); }
+notch_filter_node* notch_filter_node::create(double frequency, double q, audio_engine* engine) { return new notch_filter_node_impl(q, frequency, engine); }
 
 class peak_filter_node_impl : public audio_node_impl, public virtual peak_filter_node {
 	unique_ptr<ma_peak_node> fn;
@@ -877,7 +815,7 @@ class peak_filter_node_impl : public audio_node_impl, public virtual peak_filter
 	}
 	double get_frequency() const override { return cfg.peak.frequency; }
 };
-peak_filter_node* peak_filter_node::create(double gain_db, double q, double frequency, audio_engine* engine) { return new peak_filter_node_impl(gain_db, q, frequency, engine); }
+peak_filter_node* peak_filter_node::create(double frequency, double gain_db, double q, audio_engine* engine) { return new peak_filter_node_impl(gain_db, q, frequency, engine); }
 
 class low_shelf_filter_node_impl : public audio_node_impl, public virtual low_shelf_filter_node {
 	unique_ptr<ma_loshelf_node> fn;
@@ -922,7 +860,7 @@ class low_shelf_filter_node_impl : public audio_node_impl, public virtual low_sh
 	}
 	double get_frequency() const override { return cfg.loshelf.frequency; }
 };
-low_shelf_filter_node* low_shelf_filter_node::create(double gain_db, double q, double frequency, audio_engine* engine) { return new low_shelf_filter_node_impl(gain_db, q, frequency, engine); }
+low_shelf_filter_node* low_shelf_filter_node::create(double frequency, double gain_db, double q, audio_engine* engine) { return new low_shelf_filter_node_impl(gain_db, q, frequency, engine); }
 
 class high_shelf_filter_node_impl : public audio_node_impl, public virtual high_shelf_filter_node {
 	unique_ptr<ma_hishelf_node> fn;
@@ -967,7 +905,7 @@ class high_shelf_filter_node_impl : public audio_node_impl, public virtual high_
 	}
 	double get_frequency() const override { return cfg.hishelf.frequency; }
 };
-high_shelf_filter_node* high_shelf_filter_node::create(double gain_db, double q, double frequency, audio_engine* engine) { return new high_shelf_filter_node_impl(gain_db, q, frequency, engine); }
+high_shelf_filter_node* high_shelf_filter_node::create(double frequency, double gain_db, double q, audio_engine* engine) { return new high_shelf_filter_node_impl(gain_db, q, frequency, engine); }
 
 class delay_node_impl : public audio_node_impl, public virtual delay_node {
 	unique_ptr<ma_delay_node> dn;
@@ -998,6 +936,44 @@ class delay_node_impl : public audio_node_impl, public virtual delay_node {
 	float get_decay() const override { return ma_delay_node_get_decay(&*dn); }
 };
 delay_node* delay_node::create(unsigned int delay_in_frames, float decay, audio_engine* engine) { return new delay_node_impl(delay_in_frames, decay, engine); }
+
+class fdn_reverb_node_impl : public effect_node_impl, public virtual fdn_reverb_node {
+	microsynthiser::fdn_reverb_effect verb;
+	vector<float> silence; // Input while nothing is attached, so that the tail continues, made here rather than by the audio thread, where running out of memory ended the program.
+public:
+	fdn_reverb_node_impl(audio_engine* e) : effect_node_impl(e, 0, 0, 1, 1, MA_NODE_FLAG_CONTINUOUS_PROCESSING | MA_NODE_FLAG_ALLOW_NULL_INPUT), verb(get_engine()->get_sample_rate(), get_engine()->get_channels()), silence((size_t)SOUNDSYSTEM_FRAMESIZE * get_engine()->get_channels()) {}
+	~fdn_reverb_node_impl() { destroy_node(); }
+	void process(const float** frames_in, unsigned int* frame_count_in, float** frames_out, unsigned int* frame_count_out) override {
+		const unsigned int frames = *frame_count_out, channels = get_engine()->get_channels(), given = frames_in && frames_in[0]? min(*frame_count_in, frames) : 0;
+		if (given) verb.process(frames_in[0], frames_out[0], given);
+		for (unsigned int done = given; done < frames;) {
+			const unsigned int block = min<unsigned int>(frames - done, SOUNDSYSTEM_FRAMESIZE);
+			verb.process(silence.data(), frames_out[0] + (size_t)done * channels, block);
+			done += block;
+		}
+	}
+	void reset() override { verb.reset(); }
+	float get_tail_length() const override { return verb.get_tail_length(); }
+	#define FDN_REVERB_PROPERTY(type, name, setter, getter) void set_##name(type value) override { verb.setter(value); } type get_##name() const override { return verb.getter(); }
+	FDN_REVERB_PROPERTY(float, wet, set_wet, get_wet)
+	FDN_REVERB_PROPERTY(float, dry, set_dry, get_dry)
+	FDN_REVERB_PROPERTY(float, width, set_width, get_width)
+	FDN_REVERB_PROPERTY(bool, frozen, set_freeze, get_freeze)
+	FDN_REVERB_PROPERTY(float, input_lowpass, set_input_lowpass, get_input_lowpass)
+	FDN_REVERB_PROPERTY(float, input_highpass, set_input_highpass, get_input_highpass)
+	FDN_REVERB_PROPERTY(float, mean_free_path, set_mean_free_path, get_mean_free_path)
+	FDN_REVERB_PROPERTY(float, t60, set_t60, get_t60)
+	FDN_REVERB_PROPERTY(float, lf_rolloff, set_lf_rolloff, get_lf_rolloff)
+	FDN_REVERB_PROPERTY(float, lf_reference, set_lf_reference, get_lf_reference)
+	FDN_REVERB_PROPERTY(float, hf_rolloff, set_hf_rolloff, get_hf_rolloff)
+	FDN_REVERB_PROPERTY(float, hf_reference, set_hf_reference, get_hf_reference)
+	FDN_REVERB_PROPERTY(float, diffusion, set_diffusion, get_diffusion)
+	FDN_REVERB_PROPERTY(float, modulation_depth, set_modulation_depth, get_modulation_depth)
+	FDN_REVERB_PROPERTY(float, modulation_frequency, set_modulation_frequency, get_modulation_frequency)
+	FDN_REVERB_PROPERTY(float, late_reflections_delay, set_late_reflections_delay, get_late_reflections_delay)
+	#undef FDN_REVERB_PROPERTY
+};
+fdn_reverb_node* fdn_reverb_node::create(audio_engine* e) { return new fdn_reverb_node_impl(e); }
 
 class freeverb_node_impl : public audio_node_impl, public virtual freeverb_node {
 	unique_ptr<ma_reverb_node> rn;
@@ -1135,9 +1111,10 @@ static void reverb_let_go(audio_node* verb) {
 class reverb3d_impl : public passthrough_node_impl, public virtual reverb3d {
 	audio_node* reverb;
 	mixer* output_mixer;
+	unique_ptr<reverb3d_attachment_handler> handler;
 	float min_volume, max_volume, max_volume_distance, max_audible_distance, volume_curve;
 public:
-	reverb3d_impl(audio_engine* e, audio_node* verb, mixer* destination) : passthrough_node_impl(e), output_mixer(destination), reverb(nullptr), min_volume(-7), max_volume(-5), max_volume_distance(7), max_audible_distance(60), volume_curve(0.4) {
+	reverb3d_impl(audio_engine* e, audio_node* verb, mixer* destination, unique_ptr<reverb3d_attachment_handler> attachment_handler = nullptr) : passthrough_node_impl(e), output_mixer(destination), reverb(nullptr), handler(std::move(attachment_handler)), min_volume(-7), max_volume(-5), max_volume_distance(7), max_audible_distance(60), volume_curve(0.4) {
 		if (output_mixer) output_mixer->duplicate(); // reverb owns its own reference to output_mixer via attach_output_bus below; this is reverb3d_impl's separate reference for get_mixer().
 		bool counted = false;
 		try {
@@ -1373,6 +1350,28 @@ public:
 		}
 		return ma_volume_db_to_linear(clamp_volume(v, max_volume < -70.0f? max_volume : -70.0f, max_volume)); // Not below -70 dB, unless the script set the loudest lower.
 	}
+	bool handles_attachments() const override { return handler != nullptr; }
+	audio_node* create_source_attachment(mixer* source) override {
+		if (!handler) return create_attachment(nullptr, nullptr);
+		audio_node* attachment = handler->create_attachment(this, source);
+		if (!attachment) {
+			if (g_soundsystem_last_error == MA_SUCCESS) g_soundsystem_last_error = MA_ERROR; // A property set with nothing else to tell by.
+			return nullptr;
+		}
+		try { // A throw attaching it, as on running out of memory, lets go of it too, as create_attachment() does.
+			if (attachment->attach_output_bus(1, this, 0)) return attachment;
+		} catch (...) {
+			last_error_kept kept;
+			attachment->release();
+			throw;
+		}
+		attachment->release();
+		return nullptr;
+	}
+	void update_attachment(audio_node* attachment, const audio_spatialization_parameters& params) override {
+		if (handler) handler->update_attachment(this, attachment, params);
+		else attachment->set_output_bus_volume(1, get_volume_at(params.listener_distance));
+	}
 	splitter_node* create_attachment(audio_node* dry_input, audio_node* dry_output) override {
 		if (dry_input && dry_input->get_engine() != get_engine() || dry_output && dry_output->get_engine() != get_engine()) { // Both engines' audio threads would read the splitter.
 			g_soundsystem_last_error = MA_INVALID_ARGS;
@@ -1431,7 +1430,8 @@ bool reverb3d_reaches(reverb3d* verb, const std::function<bool(mixer*)>& is_targ
 	mixer* through_mixer = through? dynamic_cast<mixer*>(through) : nullptr;
 	return (into && mixer_reaches(into, is_target)) || (through_mixer && mixer_reaches(through_mixer, is_target));
 }
-reverb3d* reverb3d::create(audio_node* reverb, mixer* destination, audio_engine* e) {
+// handler, which the reverb3d owns, is freed when none is made, refused or thrown.
+static reverb3d* make_reverb3d(unique_ptr<reverb3d_attachment_handler> handler, audio_node* reverb, mixer* destination, audio_engine* e) {
 	if (!e) throw_refusal(MA_INVALID_ARGS, "no audio engine available");
 	if (destination && destination->get_engine() != e) throw_refusal(MA_INVALID_ARGS, "the destination mixer belongs to another audio engine");
 	if (reverb && reverb->get_engine() != e) throw_refusal(MA_INVALID_ARGS, "the reverb belongs to another audio engine");
@@ -1443,20 +1443,20 @@ reverb3d* reverb3d::create(audio_node* reverb, mixer* destination, audio_engine*
 		if (destination && mixer_reaches(destination, [verb_mixer](mixer* m) { return m == verb_mixer; })) throw_refusal(MA_INVALID_ARGS, "the destination goes into the reverb mixer");
 	}
 	if (destination && reverb && !reverb_free_for(reverb, destination, 0)) throw_refusal(MA_INVALID_OPERATION, "the reverb goes into another destination for another reverb3d already");
-	if (destination) return new reverb3d_impl(e, reverb, destination);
+	if (destination) return new reverb3d_impl(e, reverb, destination, std::move(handler));
 	// Without a destination, a reverb other reverb3ds use goes on where they send it, rather than into a mixer of this one's own that took it from them (see reverb_free_for()).
 	if (reverb && reverb_users_of(reverb) > 0) {
 		// A reverb that isn't a mixer goes where its attachment does, which the last other reverb3d sharing it can let go of on another thread meanwhile, outside the topology lock: held until the new reverb3d holds its own.
 		struct holding { audio_node* node; ~holding() { if (node) node->release(); } } destination_held{dynamic_cast<mixer*>(reverb)? nullptr : reverb_destination(reverb)};
 		audio_node* into = destination_held.node? destination_held.node : reverb_goes_into(reverb);
-		if (mixer* theirs = dynamic_cast<mixer*>(into)) return new reverb3d_impl(e, reverb, theirs);
-		if (into == e->get_endpoint()) return new reverb3d_impl(e, reverb, nullptr);
+		if (mixer* theirs = dynamic_cast<mixer*>(into)) return new reverb3d_impl(e, reverb, theirs, std::move(handler));
+		if (into == e->get_endpoint()) return new reverb3d_impl(e, reverb, nullptr, std::move(handler));
 		// Gone elsewhere by hand, or nowhere: taken into a mixer of this one's own, it was taken from the reverb3ds using it without the check a destination gets above.
 		throw_refusal(MA_INVALID_OPERATION, "the reverb goes into another destination for another reverb3d already");
 	}
 	mixer *own = new_mixer(e);
 	try {
-		reverb3d *result = new reverb3d_impl(e, reverb, own);
+		reverb3d *result = new reverb3d_impl(e, reverb, own, std::move(handler));
 		own->release(); // The reverb3d holds its own reference.
 		return result;
 	} catch (...) {
@@ -1464,6 +1464,8 @@ reverb3d* reverb3d::create(audio_node* reverb, mixer* destination, audio_engine*
 		throw;
 	}
 }
+reverb3d* reverb3d::create(audio_node* reverb, mixer* destination, audio_engine* e) { return make_reverb3d(nullptr, reverb, destination, e); }
+reverb3d* reverb3d::create_with_handler(reverb3d_attachment_handler* handler, audio_node* reverb, mixer* destination, audio_engine* e) { return make_reverb3d(unique_ptr<reverb3d_attachment_handler>(handler), reverb, destination, e); }
 
 typedef struct {
 	ma_node_base base;
@@ -1479,15 +1481,16 @@ class plugin_node_impl : public audio_node_impl, public virtual plugin_node {
 	bool release_impl; // The plugin asked for release() (see NVGT_AUDIO_PLUGIN_NODE_RELEASE): an implementation built before it existed has no such function to call.
 	std::atomic<int> script_type_id{0};
 	ma_node_vtable vtable; // The user should be able to configure custom settings.
+	vector<ma_uint32> input_channels, output_channels; // One per bus, as miniaudio reads a channel count for each.
 	public:
 	plugin_node_impl(audio_plugin_node_interface* impl, unsigned char input_bus_count, unsigned char output_bus_count, unsigned int flags, audio_engine* engine) : pn(make_unique<ma_plugin_node>()), audio_node_impl(nullptr, engine), impl(impl), release_impl((flags & NVGT_AUDIO_PLUGIN_NODE_RELEASE) != 0) {
 		vtable = { ma_plugin_node_process_pcm_frames, nullptr, input_bus_count, output_bus_count, flags & ~NVGT_AUDIO_PLUGIN_NODE_RELEASE };
 		ma_node_config cfg = ma_node_config_init();
-		// MiniAudio reads a channel count for each bus, as effect_node_impl gives it.
-		vector<ma_uint32> channels_in(input_bus_count, get_engine()->get_channels()), channels_out(output_bus_count, get_engine()->get_channels());
+		input_channels.assign(max<int>(input_bus_count, 1), get_engine()->get_channels());
+		output_channels.assign(max<int>(output_bus_count, 1), get_engine()->get_channels());
 		cfg.vtable          = &vtable;
-		if (input_bus_count > 0) cfg.pInputChannels = &channels_in[0];
-		if (output_bus_count > 0) cfg.pOutputChannels = &channels_out[0];
+		cfg.pInputChannels  = input_channels.data();
+		cfg.pOutputChannels = output_channels.data();
 		if ((g_soundsystem_last_error = ma_node_init(ma_engine_get_node_graph(get_engine()->get_ma_engine()), &cfg, nullptr, (ma_node_base*)&*pn)) != MA_SUCCESS) throw std::runtime_error("failed to create plugin_node");
 		node = (ma_node_base*)&*pn;
 		pn->impl = this;
@@ -1497,6 +1500,7 @@ class plugin_node_impl : public audio_node_impl, public virtual plugin_node {
 			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex);
 			if (pn) ma_node_uninit(&*pn, nullptr);
 		}
+		if (impl) impl->on_node_destroyed(this);
 		if (impl && release_impl) impl->release(); // Uninitialized, the node is read no more, so the plugin may free its implementation, which it otherwise had no way to know.
 	}
 	audio_plugin_node_interface* get_plugin_interface() const override { return impl; }
@@ -1508,8 +1512,8 @@ class plugin_node_impl : public audio_node_impl, public virtual plugin_node {
 };
 plugin_node* plugin_node::create(audio_plugin_node_interface* impl, unsigned char input_bus_count, unsigned char output_bus_count, unsigned int flags,audio_engine* engine) { return new plugin_node_impl(impl, input_bus_count, output_bus_count, flags, engine); }
 
-static std::unordered_map<int, spatializer_component> g_audio_panners;
-static std::unordered_map<int, spatializer_component> g_audio_attenuators;
+static std::map<int, spatializer_component> g_audio_panners; // In the order of their ids, the basic one first, which a spatializer falls back to ahead of the others.
+static std::map<int, spatializer_component> g_audio_attenuators;
 static int g_next_panner_id = 0;
 static int g_next_attenuator_id = 0;
 static std::atomic<int> g_default_3d_panner{-1}; // Set by one script thread, read by spatializers made on any.
@@ -1534,18 +1538,23 @@ int register_audio_panner(spatializer_component_node_factory factory, bool defau
 	return id;
 }
 
-int register_audio_attenuator(spatializer_component_node_factory factory, bool default_enabled) {
+int register_audio_attenuator(spatializer_component_node_factory factory, bool default_enabled, spatializer_attenuation_function attenuation) {
 	int id = g_next_attenuator_id++;
 	spatializer_component& component = g_audio_attenuators[id];
 	component.factory = factory;
 	component.enabled = default_enabled;
+	component.attenuation = attenuation;
 	return id;
+}
+float get_audio_attenuation(int attenuator_id, const audio_spatialization_parameters& params, float distance) {
+	auto it = g_audio_attenuators.find(attenuator_id);
+	return it != g_audio_attenuators.end() && it->second.attenuation ? it->second.attenuation(params, distance) : basic_attenuator::attenuation(params, distance);
 }
 
 spatializer_component_node* create_audio_panner(int id, audio_spatializer* spatializer, audio_engine* engine) {
 	auto it = g_audio_panners.find(id);
 	if (it == g_audio_panners.end() || !it->second.enabled) return nullptr;
-	// A component that can't be made, as Steam Audio's when it can't start, gives none, as a disabled one does, so that the spatializer falls back to another (see set_fallback_panner()) rather than every positioning call throwing.
+	// A component that can't be made, as a plugin's when its library can't start, gives none, as a disabled one does, so that the spatializer falls back to another (see set_fallback_panner()) rather than every positioning call throwing.
 	try {
 		return it->second.factory(spatializer, engine);
 	} catch (const std::exception&) {
@@ -1557,7 +1566,9 @@ spatializer_component_node* create_audio_attenuator(int id, audio_spatializer* s
 	auto it = g_audio_attenuators.find(id);
 	if (it == g_audio_attenuators.end() || !it->second.enabled) return nullptr;
 	try { // As create_audio_panner().
-		return it->second.factory(spatializer, engine);
+		spatializer_component_node* component = it->second.factory(spatializer, engine);
+		if (component) component->apply_cones();
+		return component;
 	} catch (const std::exception&) {
 		return nullptr;
 	}
@@ -1626,9 +1637,9 @@ int sound_get_default_3d_attenuator() {
 
 // Global  spatializer component registrations
 int g_audio_basic_panner = g_default_3d_panner = register_audio_panner(basic_panner::create, true);
-int g_audio_phonon_hrtf_panner = register_audio_panner(phonon_hrtf_panner::create, false);
-int g_audio_basic_attenuator = g_default_3d_attenuator = register_audio_attenuator(basic_attenuator::create, true);
-int g_audio_phonon_attenuator = register_audio_attenuator(phonon_attenuator::create, false);
+int g_audio_basic_attenuator = g_default_3d_attenuator = register_audio_attenuator(basic_attenuator::create, true, basic_attenuator::attenuation);
+int g_audio_hrtf_panner = register_audio_panner(hrtf_panner::create, true); // Always available, the global HRTF setting chooses whether sounds use them by default.
+int g_audio_hrtf_attenuator = register_audio_attenuator(hrtf_attenuator::create, true, hrtf_attenuator::attenuation);
 
 bool sound_set_spatialization(int panner, int attenuator, bool disable_previous, bool set_default) {
 	bool panner_success = false, attenuator_success = false;
@@ -1660,12 +1671,12 @@ private:
 	spatializer_component_node* panner;
 	spatializer_component_node* attenuator;
 	reverb3d* reverb;
-	splitter_node* reverb_attachment;
+	audio_node* reverb_attachment;
 	audio_spatializer_reverb3d_placement reverb_placement;
 	mixer* attached_mixer;
 	audio_spatialization_parameters spatialization_params; // Written by the audio thread, in process(), once made.
 	// What the script set, copied into spatialization_params by process(): written there by the script too, a rolloff set while the audio thread wrote the parameters back, as the mixer filling them in does, was overwritten with the one before, for good.
-	std::atomic<float> rolloff_set{1.0f}, directional_attenuation_factor_set{1.0f};
+	std::atomic<float> rolloff_set{default_spatializer_rolloff}, directional_attenuation_factor_set{1.0f};
 	bool parameters_valid;
 	int preferred_panner_id, preferred_attenuator_id;
 	int current_panner_id, current_attenuator_id;
@@ -1695,6 +1706,12 @@ private:
 		if (attenuator && reverb_placement != postattenuate) volume *= clamp_volume(spatialization_params.cone_volume, spatialization_params.min_volume, spatialization_params.max_volume);
 		return std::min(volume, max_volume_gain); // As the attachment's bus volume takes it, which refused a louder send, so that the send stopped following the distance.
 	}
+	// The reverb's send for the current parameters, with a reverb set, which a reverb3d's attachment handler works out itself.
+	void update_reverb_send(reverb3d* verb) {
+		if (verb->handles_attachments()) {
+			if (parameters_valid) verb->update_attachment(reverb_attachment, spatialization_params);
+		} else reverb_attachment->set_output_bus_volume(1, parameters_valid? reverb_send_volume(verb) : std::min(verb->get_volume_at(0), max_volume_gain)); // Spatialization off, the mixer plays unattenuated, as at the listener: its send is the reverb's there too, rather than kept at what it was when spatialization went off, loud or nearly silent.
+	}
 	bool set_fallback_panner() {
 		rewire_scope scope(*this);
 		for (const auto& pair : g_audio_panners) {
@@ -1720,9 +1737,9 @@ private:
 		return false;
 	}
 public:
-	audio_spatializer_impl(mixer* mixer, audio_engine* engine) : audio_node_chain_impl(nullptr, nullptr, engine), panner(nullptr), attenuator(nullptr), reverb(nullptr), reverb_attachment(nullptr), reverb_placement(postpan), attached_mixer(mixer), spatialization_params{}, parameters_valid(true), preferred_panner_id(-1), preferred_attenuator_id(-1), current_panner_id(-1), current_attenuator_id(-1) {
+	audio_spatializer_impl(mixer* mixer, audio_engine* engine) : audio_node_chain_impl(nullptr, nullptr, engine), panner(nullptr), attenuator(nullptr), reverb(nullptr), reverb_attachment(nullptr), reverb_placement(postpan), attached_mixer(mixer), spatialization_params{}, parameters_valid(false), preferred_panner_id(-1), preferred_attenuator_id(-1), current_panner_id(-1), current_attenuator_id(-1) {
 		if (!mixer) throw std::invalid_argument("mixer cannot be null");
-		spatialization_params.rolloff = 1.0f;
+		spatialization_params.rolloff = default_spatializer_rolloff;
 		spatialization_params.directional_attenuation_factor = 1.0f;
 		spatialization_params.cone_volume = 1.0f;
 		spatialization_params.max_volume = 1.0f; // MiniAudio's maximum gain, so that a reverb's first send, worked out from these before the mixer gives any, is the one at the listener rather than clamped to 0 with an attenuator.
@@ -1809,7 +1826,7 @@ public:
 			return;
 		}
 		hold_claim claim{static_cast<audio_node*>(this), new_reverb}; // Dropped unless it becomes the reverb3d.
-		splitter_node* attachment = new_reverb? new_reverb->create_attachment() : nullptr; // First: one that can't be made, or throws, leaves the sound its old reverb, which was let go of before it.
+		audio_node* attachment = new_reverb? new_reverb->create_source_attachment(owner) : nullptr; // First: one that can't be made, or throws, leaves the sound its old reverb, which was let go of before it.
 		if (new_reverb && !attachment) return;
 		// The old attachment out of the chain before anything else changes, so that a throw there, as on running out of memory, leaves the old reverb as it was, the new attachment let go of.
 		if (reverb_attachment) {
@@ -1834,7 +1851,7 @@ public:
 			reverb_attachment = attachment;
 			reverb_placement = placement;
 			claim.kept = true;
-			if (attached_mixer && parameters_valid) reverb_attachment->set_output_bus_volume(1, reverb_send_volume(new_reverb));
+			if (attached_mixer && parameters_valid) update_reverb_send(new_reverb);
 			position_reverb();
 		}
 	}
@@ -1850,7 +1867,7 @@ public:
 		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		return reverb;
 	}
-	splitter_node* get_reverb3d_attachment() const override {
+	audio_node* get_reverb3d_attachment() const override {
 		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		return reverb_attachment;
 	}
@@ -1918,8 +1935,7 @@ public:
 			parameters_valid = attached_mixer->get_spatialization_parameters(spatialization_params);
 			spatialization_params.rolloff = rolloff_set.load(std::memory_order_relaxed);
 			spatialization_params.directional_attenuation_factor = directional_attenuation_factor_set.load(std::memory_order_relaxed);
-			// Spatialization off, the mixer plays unattenuated, as at the listener: its send is the reverb's there too, rather than kept at what it was when spatialization went off, loud or nearly silent.
-			if (reverb) reverb_attachment->set_output_bus_volume(1, parameters_valid? reverb_send_volume(reverb) : std::min(reverb->get_volume_at(0), max_volume_gain));
+			if (reverb) update_reverb_send(reverb);
 		} else parameters_valid = false;
 	}
 	void on_panner_enabled_changed(int panner_id, bool enabled) override {
@@ -2014,6 +2030,62 @@ public:
 	void forget_spatializer() override { spatializer = nullptr; }
 };
 
+// The volume applied, ramped to each new one over the frames MiniAudio's spatializer smooths its gain over, as MiniAudio did the cones' when it applied them, rather than stepping at each block. Not with ma_gainer, whose stereo path in MiniAudio 0.11.25 advances its ramp once every two frames while counting each, so a block covered half its ramp and the next began with a step. Only the audio thread uses these.
+struct gain_ramp {
+	ma_uint32 channels, frames, position = 0;
+	float from = 0, to = 0;
+	bool started = false;
+	gain_ramp(audio_engine* e) : channels(e->get_channels()), frames(e->get_ma_engine()->gainSmoothTimeInFrames) {}
+	float volume() const { return position >= frames? to : from + (to - from) * ((float)position / frames); }
+	bool at(float volume) const { return started && to == volume && position >= frames; }
+	void apply(const float* in, float* out, ma_uint32 count, float new_volume) {
+		if (!started) { // The first volume at once, as for a sound starting.
+			from = to = new_volume;
+			position = frames;
+			started = true;
+		} else if (new_volume != to) {
+			from = volume();
+			to = new_volume;
+			position = 0;
+		}
+		for (ma_uint32 frame = 0; frame < count; frame++) {
+			const float gain = volume();
+			if (position < frames) position++;
+			for (ma_uint32 channel = 0; channel < channels; channel++) out[frame * channels + channel] = in[frame * channels + channel] * gain;
+		}
+	}
+};
+class plugin_spatializer_component_impl : public spatializer_component_node_impl {
+	unique_ptr<audio_plugin_spatializer_component_interface> impl;
+	gain_ramp cones;
+	bool attenuates = false; // Set before the component is attached.
+public:
+	plugin_spatializer_component_impl(audio_plugin_spatializer_component_interface* impl, audio_spatializer* spatializer, audio_engine* e, unsigned int input_channels, unsigned int output_channels) : spatializer_component_node_impl(spatializer, e, input_channels, output_channels), impl(impl), cones(e) {}
+	~plugin_spatializer_component_impl() { destroy_node(); }
+	void apply_cones() override { attenuates = true; }
+	void process(const float** frames_in, unsigned int* frame_count_in, float** frames_out, unsigned int* frame_count_out) override {
+		audio_spatialization_parameters params;
+		if (impl && spatializer && spatializer->get_parameters(params)) {
+			impl->process(params, frames_in, frame_count_in, frames_out, frame_count_out);
+			if (attenuates && !(cones.at(1) && params.cone_volume == 1)) cones.apply(frames_out[0], frames_out[0], min(*frame_count_in, *frame_count_out), params.cone_volume);
+		} else ma_copy_pcm_frames(frames_out[0], frames_in[0], min(*frame_count_in, *frame_count_out), ma_format_f32, get_engine()->get_channels());
+	}
+};
+spatializer_component_node* create_plugin_spatializer_component(audio_plugin_spatializer_component_interface* impl, audio_spatializer* spatializer, audio_engine* engine, unsigned int input_channels, unsigned int output_channels) {
+	if (!impl) return nullptr;
+	const unsigned int channels = engine? engine->get_channels() : 0;
+	if (!channels || input_channels && input_channels != channels || output_channels && output_channels != channels) { // As HRTF's two ears on an engine that isn't stereo: the next node couldn't take its output, so that the sound was attached to nothing, rather than positioned by another panner.
+		delete impl;
+		return nullptr;
+	}
+	try {
+		return new plugin_spatializer_component_impl(impl, spatializer, engine, input_channels, output_channels);
+	} catch (std::exception&) {
+		delete impl;
+		return nullptr;
+	}
+}
+
 class basic_panner_impl : public spatializer_component_node_impl, public virtual basic_panner {
 	ma_panner panner;
 public:
@@ -2038,199 +2110,90 @@ public:
 };
 spatializer_component_node* basic_panner::create(audio_spatializer* spatializer, audio_engine* engine) { return new basic_panner_impl(spatializer, engine); }
 
-class phonon_hrtf_panner_impl : public spatializer_component_node_impl, public virtual phonon_hrtf_panner {
-	IPLBinauralEffect iplEffect;
-	IPLBinauralEffectParams iplEffectParams;
-	IPLAudioBuffer inputBuffer;
-	IPLAudioBuffer outputBuffer;
+class hrtf_panner_impl : public spatializer_component_node_impl, public virtual hrtf_panner {
+	microsynthiser::hrtf_effect hrtf;
+	vector<float> mono;
 public:
-	phonon_hrtf_panner_impl(audio_spatializer* spatializer, audio_engine* e) : spatializer_component_node_impl(spatializer, e, 0, 2), iplEffect(nullptr) {
-		if (!phonon_init()) throw std::runtime_error("Steam Audio initialization failed");
-		IPLBinauralEffectSettings effectSettings{};
-		effectSettings.hrtf = g_phonon_hrtf;
-		iplEffectParams = {};
-		iplEffectParams.interpolation = IPL_HRTFINTERPOLATION_NEAREST;
-		iplEffectParams.spatialBlend = 1.0;
-		iplEffectParams.hrtf = g_phonon_hrtf;
-		if (iplBinauralEffectCreate(g_phonon_context, &g_phonon_audio_settings, &effectSettings, &iplEffect) != IPL_STATUS_SUCCESS) throw std::runtime_error("Failed to create binaural effect");
-		ma_uint32 channelsIn = e->get_channels();
-		if (iplAudioBufferAllocate(g_phonon_context, channelsIn, g_phonon_audio_settings.frameSize, &inputBuffer) != IPL_STATUS_SUCCESS) {
-			iplBinauralEffectRelease(&iplEffect);
-			throw std::runtime_error("Failed to allocate input audio buffer");
-		}
-		if (iplAudioBufferAllocate(g_phonon_context, 2, g_phonon_audio_settings.frameSize, &outputBuffer) != IPL_STATUS_SUCCESS) {
-			iplAudioBufferFree(g_phonon_context, &inputBuffer);
-			iplBinauralEffectRelease(&iplEffect);
-			throw std::runtime_error("Failed to allocate output audio buffer");
-		}
+	hrtf_panner_impl(audio_spatializer* spatializer, audio_engine* e) : spatializer_component_node_impl(spatializer, e, 0, 2), hrtf(e->get_sample_rate()) {
+		microsynthiser::distance_params no_attenuation; // The attenuator attenuates.
+		no_attenuation.model = microsynthiser::distance_model::none;
+		hrtf.set_distance_params(no_attenuation);
 	}
-	~phonon_hrtf_panner_impl() {	
-		destroy_node();
-		if (iplEffect) iplBinauralEffectRelease(&iplEffect);
-		iplAudioBufferFree(g_phonon_context, &inputBuffer);
-		iplAudioBufferFree(g_phonon_context, &outputBuffer);
-	}
+	~hrtf_panner_impl() { destroy_node(); }
 	void process(const float** frames_in, unsigned int* frame_count_in, float** frames_out, unsigned int* frame_count_out) override {
-		ma_uint32 totalFramesToProcess = *frame_count_out;
-		ma_uint32 totalFramesProcessed = 0;
-		float fully_spatialized_distance = 5; // Make this configurable once spatializer components have a property system.
-		if (fully_spatialized_distance < 0.1) fully_spatialized_distance = 0.1;
-		if (!spatializer || !iplEffect) goto fail;
+		const unsigned int frames = min(*frame_count_in, *frame_count_out), channels = get_engine()->get_channels();
 		audio_spatialization_parameters params;
-		if (!spatializer->get_parameters(params)) goto fail;
-		iplEffectParams.direction.x = params.listener_direction_x * params.directional_attenuation_factor;
-		iplEffectParams.direction.y = params.listener_direction_y * params.directional_attenuation_factor;
-		iplEffectParams.direction.z = params.listener_direction_z * params.directional_attenuation_factor;
-		iplEffectParams.spatialBlend = params.listener_distance * (params.directional_attenuation_factor / fully_spatialized_distance);
-		// Steam Audio given a NaN made the engine's whole mix NaN, kept until the sound closed, or for good through a reverb after it: clamp() passed a NaN blend through, as a distance too great for a float times a factor of 0 makes, and positions near the float's limit gave a NaN distance and direction. A blend that isn't a number, or a direction that isn't finite, spatializes nothing.
-		iplEffectParams.spatialBlend = iplEffectParams.spatialBlend > 1? 1 : iplEffectParams.spatialBlend > 0? iplEffectParams.spatialBlend : 0;
-		if (!std::isfinite(iplEffectParams.direction.x) || !std::isfinite(iplEffectParams.direction.y) || !std::isfinite(iplEffectParams.direction.z)) {
-			iplEffectParams.direction = {0, 0, -1};
-			iplEffectParams.spatialBlend = 0;
+		if (!spatializer || !spatializer->get_parameters(params)) {
+			ma_copy_pcm_frames(frames_out[0], frames_in[0], frames, ma_format_f32, channels);
+			return;
 		}
-		while (totalFramesProcessed < totalFramesToProcess) {
-			ma_uint32 framesToProcessThisIteration = totalFramesToProcess - totalFramesProcessed;
-			if (framesToProcessThisIteration > (ma_uint32)g_phonon_audio_settings.frameSize) framesToProcessThisIteration = (ma_uint32)g_phonon_audio_settings.frameSize;
-			inputBuffer.numSamples = framesToProcessThisIteration;
-			outputBuffer.numSamples = framesToProcessThisIteration;
-			iplAudioBufferDeinterleave(g_phonon_context, (float*)ma_offset_pcm_frames_const_ptr_f32(frames_in[0], totalFramesProcessed, inputBuffer.numChannels), &inputBuffer);
-			iplBinauralEffectApply(iplEffect, &iplEffectParams, &inputBuffer, &outputBuffer);
-			iplAudioBufferInterleave(g_phonon_context, &outputBuffer, ma_offset_pcm_frames_ptr_f32(frames_out[0], totalFramesProcessed, 2));
-			totalFramesProcessed += framesToProcessThisIteration;
+		// The direction is listener relative with x right, y up and z behind, microsynthiser's has y ahead and z up. One that isn't finite, as positions near the float's limit made, is kept from it, whose impulses, and all it plays, were NaN from it.
+		if (std::isfinite(params.listener_direction_x) && std::isfinite(params.listener_direction_y) && std::isfinite(params.listener_direction_z)) hrtf.set_position({params.listener_direction_x, -params.listener_direction_z, params.listener_direction_y});
+		const float fully_spatialized_distance = 5.0f; // Within this distance a sound is increasingly unpositioned, so that sounds at the listener's position aren't snapped to one direction. Like Steam Audio this narrows the difference between the ears rather than mixing in the unpositioned sound, which would make nearby sounds seem centered.
+		hrtf.set_spatial_blend(clamp(params.listener_distance * params.directional_attenuation_factor / fully_spatialized_distance, 0.0f, 1.0f)); // A NaN, as an infinite distance times a factor of 0, is unpositioned.
+		if (channels == 2) {
+			hrtf.process_stereo(frames_in[0], frames_out[0], frames);
+			return;
 		}
-		return;
-		fail:
-			ma_copy_pcm_frames(frames_out[0], frames_in[0], *frame_count_in, ma_format_f32, get_engine()->get_channels());
+		if (mono.size() < frames) mono.resize(frames);
+		const float* in = frames_in[0];
+		for (unsigned int i = 0; i < frames; i++) {
+			float sum = 0.0f;
+			for (unsigned int c = 0; c < channels; c++) sum += in[i * channels + c];
+			mono[i] = sum / channels;
+		}
+		hrtf.process(mono.data(), frames_out[0], frames);
 	}
 };
 // HRTF renders two ears, so an engine of another channel count, which couldn't take its output, gets none, and the spatializer falls back to another panner.
-spatializer_component_node* phonon_hrtf_panner::create(audio_spatializer* spatializer, audio_engine* engine) {
+spatializer_component_node* hrtf_panner::create(audio_spatializer* spatializer, audio_engine* engine) {
 	if (!engine || engine->get_channels() != 2) return nullptr;
-	return new phonon_hrtf_panner_impl(spatializer, engine);
+	return new hrtf_panner_impl(spatializer, engine);
 }
 
-class basic_attenuator_impl : public spatializer_component_node_impl, public virtual basic_attenuator {
-	// The volume applied, ramped to each new one over the frames MiniAudio's spatializer smooths its gain over, as MiniAudio did the cones' when it applied them, rather than stepping at each block. Not with ma_gainer, whose stereo path in MiniAudio 0.11.25 advances its ramp once every two frames while counting each, so a block covered half its ramp and the next began with a step. Only the audio thread uses these.
-	ma_uint32 channels, ramp_frames, ramp_position = 0;
-	float ramp_from = 0, ramp_to = 0;
-	bool ramp_started = false;
-	float ramped_volume() const { return ramp_position >= ramp_frames? ramp_to : ramp_from + (ramp_to - ramp_from) * ((float)ramp_position / ramp_frames); }
+// NVGT's distance curve, shared by its attenuators so that a sound sounds about as loud at a distance whichever is in use: 1.75 decibels per unit of distance beyond the minimum distance for a rolloff of 1, faded smoothly to silence at the maximum distance. Audio games rarely treat a unit of distance as a meter, as a step is often a whole unit, so the default rolloff of 0.375 and maximum distance of 50 keep a sound at just under half volume 10 units away and a fifth 20 units away, almost inaudible beyond 40.
+// The distance's volume, before the clamping that the attenuators make with the cones' (see volume_with_cones()), once. A negative min_distance counts as 0, which it added to every distance. A max_distance at or below min_distance counts as it, the floor winning as for volumes, so that a sound within it plays rather than no distance being within the range.
+static float distance_volume(const audio_spatialization_parameters& params, float distance) {
+	const float nearest = params.min_distance > 0 ? params.min_distance : 0.0f;
+	if (params.max_distance <= nearest) return distance <= nearest ? 1.0f : 0.0f;
+	if (!(distance < params.max_distance)) return 0.0f;
+	const float beyond = distance > nearest ? distance - nearest : 0.0f, fade = distance / params.max_distance;
+	return ma_volume_db_to_linear(-beyond * params.rolloff * 1.75f) * (1.0f - fade * fade);
+}
+// An attenuator applying a distance curve, which is also registered so that others can attenuate a sound over other distances the same way.
+template <class base, spatializer_attenuation_function curve> class curve_attenuator_impl : public spatializer_component_node_impl, public virtual base {
+	gain_ramp ramp;
 public:
-	basic_attenuator_impl(audio_spatializer* spatializer, audio_engine* e) : spatializer_component_node_impl(spatializer, e), channels(e->get_channels()), ramp_frames(e->get_ma_engine()->gainSmoothTimeInFrames) {}
-	~basic_attenuator_impl() {
+	curve_attenuator_impl(audio_spatializer* spatializer, audio_engine* e) : spatializer_component_node_impl(spatializer, e), ramp(e) {}
+	~curve_attenuator_impl() {
 		destroy_node();
 	}
 	void process(const float** frames_in, unsigned int* frame_count_in, float** frames_out, unsigned int* frame_count_out) override {
-		float distance = 0, volume = 0;
-		ma_uint32 frameCount = *frame_count_out;
-		if (!spatializer) goto fail;
+		const ma_uint32 frames = min(*frame_count_out, *frame_count_in);
 		audio_spatialization_parameters params;
-		if (!spatializer->get_parameters(params)) goto fail;
-		if (params.min_distance < 0) params.min_distance = 0; // As the Steam Audio attenuator takes it, the floor winning: a negative one was added to every distance, playing a sound at the listener as if that far away.
-		distance = params.listener_distance - params.min_distance; // Within min_distance a sound is at full volume, as at min_distance itself, rather than attenuated by its whole distance.
-		if (distance < 0) distance = 0;
-		// A max_distance below min_distance counts as min_distance, the floor winning as for volumes: otherwise no distance was within the range, and a sound at the listener played nothing.
-		volume = volume_with_cones(distance <= (params.max_distance > params.min_distance? params.max_distance - params.min_distance : 0)? ma_volume_db_to_linear(-distance * params.rolloff * 1.75) : 0, params);
-		if (!ramp_started) { // The first volume at once, as for a sound starting.
-			ramp_from = ramp_to = volume;
-			ramp_position = ramp_frames;
-			ramp_started = true;
-		} else if (volume != ramp_to) {
-			ramp_from = ramped_volume();
-			ramp_to = volume;
-			ramp_position = 0;
-		}
-		if (frameCount > *frame_count_in) frameCount = *frame_count_in;
-		for (ma_uint32 frame = 0; frame < frameCount; frame++) {
-			float gain = ramped_volume();
-			if (ramp_position < ramp_frames) ramp_position++;
-			for (ma_uint32 channel = 0; channel < channels; channel++) frames_out[0][frame * channels + channel] = frames_in[0][frame * channels + channel] * gain;
-		}
-		return;
-		fail:
-			ma_copy_pcm_frames(frames_out[0], frames_in[0], *frame_count_in, ma_format_f32, get_engine()->get_channels());
+		if (spatializer && spatializer->get_parameters(params)) ramp.apply(frames_in[0], frames_out[0], frames, volume_with_cones(curve(params, params.listener_distance), params));
+		else ma_copy_pcm_frames(frames_out[0], frames_in[0], frames, ma_format_f32, get_engine()->get_channels());
 	}
 };
-spatializer_component_node* basic_attenuator::create(audio_spatializer* spatializer, audio_engine* engine) { return new basic_attenuator_impl(spatializer, engine); }
+float basic_attenuator::attenuation(const audio_spatialization_parameters& params, float distance) { return clamp_volume(distance_volume(params, distance), params.min_volume, params.max_volume); }
+spatializer_component_node* basic_attenuator::create(audio_spatializer* spatializer, audio_engine* engine) { return new curve_attenuator_impl<basic_attenuator, distance_volume>(spatializer, engine); }
+float hrtf_attenuator::attenuation(const audio_spatialization_parameters& params, float distance) { return basic_attenuator::attenuation(params, distance); } // NVGT's distance curve, as physical models such as Synthizer's inverse distance fall off far too quickly for audio games.
+// NVGT's distance curve followed by Steam Audio's air absorption, which dulls distant sounds so that they sound far away rather than only quiet. As with the nvgt_phonon plugin's attenuator, a unit of distance is taken to be about 0.3 meters for air absorption, as audio games rarely treat a unit as a meter.
+class hrtf_attenuator_impl : public curve_attenuator_impl<hrtf_attenuator, distance_volume> {
+	microsynthiser::air_absorption_effect air;
+	static constexpr float meters_per_unit = 0.3f;
+public:
+	hrtf_attenuator_impl(audio_spatializer* spatializer, audio_engine* e) : curve_attenuator_impl(spatializer, e), air(e->get_sample_rate(), e->get_channels()) {}
+	~hrtf_attenuator_impl() { destroy_node(); } // Before air is destroyed, so the audio thread can't be using it.
+	void process(const float** frames_in, unsigned int* frame_count_in, float** frames_out, unsigned int* frame_count_out) override {
+		curve_attenuator_impl::process(frames_in, frame_count_in, frames_out, frame_count_out);
+		audio_spatialization_parameters params;
+		if (!spatializer || !spatializer->get_parameters(params)) return;
+		const float farthest = params.max_distance > params.min_distance ? params.max_distance : params.min_distance; // Past which the distance attenuates no more, rather than darkening on for good where min_gain keeps the sound heard.
+		air.set_distance((params.listener_distance < farthest ? params.listener_distance : farthest) * meters_per_unit);
+		air.process(frames_out[0], frames_out[0], min(*frame_count_in, *frame_count_out));
+	}
+};
+spatializer_component_node* hrtf_attenuator::create(audio_spatializer* spatializer, audio_engine* engine) { return new hrtf_attenuator_impl(spatializer, engine); }
 
-class phonon_attenuator_impl : public spatializer_component_node_impl, public virtual phonon_attenuator {
-	IPLDirectEffect iplEffect;
-	IPLDirectEffectParams iplEffectParams;
-	IPLAudioBuffer inputBuffer;
-	IPLAudioBuffer outputBuffer;
-	IPLDistanceAttenuationModel distanceModel;
-	IPLAirAbsorptionModel airAbsorptionModel;
-public:
-	phonon_attenuator_impl(audio_spatializer* spatializer, audio_engine* e) : spatializer_component_node_impl(spatializer, e), iplEffect(nullptr) {
-		if (!phonon_init()) throw std::runtime_error("Steam Audio initialization failed");
-		distanceModel = {};
-		distanceModel.type = IPL_DISTANCEATTENUATIONTYPE_INVERSEDISTANCE;
-		distanceModel.minDistance = 1.0f;
-		airAbsorptionModel = {};
-		airAbsorptionModel.type = IPL_AIRABSORPTIONTYPE_DEFAULT;
-		IPLDirectEffectSettings effectSettings{};
-		effectSettings.numChannels = e->get_channels();
-		iplEffectParams = {};
-		iplEffectParams.flags = static_cast<IPLDirectEffectFlags>(IPL_DIRECTEFFECTFLAGS_APPLYDISTANCEATTENUATION | IPL_DIRECTEFFECTFLAGS_APPLYAIRABSORPTION);
-		iplEffectParams.directivity = 1.0f;
-		if (iplDirectEffectCreate(g_phonon_context, &g_phonon_audio_settings, &effectSettings, &iplEffect) != IPL_STATUS_SUCCESS) throw std::runtime_error("Failed to create direct effect");
-		ma_uint32 channelsIn = e->get_channels();
-		if (iplAudioBufferAllocate(g_phonon_context, channelsIn, g_phonon_audio_settings.frameSize, &inputBuffer) != IPL_STATUS_SUCCESS) {
-			iplDirectEffectRelease(&iplEffect);
-			throw std::runtime_error("Failed to allocate input audio buffer");
-		}
-		if (iplAudioBufferAllocate(g_phonon_context, channelsIn, g_phonon_audio_settings.frameSize, &outputBuffer) != IPL_STATUS_SUCCESS) {
-			iplAudioBufferFree(g_phonon_context, &inputBuffer);
-			iplDirectEffectRelease(&iplEffect);
-			throw std::runtime_error("Failed to allocate output audio buffer");
-		}
-	}
-	~phonon_attenuator_impl() {
-		destroy_node();
-		if (iplEffect) iplDirectEffectRelease(&iplEffect);
-		iplAudioBufferFree(g_phonon_context, &inputBuffer);
-		iplAudioBufferFree(g_phonon_context, &outputBuffer);
-	}
-	void process(const float** frames_in, unsigned int* frame_count_in, float** frames_out, unsigned int* frame_count_out) override {
-		IPLVector3 sourcePos, listenerPos;
-		float distance; // How far past min_distance the sound is, scaled by the rolloff, for Steam Audio.
-		ma_uint32 totalFramesToProcess = *frame_count_out;
-		ma_uint32 totalFramesProcessed = 0;
-		if (!spatializer || !iplEffect) goto fail;
-		audio_spatialization_parameters params;
-		if (!spatializer->get_parameters(params)) goto fail;
-		// Attenuation starts at min_distance, as for the basic attenuator. Steam Audio's inverse distance model gives 1 / max(distance, minDistance), so a min_distance above 1 made a sound quieter, by 20 dB at the listener for 10, and changed nothing beyond it; the model's minimum is 1, the most the volume could be before.
-		distanceModel.minDistance = 1;
-		distanceModel.type = IPL_DISTANCEATTENUATIONTYPE_INVERSEDISTANCE;
-		if (params.min_distance < 0) params.min_distance = 0; // As for the basic attenuator, for max_distance's cut-off too.
-		params.rolloff *= 0.7; // Attenuators apply internal factors sometimes to try making it so that rolloff at a constant value will cause a similar volume reduction regardless of the attenuator in use.
-		// The model and the air absorption depend only on the distance between the positions they are given, so the listener is put at the origin and the source that far along one axis. The parameters' positions couldn't be subtracted for it: a sound positioned relative to the listener has its position relative to the listener, and was attenuated by its distance from the listener's position in the world; listener_distance, which MiniAudio works out, is right either way.
-		distance = (params.min_distance > 0? (params.listener_distance > params.min_distance? params.listener_distance - params.min_distance : 0) : params.listener_distance) * params.rolloff;
-		if (std::isnan(distance)) distance = 0; // A rolloff of 0 at an infinite distance, which attenuates nothing.
-		else if (std::isinf(distance)) distance = std::numeric_limits<float>::max(); // Positions too far apart for a float: as far as one goes.
-		sourcePos = {distance, 0, 0};
-		listenerPos = {0, 0, 0};
-		iplEffectParams.distanceAttenuation = params.listener_distance <= (params.max_distance > params.min_distance? params.max_distance : params.min_distance)? volume_with_cones(iplDistanceAttenuationCalculate(g_phonon_context, sourcePos, listenerPos, &distanceModel), params) : volume_with_cones(0, params);
-		{
-			// At no farther than max_distance, past which the distance attenuates no more, rather than darkening on for good, and to silence where the basic attenuator holds min_gain.
-			const float farthest = params.max_distance > params.min_distance? params.max_distance : params.min_distance, at = params.listener_distance < farthest? params.listener_distance : farthest;
-			float absorbed = (params.min_distance > 0? (at > params.min_distance? at - params.min_distance : 0) : at) * params.rolloff;
-			if (!std::isfinite(absorbed)) absorbed = std::isnan(absorbed)? 0 : std::numeric_limits<float>::max();
-			iplAirAbsorptionCalculate(g_phonon_context, IPLVector3{absorbed, 0, 0}, listenerPos, &airAbsorptionModel, iplEffectParams.airAbsorption);
-		}
-		while (totalFramesProcessed < totalFramesToProcess) {
-			ma_uint32 framesToProcessThisIteration = totalFramesToProcess - totalFramesProcessed;
-			if (framesToProcessThisIteration > (ma_uint32)g_phonon_audio_settings.frameSize) framesToProcessThisIteration = (ma_uint32)g_phonon_audio_settings.frameSize;
-			inputBuffer.numSamples = framesToProcessThisIteration;
-			outputBuffer.numSamples = framesToProcessThisIteration;
-			iplAudioBufferDeinterleave(g_phonon_context, (float*)ma_offset_pcm_frames_const_ptr_f32(frames_in[0], totalFramesProcessed, inputBuffer.numChannels), &inputBuffer);
-			iplDirectEffectApply(iplEffect, &iplEffectParams, &inputBuffer, &outputBuffer);
-			iplAudioBufferInterleave(g_phonon_context, &outputBuffer, ma_offset_pcm_frames_ptr_f32(frames_out[0], totalFramesProcessed, outputBuffer.numChannels));
-			totalFramesProcessed += framesToProcessThisIteration;
-		}
-		return;
-		fail:
-			ma_copy_pcm_frames(frames_out[0], frames_in[0], *frame_count_in, ma_format_f32, get_engine()->get_channels());
-	}
-};
-spatializer_component_node* phonon_attenuator::create(audio_spatializer* spatializer, audio_engine* engine) { return new phonon_attenuator_impl(spatializer, engine); }
+

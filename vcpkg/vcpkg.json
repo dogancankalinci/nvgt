@@ -20,7 +20,12 @@
     "libvorbis",
     "angelscript",
     "angelscript-nc",
-    "reactphysics3d",
+    {
+      "name": "joltphysics",
+      "features": [
+        "rtti"
+      ]
+    },
     "steam-audio",
     {
       "name": "openssl",
@@ -30,7 +35,7 @@
       "name": "curl",
       "default-features": false,
       "features": [
-        "openssl"
+        "ssl"
       ]
     },
     {
@@ -89,17 +94,23 @@
       "default-features": false,
       "features": [
         "net",
-        "netssl",
         "json",
         "util",
         "xml",
         "encodings",
         "mongodb",
         "redis",
-        "jwt",
         "prometheus",
         "sevenzip"
       ]
+    },
+    {
+      "name": "poco",
+      "default-features": false,
+      "features": [
+        "netssl"
+      ],
+      "platform": "!windows"
     },
     {
       "name": "libgit2",

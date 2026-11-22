@@ -1,5 +1,5 @@
 diff --git a/sdk/angelscript/source/as_callfunc_arm.cpp b/sdk/angelscript/source/as_callfunc_arm.cpp
-index d8d48ee..ec85582 100644
+index c000f33..6f01be3 100644
 --- a/sdk/angelscript/source/as_callfunc_arm.cpp
 +++ b/sdk/angelscript/source/as_callfunc_arm.cpp
 @@ -159,7 +159,11 @@ asQWORD CallSystemFunctionNative(asCContext *context, asCScriptFunction *descr,
@@ -16,10 +16,10 @@ index d8d48ee..ec85582 100644
  					{
  						// 64 bit value align
 diff --git a/sdk/angelscript/source/as_callfunc_arm64.cpp b/sdk/angelscript/source/as_callfunc_arm64.cpp
-index e5a0315..b42cfa0 100644
+index 537d0ac..f0b5d8f 100644
 --- a/sdk/angelscript/source/as_callfunc_arm64.cpp
 +++ b/sdk/angelscript/source/as_callfunc_arm64.cpp
-@@ -212,6 +212,30 @@ asQWORD CallSystemFunctionNative(asCContext *context, asCScriptFunction *descr,
+@@ -228,6 +228,30 @@ asQWORD CallSystemFunctionNative(asCContext *context, asCScriptFunction *descr,
  			// address of a complex object only needs one register, not as many as the object's size.
  			// The memory of an object larger than 16 bytes is freed with the other arguments after the call
  			// (AS_LARGE_OBJS_PASSED_BY_REF), as the function may still be reading it.
@@ -47,9 +47,9 @@ index e5a0315..b42cfa0 100644
 +				continue;
 +			}
 +
- 			const bool isHFA = IsRegisterHFA(parmType);
- 			if( (parmTypeInfo->flags & COMPLEX_MASK) || (parmQWords > 2 && !isHFA) )
- 			{
+ 			bool isHFA = IsRegisterHFA(parmType);
+ #if defined(AS_ARM64_MSVC)
+ 			// Upstream's IsRegisterHFAParameter, which this replaces, didn't count these as HFAs for MSVC
 diff --git a/sdk/angelscript/source/as_callfunc_x64_msvc.cpp b/sdk/angelscript/source/as_callfunc_x64_msvc.cpp
 index ece235e..f4422e5 100644
 --- a/sdk/angelscript/source/as_callfunc_x64_msvc.cpp

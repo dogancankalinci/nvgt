@@ -8,6 +8,7 @@ endif()
 set(VCPKG_CMAKE_SYSTEM_NAME Android)
 set(VCPKG_CMAKE_SYSTEM_VERSION 21)
 set(VCPKG_MAKE_BUILD_TRIPLET "--host=aarch64-linux-android")
-# CMAKE_SHARED_LINKER_FLAGS forces 16KB ELF segment alignment on vcpkg-built shared libs (libSDL3.so)
-# -> required by Google Play's 16 KB page size rule (Nov 2025) for apps targeting Android 15+.
-set(VCPKG_CMAKE_CONFIGURE_OPTIONS -DANDROID_ABI=arm64-v8a -DANDROID_STL=c++_shared -DCMAKE_POLICY_VERSION_MINIMUM=3.15 "-DCMAKE_SHARED_LINKER_FLAGS=-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384")
+# Both of these give 16 KB ELF segment alignment, required by Google Play for apps targeting Android 15+: the NDK toolchain
+# option for CMake's own link lines, and the linker flag for the ports that don't build through the toolchain file.
+set(VCPKG_CMAKE_CONFIGURE_OPTIONS -DANDROID_ABI=arm64-v8a -DANDROID_STL=c++_shared -DCMAKE_POLICY_VERSION_MINIMUM=3.15 -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON)
+set(VCPKG_LINKER_FLAGS "-Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384")

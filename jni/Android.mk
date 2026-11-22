@@ -80,8 +80,8 @@ LOCAL_MODULE    := libenet
 LOCAL_SRC_FILES := $(LIBPATH)/libenet.a
 include $(PREBUILT_STATIC_LIBRARY)
 
-LOCAL_MODULE    := libreactphysics3d
-LOCAL_SRC_FILES := $(LIBPATH)/libreactphysics3d.a
+LOCAL_MODULE    := libJolt
+LOCAL_SRC_FILES := $(LIBPATH)/libJolt.a
 include $(PREBUILT_STATIC_LIBRARY)
 
 LOCAL_MODULE    := libssl
@@ -124,18 +124,6 @@ LOCAL_MODULE    := libopus
 LOCAL_SRC_FILES := $(LIBPATH)/libopus.a
 include $(PREBUILT_STATIC_LIBRARY)
 
-LOCAL_MODULE    := libphonon
-LOCAL_SRC_FILES := $(LIBPATH)/libphonon.a
-include $(PREBUILT_STATIC_LIBRARY)
-
-LOCAL_MODULE    := libpffft
-LOCAL_SRC_FILES := $(LIBPATH)/libpffft.a
-include $(PREBUILT_STATIC_LIBRARY)
-
-LOCAL_MODULE    := libmysofa
-LOCAL_SRC_FILES := $(LIBPATH)/libmysofa.a
-include $(PREBUILT_STATIC_LIBRARY)
-
 # shared libraries
 include $(CLEAR_VARS)
 LOCAL_MODULE    := SDL3
@@ -148,7 +136,7 @@ $(shell python "${LOCAL_PATH}/../build/version_sconscript.py")
 LOCAL_SRC_FILES_COMMON := \
     $(subst $(LOCAL_PATH)/,, \
     $(wildcard $(LOCAL_PATH)/../ASAddon/src/*.cpp)\
-    ../dep/cmp.c ../dep/entities.cpp ../dep/ma_reverb_node.c ../dep/micropather.cpp ../dep/miniaudio_libopus.c ../dep/miniaudio_libvorbis.c ../dep/miniaudio_phonon.c ../dep/miniaudio_wdl_resampler.cpp ../dep/monocypher.c ../dep/resample.cpp ../dep/rng_get_bytes.c ../dep/singleheader.cpp ../dep/sonic.c ../dep/tonar.c ../dep/uncompr.c\
+    ../dep/cmp.c ../dep/entities.cpp ../dep/ma_reverb_node.c ../dep/micropather.cpp ../dep/miniaudio_libopus.c ../dep/miniaudio_libvorbis.c ../dep/miniaudio_wdl_resampler.cpp ../dep/monocypher.c ../dep/resample.cpp ../dep/rng_get_bytes.c ../dep/singleheader.cpp ../dep/sonic.c ../dep/tonar.c ../dep/uncompr.c\
     $(wildcard $(LOCAL_PATH)/../src/*.cpp))
 LOCAL_C_INCLUDES_COMMON := $(LOCAL_PATH)/$(INCLUDEPATH) $(LOCAL_PATH)/../ASAddon/include $(LOCAL_PATH)/../dep
 # -faligned-allocation: clang marks C++17 aligned operator new unavailable below android-28, but the
@@ -158,7 +146,7 @@ LOCAL_CXXFLAGS_COMMON := -DPOCO_STATIC -DNVGT_BUILDING -DAS_USE_STLNAMES=1 -std=
 # 16 KB page size rule (Nov 2025) for apps targeting Android 15+. Fixes libgame.so (this module).
 LOCAL_LDFLAGS_COMMON = -Wl,--no-fatal-warnings -Wl,--no-undefined -Wl,--gc-sections -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384
 LOCAL_SHARED_LIBRARIES_COMMON := SDL3
-LOCAL_STATIC_LIBRARIES_COMMON := libPocoFoundation libPocoCrypto libPocoJSON libPocoNet libPocoNetSSL libPocoUtil libPocoXML libffi libz libangelscript libcrypto libpcre2-8 libutf8proc libexpat libenet libreactphysics3d libssl libSDL3_ttf libfreetype libbz2 libogg libvorbisfile libvorbis libopusfile libopusenc libopus libphonon libpffft libmysofa libtinyexpr libtiny-aes-c
+LOCAL_STATIC_LIBRARIES_COMMON := libPocoFoundation libPocoCrypto libPocoJSON libPocoNet libPocoNetSSL libPocoUtil libPocoXML libffi libz libangelscript libcrypto libpcre2-8 libutf8proc libexpat libenet libJolt libssl libSDL3_ttf libfreetype libbz2 libogg libvorbisfile libvorbis libopusfile libopusenc libopus libtinyexpr libtiny-aes-c
 LOCAL_LDLIBS_COMMON := -lGLESv1_CM -lGLESv2 -lOpenSLES -llog -landroid
 LOCAL_CPP_FEATURES_COMMON := rtti exceptions
 

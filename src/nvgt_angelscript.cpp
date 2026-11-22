@@ -71,7 +71,7 @@
 #include "uuid.h"
 #include "mail.h"
 #include "random.h"
-#include "reactphysics.h"
+#include "jolt.h"
 #include "scriptstuff.h"
 #include "serialize.h"
 #include "sound.h"
@@ -501,6 +501,7 @@ int PreconfigureEngine(asIScriptEngine* engine) {
 	engine->SetEngineProperty(asEP_INIT_GLOBAL_VARS_AFTER_BUILD, false);
 	engine->SetEngineProperty(asEP_MEMBER_INIT_MODE, 0);
 	engine->SetEngineProperty(asEP_BOOL_CONVERSION_MODE, true);
+	engine->SetEngineProperty(asEP_ENABLE_VALUE_TYPED_COMPOUND_PROPERTY_ACCESSORS, true); // Scoped SIMD types such as vector and aabb expose x/y/z through accessors, and scripts expect v.x += 1 to work.
 	engine->SetDefaultAccessMask(NVGT_SUBSYSTEM_GENERAL);
 	engine->BeginConfigGroup("core");
 	RegisterStdString(engine);
@@ -539,7 +540,7 @@ int ConfigureEngine(asIScriptEngine *engine) {
 	engine->EndConfigGroup();
 	engine->SetDefaultAccessMask(NVGT_SUBSYSTEM_GENERAL);
 	engine->BeginConfigGroup("physics");
-	RegisterReactphysics(engine);
+	RegisterJolt(engine);
 	engine->EndConfigGroup();
 	engine->SetDefaultAccessMask(NVGT_SUBSYSTEM_DATA);
 	engine->BeginConfigGroup("compression");
@@ -918,7 +919,8 @@ int LoadCompiledScript(asIScriptEngine *engine, unsigned char*& code, asUINT siz
 	if (size < 1 || !codestream.set(code, size)) return -1;
 	nvgt_bytecode_istream istr(&codestream);
 	BinaryReader br(istr);
-	if (!load_serialized_nvgt_plugins(br)) return -1;
+	vector<string> plugins;
+	if (!read_serialized_nvgt_plugins(br, plugins)) return -1;
 	int ns_count;
 	br >> ns_count;
 	for (int i = 0; i < ns_count; i++) {
@@ -927,6 +929,13 @@ int LoadCompiledScript(asIScriptEngine *engine, unsigned char*& code, asUINT siz
 		g_system_namespaces[k] = v;
 	}
 	if (ConfigureEngine(engine) < 0) return -1;
+	for (const string& name : plugins) { // Plugins are loaded after the engine is configured as they are when running from source, so that a plugin can register types depending on builtin ones such as those of the sound system.
+		string errmsg = Poco::format("Unable to load %s, exiting.", name);
+		if (!load_nvgt_plugin(name, &errmsg)) {
+			message(errmsg, "error");
+			return -1;
+		}
+	}
 	for (int i = 0; i < asEP_LAST_PROPERTY; i++) {
 		UInt64 val;
 		br.read7BitEncoded(val);
@@ -1299,8 +1308,8 @@ std::string DateTimeToString(void* obj, int expandMembers, CDebugger *dbg) {
 	return s.str();
 }
 std::string Vector3ToString(void* obj, int expandMembers, CDebugger *dbg) {
-	reactphysics3d::Vector3 *v = reinterpret_cast<reactphysics3d::Vector3*>(obj);
-	return v->to_string();
+	vector3 *v = reinterpret_cast<vector3*>(obj);
+	return "vector(" + std::to_string(v->GetX()) + ", " + std::to_string(v->GetY()) + ", " + std::to_string(v->GetZ()) + ")";
 }
 #ifdef _WIN32
 BOOL WINAPI debugger_ctrlc(DWORD event) {

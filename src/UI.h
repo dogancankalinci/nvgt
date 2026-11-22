@@ -72,7 +72,7 @@ class game_window {
 		float pixel_density = 0, display_scale = 0, opacity = 0, progress_value = 0, min_aspect = 0, max_aspect = 0;
 		int x = 0, y = 0, w = 0, h = 0, pixel_w = 0, pixel_h = 0, min_w = 0, min_h = 0, max_w = 0, max_h = 0, top = 0, left = 0, bottom = 0, right = 0, surface_vsync = 0;
 		bool position_ok = false, size_ok = false, pixels_ok = false, min_ok = false, max_ok = false, aspect_ok = false, borders_ok = false, surface_vsync_ok = false;
-		bool keyboard_grab = false, mouse_grab = false, has_surface = false, focused = false, text_input_active = false, screen_keyboard_shown = false;
+		bool keyboard_grab = false, mouse_grab = false, mouse_relative_mode = false, has_surface = false, focused = false, text_input_active = false, screen_keyboard_shown = false;
 		native_window_t native_window = nullptr;
 	};
 	mutable std::mutex _state_mutex;
@@ -129,6 +129,8 @@ public:
 	bool get_keyboard_grab() const { return on_thread() ? SDL_GetWindowKeyboardGrab(_window) : state().keyboard_grab; }
 	bool set_mouse_grab(bool grabbed) { return changed(SDL_SetWindowMouseGrab(win(), grabbed)); }
 	bool get_mouse_grab() const { return on_thread() ? SDL_GetWindowMouseGrab(_window) : state().mouse_grab; }
+	bool set_mouse_relative_mode(bool enabled) { return changed(SDL_SetWindowRelativeMouseMode(win(), enabled)); }
+	bool get_mouse_relative_mode() const { return on_thread() ? SDL_GetWindowRelativeMouseMode(_window) : state().mouse_relative_mode; }
 	bool set_opacity(float opacity) { return changed(SDL_SetWindowOpacity(win(), opacity)); }
 	float get_opacity() const { return on_thread() ? SDL_GetWindowOpacity(_window) : state().opacity; }
 	bool flash(unsigned int operation) { return SDL_FlashWindow(win(), (SDL_FlashOperation)operation); }

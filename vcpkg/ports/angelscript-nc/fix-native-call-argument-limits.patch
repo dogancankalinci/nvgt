@@ -1,5 +1,5 @@
 diff --git a/sdk/angelscript/source/as_callfunc.cpp b/sdk/angelscript/source/as_callfunc.cpp
-index e08725f..014b7a3 100644
+index 43be90d..cee7c95 100644
 --- a/sdk/angelscript/source/as_callfunc.cpp
 +++ b/sdk/angelscript/source/as_callfunc.cpp
 @@ -784,6 +784,20 @@ int PrepareSystemFunction(asCScriptFunction *func, asSSystemFunctionInterface *i
@@ -89,7 +89,7 @@ index 7a29b71..a962208 100644
  		cleanArgs           = in.cleanArgs;
  		paramAutoHandles    = in.paramAutoHandles;
 diff --git a/sdk/angelscript/source/as_callfunc_arm.cpp b/sdk/angelscript/source/as_callfunc_arm.cpp
-index ec85582..4cdc3bd 100644
+index 6f01be3..573676b 100644
 --- a/sdk/angelscript/source/as_callfunc_arm.cpp
 +++ b/sdk/angelscript/source/as_callfunc_arm.cpp
 @@ -73,6 +73,93 @@ extern "C" asQWORD armFuncR0R1      (const asDWORD *, int, asFUNCTION_t, asDWORD
@@ -213,10 +213,10 @@ index ec85582..4cdc3bd 100644
  		break;
  	case ICC_CDECL_OBJLAST:
 diff --git a/sdk/angelscript/source/as_callfunc_arm64.cpp b/sdk/angelscript/source/as_callfunc_arm64.cpp
-index b42cfa0..0bef0bc 100644
+index f0b5d8f..dc251eb 100644
 --- a/sdk/angelscript/source/as_callfunc_arm64.cpp
 +++ b/sdk/angelscript/source/as_callfunc_arm64.cpp
-@@ -139,6 +139,163 @@ static inline void PadAppleStack(asQWORD* const argsArray, asQWORD& numArgs, asQ
+@@ -143,6 +143,171 @@ static inline void PadAppleStack(asQWORD* const argsArray, asQWORD& numArgs, asQ
  }
  #endif
  
@@ -260,6 +260,10 @@ index b42cfa0..0bef0bc 100644
 +	if( (callConv >= ICC_THISCALL && callConv <= ICC_VIRTUAL_THISCALL_RETURNINMEM) ||
 +		(callConv >= ICC_THISCALL_OBJLAST && callConv <= ICC_VIRTUAL_THISCALL_OBJFIRST_RETURNINMEM) )
 +		numGPRegArgs++;
++#if defined(AS_ARM64_MSVC)
++	if( sysFunc->hostReturnInMemory )
++		numGPRegArgs++;
++#endif
 +	if( callConv == ICC_CDECL_OBJFIRST || callConv == ICC_CDECL_OBJFIRST_RETURNINMEM ||
 +		callConv == ICC_THISCALL_OBJFIRST || callConv == ICC_THISCALL_OBJFIRST_RETURNINMEM ||
 +		callConv == ICC_VIRTUAL_THISCALL_OBJFIRST || callConv == ICC_VIRTUAL_THISCALL_OBJFIRST_RETURNINMEM )
@@ -282,7 +286,11 @@ index b42cfa0..0bef0bc 100644
 +					ARM64_PlaceStackArg(stackBytes, parmBytes, parmBytes);
 +				continue;
 +			}
-+			const bool isHFA = IsRegisterHFA(parmType);
++			bool isHFA = IsRegisterHFA(parmType);
++#if defined(AS_ARM64_MSVC)
++			if( parmTypeInfo->flags & (asOBJ_APP_CLASS_CONSTRUCTOR | asOBJ_APP_CLASS_DESTRUCTOR | asOBJ_APP_CLASS_ASSIGNMENT) )
++				isHFA = false;
++#endif
 +			if( (parmTypeInfo->flags & COMPLEX_MASK) || (parmQWords > 2 && !isHFA) )
 +			{
 +				if( numGPRegArgs < GP_ARG_REGISTERS )
@@ -380,12 +388,12 @@ index b42cfa0..0bef0bc 100644
  asQWORD CallSystemFunctionNative(asCContext *context, asCScriptFunction *descr, void *obj, asDWORD *args, void *retPointer, asQWORD &retQW2, void *secondObject)
  {
  	asCScriptEngine *engine = context->m_engine;
-@@ -151,7 +308,7 @@ asQWORD CallSystemFunctionNative(asCContext *context, asCScriptFunction *descr,
+@@ -156,7 +321,7 @@ asQWORD CallSystemFunctionNative(asCContext *context, asCScriptFunction *descr,
  
- 	asQWORD       gpRegArgs[GP_ARG_REGISTERS];
- 	asQWORD       floatRegArgs[FLOAT_ARG_REGISTERS];
--	asQWORD       stackArgs[64]; // It's how many x64 users can have
-+	asQWORD       stackArgs[ARM64_MAX_STACK_ARG_QWORDS]; // It's how many x64 users can have
+ 	asQWORD       gpRegArgs[GP_ARG_REGISTERS]       = { 0 };
+ 	asQWORD       floatRegArgs[FLOAT_ARG_REGISTERS] = { 0 };
+-	asQWORD       stackArgs[64]                     = { 0 }; // It's how many x64 users can have
++	asQWORD       stackArgs[ARM64_MAX_STACK_ARG_QWORDS] = { 0 }; // It's how many x64 users can have
  	asQWORD       numGPRegArgs    = 0;
  	asQWORD       numFloatRegArgs = 0;
  	asQWORD       numStackArgs    = 0;
@@ -604,7 +612,7 @@ index f4422e5..3a9cb70 100644
  
  	int callConv = sysFunc->callConv;
 diff --git a/sdk/angelscript/source/as_texts.h b/sdk/angelscript/source/as_texts.h
-index 9f7818f..a9e60de 100644
+index 9a984ea..173f90c 100644
 --- a/sdk/angelscript/source/as_texts.h
 +++ b/sdk/angelscript/source/as_texts.h
 @@ -350,6 +350,7 @@
