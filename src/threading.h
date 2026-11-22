@@ -15,4 +15,6 @@
 class asIScriptEngine;
 
 void RegisterThreading(asIScriptEngine* engine);
+bool script_threads_stop(); // Ends what script threads run once the script's module is discarded, see threading.cpp.
+bool script_threads_release_engine(); // Whether the script engine can be shut down, which no script thread uses any more then, see threading.cpp.
 long poco_ms(unsigned int ms); // A script's uint milliseconds as the long Poco takes, see threading.cpp.

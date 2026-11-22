@@ -30,6 +30,7 @@ int PreconfigureEngine(asIScriptEngine* engine);
 int ConfigureEngine(asIScriptEngine* engine);
 void ConfigureEngineOptions(asIScriptEngine* engine);
 bool ExecuteScript(asIScriptEngine* engine, const std::string& scriptFile, int& exit_code); // see there
+void release_context_pool(); // see there
 #ifndef NVGT_STUB
 	int               CompileScript(asIScriptEngine* engine, const std::string& scriptFile);
 	int SaveCompiledScript(asIScriptEngine* engine, unsigned char** output);

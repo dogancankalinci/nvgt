@@ -51,6 +51,7 @@
 #include "scriptstuff.h" // garbage_collect_stop_thread()
 #include "serialize.h" // current location of g_StringTypeid (subject to change)
 #include "sound.h"
+#include "threading.h" // script_threads_stop()
 #include "tts.h"
 #include "UI.h" // message
 #include "version.h"
@@ -351,6 +352,7 @@ protected:
 		g_shutting_down = true;
 		android_permission_requests_shutdown(); // A permission callback answered from now on must not run on the engine shut down below.
 		garbage_collect_stop_thread(); // Mode 3's collector thread, when the script ended without its module being discarded (preglobals() returning false, a failure): it collects on the engine shut down below.
+		script_threads_stop(); // As for the collector thread, the threads preglobals() started.
 		Application::uninitialize();
 		#ifdef _WIN32
 		timeEndPeriod(1);
@@ -362,9 +364,12 @@ protected:
 		uninit_sound();
 		anticheat_deinit();
 		cleanup_default_random();
-		if (g_ScriptEngine)
+		// Left as it is while a script thread still runs, in a long call or waiting for something that never comes: the program is ending, and the thread would find the engine gone. See script_threads_stop().
+		if (g_ScriptEngine && script_threads_release_engine()) {
+			release_context_pool();
 			g_ScriptEngine->ShutDownAndRelease();
-		g_ScriptEngine = nullptr;
+			g_ScriptEngine = nullptr;
+		}
 	}
 };
 

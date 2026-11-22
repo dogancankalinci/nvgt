@@ -169,6 +169,102 @@ static bool is_script_thread(Thread* thread) {
 	return script_threads().count(thread) != 0;
 }
 static void thread_release(Thread* thread);
+// The script engine was shut down at the end of the program with script threads still running (a worker the script never stopped, or one in
+// the middle of its work when exit() was called or main() returned): they went on running the bytecode, calling the functions and using the
+// global variables that had just been freed, and the program crashed as it ended, on Android, where the process lives on after the script, as
+// good as always. Each run of a script thread (a thread object's, a thread_pool's and an async call's) is counted here from before it takes a
+// context until it has let go of everything of the engine's. Once the script's module is discarded, so that its destructors still find the
+// threads they end in order, script_threads_stop() aborts what the runs left execute and gives them a moment to end; and the engine is shut
+// down only when none is left (script_threads_release_engine()), one in a long call or waiting for something for ever keeps it as it is.
+class script_thread_run;
+struct script_thread_runs {
+	std::mutex mutex;
+	std::condition_variable ended;
+	script_thread_run* first = nullptr;
+	bool stopping = false; // Nothing more is executed.
+	bool waited = false; // script_threads_stop() waited its time out before.
+	bool engine_gone = false;
+};
+static script_thread_runs& script_thread_runs_state() {
+	static auto* state = new script_thread_runs; // Never destroyed: a run can end during static destruction.
+	return *state;
+}
+class script_thread_run {
+	asIScriptContext* ctx = nullptr; // What it executes now.
+	script_thread_run* previous = nullptr;
+	script_thread_run* next = nullptr;
+	bool counted;
+	friend bool script_threads_stop();
+public:
+	script_thread_run() {
+		script_thread_runs& runs = script_thread_runs_state();
+		std::lock_guard<std::mutex> lock(runs.mutex);
+		counted = !runs.engine_gone;
+		if (!counted) return;
+		next = runs.first;
+		if (next) next->previous = this;
+		runs.first = this;
+	}
+	~script_thread_run() {
+		if (!counted) return;
+		script_thread_runs& runs = script_thread_runs_state();
+		std::lock_guard<std::mutex> lock(runs.mutex);
+		(previous ? previous->next : runs.first) = next;
+		if (next) next->previous = previous;
+		runs.ended.notify_all();
+	}
+	script_thread_run(const script_thread_run&) = delete;
+	script_thread_run& operator=(const script_thread_run&) = delete;
+	bool engine_alive() const { return counted; } // False when the run began after the engine was shut down, which it must not touch.
+	int execute(asIScriptContext* context) {
+		script_thread_runs& runs = script_thread_runs_state();
+		{
+			std::lock_guard<std::mutex> lock(runs.mutex);
+			if (runs.stopping) return asEXECUTION_ABORTED;
+			ctx = context;
+		}
+		int result = context->Execute();
+		std::lock_guard<std::mutex> lock(runs.mutex);
+		ctx = nullptr;
+		return result;
+	}
+};
+// Whether every run has ended, waiting for it at most a quarter of a second in all.
+bool script_threads_stop() {
+	script_thread_runs& runs = script_thread_runs_state();
+	std::unique_lock<std::mutex> lock(runs.mutex);
+	runs.stopping = true;
+	auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(runs.waited ? 0 : 250);
+	while (runs.first) {
+		// Again each time: an abort made just before the context starts executing, or while it calls back into the script, can be dropped.
+		for (script_thread_run* run = runs.first; run; run = run->next) {
+			if (run->ctx) run->ctx->Abort();
+		}
+		if (std::chrono::steady_clock::now() >= until) {
+			runs.waited = true;
+			return false;
+		}
+		#ifdef __APPLE__
+		if (thread_is_main()) { // See event_wait_main().
+			lock.unlock();
+			apple_run_main_loop_once();
+			lock.lock();
+			if (!runs.first) break;
+		}
+		#endif
+		runs.ended.wait_for(lock, std::chrono::milliseconds(10));
+	}
+	return true;
+}
+// From here on no run touches the engine when true: one that still begins finds it gone.
+bool script_threads_release_engine() {
+	script_thread_runs& runs = script_thread_runs_state();
+	std::lock_guard<std::mutex> lock(runs.mutex);
+	runs.stopping = true;
+	if (!runs.first) runs.engine_gone = true;
+	return runs.engine_gone;
+}
+
 // A thread object can be started on one script thread while another joins it (join(), join(ms)) or asks whether it runs. Poco's Thread
 // isn't made for that: its join, once the run has ended, closes the handle of the thread it reads again then and clears it, which by
 // then can be the handle of the run another thread has just started; the next start() found the thread not running and started a
@@ -442,7 +538,13 @@ public:
 		return true;
 	}
 	void run() {
-		int result = ctx->Execute();
+		script_thread_run here;
+		if (!here.engine_alive()) { // Started as the program ended: nothing of the engine's is left to run or let go of.
+			progress->set();
+			if (task_life) task_life->finished.set();
+			return;
+		}
+		int result = here.execute(ctx);
 		if (result == asEXECUTION_ABORTED) exception = "function call aborted";
 		else if (result == asEXECUTION_SUSPENDED) exception = "function call suspended";
 		else if (result == asEXECUTION_EXCEPTION) exception = ctx->GetExceptionString();
@@ -511,25 +613,24 @@ class script_runnable : public Runnable {
 public:
 	script_runnable(asIScriptFunction* func, CScriptDictionary* args, Thread* thread = nullptr, std::shared_ptr<script_thread_life> life = nullptr) : func(func), args(args), thread(thread), life(life) {}
 	void run() {
-		int execution_result = asEXECUTION_FINISHED;
-		asIScriptContext* ctx = nullptr;
-		if (!func) goto finish;
-		ctx = g_ScriptEngine->RequestContext();
-		if (!ctx) goto finish;
-		if (ctx->Prepare(func) < 0) goto finish;
-		if (ctx->SetArgObject(0, args) < 0) goto finish;
-		ctx->Execute(); // Todo: Work out what we want to do with exceptions or errors that take place in threads.
-	finish:
-		if (ctx && !g_shutting_down) g_ScriptEngine->ReturnContext(ctx); // We only do this when the engine is not shutting down because the angelscript could get partially destroyed on the main thread before this point in the shutdown case.
-		if (!g_shutting_down) {
+		run_function();
+		delete this; // Poco wants us to keep these Runnable objects alive as long as the thread is running, meaning we must delete ourself from within the thread to avoid some other sort of cleanup machinery.
+		return;
+	}
+	void run_function() {
+		script_thread_run here; // Keeps the engine until everything of it is let go of.
+		if (here.engine_alive()) {
+			asIScriptContext* ctx = func ? g_ScriptEngine->RequestContext() : nullptr;
+			if (ctx) {
+				if (ctx->Prepare(func) >= 0 && ctx->SetArgObject(0, args) >= 0) here.execute(ctx); // Todo: Work out what we want to do with exceptions or errors that take place in threads.
+				g_ScriptEngine->ReturnContext(ctx);
+			}
 			if (args) args->Release();
 			if (func) func->Release();
 		}
 		if (life) life->finished.set(); // See script_thread_life.
 		if (thread) thread_release(thread);
-		asThreadCleanup();
-		delete this; // Poco wants us to keep these Runnable objects alive as long as the thread is running, meaning we must delete ourself from within the thread to avoid some other sort of cleanup machinery.
-		return;
+		if (here.engine_alive()) asThreadCleanup();
 	}
 	// For a start that threw before any thread could run us (a pool with no free thread, a thread that is already running): run() will never come to release what we were handed, so the starter does it here.
 	void discard() {

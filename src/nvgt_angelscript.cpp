@@ -1044,6 +1044,12 @@ static bool module_is_live(asIScriptEngine *engine, asIScriptModule *mod) {
 	}
 	return false;
 }
+// Again before the engine is shut down, for the contexts of the script threads that ended since the module was discarded.
+void release_context_pool() {
+	ScopedLock<Mutex> l(g_ctxPoolMutex);
+	for (asIScriptContext *pooled : g_ctxPool) pooled->Release();
+	g_ctxPool.clear();
+}
 // Lets the module go once the script ended or failed to start. Engines can outlive it, and their processing callbacks, which run on audio threads, take contexts from the pool, so they are stopped first; the destructors that discarding runs use pooled contexts too, so the pool is emptied after.
 static void discard_module(asIScriptEngine *engine, asIScriptModule *mod) {
 	garbage_collect_stop_thread(); // Its collections run script destructors, which use the sounds and the rest stopped or freed from here on.
@@ -1058,9 +1064,8 @@ static void discard_module(asIScriptEngine *engine, asIScriptModule *mod) {
 	// A second Discard() of a module the script discarded put it in the engine's list of discarded modules twice, and deleting it left a freed module in the list, read at once by this collection (a crash as the script ended).
 	if (module_is_live(engine, mod)) mod->Discard();
 	engine->GarbageCollect();
-	ScopedLock<Mutex> l(g_ctxPoolMutex);
-	for (asIScriptContext *pooled : g_ctxPool) pooled->Release();
-	g_ctxPool.clear();
+	script_threads_stop(); // See there. Not before the module's destructors have run, which can be what ends the script's threads, and waits for them.
+	release_context_pool();
 }
 // False when the script couldn't run or failed (an exception nothing caught, a failed start), for the caller to report; true when it ended
 // with a code of its own, which goes in exit_code. That code is any int: exit(-1) and int main() returning -1 were taken for a failure,
