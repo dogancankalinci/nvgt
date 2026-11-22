@@ -177,10 +177,14 @@ static void thread_release(Thread* thread);
 // threads they end in order, script_threads_stop() aborts what the runs left execute and gives them a moment to end; and the engine is shut
 // down only when none is left (script_threads_release_engine()), one in a long call or waiting for something for ever keeps it as it is.
 class script_thread_run;
+class script_runnable;
 struct script_thread_runs {
 	std::mutex mutex;
 	std::condition_variable ended;
 	script_thread_run* first = nullptr;
+	std::unordered_map<ThreadPool*, std::unordered_set<script_runnable*>> started; // The tasks given to each thread_pool that its threads have yet to begin, see pool_tasks_begin().
+	std::chrono::steady_clock::time_point pools_until{}; // Until when the thread_pools let go of at the program's end wait for their tasks, see pool_tasks_end().
+	bool ending = false; // The script is over and its module is being discarded.
 	bool stopping = false; // Nothing more is executed.
 	bool waited = false; // script_threads_stop() waited its time out before.
 	bool engine_gone = false;
@@ -189,24 +193,41 @@ static script_thread_runs& script_thread_runs_state() {
 	static auto* state = new script_thread_runs; // Never destroyed: a run can end during static destruction.
 	return *state;
 }
+class script_thread_run;
+static thread_local script_thread_run* t_script_thread_run = nullptr; // This thread's.
 class script_thread_run {
 	asIScriptContext* ctx = nullptr; // What it executes now.
+	ThreadPool* pool; // The thread_pool it is a task of, null for another thread and once the pool has let go of the task.
 	script_thread_run* previous = nullptr;
 	script_thread_run* next = nullptr;
 	bool counted;
 	friend bool script_threads_stop();
+	friend bool pool_has_tasks(ThreadPool* pool);
+	friend bool pool_tasks_end(ThreadPool* pool);
+	friend void pool_tasks_forget(ThreadPool* pool);
+	friend void pool_join_all(ThreadPool* pool);
+	friend bool pool_owns_run(ThreadPool* pool, script_thread_run* run);
 public:
-	script_thread_run() {
+	script_thread_run(ThreadPool* pool = nullptr, script_runnable* task = nullptr) : pool(pool) {
 		script_thread_runs& runs = script_thread_runs_state();
 		std::lock_guard<std::mutex> lock(runs.mutex);
+		if (pool) {
+			auto it = runs.started.find(pool);
+			if (it != runs.started.end() && it->second.erase(task) && it->second.empty()) {
+				runs.started.erase(it);
+				runs.ended.notify_all();
+			}
+		}
 		counted = !runs.engine_gone;
 		if (!counted) return;
+		t_script_thread_run = this;
 		next = runs.first;
 		if (next) next->previous = this;
 		runs.first = this;
 	}
 	~script_thread_run() {
 		if (!counted) return;
+		t_script_thread_run = nullptr;
 		script_thread_runs& runs = script_thread_runs_state();
 		std::lock_guard<std::mutex> lock(runs.mutex);
 		(previous ? previous->next : runs.first) = next;
@@ -229,32 +250,49 @@ public:
 		return result;
 	}
 };
+// Waits until ready(), which is called with the runs' lock held, returns true, at most until the given time, and returns whether it did.
+template <class F> static bool script_thread_runs_wait(std::unique_lock<std::mutex>& lock, std::chrono::steady_clock::time_point until, F ready) {
+	script_thread_runs& runs = script_thread_runs_state();
+	while (!ready()) {
+		if (std::chrono::steady_clock::now() >= until) return false;
+		#ifdef __APPLE__
+		if (thread_is_main()) { // See event_wait_main().
+			lock.unlock();
+			apple_run_main_loop_once();
+			lock.lock();
+			if (ready()) break;
+		}
+		#endif
+		runs.ended.wait_for(lock, std::chrono::milliseconds(10));
+	}
+	return true;
+}
 // Whether every run has ended, waiting for it at most a quarter of a second in all.
 bool script_threads_stop() {
 	script_thread_runs& runs = script_thread_runs_state();
 	std::unique_lock<std::mutex> lock(runs.mutex);
 	runs.stopping = true;
 	auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(runs.waited ? 0 : 250);
-	while (runs.first) {
+	bool all_ended = script_thread_runs_wait(lock, until, [&runs] {
 		// Again each time: an abort made just before the context starts executing, or while it calls back into the script, can be dropped.
 		for (script_thread_run* run = runs.first; run; run = run->next) {
 			if (run->ctx) run->ctx->Abort();
 		}
-		if (std::chrono::steady_clock::now() >= until) {
-			runs.waited = true;
-			return false;
-		}
-		#ifdef __APPLE__
-		if (thread_is_main()) { // See event_wait_main().
-			lock.unlock();
-			apple_run_main_loop_once();
-			lock.lock();
-			if (!runs.first) break;
-		}
-		#endif
-		runs.ended.wait_for(lock, std::chrono::milliseconds(10));
-	}
-	return true;
+		return !runs.first;
+	});
+	if (!all_ended) runs.waited = true;
+	return all_ended;
+}
+// The script's module is about to be discarded, see pool_tasks_end().
+void script_threads_ending() {
+	script_thread_runs& runs = script_thread_runs_state();
+	std::lock_guard<std::mutex> lock(runs.mutex);
+	runs.ending = true;
+}
+static bool script_threads_are_ending() {
+	script_thread_runs& runs = script_thread_runs_state();
+	std::lock_guard<std::mutex> lock(runs.mutex);
+	return runs.ending || g_shutting_down;
 }
 // From here on no run touches the engine when true: one that still begins finds it gone.
 bool script_threads_release_engine() {
@@ -610,15 +648,16 @@ class script_runnable : public Runnable {
 	CScriptDictionary* args;
 	Thread* thread; // May be null if started from a ThreadPool.
 	std::shared_ptr<script_thread_life> life; // The thread object's, see script_thread_life; null for a pool.
+	ThreadPool* pool; // Null for a thread object.
 public:
-	script_runnable(asIScriptFunction* func, CScriptDictionary* args, Thread* thread = nullptr, std::shared_ptr<script_thread_life> life = nullptr) : func(func), args(args), thread(thread), life(life) {}
+	script_runnable(asIScriptFunction* func, CScriptDictionary* args, Thread* thread = nullptr, std::shared_ptr<script_thread_life> life = nullptr, ThreadPool* pool = nullptr) : func(func), args(args), thread(thread), life(life), pool(pool) {}
 	void run() {
 		run_function();
 		delete this; // Poco wants us to keep these Runnable objects alive as long as the thread is running, meaning we must delete ourself from within the thread to avoid some other sort of cleanup machinery.
 		return;
 	}
 	void run_function() {
-		script_thread_run here; // Keeps the engine until everything of it is let go of.
+		script_thread_run here(pool, this); // Keeps the engine until everything of it is let go of.
 		if (here.engine_alive()) {
 			asIScriptContext* ctx = func ? g_ScriptEngine->RequestContext() : nullptr;
 			if (ctx) {
@@ -834,9 +873,108 @@ static std::shared_mutex& pool_stop_lock(const ThreadPool* pool) {
 	std::uintptr_t address = reinterpret_cast<std::uintptr_t>(pool);
 	return locks[((address >> 4) ^ (address >> 12)) & 63];
 }
+// Poco's thread pool, as it stops (stop_all(), or the last handle to it let go of), takes the task a thread of it was just given away from
+// it if the thread hasn't woken up for it yet: the task never ran, and it, its function and its arguments stayed in memory. Of 100 tasks
+// started on a pool let go of at once, none ran. What the pool was given is begun first now, which takes no time, as each task has a thread.
+static void pool_tasks_begin(ThreadPool* pool) {
+	script_thread_runs& runs = script_thread_runs_state();
+	std::unique_lock<std::mutex> lock(runs.mutex);
+	script_thread_runs_wait(lock, std::chrono::steady_clock::now() + std::chrono::seconds(10), [&runs, pool] { return runs.started.count(pool) == 0; });
+}
+// Whether the pool has tasks it has yet to begin or that haven't ended, the one this thread runs not counted. Called with the runs' lock held.
+bool pool_has_tasks(ThreadPool* pool) {
+	script_thread_runs& runs = script_thread_runs_state();
+	if (runs.started.count(pool)) return true;
+	for (script_thread_run* run = runs.first; run; run = run->next) {
+		if (run->pool == pool && run != t_script_thread_run) return true;
+	}
+	return false;
+}
+// The pool stopped: what it left running after its time (Poco's 10 seconds for each thread) isn't its own any more.
+void pool_tasks_forget(ThreadPool* pool) {
+	script_thread_runs& runs = script_thread_runs_state();
+	std::lock_guard<std::mutex> lock(runs.mutex);
+	runs.started.erase(pool);
+	for (script_thread_run* run = runs.first; run; run = run->next) {
+		if (run->pool == pool) run->pool = nullptr;
+	}
+}
+// A pool let go of as the program ends waited 10 seconds for each of its tasks that was still running, one after the other, as Poco's
+// pool does when it goes: a game holding a pool in a global variable whose tasks run for as long as the game does took 10 seconds for
+// each of them to end after exit(). As the program ends, the tasks get two seconds in all to end by themselves (a destructor that holds
+// the pool can have told them to; one that waits for them itself, with join_all(), waits as long as it takes), and what is left of them
+// is aborted, as what other script threads execute is by script_threads_stop(). False when one still runs after that, in a long call or
+// waiting for something that never comes: the pool is left as it is until the process ends then.
+bool pool_tasks_end(ThreadPool* pool) {
+	script_thread_runs& runs = script_thread_runs_state();
+	std::unique_lock<std::mutex> lock(runs.mutex);
+	if (t_script_thread_run && t_script_thread_run->pool == pool) return false; // Let go of by a task of its own, which can't wait for itself.
+	auto now = std::chrono::steady_clock::now();
+	if (runs.pools_until == std::chrono::steady_clock::time_point()) runs.pools_until = now + std::chrono::seconds(2);
+	auto until = std::max(runs.pools_until, now + std::chrono::milliseconds(250)); // Another pool can have used the time up.
+	if (script_thread_runs_wait(lock, until, [pool] { return !pool_has_tasks(pool); })) return true;
+	return script_thread_runs_wait(lock, std::chrono::steady_clock::now() + std::chrono::milliseconds(250), [&runs, pool] {
+		for (script_thread_run* run = runs.first; run; run = run->next) {
+			if (run->pool == pool && run->ctx) run->ctx->Abort(); // Again each time, see script_threads_stop().
+		}
+		return !pool_has_tasks(pool);
+	});
+}
+bool pool_owns_run(ThreadPool* pool, script_thread_run* run) {
+	script_thread_runs& runs = script_thread_runs_state();
+	std::lock_guard<std::mutex> lock(runs.mutex);
+	return run->pool == pool;
+}
+static void thread_pool_release(ThreadPool* pool) {
+	angelscript_refcounted* rc = angelscript_refcounted_get(pool);
+	if (!rc || asAtomicDec(rc->refcount) >= 1) return;
+	auto destroy = [pool, rc] {
+		pool_tasks_begin(pool);
+		pool->~ThreadPool();
+		pool_tasks_forget(pool);
+		free(rc);
+	};
+	if (script_threads_are_ending()) {
+		if (pool_tasks_end(pool)) destroy();
+		return;
+	}
+	if (t_script_thread_run && pool_owns_run(pool, t_script_thread_run)) {
+		// Let go of by a task of its own (its arguments held the last handle), whose thread waited 10 seconds for itself in Poco's
+		// destructor and left its object in memory. Another thread waits for the task, which is about to end.
+		try {
+			std::thread(destroy).detach();
+			return;
+		} catch (const std::exception&) {} // No thread: as before.
+	}
+	destroy();
+}
 void pool_stop_all(ThreadPool* pool) {
 	std::unique_lock<std::shared_mutex> lock(pool_stop_lock(pool));
+	pool_tasks_begin(pool);
 	pool->stopAll();
+	pool_tasks_forget(pool);
+}
+// Poco's joinAll() waits with the pool's lock held: a task that started another on its pool meanwhile waited for that lock, and both
+// waited for ever; so did join_all() on one of the pool's own threads, which waited for itself, and then the end of the program, which
+// waited for the lock. This waits for the pool's tasks without it, those they start included, and on one of the pool's own threads for the others.
+void pool_join_all(ThreadPool* pool) {
+	int own = t_script_thread_run != nullptr; // See below.
+	for (;;) {
+		{
+			script_thread_runs& runs = script_thread_runs_state();
+			std::unique_lock<std::mutex> lock(runs.mutex);
+			if (own && t_script_thread_run->pool != pool) own = 0;
+			script_thread_runs_wait(lock, std::chrono::steady_clock::time_point::max(), [pool] { return !pool_has_tasks(pool); });
+		}
+		if (pool->used() <= own) break; // A task's thread is free a moment after the task has ended, and used counts it until then.
+		Thread::sleep(1);
+	}
+	pool->collect(); // As joinAll() does.
+}
+// The pool thread_pool_default gives was Poco's, an object of the program's static storage whose destructor waits, as the process ends, for its tasks (see pool_tasks_end()). This one isn't destroyed.
+static ThreadPool* thread_pool_default() {
+	static ThreadPool* pool = angelscript_refcounted_factory<ThreadPool, std::string>("default");
+	return pool;
 }
 // A thread_pool's arguments are checked here. Poco checks them with assertions, whose exception named the condition and the build
 // machine's source file ("Assertion violation: minCapacity >= 1 && maxCapacity >= minCapacity && idleTime > 0 in file D:\a\nvgt\...
@@ -868,11 +1006,25 @@ template <class F> void pooled_thread_start(ThreadPool* pool, asIScriptFunction*
 		if (args) args->Release();
 		return;
 	}
-	script_runnable* runnable = new script_runnable(func, args);
+	script_runnable* runnable = new script_runnable(func, args, nullptr, nullptr, pool);
+	script_thread_runs& runs = script_thread_runs_state();
 	try {
 		std::shared_lock<std::shared_mutex> lock(pool_stop_lock(pool)); // See pool_stop_lock().
+		{
+			std::lock_guard<std::mutex> runs_lock(runs.mutex);
+			runs.started[pool].insert(runnable); // See pool_tasks_begin().
+		}
 		start(*runnable);
 	} catch (...) {
+		{
+			std::lock_guard<std::mutex> runs_lock(runs.mutex);
+			auto it = runs.started.find(pool);
+			if (it != runs.started.end()) {
+				it->second.erase(runnable);
+				if (it->second.empty()) runs.started.erase(it);
+			}
+			runs.ended.notify_all();
+		}
 		runnable->discard();
 		throw;
 	}
@@ -1331,7 +1483,9 @@ void RegisterThreading(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod(_O("thread_event"), _O("void wait(uint ms)"), asFUNCTION(event_wait_ms), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(_O("thread_event"), _O("bool try_wait(uint ms)"), asFUNCTION(event_try_wait), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(_O("thread_event"), _O("void reset()"), asMETHOD(Event, reset), asCALL_THISCALL);
-	angelscript_refcounted_register<ThreadPool>(engine, "thread_pool");
+	engine->RegisterObjectType("thread_pool", 0, asOBJ_REF);
+	engine->RegisterObjectBehaviour("thread_pool", asBEHAVE_ADDREF, "void f()", asFUNCTION(angelscript_refcounted_duplicate<ThreadPool>), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectBehaviour("thread_pool", asBEHAVE_RELEASE, "void f()", asFUNCTION(thread_pool_release), asCALL_CDECL_OBJFIRST); // See pool_tasks_end().
 	engine->RegisterObjectBehaviour("thread_pool", asBEHAVE_FACTORY, format("thread_pool@ p(int min_capacity = 2, int max_capacity = 16, int idle_time = 60, int stack_size = %d)", POCO_THREAD_STACK_SIZE).c_str(), asFUNCTION(thread_pool_factory), asCALL_CDECL);
 	engine->RegisterObjectMethod("thread_pool", "void add_capacity(int modifier)", asFUNCTION(thread_pool_add_capacity), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("thread_pool", "int get_capacity() const property", asMETHOD(ThreadPool, capacity), asCALL_THISCALL);
@@ -1345,10 +1499,10 @@ void RegisterThreading(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod(_O("thread_pool"), _O("void start(thread_callback@ routine, dictionary@ args, const string&in name)"), asFUNCTIONPR(pooled_thread_begin, (ThreadPool*, asIScriptFunction*, CScriptDictionary*, const std::string&), void), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(_O("thread_pool"), _O("void start(thread_callback@ routine, dictionary@ args, const string&in name, thread_priority priority)"), asFUNCTIONPR(pooled_thread_begin, (ThreadPool*, asIScriptFunction*, CScriptDictionary*, const std::string&, Thread::Priority), void), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("thread_pool", "void stop_all()", asFUNCTION(pool_stop_all), asCALL_CDECL_OBJFIRST); // See pool_stop_lock().
-	engine->RegisterObjectMethod("thread_pool", "void join_all()", asMETHOD(ThreadPool, joinAll), asCALL_THISCALL);
+	engine->RegisterObjectMethod("thread_pool", "void join_all()", asFUNCTION(pool_join_all), asCALL_CDECL_OBJFIRST); // See there.
 	engine->RegisterObjectMethod("thread_pool", "void collect()", asMETHOD(ThreadPool, collect), asCALL_THISCALL);
 	engine->RegisterObjectMethod("thread_pool", "const string& get_name() const property", asMETHOD(ThreadPool, name), asCALL_THISCALL);
-	engine->RegisterGlobalFunction(_O("thread_pool& get_thread_pool_default() property"), asFUNCTION(ThreadPool::defaultPool), asCALL_CDECL);
+	engine->RegisterGlobalFunction(_O("thread_pool& get_thread_pool_default() property"), asFUNCTION(thread_pool_default), asCALL_CDECL);
 	engine->RegisterObjectType("async<class T>", 0, asOBJ_REF | asOBJ_TEMPLATE);
 	engine->RegisterObjectBehaviour("async<T>", asBEHAVE_FACTORY, "async<T>@ f(int&in)", asFUNCTION(async_unprepared_factory), asCALL_CDECL);
 	std::string filler; // It would seem for now that the best way is to register as many factories as we support number of arguments+1, for a couple of reasons too long to explain in a comment.
