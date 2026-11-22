@@ -16,6 +16,7 @@
 #include <cmath>
 #include <limits>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -209,7 +210,11 @@ void jolt_copy_construct(void* mem, const T& o) { new (mem) T(o); }
 
 // Aligned heap allocation for any SIMD-aligned type (Vec3, AABox, …)
 template<class T>
-static inline void* scoped_alloc() { return JPH::AlignedAllocate(sizeof(T), alignof(T)); }
+static inline void* scoped_alloc() {
+	void* mem = JPH::AlignedAllocate(sizeof(T), alignof(T));
+	if (!mem) throw std::bad_alloc(); // Constructed into all the same, through a null pointer.
+	return mem;
+}
 
 // new_vec3: the public factory used by subsystems and jolt.cpp internally
 JPH::Vec3* new_vec3(float x, float y, float z) { return ::new (scoped_alloc<Vec3>()) Vec3(x, y, z); }
@@ -333,7 +338,7 @@ static bool jolt_closest_point_on_surface(const Shape* shape, Vec3Arg scale, Vec
 		ConvexShape::SupportBuffer buffer;
 		const ConvexShape::Support* support = static_cast<const ConvexShape*>(shape)->GetSupportFunction(ConvexShape::ESupportMode::IncludeConvexRadius, buffer, scale);
 		GJKClosestPoint gjk;
-		Vec3 v = Vec3::sAxisX(), on_shape, on_point;
+		Vec3 v = Vec3::sAxisX(), on_shape = point, on_point = point; // GJK leaves them when it finds no point, as beyond a float's reach.
 		gjk.GetClosestPoints(*support, PointConvexSupport {point}, 1.0e-4f, FLT_MAX, v, on_shape, on_point);
 		out_closest = on_shape;
 		return true;
