@@ -8,7 +8,7 @@ Insert a node into the chain.
 * audio_node@ node: the node to insert.
 * audio_node@ after (1): the node in the chain to insert it after, or null to add it to the end of the chain.
 * int after (2): the index of the node to insert it after, or -1 to insert it at the start.
-* uint input_bus_index = 0: the input bus of the node that follows the new one, which the new node's output is attached to.
+* uint input_bus_index = 0: the input bus of the new node that the node before it, or the chain's input if it is the first, is attached to.
 
 ## Returns:
 bool: true if the node was inserted, false if it is null, if `after` is not in the chain or is out of range, or if the connections could not be made.

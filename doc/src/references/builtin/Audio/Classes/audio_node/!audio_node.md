@@ -25,8 +25,8 @@ void main() {
 	sound s;
 	s.load("music.ogg");
 	audio_low_pass_filter filter(1000, 2); // Remove frequencies above 1000 hertz.
-	s.set_mixer(null); // Detach it from its default connection to the engine.
-	s.attach_output_bus(0, filter, 0); // The sound's output goes to the filter's input.
+	s.set_mixer(null); // Make sure it is in no mixer, such as `sound_default_mixer`.
+	s.attach_output_bus(0, filter, 0); // The sound's output goes to the filter's input instead of to the engine.
 	filter.attach_output_bus(0, sound_default_engine.endpoint, 0); // And the filter's goes to the speakers.
 	s.play_looped();
 	wait(5000);

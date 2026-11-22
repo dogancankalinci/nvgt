@@ -3,7 +3,7 @@
 	audio_delay_node(uint delay_in_frames, float decay, audio_engine@ engine = sound_default_engine);
 	## Arguments:
 		* uint delay_in_frames: the time between echoes in PCM frames, so the engine's sample rate is one second.
-		* float decay: how much of each echo is fed into the next, from 0 for a single echo to nearly 1 for echoes that take a long time to fade.
+		* float decay: how much of the audio is heard again in each echo, from nearly 0 for a single faint echo to nearly 1 for echoes that take a long time to fade. A value of 0 makes a plain delay instead of an echo: the audio is heard once, late by the delay.
 		* audio_engine@ engine = sound_default_engine: the engine to create the node in.
 	## Remarks:
 		This is an audio_node with one input and one output bus, and has all of the methods and properties of audio_node as well as the ones listed here.
