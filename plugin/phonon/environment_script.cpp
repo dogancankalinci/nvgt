@@ -30,14 +30,14 @@ public:
 	void update_attachment(reverb3d* verb, audio_node* attachment, const audio_spatialization_parameters& params) override { if (environment_source* s = environment_source::from_node(attachment)) s->update_position(params); }
 };
 
-// The script facing environment.
-class sound_environment {
+// The script facing environment, sound_environment to scripts. Its C++ name isn't that because legacy_sound has a class of that name: linked together the two collide, and loaded together one can run the other's methods.
+class phonon_environment {
 	atomic<int> refcount = 1;
 	environment_core* core;
 	reverb3d* verb;
 	CScriptHandle raycaster;
 public:
-	sound_environment(audio_engine* engine) {
+	phonon_environment(audio_engine* engine) {
 		if (!engine) engine = phonon_default_engine();
 		if (!engine || !phonon_init()) throw runtime_error("Steam Audio could not be initialized");
 		core = new environment_core(engine);
@@ -49,16 +49,16 @@ public:
 			throw runtime_error("the environment's reverb3d could not be created");
 		}
 	}
-	~sound_environment() {
+	~phonon_environment() {
 		core->shutdown(); // Join the simulation thread here rather than wherever the last source happens to release the core.
 		verb->release();
 		core->release();
 	}
 	void add_ref() { refcount++; }
 	void release() { if (--refcount < 1) delete this; }
-	static sound_environment* create(audio_engine* engine) {
+	static phonon_environment* create(audio_engine* engine) {
 		try {
-			return new sound_environment(engine);
+			return new phonon_environment(engine);
 		} catch (exception& e) {
 			if (asIScriptContext* ctx = asGetActiveContext()) ctx->SetException(e.what());
 			return nullptr;
@@ -310,9 +310,9 @@ public:
 };
 
 // Scripts can't implicitly convert a sound handle to a mixer handle, so the functions taking either are also registered for sounds.
-static bool environment_attach_sound(sound_environment* env, sound* s) { return env->attach(s); }
-static void environment_detach_sound(sound_environment* env, sound* s) { env->detach(s); }
-static environment_source* environment_get_sound_source(const sound_environment* env, sound* s) { return env->get_source(s); }
+static bool environment_attach_sound(phonon_environment* env, sound* s) { return env->attach(s); }
+static void environment_detach_sound(phonon_environment* env, sound* s) { env->detach(s); }
+static environment_source* environment_get_sound_source(const phonon_environment* env, sound* s) { return env->get_source(s); }
 template <class T, float (T::*getter)(int) const, int band> static float band_getter(const T* obj) { return (obj->*getter)(band); }
 // environment_source has virtual bases, and Angelscript can't call through pointers to members of such classes on every compiler, so its methods are registered through these.
 template <auto method, typename R, typename... Args> static R source_call(environment_source* s, Args... args) { return (s->*method)(args...); }
@@ -361,43 +361,43 @@ void RegisterSoundEnvironment(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("sound_environment_source", "void set_apply_pathing(bool enabled) property", asFUNCTION((source_call<&environment_source::set_apply_pathing, void, bool>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectType("sound_environment", 0, asOBJ_REF);
 	engine->RegisterFuncdef("void sound_environment_bake_callback(float progress)");
-	engine->RegisterObjectBehaviour("sound_environment", asBEHAVE_FACTORY, "sound_environment@ f(audio_engine@+ engine = sound_default_engine)", asFUNCTION(sound_environment::create), asCALL_CDECL);
-	engine->RegisterObjectBehaviour("sound_environment", asBEHAVE_ADDREF, "void f()", asMETHOD(sound_environment, add_ref), asCALL_THISCALL);
-	engine->RegisterObjectBehaviour("sound_environment", asBEHAVE_RELEASE, "void f()", asMETHOD(sound_environment, release), asCALL_THISCALL);
-	engine->RegisterObjectMethod("sound_environment", "bool set_raycaster(ref@ raycaster)", asMETHOD(sound_environment, set_raycaster), asCALL_THISCALL);
-	engine->RegisterObjectMethod("sound_environment", "ref@ get_raycaster() const property", asMETHOD(sound_environment, get_raycaster), asCALL_THISCALL);
-	engine->RegisterObjectMethod("sound_environment", "sound@ new_sound()", asMETHOD(sound_environment, new_sound), asCALL_THISCALL);
-	engine->RegisterObjectMethod("sound_environment", "mixer@ new_mixer()", asMETHOD(sound_environment, new_mixer), asCALL_THISCALL);
-	engine->RegisterObjectMethod("sound_environment", "bool attach(mixer@+ sound_or_mixer)", asMETHOD(sound_environment, attach), asCALL_THISCALL);
-	engine->RegisterObjectMethod("sound_environment", "void detach(mixer@+ sound_or_mixer)", asMETHOD(sound_environment, detach), asCALL_THISCALL);
-	engine->RegisterObjectMethod("sound_environment", "sound_environment_source@ get_source(mixer@+ sound_or_mixer) const", asMETHOD(sound_environment, get_source), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour("sound_environment", asBEHAVE_FACTORY, "sound_environment@ f(audio_engine@+ engine = sound_default_engine)", asFUNCTION(phonon_environment::create), asCALL_CDECL);
+	engine->RegisterObjectBehaviour("sound_environment", asBEHAVE_ADDREF, "void f()", asMETHOD(phonon_environment, add_ref), asCALL_THISCALL);
+	engine->RegisterObjectBehaviour("sound_environment", asBEHAVE_RELEASE, "void f()", asMETHOD(phonon_environment, release), asCALL_THISCALL);
+	engine->RegisterObjectMethod("sound_environment", "bool set_raycaster(ref@ raycaster)", asMETHOD(phonon_environment, set_raycaster), asCALL_THISCALL);
+	engine->RegisterObjectMethod("sound_environment", "ref@ get_raycaster() const property", asMETHOD(phonon_environment, get_raycaster), asCALL_THISCALL);
+	engine->RegisterObjectMethod("sound_environment", "sound@ new_sound()", asMETHOD(phonon_environment, new_sound), asCALL_THISCALL);
+	engine->RegisterObjectMethod("sound_environment", "mixer@ new_mixer()", asMETHOD(phonon_environment, new_mixer), asCALL_THISCALL);
+	engine->RegisterObjectMethod("sound_environment", "bool attach(mixer@+ sound_or_mixer)", asMETHOD(phonon_environment, attach), asCALL_THISCALL);
+	engine->RegisterObjectMethod("sound_environment", "void detach(mixer@+ sound_or_mixer)", asMETHOD(phonon_environment, detach), asCALL_THISCALL);
+	engine->RegisterObjectMethod("sound_environment", "sound_environment_source@ get_source(mixer@+ sound_or_mixer) const", asMETHOD(phonon_environment, get_source), asCALL_THISCALL);
 	engine->RegisterObjectMethod("sound_environment", "bool attach(sound@+ snd)", asFUNCTION(environment_attach_sound), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("sound_environment", "void detach(sound@+ snd)", asFUNCTION(environment_detach_sound), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("sound_environment", "sound_environment_source@ get_source(sound@+ snd) const", asFUNCTION(environment_get_sound_source), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("sound_environment", "void update()", asMETHOD(sound_environment, update), asCALL_THISCALL);
-	engine->RegisterObjectMethod("sound_environment", "uint generate_probes(const vector&in minimum, const vector&in maximum, float spacing = 2, float height = 1.5)", asMETHOD(sound_environment, generate_probes), asCALL_THISCALL);
-	engine->RegisterObjectMethod("sound_environment", "void add_probe(const vector&in position, float radius = 2)", asMETHOD(sound_environment, add_probe), asCALL_THISCALL);
-	engine->RegisterObjectMethod("sound_environment", "void clear_probes()", asMETHOD(sound_environment, clear_probes), asCALL_THISCALL);
-	engine->RegisterObjectMethod("sound_environment", "uint get_probe_count() const property", asMETHOD(sound_environment, get_probe_count), asCALL_THISCALL);
-	engine->RegisterObjectMethod("sound_environment", "bool bake(sound_environment_bake_callback@ progress = null, int rays = 16384, int bounces = 64)", asMETHOD(sound_environment, bake), asCALL_THISCALL);
-	engine->RegisterObjectMethod("sound_environment", "bool get_has_baked_reverb() const property", asMETHOD(sound_environment, get_has_baked_reverb), asCALL_THISCALL);
-	engine->RegisterObjectMethod("sound_environment", "bool get_has_baked_paths() const property", asMETHOD(sound_environment, get_has_baked_paths), asCALL_THISCALL);
-	engine->RegisterObjectMethod("sound_environment", "string save_baked_data() const", asMETHOD(sound_environment, save_baked_data), asCALL_THISCALL);
-	engine->RegisterObjectMethod("sound_environment", "bool load_baked_data(const string&in data)", asMETHOD(sound_environment, load_baked_data), asCALL_THISCALL);
-	engine->RegisterObjectMethod("sound_environment", "float get_pathing_simulation_time() const property", asMETHOD(sound_environment, get_pathing_simulation_time), asCALL_THISCALL);
-	engine->RegisterObjectMethod("sound_environment", "reverb3d@+ get_reverb3d() const property", asMETHOD(sound_environment, get_reverb3d), asCALL_THISCALL);
-	engine->RegisterObjectMethod("sound_environment", "audio_engine@+ get_engine() const property", asMETHOD(sound_environment, get_engine), asCALL_THISCALL);
-	engine->RegisterObjectMethod("sound_environment", "mixer@+ get_output_mixer() const property", asMETHOD(sound_environment, get_output_mixer), asCALL_THISCALL);
-	engine->RegisterObjectMethod("sound_environment", "void set_output_mixer(mixer@+ mix) property", asMETHOD(sound_environment, set_output_mixer), asCALL_THISCALL);
-	engine->RegisterObjectMethod("sound_environment", "uint get_reflection_simulations() const property", asMETHOD(sound_environment, get_reflection_simulations), asCALL_THISCALL);
-	engine->RegisterObjectMethod("sound_environment", "bool get_simulating_reflections() const property", asMETHOD(sound_environment, get_simulating_reflections), asCALL_THISCALL);
-	engine->RegisterObjectMethod("sound_environment", "float get_reflection_simulation_time() const property", asMETHOD(sound_environment, get_reflection_simulation_time), asCALL_THISCALL);
-	engine->RegisterObjectMethod("sound_environment", "float get_direct_simulation_time() const property", asMETHOD(sound_environment, get_direct_simulation_time), asCALL_THISCALL);
-	engine->RegisterObjectMethod("sound_environment", "uint get_source_count() const property", asMETHOD(sound_environment, get_source_count), asCALL_THISCALL);
-	engine->RegisterObjectMethod("sound_environment", "uint get_active_reflection_groups() const property", asMETHOD(sound_environment, get_active_reflection_groups), asCALL_THISCALL);
+	engine->RegisterObjectMethod("sound_environment", "void update()", asMETHOD(phonon_environment, update), asCALL_THISCALL);
+	engine->RegisterObjectMethod("sound_environment", "uint generate_probes(const vector&in minimum, const vector&in maximum, float spacing = 2, float height = 1.5)", asMETHOD(phonon_environment, generate_probes), asCALL_THISCALL);
+	engine->RegisterObjectMethod("sound_environment", "void add_probe(const vector&in position, float radius = 2)", asMETHOD(phonon_environment, add_probe), asCALL_THISCALL);
+	engine->RegisterObjectMethod("sound_environment", "void clear_probes()", asMETHOD(phonon_environment, clear_probes), asCALL_THISCALL);
+	engine->RegisterObjectMethod("sound_environment", "uint get_probe_count() const property", asMETHOD(phonon_environment, get_probe_count), asCALL_THISCALL);
+	engine->RegisterObjectMethod("sound_environment", "bool bake(sound_environment_bake_callback@ progress = null, int rays = 16384, int bounces = 64)", asMETHOD(phonon_environment, bake), asCALL_THISCALL);
+	engine->RegisterObjectMethod("sound_environment", "bool get_has_baked_reverb() const property", asMETHOD(phonon_environment, get_has_baked_reverb), asCALL_THISCALL);
+	engine->RegisterObjectMethod("sound_environment", "bool get_has_baked_paths() const property", asMETHOD(phonon_environment, get_has_baked_paths), asCALL_THISCALL);
+	engine->RegisterObjectMethod("sound_environment", "string save_baked_data() const", asMETHOD(phonon_environment, save_baked_data), asCALL_THISCALL);
+	engine->RegisterObjectMethod("sound_environment", "bool load_baked_data(const string&in data)", asMETHOD(phonon_environment, load_baked_data), asCALL_THISCALL);
+	engine->RegisterObjectMethod("sound_environment", "float get_pathing_simulation_time() const property", asMETHOD(phonon_environment, get_pathing_simulation_time), asCALL_THISCALL);
+	engine->RegisterObjectMethod("sound_environment", "reverb3d@+ get_reverb3d() const property", asMETHOD(phonon_environment, get_reverb3d), asCALL_THISCALL);
+	engine->RegisterObjectMethod("sound_environment", "audio_engine@+ get_engine() const property", asMETHOD(phonon_environment, get_engine), asCALL_THISCALL);
+	engine->RegisterObjectMethod("sound_environment", "mixer@+ get_output_mixer() const property", asMETHOD(phonon_environment, get_output_mixer), asCALL_THISCALL);
+	engine->RegisterObjectMethod("sound_environment", "void set_output_mixer(mixer@+ mix) property", asMETHOD(phonon_environment, set_output_mixer), asCALL_THISCALL);
+	engine->RegisterObjectMethod("sound_environment", "uint get_reflection_simulations() const property", asMETHOD(phonon_environment, get_reflection_simulations), asCALL_THISCALL);
+	engine->RegisterObjectMethod("sound_environment", "bool get_simulating_reflections() const property", asMETHOD(phonon_environment, get_simulating_reflections), asCALL_THISCALL);
+	engine->RegisterObjectMethod("sound_environment", "float get_reflection_simulation_time() const property", asMETHOD(phonon_environment, get_reflection_simulation_time), asCALL_THISCALL);
+	engine->RegisterObjectMethod("sound_environment", "float get_direct_simulation_time() const property", asMETHOD(phonon_environment, get_direct_simulation_time), asCALL_THISCALL);
+	engine->RegisterObjectMethod("sound_environment", "uint get_source_count() const property", asMETHOD(phonon_environment, get_source_count), asCALL_THISCALL);
+	engine->RegisterObjectMethod("sound_environment", "uint get_active_reflection_groups() const property", asMETHOD(phonon_environment, get_active_reflection_groups), asCALL_THISCALL);
 	#define ENV_PROPERTY(type, name) \
-		engine->RegisterObjectMethod("sound_environment", #type " get_" #name "() const property", asMETHOD(sound_environment, get_##name), asCALL_THISCALL); \
-		engine->RegisterObjectMethod("sound_environment", "void set_" #name "(" #type " value) property", asMETHOD(sound_environment, set_##name), asCALL_THISCALL);
+		engine->RegisterObjectMethod("sound_environment", #type " get_" #name "() const property", asMETHOD(phonon_environment, get_##name), asCALL_THISCALL); \
+		engine->RegisterObjectMethod("sound_environment", "void set_" #name "(" #type " value) property", asMETHOD(phonon_environment, set_##name), asCALL_THISCALL);
 	ENV_PROPERTY(sound_environment_reflection_type, reflection_type)
 	ENV_PROPERTY(int, reflection_rays)
 	ENV_PROPERTY(float, reflection_duration)
