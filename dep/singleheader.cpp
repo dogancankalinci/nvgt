@@ -31,7 +31,7 @@
 #define MA_USE_QUAD_MICROSOFT_CHANNEL_MAP // Four channels are quad, as FLAC's specification says, a WAV without a mask means and Vorbis and Opus order them, rather than MiniAudio's default of left, right, centre and back centre, which took the third to the centre and lost the fourth.
 #define MINIAUDIO_IMPLEMENTATION
 #include <miniaudio.h>
-// Seeks a file a decoder reads, given its data source's own vtable, for what MiniAudio's FLAC and MP3 decoders get wrong; here, where their structures are known. See held_file in sound.cpp.
+// Seeks a file a decoder reads, given its data source's own vtable, for what MiniAudio's FLAC decoder gets wrong; here, where their structures are known. See held_file in sound.cpp.
 ma_result nvgt_file_seek(const ma_data_source_vtable* vtable, ma_data_source* file, ma_uint64 frame, ma_bool32 can_seek) {
 	if (vtable == &g_ma_flac_ds_vtable && ((ma_flac*)file)->dr) {
 		ma_dr_flac* flac = ((ma_flac*)file)->dr;
@@ -55,15 +55,10 @@ ma_result nvgt_file_seek(const ma_data_source_vtable* vtable, ma_data_source* fi
 			}
 			return ma_dr_flac_read_pcm_frames_f32(flac, frame - from, NULL) == frame - from? MA_SUCCESS : MA_INVALID_ARGS;
 		}
-	} else if (vtable == &g_ma_mp3_ds_vtable) {
-		// dr_mp3's cursor counts the encoder delay a LAME header gives, which it skips, and its seek forward reads on from that cursor to the frame asked for, landing the delay short, 1105 frames as a rule, reported as made. A seek back, from the start, counts it right.
-		ma_dr_mp3* mp3 = &((ma_mp3*)file)->dr;
-		const ma_uint64 delay = mp3->delayInPCMFrames;
-		if (frame && delay && mp3->currentPCMFrame >= delay && frame <= ~(ma_uint64)0 - delay && frame + delay >= mp3->currentPCMFrame) frame += delay;
 	}
 	return vtable->onSeek(file, frame);
 }
-// The frames a file's own cursor counts that it never gives (see above).
+// The frames a file's own cursor counts that it never gives: the encoder delay a LAME header gives, which dr_mp3 skips, but counts in its cursor. Its seeks don't count it from 0.7.4 on, in MiniAudio 0.11.26.
 ma_uint64 nvgt_file_delay(const ma_data_source_vtable* vtable, ma_data_source* file) { return vtable == &g_ma_mp3_ds_vtable? ((ma_mp3*)file)->dr.delayInPCMFrames : 0; }
 // Whether asking a file's length counts its frames by reading it through to its end, rather than reading what its header says: an MP3 without a frame count in a Xing, Info or VBRI header, which dr_mp3 counts anew at each ask.
 bool nvgt_file_length_counted(const ma_data_source_vtable* vtable, ma_data_source* file) { return vtable == &g_ma_mp3_ds_vtable && ((ma_mp3*)file)->dr.totalPCMFrameCount == MA_UINT64_MAX; }
