@@ -2154,12 +2154,12 @@ spatializer_component_node* hrtf_panner::create(audio_spatializer* spatializer, 
 }
 
 // NVGT's distance curve, shared by its attenuators so that a sound sounds about as loud at a distance whichever is in use: 1.75 decibels per unit of distance beyond the minimum distance for a rolloff of 1, faded smoothly to silence at the maximum distance. Audio games rarely treat a unit of distance as a meter, as a step is often a whole unit, so the default rolloff of 0.375 and maximum distance of 50 keep a sound at just under half volume 10 units away and a fifth 20 units away, almost inaudible beyond 40.
-// The distance's volume, before the clamping that the attenuators make with the cones' (see volume_with_cones()), once. A negative min_distance counts as 0, which it added to every distance. A max_distance at or below min_distance counts as it, the floor winning as for volumes, so that a sound within it plays rather than no distance being within the range.
+// The distance's volume, before the clamping that the attenuators make with the cones' (see volume_with_cones()), once. Within the minimum distance a sound is at full volume, the fade starting there too. A negative min_distance counts as 0, which it added to every distance. A max_distance at or below min_distance counts as it, the floor winning as for volumes, so that a sound within it plays rather than no distance being within the range.
 static float distance_volume(const audio_spatialization_parameters& params, float distance) {
 	const float nearest = params.min_distance > 0 ? params.min_distance : 0.0f;
 	if (params.max_distance <= nearest) return distance <= nearest ? 1.0f : 0.0f;
 	if (!(distance < params.max_distance)) return 0.0f;
-	const float beyond = distance > nearest ? distance - nearest : 0.0f, fade = distance / params.max_distance;
+	const float beyond = distance > nearest ? distance - nearest : 0.0f, fade = beyond / (params.max_distance - nearest);
 	return ma_volume_db_to_linear(-beyond * params.rolloff * 1.75f) * (1.0f - fade * fade);
 }
 // An attenuator applying a distance curve, which is also registered so that others can attenuate a sound over other distances the same way.
