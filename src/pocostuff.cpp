@@ -13,6 +13,7 @@
 */
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <sstream>
 #include <string>
@@ -321,9 +322,54 @@ poco_shared<Dynamic::Var>* poco_var_dec(poco_shared<Dynamic::Var>* var) {
 	var->ptr->operator--();
 	return var;
 }
+// Whether a var holds a number, an integer or a floating point value: not a bool, which Poco counts as an integer, nor a string.
+static bool var_is_number(const Dynamic::Var& value) {
+	return !value.isEmpty() && value.isNumeric() && !value.isBoolean() && !value.isString();
+}
+static int compare_doubles(double a, double b) {
+	if (std::isnan(a) || std::isnan(b)) return std::isnan(a) ? (std::isnan(b) ? 0 : 1) : -1;
+	return a < b ? -1 : a > b ? 1 : 0;
+}
+// A floating point number against an integer, without rounding either: the integer part first, then the fraction.
+static int compare_double_integer(double d, const Dynamic::Var& integer) {
+	if (std::isnan(d) || d >= 18446744073709551616.0) return 1;
+	if (d < -9223372036854775808.0) return -1;
+	double whole = std::floor(d);
+	int c;
+	if (integer.isSigned() && integer.convert<Int64>() < 0) {
+		Int64 i = integer.convert<Int64>();
+		if (whole >= 0) return 1;
+		Int64 w = Int64(whole);
+		c = w < i ? -1 : w > i ? 1 : 0;
+	} else {
+		if (whole < 0) return -1;
+		UInt64 i = integer.convert<UInt64>(), w = UInt64(whole);
+		c = w < i ? -1 : w > i ? 1 : 0;
+	}
+	return c ? c : (d > whole ? 1 : 0);
+}
+// Two numbers by their values. Poco compares any two vars by their strings, so var(2) < var(10) was false ("2" comes after "10"),
+// numbers read from json compared with each other or with an int (made into a var) went by their digits, 9 after 10 and 100, and
+// 1e+20 came before 9. Integers are compared exactly whatever their signs and sizes, an integer and a floating point number without
+// rounding, and NaN comes after every other number and equal to NaN, so that sorting by it stays consistent.
+static int compare_var_numbers(const Dynamic::Var& a, const Dynamic::Var& b) {
+	if (a.isInteger() && b.isInteger()) {
+		bool a_negative = a.isSigned() && a.convert<Int64>() < 0, b_negative = b.isSigned() && b.convert<Int64>() < 0;
+		if (a_negative != b_negative) return a_negative ? -1 : 1;
+		if (a_negative) {
+			Int64 x = a.convert<Int64>(), y = b.convert<Int64>();
+			return x < y ? -1 : x > y ? 1 : 0;
+		}
+		UInt64 x = a.convert<UInt64>(), y = b.convert<UInt64>();
+		return x < y ? -1 : x > y ? 1 : 0;
+	}
+	if (!a.isInteger() && !b.isInteger()) return compare_doubles(a.convert<double>(), b.convert<double>());
+	return a.isInteger() ? -compare_double_integer(b.convert<double>(), a) : compare_double_integer(a.convert<double>(), b);
+}
 int poco_var_cmp(poco_shared<Dynamic::Var>* var, const poco_shared<Dynamic::Var>& other) {
 	check_var_json(*var->ptr);
 	check_var_json(*other.ptr);
+	if (var_is_number(*var->ptr) && var_is_number(*other.ptr)) return compare_var_numbers(*var->ptr, *other.ptr);
 	if ((*var->ptr) < *(other.ptr)) return -1;
 	else if ((*var->ptr) > *(other.ptr)) return 1;
 	else return 0;
