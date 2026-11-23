@@ -364,17 +364,23 @@ public:
 			return "";
 		vfs_args args;
 		protocol_registration preg;
-		// Slot zero means use default:
-		preg = (protocol_slot == 0 ? std::atomic_load(&default_protocol) : protocols[protocol_slot]);
+		// Slot zero means use default. The default and its directive are read again should another thread change the default between the two: sound_default_pack = null sets the file system as the default and then lets go of the pack's directive, so that a load reading the pack as the default before and its directive after read none, and opened nothing.
+		for (int tries = 0; ; tries++) {
+			preg = (protocol_slot == 0 ? std::atomic_load(&default_protocol) : protocols[protocol_slot]);
+			args.protocol_directive = protocol_directive == nullptr ? preg->get_directive() : protocol_directive;
+			if (protocol_slot != 0 || protocol_directive != nullptr || tries == 8 || std::atomic_load(&default_protocol) == preg) break;
+		}
 		args.name = name;
 		args.protocol_slot = preg->get_slot();
-		args.protocol_directive = protocol_directive == nullptr ? preg->get_directive() : protocol_directive;
 		// Filter selection.
 		filter_registration freg;
-		// Filter slot zero means use default:
-		freg = (filter_slot == 0 ? std::atomic_load(&default_filter) : filters[filter_slot]);
+		// Filter slot zero means use default, read as the protocol is, as the decryption key changes the same way.
+		for (int tries = 0; ; tries++) {
+			freg = (filter_slot == 0 ? std::atomic_load(&default_filter) : filters[filter_slot]);
+			args.filter_directive = (filter_directive == nullptr ? freg->get_directive() : filter_directive);
+			if (filter_slot != 0 || filter_directive != nullptr || tries == 8 || std::atomic_load(&default_filter) == freg) break;
+		}
 		args.filter_slot = freg->get_slot();
-		args.filter_directive = (filter_directive == nullptr ? freg->get_directive() : filter_directive);
 		// Build our triplet. This is the name that will actually be remembered by MiniAudio's resource manager.
 		std::stringstream triplet;
 		const std::string suffix = preg->get()->get_suffix(args.protocol_directive);
