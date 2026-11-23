@@ -166,6 +166,7 @@ vcpkg_from_github(
         fix-cast-to-enum.patch
         fix-cross-thread-abort.patch
         fix-template-copy-constructor-flags.patch
+        fix-collector-chains-registered-weak-flags.patch
 )
 
 vcpkg_cmake_configure(

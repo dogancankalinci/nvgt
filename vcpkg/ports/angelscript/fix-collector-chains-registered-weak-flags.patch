@@ -1,0 +1,24 @@
+diff --git a/sdk/angelscript/source/as_gc.cpp b/sdk/angelscript/source/as_gc.cpp
+index 94da241..7618781 100644
+--- a/sdk/angelscript/source/as_gc.cpp
++++ b/sdk/angelscript/source/as_gc.cpp
+@@ -807,13 +807,17 @@ void asCGarbageCollector::DestroyOldChains()
+ 		references = gatheredReferences;
+ 
+ 		// As in DestroyOldGarbage
++		// ALTERED: a registered type is let go of by ReleaseRegisteredByCollector too, which keeps the collector's reference when a
++		// weak reference turned strong after the count was read (here also while the references were enumerated): released
++		// directly, the object lived on with the other thread's reference and left the list for good, so a cycle it was later
++		// part of was never collected
+ 		if( gcObj->type->flags & asOBJ_SCRIPT_OBJECT )
+ 		{
+ 			if( ((asCScriptObject*)gcObj->obj)->ReleaseByCollector() > 0 )
+ 				continue;
+ 		}
+-		else
+-			engine->CallObjectMethod(gcObj->obj, gcObj->type->beh.release);
++		else if( ReleaseRegisteredByCollector(gcObj->obj, gcObj->type) )
++			continue;
+ 
+ 		numDestroyed++;
+ 
