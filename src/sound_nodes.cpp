@@ -589,9 +589,7 @@ static std::recursive_mutex g_spatialization_change_mutex;
 bool set_global_hrtf(bool enabled) {
 	std::lock_guard<std::recursive_mutex> changing(g_spatialization_change_mutex);
 	// The defaults and the enabled components each time, whatever get_global_hrtf() read before: with one of the defaults changed by hand, or a component disabled, it reads false while the other still positions with HRTF.
-	const bool set = sound_set_spatialization(enabled ? g_audio_hrtf_panner : g_audio_basic_panner, enabled ? g_audio_hrtf_attenuator : g_audio_basic_attenuator);
-	if (set) follow_default_components(); // Those positioned already too, unless given a panner or attenuator of their own.
-	return set;
+	return sound_set_spatialization(enabled ? g_audio_hrtf_panner : g_audio_basic_panner, enabled ? g_audio_hrtf_attenuator : g_audio_basic_attenuator); // Which has those positioned already follow (see there).
 }
 // Whether sounds are positioned with HRTF: its panner and attenuator enabled, and the defaults new sounds take.
 bool get_global_hrtf() { return get_audio_panner_enabled(g_audio_hrtf_panner) && get_audio_attenuator_enabled(g_audio_hrtf_attenuator) && sound_get_default_3d_panner() == g_audio_hrtf_panner && sound_get_default_3d_attenuator() == g_audio_hrtf_attenuator; }
@@ -1685,6 +1683,8 @@ bool sound_set_spatialization(int panner, int attenuator, bool disable_previous,
 		if (set_default) sound_set_default_3d_attenuator(attenuator);
 		attenuator_success = true;
 	}
+	// Sounds and mixers positioned already follow new defaults, unless given a panner or attenuator of their own, as set_sound_global_hrtf() has them: with disable_previous, those on the old ones went to whichever enabled component came first, NVGT's HRTF ones rather than a plugin's made the default.
+	if (set_default && panner_success && attenuator_success) follow_default_components();
 	if (panner_success && attenuator_success) g_soundsystem_last_error = MA_SUCCESS; // As a call that succeeded reads.
 	return panner_success && attenuator_success;
 }
