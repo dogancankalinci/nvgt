@@ -716,20 +716,6 @@ template <class t> double diff_years(t &first, t &second) {
 	return years + (high->utcTime() - anniversary.utcTime()) / (double)year_length;
 }
 /**
- * Computes the span of time that has elapsed since midnight on the current day as represented by the given object.
-*/
-template <class t> Timespan::TimeDiff time_since_midnight(t &dt) {
-	return dt.utcTime() - t(dt.year(), dt.month(), dt.day()).utcTime();
-}
-template <class t> bool is_further_into_month(t &high, t &low) {
-	if (high.day() > low.day())
-		return false;
-	if (high.day() < low.day())
-		return true;
-	// They're same day, so just check which one is a later time.
-	return time_since_midnight(high) < time_since_midnight(low);
-}
-/**
  * Computes the difference between two dates in months.
 */
 template <class t> asINT64 diff_months(t &first, t &second) {
@@ -742,8 +728,17 @@ template <class t> asINT64 diff_months(t &first, t &second) {
 		low = &first;
 	}
 	asINT64 months = (asINT64)(high->year() - low->year()) * 12 + high->month() - low->month();
-	if (is_further_into_month(*high, *low))
-		months--;
+	// The date that many months after the earlier one, its day kept up to the end of that month as add_months() keeps it, is the
+	// anniversary the later date has to reach, as diff_years() measures years: compared day by day, the month add_months() gives from
+	// January 31st (February 28th) wasn't counted, so diff_months() of the two was 0 where diff_years() counts February 29th to the
+	// February 28th after it as a whole year.
+	if (months > 0) {
+		asINT64 total = asINT64(low->year()) * 12 + (low->month() - 1) + months;
+		int year = int(total / 12), month = int(total % 12) + 1; // Never negative: the later date's year and month.
+		t anniversary(year, month, min(low->day(), DateTime::daysOfMonth(year, month)), low->hour(), low->minute(), low->second(), low->millisecond(), low->microsecond());
+		if (anniversary.utcTime() > high->utcTime())
+			months--;
+	}
 	return months;
 }
 /**
