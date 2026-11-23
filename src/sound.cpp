@@ -7171,6 +7171,16 @@ static std::string sound_loaded_filename_script(sound* s) { // A copy, made unde
 	mixer_api_lock lock = lock_node_api(s);
 	return lock.held? s->get_loaded_filename() : std::string();
 }
+// A mixer's parent, as api_acquire() gives it, under the topology lock too: a reverb3d sending through the mixer moves it under that lock alone.
+template < class T >
+static mixer* mixer_parent_script(T *object) {
+	mixer_api_lock lock = lock_node_api(object);
+	if (!lock.held) return nullptr;
+	std::lock_guard<std::recursive_mutex> topology(g_audio_topology_mutex);
+	mixer* parent = object->get_mixer();
+	if (parent) parent->duplicate();
+	return parent;
+}
 // As api_acquire(), for the nodes of a chain, a reverb3d's reverb and mixer, and an engine's callback, under the locks they are changed under.
 static audio_node* chain_endpoint_script(audio_node_chain* c) { return audio_node_chain_acquire(c, chain_node_endpoint, 0); }
 static audio_node* chain_first_script(audio_node_chain* c) { return audio_node_chain_acquire(c, chain_node_first, 0); }
@@ -7389,7 +7399,7 @@ template<class T> void RegisterSoundsystemMixer(asIScriptEngine *engine, const s
 	RegisterSoundsystemAudioNode < T > (engine, type);
 	engine->RegisterObjectMethod(type.c_str(), "audio_engine@+ get_engine() const property", asFUNCTION((api_call < T, &T::get_engine, audio_engine * >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "bool set_mixer(mixer@+ parent_mixer)", asFUNCTION((api_call < T, &T::set_mixer, bool, mixer * >)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "mixer@ get_mixer() const", asFUNCTION((api_acquire < T, &T::get_mixer, mixer >)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "mixer@ get_mixer() const", asFUNCTION(mixer_parent_script < T >), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "void set_3d_panner(int panner_id)", asFUNCTION((api_call < T, &T::set_3d_panner, void, int >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "int get_3d_panner() const", asFUNCTION((api_call < T, &T::get_3d_panner, int >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "void set_3d_attenuator(int attenuator_id)", asFUNCTION((api_call < T, &T::set_3d_attenuator, void, int >)), asCALL_CDECL_OBJFIRST);
