@@ -420,8 +420,10 @@ void script_message_callback(const asSMessageInfo* msg, void* param) {
 }
 const asPWORD SCRIPT_MODULE_STATEMENT_LIMIT_USERDATA = 0x4e565354; // Key for the default statement limit stored directly in a module's user data pointer, so that every script_module object for the same module sees the same value and it needs no cleanup.
 struct script_function_call_data {
-	int max_statement_count;
-	int current_statement_count;
+	// 64 bits: a module's default is a uint (script_module::max_statement_count), whose values of 2^31 and more were read into an int as
+	// negative ones, which mean no limit, so a module limited to 3000000000 statements had none.
+	asINT64 max_statement_count;
+	asINT64 current_statement_count;
 	bool exceeded; // The limit ended the call: aborted rather than suspended, as a nested call can't be left suspended (see execute_nested), and not passed on to the caller.
 	asIScriptContext* ctx; // The call's own context, once it has one.
 	// The limit aborted the call's own context (or a nested call made on it, which passes the abort on to it), so that the call's execution ending as aborted is the limit's doing. Exceeded on another context (an argument's copy, a script random generator, a destructor the garbage collector runs on a pooled context as the function's execution ends), the limit aborts only that one, and an abort the call's own execution ends with came from elsewhere: exit()'s was dropped as the limit's, the script went on after exit(), and no later exit() ended it, as the context manager had already let go of its context.
@@ -525,8 +527,9 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 	std::string callstack2 = "";
 	// The engine's messages for this thread (a default value that doesn't compile) go to errors until the call ends, see CScriptMessageSink: the engine's message callback was replaced with one for errors and then cleared, which also gave the messages of other threads' builds to errors (two threads added to it at once) and took NVGT's own callback away.
 	CScriptMessageSink message_sink(script_message_callback, errors);
-	if (max_statement_count == 0 && func->GetModule()) max_statement_count = (int)(asPWORD)func->GetModule()->GetUserData(SCRIPT_MODULE_STATEMENT_LIMIT_USERDATA); // 0 means use the default of the function's module, whereas a negative value means no limit.
-	script_function_call_data call_data {max_statement_count, 0, false, nullptr, false, g_script_function_call};
+	asINT64 statement_limit = max_statement_count;
+	if (statement_limit == 0 && func->GetModule()) statement_limit = (asDWORD)(asPWORD)func->GetModule()->GetUserData(SCRIPT_MODULE_STATEMENT_LIMIT_USERDATA); // 0 means use the default of the function's module, whereas a negative value means no limit. The default is the module's uint, see script_function_call_data.
+	script_function_call_data call_data {statement_limit, 0, false, nullptr, false, g_script_function_call};
 	// Every statement run on this thread from here until the results are gathered is the call's, whatever context runs it: the copy constructor or opAssign copying an argument or the result (run on a context of their own, as the call's is already prepared), a default value, a callback run on a context of its own, a script random generator. Only the call's own context and its defaults counted, so a copy that never ended hung the script whatever the limit.
 	script_function_call_scope scope(call_data);
 	// The values passed to reference parameters, which the arguments point to, so they last until the call returns (8 bytes hold any primitive or a handle).
@@ -723,7 +726,7 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 			failure_reason = msg;
 		} else if (call_data.exceeded) {
 			char msg[128];
-			snprintf(msg, 128, "maximum statement count of %d exceeded", call_data.max_statement_count);
+			snprintf(msg, 128, "maximum statement count of %lld exceeded", (long long)call_data.max_statement_count);
 			failure_reason = msg;
 		}
 		callstack1 = get_call_stack_ctx(ctx);
@@ -1127,12 +1130,18 @@ public:
 	// compile_global() was declared without its errors parameter until the errors array was added before line_offset; this keeps
 	// calls written for the old declaration that pass a line offset compiling.
 	int compile_global_at(const std::string& section_name, const std::string& code, asDWORD line_offset) { return compile_global(section_name, code, nullptr, line_offset); }
+	// Under the lock and with one lookup, as every other use (see get_mod()): the module was looked up twice without it, so one another thread
+	// discarded in between was null at the second lookup (a crash), or a module made in its place got the value.
 	asDWORD get_max_statement_count() {
-		if (!get_mod()) return 0;
-		return (asDWORD)(asPWORD)get_mod()->GetUserData(SCRIPT_MODULE_STATEMENT_LIMIT_USERDATA);
+		std::lock_guard<std::recursive_mutex> lock(script_module_mutex()); // See script_module_mutex().
+		asIScriptModule* mod = get_mod();
+		if (!mod) return 0;
+		return (asDWORD)(asPWORD)mod->GetUserData(SCRIPT_MODULE_STATEMENT_LIMIT_USERDATA);
 	}
 	void set_max_statement_count(asDWORD count) {
-		if (get_mod()) get_mod()->SetUserData((void*)(asPWORD)count, SCRIPT_MODULE_STATEMENT_LIMIT_USERDATA);
+		std::lock_guard<std::recursive_mutex> lock(script_module_mutex()); // See script_module_mutex().
+		asIScriptModule* mod = get_mod();
+		if (mod) mod->SetUserData((void*)(asPWORD)count, SCRIPT_MODULE_STATEMENT_LIMIT_USERDATA);
 	}
 	void discard() {
 		std::lock_guard<std::recursive_mutex> lock(script_module_mutex()); // See script_module_mutex(): the globals' destructors, script code, run with it held.
