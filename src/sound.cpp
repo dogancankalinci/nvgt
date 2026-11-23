@@ -767,11 +767,11 @@ sound_shape* sound_shape_builtin_standard_setup(mixer* snd, CScriptHandle* shape
 }
 class sound_aabb_shape : public sound_shape {
 public:
-	float left_range, right_range, backward_range, forward_range, lower_range, upper_range;
+	std::atomic<float> left_range, right_range, backward_range, forward_range, lower_range, upper_range; // Set by the script, read by whichever thread moves a listener.
 	sound_aabb_shape(float left_range, float right_range, float backward_range, float forward_range, float lower_range, float upper_range) : sound_shape(), left_range(left_range), right_range(right_range), backward_range(backward_range), forward_range(forward_range), lower_range(lower_range), upper_range(upper_range) {}
 	bool contains(const vector3& listener_position, vector3& sound_position) override {
 		// The box between the two corners the ranges make, whichever way round: ranges whose sum is negative on an axis crossed its corners over, which std::clamp() below is undefined for, and the sound played from the box's far edge.
-		vector3 low_corner = sound_position - vector3(left_range, backward_range, lower_range), high_corner = sound_position + vector3(right_range, forward_range, upper_range);
+		vector3 low_corner = sound_position - vector3(left_range.load(), backward_range.load(), lower_range.load()), high_corner = sound_position + vector3(right_range.load(), forward_range.load(), upper_range.load());
 		vector3 low = vector3::sMin(low_corner, high_corner), high = vector3::sMax(low_corner, high_corner);
 		if (listener_position.GetX() >= low.GetX() && listener_position.GetX() <= high.GetX() && listener_position.GetY() >= low.GetY() && listener_position.GetY() <= high.GetY() && listener_position.GetZ() >= low.GetZ() && listener_position.GetZ() <= high.GetZ()) return true;
 		sound_position.SetX(clamp(listener_position.GetX(), low.GetX(), high.GetX()));
@@ -4517,7 +4517,7 @@ protected:
 	// With a shape, the position the script set, which MiniAudio's is moved from to the shape's point nearest the listener. Kept here rather than in the shape, as one shape can be given to several sounds.
 	vector3 shape_anchor = vector3(0, 0, 0);
 	mutable audio_spatializer *spatializer;
-	mutex spatialization_params_mutex;
+	mutable mutex spatialization_params_mutex;
 	audio_node_chain* node_chain;
 	audio_node_chain* effects_chain;
 public:
@@ -5058,6 +5058,7 @@ public:
 	vector3 get_position_3d() const override {
 		if (!snd)
 			return vector3();
+		std::lock_guard<std::mutex> lock(spatialization_params_mutex); // Which the shape and its anchor are changed under, as by a listener moving on another thread.
 		if (shape) return shape_anchor; // The position the script set, as MiniAudio's may have been moved by the shape.
 		const auto pos = ma_sound_get_position(&*snd);
 		return vector3(pos.x, pos.y, pos.z);
@@ -7623,12 +7624,12 @@ void RegisterSoundsystemShapes(asIScriptEngine* engine) {
 	engine->RegisterObjectBehaviour("sound_aabb_shape", asBEHAVE_FACTORY, "sound_aabb_shape@ s(float left_range, float right_range, float backward_range, float forward_range, float lower_range, float upper_range)", asFUNCTION(create_sound_aabb_shape), asCALL_CDECL);
 	engine->RegisterObjectBehaviour("sound_aabb_shape", asBEHAVE_ADDREF, "void f()", asMETHOD(sound_aabb_shape, duplicate), asCALL_THISCALL);
 	engine->RegisterObjectBehaviour("sound_aabb_shape", asBEHAVE_RELEASE, "void f()", asMETHOD(sound_aabb_shape, release), asCALL_THISCALL);
-	engine->RegisterObjectProperty("sound_aabb_shape", "float left_range", asOFFSET(sound_aabb_shape, left_range));
-	engine->RegisterObjectProperty("sound_aabb_shape", "float right_range", asOFFSET(sound_aabb_shape, right_range));
-	engine->RegisterObjectProperty("sound_aabb_shape", "float backward_range", asOFFSET(sound_aabb_shape, backward_range));
-	engine->RegisterObjectProperty("sound_aabb_shape", "float forward_range", asOFFSET(sound_aabb_shape, forward_range));
-	engine->RegisterObjectProperty("sound_aabb_shape", "float lower_range", asOFFSET(sound_aabb_shape, lower_range));
-	engine->RegisterObjectProperty("sound_aabb_shape", "float upper_range", asOFFSET(sound_aabb_shape, upper_range));
+	// Through accessors, as the ranges are atomic: a listener moving on another thread reads them.
+	#define AABB_RANGE(name) \
+		engine->RegisterObjectMethod("sound_aabb_shape", "float get_" #name "() const property", asFUNCTIONPR([](const sound_aabb_shape* s) { return s->name.load(); }, (const sound_aabb_shape*), float), asCALL_CDECL_OBJFIRST); \
+		engine->RegisterObjectMethod("sound_aabb_shape", "void set_" #name "(float value) property", asFUNCTIONPR([](sound_aabb_shape* s, float value) { s->name = value; }, (sound_aabb_shape*, float), void), asCALL_CDECL_OBJFIRST);
+	AABB_RANGE(left_range) AABB_RANGE(right_range) AABB_RANGE(backward_range) AABB_RANGE(forward_range) AABB_RANGE(lower_range) AABB_RANGE(upper_range)
+	#undef AABB_RANGE
 }
 void RegisterSoundsystem(asIScriptEngine *engine) {
 	engine->RegisterEnum("audio_error_state");

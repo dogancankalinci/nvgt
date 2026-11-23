@@ -1702,7 +1702,7 @@ private:
 	std::atomic<float> rolloff_set{default_spatializer_rolloff}, directional_attenuation_factor_set{1.0f};
 	bool parameters_valid, parameters_given = false; // The second once they were valid, the listener's position given from then on even while they aren't.
 	int preferred_panner_id, preferred_attenuator_id;
-	int current_panner_id, current_attenuator_id;
+	std::atomic<int> current_panner_id, current_attenuator_id; // Read on the audio thread, as the mixer gives its parameters, while the sweeps set them.
 	bool default_panner = false, default_attenuator = false; // Whether the preferred ones are the defaults it was given, which set_global_hrtf() changes, rather than its own.
 	// Its rewiring runs in the chain's rewire_scope, what it lets go of released once the thread's outermost release_scope ends (see release_scope).
 	void position_reverb() {
