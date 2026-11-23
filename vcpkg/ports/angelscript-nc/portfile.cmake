@@ -167,6 +167,7 @@ vcpkg_from_github(
         fix-cross-thread-abort.patch
         fix-template-copy-constructor-flags.patch
         fix-collector-chains-registered-weak-flags.patch
+        fix-abort-before-nested-prepare.patch
 )
 
 vcpkg_cmake_configure(
