@@ -280,22 +280,27 @@ random_pcg::random_pcg(uint32 s) : ref_count(1) {
 }
 
 uint32 random_pcg::next() {
+	std::lock_guard<std::mutex> lock(state_mutex); // See random_interface::state_mutex.
 	return rnd_pcg_next(&gen);
 }
 
 float32 random_pcg::nextf() {
+	std::lock_guard<std::mutex> lock(state_mutex); // See random_interface::state_mutex.
 	return rnd_pcg_nextf(&gen);
 }
 
 int32 random_pcg::range(int32 min, int32 max) {
+	std::lock_guard<std::mutex> lock(state_mutex); // See random_interface::state_mutex.
 	return rnd_pcg_range(&gen, min, max);
 }
 
 void random_pcg::seed(uint32 s) {
+	std::lock_guard<std::mutex> lock(state_mutex); // See random_interface::state_mutex.
 	rnd_pcg_seed(&gen, s);
 }
 
 std::string random_pcg::get_state() const {
+	std::lock_guard<std::mutex> lock(state_mutex); // See random_interface::state_mutex.
 	std::ostringstream ostr;
 	Poco::Base64Encoder enc(ostr);
 	enc << std::string(reinterpret_cast<const char*>(gen.state), sizeof(gen.state));
@@ -316,6 +321,7 @@ bool random_pcg::set_state(const std::string& state) {
 		r.push_back(static_cast<uint8>(c));
 	if (r.size() != sizeof(gen.state))
 		return false;
+	std::lock_guard<std::mutex> lock(state_mutex); // See random_interface::state_mutex.
 	memcpy(&gen.state[0], &r[0], sizeof(gen.state));
 	return true;
 }
@@ -332,22 +338,27 @@ random_well::random_well(uint32 s) : ref_count(1) {
 }
 
 uint32 random_well::next() {
+	std::lock_guard<std::mutex> lock(state_mutex); // See random_interface::state_mutex.
 	return rnd_well_next(&gen);
 }
 
 float32 random_well::nextf() {
+	std::lock_guard<std::mutex> lock(state_mutex); // See random_interface::state_mutex.
 	return rnd_well_nextf(&gen);
 }
 
 int32 random_well::range(int32 min, int32 max) {
+	std::lock_guard<std::mutex> lock(state_mutex); // See random_interface::state_mutex.
 	return rnd_well_range(&gen, min, max);
 }
 
 void random_well::seed(uint32 s) {
+	std::lock_guard<std::mutex> lock(state_mutex); // See random_interface::state_mutex.
 	rnd_well_seed(&gen, s);
 }
 
 std::string random_well::get_state() const {
+	std::lock_guard<std::mutex> lock(state_mutex); // See random_interface::state_mutex.
 	std::ostringstream ostr;
 	Poco::Base64Encoder enc(ostr);
 	enc << std::string(reinterpret_cast<const char*>(&gen), sizeof(gen));
@@ -368,6 +379,7 @@ bool random_well::set_state(const std::string& state) {
 		r.push_back(static_cast<uint8>(c));
 	if (r.size() != sizeof(gen))
 		return false;
+	std::lock_guard<std::mutex> lock(state_mutex); // See random_interface::state_mutex.
 	memcpy(&gen, &r[0], sizeof(gen));
 	return true;
 }
@@ -385,22 +397,27 @@ random_gamerand::random_gamerand(uint32 s) : ref_count(1) {
 }
 
 uint32 random_gamerand::next() {
+	std::lock_guard<std::mutex> lock(state_mutex); // See random_interface::state_mutex.
 	return rnd_gamerand_next(&gen);
 }
 
 float32 random_gamerand::nextf() {
+	std::lock_guard<std::mutex> lock(state_mutex); // See random_interface::state_mutex.
 	return rnd_gamerand_nextf(&gen);
 }
 
 int32 random_gamerand::range(int32 min, int32 max) {
+	std::lock_guard<std::mutex> lock(state_mutex); // See random_interface::state_mutex.
 	return rnd_gamerand_range(&gen, min, max);
 }
 
 void random_gamerand::seed(uint32 s) {
+	std::lock_guard<std::mutex> lock(state_mutex); // See random_interface::state_mutex.
 	rnd_gamerand_seed(&gen, s);
 }
 
 std::string random_gamerand::get_state() const {
+	std::lock_guard<std::mutex> lock(state_mutex); // See random_interface::state_mutex.
 	std::ostringstream ostr;
 	Poco::Base64Encoder enc(ostr);
 	enc << std::string(reinterpret_cast<const char*>(&gen), sizeof(gen));
@@ -421,6 +438,7 @@ bool random_gamerand::set_state(const std::string& state) {
 		r.push_back(static_cast<uint8>(c));
 	if (r.size() != sizeof(gen))
 		return false;
+	std::lock_guard<std::mutex> lock(state_mutex); // See random_interface::state_mutex.
 	memcpy(&gen, &r[0], sizeof(gen));
 	return true;
 }
@@ -440,22 +458,27 @@ random_xorshift::random_xorshift(uint64 s) : ref_count(1) {
 }
 
 uint32 random_xorshift::next() {
+	std::lock_guard<std::mutex> lock(state_mutex); // See random_interface::state_mutex.
 	return static_cast<uint32>(rnd_xorshift_next(&gen));
 }
 
 int64 random_xorshift::next64() {
+	std::lock_guard<std::mutex> lock(state_mutex); // See random_interface::state_mutex.
 	return static_cast<int64>(rnd_xorshift_next(&gen));
 }
 
 float32 random_xorshift::nextf() {
+	std::lock_guard<std::mutex> lock(state_mutex); // See random_interface::state_mutex.
 	return rnd_xorshift_nextf(&gen);
 }
 
 int32 random_xorshift::range(int32 min, int32 max) {
+	std::lock_guard<std::mutex> lock(state_mutex); // See random_interface::state_mutex.
 	return rnd_xorshift_range(&gen, min, max);
 }
 
 int64 random_xorshift::range64(int64 min, int64 max) {
+	std::lock_guard<std::mutex> lock(state_mutex); // See random_interface::state_mutex.
 	return rnd_xorshift_range64(&gen, min, max);
 }
 
@@ -464,10 +487,12 @@ void random_xorshift::seed(uint32 s) {
 }
 
 void random_xorshift::seed64(uint64 s) {
+	std::lock_guard<std::mutex> lock(state_mutex); // See random_interface::state_mutex.
 	rnd_xorshift_seed(&gen, s);
 }
 
 std::string random_xorshift::get_state() const {
+	std::lock_guard<std::mutex> lock(state_mutex); // See random_interface::state_mutex.
 	std::ostringstream ostr;
 	Poco::Base64Encoder enc(ostr);
 	enc << std::string(reinterpret_cast<const char*>(&gen), sizeof(gen));
@@ -490,6 +515,7 @@ bool random_xorshift::set_state(const std::string& state) {
 		r.push_back(static_cast<uint8>(c));
 	if (r.size() != sizeof(gen))
 		return false;
+	std::lock_guard<std::mutex> lock(state_mutex); // See random_interface::state_mutex.
 	memcpy(&gen, &r[0], sizeof(gen));
 	return true;
 }

@@ -11,6 +11,7 @@
  */
 
 #pragma once
+#include <mutex>
 
 #include <rnd.h>
 
@@ -57,6 +58,12 @@ public:
 	// Utility functions (with default implementations)
 	virtual bool next_bool(int32 percent = 50);
 	virtual std::string next_character(const std::string& min, const std::string& max);
+protected:
+	// Held by the built in generators while they read or change their state. The default generator is used by random(), random_float(),
+	// random_bool(), array.random() and array.shuffle() on every script thread, and a generator object can be shared between threads too:
+	// two threads drawing at once both stepped the generator from the same state (both got the same number, and a draw was lost) and
+	// wrote it back over each other, on 32-bit ARM half each.
+	mutable std::mutex state_mutex;
 };
 
 class script_random_wrapper;
