@@ -1309,6 +1309,22 @@ public:
 			case asTYPEID_UINT64: integer = asINT64(*(asQWORD*)ref); return new CScriptAny(&integer, asTYPEID_INT64, g_ScriptEngine);
 			case asTYPEID_FLOAT: real = *(float*)ref; return new CScriptAny(&real, asTYPEID_DOUBLE, g_ScriptEngine);
 		}
+		// An enum is an integer too, read as its underlying type (enum E : int8 takes one byte, enum E : uint64 eight): it was handed over
+		// under the module's enum type, which the script can't name (another module's), so no retrieve() could read it.
+		if (!(type_id & asTYPEID_MASK_OBJECT) && type_id > asTYPEID_DOUBLE) {
+			asITypeInfo* enum_type = g_ScriptEngine->GetTypeInfoById(type_id);
+			switch (enum_type ? enum_type->GetUnderlyingTypeId() : asTYPEID_INT32) {
+				case asTYPEID_INT8: integer = *(asINT8*)ref; break;
+				case asTYPEID_INT16: integer = *(asINT16*)ref; break;
+				case asTYPEID_INT64: integer = *(asINT64*)ref; break;
+				case asTYPEID_UINT8: integer = *(asBYTE*)ref; break;
+				case asTYPEID_UINT16: integer = *(asWORD*)ref; break;
+				case asTYPEID_UINT32: integer = *(asDWORD*)ref; break;
+				case asTYPEID_UINT64: integer = asINT64(*(asQWORD*)ref); break;
+				default: integer = *(int*)ref; break;
+			}
+			return new CScriptAny(&integer, asTYPEID_INT64, g_ScriptEngine);
+		}
 		return new CScriptAny(ref, type_id, g_ScriptEngine);
 	}
 	const std::string get_global_decl(asDWORD index) {

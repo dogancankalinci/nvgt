@@ -10,4 +10,4 @@ Get the value of a global variable of the module.
 any@: an any holding the value, or null if the index is out of range.
 
 ## Remarks:
-Integers are given as int64 and floats as double, as an any can't give back narrower numbers, so retrieve them into variables of those types. Objects are given as handles.
+Integers, enums included, are given as int64 and floats as double, as an any can't give back narrower numbers, so retrieve them into variables of those types. Objects are given as handles.
