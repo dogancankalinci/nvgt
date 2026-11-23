@@ -557,6 +557,12 @@ public:
 		if (nodes.size() <= index) return nullptr;
 		return nodes[index];
 	}
+	audio_node* acquire_node(chain_node_which which, unsigned int index) const {
+		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		audio_node* found = which == chain_node_endpoint? endpoint : nodes.empty()? nullptr : which == chain_node_first? nodes[0] : which == chain_node_last? nodes.back() : index < nodes.size()? nodes[index] : nullptr;
+		if (found) found->duplicate();
+		return found;
+	}
 	int index_of(audio_node* node) const override {
 		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
 		auto it = find(nodes.begin(), nodes.end(), node);
@@ -569,6 +575,13 @@ public:
 	}
 };
 audio_node_chain* audio_node_chain::create(audio_node* source, audio_node* endpoint, audio_engine* engine) { return new audio_node_chain_impl(source, endpoint, engine); }
+audio_node* audio_node_chain_acquire(audio_node_chain* chain, chain_node_which which, unsigned int index) {
+	if (!chain) return nullptr;
+	if (auto impl = dynamic_cast<audio_node_chain_impl*>(chain)) return impl->acquire_node(which, index);
+	audio_node* found = which == chain_node_endpoint? chain->get_endpoint() : which == chain_node_first? chain->first() : which == chain_node_last? chain->last() : (*chain)[index];
+	if (found) found->duplicate();
+	return found;
+}
 
 static void follow_default_components(); // After audio_spatializer_impl.
 bool set_global_hrtf(bool enabled) {
