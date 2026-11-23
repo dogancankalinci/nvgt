@@ -1123,6 +1123,14 @@ bool CScriptDictValue::Get(void *value, int typeId) const
 				// TODO: Check if the object has a conversion operator to a primitive value
 				*(bool*)value = true;
 			}
+			else if( m_typeId == asTYPEID_DOUBLE || m_typeId == asTYPEID_FLOAT )
+			{
+				// ALTERED: a real is true when it isn't 0: compared by its bytes, -0.0 (the sign bit set), which equals 0, read as true
+				// (the any add-on gives false for it). A float is kept as one when set through a ?&in parameter.
+				float f;
+				memcpy(&f, &m_valueInt, sizeof(f));
+				*(bool*)value = m_typeId == asTYPEID_DOUBLE ? m_valueFlt != 0 : f != 0;
+			}
 			else
 			{
 				// Compare only the bytes that were actually set
