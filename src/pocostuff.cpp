@@ -304,12 +304,35 @@ template<typename T> poco_shared<T>* poco_var_extract_shared(poco_shared<Dynamic
 		return NULL;
 	}
 }
+// Integer sums, differences and products of a var and a value as the script's own arithmetic gives them: one that doesn't fit wraps
+// around. They were computed signed, and a signed int or int64 result past its range is undefined in C++; they are computed unsigned
+// now, which wraps as the result did in practice. Smaller types are promoted to int as before, so that their results are still
+// checked by the conversion back (int16(32767) + 1 raises "Value too big"), and every other type is computed as it was.
+enum var_operation { var_add, var_subtract, var_multiply };
+template<typename T> auto var_arithmetic(const T& a, const T& b, var_operation op) {
+	using result = decltype(a + b);
+	if constexpr(std::is_integral<result>::value && std::is_signed<result>::value) {
+		using unsigned_result = typename std::make_unsigned<result>::type;
+		unsigned_result x = unsigned_result(result(a)), y = unsigned_result(result(b));
+		return result(op == var_add ? x + y : op == var_subtract ? x - y : x * y);
+	} else return result(op == var_add ? a + b : op == var_subtract ? a - b : a * b);
+}
+// A compound assignment changes the var only once its result converts back to the type asked for: the var was given the result first,
+// so one that raised ("Value too big" for int16(32767) += 1) left it changed (to 32768, held as an int).
+template<typename T> T var_compound_assign(poco_shared<Dynamic::Var>* var, const Dynamic::Var& result) {
+	T value = poco_var_convert<T>(result);
+	*var->ptr = result;
+	return value;
+}
 template<typename T> T poco_var_add_assign(poco_shared<Dynamic::Var>* var, const T& val) {
-	*var->ptr = poco_var_convert<T>(*var->ptr) + val;
-	return poco_var_convert<T>(*var->ptr);
+	if constexpr(std::is_same<T, std::string>::value) {
+		*var->ptr = poco_var_convert<T>(*var->ptr) + val;
+		return poco_var_convert<T>(*var->ptr);
+	} else return var_compound_assign<T>(var, Dynamic::Var(var_arithmetic<T>(poco_var_convert<T>(*var->ptr), val, var_add)));
 }
 template<typename T> T poco_var_add(poco_shared<Dynamic::Var>* var, const T& val) {
-	return poco_var_convert<T>(Dynamic::Var(poco_var_convert<T>(*var->ptr) + val));
+	if constexpr(std::is_same<T, std::string>::value) return poco_var_convert<T>(Dynamic::Var(poco_var_convert<T>(*var->ptr) + val));
+	else return poco_var_convert<T>(Dynamic::Var(var_arithmetic<T>(poco_var_convert<T>(*var->ptr), val, var_add)));
 }
 template<typename T> T poco_var_add_r(poco_shared<Dynamic::Var>* var, const T& val) {
 	return val + poco_var_convert<T>(*var->ptr);
@@ -375,18 +398,16 @@ int poco_var_cmp(poco_shared<Dynamic::Var>* var, const poco_shared<Dynamic::Var>
 	else return 0;
 }
 template<typename T> T poco_var_sub_assign(poco_shared<Dynamic::Var>* var, const T& val) {
-	*var->ptr = poco_var_convert<T>(*var->ptr) - val;
-	return poco_var_convert<T>(*var->ptr);
+	return var_compound_assign<T>(var, Dynamic::Var(var_arithmetic<T>(poco_var_convert<T>(*var->ptr), val, var_subtract)));
 }
 template<typename T> T poco_var_sub(poco_shared<Dynamic::Var>* var, const T& val) {
-	return poco_var_convert<T>(Dynamic::Var(poco_var_convert<T>(*var->ptr) - val));
+	return poco_var_convert<T>(Dynamic::Var(var_arithmetic<T>(poco_var_convert<T>(*var->ptr), val, var_subtract)));
 }
 template<typename T> T poco_var_mul_assign(poco_shared<Dynamic::Var>* var, const T& val) {
-	*var->ptr = poco_var_convert<T>(*var->ptr) * val;
-	return poco_var_convert<T>(*var->ptr);
+	return var_compound_assign<T>(var, Dynamic::Var(var_arithmetic<T>(poco_var_convert<T>(*var->ptr), val, var_multiply)));
 }
 template<typename T> T poco_var_mul(poco_shared<Dynamic::Var>* var, const T& val) {
-	return poco_var_convert<T>(Dynamic::Var(poco_var_convert<T>(*var->ptr) * val));
+	return poco_var_convert<T>(Dynamic::Var(var_arithmetic<T>(poco_var_convert<T>(*var->ptr), val, var_multiply)));
 }
 template<typename T> void poco_var_check_div(poco_shared<Dynamic::Var>* var, const T& val) {
 	if constexpr(std::is_integral<T>::value) {
@@ -398,8 +419,7 @@ template<typename T> void poco_var_check_div(poco_shared<Dynamic::Var>* var, con
 }
 template<typename T> T poco_var_div_assign(poco_shared<Dynamic::Var>* var, const T& val) {
 	poco_var_check_div<T>(var, val);
-	*var->ptr = poco_var_convert<T>(*var->ptr) / val;
-	return poco_var_convert<T>(*var->ptr);
+	return var_compound_assign<T>(var, Dynamic::Var(poco_var_convert<T>(*var->ptr) / val));
 }
 template<typename T> T poco_var_div(poco_shared<Dynamic::Var>* var, const T& val) {
 	poco_var_check_div<T>(var, val);
