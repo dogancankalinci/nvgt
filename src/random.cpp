@@ -63,9 +63,7 @@ bool random_bool(int percent) {
 	return default_random()->next_bool(percent);
 }
 std::string random_character(const std::string& min, std::string& max) {
-	if (min == "" || max == "") return "";
-	if (min == max) return min;
-	return std::string(1, (char)random(min[0], max[0]));
+	return default_random()->next_character(min, max); // The default generator's, as random_bool() takes its next_bool(): a script generator set as the default implements its own.
 }
 void* random_choice(CScriptArray* array) {
 	if (array->GetSize() == 0) {

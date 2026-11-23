@@ -134,6 +134,29 @@ public:
 		return c.run() ? c.ctx->GetReturnQWord() : 0;
 	}
 
+	// The interface's next_bool() and next_character(), which every random_generator implements, were looked up and never called:
+	// random_bool(), random_character() and the methods of get_default_random() made their results from the script's range() instead.
+	bool next_bool(int32 percent) override {
+		if (!nextBoolFunc) return random_interface::next_bool(percent);
+		running hold(this);
+		call c(scriptObj, nextBoolFunc);
+		if (c.prepared) c.ctx->SetArgDWord(0, percent);
+		return c.run() ? c.ctx->GetReturnByte() != 0 : false;
+	}
+
+	std::string next_character(const std::string& min, const std::string& max) override {
+		if (!nextCharFunc) return random_interface::next_character(min, max);
+		running hold(this);
+		call c(scriptObj, nextCharFunc);
+		if (c.prepared) {
+			c.ctx->SetArgObject(0, (void*)&min);
+			c.ctx->SetArgObject(1, (void*)&max);
+		}
+		if (!c.run()) return "";
+		const std::string* result = static_cast<const std::string*>(c.ctx->GetReturnObject());
+		return result ? *result : "";
+	}
+
 	void seed(uint32 s) override {
 		// Script objects handle their own seeding
 	}
