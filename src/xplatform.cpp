@@ -18,6 +18,7 @@
 #endif
 #include <condition_variable>
 #include <mutex>
+#include <thread>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -249,7 +250,9 @@ struct android_permission_request_callback_data {
 	std::string callback_data;
 	Event completed;
 	bool was_granted;
-	android_permission_request_callback_data(asIScriptFunction* func, const std::string& callback_data) : func(func), with_callback(func != nullptr), callback_data(callback_data), was_granted(false) {}
+	std::string permission; // The answer kept for the main thread, see android_permission_request_callback.
+	const std::thread::id requester; // The thread that asked.
+	android_permission_request_callback_data(asIScriptFunction* func, const std::string& callback_data) : func(func), with_callback(func != nullptr), callback_data(callback_data), was_granted(false), requester(std::this_thread::get_id()) {}
 	void execute(std::string permission, bool granted) {
 		was_granted = granted;
 		if (!with_callback) {
@@ -289,12 +292,28 @@ struct android_permission_request_callback_data {
 		completed.set();
 	}
 };
+static void android_permission_request_run(void* raw_data) {
+	android_permission_request_callback_data* data = reinterpret_cast<android_permission_request_callback_data*>(raw_data);
+	data->execute(data->permission, data->was_granted);
+	delete data;
+}
 void android_permission_request_callback(void* raw_data, const char* permission, bool granted) {
 	android_permission_request_callback_data* data = reinterpret_cast<android_permission_request_callback_data*>(raw_data);
-	// With a callback nothing waits for the answer, and the request's data was never freed: it is freed here once the callback has run. Without one, request_android_permission waits for the answer and frees it.
-	bool has_callback = data->with_callback;
-	data->execute(permission, granted);
-	if (has_callback) delete data;
+	// Without a callback, request_android_permission waits for the answer and frees the data.
+	if (!data->with_callback) {
+		data->execute(permission, granted);
+		return;
+	}
+	// With one nothing waits for the answer, and the request's data is freed once the callback has run. A later answer comes on the Java UI
+	// thread, where the callback ran script code at the same time as the script's main thread and its other threads, on a thread no script
+	// made, and held up the UI thread, which handles the application's input and drawing, for as long as it ran (long enough, and Android
+	// reports the application as not responding). It is run on the main thread instead, at its next event processing (wait(),
+	// refresh_window()), as SDL runs what other threads hand to that thread. An answer SDL gives at once, before SDL_RequestAndroidPermission()
+	// returns (the permission was granted already), still runs on the thread that asked, as it did.
+	data->permission = permission ? permission : "";
+	data->was_granted = granted;
+	if (data->requester == std::this_thread::get_id() || !SDL_RunOnMainThread(android_permission_request_run, data, false))
+		android_permission_request_run(data);
 }
 bool request_android_permission(const std::string& permission, asIScriptFunction* callback, const std::string& callback_data) {
 	android_permission_request_callback_data* data = new android_permission_request_callback_data(callback, callback_data);
