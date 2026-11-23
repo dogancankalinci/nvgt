@@ -3208,7 +3208,10 @@ public:
 		return g_soundsystem_last_error == MA_SUCCESS;
 	}
 	bool get_active() const override { return sample_rate && channels; }
-	unsigned long long get_frames_written() const override { return frames_written; }
+	unsigned long long get_frames_written() const override {
+		unique_lock<mutex> lock = const_cast<audio_encoder_impl*>(this)->lock_writes(); // Which process() counts them under on the audio thread.
+		return lock? frames_written : 0;
+	}
 	// Takes frames in the engine's format, as process() is given them when the encoder is a node, and returns how many of those it wrote, which is what frames_written counts.
 	unsigned int write(const float* frames_in, unsigned int frame_count) override {
 		unique_lock<mutex> lock = lock_writes();
