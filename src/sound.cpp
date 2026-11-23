@@ -2053,6 +2053,7 @@ struct pcm_queue {
 class audio_ring_buffer_impl : public audio_data_source_impl, public virtual audio_ring_buffer {
 	unique_ptr<pcm_queue> queue;
 	ma_pcm_rb *rb = nullptr; // The queue's.
+	std::mutex writer_mutex; // MiniAudio's ring buffer has one writer: script threads' writes take turns, and a reset, which moves the write position, waits for the write under way.
 protected:
 	void discard_queued() { if (queue) queue->discard(); }
 	void drop_pending_frames() override { if (queue) queue->drop_pending(); }
@@ -2092,6 +2093,7 @@ protected:
 	void reset_ring(bool used) {
 		if (!rb) return;
 		// While the graph, a sound or a chain reads it on the audio thread, what is queued is dropped by that reader (see pcm_queue): resetting the ring buffer under it had it play old frames again. Either way get_available_read() reads 0 at once and what is written after this is kept.
+		std::lock_guard<std::mutex> writing(writer_mutex);
 		if (used) {
 			queue->discard();
 			return;
@@ -2110,6 +2112,7 @@ public:
 		// 2.6-6% of all captured audio depending on device timing, audible as periodic clicks
 		// and a production rate below realtime in voice chat). Loop until everything is written
 		// or the ring is genuinely full - same pattern stream_pcm below already uses.
+		std::lock_guard<std::mutex> writing(writer_mutex);
 		unsigned int total = 0;
 		while (total < frame_count) {
 			ma_uint32 chunk = frame_count - total;
