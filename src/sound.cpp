@@ -1439,6 +1439,19 @@ protected:
 		if (!lock.owns_lock()) g_soundsystem_last_error = MA_BUSY;
 		return lock;
 	}
+	// This source's lock and another's, as lock_source() takes one, for a call that reads or links the other: taken together, so that two threads linking two sources to each other at once can't each wait for the other's.
+	struct source_pair_lock {
+		std::unique_lock<std::recursive_mutex> mine, theirs;
+		explicit operator bool() const { return mine.owns_lock() && (!theirs.mutex() || theirs.owns_lock()); }
+	};
+	source_pair_lock lock_sources_with(audio_data_source* other) const {
+		auto impl = dynamic_cast<audio_data_source_impl*>(other);
+		if (!impl || impl == this) return {lock_source(), {}};
+		std::unique_lock<std::recursive_mutex> mine(source_mutex, std::defer_lock), theirs(impl->source_mutex, std::defer_lock);
+		if (!on_an_audio_thread()) std::lock(mine, theirs);
+		else if (std::try_lock(mine, theirs) != -1) g_soundsystem_last_error = MA_BUSY;
+		return {std::move(mine), std::move(theirs)};
+	}
 	bool set_ma_data_source(ma_data_source* new_src) {
 		std::lock_guard<std::recursive_mutex> guard(source_mutex);
 		reset();
@@ -1508,6 +1521,12 @@ public:
 	static void add_user(audio_data_source* ds) {
 		if (auto impl = dynamic_cast<audio_data_source_impl*>(ds)) impl->users++;
 	}
+	// A source's lock (see lock_source()), for a sound that checks and takes it in one step, which another thread's close() or open() could otherwise come between. An object that isn't NVGT's own has none, and nothing to own.
+	static std::unique_lock<std::recursive_mutex> lock_source_of(audio_data_source* ds) {
+		auto impl = dynamic_cast<audio_data_source_impl*>(ds);
+		return impl? impl->lock_source() : std::unique_lock<std::recursive_mutex>();
+	}
+	static bool is_ours(audio_data_source* ds) { return dynamic_cast<audio_data_source_impl*>(ds) != nullptr; }
 	static void remove_user(audio_data_source* ds) {
 		if (auto impl = dynamic_cast<audio_data_source_impl*>(ds)) impl->users--;
 	}
@@ -1647,11 +1666,15 @@ public:
 		return skipped;
 	}
 	unsigned long long skip_frames(unsigned long long frame_count) override {
+		auto guard = lock_source();
+		if (!guard) return 0;
 		if (!src || in_use()) return refused_now(), 0;
 		drop_pending_frames(); // As read() does: the script is the only reader here.
 		return skip_by_reading(frames_to_take(frame_count));
 	}
 	float skip_milliseconds(float ms) override {
+		auto guard = lock_source();
+		if (!guard) return 0;
 		if (!src || in_use()) return refused_now(), 0;
 		ma_uint32 sample_rate = 0;
 		if ((g_soundsystem_last_error = ma_data_source_get_data_format(src->pDataSource, nullptr, nullptr, &sample_rate, nullptr, 0)) != MA_SUCCESS || !sample_rate) return 0;
@@ -1664,6 +1687,8 @@ public:
 		return skip_by_reading(frames_to_take(frames < 9e18? (unsigned long long)frames : 9000000000000000000ULL)) * 1000.0f / sample_rate;
 	}
 	bool seek_frames(unsigned long long frame_index) override {
+		auto guard = lock_source();
+		if (!guard) return false;
 		if (!src || in_use()) return refused_now();
 		unsigned long long length = get_length_frames(); // 0 when unknown, as for a ring buffer or a stream that can't seek.
 		ma_uint64 range_begin = 0;
@@ -1675,6 +1700,8 @@ public:
 		return (g_soundsystem_last_error = seek_or_keep_place(src->pDataSource, frame_index)) == MA_SUCCESS;
 	}
 	bool seek_milliseconds(float ms) override {
+		auto guard = lock_source();
+		if (!guard) return false;
 		if (!src || in_use()) return refused_now();
 		if (!(ms >= 0 && ms <= FLT_MAX)) { // Negative, infinite or not a number: MiniAudio turns it into a frame index near 2^64, or one no integer holds.
 			g_soundsystem_last_error = MA_INVALID_ARGS;
@@ -1694,15 +1721,20 @@ public:
 	}
 	unsigned long long get_cursor_frames() const override {
 		ma_uint64 cursor;
+		auto guard = lock_source();
+		if (!guard) return 0;
 		if (!src) return 0;
 		return (g_soundsystem_last_error = ma_data_source_get_cursor_in_pcm_frames(src->pDataSource, &cursor)) == MA_SUCCESS? cursor : 0;
 	}
 	float get_cursor_milliseconds() const override {
 		float cursor;
+		auto guard = lock_source();
+		if (!guard) return 0;
 		if (!src) return 0;
 		return (g_soundsystem_last_error = ma_data_source_get_cursor_in_seconds(src->pDataSource, &cursor)) == MA_SUCCESS? cursor * 1000 : 0;
 	}
 	unsigned long long get_length_frames() const override {
+		std::lock_guard<std::recursive_mutex> guard(source_mutex); // Waited for on an audio thread too, as a decoder's length is (see audio_decoder_impl::get_length_frames()).
 		if (!src) return 0;
 		ma_length(); // For its error, a source with no length at all reading none.
 		if (g_soundsystem_last_error != MA_SUCCESS) return 0;
@@ -1710,12 +1742,14 @@ public:
 	}
 	// The whole source's length, whatever its range, 0 when unknown or empty. A chain counts a source's length within its range only when the whole is known (see chain_source()).
 	virtual unsigned long long whole_length_frames() const {
+		std::lock_guard<std::recursive_mutex> guard(source_mutex); // As get_length_frames().
 		if (!src) return 0;
 		ma_data_source_base* base = (ma_data_source_base*)src->pDataSource;
 		ma_uint64 whole = 0;
 		return base->vtable->onGetLength && base->vtable->onGetLength(src->pDataSource, &whole) == MA_SUCCESS? whole : 0;
 	}
 	float get_length_milliseconds() const override {
+		std::lock_guard<std::recursive_mutex> guard(source_mutex); // As get_length_frames().
 		ma_uint32 sample_rate = 0;
 		if (!src || (g_soundsystem_last_error = ma_data_source_get_data_format(src->pDataSource, nullptr, nullptr, &sample_rate, nullptr, 0)) != MA_SUCCESS || !sample_rate) return 0;
 		return get_length_frames() * 1000.0f / sample_rate; // As counted within the range.
@@ -1727,11 +1761,19 @@ public:
 		return true;
 	}
 	bool set_looping(bool looping) override {
+		auto guard = lock_source();
+		if (!guard) return false;
 		if (queue_refuses(looping)) return false;
 		return src && !in_use()? (g_soundsystem_last_error = ma_data_source_set_looping(src->pDataSource, looping)) == MA_SUCCESS : refused_now();
 	}
-	bool get_looping() const override { return src? ma_data_source_is_looping(src->pDataSource) : false; }
+	bool get_looping() const override {
+		auto guard = lock_source();
+		if (!guard) return false;
+		return src? ma_data_source_is_looping(src->pDataSource) : false;
+	}
 	bool set_range(unsigned long long start_frame, unsigned long long end_frame) override {
+		auto guard = lock_source();
+		if (!guard) return false;
 		if (queue_refuses(start_frame != 0 || end_frame != ~0ull)) return false;
 		if (!src || in_use()) return refused_now();
 		if (end_frame < start_frame) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // As MiniAudio refuses it, before the seek below moves the source.
@@ -1761,9 +1803,12 @@ public:
 	// Without a source, 0 for both, as AngelScript leaves &out values unset.
 	void get_range(unsigned long long* start_frame, unsigned long long* end_frame) const override {
 		*start_frame = *end_frame = 0;
-		if (src) ma_data_source_get_range_in_pcm_frames(src->pDataSource, start_frame, end_frame);
+		auto guard = lock_source();
+		if (guard && src) ma_data_source_get_range_in_pcm_frames(src->pDataSource, start_frame, end_frame);
 	}
 	bool set_loop_point(unsigned long long start_frame, unsigned long long end_frame) override {
+		auto guard = lock_source();
+		if (!guard) return false;
 		if (queue_refuses(start_frame != 0 || end_frame != ~0ull)) return false;
 		if (!src || in_use()) return refused_now();
 		// A start at or past the range's known end, which MiniAudio checks only the end against: each loop back landed past the end (see set_range()), so that a looping sound played once and stopped, its position reading past its length. One of unknown length is taken, as decided.
@@ -1775,7 +1820,8 @@ public:
 	}
 	void get_loop_point(unsigned long long* start_frame, unsigned long long* end_frame) const override {
 		*start_frame = *end_frame = 0;
-		if (src) ma_data_source_get_loop_point_in_pcm_frames(src->pDataSource, start_frame, end_frame);
+		auto guard = lock_source();
+		if (guard && src) ma_data_source_get_loop_point_in_pcm_frames(src->pDataSource, start_frame, end_frame);
 	}
 	// A queue that something else fills as it is read, as a ring buffer or microphone, rather than a source with a start.
 	virtual bool is_live_queue() const { return false; }
@@ -1793,6 +1839,8 @@ public:
 		return format == their_format && channels == their_channels && sample_rate == their_sample_rate;
 	}
 	bool set_current(audio_data_source* new_current) override {
+		auto guard = lock_sources_with(new_current); // Theirs too: what is checked of it below, and taken, can't be changed by its close() or open() on another thread meanwhile.
+		if (!guard) return false;
 		if (!src || in_use()) return refused_now();
 		bool self = new_current == static_cast<audio_data_source*>(this); // Back to this head, as a chain is rewound in MiniAudio. Nothing needs holding for that, and a reference to itself would keep this alive and in use for good.
 		if (new_current && !self && is_live_queue()) { // Nor a head, as for can_chain(): a queue never ends, so it never moves on, and its reads are capped at what it has queued, not what another source holds.
@@ -1821,8 +1869,14 @@ public:
 		return true;
 	}
 	// The source MiniAudio is on, which reading moves along the chain past one set_current() gave.
-	audio_data_source* get_current() const override { return src? audio_data_source_get(ma_data_source_get_current(src->pDataSource), get_engine()) : nullptr; }
+	audio_data_source* get_current() const override {
+		auto guard = lock_source();
+		if (!guard) return nullptr;
+		return src? audio_data_source_get(ma_data_source_get_current(src->pDataSource), get_engine()) : nullptr;
+	}
 	bool set_next(audio_data_source* new_next) override {
+		auto guard = lock_sources_with(new_next); // As in set_current().
+		if (!guard) return false;
 		if (!src || in_use()) return refused_now();
 		bool self = new_next == static_cast<audio_data_source*>(this); // Looping this source on itself; as for set_current(), without a reference to itself.
 		if (new_next && !self && is_live_queue()) { // As set_current() refuses.
@@ -1846,6 +1900,8 @@ public:
 		return true;
 	}
 	audio_data_source* get_next() const override {
+		auto guard = lock_source();
+		if (!guard) return nullptr;
 		if (src_next) {
 			src_next->duplicate();
 			return src_next;
@@ -1861,6 +1917,8 @@ public:
 		if (format) *format = ma_format_unknown; // As MiniAudio sets them when it fails, for a source there isn't.
 		if (channels) *channels = 0;
 		if (sample_rate) *sample_rate = 0;
+		auto guard = lock_source();
+		if (!guard) return false;
 		return src? (g_soundsystem_last_error = ma_data_source_get_data_format(src->pDataSource, format, channels, sample_rate, nullptr, 0)) == MA_SUCCESS : false;
 	}
 	unsigned int get_channels() const override {
@@ -1871,7 +1929,10 @@ public:
 		unsigned int sample_rate;
 		return get_data_format(nullptr, nullptr, &sample_rate)? sample_rate : 0;
 	}
-	bool get_active() const override { return src != nullptr; }
+	bool get_active() const override {
+		std::lock_guard<std::recursive_mutex> guard(source_mutex); // Waited for on an audio thread too: it says nothing of a source being read.
+		return src != nullptr;
+	}
 };
 audio_data_source* audio_data_source_get(ma_data_source* ptr, audio_engine* engine) {
 	if (!ptr) return nullptr; // Without an engine, the node takes the default one, see audio_node_impl.
@@ -2002,7 +2063,12 @@ public:
 		audio_data_source_impl::reset(); // Qualified: audio_ring_buffer_impl::reset() below overrides a different (ring-buffer-clearing) virtual and would otherwise hide this one.
 		if (rb) queue->uninit();
 	}
-	void reset() override { reset_ring(is_used(this)); }
+	void reset() override {
+		const bool used = is_used(this);
+		auto guard = lock_source(); // Nor under a script's read, which a reset moves the read position under.
+		if (!guard) return;
+		reset_ring(used);
+	}
 protected:
 	// reset(), told whether the ring buffer is read elsewhere, which takes the graph lock to find out: the microphone finds out before it takes its capture lock, which the capture thread only tries for, so that one isn't held while the graph lock is waited for.
 	void reset_ring(bool used) {
@@ -2753,8 +2819,14 @@ public:
 		cursor.reset(); // After uninit, since the callbacks read through it.
 		return true;
 	}
-	virtual unsigned int get_sample_rate() const override { return decoder? decoder->outputSampleRate : 0; }
-	virtual unsigned int get_channels() const override { return decoder? decoder->outputChannels : 0; }
+	virtual unsigned int get_sample_rate() const override {
+		std::lock_guard<std::recursive_mutex> guard(source_mutex); // As get_length_frames(), as close() frees the decoder.
+		return decoder? decoder->outputSampleRate : 0;
+	}
+	virtual unsigned int get_channels() const override {
+		std::lock_guard<std::recursive_mutex> guard(source_mutex);
+		return decoder? decoder->outputChannels : 0;
+	}
 	void prepare_length() override { get_length_frames(); }
 	unsigned long long get_length_frames() const override {
 		std::lock_guard<std::recursive_mutex> guard(source_mutex); // Waited for on an audio thread too, unlike the script's other calls (see lock_source()): stop(), seek() and sound.open() take a length of 0 for none, so that one not given while the lock was held made stop() not rewind and seeks be refused.
@@ -5876,6 +5948,15 @@ public:
 	bool open(audio_data_source* ds) override {
 		if (!ds) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS;
 		if (snd && datasource_opened && ds == datasource) close_to_reload(); // The source it plays, which is_used() below counts this sound as reading: closed and opened anew, as open() does with another source, rather than refused.
+		// A reference of this call's own, let go of after the lock below: the script's, which the releases below let go of, can be the last.
+		ds->duplicate();
+		struct call_reference { audio_data_source* ds; ~call_reference() { ds->release(); } } kept_alive{ds};
+		// The source's lock, from the checks below until this sound counts as its user: another thread's ds.close() or open() would free the decoder this sound is being made on, and another sound's open() would pass the same checks.
+		auto source_guard = audio_data_source_impl::lock_source_of(ds);
+		if (audio_data_source_impl::is_ours(ds) && !source_guard) { // Busy, on an audio thread.
+			ds->release();
+			return false;
+		}
 		// A sound's own source is freed by that sound when it closes, as this one does to open it, and one another sound or chain reads would be read from two places.
 		if (!ds->get_active() || audio_data_source_impl::is_sound_owned(ds) || audio_data_source_impl::is_used(ds)) {
 			g_soundsystem_last_error = ds->get_active()? MA_INVALID_OPERATION : MA_INVALID_ARGS;
@@ -6640,6 +6721,8 @@ public:
 	// A ring buffer has one writer and one reader, and resetting it moves both positions: reset() while the capture thread wrote into it could leave that writer writing past its end. reset() therefore holds this, which the capture thread only tries for, dropping what it captured meanwhile rather than waiting.
 	void reset() override {
 		bool used = is_used(this);
+		auto guard = lock_source(); // As audio_ring_buffer_impl::reset().
+		if (!guard) return;
 		std::lock_guard<std::mutex> lock(capture_write_mutex);
 		reset_ring(used);
 	}
