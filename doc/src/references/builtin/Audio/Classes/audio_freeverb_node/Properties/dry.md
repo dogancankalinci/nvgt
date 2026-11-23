@@ -1,5 +1,5 @@
 # dry
-The volume at which the input is passed through unchanged, alongside the reverb, between 0 and 1.
+The volume at which the input is passed through unchanged, alongside the reverb, as a linear gain where 1 is full volume.
 
 `float audio_freeverb_node::dry;`
 

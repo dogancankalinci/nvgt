@@ -12,4 +12,4 @@ Get the format of the audio that the sound plays.
 bool: true if the format could be found, false if nothing is loaded.
 
 ## Remarks:
-Sounds loaded with `load()` or `load_pcm()` are decoded to floating point samples at the engine's sample rate, so this describes them as they are held in memory rather than as they were in the file.
+Sounds loaded with `load()` or `load_pcm()` are decoded at the engine's sample rate and kept in memory in the file's own sample format, such as 16-bit integers for a 16-bit WAV file or for `load_pcm()` of an int16 array, so this describes them as they are held in memory, which can differ from the file in its sample rate.

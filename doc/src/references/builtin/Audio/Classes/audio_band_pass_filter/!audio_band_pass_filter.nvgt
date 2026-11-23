@@ -7,6 +7,7 @@
 		* audio_engine@ engine = sound_default_engine: the engine to create the node in.
 	## Remarks:
 		This is an audio_node with one input and one output bus, and has all of the methods and properties of audio_node as well as the ones listed here. Its settings can be changed while audio is playing.
+		The order must be even, as the filter is made of second order sections: an odd order is refused and the constructor throws.
 		This gives the sound of a radio or an old telephone line.
 */
 

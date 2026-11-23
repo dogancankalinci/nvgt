@@ -1,7 +1,7 @@
 # loaded_filename
 Obtain the name the sound was loaded from.
 
-`string sound::loaded_filename;`
+`const string sound::loaded_filename;`
 
 ## Remarks:
 This is the file name or URL given to load(), stream() or stream_url(), as it was given. A sound that wasn't loaded from a file has one of these names instead:

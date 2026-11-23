@@ -8,4 +8,4 @@ Enable or disable a listener.
 * bool enabled: whether sounds are heard from this listener.
 
 ## Remarks:
-Sounds are heard from the closest enabled listener.
+Sounds and mixers whose `pinned_listener` is 255 are heard from the closest enabled listener; the others, listener 0 by default, are heard from the listener they are pinned to.

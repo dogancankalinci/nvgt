@@ -6,7 +6,7 @@ Choose the panner and attenuator that sounds use by default, enabling them if th
 ## Arguments:
 * int panner: the panner to use, a value of the audio_panner enum or one provided by a plugin.
 * int attenuator: the attenuator to use, a value of the audio_attenuator enum or one provided by a plugin.
-* bool disable_previous = false: whether to disable the panner and attenuator that were the defaults before, so that mixers using them switch to another.
+* bool disable_previous = false: whether to disable the panner and attenuator that were the defaults before, so that mixers using them switch to another. This only applies when set_default is true, as only then are they replaced as the defaults.
 * bool set_default = true: whether to make these the defaults. If false, they are only enabled.
 
 ## Returns:

@@ -1,5 +1,5 @@
 # order
-How steeply the filter cuts frequencies beyond its cutoff, from 1 to 8.
+How steeply the filter cuts frequencies beyond its cutoff, an even number from 2 to 8.
 
 `uint audio_band_pass_filter::order;`
 

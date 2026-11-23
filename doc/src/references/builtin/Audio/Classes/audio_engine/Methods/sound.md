@@ -7,4 +7,4 @@ Create a new, empty sound that belongs to this engine.
 sound@: the new sound.
 
 ## Remarks:
-This is the same as creating a sound object with this engine passed to its constructor. Load something into it with `sound::load()`.
+`sound()` on its own makes a sound of the default engine, so this is how a sound of another engine is made. Load something into it with `sound::load()`.
