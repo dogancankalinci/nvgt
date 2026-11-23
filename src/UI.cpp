@@ -564,9 +564,13 @@ game_window::game_window(const std::string& title, unsigned int w, unsigned int 
 	_native_window = (native_window_t)SDL_GetPointerProperty(props, NATIVE_WINDOW_SDL_PROP, nullptr);
 	#endif
 	#ifdef __APPLE__
-	SDL_ShowWindow(_window);
-	SDL_RaiseWindow(_window);
-	voice_over_window_created(this);
+	// Not one made hidden (WINDOW_FLAG_HIDDEN), which was shown, raised and given VoiceOver's focus here all the same, unlike on every other
+	// platform and as the documentation says: show_window() does that once the script shows it.
+	if (!(flags & SDL_WINDOW_HIDDEN)) {
+		SDL_ShowWindow(_window);
+		SDL_RaiseWindow(_window);
+		voice_over_window_created(this);
+	}
 	#endif
 	update_state();
 }
@@ -849,6 +853,9 @@ game_window* ShowNVGTWindow(const std::string& window_title, unsigned int flags)
 		if (shown->get_flags() & SDL_WINDOW_HIDDEN) {
 			shown->show();
 			shown->raise();
+			#ifdef __APPLE__
+			voice_over_window_created(shown); // as for a window made shown, see the game_window constructor
+			#endif
 		}
 		shown->duplicate();
 		return shown;
