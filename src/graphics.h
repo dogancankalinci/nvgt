@@ -197,7 +197,7 @@ public:
 	bool present() { bool ok = SDL_RenderPresent(rend()); if (ok) { _dirty = false; _presented_once = true; } return ok; }
 	bool present_if_dirty() { return !_dirty || present(); }
 	bool draw_point(float x, float y) { bool ok = SDL_RenderPoint(rend(), x, y); if (ok) mark_dirty(); return ok; }
-	bool draw_line(float x1, float y1, float x2, float y2) { bool ok = SDL_RenderLine(rend(), x1, y1, x2, y2); if (ok) mark_dirty(); return ok; }
+	bool draw_line(float x1, float y1, float x2, float y2); // see graphics.cpp
 	bool set_draw_color(unsigned int r, unsigned int g, unsigned int b, unsigned int a) { return SDL_SetRenderDrawColor(rend(), color_mod_byte(r), color_mod_byte(g), color_mod_byte(b), color_mod_byte(a)); }
 	bool set_scale(float sx, float sy) { return SDL_SetRenderScale(rend(), sx, sy); }
 	bool set_vsync(int vsync) { return SDL_SetRenderVSync(rend(), vsync); }

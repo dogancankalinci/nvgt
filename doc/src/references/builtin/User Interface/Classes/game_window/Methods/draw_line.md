@@ -11,3 +11,6 @@ Draw a line.
 * uint r: the red component of the color, from 0 to 255.
 * uint g: the green component of the color, from 0 to 255.
 * uint b: the blue component of the color, from 0 to 255.
+
+## Remarks:
+A line with a coordinate that isn't finite (NaN or infinity) isn't drawn. Only the part of a line within 16777216 pixels of the origin is drawn, which is far past any window.

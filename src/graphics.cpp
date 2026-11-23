@@ -474,6 +474,35 @@ bool graphics_renderer::get_current_output_size(int& w, int& h) const {
 	return SDL_GetCurrentRenderOutputSize(rend(), &w, &h);
 }
 
+// SDL clips a line to the target with integer Cohen-Sutherland (SDL_rect_impl.h), which subtracts the end points as ints before widening
+// them: with an end point far off the target (-1e10, or anything past an int, which converts to INT_MIN), the subtraction overflowed and
+// the clip went round for ever, so draw_line(-1000, 3, 1000, -1e10) never returned (game_window's draw_line too). The segment is clipped
+// here first, in double, to a square 2^24 pixels about the origin (far past any target, and well within what SDL's int arithmetic holds),
+// which keeps all of it that can be drawn. A line with a coordinate that isn't finite has no part that can, and is refused.
+bool graphics_renderer::draw_line(float x1, float y1, float x2, float y2) {
+	SDL_Renderer* r = rend();
+	if (!r || !std::isfinite(x1) || !std::isfinite(y1) || !std::isfinite(x2) || !std::isfinite(y2)) return false;
+	const double limit = 16777216.0;
+	double ax = x1, ay = y1, dx = double(x2) - x1, dy = double(y2) - y1, t0 = 0, t1 = 1;
+	// Liang-Barsky: the part of the segment, as t from 0 to 1, within each of the four edges.
+	auto edge = [&](double p, double q) {
+		if (p == 0) return q >= 0;
+		double t = q / p;
+		if (p < 0) {
+			if (t > t1) return false;
+			if (t > t0) t0 = t;
+		} else {
+			if (t < t0) return false;
+			if (t < t1) t1 = t;
+		}
+		return true;
+	};
+	if (!edge(-dx, ax + limit) || !edge(dx, limit - ax) || !edge(-dy, ay + limit) || !edge(dy, limit - ay)) return true; // none of it can be seen, which SDL reports as drawn
+	bool ok = SDL_RenderLine(r, float(ax + t0 * dx), float(ay + t0 * dy), t1 < 1 ? float(ax + t1 * dx) : x2, t1 < 1 ? float(ay + t1 * dy) : y2);
+	if (ok) mark_dirty();
+	return ok;
+}
+
 bool graphics_renderer::draw_rect(float x, float y, float w, float h) {
 	SDL_FRect r = {x, y, w, h};
 	bool ok = SDL_RenderRect(rend(), &r);
