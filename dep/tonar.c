@@ -140,15 +140,16 @@ int el_tonar_freq_ms(el_tonar* gen, double freq, int ms)
 if(!elz_tonar_is_init(gen)) return 0;
 return elz_tonar_sequence(gen, freq+gen->freq_transpose, 0, ms, 0, 0);
 }
-int el_tonar_note_bend(el_tonar* gen, char* note, int bend_amount, double length, double bend_start, double bend_length)
+int el_tonar_note_bend(el_tonar* gen, char* note, double bend_amount, double length, double bend_start, double bend_length)
 {
 if(!elz_tonar_is_init(gen)) return 0;
 return el_tonar_note_bend_ms(gen, note, bend_amount, elz_tonar_music_beat_to_ms(gen->tempo, length), elz_tonar_music_beat_to_ms(gen->tempo, bend_start), elz_tonar_music_beat_to_ms(gen->tempo, bend_length));
 }
-int el_tonar_note_bend_ms(el_tonar* gen, char* note, int bend_amount, int length, int bend_start, int bend_length)
+int el_tonar_note_bend_ms(el_tonar* gen, char* note, double bend_amount, int length, int bend_start, int bend_length)
 {
 if(!elz_tonar_is_init(gen)) return 0;
-int start_note=elz_tonar_music_name_to_note(note, gen->note_transpose);
+double start_note=elz_tonar_music_name_to_note(note, gen->note_transpose);
+if(start_note<0) return 0; /* A name that isn't a note: refused, as note() refuses it, rather than bent from no frequency to one. */
 double start_freq=elz_tonar_music_note_to_freq(start_note);
 double target_freq=elz_tonar_music_note_to_freq(start_note+bend_amount);
 double amount=target_freq-start_freq;
@@ -159,7 +160,7 @@ int el_tonar_freq_bend(el_tonar* gen, double freq, double bend_amount, double le
 if(!elz_tonar_is_init(gen)) return 0;
 return elz_tonar_sequence(gen, freq+gen->freq_transpose, bend_amount, elz_tonar_music_beat_to_ms(gen->tempo, length), elz_tonar_music_beat_to_ms(gen->tempo, bend_start), elz_tonar_music_beat_to_ms(gen->tempo, bend_length));
 }
-int el_tonar_freq_bend_ms(el_tonar* gen, double freq, int bend_amount, int length, int bend_start, int bend_length)
+int el_tonar_freq_bend_ms(el_tonar* gen, double freq, double bend_amount, int length, int bend_start, int bend_length)
 {
 if(!elz_tonar_is_init(gen)) return 0;
 return elz_tonar_sequence(gen, freq+gen->freq_transpose, bend_amount, length, bend_start, bend_length);
@@ -210,8 +211,9 @@ return el_tonar_seek_ms(gen, elz_tonar_music_beat_to_ms(gen->tempo, position));
 }
 int el_tonar_seek_ms(el_tonar* gen, int position)
 {
+if(!elz_tonar_is_init(gen)) return 0;
 if(position<0) return 0;
-int l=el_tonar_get_length(gen);
+int l=el_tonar_get_length_ms(gen); /* In milliseconds, as the position: the length in beats refused every seek past a few milliseconds. */
 if(position>=l) return 0;
 int frame=elz_tonar_ms_to_frames(gen, position);
 int sample=frame*gen->channels;
@@ -225,7 +227,7 @@ return el_tonar_rewind_ms(gen, elz_tonar_music_beat_to_ms(gen->tempo, amount));
 }
 int el_tonar_rewind_ms(el_tonar* gen, int amount)
 {
-return el_tonar_seek(gen, el_tonar_get_position(gen)-amount);
+return el_tonar_seek_ms(gen, el_tonar_get_position_ms(gen)-amount); /* Milliseconds from milliseconds: taken from the position in beats, every rewind went before the start. */
 }
 int el_tonar_get_sample_rate(el_tonar* gen)
 {
@@ -583,7 +585,7 @@ return 1;
 double elz_tonar_calculate_frequency_at_frame(double start_freq, double target_freq, int current_frame, int bend_start_frame, int bend_end_frame, elz_tonar_bend_curve curve)
 {
 if(current_frame<bend_start_frame) return start_freq;
-if(current_frame>bend_end_frame) return target_freq;
+if(current_frame>=bend_end_frame) return target_freq; /* At its end too, which a bend of no length starts at: 0/0 made the rest of the tone NaN. */
 double t=(double) (current_frame-bend_start_frame)/(bend_end_frame-bend_start_frame);
 if(curve==elz_tonar_bend_linear) return start_freq+(target_freq-start_freq)*t;
 if(curve==elz_tonar_bend_exponential) return start_freq*pow(target_freq/start_freq, t);
@@ -603,22 +605,17 @@ return t*t+t+t+1.0;
 }
 return 0.0;
 }
-double elz_tonar_music_note_to_freq(int note)
+double elz_tonar_music_note_to_freq(double note)
 {
 if(note<0) return 0;
 return 440.0*pow(2, (note-69)/12.0);
 }
-int elz_tonar_music_name_to_note(char* name, int transpose)
+double elz_tonar_music_name_to_note(char* name, double transpose)
 {
 if((!name)||(!*name)) return -1;
 int base=-1;
 /* The letter in either case. <ctype.h> takes an unsigned char's value, which a plain char isn't for a byte of 0x80 or more where char is signed; and any other letter, as a lower case one, was taken as a C less one semitone, so that "c4" played B3. */
 char letter=(char)toupper((unsigned char)name[0]);
-char mod=name[1];
-if(!mod) return -1;
-char octave=name[2];
-if(!octave) octave=mod;
-if(!isdigit((unsigned char)octave)) return -1;
 if(letter=='C') base=0;
 if(letter=='D') base=2;
 if(letter=='E') base=4;
@@ -627,10 +624,24 @@ if(letter=='G') base=7;
 if(letter=='A') base=9;
 if(letter=='B') base=11;
 if(base<0) return -1;
-if(mod=='#') base++;
-if(mod=='b') base--;
-int o=octave-48;
-int note=(((o+1)*12)+base)+transpose;
+/* Then a sharp or flat, and the octave, a whole number that can be negative, to the end of the name: one character was read for each, so that "C10" was C0, "C-1" C1 and "C44" C4. */
+const char* p=name+1;
+if(*p=='#') { base++; p++; }
+else if(*p=='b') { base--; p++; }
+int negative=0;
+if(*p=='-') { negative=1; p++; }
+if(!isdigit((unsigned char)*p)) return -1;
+int o=0;
+while(isdigit((unsigned char)*p))
+{
+o=o*10+(*p-'0');
+if(o>11) return -1; /* Past MIDI's notes whatever the transpose. */
+p++;
+}
+if(*p) return -1;
+if(negative) o=-o;
+/* The transpose in fractions of a semitone too, as note_transpose is set: an int dropped them. */
+double note=(((o+1)*12)+base)+transpose;
 if((note<0)||(note>127)) return -1;
 return note;
 }

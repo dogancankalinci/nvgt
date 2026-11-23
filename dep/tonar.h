@@ -64,10 +64,10 @@ int el_tonar_note(el_tonar* gen, char* note, double length);
 int el_tonar_note_ms(el_tonar* gen, char* note, int ms);
 int el_tonar_freq(el_tonar* gen, double freq, double length);
 int el_tonar_freq_ms(el_tonar* gen, double freq, int ms);
-int el_tonar_note_bend(el_tonar* gen, char* note, int bend_amount, double length, double bend_start, double bend_length);
-int el_tonar_note_bend_ms(el_tonar* gen, char* note, int bend_amount, int length, int bend_start, int bend_length);
+int el_tonar_note_bend(el_tonar* gen, char* note, double bend_amount, double length, double bend_start, double bend_length);
+int el_tonar_note_bend_ms(el_tonar* gen, char* note, double bend_amount, int length, int bend_start, int bend_length);
 int el_tonar_freq_bend(el_tonar* gen, double freq, double bend_amount, double length, double bend_start, double bend_length);
-int el_tonar_freq_bend_ms(el_tonar* gen, double freq, int bend_amount, int length, int bend_start, int bend_length);
+int el_tonar_freq_bend_ms(el_tonar* gen, double freq, double bend_amount, int length, int bend_start, int bend_length);
 int el_tonar_rest(el_tonar* gen, double length);
 int el_tonar_rest_ms(el_tonar* gen, int ms);
 double el_tonar_get_length(el_tonar* gen);
@@ -141,8 +141,8 @@ int elz_tonar_adjust_length(el_tonar* gen, int samples);
 double elz_tonar_calculate_frequency_at_frame(double start_freq, double target_freq, int current_frame, int bend_start_frame, int bend_end_frame, elz_tonar_bend_curve curve);
 double elz_tonar_poly_blep(double t, double dt);
 
-double elz_tonar_music_note_to_freq(int note);
-int elz_tonar_music_name_to_note(char* name, int transpose);
+double elz_tonar_music_note_to_freq(double note);
+double elz_tonar_music_name_to_note(char* name, double transpose);
 int elz_tonar_music_beat_to_ms(double tempo, double beat);
 double elz_tonar_music_ms_to_beat(double tempo, int ms);
 

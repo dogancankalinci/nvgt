@@ -19,6 +19,8 @@
 #include <memory>
 #include <angelscript.h>
 #include <scriptarray.h>
+#include <Poco/Exception.h>
+#include <Poco/FileStream.h>
 #include <Poco/Format.h>
 #include "sound.h"
 #include "nvgt.h" // g_ScriptEngine
@@ -41,10 +43,8 @@ void tone_synth::Release() {
 		delete this;
 	}
 }
-void tone_synth::reset() {
+void tone_synth::reset() { // Back to a new tone_synth's settings, a sine wave and no silent output: it set a sawtooth wave and allowed silence, settings no new object had.
 	el_tonar_reset(gen);
-	el_tonar_set_waveform(gen, 3);
-	el_tonar_set_allow_silence(gen, 1);
 }
 void tone_synth::set_waveform(int type) {
 	int real_type = bgt_to_tonar_waveform(type);
@@ -52,7 +52,13 @@ void tone_synth::set_waveform(int type) {
 	el_tonar_set_waveform(gen, real_type);
 }
 int tone_synth::get_waveform() {
-	return bgt_to_tonar_waveform(el_tonar_get_waveform(gen));
+	switch (el_tonar_get_waveform(gen)) { // tonar's numbering back to BGT's, the inverse of bgt_to_tonar_waveform(): mapped the same way, set values read back as others.
+		case 3: return 1;
+		case 2: return 2;
+		case 0: return 3;
+		case 1: return 4;
+	}
+	return -1;
 }
 void tone_synth::set_volume(double db) {
 	el_tonar_set_volume(gen, db);
@@ -99,10 +105,10 @@ bool tone_synth::note(std::string note, double length) {
 bool tone_synth::note_ms(std::string note, int ms) {
 	return el_tonar_note_ms(gen, const_cast<char*> (note.c_str()), ms)? true: false;
 }
-bool tone_synth::note_bend(std::string note, int bend_amount, double length, double bend_start, double bend_length) {
+bool tone_synth::note_bend(std::string note, double bend_amount, double length, double bend_start, double bend_length) {
 	return el_tonar_note_bend(gen, const_cast<char*> (note.c_str()), bend_amount, length, bend_start, bend_length)? true: false;
 }
-bool tone_synth::note_bend_ms(std::string note, int bend_amount, int length, int bend_start, int bend_length) {
+bool tone_synth::note_bend_ms(std::string note, double bend_amount, int length, int bend_start, int bend_length) {
 	return el_tonar_note_bend_ms(gen, const_cast<char*> (note.c_str()), bend_amount, length, bend_start, bend_length)? true: false;
 }
 bool tone_synth::freq(double freq, double length) {
@@ -111,10 +117,10 @@ bool tone_synth::freq(double freq, double length) {
 bool tone_synth::freq_ms(double freq, int ms) {
 	return el_tonar_freq_ms(gen, freq, ms)? true: false;
 }
-bool tone_synth::freq_bend(double freq, int bend_amount, double length, double bend_start, double bend_length) {
+bool tone_synth::freq_bend(double freq, double bend_amount, double length, double bend_start, double bend_length) {
 	return el_tonar_freq_bend(gen, freq, bend_amount, length, bend_start, bend_length)? true: false;
 }
-bool tone_synth::freq_bend_ms(double freq, int bend_amount, int length, int bend_start, int bend_length) {
+bool tone_synth::freq_bend_ms(double freq, double bend_amount, int length, int bend_start, int bend_length) {
 	return el_tonar_freq_bend_ms(gen, freq, bend_amount, length, bend_start, bend_length)? true: false;
 }
 bool tone_synth::rest(double length) {
@@ -186,8 +192,20 @@ CScriptArray* tone_synth::write_samples() {
 	}
 	return arr;
 }
+// Written through Poco, which opens a UTF-8 name as it is on every platform: tonar's fopen() took it in the Windows ANSI code page, writing a file of another name, and didn't check the write.
 bool tone_synth::generate_file(const std::string& filename) {
-	return el_tonar_output_file(gen, const_cast<char*> (filename.c_str()))? true: false;
+	const int size = el_tonar_output_buffer_size(gen);
+	if (size <= 0 || filename.empty()) return false;
+	std::unique_ptr<char[]> data(new char[(size_t)size + 44]); // tonar's header, then its samples, as el_tonar_output_file() lays them out.
+	if (!elz_tonar_output_wave_header(gen, data.get(), 44, size) || !el_tonar_output_buffer(gen, data.get() + 44, size)) return false;
+	try {
+		Poco::FileOutputStream out(filename, std::ios::out | std::ios::binary | std::ios::trunc);
+		out.write(data.get(), (std::streamsize)size + 44);
+		out.close();
+		return out.good();
+	} catch (const Poco::Exception&) {
+		return false;
+	}
 }
 int tone_synth::bgt_to_tonar_waveform(int type) {
 	if (type == 1) return 3;
@@ -230,12 +248,12 @@ void RegisterScriptTonesynth(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("tone_synth", "bool set_edge_fades(int start, int end)", asMETHOD(tone_synth, set_edge_fades), asCALL_THISCALL);
 	engine->RegisterObjectMethod("tone_synth", "bool note(string note, double length)", asMETHOD(tone_synth, note), asCALL_THISCALL);
 	engine->RegisterObjectMethod("tone_synth", "bool note_ms(string note, int ms)", asMETHOD(tone_synth, note_ms), asCALL_THISCALL);
-	engine->RegisterObjectMethod("tone_synth", "bool note_bend(string note, int bend_amount, double length, double bend_start, double bend_length)", asMETHOD(tone_synth, note_bend), asCALL_THISCALL);
-	engine->RegisterObjectMethod("tone_synth", "bool note_bend_ms(string note, int bend_amount, int length, int bend_start, int bend_length)", asMETHOD(tone_synth, note_bend_ms), asCALL_THISCALL);
+	engine->RegisterObjectMethod("tone_synth", "bool note_bend(string note, double bend_amount, double length, double bend_start, double bend_length)", asMETHOD(tone_synth, note_bend), asCALL_THISCALL);
+	engine->RegisterObjectMethod("tone_synth", "bool note_bend_ms(string note, double bend_amount, int length, int bend_start, int bend_length)", asMETHOD(tone_synth, note_bend_ms), asCALL_THISCALL);
 	engine->RegisterObjectMethod("tone_synth", "bool freq(double freq, double length)", asMETHOD(tone_synth, freq), asCALL_THISCALL);
 	engine->RegisterObjectMethod("tone_synth", "bool freq_ms(double freq, int ms)", asMETHOD(tone_synth, freq_ms), asCALL_THISCALL);
-	engine->RegisterObjectMethod("tone_synth", "bool freq_bend(double freq, int bend_amount, double length, double bend_start, double bend_length)", asMETHOD(tone_synth, freq_bend), asCALL_THISCALL);
-	engine->RegisterObjectMethod("tone_synth", "bool freq_bend_ms(double freq, int bend_amount, int length, int bend_start, int bend_length)", asMETHOD(tone_synth, freq_bend_ms), asCALL_THISCALL);
+	engine->RegisterObjectMethod("tone_synth", "bool freq_bend(double freq, double bend_amount, double length, double bend_start, double bend_length)", asMETHOD(tone_synth, freq_bend), asCALL_THISCALL);
+	engine->RegisterObjectMethod("tone_synth", "bool freq_bend_ms(double freq, double bend_amount, int length, int bend_start, int bend_length)", asMETHOD(tone_synth, freq_bend_ms), asCALL_THISCALL);
 	engine->RegisterObjectMethod("tone_synth", "bool rest(double length)", asMETHOD(tone_synth, rest), asCALL_THISCALL);
 	engine->RegisterObjectMethod("tone_synth", "bool rest_ms(int ms)", asMETHOD(tone_synth, rest_ms), asCALL_THISCALL);
 	engine->RegisterObjectMethod("tone_synth", "int get_sample_rate() property", asMETHOD(tone_synth, get_sample_rate), asCALL_THISCALL);

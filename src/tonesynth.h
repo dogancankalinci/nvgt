@@ -51,12 +51,12 @@ public:
 	double get_freq_transpose();
 	bool note(std::string note, double length);
 	bool note_ms(std::string note, int ms);
-	bool note_bend(std::string note, int bend_amount, double length, double bend_start, double bend_length);
-	bool note_bend_ms(std::string note, int bend_amount, int length, int bend_start, int bend_length);
+	bool note_bend(std::string note, double bend_amount, double length, double bend_start, double bend_length);
+	bool note_bend_ms(std::string note, double bend_amount, int length, int bend_start, int bend_length);
 	bool freq(double freq, double length);
 	bool freq_ms(double freq, int ms);
-	bool freq_bend(double freq, int bend_amount, double length, double bend_start, double bend_length);
-	bool freq_bend_ms(double freq, int bend_amount, int length, int bend_start, int bend_length);
+	bool freq_bend(double freq, double bend_amount, double length, double bend_start, double bend_length);
+	bool freq_bend_ms(double freq, double bend_amount, int length, int bend_start, int bend_length);
 	bool rest(double length);
 	bool rest_ms(int ms);
 	double get_length();
