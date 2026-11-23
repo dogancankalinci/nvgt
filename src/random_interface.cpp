@@ -112,6 +112,8 @@ public:
 		return c.run() ? c.ctx->GetReturnQWord() : 0;
 	}
 
+	// A call that doesn't finish (the generator raised an exception, or exit() was called) gives min, as a generator without the method
+	// does: it gave 0, which random(1, 6) and the like can't give otherwise.
 	int32 range(int32 min, int32 max) override {
 		if (!rangeFunc) return min;
 		running hold(this);
@@ -120,7 +122,7 @@ public:
 			c.ctx->SetArgDWord(0, min);
 			c.ctx->SetArgDWord(1, max);
 		}
-		return c.run() ? c.ctx->GetReturnDWord() : 0;
+		return c.run() ? c.ctx->GetReturnDWord() : min;
 	}
 
 	int64 range64(int64 min, int64 max) override {
@@ -131,7 +133,7 @@ public:
 			c.ctx->SetArgQWord(0, min);
 			c.ctx->SetArgQWord(1, max);
 		}
-		return c.run() ? c.ctx->GetReturnQWord() : 0;
+		return c.run() ? c.ctx->GetReturnQWord() : min; // see range()
 	}
 
 	// The interface's next_bool() and next_character(), which every random_generator implements, were looked up and never called:
