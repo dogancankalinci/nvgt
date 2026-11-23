@@ -152,6 +152,44 @@ bool Print::PrintAddonTypes(std::ostream & dst, void const *objPtr, int typeId, 
     return false;
 }
 
+// Prints an object (not a handle) through its string conversion, opImplConv() or else opConv(), if its type has one; false if not or
+// if the conversion didn't finish.
+static bool PrintStringConversion(std::ostream & dst, void const* objPtr, asITypeInfo* typeInfo, asIScriptEngine* engine)
+{
+	// Check if the object has a string conversion method
+	auto* func = typeInfo->GetMethodByDecl("string opImplConv() const");
+	if (!func) {
+		func = typeInfo->GetMethodByDecl("string opConv() const");
+	}
+
+	if (func) {
+		// Need to create a new context or save the current state
+		asIScriptContext* callCtx = engine->RequestContext();
+		// ALTERED: the object is held while its conversion runs, as that can be script code, which can take it out of the
+		// array or dictionary holding it and free it in the middle of its own call. Only an object whose type counts
+		// references (not a value type, nor a scoped or NOCOUNT one) can be held.
+		bool hold = callCtx && (typeInfo->GetFlags() & asOBJ_REF) && !(typeInfo->GetFlags() & (asOBJ_NOCOUNT | asOBJ_SCOPED));
+		if (hold) engine->AddRefScriptObject(const_cast<void*>(objPtr), typeInfo);
+		if (callCtx) {
+			// Call the string conversion method
+			callCtx->Prepare(func);
+			callCtx->SetObject(const_cast<void*>(objPtr));
+			if (callCtx->Execute() == asEXECUTION_FINISHED) {
+				auto strPtr = (std::string*)callCtx->GetReturnObject();
+				if (strPtr) {
+					dst << *strPtr;
+					engine->ReturnContext(callCtx);
+					if (hold) engine->ReleaseScriptObject(const_cast<void*>(objPtr), typeInfo);
+					return true;
+				}
+			}
+			engine->ReturnContext(callCtx);
+		}
+		if (hold) engine->ReleaseScriptObject(const_cast<void*>(objPtr), typeInfo);
+	}
+	return false;
+}
+
 void Print::PrintTemplate(std::ostream & dst, void const* objPtr, int typeId, int depth)
 {
     switch(typeId)
@@ -238,9 +276,13 @@ void Print::PrintTemplate(std::ostream & dst, void const* objPtr, int typeId, in
 
         // ALTERED: a script object ends here. It went on to the end of the function, which printed "UNKNOWN" right after it
         // ("C(0x...)UNKNOWN", "@C(0x...)UNKNOWN" for a handle); a null handle is printed as null, as a registered type's is.
+        // ALTERED: a script class with a string conversion is printed through it, as a registered type is (its type name and address
+        // were printed); the object a handle points to is converted, not the handle.
+        void const* obj = (typeId & asTYPEID_OBJHANDLE) ? *(void* const*)objPtr : objPtr;
+        if(obj && PrintStringConversion(dst, obj, typeInfo, engine))
+            return;
         if(typeId & asTYPEID_OBJHANDLE)
         {
-            void const* obj = *(void* const*)objPtr;
             if(!obj)
                 dst << "null";
             else
@@ -272,37 +314,8 @@ void Print::PrintTemplate(std::ostream & dst, void const* objPtr, int typeId, in
                 return;
         }
 
-	// Check if the object has a string conversion method
-	auto* func = typeInfo->GetMethodByDecl("string opImplConv() const");
-	if (!func) {
-		func = typeInfo->GetMethodByDecl("string opConv() const");
-	}
-
-	if (func) {
-		// Need to create a new context or save the current state
-		asIScriptContext* callCtx = engine->RequestContext();
-		// ALTERED: the object is held while its conversion runs, as that can be script code, which can take it out of the
-		// array or dictionary holding it and free it in the middle of its own call. Only an object whose type counts
-		// references (not a value type, nor a scoped or NOCOUNT one) can be held.
-		bool hold = callCtx && (typeInfo->GetFlags() & asOBJ_REF) && !(typeInfo->GetFlags() & (asOBJ_NOCOUNT | asOBJ_SCOPED));
-		if (hold) engine->AddRefScriptObject(const_cast<void*>(objPtr), typeInfo);
-		if (callCtx) {
-			// Call the string conversion method
-			callCtx->Prepare(func);
-			callCtx->SetObject(const_cast<void*>(objPtr));
-			if (callCtx->Execute() == asEXECUTION_FINISHED) {
-				auto strPtr = (std::string*)callCtx->GetReturnObject();
-				if (strPtr) {
-					dst << *strPtr;
-					engine->ReturnContext(callCtx);
-					if (hold) engine->ReleaseScriptObject(const_cast<void*>(objPtr), typeInfo);
-					return;
-				}
-			}
-			engine->ReturnContext(callCtx);
-		}
-		if (hold) engine->ReleaseScriptObject(const_cast<void*>(objPtr), typeInfo);
-	}
+	if (PrintStringConversion(dst, objPtr, typeInfo, engine))
+		return;
 
         dst << "RegisteredObject";
 
