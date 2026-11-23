@@ -146,9 +146,9 @@ static string StringJoin(const CScriptArray &array, const string &delim, int sta
 	int size = array.GetSize();
 	if (start < 0 || start >= size) return "";
 	if (count < -1 || count == 0) return "";
-	int end = start + count;
-	if (end < start) end = size;
-	if(end > size) end = size;
+	// ALTERED: a count reaching past the end is measured against what is left, not added to start: start + count overflowed (undefined) for a
+	// count near INT_MAX, and gcc's code then joined elements past the end of the array (join(a, ",", 1, 2147483647) read beyond it).
+	int end = (count == -1 || count >= size - start) ? size : start + count;
 	int n = start;
 	for (n = start; n < end - 1; n++)
 	{
@@ -183,17 +183,18 @@ static void StringJoin_Generic(asIScriptGeneric *gen)
 // string string::slice(int start = 0, int end = 0) const
 static string StringSlice(int start, int end, const string &str)
 {
-	asUINT size = str.size();
-	if (start < 0)
-		start = size + start;
-	if (end <= 0)
-		end = size + end;
-	if (end >= 0 && asUINT(end) >= size)
-		end = size;
-	int count = end - start;
-	if (start < 0 || count <= 0 || start >= size)
+	// ALTERED: resolved in 64 bits. As ints, end - start overflowed (undefined) for bounds near INT_MIN and INT_MAX, and the size of a
+	// string of 2 GB or more didn't fit.
+	long long size = (long long)str.size(), s = start, e = end;
+	if (s < 0)
+		s += size;
+	if (e <= 0)
+		e += size;
+	if (e > size)
+		e = size;
+	if (s < 0 || s >= size || e <= s)
 		return "";
-	return str.substr(start, count);
+	return str.substr((size_t)s, (size_t)(e - s));
 }
 
 // This function replaces a range of bytes(start, count) with a string of text.
