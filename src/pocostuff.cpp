@@ -147,7 +147,10 @@ bool string_is(std::string* str, const std::string& encoding, bool(x(int))) {
 	TextIterator it(*str, *enc);
 	TextIterator end(*str);
 	while (it != end) {
-		if (!x(*it)) return false;
+		// A byte sequence that isn't a character of the encoding comes as -1, which is none of these: Poco's Unicode::properties() refuses
+		// only values past the last code point, and looked -1 up in PCRE2's tables at the index before the first one (out of bounds; what
+		// it found there decided the answer).
+		if (*it < 0 || !x(*it)) return false;
 		++it;
 	}
 	return true;

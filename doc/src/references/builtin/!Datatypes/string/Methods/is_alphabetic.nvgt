@@ -7,7 +7,7 @@
 		bool: true if the input string contains only alphabetic characters, false otherwise.
 	## Remarks:
 		This function only returns true if the string contains only alphabetical characters in the given encoding. If a single other non-alphabetical character is encountered, this function will return false.
-		If this function is called on a string that contains data that is not in the specified encoding, the results are undefined.
+		If the string holds bytes that are not a character of the given encoding (text that is not valid UTF-8, for example), this function returns false.
 */
 
 // example:
