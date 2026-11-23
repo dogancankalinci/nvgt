@@ -353,6 +353,19 @@ static float rnd_internal_float_normalized_from_u32( RND_U32 value )
     }
 
 
+// ALTERED: a range of more than 2^23 values was scaled by the float that nextf() makes of 23 of the random bits, so only 2^23 of its values
+// could come out and the others never did (random(100000000, 999999999) gave one value in 107, evenly spaced, and random(INT_MIN, INT_MAX)
+// nothing above 2147483136). Such a range takes the same 32 random bits in integer arithmetic. A smaller one is scaled as before, so that
+// a seeded generator still gives the numbers it gave for it.
+static int rnd_internal_range( RND_U32 bits, int min, long long range )
+    {
+    long long value;
+    if( range <= ( 1LL << 23 ) ) value = (long long) ( rnd_internal_float_normalized_from_u32( bits ) * range );
+    else value = (long long) ( ( (RND_U64) bits * (RND_U64) range ) >> 32 );
+    return (int) ( min + value );
+    }
+
+
 static RND_U32 rnd_internal_murmur3_avalanche32( RND_U32 h )
     {
     h ^= h >> 16;
@@ -407,8 +420,7 @@ int rnd_pcg_range( rnd_pcg_t* pcg, int min, int max )
     {
     long long const range = ( (long long) max - min ) + 1;
     if( range <= 0 ) return min;
-    long long const value = (long long) ( rnd_pcg_nextf( pcg ) * range );
-    return (int) ( min + value ); 
+    return rnd_internal_range( rnd_pcg_next( pcg ), min, range );
     }
 
 
@@ -448,8 +460,7 @@ int rnd_well_range( rnd_well_t* well, int min, int max )
     {
     long long const range = ( (long long) max - min ) + 1;
     if( range <= 0 ) return min;
-    long long const value = (long long) ( rnd_well_nextf( well ) * range );
-    return (int) ( min + value ); 
+    return rnd_internal_range( rnd_well_next( well ), min, range );
     }
 
 
@@ -480,8 +491,7 @@ int rnd_gamerand_range( rnd_gamerand_t* gamerand, int min, int max )
     {
     long long const range = ( (long long) max - min ) + 1;
     if( range <= 0 ) return min;
-    long long const value = (long long) ( rnd_gamerand_nextf( gamerand ) * range );
-    return (int) ( min + value ); 
+    return rnd_internal_range( rnd_gamerand_next( gamerand ), min, range );
     }
 
 
@@ -517,8 +527,7 @@ int rnd_xorshift_range( rnd_xorshift_t* xorshift, int min, int max )
     {
     long long const range = ( (long long) max - min ) + 1;
     if( range <= 0 ) return min;
-    long long const value = (long long) ( rnd_xorshift_nextf( xorshift ) * range );
-    return (int) ( min + value ); 
+    return rnd_internal_range( (RND_U32)( rnd_xorshift_next( xorshift ) >> 32 ), min, range );
    }
 
 
