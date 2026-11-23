@@ -5504,7 +5504,27 @@ public:
 		track_shape(false);
 		try {
 			close();
+			// A spatializer given since the sound closed, as by set_3d_panner() or hrtf, which close() keeps for a sound with nothing loaded, as for the load that follows: left to ~mixer_impl(), it was taken apart after this destructor, while the engine's audio thread still asked the half-destroyed sound for its parameters.
+			let_go_of_spatializer();
 		} catch (...) {} // Out of memory closing it, as reserving its reap: what close() didn't get to is left, rather than the program ended from a destructor.
+	}
+	// Takes the spatializer out of the chain and lets go of it, as close() does for a loaded sound and the destructor for any.
+	void let_go_of_spatializer() {
+		if (!spatializer) return;
+		// Not under this sound's lock, which no chain's lock is taken inside: forgetting the mixer takes the spatializer's, and taking it out of the chain rewires the chains around it, and each of these, like letting go of the spatializer itself, can let go of the last reference to a mixer, such as one a reverb3d made or one the script pointed a chain at. A mixer's destructor takes g_shaped_mixers_mutex, which a listener's move holds while it waits for this sound's lock.
+		// The spatializer forgets this sound before the sound lets go of it, so that it stops asking the sound for its parameters first.
+		audio_spatializer *forgotten = spatializer;
+		forgotten->forget_mixer();
+		{
+			std::lock_guard<std::recursive_mutex> topology(g_audio_topology_mutex); // A loop check walking mixers reads this spatializer (see mixer_reaches()).
+			unique_lock<mutex> lock(spatialization_params_mutex);
+			spatializer = nullptr;
+		}
+		try {
+			node_chain->remove_node(forgotten);
+		} catch (...) {} // Out of memory rewiring around it: left in the chain, which this sound still holds, rather than thrown out of close() before the sound is off the graph, which a destructor's close() then left attached as its parts were freed.
+		drop_node_hold(static_cast<audio_node*>(this), forgotten);
+		forgotten->release();
 	}
 	inline void release() override {
 		if (asAtomicDec(refcount) < 1) {
@@ -6090,22 +6110,7 @@ public:
 			load_completed.clear(); // As for a sound closed after loading: a load that failed left it set.
 			return nothing_loaded();
 		}
-		if (spatializer) {
-			// Not under this sound's lock, which no chain's lock is taken inside: forgetting the mixer takes the spatializer's, and taking it out of the chain rewires the chains around it, and each of these, like letting go of the spatializer itself, can let go of the last reference to a mixer, such as one a reverb3d made or one the script pointed a chain at. A mixer's destructor takes g_shaped_mixers_mutex, which a listener's move holds while it waits for this sound's lock.
-			// The spatializer forgets this sound before the sound lets go of it, so that it stops asking the sound for its parameters first.
-			audio_spatializer *forgotten = spatializer;
-			forgotten->forget_mixer();
-			{
-				std::lock_guard<std::recursive_mutex> topology(g_audio_topology_mutex); // A loop check walking mixers reads this spatializer (see mixer_reaches()).
-				unique_lock<mutex> lock(spatialization_params_mutex);
-				spatializer = nullptr;
-			}
-			try {
-				node_chain->remove_node(forgotten);
-			} catch (...) {} // Out of memory rewiring around it: left in the chain, which this sound still holds, rather than thrown out of close() before the sound is off the graph, which a destructor's close() then left attached as its parts were freed.
-			drop_node_hold(static_cast<audio_node*>(this), forgotten);
-			forgotten->release();
-		}
+		let_go_of_spatializer();
 		// Taken out of snd under the lock a listener's move and the audio thread read snd under, so neither reads the sound while it is freed.
 		held_sound_ptr closing;
 		{
