@@ -286,12 +286,16 @@ static std::vector<map_area*> snapshot_areas(const std::vector<map_area*>& areas
 static void release_snapshot(std::vector<map_area*>& copy) {
 	for (map_area* a : copy) a->release();
 }
-int map_frame::add_areas_for_point(std::vector<map_area*>& local_areas, float x, float y, float z, float d, int p, asIScriptFunction* filter_callback, asINT64 flags, asINT64 excluded_flags) {
+// raise_priority: only areas of at least the priority of the last one found are taken, which is all get_area() needs for the area on top.
+// Without it every area at the point is: get_areas() and get_area() given a priority went by it too (the reset of p between frames
+// didn't help within a frame), so an area listed after one of a higher priority in its frame was left out: of a priority 1 and then a
+// priority 5 area over a priority 0 one added last, get_areas() gave the first two, and get_area(x, y, z, 1) none at all.
+int map_frame::add_areas_for_point(std::vector<map_area*>& local_areas, float x, float y, float z, float d, int p, asIScriptFunction* filter_callback, asINT64 flags, asINT64 excluded_flags, bool raise_priority) {
 	std::vector<map_area*> snap = snapshot_areas(areas);
 	for (map_area* a : snap) {
 		// framed is checked after the callback, which may have removed this area from the map.
 		if (a->priority >= p && a->is_in_area(x, y, z, d, filter_callback, flags, excluded_flags) && a->framed) {
-			p = a->priority;
+			if (raise_priority) p = a->priority;
 			a->add_ref(); // the result list owns a reference; the callers below release it
 			local_areas.push_back(a);
 		}
@@ -422,7 +426,7 @@ void coordinate_map::get_areas(float minx, float maxx, float miny, float maxy, f
 		for (int i = total_frame_sizes - 1; i >= 0; i--) {
 			map_frame* f = get_frame(minx, miny, minz, i, false);
 			if (!f) continue;
-			p = f->add_areas_for_point(local_areas, minx, miny, minz, d, p, filter_callback, flags, excluded_flags);
+			p = f->add_areas_for_point(local_areas, minx, miny, minz, d, p, filter_callback, flags, excluded_flags, priority_check);
 			if (!priority_check) p = -1;
 		}
 	} else {

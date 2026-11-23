@@ -70,7 +70,7 @@ class map_frame {
 public:
 	std::vector<map_area*> areas;
 	int size;
-	int add_areas_for_point(std::vector<map_area*>& local_areas, float x, float y, float z, float d = 0.0, int p = -1, asIScriptFunction* filter_callback = NULL, asINT64 flags = 0, asINT64 excluded_flags = 0);
+	int add_areas_for_point(std::vector<map_area*>& local_areas, float x, float y, float z, float d = 0.0, int p = -1, asIScriptFunction* filter_callback = NULL, asINT64 flags = 0, asINT64 excluded_flags = 0, bool raise_priority = true);
 	int add_areas_for_range(std::vector<map_area*>& local_areas, std::unordered_set<map_area*>& taken, float minx, float maxx, float miny, float maxy, float minz, float maxz, float d = 0.0, int p = -1, asIScriptFunction* filter_callback = NULL, asINT64 flags = 0, asINT64 excluded_flags = 0);
 	void reset(std::vector<map_area*>& held);
 };
