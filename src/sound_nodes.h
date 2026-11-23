@@ -30,10 +30,10 @@ extern std::recursive_mutex g_node_graph_mutex;
 // A group of an engine through which a node of another sample rate goes into one of its nodes, resampled from that rate to the engine's (see audio_node_impl::attach_output_bus()). Made unattached, of the given channels in and out, under the graph lock, as it is let go of.
 ma_sound* rate_bridge_create(audio_engine* engine, unsigned int channels, unsigned int sample_rate);
 void rate_bridge_destroy(ma_sound* bridge);
-bool engine_read_by_script(const audio_engine* e);
+bool engine_read_by_script(const audio_engine* e); // Under the graph lock: whether a script thread is reading this no-device engine (see audio_engine_impl::read_script()).
 // A chain's endpoint, first or last node, or the node at an index, with a reference the caller lets go of, taken under the chain's lock, which the nodes are let go of after: a script's `@+` handle took its reference once the call had returned, after another thread's remove_node() could free the node.
 enum chain_node_which { chain_node_endpoint, chain_node_first, chain_node_last, chain_node_at };
-audio_node* audio_node_chain_acquire(audio_node_chain* chain, chain_node_which which, unsigned int index); // Under the graph lock: whether a script thread is reading this no-device engine (see audio_engine_impl::read_script()).
+audio_node* audio_node_chain_acquire(audio_node_chain* chain, chain_node_which which, unsigned int index);
 // The references nodes hold to one another outside the graph (see claim_node_hold()), which audio_node_impl::reaches_node() follows with the attachments: appended to out under node_holds_lock(), which is taken after the graph lock and with nothing taken under it.
 std::unique_lock<std::mutex> node_holds_lock();
 void append_node_holds(const audio_node* n, std::vector<audio_node*>& out);

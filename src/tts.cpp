@@ -1358,7 +1358,10 @@ void tts_voice::at_end(void *pUserData, ma_sound *pSound) {
 	tts_voice *voice = live->second;
 	unique_lock<mutex> lock(voice->queue_mtx, try_to_lock);
 	if (!lock.owns_lock() || voice->queue.empty() || voice->queue.front()->get_ma_sound() != pSound) return;
-	voice->advance_queue();
+	// Out of memory moving the queue on, as its finished list grows, leaves it for the script's next call, which moves it on too (see queue_speaking()): thrown out of MiniAudio's callback on the audio thread, it ended the program.
+	try {
+		voice->advance_queue();
+	} catch (...) {}
 }
 ma_result tts_voice::job_proc(ma_job *pJob) {
 	// Held until the voice's queue lock below is released, so the voice can't be destroyed in between.
