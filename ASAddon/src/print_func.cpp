@@ -236,14 +236,21 @@ void Print::PrintTemplate(std::ostream & dst, void const* objPtr, int typeId, in
         if(g_PrintScriptObjectType && g_PrintScriptObjectType(dst, objPtr, typeId, depth))
             return;
 
+        // ALTERED: a script object ends here. It went on to the end of the function, which printed "UNKNOWN" right after it
+        // ("C(0x...)UNKNOWN", "@C(0x...)UNKNOWN" for a handle); a null handle is printed as null, as a registered type's is.
         if(typeId & asTYPEID_OBJHANDLE)
         {
-            dst << "@" << typeInfo->GetName() << "(" <<  *(void**)objPtr << ")";
+            void const* obj = *(void* const*)objPtr;
+            if(!obj)
+                dst << "null";
+            else
+                dst << "@" << typeInfo->GetName() << "(" <<  obj << ")";
         }
         else
         {
             dst << typeInfo->GetName() << "(" <<  objPtr << ")";
         }
+        return;
     }
 
     if(typeId & (asTYPEID_APPOBJECT|asTYPEID_TEMPLATE))
