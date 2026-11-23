@@ -269,7 +269,7 @@ std::string generate_profile(bool reset = true) {
 		if (!results[i]) continue;
 		const char* decl = profiler_decls[results[i]].c_str(); // See profiler_decls.
 		float ms = std::chrono::duration_cast<std::chrono::milliseconds>(profiler_cache[results[i]] - profiler_start).count();
-		float p = (ms / total_ms) * 100.0;
+		float p = total_ms ? (ms / total_ms) * 100.0 : 0.0; // A profile taken within a millisecond of its start has a total of 0 ms, and every share was 0/0, printed as nan.
 		snprintf(text, 4096, "%s: %.0fms (%.3f%%)\r\n", decl, ms, p);
 		output += text;
 	}
