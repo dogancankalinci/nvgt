@@ -7120,17 +7120,44 @@ static mixer_api_lock lock_node_api(audio_node* n) {
 	if (!held) g_soundsystem_last_error = MA_BUSY;
 	return {std::move(lock), held};
 }
+// A refused call's &out results, which AngelScript leaves as they were, as it doesn't initialise them: 0, as the refusal says. Only those of a number or enum type, which a pointer to one that isn't const is.
+template < typename A > static void zero_out_result(A arg) {
+	if constexpr (std::is_pointer_v<A>) {
+		using pointed = std::remove_pointer_t<A>;
+		if constexpr (!std::is_const_v<pointed> && (std::is_arithmetic_v<pointed> || std::is_enum_v<pointed>)) if (arg) *arg = pointed{};
+	}
+}
 // A script's call on a node, under the node's lock, as virtual_call() makes it for other objects.
 template < class T, auto Function, typename ReturnType, typename... Args >
 ReturnType api_call(T *object, Args... args) {
 	if constexpr (std::is_base_of_v<audio_node, T>) {
 		mixer_api_lock lock = lock_node_api(object);
 		if (!lock.held) {
+			(zero_out_result(args), ...);
 			if constexpr (std::is_void_v<ReturnType>) return;
 			else return ReturnType{};
 		}
 		return (object->*Function)(std::forward < Args > (args)...);
 	} else return (object->*Function)(std::forward < Args > (args)...);
+}
+// A property setter whose C++ function returns whether it took the value: registered as AngelScript's void setter, as a property's must be, through this, rather than as the bool function itself, which only worked as the return register was ignored.
+template < class T, auto Function, typename... Args >
+void api_setter(T *object, Args... args) { api_call<T, Function, bool, Args...>(object, args...); }
+// A handle the script gave with `@`, which the call itself lets go of: a refused call lets go of it instead, as it never got to.
+static void let_go_of_given(asIScriptFunction* f) { if (f) f->Release(); }
+static void let_go_of_given(datastream* ds) { if (ds) ds->release(); }
+static void let_go_of_given(audio_data_source* ds) { if (ds) ds->release(); }
+template < typename A > static void let_go_of_given(A) {}
+// api_call() for a call given handles with `@`: refused, as on an audio thread while another thread uses the node, it leaked a delegate and its object, a datastream with its file open, or a source.
+template < class T, auto Function, typename ReturnType, typename... Args >
+ReturnType api_call_given(T *object, Args... args) {
+	mixer_api_lock lock = lock_node_api(object);
+	if (!lock.held) {
+		(let_go_of_given(args), ...);
+		if constexpr (std::is_void_v<ReturnType>) return;
+		else return ReturnType{};
+	}
+	return (object->*Function)(std::forward < Args > (args)...);
 }
 // A getter's object with a reference of the script's own, taken under the node's lock: given with `@+`, AngelScript took its reference once the call had returned, after another thread's setter could let the object go.
 template < class T, auto Function, typename Result >
@@ -7281,7 +7308,7 @@ void RegisterSoundsystemEngine(asIScriptEngine *engine) {
 	engine->RegisterObjectMethod("audio_engine", "bool set_device(int device)", asFUNCTION((api_call < audio_engine, &audio_engine::set_device, bool, int >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_engine", "audio_node@+ get_endpoint() const property", asFUNCTION((api_call < audio_engine, &audio_engine::get_endpoint, audio_node * >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_engine", "float[]@ read(uint64 frame_count)", asFUNCTION((api_call < audio_engine, &audio_engine::read_script, CScriptArray *, unsigned long long >)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("audio_engine", "void set_processing_callback(audio_engine_processing_callback@ cb) property", asFUNCTION((api_call < audio_engine, &audio_engine::set_processing_callback, void, asIScriptFunction*>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("audio_engine", "void set_processing_callback(audio_engine_processing_callback@ cb) property", asFUNCTION((api_call_given < audio_engine, &audio_engine::set_processing_callback, void, asIScriptFunction*>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_engine", "audio_engine_processing_callback@ get_processing_callback() const property", asFUNCTION(engine_processing_callback_script), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_engine", "uint64 get_time_in_frames() const property", asFUNCTION((api_call < audio_engine, &audio_engine::get_time_in_frames, unsigned long long >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_engine", "bool set_time_in_frames(uint64 time_frames)", asFUNCTION((api_call < audio_engine, &audio_engine::set_time_in_frames, bool, unsigned long long >)), asCALL_CDECL_OBJFIRST);
@@ -7323,7 +7350,7 @@ void RegisterSoundsystemDataSources(asIScriptEngine* engine) {
 	RegisterSoundsystemDataSource<audio_decoder>(engine, "audio_decoder");
 	engine->RegisterObjectBehaviour("audio_decoder", asBEHAVE_FACTORY, "audio_decoder@ d(audio_engine@+ engine = sound_default_engine)", asFUNCTION(audio_decoder::create), asCALL_CDECL);
 	engine->RegisterObjectMethod("audio_decoder", "bool open(const string&in filename, const pack_interface@+ pack_file = sound_default_pack, uint sample_rate = 0, uint channels = 0)", asFUNCTION((api_call < audio_decoder, &audio_decoder::open, bool, const string&, const pack_interface*, unsigned int, unsigned int >)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("audio_decoder", "bool open(datastream@ stream, uint sample_rate = 0, uint channels = 0)", asFUNCTION((api_call < audio_decoder, &audio_decoder::open_stream, bool, datastream*, unsigned int, unsigned int >)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("audio_decoder", "bool open(datastream@ stream, uint sample_rate = 0, uint channels = 0)", asFUNCTION((api_call_given < audio_decoder, &audio_decoder::open_stream, bool, datastream*, unsigned int, unsigned int >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_decoder", "bool close()", asFUNCTION((api_call < audio_decoder, &audio_decoder::close, bool >)), asCALL_CDECL_OBJFIRST);
 	RegisterSoundsystemRingBuffer<audio_ring_buffer>(engine, "audio_ring_buffer");
 	engine->RegisterObjectBehaviour("audio_ring_buffer", asBEHAVE_FACTORY, "audio_ring_buffer@ r(uint channels, uint size, audio_engine@+ engine = sound_default_engine)", asFUNCTION(audio_ring_buffer::create), asCALL_CDECL);
@@ -7339,7 +7366,7 @@ template <class T> void RegisterSoundsystemEncoder(asIScriptEngine* engine, cons
 	engine->RegisterObjectMethod(type.c_str(), "uint get_default_open_flags() const property", asFUNCTION((api_call<T, &T::get_default_open_flags, unsigned int>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "bool open(uint sample_rate, uint channels, uint flags = AUDIO_ENCODER_DEFAULTS)", asFUNCTION((api_call<T, &T::open_pull, bool, unsigned int, unsigned int, unsigned int>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "bool open(const string&in filename, uint sample_rate, uint channels, uint flags = AUDIO_ENCODER_DEFAULTS)", asFUNCTION((api_call<T, &T::open_file, bool, const string&, unsigned int, unsigned int, unsigned int>)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "bool open(datastream@ stream, uint sample_rate, uint channels, uint flags = AUDIO_ENCODER_DEFAULTS)", asFUNCTION((api_call<T, &T::open_stream, bool, datastream*, unsigned int, unsigned int, unsigned int>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "bool open(datastream@ stream, uint sample_rate, uint channels, uint flags = AUDIO_ENCODER_DEFAULTS)", asFUNCTION((api_call_given<T, &T::open_stream, bool, datastream*, unsigned int, unsigned int, unsigned int>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "bool close()", asFUNCTION((api_call<T, &T::close, bool>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "bool get_active() const property", asFUNCTION((api_call<T, &T::get_active, bool>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "uint64 get_frames_written() const property", asFUNCTION((api_call<T, &T::get_frames_written, unsigned long long>)), asCALL_CDECL_OBJFIRST);
@@ -7379,21 +7406,21 @@ void RegisterSoundsystemEncoders(asIScriptEngine* engine) {
 	RegisterSoundsystemEncoder<audio_opus_encoder>(engine, "audio_opus_encoder");
 	engine->RegisterObjectBehaviour("audio_opus_encoder", asBEHAVE_FACTORY, "audio_opus_encoder@ e(audio_engine@+ engine = sound_default_engine)", asFUNCTION(audio_opus_encoder::create), asCALL_CDECL);
 	engine->RegisterObjectMethod("audio_opus_encoder", "int get_bitrate() const property", asFUNCTION((api_call<audio_opus_encoder, &audio_opus_encoder::get_bitrate, int>)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("audio_opus_encoder", "void set_bitrate(int bitrate) property", asFUNCTION((api_call<audio_opus_encoder, &audio_opus_encoder::set_bitrate, bool, int>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("audio_opus_encoder", "void set_bitrate(int bitrate) property", asFUNCTION((api_setter<audio_opus_encoder, &audio_opus_encoder::set_bitrate, int>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_opus_encoder", "int get_complexity() const property", asFUNCTION((api_call<audio_opus_encoder, &audio_opus_encoder::get_complexity, int>)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("audio_opus_encoder", "void set_complexity(int complexity) property", asFUNCTION((api_call<audio_opus_encoder, &audio_opus_encoder::set_complexity, bool, int>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("audio_opus_encoder", "void set_complexity(int complexity) property", asFUNCTION((api_setter<audio_opus_encoder, &audio_opus_encoder::set_complexity, int>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_opus_encoder", "int get_signal_type() const property", asFUNCTION((api_call<audio_opus_encoder, &audio_opus_encoder::get_signal_type, int>)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("audio_opus_encoder", "void set_signal_type(int signal_type) property", asFUNCTION((api_call<audio_opus_encoder, &audio_opus_encoder::set_signal_type, bool, int>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("audio_opus_encoder", "void set_signal_type(int signal_type) property", asFUNCTION((api_setter<audio_opus_encoder, &audio_opus_encoder::set_signal_type, int>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_opus_encoder", "int get_application() const property", asFUNCTION((api_call<audio_opus_encoder, &audio_opus_encoder::get_application, int>)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("audio_opus_encoder", "void set_application(int application) property", asFUNCTION((api_call<audio_opus_encoder, &audio_opus_encoder::set_application, bool, int>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("audio_opus_encoder", "void set_application(int application) property", asFUNCTION((api_setter<audio_opus_encoder, &audio_opus_encoder::set_application, int>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_opus_encoder", "int get_packet_loss_percent() const property", asFUNCTION((api_call<audio_opus_encoder, &audio_opus_encoder::get_packet_loss_percent, int>)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("audio_opus_encoder", "void set_packet_loss_percent(int percent) property", asFUNCTION((api_call<audio_opus_encoder, &audio_opus_encoder::set_packet_loss_percent, bool, int>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("audio_opus_encoder", "void set_packet_loss_percent(int percent) property", asFUNCTION((api_setter<audio_opus_encoder, &audio_opus_encoder::set_packet_loss_percent, int>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_opus_encoder", "bool get_vbr() const property", asFUNCTION((api_call<audio_opus_encoder, &audio_opus_encoder::get_vbr, bool>)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("audio_opus_encoder", "void set_vbr(bool enabled) property", asFUNCTION((api_call<audio_opus_encoder, &audio_opus_encoder::set_vbr, bool, bool>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("audio_opus_encoder", "void set_vbr(bool enabled) property", asFUNCTION((api_setter<audio_opus_encoder, &audio_opus_encoder::set_vbr, bool>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_opus_encoder", "bool get_cvbr() const property", asFUNCTION((api_call<audio_opus_encoder, &audio_opus_encoder::get_cvbr, bool>)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("audio_opus_encoder", "void set_cvbr(bool enabled) property", asFUNCTION((api_call<audio_opus_encoder, &audio_opus_encoder::set_cvbr, bool, bool>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("audio_opus_encoder", "void set_cvbr(bool enabled) property", asFUNCTION((api_setter<audio_opus_encoder, &audio_opus_encoder::set_cvbr, bool>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_opus_encoder", "bool get_dtx() const property", asFUNCTION((api_call<audio_opus_encoder, &audio_opus_encoder::get_dtx, bool>)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("audio_opus_encoder", "void set_dtx(bool enabled) property", asFUNCTION((api_call<audio_opus_encoder, &audio_opus_encoder::set_dtx, bool, bool>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("audio_opus_encoder", "void set_dtx(bool enabled) property", asFUNCTION((api_setter<audio_opus_encoder, &audio_opus_encoder::set_dtx, bool>)), asCALL_CDECL_OBJFIRST);
 }
 template<class T> void RegisterSoundsystemMixer(asIScriptEngine *engine, const string &type) {
 	RegisterSoundsystemAudioNode < T > (engine, type);
@@ -7787,7 +7814,7 @@ void RegisterSoundsystem(asIScriptEngine *engine) {
 	engine->RegisterObjectMethod("sound", "bool stream_pcm(const memory_buffer<int>&in data, uint sample_rate = 0, uint channels = 0, uint buffer_size = 0)", asFUNCTION((api_call < sound, &sound::stream_pcm_script_memory_buffer, bool, script_memory_buffer*, unsigned int, unsigned int, unsigned int>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("sound", "bool stream_pcm(const memory_buffer<int16>&in data, uint sample_rate = 0, uint channels = 0, uint buffer_size = 0)", asFUNCTION((api_call < sound, &sound::stream_pcm_script_memory_buffer, bool, script_memory_buffer*, unsigned int, unsigned int, unsigned int>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("sound", "bool stream_pcm(const memory_buffer<uint8>&in data, uint sample_rate = 0, uint channels = 0, uint buffer_size = 0)", asFUNCTION((api_call < sound, &sound::stream_pcm_script_memory_buffer, bool, script_memory_buffer*, unsigned int, unsigned int, unsigned int>)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("sound", "bool open(audio_data_source@ datasource)", asFUNCTION((api_call<sound, &sound::open, bool, audio_data_source*>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("sound", "bool open(audio_data_source@ datasource)", asFUNCTION((api_call_given<sound, &sound::open, bool, audio_data_source*>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("sound", "bool close()", asFUNCTION((api_call < sound, &sound::close, bool >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("sound", "void set_autoclose(bool enabled = true) property", asFUNCTION((api_call < sound, &sound::set_autoclose, void, bool >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("sound", "bool get_autoclose() const property", asFUNCTION((api_call < sound, &sound::get_autoclose, bool >)), asCALL_CDECL_OBJFIRST);
