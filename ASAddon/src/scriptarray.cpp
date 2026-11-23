@@ -2078,24 +2078,34 @@ void CScriptArray::Sort(asUINT startAt, asUINT count, bool asc)
 	}
 	else
 	{
-		// TODO: Use std::sort for primitive types too
-
-		// Insertion sort
-		asBYTE tmp[16];
-		for( int i = start + 1; i < end; i++ )
+		// ALTERED: a bottom-up merge sort of the elements' values, as the sort of objects above does, instead of an insertion sort, whose
+		// time grew with the square of the count: sort_ascending() of 600000 numbers took minutes, which a game sorting a large list sat
+		// frozen in. It is stable as that was, so elements comparing equal (0 and -0, say) keep their order, and like it, it reads and
+		// writes only inside the range whatever the comparisons answer (NaN). The values are numbers, bools or enums, which no script code
+		// copies or compares.
+		size_t n = size_t(end - start), es = size_t(elementSize);
+		std::vector<asBYTE> items(n * es), merged(n * es);
+		memcpy(items.data(), GetArrayItemPointer(start), n * es);
+		for( size_t width = 1; width < n; width *= 2 )
 		{
-			Copy(tmp, GetArrayItemPointer(i));
-
-			int j = i - 1;
-
-			while( j >= start && Less(GetDataPointer(tmp), At(j), asc) )
+			for( size_t lo = 0; lo < n; lo += 2 * width )
 			{
-				Copy(GetArrayItemPointer(j + 1), GetArrayItemPointer(j));
-				j--;
+				size_t mid = lo + width < n ? lo + width : n;
+				size_t hi = lo + 2 * width < n ? lo + 2 * width : n;
+				size_t i = lo, j = mid, k = lo;
+				while( i < mid && j < hi )
+				{
+					bool takeRight = Less(&items[j * es], &items[i * es], asc);
+					memcpy(&merged[k++ * es], takeRight ? &items[j++ * es] : &items[i++ * es], es);
+				}
+				if( i < mid )
+					memcpy(&merged[k * es], &items[i * es], (mid - i) * es), k += mid - i;
+				if( j < hi )
+					memcpy(&merged[k * es], &items[j * es], (hi - j) * es);
 			}
-
-			Copy(GetArrayItemPointer(j + 1), tmp);
+			items.swap(merged);
 		}
+		memcpy(GetArrayItemPointer(start), items.data(), n * es);
 	}
 }
 
