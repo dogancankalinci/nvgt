@@ -584,7 +584,10 @@ audio_node* audio_node_chain_acquire(audio_node_chain* chain, chain_node_which w
 }
 
 static void follow_default_components(); // After audio_spatializer_impl.
+// set_sound_global_hrtf() and sound_set_spatialization(), one thread at a time: each enables and sets the panner, then the attenuator, so that two threads switching HRTF on and off at once could leave one of each as the defaults, and the sounds following them mixed.
+static std::recursive_mutex g_spatialization_change_mutex;
 bool set_global_hrtf(bool enabled) {
+	std::lock_guard<std::recursive_mutex> changing(g_spatialization_change_mutex);
 	// The defaults and the enabled components each time, whatever get_global_hrtf() read before: with one of the defaults changed by hand, or a component disabled, it reads false while the other still positions with HRTF.
 	const bool set = sound_set_spatialization(enabled ? g_audio_hrtf_panner : g_audio_basic_panner, enabled ? g_audio_hrtf_attenuator : g_audio_basic_attenuator);
 	if (set) follow_default_components(); // Those positioned already too, unless given a panner or attenuator of their own.
@@ -1661,6 +1664,7 @@ int g_audio_hrtf_panner = register_audio_panner(hrtf_panner::create, true); // A
 int g_audio_hrtf_attenuator = register_audio_attenuator(hrtf_attenuator::create, true, hrtf_attenuator::attenuation);
 
 bool sound_set_spatialization(int panner, int attenuator, bool disable_previous, bool set_default) {
+	std::lock_guard<std::recursive_mutex> changing(g_spatialization_change_mutex);
 	bool panner_success = false, attenuator_success = false;
 	int prev_panner = g_default_3d_panner, prev_attenuator = g_default_3d_attenuator;
 	auto panner_it = g_audio_panners.find(panner);
