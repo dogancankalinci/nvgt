@@ -2122,7 +2122,10 @@ void CScriptArray::Sort(asIScriptFunction *func, asUINT startAt, asUINT count)
 	if (end > buffer->numElements)
 		end = buffer->numElements;
 
-	if (start >= buffer->numElements)
+	// ALTERED: a start at the end of the array is an empty range, as the count is cut to the elements there are: sort(callback) of an
+	// empty array (start 0, every element) raised "Index out of bounds", while sort_ascending() of one does nothing. Only a start past
+	// the end is out of bounds.
+	if (start > buffer->numElements)
 	{
 		asIScriptContext *ctx = asGetActiveContext();
 
@@ -2132,6 +2135,8 @@ void CScriptArray::Sort(asIScriptFunction *func, asUINT startAt, asUINT count)
 
 		return;
 	}
+	if (end - start < 2)
+		return;
 
 	asIScriptContext *cmpContext = 0;
 	bool isNested = false;
