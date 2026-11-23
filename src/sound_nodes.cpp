@@ -1130,7 +1130,7 @@ class reverb3d_impl : public passthrough_node_impl, public virtual reverb3d {
 	audio_node* reverb;
 	mixer* output_mixer;
 	unique_ptr<reverb3d_attachment_handler> handler;
-	float min_volume, max_volume, max_volume_distance, max_audible_distance, volume_curve;
+	std::atomic<float> min_volume, max_volume, max_volume_distance, max_audible_distance, volume_curve; // Set by the script, read on the audio thread (see get_volume_at()).
 public:
 	reverb3d_impl(audio_engine* e, audio_node* verb, mixer* destination, unique_ptr<reverb3d_attachment_handler> attachment_handler = nullptr) : passthrough_node_impl(e), output_mixer(destination), reverb(nullptr), handler(std::move(attachment_handler)), min_volume(-7), max_volume(-5), max_volume_distance(7), max_audible_distance(60), volume_curve(0.4) {
 		if (output_mixer) output_mixer->duplicate(); // reverb owns its own reference to output_mixer via attach_output_bus below; this is reverb3d_impl's separate reference for get_mixer().
@@ -1354,6 +1354,7 @@ public:
 	void set_volume_curve(float value) override { if (finite_node_values({value})) volume_curve = value; }
 	float get_volume_curve() const override { return volume_curve; }
 	float get_volume_at(float distance) const override {
+		const float min_volume = this->min_volume, max_volume = this->max_volume, max_volume_distance = this->max_volume_distance, max_audible_distance = this->max_audible_distance, volume_curve = this->volume_curve; // Read once each: another thread's set changed them between the reads below.
 		float v;
 		// Past the audible distance, the quietest send, told from the distance as given: clamped to the audible distance first, a sound past it took the loudest range whenever that reached so far, as with max_volume_distance at or past the audible distance, sent the loudest at every distance.
 		if (!(distance <= max_audible_distance)) v = -60;
