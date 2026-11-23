@@ -18,6 +18,6 @@ Find the cheapest path between two tiles.
 array<vector>@: the tiles of the path in order, not including the start but including the destination, or an empty array if there is no path.
 
 ## Remarks:
-There is no path when the start or end can't be crossed, every route is blocked, the destination is beyond search_range, no callback has been set, or a search is already in progress. total_cost holds the cost of the path found.
+There is no path when the start or end can't be crossed, every route is blocked, the destination is beyond search_range, no callback has been set, or a search is already in progress; the array is also empty when the start is the destination. total_cost holds the cost of the path found.
 
-The 2D overload, which takes no z coordinates and a string of user data, is for code ported from BGT and only works with a legacy callback.
+The 2D overload, which takes no z coordinates and a string of user data, is for code ported from BGT and only works with a legacy callback: with any other callback, or none, it finds no path.

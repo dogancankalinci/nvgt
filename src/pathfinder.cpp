@@ -314,8 +314,13 @@ CScriptArray* pathfinder::find(int start_x, int start_y, int start_z, int end_x,
 	return array;
 }
 CScriptArray* pathfinder::find_legacy(int start_x, int start_y, int parent_x, int parent_y, string user_data) {
-	if (callback_mode != CALLBACK_LEGACY)
-		return nullptr;
+	// No path without a legacy callback (none set, or another kind), as find() gives for no callback: an empty array, as documented. It was
+	// null, which the script's path.length() then raised a null pointer exception on.
+	if (callback_mode != CALLBACK_LEGACY) {
+		if (!solving) total_cost = 0; // as find() leaves it when no path is found (but not under a search going on)
+		if (!VectorArrayType) VectorArrayType = get_array_type("array<vector>");
+		return CScriptArray::Create(VectorArrayType);
+	}
 	if (StringType == nullptr)
 		StringType = get_array_type("string");
 	CScriptAny* ud = new CScriptAny(g_ScriptEngine);
