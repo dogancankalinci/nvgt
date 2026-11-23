@@ -131,9 +131,9 @@ std::atomic<bool> g_ASDebugBreak(false); // If the angelscript debugger is in us
 asIScriptEngine* g_ScriptEngine = NULL;
 std::string g_command_line;
 int g_LastError;
-int g_retcode = 0;
+std::atomic<int> g_retcode{0};
 bool g_initialising_globals = true;
-bool g_shutting_down = false;
+std::atomic<bool> g_shutting_down{false};
 std::string g_stub = "";
 bool g_script_uses_iap = false;
 bool g_script_uses_microphone = false;
@@ -1110,7 +1110,7 @@ bool ExecuteScript(asIScriptEngine *engine, const string &scriptFile, int &exit_
 		}
 		if (!ctx->GetReturnByte()) {
 			engine->ReturnContext(ctx);
-			exit_code = g_exit_called ? g_retcode : 0; // exit() called by preglobals() before it returned false, which it can't abort (see below): its code, as on the other paths.
+			exit_code = g_exit_called ? g_retcode.load() : 0; // exit() called by preglobals() before it returned false, which it can't abort (see below): its code, as on the other paths.
 			return true;
 		}
 		engine->ReturnContext(ctx);

@@ -11,6 +11,7 @@
 */
 
 #pragma once
+#include <atomic>
 #include <string>
 #include "nvgt_plugin.h" // subsystems
 
@@ -18,9 +19,9 @@ class asIScriptEngine;
 extern bool g_debug;
 extern asIScriptEngine* g_ScriptEngine;
 extern int g_LastError;
-extern int g_retcode;
+extern std::atomic<int> g_retcode; // Atomic, as g_shutting_down: exit() sets both on whichever thread calls it, and other threads read them.
 extern bool g_initialising_globals;
-extern bool g_shutting_down;
+extern std::atomic<bool> g_shutting_down;
 extern std::string g_stub;
 extern std::string g_scriptpath;
 extern std::string g_platform;
