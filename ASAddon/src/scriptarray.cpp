@@ -2161,52 +2161,108 @@ void CScriptArray::Sort(asIScriptFunction *func, asUINT startAt, asUINT count)
 	//       For example, the callback resizes the array in the middle of the sort
 	//       Possible solution: set a lock flag on the array, and prohibit modifications while the lock flag is set
 
-	// Bubble sort
-	// TODO: optimize: Use an efficient sort algorithm
-	// ALTERED: the callback can resize the array. Past a new end the elements are no longer there: they were passed to it as
-	// null references (a crash) and swapped in memory the array no longer owns. The sort ends there and the script gets an
-	// exception.
+	// ALTERED: a merge sort of the elements as they were when the sort began, which makes O(n log n) calls of the callback: the selection
+	// sort here made one for every pair of elements, n(n-1)/2 (1999000 for 2000 elements, about 50 million for 10000). The callback gets
+	// each element as it did (see SCallbackArg), made from what the sort keeps of it: a handle's or a primitive's value, an object of a
+	// reference type, held, or a copy of an object of a value type, made once, as the callback can let go of the array's own. The callback
+	// can change the array: the sorted order is written back only if the array still has its size and the elements that were sorted, in
+	// their places; otherwise it is left as the callback left it and the script gets the exception, as it did when the size changed. The
+	// sort is stable: elements the callback doesn't put apart keep their order.
 	asUINT size = GetSize();
 	bool changed = false;
-	for (asUINT i = start; i+1 < end; i++)
 	{
-		asUINT best = i;
-		for (asUINT j = i + 1; j < end; j++)
+		asIScriptEngine *engine = objType->GetEngine();
+		asITypeInfo *subType = objType->GetSubType();
+		asQWORD flags = subType ? subType->GetFlags() : 0;
+		bool isObject = (subTypeId & asTYPEID_MASK_OBJECT) && !(subTypeId & asTYPEID_OBJHANDLE);
+		bool counted = (flags & asOBJ_REF) && !(flags & (asOBJ_NOCOUNT | asOBJ_SCOPED));
+		bool copyValues = isObject && (flags & asOBJ_VALUE);
+		size_t n = size_t(end - start), es = size_t(elementSize);
+		std::vector<asBYTE> before(n * es);
+		memcpy(before.data(), GetArrayItemPointer(start), n * es);
+		std::vector<void*> data(n), kept;
+		for( size_t k = 0; k < n; k++ )
 		{
-			// ALTERED: see ArrayCallbacksStopped
-			if (ArrayCallbacksStopped(callerCtx, cmpContext))
-				break;
-			cmpContext->Prepare(func);
-			// ALTERED: see SCallbackArg
-			SCallbackArg argA(objType->GetEngine(), objType->GetSubType(), subTypeId, elementSize, At(j));
-			SCallbackArg argB(objType->GetEngine(), objType->GetSubType(), subTypeId, elementSize, At(best));
-			cmpContext->SetArgAddress(0, argA.address);
-			cmpContext->SetArgAddress(1, argB.address);
-			int r = ExecuteResumed(cmpContext);
-			if (r != asEXECUTION_FINISHED)
-				break;
-			// ALTERED: see above
-			if (GetSize() != size)
+			void *slot = &before[k * es];
+			data[k] = isObject ? *(void**)slot : slot;
+			void *obj = isObject ? data[k] : (subTypeId & asTYPEID_OBJHANDLE) ? *(void**)slot : 0;
+			if( !obj )
+				continue;
+			if( counted )
 			{
-				changed = true;
-				break;
+				engine->AddRefScriptObject(obj, subType);
+				kept.push_back(obj);
 			}
-			if (*(bool*)(cmpContext->GetAddressOfReturnValue()))
-				best = j;
+			else if( copyValues )
+			{
+				void *copy = engine->CreateScriptObjectCopy(obj, subType);
+				if( copy )
+				{
+					data[k] = copy;
+					kept.push_back(copy);
+				}
+			}
 		}
-		if (changed)
-			break;
-
-		// With Swap we guarantee that the array always sees all references
-		// if the GC calls the EnumReferences in the middle of the sorting
-		if( best != i )
-			Swap(GetArrayItemPointer(i), GetArrayItemPointer(best));
-
-		// An aborted callback (exit() in it) ends the sort, so the abort is passed on below
-		// ALTERED: as does exit() in a callback run in a context of the add-on's own, see ArrayCallbacksStopped
-		if( ArrayCallbacksStopped(callerCtx, cmpContext) )
-			break;
+		std::vector<size_t> order(n), merged(n);
+		for( size_t k = 0; k < n; k++ )
+			order[k] = k;
+		bool stop = false;
+		for( size_t width = 1; width < n && !stop; width *= 2 )
+		{
+			for( size_t lo = 0; lo < n; lo += 2 * width )
+			{
+				size_t mid = lo + width < n ? lo + width : n;
+				size_t hi = lo + 2 * width < n ? lo + 2 * width : n;
+				size_t i = lo, j = mid, k = lo;
+				while( i < mid && j < hi )
+				{
+					bool takeRight = false;
+					// ALTERED: see ArrayCallbacksStopped. An aborted callback (exit() in it) ends the sort, so the abort is passed on below.
+					if( !stop && ArrayCallbacksStopped(callerCtx, cmpContext) )
+						stop = true;
+					if( !stop )
+					{
+						cmpContext->Prepare(func);
+						SCallbackArg argA(engine, subType, subTypeId, elementSize, data[order[j]]);
+						SCallbackArg argB(engine, subType, subTypeId, elementSize, data[order[i]]);
+						cmpContext->SetArgAddress(0, argA.address);
+						cmpContext->SetArgAddress(1, argB.address);
+						int r = ExecuteResumed(cmpContext);
+						if( r != asEXECUTION_FINISHED )
+							stop = true;
+						else if( GetSize() != size )
+							changed = stop = true;
+						else
+							takeRight = *(bool*)(cmpContext->GetAddressOfReturnValue());
+					}
+					merged[k++] = takeRight ? order[j++] : order[i++];
+				}
+				while( i < mid )
+					merged[k++] = order[i++];
+				while( j < hi )
+					merged[k++] = order[j++];
+			}
+			order.swap(merged);
+		}
+		if( !stop )
+		{
+			if( GetSize() != size || memcmp(GetArrayItemPointer(start), before.data(), n * es) != 0 )
+				changed = true;
+			else
+			{
+				std::vector<asBYTE> sorted(n * es);
+				for( size_t k = 0; k < n; k++ )
+					memcpy(&sorted[k * es], &before[order[k] * es], es);
+				// ALTERED: see CollectorReadsElements
+				std::unique_lock<std::mutex> guard(BufferSwapLock(engine), std::defer_lock);
+				if( CollectorReadsElements(objType, subTypeId) ) guard.lock();
+				memcpy(GetArrayItemPointer(start), sorted.data(), n * es);
+			}
+		}
+		for( void *obj : kept )
+			engine->ReleaseScriptObject(obj, subType);
 	}
+
 	// ALTERED: not when the script is ending, whose abort is passed on below
 	bool stopped = ArrayCallbacksStopped(callerCtx, cmpContext);
 
