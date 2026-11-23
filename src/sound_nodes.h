@@ -400,7 +400,7 @@ class reverb3d_attachment_handler {
 public:
 	virtual ~reverb3d_attachment_handler() = default;
 	virtual audio_node* create_attachment(reverb3d* verb, mixer* source) = 0; // Must return a node with one input and two output buses, bus 0 continuing the source's dry signal and bus 1 being the send that will be connected to verb, such as a plugin_node.
-	virtual void update_attachment(reverb3d* verb, audio_node* attachment, const audio_spatialization_parameters& params) = 0; // Called from the audio thread with the source's current spatialization parameters, in place of reverb3d's distance based send volume.
+	virtual void update_attachment(reverb3d* verb, audio_node* attachment, const audio_spatialization_parameters& params) = 0; // Called with the source's current spatialization parameters, in place of reverb3d's distance based send volume: from the audio thread, and from the script's thread when the source is first given the reverb3d.
 };
 class reverb3d : public virtual passthrough_node {
 public:
