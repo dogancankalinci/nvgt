@@ -16,7 +16,7 @@ Sounds and mixers are attached to the audio engine's endpoint automatically, so 
 ### States and time
 A node is either started or stopped, which you can change with `set_state()`. A stopped node produces no audio and doesn't process its input. The state can also be scheduled to change at a future time with `set_state_time()`.
 
-Times given to and returned from the methods of a node are in PCM frames, where a frame is one sample for each channel, so that 44100 of them are a second at a sample rate of 44100 hertz. They are measured on a global clock that the audio engine runs, which goes forward as audio is produced. Each node also has its own local clock, which `time` reads and `set_time()` changes, that counts the frames the node has processed. The audio_engine is the exception, whose `time` is its global clock, measured in milliseconds unless the AUDIO_ENGINE_DURATIONS_IN_FRAMES flag was used.
+Times given to and returned from the methods of a node are in PCM frames, where a frame is one sample for each channel, so that 44100 of them are a second at a sample rate of 44100 hertz. They are measured on a global clock that the audio engine runs, which goes forward as audio is produced. Each node also has its own local clock, which `time` reads and `set_time()` changes, that counts the frames the node has processed; a sound's and a mixer's is counted in the engine's unit of time, as the engine's own time is. The audio_engine is the exception, whose `time` is its global clock, measured in milliseconds unless the AUDIO_ENGINE_DURATIONS_IN_FRAMES flag was used.
 
 ## Example:
 ```

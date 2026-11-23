@@ -1,7 +1,10 @@
 # play
 Starts playing the sound.
 
-`bool sound::play();`
+`bool sound::play(bool reset_loop_state = true);`
+
+## Arguments:
+* bool reset_loop_state = true: if true, turn off looping, so that a sound that was playing looped plays to its end once. Pass false to keep it looping.
 
 ## Returns:
 bool: true if the sound was able to start playing, false otherwise.

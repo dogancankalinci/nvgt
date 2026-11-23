@@ -1,0 +1,48 @@
+/**
+	Generates tones, notes and rests into a buffer in memory, from which a sound, an array of samples or a WAV file is made, as BGT's tone_synth did.
+	tone_synth();
+	## Remarks:
+		The audio is 16-bit stereo at 44100 hertz, as `sample_rate` and `channels` read. Each of the calls that add audio writes it at the current position, `position` or `position_ms`, and moves the position on by its length; writing over audio already there mixes the two, so that `seek()` back to an earlier position and a second note make a chord. `seek()`, `seek_ms()`, `rewind()` and `rewind_ms()` move the position within the length written so far, and return false for a position outside it.
+		Lengths are given in beats or, for the methods ending in `_ms`, in milliseconds. A beat lasts 60000 / `tempo` milliseconds, 500 at the default tempo of 120.
+		### Settings
+		* int waveform_type: the shape of the wave, 1 for sawtooth, 2 for square, 3 for sine and 4 for triangle, as BGT numbered them. Other values are ignored. The default is 3, a sine wave.
+		* double volume: in decibels, from -100 to 0, the default. Other values are ignored.
+		* double pan: from -100, fully left, to 100, fully right; 0 by default.
+		* double tempo: in beats per minute, from 1 to 999; 120 by default.
+		* double note_transpose: semitones added to every note, fractions of one included; 0 by default.
+		* double freq_transpose: hertz added to every frequency given to `freq()` and its variants; 0 by default.
+		* bool allow_silent_output: whether a buffer holding only silence, as after only `rest()`, can be written out; false by default, which makes the write methods fail for it.
+		* bool set_edge_fades(int start, int end): the fade in and out of each tone, in milliseconds, 8 and 12 by default, which keep tones from clicking. Negative values are refused.
+		* void reset(): empties the buffer and puts every setting back to a new tone_synth's.
+		### Adding audio
+		* bool note(string note, double length), bool note_ms(string note, int ms): a note by its name, a letter from A to G in either case, then optionally # for sharp or b for flat, then the octave, which can be negative, such as "C4", "f#3", "Bb2" or "C-1". C4 is middle C, and A4 is 440 hertz. A name that isn't a note, or one outside MIDI's range of C-1 to G9 once transposed, is refused.
+		* bool note_bend(string note, double bend_amount, double length, double bend_start, double bend_length), and note_bend_ms() with lengths in milliseconds: a note bent by bend_amount semitones, up for a positive amount, starting bend_start into the note and taking bend_length.
+		* bool freq(double freq, double length), bool freq_ms(double freq, int ms): a tone of a frequency in hertz, from 20 to 20000.
+		* bool freq_bend(double freq, double bend_amount, double length, double bend_start, double bend_length), and freq_bend_ms(): a tone bent by bend_amount hertz.
+		* bool rest(double length), bool rest_ms(int ms): silence.
+		### Reading
+		* double length, int length_ms: the length written so far.
+		* double position, int position_ms: the current position.
+		### Writing out
+		* sound@ write_wave_sound(): a sound of the default engine holding the audio, or null if there is nothing to write.
+		* int16[]@ write_samples(): the samples, interleaved left and right, or null.
+		* bool write_wave_file(const string&in filename): writes a 16-bit WAV file, replacing a file of that name, and returns whether it was written.
+*/
+
+// Example:
+void main() {
+	tone_synth synth;
+	synth.tempo = 150;
+	// A chord: three notes written at the same place, which mix.
+	synth.note("C4", 2);
+	synth.seek(0);
+	synth.note("E4", 2);
+	synth.seek(0);
+	synth.note("G4", 2);
+	// Then a rising arpeggio, from the end of the chord.
+	string[] notes = {"C4", "E4", "G4", "C5"};
+	for (uint i = 0; i < notes.length(); i++) synth.note(notes[i], 0.5);
+	sound@ s = synth.write_wave_sound();
+	if (@s == null) return;
+	s.play_wait();
+}
