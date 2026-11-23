@@ -1316,7 +1316,7 @@ public:
 		asIScriptModule* mod = get_mod();
 		if (!mod)
 			return "";
-		const char* result = mod->GetGlobalVarDeclaration(index);
+		const char* result = mod->GetGlobalVarDeclaration(index, true); // With its namespace, as get_global_index_by_decl() takes it and a function's decl gives it: "int g" for ns::g named the global g as well.
 		if (!result) return "";
 		return std::string(result);
 	}
@@ -1363,6 +1363,13 @@ public:
 		std::lock_guard<std::recursive_mutex> lock(script_module_mutex()); // See script_module_mutex(): mod_name is read by every use on any thread.
 		asIScriptModule* mod = get_mod();
 		if (!mod) return;
+		// Not another module's name: two modules of one name, every script_module of that name found the first (the engine's lookup),
+		// and the other could no longer be reached, used or discarded until the program ended.
+		asIScriptModule* named = g_ScriptEngine->GetModule(name.c_str(), asGM_ONLY_IF_EXISTS);
+		if (named && named != mod) {
+			if (asIScriptContext* ctx = asGetActiveContext()) ctx->SetException(("a module named '" + name + "' already exists").c_str());
+			return;
+		}
 		mod->SetName(name.c_str());
 		mod_name = name;
 	}
