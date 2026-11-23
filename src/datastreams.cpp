@@ -662,7 +662,12 @@ datastream& datastream::read(T& value) {
 			return *this;
 		}
 	}
-	binary ? (*r) >> value : (*_istr) >> value;
+	if (binary) {
+		(*r) >> value;
+		// Data that ended part of the way through the value (one byte left for an int) failed the read and gave the bytes that were there,
+		// shifted by the byte order (2021195776 for "xy" read as a big endian int) rather than 0. It reads as 0, as data that has ended does.
+		if (_istr->fail()) value = T();
+	} else (*_istr) >> value;
 	return *this;
 }
 template <typename T>
@@ -684,7 +689,10 @@ T datastream::read() {
 			return value;
 		}
 	}
-	binary ? (*r) >> value : (*_istr) >> value;
+	if (binary) {
+		(*r) >> value;
+		if (_istr->fail()) value = T(); // see read(T&)
+	} else (*_istr) >> value;
 	return value;
 }
 template <typename T>
