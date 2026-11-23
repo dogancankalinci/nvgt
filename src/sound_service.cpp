@@ -685,18 +685,23 @@ static std::string permanent_redirect(const std::string& uri, const Poco::Net::H
 	for (char& c : reason) c = (char)std::tolower((unsigned char)c);
 	if (reason.find("redirect") == std::string::npos) return "";
 	try {
-		Poco::URI from(uri);
-		std::unique_ptr<Poco::Net::HTTPClientSession> session;
-		if (from.getScheme() == "http") session = std::make_unique<Poco::Net::HTTPClientSession>(from.getHost(), from.getPort());
-		else if (from.getScheme() == "https") session = std::make_unique<Poco::Net::HTTPSClientSession>(from.getHost(), from.getPort());
-		else return "";
-		Poco::Net::HTTPRequest request(Poco::Net::HTTPRequest::HTTP_GET, from.getPathAndQuery().empty()? "/" : from.getPathAndQuery(), Poco::Net::HTTPRequest::HTTP_1_1);
-		session->sendRequest(request);
-		Poco::Net::HTTPResponse response;
-		session->receiveResponse(response);
-		if (response.getStatus() != Poco::Net::HTTPResponse::HTTP_PERMANENT_REDIRECT || !response.has("Location")) return "";
-		from.resolve(response.get("Location"));
-		return from.toString();
+		// The whole chain, followed from the URL given to where it stops redirecting: Poco follows a 301 or 302 to a URL that then answers 308, so asking only the URL given again got that 301 rather than the 308, and the stream wasn't opened.
+		Poco::URI at(uri);
+		for (int hops = 0; hops < 10; hops++) {
+			std::unique_ptr<Poco::Net::HTTPClientSession> session;
+			if (at.getScheme() == "http") session = std::make_unique<Poco::Net::HTTPClientSession>(at.getHost(), at.getPort());
+			else if (at.getScheme() == "https") session = std::make_unique<Poco::Net::HTTPSClientSession>(at.getHost(), at.getPort());
+			else return "";
+			Poco::Net::HTTPRequest request(Poco::Net::HTTPRequest::HTTP_GET, at.getPathAndQuery().empty()? "/" : at.getPathAndQuery(), Poco::Net::HTTPRequest::HTTP_1_1);
+			session->sendRequest(request);
+			Poco::Net::HTTPResponse response;
+			session->receiveResponse(response);
+			const int status = response.getStatus();
+			const bool redirect = status == Poco::Net::HTTPResponse::HTTP_MOVED_PERMANENTLY || status == Poco::Net::HTTPResponse::HTTP_FOUND || status == Poco::Net::HTTPResponse::HTTP_SEE_OTHER || status == Poco::Net::HTTPResponse::HTTP_TEMPORARY_REDIRECT || status == Poco::Net::HTTPResponse::HTTP_PERMANENT_REDIRECT;
+			if (!redirect || !response.has("Location")) return hops? at.toString() : "";
+			at.resolve(response.get("Location"));
+		}
+		return ""; // Too many, as Poco gives up on.
 	} catch (const Poco::Exception&) {
 		return ""; // Told as the redirect not followed.
 	}
