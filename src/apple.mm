@@ -356,7 +356,7 @@ public:
 			@try {
 				AVSpeechSynthesisVoice *voice = [voices objectAtIndex:index];
 				std::string lang([voice.language UTF8String]);
-				std::transform(lang.begin(), lang.end(), lang.begin(), ::tolower);
+				std::transform(lang.begin(), lang.end(), lang.begin(), [](unsigned char c) { return (char)::tolower(c); }); // tolower takes an unsigned char's value; char is signed on Apple's targets.
 				return lang;
 			} @catch (NSException *exception) { return ""; }
 		}

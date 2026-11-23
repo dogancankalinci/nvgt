@@ -14,7 +14,7 @@
 ProcessWatcher::ProcessWatcher(const std::string& process_name) 
 	: process_name_(process_name), snapshot_(nullptr), process_handle_(nullptr) {
 	// Convert process name to lowercase for case-insensitive comparison
-	std::transform(process_name_.begin(), process_name_.end(), process_name_.begin(), ::tolower);
+	std::transform(process_name_.begin(), process_name_.end(), process_name_.begin(), [](unsigned char c) { return (char)::tolower(c); }); // tolower takes an unsigned char's value, not a char that can be negative.
 }
 
 ProcessWatcher::~ProcessWatcher() {
@@ -51,7 +51,7 @@ bool ProcessWatcher::find() {
 		int size_needed = WideCharToMultiByte(CP_UTF8, 0, entry.szExeFile, -1, NULL, 0, NULL, NULL);
 		std::string current_process_name(size_needed - 1, 0);
 		WideCharToMultiByte(CP_UTF8, 0, entry.szExeFile, -1, &current_process_name[0], size_needed, NULL, NULL);
-		std::transform(current_process_name.begin(), current_process_name.end(), current_process_name.begin(), ::tolower);
+		std::transform(current_process_name.begin(), current_process_name.end(), current_process_name.begin(), [](unsigned char c) { return (char)::tolower(c); });
 		if (current_process_name == process_name_) {
 			process_handle_ = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, entry.th32ProcessID);
 			if (process_handle_) {

@@ -328,8 +328,8 @@ static string StringLower(const string &str)
 {
 	string ret;
 	ret.reserve(str.size());
-	for (int i = 0; i < str.size(); i++)
-		ret += tolower(str[i]);
+	for (size_t i = 0; i < str.size(); i++)
+		ret += (char)tolower((unsigned char)str[i]); // <cctype> takes an unsigned char's value: a plain char is negative for a byte of 0x80 or more where char is signed.
 	return ret;
 }
 
@@ -341,8 +341,8 @@ static string StringUpper(const string &str)
 {
 	string ret;
 	ret.reserve(str.size());
-	for (int i = 0; i < str.size(); i++)
-		ret += toupper(str[i]);
+	for (size_t i = 0; i < str.size(); i++)
+		ret += (char)toupper((unsigned char)str[i]);
 	return ret;
 }
 
@@ -352,9 +352,9 @@ static string StringUpper(const string &str)
 // bool string::isLower() const
 static bool StringIsLower(const string &str)
 {
-	for (int i = 0; i < str.size(); i++)
+	for (size_t i = 0; i < str.size(); i++)
 	{
-		if (!islower(str[i]))
+		if (!islower((unsigned char)str[i]))
 			return false;
 	}
 	return true;
@@ -366,9 +366,9 @@ static bool StringIsLower(const string &str)
 // bool string::isUpper() const
 static bool StringIsUpper(const string &str)
 {
-	for (int i = 0; i < str.size(); i++)
+	for (size_t i = 0; i < str.size(); i++)
 	{
-		if (!isupper(str[i]))
+		if (!isupper((unsigned char)str[i]))
 			return false;
 	}
 	return true;
@@ -380,9 +380,9 @@ static bool StringIsUpper(const string &str)
 // bool string::isPunct() const
 static bool StringIsPunct(const string &str)
 {
-	for (int i = 0; i < str.size(); i++)
+	for (size_t i = 0; i < str.size(); i++)
 	{
-		if (!ispunct(str[i]))
+		if (!ispunct((unsigned char)str[i]))
 			return false;
 	}
 	return true;
@@ -396,9 +396,9 @@ static bool StringIsDigit(const string &str)
 {
 	if (str.size() < 1)
 		return false;
-	for (int i = 0; i < str.size(); i++)
+	for (size_t i = 0; i < str.size(); i++)
 	{
-		if (!isdigit(str[i]))
+		if (!isdigit((unsigned char)str[i]))
 			return false;
 	}
 	return true;
@@ -410,9 +410,9 @@ static bool StringIsDigit(const string &str)
 // bool string::isAlpha() const
 static bool StringIsAlpha(const string &str)
 {
-	for (int i = 0; i < str.size(); i++)
+	for (size_t i = 0; i < str.size(); i++)
 	{
-		if (!isalpha(str[i]))
+		if (!isalpha((unsigned char)str[i]))
 			return false;
 	}
 	return true;
@@ -424,9 +424,9 @@ static bool StringIsAlpha(const string &str)
 // bool string::isAlphanum() const
 static bool StringIsAlphanum(const string &str)
 {
-	for (int i = 0; i < str.size(); i++)
+	for (size_t i = 0; i < str.size(); i++)
 	{
-		if (!isalpha(str[i]) && !isdigit(str[i]))
+		if (!isalnum((unsigned char)str[i]))
 			return false;
 	}
 	return true;
