@@ -114,9 +114,10 @@ Complex Complex::get_ri() const
 {
 	return *this;
 }
+// The imaginary part first, as set_ir() takes it: this returned the number as it is (the ri order), so c.ir gave c back, and c.ir = c.ir swapped c's parts.
 Complex Complex::get_ir() const
 {
-	return Complex(r,i);
+	return Complex(i,r);
 }
 void Complex::set_ri(const Complex &o)
 {
