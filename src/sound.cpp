@@ -6942,8 +6942,10 @@ bool sound_set_listener_position_vector(const vector3& position, unsigned int li
 void set_default_decryption_key(const std::string &key) {
 	if (!init_sound_context())
 		return;
+	// The default filter first when it goes, as for the default pack: a load reading the old default and the new key between the two steps tried to decrypt with no key (see prepare_triplet()).
+	if (key.empty()) g_sound_service->set_default_filter(sound_service::null_filter_slot);
 	g_sound_service->set_filter_directive(g_encryption_filter_slot, std::make_shared < std::string > (key));
-	g_sound_service->set_default_filter(key.empty() ? sound_service::null_filter_slot : g_encryption_filter_slot);
+	if (!key.empty()) g_sound_service->set_default_filter(g_encryption_filter_slot);
 }
 // Set default pack storage for future sounds. Null means go back to local file system.
 // Note: a pack must be marked immutable in order to be used with sound service.
