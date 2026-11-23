@@ -611,14 +611,14 @@ return 440.0*pow(2, (note-69)/12.0);
 int elz_tonar_music_name_to_note(char* name, int transpose)
 {
 if((!name)||(!*name)) return -1;
-if(!isalpha(name[0])) return -1;
 int base=-1;
-char letter=name[0];
+/* The letter in either case. <ctype.h> takes an unsigned char's value, which a plain char isn't for a byte of 0x80 or more where char is signed; and any other letter, as a lower case one, was taken as a C less one semitone, so that "c4" played B3. */
+char letter=(char)toupper((unsigned char)name[0]);
 char mod=name[1];
 if(!mod) return -1;
 char octave=name[2];
 if(!octave) octave=mod;
-if(!isdigit(octave)) return -1;
+if(!isdigit((unsigned char)octave)) return -1;
 if(letter=='C') base=0;
 if(letter=='D') base=2;
 if(letter=='E') base=4;
@@ -626,6 +626,7 @@ if(letter=='F') base=5;
 if(letter=='G') base=7;
 if(letter=='A') base=9;
 if(letter=='B') base=11;
+if(base<0) return -1;
 if(mod=='#') base++;
 if(mod=='b') base--;
 int o=octave-48;
