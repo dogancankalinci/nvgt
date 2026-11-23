@@ -164,6 +164,7 @@ vcpkg_from_github(
         fix-int64-enum-constants.patch
         fix-cast-to-enum.patch
         fix-cross-thread-abort.patch
+        fix-template-copy-constructor-flags.patch
 )
 
 vcpkg_cmake_configure(

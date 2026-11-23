@@ -1,0 +1,22 @@
+diff --git a/sdk/angelscript/source/as_scriptengine.cpp b/sdk/angelscript/source/as_scriptengine.cpp
+index 8dbdee0..1c83f18 100644
+--- a/sdk/angelscript/source/as_scriptengine.cpp
++++ b/sdk/angelscript/source/as_scriptengine.cpp
+@@ -2418,12 +2418,15 @@ int asCScriptEngine::RegisterBehaviourToObjectType(asCObjectType *objectType, as
+ 					 (func.parameterTypes.GetLength() == 2 && (objectType->flags & asOBJ_TEMPLATE)) )
+ 			{
+ 				// Is this the copy constructor?
+-				asCDataType paramType = func.parameterTypes[objectType->flags & asOBJ_TEMPLATE ? 1 : 0];
++				// ALTERED: the parameter's own flags: for a template the first parameter is the hidden type, always &in, whose flags were read,
++				// so a constructor taking a const reference to the type for output was taken for the copy constructor.
++				asUINT paramIndex = objectType->flags & asOBJ_TEMPLATE ? 1 : 0;
++				asCDataType paramType = func.parameterTypes[paramIndex];
+ 
+ 				// If the parameter is object, and const reference for input or inout,
+ 				// and same type as this class, then this is a copy constructor.
+ 				if( paramType.IsObject() && paramType.IsReference() && paramType.IsReadOnly() &&
+-				   (func.inOutFlags[0] & asTM_INREF) && paramType.GetTypeInfo() == objectType )
++				   (func.inOutFlags[paramIndex] & asTM_INREF) && paramType.GetTypeInfo() == objectType )
+ 				{
+ 					if( beh->copyconstruct != 0 )
+ 						return ConfigError(asALREADY_REGISTERED, "RegisterObjectBehaviour", objectType->name.AddressOf(), decl);
