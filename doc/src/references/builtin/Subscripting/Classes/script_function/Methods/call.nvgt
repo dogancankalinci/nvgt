@@ -9,6 +9,7 @@
 		dictionary@: the args dictionary, cleared and then holding the return value under the key "0" if the function returns something and the final value of each &out or &inout argument under its own number, or a new dictionary holding them if args was null. null if the call failed, in which case the args dictionary is emptied too, and also on success when args was null and there is nothing to give back (a function that returns nothing and has no &out or &inout parameter).
 	## Remarks:
 		Integer return values are stored as int64 and floats as double, so retrieve them into variables of those types. Arguments are converted to the parameter types where possible, and handles and objects must be of the parameter's class or derive from it.
+		An argument missing from args gets the parameter's default value. Without one, a number, bool, enum or handle parameter passed by value gets 0, false or null, an &out parameter gets room for its result, and any other parameter fails the call with "Missing argument".
 		Calling a script_function directly, as in `func(args)`, does the same as call().
 */
 
