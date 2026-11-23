@@ -722,7 +722,9 @@ static asINT64 parseInt(const string &val, asUINT base, asUINT *byteCount)
 	else if( *end == '+' )
 		end++;
 
-	asINT64 res = 0;
+	// ALTERED: accumulated unsigned, as parseUInt does: digits beyond the range of an int64 (and -9223372036854775808 itself, whose digits
+	// are one more than INT64_MAX) overflowed a signed integer, which is undefined; the value wraps around as it did, without that.
+	asQWORD res = 0;
 	if( base == 10 )
 	{
 		while( *end >= '0' && *end <= '9' )
@@ -751,9 +753,9 @@ static asINT64 parseInt(const string &val, asUINT base, asUINT *byteCount)
 		*byteCount = asUINT(size_t(end - val.c_str()));
 
 	if( sign )
-		res = -res;
+		res = 0 - res;
 
-	return res;
+	return asINT64(res);
 }
 
 // AngelScript signature:
