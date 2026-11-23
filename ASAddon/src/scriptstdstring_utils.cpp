@@ -464,12 +464,14 @@ static string &string_multiply_assign(string &str, asUINT multiplier)
 }
 static asQWORD string_count(string &str, const string &search, asQWORD start)
 {
-	if (str.empty() || search.empty())
+	// ALTERED: a start past the end finds nothing: on 32-bit targets (armeabi-v7a) the uint64 start was cut to size_t for find(), so
+	// count("a", 4294967296) counted from 0. The count is 64 bits, as returned (a 32-bit one wrapped for a string of more than 4 GB).
+	if (str.empty() || search.empty() || start >= str.size())
 		return 0;
-	asUINT c = 0;
+	asQWORD c = 0;
 	while (true)
 	{
-		size_t pos = str.find(search, start);
+		size_t pos = str.find(search, size_t(start));
 		if (pos == std::string::npos)
 			break;
 		start = pos + 1;
