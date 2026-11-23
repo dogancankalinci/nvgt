@@ -1,0 +1,375 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+index 891f573..a33bda8 100644
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -215,7 +215,7 @@ asCContext::asCContext(asCScriptEngine *engine, bool holdRef)
+ 	m_initialFunction           = 0;
+ 	m_lineCallback              = false;
+ 	m_exceptionCallback         = false;
+-	m_regs.doProcessSuspend     = false;
++	DoProcessSuspend()     = false;
+ 	m_doSuspend                 = false;
+ 	m_exceptionWillBeCaught     = false;
+ 	m_exceptionFrameFunction    = 0; // ALTERED: see SetInternalException
+@@ -852,7 +852,7 @@ int asCContext::Prepare(asIScriptFunction *func)
+ 		m_nestedRequests[m_nestedRequests.GetLength() - 1] |= 3;
+ 	m_doAbort                 = false;
+ 	m_doSuspend               = false;
+-	m_regs.doProcessSuspend   = m_lineCallback;
++	DoProcessSuspend()   = m_lineCallback;
+ 	m_externalSuspendRequest  = false;
+ 	m_status = asEXECUTION_PREPARED;
+ 	m_regs.programPointer = 0;
+@@ -1575,15 +1575,20 @@ int asCContext::Abort()
+ {
+ 	if( m_engine == 0 ) return asERROR;
+ 
+-	// TODO: multithread: Make thread safe. There is a chance that the status
+-	//                    changes to something else after being set to ABORTED here.
+-	if( m_status == asEXECUTION_SUSPENDED )
+-		m_status = asEXECUTION_ABORTED;
+-
+-	m_doSuspend = true;
+-	m_regs.doProcessSuspend = true;
+-	m_externalSuspendRequest = true;
++	// ALTERED: thread safe. The request is made first, its abort half before its suspend half: the thread executing acts on the
++	// request as soon as it sees m_doSuspend, and Execute then has to see m_doAbort as well, or it returned asEXECUTION_SUSPENDED
++	// for an abort (set last, as it was, the abort could come after the execution had suspended for it). A suspended context is
++	// then marked aborted only if it is still suspended: read and then written as two steps, the status could be changed in
++	// between by Execute() resuming the context on the other thread, and the write replaced asEXECUTION_ACTIVE (the resumed
++	// execution stopped where it was, with no clean up) or asEXECUTION_EXCEPTION (an exception of the resumed execution, after
++	// which the instruction that failed was taken for completed, see m_abortedAfterException).
+ 	m_doAbort = true;
++	m_externalSuspendRequest = true;
++	m_doSuspend = true;
++	DoProcessSuspend() = true;
++
++	asEContextState suspended = asEXECUTION_SUSPENDED;
++	m_status.compare_exchange_strong(suspended, asEXECUTION_ABORTED);
+ 
+ 	return 0;
+ }
+@@ -1599,7 +1604,7 @@ int asCContext::Suspend()
+ 
+ 	m_doSuspend = true;
+ 	m_externalSuspendRequest = true;
+-	m_regs.doProcessSuspend = true;
++	DoProcessSuspend() = true;
+ 
+ 	return 0;
+ }
+@@ -1609,7 +1614,10 @@ int asCContext::Execute()
+ {
+ 	asASSERT( m_engine != 0 );
+ 
+-	if( m_status != asEXECUTION_SUSPENDED && m_status != asEXECUTION_PREPARED )
++	// ALTERED: from prepared or suspended to active in one step: Abort() on another thread can mark a suspended context aborted
++	// meanwhile, see Abort()
++	asEContextState state = m_status;
++	if( (state != asEXECUTION_SUSPENDED && state != asEXECUTION_PREPARED) || !m_status.compare_exchange_strong(state, asEXECUTION_ACTIVE) )
+ 	{
+ 		asCString str;
+ 		str.Format(TXT_FAILED_IN_FUNC_s_s_d, "Execute", errorNames[-asCONTEXT_NOT_PREPARED], asCONTEXT_NOT_PREPARED);
+@@ -1617,8 +1625,6 @@ int asCContext::Execute()
+ 		return asCONTEXT_NOT_PREPARED;
+ 	}
+ 
+-	m_status = asEXECUTION_ACTIVE;
+-
+ 	asCThreadLocalData *tld = asPushActiveContext((asIScriptContext *)this);
+ 
+ 	// Make sure there are not too many nested calls, as it could crash the application
+@@ -1647,10 +1653,10 @@ int asCContext::Execute()
+ 		// Call the line callback one last time before leaving
+ 		// so anyone listening can catch the state change
+ 		CallLineCallback();
+-		m_regs.doProcessSuspend = true;
++		DoProcessSuspend() = true;
+ 	}
+ 	else
+-		m_regs.doProcessSuspend = false;
++		DoProcessSuspend() = false;
+ 
+ 	m_doSuspend = false;
+ 
+@@ -1686,7 +1692,7 @@ int asCContext::Execute()
+ 		if( m_doAbort )
+ 		{
+ 			m_doSuspend = true;
+-			m_regs.doProcessSuspend = true;
++			DoProcessSuspend() = true;
+ 		}
+ 
+ 		return asEXECUTION_FINISHED;
+@@ -1708,10 +1714,20 @@ int asCContext::Execute()
+ 		return asEXECUTION_ABORTED;
+ 	}
+ 
+-	if( m_status == asEXECUTION_SUSPENDED )
++	// ALTERED: the status read once. An Abort() on another thread made after the abort check above marks the suspended context
++	// aborted (its request was made before that, see Abort()): read again for each test below, the status could change between
++	// them, and this returned asERROR for an execution that had suspended.
++	asEContextState status = m_status;
++	if( status == asEXECUTION_ABORTED )
++	{
++		m_doAbort = false;
++		return asEXECUTION_ABORTED;
++	}
++
++	if( status == asEXECUTION_SUSPENDED )
+ 		return asEXECUTION_SUSPENDED;
+ 
+-	if( m_status == asEXECUTION_EXCEPTION )
++	if( status == asEXECUTION_EXCEPTION )
+ 		return asEXECUTION_EXCEPTION;
+ 
+ 	return asERROR;
+@@ -1906,9 +1922,11 @@ int asCContext::PushState()
+ 	// Prepare() of the nested call and lost (a registered function that called Abort() and then made a nested call,
+ 	// such as creating a script object or assigning one through a registered opAssign, returned to a script that kept
+ 	// running). It is kept here and put back by PopState, so the interrupted execution still acts on it.
+-	m_nestedRequests.PushLast(asBYTE((m_doAbort ? 1 : 0) | (m_doSuspend ? 2 : 0)));
+-	m_doAbort = false;
+-	m_doSuspend = false;
++	// ALTERED: each taken and cleared in one step, the suspend half first (Abort() on another thread sets the abort half first):
++	// read and then cleared, an Abort() made in between was lost. An abort always comes back with its suspend half.
++	bool suspendRequest = m_doSuspend.exchange(false);
++	bool abortRequest = m_doAbort.exchange(false);
++	m_nestedRequests.PushLast(asBYTE(abortRequest ? 3 : suspendRequest ? 2 : 0));
+ 
+ 	// Push the system function too, which will serve both as a marker and
+ 	// informing which system function that created the nested call
+@@ -1996,7 +2014,7 @@ int asCContext::PopState()
+ 		if( requests & 2 )
+ 			m_doSuspend = true;
+ 		if( requests )
+-			m_regs.doProcessSuspend = true;
++			DoProcessSuspend() = true;
+ 	}
+ 
+ 	return asSUCCESS;
+@@ -2452,7 +2470,7 @@ void asCContext::PrepareScriptFunction()
+ 
+ 	// Call the line callback for each script function, to guarantee that infinitely recursive scripts can
+ 	// be interrupted, even if the scripts have been compiled with asEP_BUILD_WITHOUT_LINE_CUES
+-	if( m_regs.doProcessSuspend )
++	if( ProcessSuspend() )
+ 	{
+ 		if( m_lineCallback )
+ 			CallLineCallback();
+@@ -2743,7 +2761,7 @@ static const void *const dispatch_table[256] = {
+ 			l_fp = m_regs.stackFramePointer;
+ 
+ 			// If status isn't active anymore then we must stop
+-			if( m_status != asEXECUTION_ACTIVE )
++			if( m_status.load(std::memory_order_relaxed) != asEXECUTION_ACTIVE )
+ 				return;
+ 		}
+ 		NEXT_INSTRUCTION();
+@@ -3320,7 +3338,7 @@ static const void *const dispatch_table[256] = {
+ 			// Update the program position after the call so that line number is correct
+ 			l_bc += 2;
+ 
+-			if( m_regs.doProcessSuspend )
++			if( ProcessSuspend() )
+ 			{
+ 				// ALTERED: an exception is handled before a suspend request. A registered function that raised a script
+ 				// exception while a suspend was requested (by itself, by another thread, or before a nested call that put
+@@ -3329,7 +3347,7 @@ static const void *const dispatch_table[256] = {
+ 				// pending for the next suspend point after the exception is handled.
+ 
+ 				// An exception might have been raised
+-				if( m_status != asEXECUTION_ACTIVE )
++				if( m_status.load(std::memory_order_relaxed) != asEXECUTION_ACTIVE )
+ 				{
+ 					m_regs.programPointer    = l_bc;
+ 					m_regs.stackPointer      = l_sp;
+@@ -3410,12 +3428,12 @@ static const void *const dispatch_table[256] = {
+ 			l_fp = m_regs.stackFramePointer;
+ 
+ 			// If status isn't active anymore then we must stop
+-			if( m_status != asEXECUTION_ACTIVE )
++			if( m_status.load(std::memory_order_relaxed) != asEXECUTION_ACTIVE )
+ 				return;
+ 
+ 			// ALTERED: a suspend requested by the registered function is acted on before the next instruction, as after asBC_CALLSYS,
+ 			// see asBC_CallPtr
+-			if( calledSystemFunction && m_regs.doProcessSuspend && m_doSuspend )
++			if( calledSystemFunction && ProcessSuspend() && m_doSuspend )
+ 			{
+ 				m_status = asEXECUTION_SUSPENDED;
+ 				return;
+@@ -3424,7 +3442,7 @@ static const void *const dispatch_table[256] = {
+ 		NEXT_INSTRUCTION();
+ 
+ 	INSTRUCTION(asBC_SUSPEND):
+-		if( m_regs.doProcessSuspend )
++		if( ProcessSuspend() )
+ 		{
+ 			if( m_lineCallback )
+ 			{
+@@ -3490,7 +3508,7 @@ static const void *const dispatch_table[256] = {
+ 				l_fp = m_regs.stackFramePointer;
+ 
+ 				// If status isn't active anymore then we must stop
+-				if( m_status != asEXECUTION_ACTIVE )
++				if( m_status.load(std::memory_order_relaxed) != asEXECUTION_ACTIVE )
+ 					return;
+ 			}
+ 			else
+@@ -3522,7 +3540,7 @@ static const void *const dispatch_table[256] = {
+ 				// (below), so a collection meanwhile walked into it.
+ 				if( a )
+ 				{
+-					if( m_status == asEXECUTION_ACTIVE )
++					if( m_status.load(std::memory_order_relaxed) == asEXECUTION_ACTIVE )
+ 						asStorePointerRelease((void**)a, mem);
+ 					else
+ 						*a = 0;
+@@ -3530,13 +3548,13 @@ static const void *const dispatch_table[256] = {
+ 
+ 				l_bc += 2+AS_PTR_SIZE;
+ 
+-				if( m_regs.doProcessSuspend )
++				if( ProcessSuspend() )
+ 				{
+ 					// ALTERED: an exception is handled before a suspend request, see asBC_CALLSYS (here the memory of an object
+ 					// whose constructor failed was left in the variable, and destroyed as an object later)
+ 
+ 					// An exception might have been raised
+-					if( m_status != asEXECUTION_ACTIVE )
++					if( m_status.load(std::memory_order_relaxed) != asEXECUTION_ACTIVE )
+ 					{
+ 						m_regs.programPointer    = l_bc;
+ 						m_regs.stackPointer      = l_sp;
+@@ -4290,7 +4308,7 @@ static const void *const dispatch_table[256] = {
+ 			l_fp = m_regs.stackFramePointer;
+ 
+ 			// If status isn't active anymore then we must stop
+-			if( m_status != asEXECUTION_ACTIVE )
++			if( m_status.load(std::memory_order_relaxed) != asEXECUTION_ACTIVE )
+ 				return;
+ 		}
+ 		NEXT_INSTRUCTION();
+@@ -4693,7 +4711,7 @@ static const void *const dispatch_table[256] = {
+ 					l_fp = m_regs.stackFramePointer;
+ 
+ 					// If status isn't active anymore then we must stop
+-					if( m_status != asEXECUTION_ACTIVE )
++					if( m_status.load(std::memory_order_relaxed) != asEXECUTION_ACTIVE )
+ 						return;
+ 
+ 					NEXT_INSTRUCTION();
+@@ -4817,7 +4835,7 @@ static const void *const dispatch_table[256] = {
+ 			l_fp = m_regs.stackFramePointer;
+ 
+ 			// If status isn't active anymore then we must stop
+-			if( m_status != asEXECUTION_ACTIVE )
++			if( m_status.load(std::memory_order_relaxed) != asEXECUTION_ACTIVE )
+ 				return;
+ 
+ 			// ALTERED: a suspend requested by the registered function (such as a context manager's sleep() or yield(), called through
+@@ -4826,7 +4844,7 @@ static const void *const dispatch_table[256] = {
+ 			// when built without line cues (the suspend points are then only at loops and function entries). A yield() that the
+ 			// execution ended without acting on still moved the context manager on to the next co-routine, and the manager removed
+ 			// that co-routine instead of the one that ended, then executed the null left in its place.
+-			if( calledSystemFunction && m_regs.doProcessSuspend && m_doSuspend )
++			if( calledSystemFunction && ProcessSuspend() && m_doSuspend )
+ 			{
+ 				m_status = asEXECUTION_SUSPENDED;
+ 				return;
+@@ -5309,12 +5327,12 @@ static const void *const dispatch_table[256] = {
+ 			// Update the program position after the call so that line number is correct
+ 			l_bc += 2;
+ 
+-			if( m_regs.doProcessSuspend )
++			if( ProcessSuspend() )
+ 			{
+ 				// ALTERED: an exception is handled before a suspend request, see asBC_CALLSYS
+ 
+ 				// An exception might have been raised
+-				if( m_status != asEXECUTION_ACTIVE )
++				if( m_status.load(std::memory_order_relaxed) != asEXECUTION_ACTIVE )
+ 				{
+ 					m_regs.programPointer    = l_bc;
+ 					m_regs.stackPointer      = l_sp;
+@@ -5454,7 +5472,7 @@ void asCContext::SetInternalException(const char *descr, bool allowCatch, bool a
+ 	}
+ 
+ 	m_status                = asEXECUTION_EXCEPTION;
+-	m_regs.doProcessSuspend = true;
++	DoProcessSuspend() = true;
+ 
+ 	m_exceptionString       = descr;
+ 	m_exceptionFunction     = m_currentFunction->id;
+@@ -6469,7 +6487,8 @@ int asCContext::SetLineCallback(const asSFuncPtr &callback, void *obj, int callC
+ 	bool isObj = false;
+ 	if( (unsigned)callConv == asCALL_GENERIC || (unsigned)callConv == asCALL_THISCALL_OBJFIRST || (unsigned)callConv == asCALL_THISCALL_OBJLAST )
+ 	{
+-		m_regs.doProcessSuspend = m_doSuspend;
++		DoProcessSuspend() = m_doSuspend.load();
++		if( m_doSuspend ) DoProcessSuspend() = true; // ALTERED: see ClearLineCallback
+ 		return asNOT_SUPPORTED;
+ 	}
+ 	if( (unsigned)callConv >= asCALL_THISCALL )
+@@ -6477,7 +6496,8 @@ int asCContext::SetLineCallback(const asSFuncPtr &callback, void *obj, int callC
+ 		isObj = true;
+ 		if( obj == 0 )
+ 		{
+-			m_regs.doProcessSuspend = m_doSuspend;
++			DoProcessSuspend() = m_doSuspend.load();
++			if( m_doSuspend ) DoProcessSuspend() = true; // ALTERED: see ClearLineCallback
+ 			return asINVALID_ARG;
+ 		}
+ 	}
+@@ -6489,7 +6509,8 @@ int asCContext::SetLineCallback(const asSFuncPtr &callback, void *obj, int callC
+ 
+ 	// The BC_SUSPEND instruction should be processed if either line
+ 	// callback is set or if the application has requested a suspension
+-	m_regs.doProcessSuspend = m_doSuspend || m_lineCallback;
++	DoProcessSuspend() = m_doSuspend || m_lineCallback;
++	if( m_doSuspend ) DoProcessSuspend() = true; // ALTERED: see ClearLineCallback
+ 
+ 	return r;
+ }
+@@ -6561,7 +6582,10 @@ void asCContext::HandleAppException()
+ void asCContext::ClearLineCallback()
+ {
+ 	m_lineCallback = false;
+-	m_regs.doProcessSuspend = m_doSuspend;
++	DoProcessSuspend() = m_doSuspend.load();
++	// ALTERED: read again after the write: a Suspend() or Abort() on another thread between the read of m_doSuspend and the
++	// write cleared the flag it had just set, and the execution never acted on the request.
++	if( m_doSuspend ) DoProcessSuspend() = true;
+ }
+ 
+ // interface
+diff --git a/sdk/angelscript/source/as_context.h b/sdk/angelscript/source/as_context.h
+index 9db3fad..b6e6650 100644
+--- a/sdk/angelscript/source/as_context.h
++++ b/sdk/angelscript/source/as_context.h
+@@ -198,10 +198,20 @@ public:
+ 	bool             m_holdEngineRef;
+ 	asCScriptEngine *m_engine;
+ 
+-	asEContextState m_status;
+-	bool            m_doSuspend;
+-	bool            m_doAbort;
+-	bool            m_externalSuspendRequest;
++	// ALTERED: atomic. Abort() and Suspend() are made to be called on another thread than the one executing (an application
++	// stopping a script that runs too long, a script thread ending the program), and these were plain variables both threads
++	// read and wrote: a data race, and Abort() read the status and wrote it as two steps, see Abort().
++	std::atomic<asEContextState> m_status;
++	std::atomic<bool> m_doSuspend;
++	std::atomic<bool> m_doAbort;
++	std::atomic<bool> m_externalSuspendRequest;
++	// ALTERED: m_regs.doProcessSuspend is a plain bool of the public asSVMRegisters, which Abort() and Suspend() set on another
++	// thread as well: every access goes through this, as asStorePointerRelease does for pointers.
++	std::atomic<bool> &DoProcessSuspend() { return *reinterpret_cast<std::atomic<bool>*>(&m_regs.doProcessSuspend); }
++	// ALTERED: the read the executing thread makes at every suspend point and after every call of a registered function. Relaxed: it is only
++	// the sign to look at m_doSuspend and m_doAbort, which are read in full order then, and a sign seen one instruction late is acted on at
++	// the next one; a fully ordered read put a memory barrier on each (a dmb on 32-bit ARM, and the suspend point is in every loop).
++	bool ProcessSuspend() const { return reinterpret_cast<const std::atomic<bool>*>(&m_regs.doProcessSuspend)->load(std::memory_order_relaxed); }
+ 
+ 	asCScriptFunction *m_currentFunction;
+ 	asCScriptFunction *m_callingSystemFunction;
