@@ -13,7 +13,9 @@
 
 #include <algorithm>
 #include <exception>
+#include <chrono>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -69,9 +71,52 @@ int nvgt_register_audio_panner(nvgt_spatializer_component_factory* factory, bool
 int nvgt_register_audio_attenuator(nvgt_spatializer_component_factory* factory, bool default_enabled, nvgt_audio_attenuation_function* attenuation) { return factory ? register_audio_attenuator(factory, default_enabled, attenuation) : -1; }
 float nvgt_get_audio_attenuation(int attenuator_id, const audio_spatialization_parameters* params, float distance) { return params ? get_audio_attenuation(attenuator_id, *params, distance) : 1.0f; }
 spatializer_component_node* nvgt_audio_spatializer_component_create(audio_plugin_spatializer_component_interface* impl, audio_spatializer* spatializer, audio_engine* engine, unsigned int input_channels, unsigned int output_channels) { return create_plugin_spatializer_component(impl, spatializer, engine, input_channels, output_channels); }
+// The engines nvgt_get_default_audio_engine() gave plugins, each kept with a reference of NVGT's own: a plugin is given the default engine without a reference, as plugins built for this API expect, which another thread setting sound_default_engine could otherwise free before the plugin took one of its own. Giving the plugin a reference instead would have plugins built for that free one they were only lent by an NVGT built before it. Let go of once the engine is no longer the default and was last given out a second before, which no plugin taking its reference at once, as nvgt_plugin.h says, comes near, and the oldest past the eighth whatever their age: kept for good, a replaced engine held its device open, and kept for ten seconds, a script replacing the default many times a second kept hundreds alive, gigabytes of them.
+struct plugin_lent_engine {
+	audio_engine* engine;
+	std::chrono::steady_clock::time_point lent;
+};
+static std::mutex g_plugin_engines_mutex;
+static std::vector<plugin_lent_engine> g_plugin_engines;
+static void take_out_lent_engines(audio_engine* current, std::vector<audio_engine*>& let_go) { // Under g_plugin_engines_mutex; the caller lets go of them after it, as freeing an engine closes its device.
+	const auto now = std::chrono::steady_clock::now();
+	size_t others = 0;
+	for (auto it = g_plugin_engines.begin(); it != g_plugin_engines.end();) {
+		if (it->engine != current && now - it->lent > std::chrono::seconds(1)) {
+			let_go.push_back(it->engine);
+			it = g_plugin_engines.erase(it);
+		} else {
+			if (it->engine != current) others++;
+			++it;
+		}
+	}
+	for (auto it = g_plugin_engines.begin(); others > 8 && it != g_plugin_engines.end();) { // Oldest first, as kept in the order given.
+		if (it->engine == current) { ++it; continue; }
+		let_go.push_back(it->engine);
+		it = g_plugin_engines.erase(it);
+		others--;
+	}
+}
 audio_engine* nvgt_get_default_audio_engine() {
-	try { return init_sound() ? g_audio_engine : nullptr; }
-	catch (const std::exception&) { return nullptr; } // Not through a plugin, which may not take it.
+	audio_engine* engine = nullptr;
+	std::vector<audio_engine*> let_go;
+	struct letting_go { std::vector<audio_engine*>& engines; ~letting_go() { for (audio_engine* e : engines) e->release(); } } after_lock{let_go}; // Declared before the lock, so run after it.
+	try {
+		if (!(engine = acquire_default_engine())) return nullptr;
+		std::lock_guard<std::mutex> lock(g_plugin_engines_mutex);
+		let_go.reserve(g_plugin_engines.size() + 1); // Room made first, so that neither taking them out nor keeping this one can throw midway.
+		g_plugin_engines.reserve(g_plugin_engines.size() + 1);
+		take_out_lent_engines(engine, let_go);
+		auto kept = std::find_if(g_plugin_engines.begin(), g_plugin_engines.end(), [engine](const plugin_lent_engine& lent) { return lent.engine == engine; });
+		if (kept != g_plugin_engines.end()) {
+			kept->lent = std::chrono::steady_clock::now();
+			engine->release(); // Kept already, by the reference taken the first time.
+		} else g_plugin_engines.push_back({engine, std::chrono::steady_clock::now()});
+		return engine;
+	} catch (const std::exception&) { // Not through a plugin, which may not take it; out of memory keeping the engine, the reference just taken let go of.
+		if (engine) engine->release();
+		return nullptr;
+	}
 }
 reverb3d* nvgt_reverb3d_create_with_handler(reverb3d_attachment_handler* handler, audio_node* reverb, mixer* destination, audio_engine* engine) {
 	// reverb3d::create_with_handler() throws for what it refuses (a reverb of another engine, a loop, a reverb in use elsewhere) and frees

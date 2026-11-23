@@ -59,7 +59,7 @@ typedef nvgt_raycast_provider* nvgt_raycast_provider_getter(void* object);
 // Audio for plugins. A plugin can't use NVGT's audio classes beyond their virtual methods, so NVGT creates the nodes a plugin needs and the plugin implements their processing through an interface (see sound_nodes.h).
 // 3d panners and attenuators, the components of a sound's spatializer, are created by factories registered with nvgt_register_audio_panner and nvgt_register_audio_attenuator, which return the id scripts select them by (sound.set_3d_panner and sound.set_3d_attenuator). A factory returns the node made by nvgt_audio_spatializer_component_create for its audio_plugin_spatializer_component_interface. An attenuator can register its distance curve, which nvgt_get_audio_attenuation evaluates for any distance.
 // nvgt_reverb3d_create_with_handler creates a reverb3d whose attachment to each source is made by a handler, see reverb3d_attachment_handler, in the default engine if none is given. It takes the handler whatever it returns.
-// nvgt_get_default_audio_engine gives the default engine without a reference, which duplicate() must be called on before anything else is done with it, as another thread may change the default, or null if the sound system can't be started.
+// nvgt_get_default_audio_engine gives the default engine without a reference, or null if the sound system can't be started. NVGT keeps an engine it gave this way for a second after it was last given and is no longer the default, so that another thread changing the default can't free it before the plugin calls duplicate() on it, which it must do at once to keep it.
 class audio_node;
 class mixer;
 class reverb3d;
