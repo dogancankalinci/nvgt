@@ -228,8 +228,30 @@ void string_remove_BOM(std::string* str) {
 std::string string_escape(std::string* str, bool strict_json) {
 	return UTF8::escape(*str, strict_json);
 }
+// Poco's UTF8::unescape() leaves \" and \/ as they are, a backslash and the character, though its escape() writes them: the text a\"b
+// kept its backslash, so s.escape().unescape() wasn't s for text with a " or a /. They become the character here, and the rest goes to Poco
+// as it was (an escaped backslash is passed on whole, so that the character after it is never taken for an escape).
 std::string string_unescape(std::string* str) {
-	return UTF8::unescape(*str); // It called escape(), so unescape() escaped the text a second time ("a\\nb" gave "a\\\\nb").
+	std::string text;
+	text.reserve(str->size());
+	for (size_t i = 0; i < str->size(); i++) {
+		const char c = (*str)[i];
+		if (c == '\\' && i + 1 < str->size()) {
+			const char next = (*str)[i + 1];
+			if (next == '"' || next == '/') {
+				text += next;
+				i++;
+				continue;
+			}
+			if (next == '\\') {
+				text += "\\\\";
+				i++;
+				continue;
+			}
+		}
+		text += c;
+	}
+	return UTF8::unescape(text); // It called escape(), so unescape() escaped the text a second time ("a\\nb" gave "a\\\\nb").
 }
 std::string string_trim_whitespace_left(std::string* str) {
 	return trimLeft<std::string>(*str);
