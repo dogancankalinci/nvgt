@@ -50,7 +50,8 @@ bool combination_generator::active() {
 }
 
 bool combination_generator::validate(int items, int min_size, int max_size) {
-	if (items < 2) return false;
+	// One item is a set too: each size has the one combination of it.
+	if (items < 1) return false;
 	if (min_size < 1) return false;
 	if (max_size < min_size) return false;
 	return true;
@@ -108,8 +109,8 @@ bool combination_permutation::build_first() {
 // Algorithm for returning unique combinations in a set.
 bool combination_unique::validate(int items, int min_size, int max_size) {
 	if (!combination_generator::validate(items, min_size, max_size)) return false;
-	if (items < 3) return false;
-	if (max_size >= items) return false;
+	// A combination without repetition can take every item at most once, so it can be all of them (n of n) but no more.
+	if (max_size > items) return false;
 	return true;
 }
 bool combination_unique::advance() {
