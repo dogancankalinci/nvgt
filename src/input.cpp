@@ -368,7 +368,9 @@ int total_keys_down() {
 		return g_TotalKeysDownCache;
 	int c = 0;
 	for (int i = 0; i < g_KeysDownArrayLen; i++) {
-		if (keys_down[i] || g_KeysReleased[i])
+		// A key held down by simulate_key_down() too, as key_down() and keys_down() count it: SDL's own state doesn't have it, and it was
+		// left out (key_down(KEY_A) true, keys_down() of 1 and total_keys_down() 0).
+		if (keys_down[i] || g_KeysForced[i] || g_KeysReleased[i])
 			c++;
 	}
 	g_KeyboardStateChange = false;
