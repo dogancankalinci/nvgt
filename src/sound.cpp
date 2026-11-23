@@ -783,6 +783,7 @@ public:
 sound_aabb_shape* create_sound_aabb_shape(float left_range, float right_range, float backward_range, float forward_range, float lower_range, float upper_range) { return new sound_aabb_shape(left_range, right_range, backward_range, forward_range, lower_range, upper_range); }
 
 // An engine's endpoint, which lives exactly as long as its engine: its references are the engine's, so a script holding the endpoint keeps the engine, while the engine, which deletes it, isn't kept alive by it. A reference of its own on the engine made the two hold each other, and no engine was ever destroyed.
+class audio_engine_impl;
 class audio_engine_endpoint final : public audio_node_impl {
 public:
 	audio_engine_endpoint(ma_node_base *endpoint, audio_engine *e) : audio_node_impl(endpoint, e) { engine->release(); } // Gives back the reference the node took; the engine's own keeps it alive.
@@ -1095,6 +1096,17 @@ public:
 		return false;
 	}
 	bool read(void *buffer, unsigned long long frame_count, unsigned long long *frames_read) override { return engine ? (g_soundsystem_last_error = ma_engine_read_pcm_frames(&*engine, buffer, frame_count, frames_read)) == MA_SUCCESS : false; }
+	// A script's reads, one at a time, as MiniAudio's engine can't be read from two threads at once; script_reading tells attach_output_bus() not to mix the engine into another meanwhile, whose audio thread would read it too.
+	std::mutex script_read_mutex;
+	bool script_reading = false; // Under the graph lock.
+	struct script_read_turn {
+		audio_engine_impl* e;
+		~script_read_turn() {
+			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex);
+			e->script_reading = false;
+		}
+	};
+	friend bool engine_read_by_script(const audio_engine* e);
 	CScriptArray *read_script(unsigned long long frame_count) override {
 		if (!engine)
 			return nullptr;
@@ -1102,10 +1114,16 @@ public:
 			g_soundsystem_last_error = MA_INVALID_OPERATION;
 			return CScriptArray::Create(float_array_type());
 		}
-		if (output_attached()) { // Mixed into another engine, whose audio thread reads it there.
-			g_soundsystem_last_error = MA_INVALID_OPERATION;
-			return CScriptArray::Create(float_array_type());
+		std::lock_guard<std::mutex> reading(script_read_mutex);
+		{
+			std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); // Which an attach checks script_reading under.
+			if (output_attached()) { // Mixed into another engine, whose audio thread reads it there.
+				g_soundsystem_last_error = MA_INVALID_OPERATION;
+				return CScriptArray::Create(float_array_type());
+			}
+			script_reading = true;
 		}
+		script_read_turn turn{this};
 		unsigned int channels = ma_engine_get_channels(&*engine);
 		if (frame_count > 0xFFFFFFFF / channels) throw_refusal(MA_INVALID_ARGS, "too many frames requested");
 		CScriptArray *result = CScriptArray::Create(float_array_type(), frame_count * channels);
@@ -6779,6 +6797,10 @@ microphone* microphone::create(int device, audio_engine* engine) {
 }
 
 audio_engine *new_audio_engine(int flags, int sample_rate, int channels) { return new audio_engine_impl(flags, sample_rate, channels); }
+bool engine_read_by_script(const audio_engine* e) {
+	auto impl = dynamic_cast<const audio_engine_impl*>(e);
+	return impl && impl->script_reading;
+}
 mixer *new_mixer(audio_engine *engine) { return new mixer_impl(engine); }
 sound *new_sound(audio_engine *engine) { return new sound_impl(engine); }
 // The default engine with a reference of the caller's own: another thread making a different engine the default lets go of the old one, which could otherwise be destroyed while it is used. Null when the sound system couldn't start.

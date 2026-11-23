@@ -30,6 +30,7 @@ extern std::recursive_mutex g_node_graph_mutex;
 // A group of an engine through which a node of another sample rate goes into one of its nodes, resampled from that rate to the engine's (see audio_node_impl::attach_output_bus()). Made unattached, of the given channels in and out, under the graph lock, as it is let go of.
 ma_sound* rate_bridge_create(audio_engine* engine, unsigned int channels, unsigned int sample_rate);
 void rate_bridge_destroy(ma_sound* bridge);
+bool engine_read_by_script(const audio_engine* e); // Under the graph lock: whether a script thread is reading this no-device engine (see audio_engine_impl::read_script()).
 // The references nodes hold to one another outside the graph (see claim_node_hold()), which audio_node_impl::reaches_node() follows with the attachments: appended to out under node_holds_lock(), which is taken after the graph lock and with nothing taken under it.
 std::unique_lock<std::mutex> node_holds_lock();
 void append_node_holds(const audio_node* n, std::vector<audio_node*>& out);
@@ -134,6 +135,10 @@ public:
 			// Checked under the graph lock the attach is made under, which feeds_engine() takes too, so that two threads mixing two no-device engines into each other at once can't both pass it before either attached. Only into this node's own engine, whose audio thread alone reads its graph: a node read by two engines' threads at once crashes. An engine itself is the exception, as a no-device engine is mixed into another through its own node, which only that other engine's thread then reads; an engine with a device would be read by its own device thread too, and one fed back into itself, directly or through other engines, would read itself without end.
 			if (is_engine()? !(engine->get_flags() & audio_engine::NO_DEVICE) || feeds_engine(destination->get_engine()) : destination->get_engine() != engine) {
 				g_soundsystem_last_error = MA_INVALID_ARGS;
+				return false;
+			}
+			if (is_engine() && engine_read_by_script(engine)) { // A script thread reads it now, which mixed into another engine its audio thread would read too.
+				g_soundsystem_last_error = MA_BUSY;
 				return false;
 			}
 			// Nor into itself, or into a node whose output reaches this one, as a chain's endpoint set to the chain or one of its own nodes: each attachment holds the node it goes into, so the loop kept every node on it, and their engine with its device, alive for good.
