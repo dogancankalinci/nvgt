@@ -1598,7 +1598,8 @@ public:
 	unsigned int output_sample_rate() const override { return get_sample_rate(); } // The source's frames as they are, which a graph of another rate takes through a group that resamples them (see audio_node_impl::attach_output_bus()).
 	// The graph's audio thread reads the source once its node is attached, so not while a sound, chain or head reads it, nor a sound's own source.
 	bool attach_output_bus(unsigned int output_bus, audio_node *destination, unsigned int destination_input_bus) override {
-		if (in_use(false)) return false;
+		auto guard = lock_source(); // As the calls that check in_use() take it: a sound's open() on another thread, or a seek or read, came between the check and the attach, the audio thread then reading the source with them.
+		if (!guard || in_use(false)) return false;
 		prepare_length();
 		return audio_node_impl::attach_output_bus(output_bus, destination, destination_input_bus);
 	}
@@ -2090,10 +2091,9 @@ public:
 		if (rb) queue->uninit();
 	}
 	void reset() override {
-		const bool used = is_used(this);
-		auto guard = lock_source(); // Nor under a script's read, which a reset moves the read position under.
+		auto guard = lock_source(); // Nor under a script's read, which a reset moves the read position under, and before it is told whether the buffer is read elsewhere, which a sound's open() or an attach under this lock could make it meanwhile.
 		if (!guard) return;
-		reset_ring(used);
+		reset_ring(is_used(this));
 	}
 protected:
 	// reset(), told whether the ring buffer is read elsewhere, which takes the graph lock to find out: the microphone finds out before it takes its capture lock, which the capture thread only tries for, so that one isn't held while the graph lock is waited for.
@@ -5984,21 +5984,30 @@ public:
 		struct call_reference { audio_data_source* ds; ~call_reference() { ds->release(); } } kept_alive{ds};
 		// The source's lock, from the checks below until this sound counts as its user: another thread's ds.close() or open() would free the decoder this sound is being made on, and another sound's open() would pass the same checks.
 		auto source_guard = audio_data_source_impl::lock_source_of(ds);
-		if (audio_data_source_impl::is_ours(ds) && !source_guard) { // Busy, on an audio thread.
+		// Refused with the reference let go of: busy, on an audio thread, or a source that can't be opened. A sound's own source is freed by that sound when it closes, as this one does to open it, and one another sound or chain reads would be read from two places.
+		auto refused = [&]() {
+			if (audio_data_source_impl::is_ours(ds) && !source_guard) return true;
+			if (ds->get_active() && !audio_data_source_impl::is_sound_owned(ds) && !audio_data_source_impl::is_used(ds)) return false;
+			g_soundsystem_last_error = ds->get_active()? MA_INVALID_OPERATION : MA_INVALID_ARGS;
+			return true;
+		};
+		if (refused()) {
 			ds->release();
 			return false;
 		}
-		// A sound's own source is freed by that sound when it closes, as this one does to open it, and one another sound or chain reads would be read from two places.
-		if (!ds->get_active() || audio_data_source_impl::is_sound_owned(ds) || audio_data_source_impl::is_used(ds)) {
-			g_soundsystem_last_error = ds->get_active()? MA_INVALID_OPERATION : MA_INVALID_ARGS;
-			ds->release();
-			return false;
+		if (snd) { // Closed without the source's lock, as closing rewires this sound's chains, whose locks a chain adding the source takes before the source's (see audio_data_source_impl::attach_output_bus()); checked again once it is taken anew.
+			if (source_guard.owns_lock()) source_guard.unlock();
+			close_to_reload();
+			source_guard = audio_data_source_impl::lock_source_of(ds);
+			if (refused()) {
+				ds->release();
+				return false;
+			}
 		}
 		// The script's reference is this sound's from here, let go of on a throw too, as on running out of memory, and the source's looping put back once chain_source() set it aside: kept, the source was never freed.
 		ma_bool32 looped = MA_FALSE;
 		bool looping_read = false;
 		try {
-		if (snd) close_to_reload();
 		complete_if_failed failed{this}; // As in load_source().
 		audio_data_source_impl::prepare_length_of(ds); // Before the sound reads it.
 		looped = ma_data_source_is_looping(ds->get_ma_data_source()); // Before chain_source() sets it aside.
@@ -6024,6 +6033,7 @@ public:
 		datasource = ds;
 		datasource_opened = true;
 		audio_data_source_impl::add_user(ds); // So it can't be closed while this sound reads it.
+		if (source_guard.owns_lock()) source_guard.unlock(); // Before the sound is attached, as for close_to_reload() above.
 		loaded_or_closed([&]() { postload(":datasource", false); });
 		return true;
 	}
@@ -6761,9 +6771,9 @@ public:
 	}
 	// A ring buffer has one writer and one reader, and resetting it moves both positions: reset() while the capture thread wrote into it could leave that writer writing past its end. reset() therefore holds this, which the capture thread only tries for, dropping what it captured meanwhile rather than waiting.
 	void reset() override {
-		bool used = is_used(this);
 		auto guard = lock_source(); // As audio_ring_buffer_impl::reset().
 		if (!guard) return;
+		bool used = is_used(this); // Before the capture lock, as reset_ring() says.
 		std::lock_guard<std::mutex> lock(capture_write_mutex);
 		reset_ring(used);
 	}
