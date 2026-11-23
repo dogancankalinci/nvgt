@@ -168,10 +168,24 @@ struct SDictionaryCache
 //--------------------------------------------------------------------------
 // CScriptDictionary implementation
 
+// ALTERED: an allocation that failed raises "Out of memory" and gives null, as the array and grid add-ons do; the dictionary (or the
+// iterator, see opForBegin) was constructed at the null pointer
+static bool DictionaryMemoryAllocated(void *mem)
+{
+	if( mem )
+		return true;
+	asIScriptContext *ctx = asGetActiveContext();
+	if( ctx )
+		ctx->SetException("Out of memory");
+	return false;
+}
+
 CScriptDictionary *CScriptDictionary::Create(asIScriptEngine *engine)
 {
 	// Use the custom memory routine from AngelScript to allow application to better control how much memory is used
 	CScriptDictionary *obj = (CScriptDictionary*)asAllocMem(sizeof(CScriptDictionary));
+	if( !DictionaryMemoryAllocated(obj) )
+		return 0;
 	new(obj) CScriptDictionary(engine);
 	return obj;
 }
@@ -180,6 +194,8 @@ CScriptDictionary *CScriptDictionary::Create(asBYTE *buffer)
 {
 	// Use the custom memory routine from AngelScript to allow application to better control how much memory is used
 	CScriptDictionary *obj = (CScriptDictionary*)asAllocMem(sizeof(CScriptDictionary));
+	if( !DictionaryMemoryAllocated(obj) )
+		return 0;
 	new(obj) CScriptDictionary(buffer);
 	return obj;
 }
@@ -1320,6 +1336,8 @@ CScriptDictionary::CScriptDictIter* CScriptDictionary::opForBegin() const
 {
 	// Use the custom memory routine from AngelScript to allow application to better control how much memory is used
 	CScriptDictionary::CScriptDictIter* iter = (CScriptDictionary::CScriptDictIter*)asAllocMem(sizeof(CScriptDictionary::CScriptDictIter));
+	if( !DictionaryMemoryAllocated(iter) )
+		return 0; // ALTERED: opForEnd() then ends the loop, see CheckIter
 	new(iter) CScriptDictionary::CScriptDictIter(this);
 	return iter;
 }

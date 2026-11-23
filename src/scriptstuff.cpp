@@ -737,6 +737,10 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 	// The result: the return value under "0" and the final value of each &out or &inout argument under its own number, which the caller's dictionary holds in place of the arguments it was given. They are gathered before anything is released, as an &out value can be the dictionary's own and a returned reference can point to an argument.
 	CScriptDictionary* results;
 	results = CScriptDictionary::Create(g_ScriptEngine);
+	if (!results) { // No memory for it: the dictionary add-on raised "Out of memory" (it was constructed at null before).
+		failure_reason = "ERROR: Out of memory";
+		goto failure;
+	}
 	for (auto& out : out_args) set_call_result(results, std::to_string(std::get<0>(out) + 1), std::get<1>(out), std::get<2>(out));
 	asDWORD ret_tmods;
 	int ret_type_id;

@@ -511,6 +511,7 @@ static void check_key_bucket(CScriptDictionary* dict, const std::string& key) {
 }
 static CScriptDictionary* read_dictionary_body(Poco::BinaryReader& r, asIScriptModule* mod) {
 	std::unique_ptr<CScriptDictionary, void(*)(CScriptDictionary*)> dict(CScriptDictionary::Create(g_ScriptEngine), [](CScriptDictionary* d) { d->Release(); });
+	if (!dict) throw std::bad_alloc(); // see CScriptDictionary::Create: no memory for it
 	Poco::UInt32 count = 0;
 	r >> count;
 	check_left(r, count);
@@ -561,6 +562,7 @@ static void read_array_body(Poco::BinaryReader& r, asIScriptModule* mod, CScript
 // Cleaned up but format-compatible reimplementation of the pre-2025 dictionary format (bool/int64/double/string only, keyed on a 1 byte type tag). Bounds every read against the remaining buffer instead of trusting embedded lengths, since that trust is what made the original implementation crash-prone on truncated or malformed input.
 static CScriptDictionary* deserialize_legacy(const std::string& input) {
 	CScriptDictionary* dict = CScriptDictionary::Create(g_ScriptEngine);
+	if (!dict) return nullptr; // No memory for it: the add-on raised "Out of memory".
 	size_t pos = 4; // The 4 byte legacy magic was already matched by the caller.
 	auto fits = [&](size_t n) { return pos + n <= input.size(); };
 	if (!fits(4)) return dict;
