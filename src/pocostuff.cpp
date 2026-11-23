@@ -136,6 +136,11 @@ static UTF8Encoding g_UTF8;
 bool character_is_alphanum(int ch) {
 	return Unicode::isAlpha(ch) || Unicode::isDigit(ch);
 }
+// The whitespace trim_whitespace() takes away (space, tab, line feed, vertical tab, form feed, carriage return) and Unicode's space
+// separators: Poco's Unicode::isSpace() is the separators alone, so "\t" and "\n" weren't whitespace to is_whitespace().
+bool character_is_whitespace(int ch) {
+	return ch == ' ' || (ch >= '\t' && ch <= '\r') || Unicode::isSpace(ch);
+}
 bool string_is(std::string* str, const std::string& encoding, bool(x(int))) {
 	if (str->size() < 1) return false;
 	TextEncoding* enc = &g_UTF8;
@@ -191,7 +196,7 @@ bool string_is_upper(std::string* str, const std::string& encoding) {
 	return string_is(str, encoding, Unicode::isUpper);
 }
 bool string_is_whitespace(std::string* str, const std::string& encoding) {
-	return string_is(str, encoding, Unicode::isSpace);
+	return string_is(str, encoding, character_is_whitespace);
 }
 bool string_is_punct(std::string* str, const std::string& encoding) {
 	return string_is(str, encoding, Unicode::isPunct);

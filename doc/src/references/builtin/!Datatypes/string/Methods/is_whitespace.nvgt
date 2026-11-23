@@ -1,0 +1,18 @@
+/**
+	Checks whether a string contains only whitespace characters and nothing else.
+	bool string::is_whitespace(string encoding = "UTF8");
+	## Arguments:
+		* string encoding = "UTF8": The encoding to check against, with the UTF8 encoding being cached for speed.
+	## Returns:
+		bool: true if the input string contains only whitespace characters.
+	## Remarks:
+		Whitespace is what trim_whitespace() removes (spaces, tabs, new lines, carriage returns, vertical tabs and form feeds) and every Unicode space separator, such as the no-break space.
+		An empty string gives false.
+		If the string holds bytes that are not a character of the given encoding (text that is not valid UTF-8, for example), this function returns false.
+*/
+
+// example:
+void main() {
+	alert("example", " \t\n".is_whitespace()); // Should show true.
+	alert("example", " a ".is_whitespace()); // Should show false.
+}
