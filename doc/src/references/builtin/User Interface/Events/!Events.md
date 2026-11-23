@@ -13,10 +13,12 @@ Add a listener with the `+=` operator, or with the `insert()` method, which also
 
 `bool insert(listener@ listener, int index = -1);`
 
-An index of -1 adds the listener to the end of the list, while 0 makes it the first listener to be called. Both `+=` and `insert()` return false if the listener is already in the list.
+An index of -1 adds the listener to the end of the list, while 0 makes it the first listener to be called. Both `+=` and `insert()` return false if the listener is already in the list, and `insert()` also does for an index past the end of the list or below -1.
 
 ## Removing listeners
 Remove a listener with the `-=` operator or with `remove(listener)`. You can also remove the listener at a given position with `remove(uint index)`, or every listener with `clear()`. To find a listener's position in the list, use `find(listener)`, which returns -1 if it is not in the list. The `count` property holds the number of listeners.
+
+A listener can add or remove listeners, itself included, while the event fires: a listener removed then is not called by that firing, and one added is called from the next firing on.
 
 Object listeners and method listeners only hold a weak reference to their object, so being registered with an event doesn't keep an object alive. Once the object is destroyed, its listener is removed automatically the next time the event fires.
 

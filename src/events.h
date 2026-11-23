@@ -53,15 +53,20 @@ class engine_event {
 	bool remove(const engine_event_listener& listener);
 	int find_locked(const engine_event_listener& listener) const; // listeners_mutex held
 	std::optional<engine_event_listener> listener_at(size_t index) const; // A copy of listeners[index], none past the end.
+	std::vector<engine_event_listener> listeners_copy() const; // A copy of the list, taken under the lock.
+	bool is_listed(const engine_event_listener& listener) const;
 protected:
 	template <typename... Args> void fire(Args&... args) {
 		clean_inactive_listeners();
-		// Each listener is copied under the lock and called without it, by index as before: a listener that removes or inserts
-		// listeners changes which ones the rest of this firing runs, as it did.
-		for (size_t i = 0;; i++) {
-			std::optional<engine_event_listener> l = listener_at(i);
-			if (!l) break;
-			if (l->fire(std::forward<Args>(args)...)) break;
+		// The listeners as the event fires, copied under the lock and each called without it if it is still listed when its turn
+		// comes. Gone through by index in the live list, a listener that removed itself (or one before it) shifted the rest under the
+		// index, and the listener after it wasn't called for this firing (for [R, V] where R removes itself, only R ran); one inserted
+		// before the current position made the current one run again. A listener removed during a firing isn't called; one added is
+		// called from the next firing on.
+		std::vector<engine_event_listener> snapshot = listeners_copy();
+		for (engine_event_listener& l : snapshot) {
+			if (!is_listed(l)) continue;
+			if (l.fire(std::forward<Args>(args)...)) break;
 		}
 	}
 	engine_event(const std::string& name, const std::string& type, const std::string& args, const asSFuncPtr& fire_func);

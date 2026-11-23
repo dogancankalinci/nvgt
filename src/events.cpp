@@ -90,6 +90,14 @@ std::optional<engine_event_listener> engine_event::listener_at(size_t index) con
 	if (index >= listeners.size()) return std::nullopt;
 	return listeners[index];
 }
+std::vector<engine_event_listener> engine_event::listeners_copy() const {
+	std::lock_guard<std::mutex> lock(listeners_mutex);
+	return listeners;
+}
+bool engine_event::is_listed(const engine_event_listener& listener) const {
+	std::lock_guard<std::mutex> lock(listeners_mutex);
+	return find_locked(listener) > -1;
+}
 void engine_event::clean_inactive_listeners() {
 	for (size_t i = 0;; i++) {
 		std::optional<engine_event_listener> l = listener_at(i);
