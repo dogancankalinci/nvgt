@@ -52,7 +52,7 @@ if env["NVGT_TARGET"] == "windows":
 	# HTTPS uses Windows' own TLS rather than OpenSSL, see vcpkg/triplets/x64-windows.cmake. OpenSSL itself stays on the list for
 	# the iOS signer in src/bundling.cpp, which only the compiler needs: the stubs link it only if they reference it.
 	common_libs = [l for l in common_libs if l not in ("PocoNetSSL", "PocoCrypto")] + ["PocoNetSSLWin"]
-	deb_rel_flags = ["/MTd", "/Od", "/Z7"] if ARGUMENTS.get("debug", "0") == "1" else ["/MT", "/O2"]
+	deb_rel_flags = ["/MTd", "/Od", "/Z7"] if ARGUMENTS.get("debug", "0") == "1" else ["/MT", "/O2", "/Gw"]
 	env.Append(CCFLAGS = ["/EHsc", "/J", "/utf-8", "/Gy", "/std:c++20", "/GF", "/Zc:inline", "/bigobj", "/permissive-", "/W3" if ARGUMENTS.get("warnings", "0") == "1" else "", "/WX" if ARGUMENTS.get("warnings_as_errors", "0") == "1" else ""] + deb_rel_flags)
 	env.Append(LINKFLAGS = ["/NOEXP", "/NOIMPLIB"], no_import_lib = 1)
 	env.Append(LIBS = ["Kernel32", "User32", "imm32", "OneCoreUAP", "dinput8", "dxguid", "gdi32", "winspool", "shell32", "iphlpapi", "ole32", "oleaut32", "delayimp", "uuid", "comdlg32", "advapi32", "netapi32", "secur32", "winmm", "version", "crypt32", "bcrypt", "normaliz", "wldap32", "ws2_32", "ntdll", "wbemuuid"])
@@ -415,7 +415,7 @@ version_object = env.Object("build/obj_src/version", "src/version.cpp") # Things
 VariantDir("build/obj_src", "src", duplicate = 0)
 env.Append(CPPDEFINES = ["NVGT_BUILDING", "NO_OBFUSCATE"])
 if env["NVGT_TARGET"] == "windows":
-	deb_rel_flags = ["/DEBUG", "/INCREMENTAL:NO"] if ARGUMENTS.get("debug", "0") == "1" else ["/OPT:ICF=3"]
+	deb_rel_flags = ["/DEBUG", "/INCREMENTAL:NO"] if ARGUMENTS.get("debug", "0") == "1" else ["/OPT:ICF=3", "/NODEFAULTLIB:libucrt.lib", "ucrt.lib"] # Release builds use the Universal CRT that ships with Windows 10 and later rather than a static copy, saving around 400 KB.
 	env.Append(CPPDEFINES = ["_SILENCE_CXX20_OLD_SHARED_PTR_ATOMIC_SUPPORT_DEPRECATION_WARNING"], LINKFLAGS = ["/ignore:4099"] + deb_rel_flags)
 elif env["NVGT_TARGET"] in ("macos", "ios"):
 	sources.append("apple.mm")
