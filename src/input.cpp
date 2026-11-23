@@ -197,12 +197,25 @@ bool InputEvent(SDL_Event* evt) {
 	return true;
 }
 
+inline bool post_key_event(int key, SDL_EventType evt_type);
+// Keys held down by simulate_key_down() are NVGT's own (g_KeysForced; SDL's state doesn't have them), and SDL_ResetKeyboard() lets go of
+// every key but those: after reset_keyboard() or the window losing focus they stayed down for good (key_down() true, keys_down() listing
+// them). They are let go of with the rest, as simulate_key_up() does, so their release is reported (key_released(), the key events) as
+// SDL's reset reports the keys it lets go of.
+static void release_simulated_keys() {
+	for (int i = 0; i < SDL_SCANCODE_COUNT; i++) {
+		if (g_KeysForced[i] && !post_key_event(i, SDL_EVENT_KEY_UP)) g_KeysForced[i] = 0; // no video, no event: just no longer held
+	}
+}
 // SDL's keyboard state is changed by the thread that handles the window's events (see game_window::on_thread() in UI.h): SDL_ResetKeyboard(), registered as it was, ran on any script thread, changing the key states and sending key up events while the window's thread did the same as it handled its events. Elsewhere it does nothing, as the other calls that change SDL's state.
 static void reset_keyboard() {
-	if (window_thread_free()) SDL_ResetKeyboard();
+	if (!window_thread_free()) return;
+	SDL_ResetKeyboard();
+	release_simulated_keys();
 }
 void lost_window_focus() {
 	SDL_ResetKeyboard();
+	release_simulated_keys();
 	lost_window_focus_platform();
 }
 void regained_window_focus() {
@@ -272,7 +285,7 @@ bool insure_key_up(int key) {
 	const bool* keys_down = g_KeysDown; // See g_KeysDown.
 	if (key < 0 || key >= SDL_SCANCODE_COUNT || !keys_down)
 		return false;
-	if (keys_down[key] == 1)
+	if (keys_down[key] == 1 || g_KeysForced[key]) // a key simulate_key_down() holds too, which key_down() reports: it was left down and false returned
 		g_KeysReleased[key] = 1;
 	else
 		return false;
