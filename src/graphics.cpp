@@ -572,7 +572,7 @@ bool graphics_renderer::render_texture_rotated(graphics_texture* tex, float dst_
 	// Rotates around the center of the drawn texture.
 	if (!tex || !tex->get_texture()) return false;
 	SDL_FRect dst = {dst_x, dst_y, (float)tex->get_width(), (float)tex->get_height()};
-	bool ok = SDL_RenderTextureRotated(_renderer, tex->get_texture(), nullptr, &dst, angle, nullptr, (SDL_FlipMode)flip);
+	bool ok = SDL_RenderTextureRotated(rend(), tex->get_texture(), nullptr, &dst, angle, nullptr, (SDL_FlipMode)flip);
 	if (ok) mark_dirty();
 	return ok;
 }
@@ -583,7 +583,7 @@ bool graphics_renderer::render_texture_rotated_ex(graphics_texture* tex, float s
 	SDL_FRect src = {src_x, src_y, src_w, src_h};
 	SDL_FRect dst = {dst_x, dst_y, dst_w, dst_h};
 	SDL_FPoint center = {center_x, center_y};
-	bool ok = SDL_RenderTextureRotated(_renderer, tex->get_texture(), &src, &dst, angle, &center, (SDL_FlipMode)flip);
+	bool ok = SDL_RenderTextureRotated(rend(), tex->get_texture(), &src, &dst, angle, &center, (SDL_FlipMode)flip);
 	if (ok) mark_dirty();
 	return ok;
 }
