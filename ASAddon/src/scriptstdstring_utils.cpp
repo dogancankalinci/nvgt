@@ -12,6 +12,14 @@ using namespace std;
 BEGIN_AS_NAMESPACE
 
 static asITypeInfo *StringArrayType = NULL;
+// ALTERED: an array that couldn't be made or grown, for want of memory or as too large (the array add-on raised the exception), ends the
+// split with that exception: the parts were written through the null pointer the array gives for an element it doesn't have, a crash.
+static CScriptArray *SplitFailed(CScriptArray *array)
+{
+	if (array)
+		array->Release();
+	return 0;
+}
 // This function takes an input string and splits it into parts by looking
 // for a specified delimiter. Example:
 //
@@ -40,6 +48,8 @@ static CScriptArray *StringRSplit(const string &delim, bool full, bool allow_bla
 		while (end >= dl && (full ? str.compare(end - dl, dl, delim) == 0 : delim.find(str[end - 1]) != string::npos)) end -= dl;
 	if (allow_blanks || end > 0 || parts.empty()) parts.push_back(str.substr(0, end));
 	array->Resize(parts.size());
+	if (array->GetSize() != parts.size())
+		return SplitFailed(array); // see SplitFailed
 	for (size_t i = 0; i < parts.size(); i++) *(string *)array->At(parts.size() - 1 - i) = std::move(parts[i]);
 	return array;
 }
@@ -57,6 +67,10 @@ static CScriptArray *StringSplit(const string &delim, bool full, bool allow_blan
 
 	// Create the array object
 	CScriptArray *array = CScriptArray::Create(StringArrayType);
+	if (!array)
+		return 0; // see SplitFailed
+	// The array add-on raised an exception (see SplitFailed): for want of memory, a Reserve() leaves the array as it was.
+	auto raised = [ctx]() { return ctx->GetState() == asEXECUTION_EXCEPTION; };
 
 	// Fix: Previously a 1-length array was always returned from an empty string.
 	if (!allow_blanks && str == "") return array; // Nothing to split.
@@ -64,11 +78,15 @@ static CScriptArray *StringSplit(const string &delim, bool full, bool allow_blan
 	if (delim == "")
 	{
 		array->InsertLast((void *)&str);
+		if (array->GetSize() != 1)
+			return SplitFailed(array);
 		return array;
 	}
 	if (max_elements < 0) return StringRSplit(delim, full, allow_blanks, (asUINT)-(long long)max_elements, str, array);
 	asUINT reserved = str.size() * 0.05; // Sam: Not sure how to predict how many elements we should initially reserve as each string could be different. Does it matter?
 	array->Reserve(reserved);
+	if (raised())
+		return SplitFailed(array);
 
 	// Find the existence of the delimiter in the input string
 	size_t pos = 0, prev = 0;
@@ -77,13 +95,18 @@ static CScriptArray *StringSplit(const string &delim, bool full, bool allow_blan
 	{
 		if (count > reserved)
 		{
-			reserved *= 8;
+			// ALTERED: grown without wrapping round, which made it smaller than the parts already there
+			reserved = reserved > 0xFFFFFFFFu / 8 ? 0xFFFFFFFFu : reserved * 8;
 			array->Reserve(reserved);
+			if (raised())
+				return SplitFailed(array);
 		}
 		// Add the part to the array
 		if (allow_blanks || pos - prev > 0)
 		{
 			array->Resize(array->GetSize() + 1);
+			if (array->GetSize() != count + 1)
+				return SplitFailed(array);
 			((string *)array->At(count))->assign(&str[prev], pos - prev);
 			count++;
 		}
@@ -107,6 +130,8 @@ static CScriptArray *StringSplit(const string &delim, bool full, bool allow_blan
 	if (array->GetSize() < 1 || str.size() - prev > 0 || allow_blanks)
 	{
 		array->Resize(array->GetSize() + 1);
+		if (array->GetSize() != count + 1)
+			return SplitFailed(array);
 		((string *)array->At(count))->assign(&str[prev], str.size() - prev);
 	}
 	array->Resize(array->GetSize());
