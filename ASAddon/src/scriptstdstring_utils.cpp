@@ -48,7 +48,9 @@ static CScriptArray *StringRSplit(const string &delim, bool full, bool allow_bla
 		while (end >= dl && (full ? str.compare(end - dl, dl, delim) == 0 : delim.find(str[end - 1]) != string::npos)) end -= dl;
 	if (allow_blanks || end > 0 || parts.empty()) parts.push_back(str.substr(0, end));
 	array->Resize(parts.size());
-	if (array->GetSize() != parts.size())
+	// An element the engine had no memory for is left null with the exception raised, at the size asked for, see StringSplit.
+	asIScriptContext *ctx = asGetActiveContext();
+	if (array->GetSize() != parts.size() || (ctx && ctx->GetState() == asEXECUTION_EXCEPTION))
 		return SplitFailed(array); // see SplitFailed
 	for (size_t i = 0; i < parts.size(); i++) *(string *)array->At(parts.size() - 1 - i) = std::move(parts[i]);
 	return array;
@@ -78,7 +80,7 @@ static CScriptArray *StringSplit(const string &delim, bool full, bool allow_blan
 	if (delim == "")
 	{
 		array->InsertLast((void *)&str);
-		if (array->GetSize() != 1)
+		if (array->GetSize() != 1 || raised())
 			return SplitFailed(array);
 		return array;
 	}
@@ -105,7 +107,9 @@ static CScriptArray *StringSplit(const string &delim, bool full, bool allow_blan
 		if (allow_blanks || pos - prev > 0)
 		{
 			array->Resize(array->GetSize() + 1);
-			if (array->GetSize() != count + 1)
+			// The new element is null when the engine had no memory for the string (the exception is raised, the size is the
+			// one asked for), and the part was assigned through it.
+			if (array->GetSize() != count + 1 || raised())
 				return SplitFailed(array);
 			((string *)array->At(count))->assign(&str[prev], pos - prev);
 			count++;
@@ -130,7 +134,7 @@ static CScriptArray *StringSplit(const string &delim, bool full, bool allow_blan
 	if (array->GetSize() < 1 || str.size() - prev > 0 || allow_blanks)
 	{
 		array->Resize(array->GetSize() + 1);
-		if (array->GetSize() != count + 1)
+		if (array->GetSize() != count + 1 || raised()) // as above
 			return SplitFailed(array);
 		((string *)array->At(count))->assign(&str[prev], str.size() - prev);
 	}
