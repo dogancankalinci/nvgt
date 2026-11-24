@@ -1,0 +1,42 @@
+diff --git a/sdk/angelscript/source/as_memory.h b/sdk/angelscript/source/as_memory.h
+index 26c91b9..d6c53d0 100644
+--- a/sdk/angelscript/source/as_memory.h
++++ b/sdk/angelscript/source/as_memory.h
+@@ -69,9 +69,15 @@ bool isAligned(const void* const pointer, asUINT alignment);
+ 
+ // We don't overload the new operator as that would affect the application as well
+ 
++// ALTERED: asNEW constructed the object at whatever userAlloc gave, a null pointer when there was no memory: the object was
++// constructed at null (an access violation), and every check of an asNEW result against null after it was dead code. The
++// placement form below is a non-throwing allocation function, for which the new expression checks the pointer and gives null
++// without constructing anything.
++struct asSNoThrowAlloc {};
++
+ #ifndef AS_DEBUG
+ 
+-	#define asNEW(x)        new(userAlloc(sizeof(x))) x
++	#define asNEW(x)        new(userAlloc(sizeof(x)), AS_NAMESPACE_QUALIFIER asSNoThrowAlloc()) x
+ 	#define asDELETE(ptr,x) {void *tmp = ptr; (ptr)->~x(); userFree(tmp);}
+ 
+ 	#define asNEWARRAY(x,cnt)  (x*)userAlloc(sizeof(x)*cnt)
+@@ -93,7 +99,7 @@ bool isAligned(const void* const pointer, asUINT alignment);
+ 
+ 	typedef void *(*asALLOCFUNCDEBUG_t)(size_t, const char *, unsigned int);
+ 
+-	#define asNEW(x)        new((reinterpret_cast<asALLOCFUNCDEBUG_t>(userAlloc))(sizeof(x), __FILE__, __LINE__)) x
++	#define asNEW(x)        new((reinterpret_cast<asALLOCFUNCDEBUG_t>(userAlloc))(sizeof(x), __FILE__, __LINE__), AS_NAMESPACE_QUALIFIER asSNoThrowAlloc()) x
+ 	#define asDELETE(ptr,x) {void *tmp = ptr; (ptr)->~x(); userFree(tmp);}
+ 
+ 	#define asNEWARRAY(x,cnt)  (x*)(reinterpret_cast<asALLOCFUNCDEBUG_t>(userAlloc))(sizeof(x)*cnt, __FILE__, __LINE__)
+@@ -110,6 +116,11 @@ bool isAligned(const void* const pointer, asUINT alignment);
+ END_AS_NAMESPACE
+ 
+ #include <new>
++
++// ALTERED: see asSNoThrowAlloc. The matching placement delete is called, and does nothing, when a constructor throws, as the
++// standard placement form's does.
++inline void *operator new(size_t, void *ptr, AS_NAMESPACE_QUALIFIER asSNoThrowAlloc) noexcept { return ptr; }
++inline void operator delete(void *, void *, AS_NAMESPACE_QUALIFIER asSNoThrowAlloc) noexcept {}
+ #include "as_criticalsection.h"
+ #include "as_array.h"
+ 
