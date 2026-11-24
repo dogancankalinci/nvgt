@@ -170,6 +170,7 @@ vcpkg_from_github(
         fix-x64-windows-paramsize-upper-half.patch
         fix-collector-out-of-memory.patch
         fix-init-globals-without-context.patch
+        fix-unchecked-object-allocation.patch
 )
 
 vcpkg_cmake_configure(

@@ -1,0 +1,91 @@
+diff --git a/sdk/angelscript/source/as_scriptengine.cpp b/sdk/angelscript/source/as_scriptengine.cpp
+index 1c83f18..72c691f 100644
+--- a/sdk/angelscript/source/as_scriptengine.cpp
++++ b/sdk/angelscript/source/as_scriptengine.cpp
+@@ -6028,6 +6028,16 @@ void *asCScriptEngine::CreateScriptObject(const asITypeInfo *type)
+ 
+ 		// Manually allocate the memory, then call the default constructor
+ 		ptr = CallAlloc(objType);
++		// ALTERED: with no memory for the object the constructor ran on a null pointer, an access violation (the array add-on
++		// growing an array of strings it had no memory for). The active context gets the exception the add-ons expect of this
++		// function when it returns null.
++		if( ptr == 0 )
++		{
++			asIScriptContext *ctx = asGetActiveContext();
++			if( ctx )
++				ctx->SetException("Out of memory");
++			return 0;
++		}
+ 		int funcIndex = objType->beh.construct;
+ 		if (funcIndex)
+ 		{
+@@ -6197,6 +6207,14 @@ int asCScriptEngine::CallCopyBehaviour(void *dst, void *src, int funcId)
+ 			return asNOT_SUPPORTED;
+ 		}
+ 		arg = CallAlloc(argType);
++		// ALTERED: see CreateScriptObject, the copy was constructed at a null pointer
++		if( arg == 0 )
++		{
++			asIScriptContext *active = asGetActiveContext();
++			if( active )
++				active->SetException("Out of memory");
++			return asOUT_OF_MEMORY;
++		}
+ 		if( argType->beh.copyconstruct )
+ 		{
+ #ifdef AS_NO_EXCEPTIONS
+@@ -6289,6 +6307,14 @@ void *asCScriptEngine::CreateUninitializedScriptObject(const asITypeInfo *type)
+ 	// Construct the object, but do not call the actual constructor that initializes the members
+ 	// The initialization will be done by the application afterwards, e.g. through serialization.
+ 	asCScriptObject *obj = reinterpret_cast<asCScriptObject*>(CallAlloc(objType));
++	// ALTERED: see CreateScriptObject, the object was initialized at a null pointer
++	if( obj == 0 )
++	{
++		asIScriptContext *ctx = asGetActiveContext();
++		if( ctx )
++			ctx->SetException("Out of memory");
++		return 0;
++	}
+ 
+ 	// Pre-initialize the memory so there are no invalid pointers
+ 	ScriptObject_ConstructUnitialized(objType, obj);
+@@ -6333,6 +6359,14 @@ void *asCScriptEngine::CreateScriptObjectCopy(void *origObj, const asITypeInfo *
+ 	{
+ 		// Manually allocate the memory, then call the copy constructor
+ 		newObj = CallAlloc(ot);
++		// ALTERED: see CreateScriptObject, the copy was constructed at a null pointer
++		if( newObj == 0 )
++		{
++			asIScriptContext *ctx = asGetActiveContext();
++			if( ctx )
++				ctx->SetException("Out of memory");
++			return 0;
++		}
+ #ifdef AS_NO_EXCEPTIONS
+ 		CallObjectMethod(newObj, origObj, ot->beh.copyconstruct);
+ #else
+diff --git a/sdk/angelscript/source/as_scriptobject.cpp b/sdk/angelscript/source/as_scriptobject.cpp
+index 291e4bd..60cce0c 100644
+--- a/sdk/angelscript/source/as_scriptobject.cpp
++++ b/sdk/angelscript/source/as_scriptobject.cpp
+@@ -1276,7 +1276,10 @@ void *asCScriptObject::AllocateUninitializedObject(asCObjectType *in_objType, as
+ 	if( in_objType->flags & asOBJ_SCRIPT_OBJECT )
+ 	{
+ 		ptr = engine->CallAlloc(in_objType);
+-		ScriptObject_ConstructUnitialized(in_objType, reinterpret_cast<asCScriptObject*>(ptr));
++		// ALTERED: with no memory for the member it was initialized at a null pointer; it is left null, as a member whose
++		// factory failed is
++		if( ptr )
++			ScriptObject_ConstructUnitialized(in_objType, reinterpret_cast<asCScriptObject*>(ptr));
+ 	}
+ 	// ALTERED: only a reference template stores its registered factory in the construct behaviour. A value template's
+ 	// construct behaviour is a generated script function (the stub that passes the hidden type argument to the registered
+@@ -1296,7 +1299,7 @@ void *asCScriptObject::AllocateUninitializedObject(asCObjectType *in_objType, as
+ 	{
+ 		ptr = engine->CallAlloc(in_objType);
+ 		int funcIndex = in_objType->beh.construct;
+-		if( funcIndex )
++		if( funcIndex && ptr ) // ALTERED: not constructed at a null pointer, see above
+ 		{
+ 			// The value template's constructor stub is run by a context, as CreateScriptObject does
+ 			if( engine->scriptFunctions[funcIndex]->funcType != asFUNC_SYSTEM )
