@@ -16,6 +16,7 @@ extern "C" {
 	#include <tonar.h>
 }
 
+#include <mutex>
 #include <string>
 
 #include <angelscript.h>
@@ -78,6 +79,7 @@ private:
 
 	int refCount = 1;
 	el_tonar* gen = nullptr;
+	std::recursive_mutex mtx; // Every method's, one thread at a time: two threads writing one synth reallocated its buffer under each other, which corrupted the heap.
 };
 
 tone_synth *script_tone_synth_factory();

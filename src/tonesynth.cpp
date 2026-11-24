@@ -44,14 +44,17 @@ void tone_synth::Release() {
 	}
 }
 void tone_synth::reset() { // Back to a new tone_synth's settings, a sine wave and no silent output: it set a sawtooth wave and allowed silence, settings no new object had.
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	el_tonar_reset(gen);
 }
 void tone_synth::set_waveform(int type) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	int real_type = bgt_to_tonar_waveform(type);
 	if (real_type < 0) return;
 	el_tonar_set_waveform(gen, real_type);
 }
 int tone_synth::get_waveform() {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	switch (el_tonar_get_waveform(gen)) { // tonar's numbering back to BGT's, the inverse of bgt_to_tonar_waveform(): mapped the same way, set values read back as others.
 		case 3: return 1;
 		case 2: return 2;
@@ -61,105 +64,139 @@ int tone_synth::get_waveform() {
 	return -1;
 }
 void tone_synth::set_volume(double db) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	el_tonar_set_volume(gen, db);
 }
 double tone_synth::get_volume() {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	return el_tonar_get_volume(gen);
 }
 void tone_synth::set_pan(double pan) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	el_tonar_set_pan(gen, pan);
 }
 double tone_synth::get_pan() {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	return el_tonar_get_pan(gen);
 }
 void tone_synth::set_allow_silence(bool silence) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	el_tonar_set_allow_silence(gen, (silence? 1: 0));
 }
 bool tone_synth::get_allow_silence() {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	return (el_tonar_get_allow_silence(gen)? true: false);
 }
 bool tone_synth::set_edge_fades(int start, int end) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	return el_tonar_set_edge_fades(gen, start, end)? true: false;
 }
 void tone_synth::set_tempo(double tempo) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	el_tonar_set_tempo(gen, tempo);
 }
 double tone_synth::get_tempo() {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	return el_tonar_get_tempo(gen);
 }
 void tone_synth::set_note_transpose(double note_transpose) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	el_tonar_set_note_transpose(gen, note_transpose);
 }
 double tone_synth::get_note_transpose() {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	return el_tonar_get_note_transpose(gen);
 }
 void tone_synth::set_freq_transpose(double freq_transpose) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	el_tonar_set_freq_transpose(gen, freq_transpose);
 }
 double tone_synth::get_freq_transpose() {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	return el_tonar_get_freq_transpose(gen);
 }
 bool tone_synth::note(std::string note, double length) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	return el_tonar_note(gen, const_cast<char*> (note.c_str()), length)? true: false;
 }
 bool tone_synth::note_ms(std::string note, int ms) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	return el_tonar_note_ms(gen, const_cast<char*> (note.c_str()), ms)? true: false;
 }
 bool tone_synth::note_bend(std::string note, double bend_amount, double length, double bend_start, double bend_length) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	return el_tonar_note_bend(gen, const_cast<char*> (note.c_str()), bend_amount, length, bend_start, bend_length)? true: false;
 }
 bool tone_synth::note_bend_ms(std::string note, double bend_amount, int length, int bend_start, int bend_length) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	return el_tonar_note_bend_ms(gen, const_cast<char*> (note.c_str()), bend_amount, length, bend_start, bend_length)? true: false;
 }
 bool tone_synth::freq(double freq, double length) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	return el_tonar_freq(gen, freq, length)? true: false;
 }
 bool tone_synth::freq_ms(double freq, int ms) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	return el_tonar_freq_ms(gen, freq, ms)? true: false;
 }
 bool tone_synth::freq_bend(double freq, double bend_amount, double length, double bend_start, double bend_length) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	return el_tonar_freq_bend(gen, freq, bend_amount, length, bend_start, bend_length)? true: false;
 }
 bool tone_synth::freq_bend_ms(double freq, double bend_amount, int length, int bend_start, int bend_length) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	return el_tonar_freq_bend_ms(gen, freq, bend_amount, length, bend_start, bend_length)? true: false;
 }
 bool tone_synth::rest(double length) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	return el_tonar_rest(gen, length)? true: false;
 }
 bool tone_synth::rest_ms(int ms) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	return el_tonar_rest_ms(gen, ms)? true: false;
 }
 double tone_synth::get_length() {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	return el_tonar_get_length(gen);
 }
 int tone_synth::get_length_ms() {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	return el_tonar_get_length_ms(gen);
 }
 double tone_synth::get_position() {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	return el_tonar_get_position(gen);
 }
 int tone_synth::get_position_ms() {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	return el_tonar_get_position_ms(gen);
 }
 bool tone_synth::seek(double position) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	return el_tonar_seek(gen, position)? true: false;
 }
 bool tone_synth::seek_ms(int position) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	return el_tonar_seek_ms(gen, position)? true: false;
 }
 bool tone_synth::rewind(double amount) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	return el_tonar_rewind(gen, amount)? true: false;
 }
 bool tone_synth::rewind_ms(int amount) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	return el_tonar_rewind_ms(gen, amount)? true: false;
 }
 int tone_synth::get_sample_rate() {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	return el_tonar_get_sample_rate(gen);
 }
 int tone_synth::get_channels() {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	return el_tonar_get_channels(gen);
 }
 sound* tone_synth::generate_sound() {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	if (!init_sound()) return nullptr;
 	int size = el_tonar_output_buffer_size(gen);
 	if (size <= 0) return nullptr;
@@ -181,6 +218,7 @@ sound* tone_synth::generate_sound() {
 	return s;
 }
 CScriptArray* tone_synth::write_samples() {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	int size = el_tonar_output_sample_count(gen);
 	if (size <= 0) return NULL;
 	CScriptArray* arr = CScriptArray::Create(get_array_type("int16[]"), size);
@@ -194,6 +232,7 @@ CScriptArray* tone_synth::write_samples() {
 }
 // Written through Poco, which opens a UTF-8 name as it is on every platform: tonar's fopen() took it in the Windows ANSI code page, writing a file of another name, and didn't check the write.
 bool tone_synth::generate_file(const std::string& filename) {
+	std::lock_guard<std::recursive_mutex> lock(mtx);
 	const int size = el_tonar_output_buffer_size(gen);
 	if (size <= 0 || filename.empty()) return false;
 	std::unique_ptr<char[]> data(new char[(size_t)size + 44]); // tonar's header, then its samples, as el_tonar_output_file() lays them out.
