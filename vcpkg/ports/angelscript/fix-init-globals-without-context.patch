@@ -1,0 +1,17 @@
+diff --git a/sdk/angelscript/source/as_module.cpp b/sdk/angelscript/source/as_module.cpp
+index dfe336e..8b35bdb 100644
+--- a/sdk/angelscript/source/as_module.cpp
++++ b/sdk/angelscript/source/as_module.cpp
+@@ -383,7 +383,12 @@ int asCModule::CallInit(asIScriptContext *myCtx)
+ 			{
+ 				ctx = m_engine->RequestContext();
+ 				if( ctx == 0 )
++				{
++					// ALTERED: no context could be had (out of memory): the initialization failed, and the remaining globals
++					// weren't initialized. It ended here with asSUCCESS, so the script ran with them left as zeroed memory.
++					r = asOUT_OF_MEMORY;
+ 					break;
++				}
+ 			}
+ 
+ 			r = InitGlobalProp(desc, ctx);

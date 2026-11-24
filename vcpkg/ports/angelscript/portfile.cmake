@@ -169,6 +169,7 @@ vcpkg_from_github(
         fix-abort-before-nested-prepare.patch
         fix-x64-windows-paramsize-upper-half.patch
         fix-collector-out-of-memory.patch
+        fix-init-globals-without-context.patch
 )
 
 vcpkg_cmake_configure(
