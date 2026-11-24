@@ -338,7 +338,8 @@ void coordinate_map::add_ref() {
 	asAtomicInc(ref_count);
 }
 std::recursive_mutex& coordinate_map::links_mutex() {
-	static std::recursive_mutex* m = new std::recursive_mutex; // never destroyed: a map can go late in the program's end
+	alignas(std::recursive_mutex) static unsigned char storage[sizeof(std::recursive_mutex)]; // never destroyed: a map can go late in the program's end; not on the heap, as made first there with no memory left the bad_alloc ended the program
+	static std::recursive_mutex* m = new (storage) std::recursive_mutex;
 	return *m;
 }
 void coordinate_map::release() {

@@ -58,7 +58,8 @@ static Poco::Thread* g_GCThread = nullptr; // Guarded by gc_thread_mutex(), as i
 static bool g_GCThreadRunning = false;
 static std::atomic<bool> g_GCThreadStopped{false};
 static std::mutex& gc_thread_mutex() {
-	static std::mutex* m = new std::mutex; // Never destroyed: set_garbage_collect_mode() can be called by a destructor run late in the program's end.
+	alignas(std::mutex) static unsigned char storage[sizeof(std::mutex)]; // Never destroyed: set_garbage_collect_mode() can be called by a destructor run late in the program's end. Not on the heap: first made at the program's end (garbage_collect_stop_thread()) with no memory left, the bad_alloc ended the program.
+	static std::mutex* m = new (storage) std::mutex;
 	return *m;
 }
 std::atomic<asQWORD> g_GCAutoFullTime{ticks()};

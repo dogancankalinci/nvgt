@@ -184,7 +184,8 @@ public:
 // pointer (a use of freed memory). The pointers change under this lock, and a user takes a reference under it
 // (acquire_default_random()). A generator is let go of after the lock is: its release can run script code that uses random().
 static std::mutex& default_random_mutex() {
-	static std::mutex* m = new std::mutex; // Never destroyed: cleanup_default_random() runs at the program's end.
+	alignas(std::mutex) static unsigned char storage[sizeof(std::mutex)]; // Never destroyed: cleanup_default_random() runs at the program's end. Not on the heap, see gc_thread_mutex().
+	static std::mutex* m = new (storage) std::mutex;
 	return *m;
 }
 random_interface* g_default_random = nullptr;

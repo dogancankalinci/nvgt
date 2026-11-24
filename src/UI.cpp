@@ -1185,7 +1185,8 @@ static game_window* game_window_factory(const std::string& title, unsigned int w
 
 // The tray wrappers are garbage-collected types. The collector reads their references (enum_references) on a thread of its own with garbage_collect_mode 3 while the script's thread changes them, so the reference fields change and are read under this lock, which is never held while script code runs. It also guards the entry registry below.
 static std::recursive_mutex& system_tray_gc_mutex() {
-	static std::recursive_mutex* m = new std::recursive_mutex; // never destroyed: a wrapper can go late in the program's end
+	alignas(std::recursive_mutex) static unsigned char storage[sizeof(std::recursive_mutex)]; // never destroyed: a wrapper can go late in the program's end; not on the heap, as made first there with no memory left the bad_alloc ended the program
+	static std::recursive_mutex* m = new (storage) std::recursive_mutex;
 	return *m;
 }
 static asITypeInfo* g_system_tray_type = nullptr, *g_system_tray_menu_type = nullptr, *g_system_tray_menu_item_type = nullptr;

@@ -354,7 +354,8 @@ void MessageCallback(const asSMessageInfo *msg, void* param) {
 // the e command evaluates runs line callbacks on the same thread. Never destroyed, as threads can still run script code while
 // static objects are torn down.
 static std::recursive_mutex& debugger_mutex() {
-	static std::recursive_mutex* m = new std::recursive_mutex;
+	alignas(std::recursive_mutex) static unsigned char storage[sizeof(std::recursive_mutex)]; // Not on the heap: with no memory left the bad_alloc ended the program.
+	static std::recursive_mutex* m = new (storage) std::recursive_mutex;
 	return *m;
 }
 #endif

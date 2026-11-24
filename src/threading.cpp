@@ -214,6 +214,9 @@ static script_thread_runs& script_thread_runs_state() {
 	static auto* state = new script_thread_runs; // Never destroyed: a run can end during static destruction.
 	return *state;
 }
+// Made as the program starts: a script that started no thread first asked for it in script_threads_stop() at the program's end,
+// and with no memory left then (a script that ended on running out of it) the bad_alloc ended the program.
+[[maybe_unused]] static const bool script_thread_runs_made = (script_thread_runs_state(), true);
 class script_thread_run;
 static thread_local script_thread_run* t_script_thread_run = nullptr; // This thread's.
 class script_thread_run {
