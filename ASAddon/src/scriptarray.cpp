@@ -672,12 +672,17 @@ CScriptArray::CScriptArray(asITypeInfo *ti, void *buf)
 		if( !buffer ) return; // ALTERED: see the constructor below
 
 		// For value types we need to call the opAssign for each individual object
+		// ALTERED: the copying stops at the first element that couldn't be assigned (its opAssign raised an exception, or the
+		// element couldn't be made for want of memory): the rest were assigned with the exception raised, running the script's
+		// opAssign for each of them anyway.
+		asIScriptContext *ctx = asGetActiveContext();
 		for( asUINT n = 0; n < length; n++ )
 		{
 			void *obj = At(n);
 			asBYTE *srcObj = (asBYTE*)buf;
 			srcObj += 4 + n*ti->GetSubType()->GetSize();
-			engine->AssignScriptObject(obj, srcObj, ti->GetSubType());
+			if( engine->AssignScriptObject(obj, srcObj, ti->GetSubType()) < 0 || (ctx && ctx->GetState() == asEXECUTION_EXCEPTION) )
+				break;
 		}
 	}
 
