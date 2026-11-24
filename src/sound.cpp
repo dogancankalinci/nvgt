@@ -7501,8 +7501,14 @@ template<class T> void RegisterSoundsystemMixer(asIScriptEngine *engine, const s
 	engine->RegisterObjectMethod(type.c_str(), "void set_stop_time(uint64 absolute_time)", asFUNCTION((api_call < T, &T::set_stop_time, void, ma_uint64 >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "bool get_playing() const property", asFUNCTION((api_call < T, &T::get_playing, bool >)), asCALL_CDECL_OBJFIRST);
 }
-static bool audio_node_chain_add_node_script(audio_node_chain* chain, audio_node* node, audio_node* after, unsigned int input_bus_index) { return after? chain->add_node(node, after, input_bus_index) : chain->append_node(node, input_bus_index); } // Scripts expect a node added without a position to go at the end, while C++ callers such as the spatializer pass null to insert at the start.
+// The chain's script calls made through these, under its lock as every other node call is (see api_call()).
+static bool audio_node_chain_add_node_script(audio_node_chain* chain, audio_node* node, audio_node* after, unsigned int input_bus_index) {
+	mixer_api_lock lock = lock_node_api(chain);
+	if (!lock.held) return false;
+	return after? chain->add_node(node, after, input_bus_index) : chain->append_node(node, input_bus_index); } // Scripts expect a node added without a position to go at the end, while C++ callers such as the spatializer pass null to insert at the start.
 static bool audio_node_chain_add_nodes(audio_node_chain* chain, CScriptArray* nodes) {
+	mixer_api_lock lock = lock_node_api(chain);
+	if (!lock.held) return false;
 	if (!nodes) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS;
 	bool success = true;
 	ma_result refused = MA_SUCCESS; // The first node's refusal, which the next one added read as success over.
@@ -7516,7 +7522,14 @@ static bool audio_node_chain_add_nodes(audio_node_chain* chain, CScriptArray* no
 }
 static audio_node_chain* audio_node_chain_add_assign(audio_node_chain* chain, audio_node* node) { audio_node_chain_add_node_script(chain, node, nullptr, 0); chain->duplicate(); return chain; }
 static audio_node_chain* audio_node_chain_add_assign_array(audio_node_chain* chain, CScriptArray* nodes) { audio_node_chain_add_nodes(chain, nodes); chain->duplicate(); return chain; }
-static audio_node_chain* audio_node_chain_sub_assign(audio_node_chain* chain, audio_node* node) { chain->remove_node(node); chain->duplicate(); return chain; }
+static audio_node_chain* audio_node_chain_sub_assign(audio_node_chain* chain, audio_node* node) {
+	{
+		mixer_api_lock lock = lock_node_api(chain);
+		if (lock.held) chain->remove_node(node);
+	}
+	chain->duplicate();
+	return chain;
+}
 void RegisterSoundsystemNodes(asIScriptEngine *engine) {
 	engine->RegisterObjectBehaviour("audio_node_chain", asBEHAVE_FACTORY, "audio_node_chain@ c(audio_node@+ source = null, audio_node@+ endpoint = null, audio_engine@+ engine = sound_default_engine)", asFUNCTION(audio_node_chain::create), asCALL_CDECL);
 	engine->RegisterObjectMethod("audio_node_chain", "bool add_node(audio_node@+ node, audio_node@+ after = null, uint input_bus_index = 0)", asFUNCTION(audio_node_chain_add_node_script), asCALL_CDECL_OBJFIRST);
