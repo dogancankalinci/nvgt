@@ -1404,7 +1404,14 @@ void ReturnContextCallback(asIScriptEngine *engine, asIScriptContext *ctx, void*
 }
 void ExceptionHandlerCallback(asIScriptContext *ctx, void* obj) {
 	// The call stack of the context raising the exception, not of asGetActiveContext(): a pooled context whose Prepare() fails (a function needing more stack than scripting.max_stack_size allows) raises a stack overflow before it runs, when no context may be active at all (preglobals(), or a destructor run when the module is discarded), and with another context active that context's call stack was recorded instead.
-	g_last_exception_callstack = get_call_stack_ctx(ctx);
+	// Building the call stack's text can run out of memory, as when the exception is the add-on's "Out of memory": the bad_alloc left
+	// the engine through the catch blocks that called this callback, past the script's own try/catch, and ended the script
+	// without cleaning its stack. The exception is still raised, with no call stack recorded.
+	try {
+		g_last_exception_callstack = get_call_stack_ctx(ctx);
+	} catch (...) {
+		g_last_exception_callstack.clear();
+	}
 }
 
 // Registered functions on every script thread ask for array types, and the first asking for a declaration makes its type (an
