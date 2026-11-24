@@ -156,7 +156,7 @@ class audio_data_source : public virtual audio_node {
 public:
 	virtual ma_data_source* get_ma_data_source() const = 0;
 	virtual unsigned int get_advised_read_frame_count() const = 0;
-	virtual unsigned long long read(void* buffer, unsigned long long frame_count) = 0;
+	virtual unsigned long long read(void* buffer, unsigned long long frame_count) = 0; // Up to frame_count frames of 32-bit float samples, at the source's channel count, into buffer; the frames read, none for a frame_count of 0.
 	virtual CScriptArray* read_script(unsigned long long frame_count) = 0;
 	virtual unsigned long long skip_frames(unsigned long long frame_count) = 0;
 	virtual float skip_milliseconds(float ms) = 0;

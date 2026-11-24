@@ -1638,8 +1638,7 @@ public:
 	// Reads 32-bit float samples into buffer, as read_script() makes them.
 	unsigned long long read(void* buffer, unsigned long long frame_count) override {
 		auto guard = lock_source();
-		if (!guard || !ready_to_read()) return 0;
-		if (!frame_count) frame_count = get_advised_read_frame_count();
+		if (!guard || !frame_count || !ready_to_read()) return 0; // None asked, none read: the advised count, which read_script() takes for 0 itself, filled a plugin's buffer of any size with 512 frames.
 		if (!(frame_count = frames_to_take(frame_count))) return 0;
 		ma_format format = ma_format_f32;
 		ma_uint32 channels = 0;
