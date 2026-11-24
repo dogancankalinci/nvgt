@@ -519,7 +519,7 @@ public:
 	static float attenuation(const audio_spatialization_parameters& params, float distance);
 };
 
-// Synthizer's HRTF panner and inverse distance attenuation from microsynthiser, NVGT's built in HRTF.
+// Synthizer's HRTF panner from microsynthiser, and an attenuator of NVGT's own distance curve with air absorption: NVGT's built in HRTF.
 class hrtf_panner : public virtual spatializer_component_node {
 public:
 	static spatializer_component_node* create(audio_spatializer* spatializer, audio_engine* engine);
