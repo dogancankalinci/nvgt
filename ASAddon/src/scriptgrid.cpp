@@ -326,6 +326,8 @@ static void RegisterScriptGrid_Native(asIScriptEngine *engine)
 	r = engine->RegisterObjectBehaviour("grid<T>", asBEHAVE_RELEASEREFS, "void f(int&in)", asMETHOD(CScriptGrid, ReleaseAllHandles), asCALL_THISCALL); assert( r >= 0 );
 }
 
+static bool GridCopyStopped(asIScriptContext *ctx, bool hadException); // see its definition below
+
 CScriptGrid::CScriptGrid(asITypeInfo *ti, void *buf)
 {
 	refCount = 1;
@@ -361,6 +363,9 @@ CScriptGrid::CScriptGrid(asITypeInfo *ti, void *buf)
 	if( (ti->GetSubTypeId() & asTYPEID_MASK_OBJECT) == 0 )
 	{
 		CreateBuffer(&buffer, width, height);
+		// ALTERED: out of memory (CreateBuffer raised the exception): each row was copied to the null pointer At() gives then, as the
+		// array add-on's list constructor did
+		if( !buffer ) return;
 
 		// Copy the values of the primitive type into the internal buffer
 		for( asUINT y = 0; y < height; y++ )
@@ -383,6 +388,7 @@ CScriptGrid::CScriptGrid(asITypeInfo *ti, void *buf)
 	else if( ti->GetSubTypeId() & asTYPEID_OBJHANDLE )
 	{
 		CreateBuffer(&buffer, width, height);
+		if( !buffer ) return; // ALTERED: see above; the list keeps its handles, which the engine releases
 
 		// Copy the handles into the internal buffer
 		for( asUINT y = 0; y < height; y++ )
@@ -414,6 +420,7 @@ CScriptGrid::CScriptGrid(asITypeInfo *ti, void *buf)
 		subTypeId |= asTYPEID_OBJHANDLE;
 		CreateBuffer(&buffer, width, height);
 		subTypeId &= ~asTYPEID_OBJHANDLE;
+		if( !buffer ) return; // ALTERED: see above
 
 		// Copy the handles into the internal buffer
 		for( asUINT y = 0; y < height; y++ )
@@ -447,8 +454,12 @@ CScriptGrid::CScriptGrid(asITypeInfo *ti, void *buf)
 		//       of the copy constructor as the engine will just discard the objects in the
 		//       buffer afterwards.
 		CreateBuffer(&buffer, width, height);
+		if( !buffer ) return; // ALTERED: see above
 
 		// For value types we need to call the opAssign for each individual object
+		// ALTERED: no more once an exception is raised (an element's opAssign: a dictionaryValue's copies a script class), see Resize
+		asIScriptContext *ctx = asGetActiveContext();
+		const bool hadException = ctx && ctx->GetState() == asEXECUTION_EXCEPTION;
 		asITypeInfo *subType = ti->GetSubType();
 		asUINT subTypeSize = subType->GetSize();
 		for( asUINT y = 0;y < height; y++ )
@@ -459,6 +470,8 @@ CScriptGrid::CScriptGrid(asITypeInfo *ti, void *buf)
 			// Call opAssign for each of the objects on the row
 			for( asUINT x = 0; x < width; x++ )
 			{
+				if( GridCopyStopped(ctx, hadException) )
+					return;
 				void *obj = At(x,y);
 				asBYTE *srcObj = (asBYTE*)(buf) + size_t(x)*subTypeSize;
 				engine->AssignScriptObject(obj, srcObj, subType);
