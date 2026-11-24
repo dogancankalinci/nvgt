@@ -757,7 +757,10 @@ struct panner_state {
 	void process(const float *input, unsigned int channels, float *output, unsigned int frames, bool accumulate) {
 		if (!input || !output) return;
 		denormal_guard guard;
-		if (reset_pending.exchange(false)) clear();
+		if (reset_pending.exchange(false)) {
+			clear();
+			first = true; // As when new: the next parameters are taken at once rather than faded to from those before the reset.
+		}
 		while (frames) {
 			unsigned int n = std::min(frames, CHUNK);
 			params np;
@@ -1310,8 +1313,11 @@ struct air_absorption_state {
 	void process(const float *input, float *output, unsigned int frames, bool accumulate) {
 		if (!input || !output) return;
 		denormal_guard guard;
-		if (reset_pending.exchange(false))
+		if (reset_pending.exchange(false)) {
 			for (auto &s : states) std::fill(s.begin(), s.end(), biquad_state());
+			first = true; // As when new, the next distance taken at once.
+			xfade_pos = xfade_len;
+		}
 		while (frames) {
 			unsigned int n = std::min(frames, CHUNK);
 			params np;

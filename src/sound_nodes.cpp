@@ -2199,7 +2199,7 @@ class silent_input_rest {
 	const unsigned long long tail_frames;
 	bool resting = false;
 public:
-	explicit silent_input_rest(unsigned int sample_rate) : tail_frames(sample_rate / 10) {} // A tenth of a second, far past the HRTF's few milliseconds of impulse, delay and crossfade and the air absorption's filters.
+	explicit silent_input_rest(unsigned int sample_rate) : tail_frames(sample_rate / 10) {} // A tenth of a second, far past the HRTF's few milliseconds of impulse, delay and crossfade and the air absorption's filters, and their parameter fades, which the reset then lets take the next parameters at once, as they would have reached them.
 	// True if this block of input is silence and the component rests through it, its output silenced here; reset is called as it starts resting.
 	template <class F> bool rest(const float* in, float* out, unsigned int frames, unsigned int channels, F reset) {
 		const size_t samples = (size_t)frames * channels;
@@ -2262,6 +2262,7 @@ static float distance_volume(const audio_spatialization_parameters& params, floa
 }
 // An attenuator applying a distance curve, which is also registered so that others can attenuate a sound over other distances the same way.
 template <class base, spatializer_attenuation_function curve> class curve_attenuator_impl : public spatializer_component_node_impl, public virtual base {
+protected:
 	gain_ramp ramp;
 public:
 	curve_attenuator_impl(audio_spatializer* spatializer, audio_engine* e) : spatializer_component_node_impl(spatializer, e), ramp(e) {}
@@ -2287,7 +2288,10 @@ public:
 	hrtf_attenuator_impl(audio_spatializer* spatializer, audio_engine* e) : curve_attenuator_impl(spatializer, e), air(e->get_sample_rate(), e->get_channels()), silence(e->get_sample_rate()) {}
 	~hrtf_attenuator_impl() { destroy_node(); } // Before air is destroyed, so the audio thread can't be using it.
 	void process(const float** frames_in, unsigned int* frame_count_in, float** frames_out, unsigned int* frame_count_out) override {
-		if (silence.rest(frames_in[0], frames_out[0], min(*frame_count_in, *frame_count_out), get_engine()->get_channels(), [this] { air.reset(); })) return;
+		if (silence.rest(frames_in[0], frames_out[0], min(*frame_count_in, *frame_count_out), get_engine()->get_channels(), [this] {
+			air.reset();
+			ramp.started = false; // The volume taken at once when audio comes again, as for a sound starting: ramped from the one it rested at, a sound that moved away meanwhile began a few milliseconds at its old volume.
+		})) return;
 		curve_attenuator_impl::process(frames_in, frame_count_in, frames_out, frame_count_out);
 		audio_spatialization_parameters params;
 		if (!spatializer || !spatializer->get_parameters(params)) return;
