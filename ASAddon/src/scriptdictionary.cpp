@@ -705,13 +705,39 @@ CScriptArray* CScriptDictionary::GetKeys() const
 	asITypeInfo *ti = cache->arrayType;
 
 	// Create the array object
+	// ALTERED: an array that couldn't be made, for want of memory (the array add-on raised the exception), is given back as null: the
+	// keys were written through the null pointer Create() gives, or through the null At() gives for an array whose elements couldn't
+	// be allocated (Create() still gives that array).
+	asIScriptContext *ctx = asGetActiveContext();
+	const bool hadException = ctx && ctx->GetState() == asEXECUTION_EXCEPTION;
 	CScriptArray *array = CScriptArray::Create(ti, asUINT(dict.size()));
-	long current = -1;
-	dictMap_t::const_iterator it;
-	for( it = dict.begin(); it != dict.end(); it++ )
+	if( array == 0 )
+		return 0;
+	if( !hadException && ctx && ctx->GetState() == asEXECUTION_EXCEPTION )
 	{
-		current++;
-		*(dictKey_t*)array->At(current) = it->first;
+		array->Release();
+		return 0;
+	}
+	try
+	{
+		long current = -1;
+		dictMap_t::const_iterator it;
+		for( it = dict.begin(); it != dict.end(); it++ )
+		{
+			current++;
+			dictKey_t *key = (dictKey_t*)array->At(current);
+			if( key == 0 )
+			{
+				array->Release();
+				return 0;
+			}
+			*key = it->first;
+		}
+	}
+	catch( ... )
+	{
+		array->Release(); // a key's copy that couldn't allocate
+		throw;
 	}
 
 	return array;
