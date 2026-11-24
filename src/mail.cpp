@@ -932,6 +932,66 @@ bool validate_email_address(const std::string& email) {
 	}
 }
 
+// The addresses of an address list header (To, Cc, Bcc; RFC 5322), as (address, display name) pairs: split at the commas outside quotes,
+// angle brackets and comments; "Name <address>", "\"Name\" <address>", "<address>" or a bare address, the name unquoted and its encoded
+// words decoded; comments are left out, and a group ("team: a@x, b@y;") gives its members.
+static void mail_parse_address_list(const std::string& value, std::vector<std::pair<std::string, std::string>>& out) {
+	std::string item;
+	auto flush = [&]() {
+		std::string text = Poco::trim(item);
+		item.clear();
+		if (text.empty()) return;
+		std::string address = text, name;
+		size_t open = text.rfind('<');
+		if (open != std::string::npos) {
+			size_t close = text.find('>', open);
+			address = Poco::trim(text.substr(open + 1, close == std::string::npos ? std::string::npos : close - open - 1));
+			name = Poco::trim(text.substr(0, open));
+			if (name.size() >= 2 && name.front() == '"' && name.back() == '"') {
+				std::string unquoted;
+				for (size_t i = 1; i + 1 < name.size(); i++) {
+					if (name[i] == '\\' && i + 2 < name.size()) i++;
+					unquoted += name[i];
+				}
+				name = unquoted;
+			}
+			name = mail_header_text_decoded(name);
+		}
+		if (!address.empty()) out.emplace_back(address, name);
+	};
+	bool quoted = false, angle = false;
+	int comment = 0;
+	for (size_t i = 0; i < value.size(); i++) {
+		char c = value[i];
+		if (comment) {
+			if (c == '\\') i++;
+			else if (c == '(') comment++;
+			else if (c == ')') comment--;
+			continue;
+		}
+		if (quoted) {
+			item += c;
+			if (c == '\\' && i + 1 < value.size()) item += value[++i];
+			else if (c == '"') quoted = false;
+			continue;
+		}
+		if (c == '"') {
+			quoted = true;
+			item += c;
+		} else if (c == '(' && !angle) comment = 1;
+		else if (c == '<') {
+			angle = true;
+			item += c;
+		} else if (c == '>') {
+			angle = false;
+			item += c;
+		} else if ((c == ',' || c == ';') && !angle) flush();
+		else if (c == ':' && !angle) item.clear(); // the name of a group
+		else item += c;
+	}
+	flush();
+}
+
 mail_message* parse_email_message(const std::string& raw_message) {
 	// This is very much incomplete
 	// Should probably find a library for this?
@@ -943,10 +1003,16 @@ mail_message* parse_email_message(const std::string& raw_message) {
 		msg->set_sender(pocoMsg.getSender());
 		msg->set_subject(pocoMsg.getSubject());
 		msg->set_content(pocoMsg.getContent(), pocoMsg.getContentType());
-		const MailMessage::Recipients& recipients = pocoMsg.recipients();
-		for (const auto& r : recipients) {
-			mail_recipient recipient(r.getType(), r.getAddress(), r.getRealName());
-			msg->add_recipient(recipient);
+		// MailMessage::read() leaves To, Cc and Bcc as headers (its recipients are only those added to a message being written), so every
+		// parsed message had no recipients. They are read from the headers, each one of them, in order.
+		const struct { const char* header; MailRecipient::RecipientType type; } address_headers[] = {{"To", MailRecipient::PRIMARY_RECIPIENT}, {"Cc", MailRecipient::CC_RECIPIENT}, {"Bcc", MailRecipient::BCC_RECIPIENT}};
+		for (const auto& h : address_headers) {
+			for (const auto& field : pocoMsg) {
+				if (Poco::icompare(field.first, h.header) != 0) continue;
+				std::vector<std::pair<std::string, std::string>> addresses;
+				mail_parse_address_list(field.second, addresses);
+				for (const auto& a : addresses) msg->add_recipient(mail_recipient(h.type, a.first, a.second));
+			}
 		}
 		if (pocoMsg.has("Message-ID"))
 			msg->set_message_id(pocoMsg.get("Message-ID"));
