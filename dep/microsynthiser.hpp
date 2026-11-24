@@ -582,10 +582,14 @@ struct hrtf_dataset {
 /* The dataset is recorded at 44100hz. Other rates get a band limited (Blackman windowed sinc) resampling of every impulse. Scaling by the rate ratio keeps the frequency response, rather than the sum of the taps, the same. Results are cached and shared between all instances. */
 inline std::shared_ptr<const hrtf_dataset> get_hrtf_dataset(unsigned int sr) {
 	static std::mutex mutex;
-	static std::vector<std::shared_ptr<const hrtf_dataset>> cache;
+	static std::vector<std::weak_ptr<const hrtf_dataset>> cache; // Those in use only: kept for good, every rate an engine was made at stayed in memory, up to a megabyte each.
 	std::lock_guard<std::mutex> lock(mutex);
-	for (auto &d : cache)
-		if (d->sr == sr) return d;
+	for (auto it = cache.begin(); it != cache.end();) {
+		if (auto d = it->lock()) {
+			if (d->sr == sr) return d;
+			++it;
+		} else it = cache.erase(it);
+	}
 	auto data = std::make_shared<hrtf_dataset>();
 	data->sr = sr;
 	// The kernel extends radius input samples either side of each tap; starting the output that far early keeps the ringing ahead of the dataset's large first tap, at the cost of well under a millisecond of latency.
