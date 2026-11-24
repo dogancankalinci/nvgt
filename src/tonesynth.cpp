@@ -222,7 +222,11 @@ CScriptArray* tone_synth::write_samples() {
 	int size = el_tonar_output_sample_count(gen);
 	if (size <= 0) return NULL;
 	CScriptArray* arr = CScriptArray::Create(get_array_type("int16[]"), size);
-	if (!arr) return nullptr;
+	asIScriptContext* ctx = asGetActiveContext();
+	if (!arr || (ctx && ctx->GetState() == asEXECUTION_EXCEPTION)) { // Made without its buffer, as on running out of memory, which the array's own calls then read through a null pointer; the script gets the array's exception.
+		if (arr) arr->Release();
+		return nullptr;
+	}
 	short* data = reinterpret_cast<short*>(arr->At(0));
 	if (!el_tonar_output_samples(gen, data, size)) {
 		arr->Release();
