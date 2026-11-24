@@ -486,6 +486,7 @@ CScriptArray* coordinate_map::get_areas_script(float x, float y, float z, float 
 	local_areas.reserve(20);
 	if (!g_MapAreaArrayType) g_MapAreaArrayType = get_array_type("array<coordinate_map_area@>");
 	CScriptArray* array = CScriptArray::Create(g_MapAreaArrayType);
+	if (!array) return nullptr;
 	get_areas(x, x, y, y, z, z, d, local_areas, false, filter_callback, flags, excluded_flags);
 	array->Reserve(local_areas.size());
 	for (int i = 0; i < local_areas.size(); i++) {
@@ -499,6 +500,7 @@ CScriptArray* coordinate_map::get_areas_in_range_script(float minx, float maxx, 
 	local_areas.reserve(20);
 	if (!g_MapAreaArrayType) g_MapAreaArrayType = get_array_type("array<coordinate_map_area@>");
 	CScriptArray* array = CScriptArray::Create(g_MapAreaArrayType);
+	if (!array) return nullptr;
 	get_areas(minx, maxx, miny, maxy, minz, maxz, d, local_areas, false, filter_callback, flags, excluded_flags);
 	array->Reserve(local_areas.size());
 	for (int i = 0; i < local_areas.size(); i++) {

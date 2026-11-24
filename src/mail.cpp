@@ -318,6 +318,7 @@ public:
 		asIScriptEngine* engine = ctx->GetEngine();
 		asITypeInfo* arrayType = get_array_type("array<mail_recipient@>");
 		CScriptArray* arr = CScriptArray::Create(arrayType);
+		if (!arr) return nullptr;
 		const MailMessage::Recipients& recipients = m_message.recipients();
 		for (const auto& r : recipients) {
 			mail_recipient* mr = new mail_recipient(r.getType(), r.getAddress(), r.getRealName());

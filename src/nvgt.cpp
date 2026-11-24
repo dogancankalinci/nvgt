@@ -130,7 +130,7 @@ protected:
 		g_command_line_args = CScriptArray::Create(g_ScriptEngine->GetTypeInfoByDecl("string[]"));
 		for (unsigned int i = offset; i < argv.size(); i++) {
 			g_CommandLine += argv[i];
-			g_command_line_args->InsertLast((void*)&argv[i]);
+			if (g_command_line_args) g_command_line_args->InsertLast((void*)&argv[i]);
 			if (i < argv.size() - 1)
 				g_CommandLine += " ";
 		}
@@ -306,7 +306,7 @@ protected:
 		#endif
 		g_scriptpath = Path(scriptfile).makeAbsolute().makeParent().toString();
 		setupCommandLineProperty(args, 1);
-		g_command_line_args->InsertAt(0, (void*)&scriptfile);
+		if (g_command_line_args) g_command_line_args->InsertAt(0, (void*)&scriptfile);
 		ConfigureEngineOptions(g_ScriptEngine);
 		if (mode == NVGT_RUN) {
 			if (CompileScript(g_ScriptEngine, scriptfile.c_str()) < 0) {
@@ -335,7 +335,7 @@ protected:
 	virtual int main(const std::vector<std::string>& args) override {
 		setupCommandLineProperty(args);
 		std::string path_tmp;
-		g_command_line_args->InsertAt(0, (void*)&path_tmp);
+		if (g_command_line_args) g_command_line_args->InsertAt(0, (void*)&path_tmp);
 		int retcode = Application::EXIT_OK;
 		if (LoadCompiledExecutable(g_ScriptEngine) < 0 || !ExecuteScript(g_ScriptEngine, commandName().c_str(), retcode)) {
 			ShowAngelscriptMessages();

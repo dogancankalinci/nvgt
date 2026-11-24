@@ -255,7 +255,7 @@ CScriptArray* pathfinder::find(int start_x, int start_y, int start_z, int end_x,
 	} hold(this);
 	if (!VectorArrayType) VectorArrayType = get_array_type("array<vector>");
 	CScriptArray* array = CScriptArray::Create(VectorArrayType);
-	if (solving) return array;
+	if (!array || solving) return array;
 	solve_desperation = desperation_factor; // for the whole search, see solve_desperation
 	abort = false;
 	must_reset = false;

@@ -231,6 +231,16 @@ static void CleanupTypeInfoArrayCache(asITypeInfo *type)
 	}
 }
 
+// ALTERED: an array whose buffer couldn't be made ("Out of memory" or "Too large array size", the context has the exception) is
+// released here instead of handed out: every method but the destructor reads the buffer, and the application callers that
+// check for null were never told of the failure. With no active context the caller only sees the null.
+static CScriptArray *ArrayOrNull(CScriptArray *a, bool made)
+{
+	if( made ) return a;
+	a->Release();
+	return 0;
+}
+
 CScriptArray* CScriptArray::Create(asITypeInfo *ti, asUINT length)
 {
 	// Allocate the memory
@@ -247,7 +257,7 @@ CScriptArray* CScriptArray::Create(asITypeInfo *ti, asUINT length)
 	// Initialize the object
 	CScriptArray *a = new(mem) CScriptArray(length, ti);
 
-	return a;
+	return ArrayOrNull(a, a->buffer != 0);
 }
 
 CScriptArray* CScriptArray::Create(asITypeInfo *ti, void *initList)
@@ -266,7 +276,7 @@ CScriptArray* CScriptArray::Create(asITypeInfo *ti, void *initList)
 	// Initialize the object
 	CScriptArray *a = new(mem) CScriptArray(ti, initList);
 
-	return a;
+	return ArrayOrNull(a, a->buffer != 0);
 }
 
 CScriptArray* CScriptArray::Create(asITypeInfo *ti, asUINT length, void *defVal)
@@ -285,7 +295,7 @@ CScriptArray* CScriptArray::Create(asITypeInfo *ti, asUINT length, void *defVal)
 	// Initialize the object
 	CScriptArray *a = new(mem) CScriptArray(length, defVal, ti);
 
-	return a;
+	return ArrayOrNull(a, a->buffer != 0);
 }
 
 CScriptArray* CScriptArray::Create(asITypeInfo *ti)
@@ -640,8 +650,7 @@ CScriptArray::CScriptArray(asITypeInfo *ti, void *buf)
 		// Only allocate the buffer, but not the objects
 		subTypeId |= asTYPEID_OBJHANDLE;
 		CreateBuffer(&buffer, length);
-		if (!buffer)
-			throw std::bad_alloc();
+		if( !buffer ) return; // ALTERED: see the constructor below; a throw here lost the memory Create() allocated
 		subTypeId &= ~asTYPEID_OBJHANDLE;
 
 		// Copy the handles into the internal buffer

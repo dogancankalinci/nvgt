@@ -830,6 +830,7 @@ static bool physics_material_register(nvgt_physics_material* m) {
 static CScriptArray* physics_material_list() {
 	asIScriptContext* ctx = asGetActiveContext();
 	CScriptArray* names = CScriptArray::Create(ctx->GetEngine()->GetTypeInfoByDecl("array<string>"));
+	if (!names) return nullptr;
 	for (const auto& [name, mat] : *g_physics_materials) names->InsertLast((void*)&name);
 	return names;
 }

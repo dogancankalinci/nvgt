@@ -1419,6 +1419,7 @@ int system_tray_menu::get_entry_count() const {
 CScriptArray* system_tray_menu::get_entries() {
 	asITypeInfo* array_type = get_array_type("array<system_tray_menu_item@>");
 	CScriptArray* arr = CScriptArray::Create(array_type);
+	if (!arr) return nullptr;
 	std::vector<Poco::AutoPtr<system_tray_menu_item>> items;
 	{
 		std::lock_guard<std::recursive_mutex> lock(system_tray_gc_mutex());

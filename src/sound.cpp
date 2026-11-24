@@ -1131,8 +1131,8 @@ public:
 		if (frame_count > 0xFFFFFFFF / channels) throw_refusal(MA_INVALID_ARGS, "too many frames requested");
 		CScriptArray *result = CScriptArray::Create(float_array_type(), frame_count * channels);
 		asIScriptContext* ctx = asGetActiveContext();
-		if (ctx && ctx->GetState() == asEXECUTION_EXCEPTION) {
-			g_soundsystem_last_error = array_refusal(ctx);
+		if (!result || (ctx && ctx->GetState() == asEXECUTION_EXCEPTION)) { // Null with no context to raise on too, which the read went on to write through.
+			g_soundsystem_last_error = ctx ? array_refusal(ctx) : MA_OUT_OF_MEMORY;
 			if (result) result->Release(); // None, with no memory for the array itself.
 			return nullptr;
 		}
@@ -1663,8 +1663,8 @@ public:
 		if (channels && frame_count > 0xFFFFFFFF / channels) throw_refusal(MA_INVALID_ARGS, "too many frames requested");
 		CScriptArray* array = CScriptArray::Create(float_array_type(), frame_count * channels);
 		asIScriptContext* ctx = asGetActiveContext();
-		if (ctx && ctx->GetState() == asEXECUTION_EXCEPTION) {
-			g_soundsystem_last_error = array_refusal(ctx);
+		if (!array || (ctx && ctx->GetState() == asEXECUTION_EXCEPTION)) {
+			g_soundsystem_last_error = ctx ? array_refusal(ctx) : MA_OUT_OF_MEMORY;
 			if (array) array->Release(); // As above.
 			return nullptr;
 		}

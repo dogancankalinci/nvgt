@@ -45,6 +45,7 @@ template <class T> inline CScriptArray* vector_to_scriptarray(const std::vector<
 	asITypeInfo* t = get_array_type(Poco::format("array<%s>", array_type));
 	if (!t) return nullptr;
 	CScriptArray* array = CScriptArray::Create(t, input.size());
+	if (!array) return nullptr;
 	for (int i = 0; i < input.size(); i++)((T*)array->At(i))->operator=(input[i]);
 	return array;
 }

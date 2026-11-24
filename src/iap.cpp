@@ -504,6 +504,7 @@ static CScriptArray* as_iap_get_products() {
 	}
 
 	CScriptArray* arr = CScriptArray::Create(t, (asUINT)snapshot.size());
+	if (!arr) return nullptr;
 	for (asUINT i = 0; i < (asUINT)snapshot.size(); i++) {
 		script_iap_product* p = new script_iap_product();
 		p->info = snapshot[i];
@@ -548,6 +549,11 @@ static CScriptArray* as_iap_get_pending_purchases() {
 	}
 
 	CScriptArray* arr = CScriptArray::Create(t, (asUINT)drained.size());
+	if (!arr) { // The purchases go back in front of any that came in meanwhile, for the next call.
+		std::lock_guard<std::mutex> lk(g_iap.mtx);
+		g_iap.pending_purchases.insert(g_iap.pending_purchases.begin(), drained.begin(), drained.end());
+		return nullptr;
+	}
 	for (asUINT i = 0; i < (asUINT)drained.size(); i++) {
 		script_iap_purchase* p = new script_iap_purchase();
 		p->info = drained[i];

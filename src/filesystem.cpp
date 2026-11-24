@@ -169,7 +169,7 @@ CScriptArray* FindFiles(const string& path) {
 
 	// Create the array object
 	CScriptArray* array = CScriptArray::Create(arrayType);
-	if (path_has_nul(path)) return array;
+	if (!array || path_has_nul(path)) return array;
 
 	#if defined(_WIN32)
 	// Windows uses UTF16 so it is necessary to convert the string
@@ -264,7 +264,7 @@ CScriptArray* FindDirectories(const string& path) {
 
 	// Create the array object
 	CScriptArray* array = CScriptArray::Create(arrayType);
-	if (path_has_nul(path)) return array;
+	if (!array || path_has_nul(path)) return array;
 
 	#if defined(_WIN32)
 	// Windows uses UTF16 so it is necessary to convert the string
@@ -413,7 +413,7 @@ CScriptArray* script_glob(const string& pattern, int options) {
 	// Expected to have been called from a script.
 	CScriptArray* array = CScriptArray::Create(get_array_type("array<string>"));
 	set<string> files;
-	if (glob_pattern_too_wild(pattern) || path_has_nul(pattern)) return array;
+	if (!array || glob_pattern_too_wild(pattern) || path_has_nul(pattern)) return array;
 	try {
 		Glob::glob(pattern, files, options);
 	} catch(Exception&) {}

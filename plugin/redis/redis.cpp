@@ -128,6 +128,7 @@ public:
 	CScriptArray* get_array() const {
 		asITypeInfo* arrayType = g_value_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
+		if (!result) return nullptr;
 		if (ptr && ptr->isArray()) {
 			const Type<Array>* arr = dynamic_cast<const Type<Array>*>(ptr);
 			if (arr) {
@@ -470,6 +471,7 @@ public:
 	CScriptArray* mget(CScriptArray* keys) {
 		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
+		if (!result) return nullptr;
 		if (!is_connected()) {
 			m_last_error = "Not connected";
 			return result;
@@ -605,6 +607,7 @@ public:
 	CScriptArray* keys(const std::string& pattern) {
 		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
+		if (!result) return nullptr;
 		if (!is_connected()) {
 			m_last_error = "Not connected";
 			return result;
@@ -691,6 +694,7 @@ public:
 	CScriptArray* lrange(const std::string& key, int64_t start, int64_t stop) {
 		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
+		if (!result) return nullptr;
 		if (!is_connected()) {
 			m_last_error = "Not connected";
 			return result;
@@ -842,6 +846,7 @@ public:
 	CScriptArray* hkeys(const std::string& key) {
 		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
+		if (!result) return nullptr;
 		if (!is_connected()) {
 			m_last_error = "Not connected";
 			return result;
@@ -866,6 +871,7 @@ public:
 	CScriptArray* hvals(const std::string& key) {
 		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
+		if (!result) return nullptr;
 		if (!is_connected()) {
 			m_last_error = "Not connected";
 			return result;
@@ -969,6 +975,7 @@ public:
 	CScriptArray* smembers(const std::string& key) {
 		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
+		if (!result) return nullptr;
 		if (!is_connected()) {
 			m_last_error = "Not connected";
 			return result;
@@ -1025,6 +1032,7 @@ public:
 	CScriptArray* srandmember_count(const std::string& key, int64_t count) {
 		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
+		if (!result) return nullptr;
 		if (!is_connected()) {
 			m_last_error = "Not connected";
 			return result;
@@ -1049,6 +1057,7 @@ public:
 	CScriptArray* sunion(CScriptArray* keys) {
 		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
+		if (!result) return nullptr;
 		if (!is_connected()) {
 			m_last_error = "Not connected";
 			return result;
@@ -1081,6 +1090,7 @@ public:
 	CScriptArray* sinter(CScriptArray* keys) {
 		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
+		if (!result) return nullptr;
 		if (!is_connected()) {
 			m_last_error = "Not connected";
 			return result;
@@ -1113,6 +1123,7 @@ public:
 	CScriptArray* sdiff(CScriptArray* keys) {
 		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
+		if (!result) return nullptr;
 		if (!is_connected()) {
 			m_last_error = "Not connected";
 			return result;
@@ -1206,6 +1217,7 @@ public:
 	CScriptArray* zrange(const std::string& key, int64_t start, int64_t stop, bool withscores = false) {
 		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
+		if (!result) return nullptr;
 		if (!is_connected()) {
 			m_last_error = "Not connected";
 			return result;
@@ -1233,6 +1245,7 @@ public:
 	CScriptArray* zrevrange(const std::string& key, int64_t start, int64_t stop, bool withscores = false) {
 		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
+		if (!result) return nullptr;
 		if (!is_connected()) {
 			m_last_error = "Not connected";
 			return result;
@@ -1303,6 +1316,7 @@ public:
 	CScriptArray* zrangebyscore(const std::string& key, double min, double max, bool withscores = false, int64_t offset = -1, int64_t count = -1) {
 		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
+		if (!result) return nullptr;
 		if (!is_connected()) {
 			m_last_error = "Not connected";
 			return result;
@@ -1685,6 +1699,7 @@ public:
 	CScriptArray* geopos(const std::string& key, CScriptArray* members) {
 		asITypeInfo* arrayType = g_coordinates_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
+		if (!result) return nullptr;
 		if (!is_connected()) {
 			m_last_error = "Not connected";
 			return result;
@@ -1702,6 +1717,10 @@ public:
 			asITypeInfo* doubleArrayType = g_double_array_type;
 			for (size_t i = 0; i < reply.size(); ++i) {
 				CScriptArray* coords = CScriptArray::Create(doubleArrayType);
+				if (!coords) {
+					result->Release();
+					return nullptr;
+				}
 				try {
 					Array pos = reply.get<Array>(i);
 					if (pos.size() >= 2) {
@@ -1738,6 +1757,7 @@ public:
 	CScriptArray* georadius(const std::string& key, double longitude, double latitude, double radius, const std::string& unit, bool withcoord = false, bool withdist = false, bool withhash = false, int64_t count = -1) {
 		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
+		if (!result) return nullptr;
 		if (!is_connected()) {
 			m_last_error = "Not connected";
 			return result;
@@ -1778,6 +1798,7 @@ public:
 	CScriptArray* georadiusbymember(const std::string& key, const std::string& member, double radius, const std::string& unit, bool withcoord = false, bool withdist = false, bool withhash = false, int64_t count = -1) {
 		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
+		if (!result) return nullptr;
 		if (!is_connected()) {
 			m_last_error = "Not connected";
 			return result;
@@ -1909,6 +1930,7 @@ public:
 	CScriptArray* scan(int64_t cursor, const std::string& match = "", int64_t count = -1) {
 		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
+		if (!result) return nullptr;
 		if (!is_connected()) {
 			m_last_error = "Not connected";
 			return result;
@@ -2169,6 +2191,7 @@ public:
 	CScriptArray* client_list() {
 		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
+		if (!result) return nullptr;
 		if (!is_connected()) {
 			m_last_error = "Not connected";
 			return result;
@@ -2233,6 +2256,7 @@ public:
 	CScriptArray* acl_list() {
 		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
+		if (!result) return nullptr;
 		if (!is_connected()) {
 			m_last_error = "Not connected";
 			return result;
@@ -2293,6 +2317,7 @@ public:
 	CScriptArray* acl_getuser(const std::string& username) {
 		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
+		if (!result) return nullptr;
 		if (!is_connected()) {
 			m_last_error = "Not connected";
 			return result;
@@ -2363,6 +2388,7 @@ public:
 	CScriptArray* pipeline_execute() {
 		asITypeInfo* arrayType = g_value_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
+		if (!result) return nullptr;
 		if (!m_pipeline_mode) {
 			m_last_error = "Not in pipeline mode";
 			return result;
@@ -2523,6 +2549,7 @@ public:
 	CScriptArray* get_messages(const std::string& channel) {
 		asITypeInfo* arrayType = g_string_array_type;
 		CScriptArray* result = CScriptArray::Create(arrayType);
+		if (!result) return nullptr;
 		Mutex::ScopedLock lock(m_messages_mutex);
 		auto it = m_messages.find(channel);
 		if (it != m_messages.end()) {

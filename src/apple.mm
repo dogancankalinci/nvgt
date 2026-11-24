@@ -282,6 +282,7 @@ public:
 	CScriptArray* getAllVoices() const {
 		asITypeInfo* arrayTipe = asGetActiveContext()->GetEngine()->GetTypeInfoByDecl("array<string>");
 		CScriptArray* voiceNames = CScriptArray::Create(arrayTipe, (int)0);
+		if (!voiceNames) return nullptr;
 		@autoreleasepool {
 			for (AVSpeechSynthesisVoice *voice in voices) {
 				std::string voiceName([voice.name UTF8String]);
@@ -294,6 +295,7 @@ public:
 	CScriptArray* getVoicesByLanguage(const std::string& language) const {
 		asITypeInfo* arrayTipe = asGetActiveContext()->GetEngine()->GetTypeInfoByDecl("array<string>");
 		CScriptArray* voiceNames = CScriptArray::Create(arrayTipe, (int)0);
+		if (!voiceNames) return nullptr;
 		@autoreleasepool {
 			NSString *nslanguage = [NSString stringWithUTF8String:language.c_str()];
 			for (AVSpeechSynthesisVoice *voice in voices) {

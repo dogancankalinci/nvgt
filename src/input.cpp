@@ -350,6 +350,7 @@ CScriptArray* keys_pressed() {
 	if (!key_code_array_type)
 		key_code_array_type = get_array_type("array<int>");
 	CScriptArray* array = CScriptArray::Create(key_code_array_type);
+	if (!array) return nullptr;
 	for (int i = 0; i < SDL_SCANCODE_COUNT; i++) {
 		int k = (int)i;
 		if (KeyPressed(k))
@@ -396,6 +397,7 @@ CScriptArray* keys_released() {
 	if (!key_code_array_type)
 		key_code_array_type = get_array_type("array<int>");
 	CScriptArray* array = CScriptArray::Create(key_code_array_type);
+	if (!array) return nullptr;
 	for (int i = 0; i < g_KeysDownArrayLen; i++) {
 		if (KeyReleased(i))
 			array->InsertLast(&i);

@@ -632,6 +632,7 @@ CScriptArray* poco_json_object::get_keys() const {
 	asIScriptEngine* engine = ctx->GetEngine();
 	asITypeInfo* arrayType = get_array_type("array<string>");
 	CScriptArray* array = CScriptArray::Create(arrayType, ptr->size());
+	if (!array) return nullptr;
 	int c = 0;
 	for (JSON::Object::ConstIterator i = ptr->begin(); i != ptr->end(); i++, c++)((std::string*)(array->At(c)))->assign(i->first);
 	return array;
@@ -829,7 +830,7 @@ int poco_regular_expression_subst(RegularExpression* exp, std::string& subject, 
 CScriptArray* poco_regular_expression_split(RegularExpression* exp, const std::string& subject, asQWORD offset, int options) {
 	if (!StringArrayType) StringArrayType = get_array_type("array<string>");
 	CScriptArray* array = CScriptArray::Create(StringArrayType);
-	if (regexp_offset_past_end(subject, offset)) return array;
+	if (!array || regexp_offset_past_end(subject, offset)) return array;
 	RegularExpression::MatchVec groups;
 	try {
 		if (regexp_match_groups(*exp, subject, regexp_offset(offset), groups, options) < 1) return array;
