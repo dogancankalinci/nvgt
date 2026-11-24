@@ -283,9 +283,9 @@ inline double wrap_azimuth(double azimuth) {
 	return azimuth < 0.0 ? azimuth + 360.0 : azimuth;
 }
 inline unsigned int scale_samples(unsigned int sr, double samples_at_reference) { return std::max(1u, (unsigned int)std::lround(samples_at_reference * sr / REFERENCE_SR)); }
-inline unsigned int next_pow2(unsigned int v) {
+inline unsigned int next_pow2(unsigned int v) { // At most 2^31: past it, r wrapped to 0 and the loop never ended.
 	unsigned int r = 1;
-	while (r < v) r <<= 1;
+	while (r < v && r < (1u << 31)) r <<= 1;
 	return r;
 }
 
@@ -1144,9 +1144,9 @@ struct echo_state {
 	ramp wet, dry;
 
 	echo_state(unsigned int sample_rate, unsigned int channel_count, double max_delay_seconds) : sr(std::max(1u, sample_rate)), channels(std::max(1u, channel_count)) {
-		max_delay = (unsigned int)std::ceil(sanitize(max_delay_seconds, 0.0, 3600.0) * sr);
+		max_delay = (unsigned int)std::min(std::ceil(sanitize(max_delay_seconds, 0.0, 3600.0) * sr), double(1u << 30)); // An hour at a high rate passed 2^31 frames, whose line size wrapped to 0.
 		mask = next_pow2(max_delay + 1) - 1;
-		line.assign((mask + 1) * 2, 0.0f);
+		line.assign((size_t)(mask + 1) * 2, 0.0f);
 		xfade_len = xfade_pos = fade_len = scale_samples(sr, 256);
 		params defaults;
 		wet.snap(float(defaults.wet));
