@@ -1146,8 +1146,10 @@ string tts_voice::get_engine_name() {
 	voice_info *voice = get_voice_info(current_voice_index);
 	return voice? voice->engine_name : "";
 }
-int tts_voice::get_engine_count() { return engine_names.size(); }
+// Under the lock, as ensure_default() and list_voices_again() replace engine_names under it.
+int tts_voice::get_engine_count() { std::lock_guard<std::recursive_mutex> chain(chain_mtx); return engine_names.size(); }
 string tts_voice::get_engine_name(int index) {
+	std::lock_guard<std::recursive_mutex> chain(chain_mtx);
 	if (index < 0 || index >= static_cast<int>(engine_names.size())) return "";
 	return engine_names[index];
 }
