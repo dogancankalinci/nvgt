@@ -2222,7 +2222,6 @@ public:
 };
 class hrtf_panner_impl : public spatializer_component_node_impl, public virtual hrtf_panner {
 	microsynthiser::hrtf_effect hrtf;
-	vector<float> mono;
 	silent_input_rest silence;
 public:
 	hrtf_panner_impl(audio_spatializer* spatializer, audio_engine* e) : spatializer_component_node_impl(spatializer, e, 0, 2), hrtf(e->get_sample_rate()), silence(e->get_sample_rate()) {
@@ -2243,18 +2242,7 @@ public:
 		if (std::isfinite(params.listener_direction_x) && std::isfinite(params.listener_direction_y) && std::isfinite(params.listener_direction_z)) hrtf.set_position({params.listener_direction_x, -params.listener_direction_z, params.listener_direction_y});
 		const float fully_spatialized_distance = 5.0f; // Within this distance a sound is increasingly unpositioned, so that sounds at the listener's position aren't snapped to one direction. Like Steam Audio this narrows the difference between the ears rather than mixing in the unpositioned sound, which would make nearby sounds seem centered.
 		hrtf.set_spatial_blend(clamp(params.listener_distance * params.directional_attenuation_factor / fully_spatialized_distance, 0.0f, 1.0f)); // A NaN, as an infinite distance times a factor of 0, is unpositioned.
-		if (channels == 2) {
-			hrtf.process_stereo(frames_in[0], frames_out[0], frames);
-			return;
-		}
-		if (mono.size() < frames) mono.resize(frames);
-		const float* in = frames_in[0];
-		for (unsigned int i = 0; i < frames; i++) {
-			float sum = 0.0f;
-			for (unsigned int c = 0; c < channels; c++) sum += in[i * channels + c];
-			mono[i] = sum / channels;
-		}
-		hrtf.process(mono.data(), frames_out[0], frames);
+		hrtf.process_stereo(frames_in[0], frames_out[0], frames); // Stereo only, as create() makes the panner for a stereo engine alone: the other channel counts' downmix, never reached, allocated on the audio thread.
 	}
 };
 // HRTF renders two ears, so an engine of another channel count, which couldn't take its output, gets none, and the spatializer falls back to another panner.
