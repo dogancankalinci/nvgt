@@ -978,25 +978,40 @@ bool screen_reader_silence() { return voice_over_speak("", true); }
 #endif
 // The following code was originally taken from https://github.com/hammerspoon/hammerspoon under an MIT license, but has been heavily trimmed/modified for our simpler needs and basically consists of system API calls. It was then run through Claude to create the IOS version.
 #if !TARGET_OS_IOS
+// AppKit's windows are made and run on the main thread only (an NSAlert made on another thread stops the program with an exception), so
+// input_box() and info_box() called on a script thread show the alert there, which the main thread runs while it waits (see
+// apple_run_main_loop_once()), as SDL does for alert() and message_box(). The texts are made valid UTF-8 first: NSString makes nil of
+// malformed UTF-8, and NSTextField refuses a nil value with an exception. The alert and the field are released once read: both leaked,
+// with the alert's window, for each box shown.
 std::string apple_input_box(const std::string& title, const std::string& message, const std::string& default_value, bool secure, bool readonly) {
-	NSAlert* alert = [[NSAlert alloc] init];
-	[alert setMessageText:[NSString stringWithUTF8String:title.c_str()]];
-	[alert setInformativeText:[NSString stringWithUTF8String:message.c_str()]];
-	[alert addButtonWithTitle:@"OK"];
-	[alert addButtonWithTitle:@"Cancel"];
-	[[alert.buttons objectAtIndex:0] setKeyEquivalent:@"\r"]; // Return
-	[[alert.buttons objectAtIndex:1] setKeyEquivalent:@"\033"]; // Escape
-	NSTextField* input;
-	if (secure) input = [[NSSecureTextField alloc] initWithFrame:NSMakeRect(0, 0, 200, 24)];
-	else input = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 200, 24)];
-	[input setStringValue:[NSString stringWithUTF8String:default_value.c_str()]];
-	input.editable = !readonly;
-	[alert setAccessoryView:input];
-	[[alert window] setInitialFirstResponder:input]; // Focus on text input.
-	NSInteger result = [alert runModal];
-	if (result == NSAlertFirstButtonReturn) return [[input stringValue] UTF8String];
-	else if (result == NSAlertSecondButtonReturn) return "\xff"; // nvgt value for cancel for the moment.
-	return "\xff"; // Either an error or we can't determine what was pressed.
+	if (![NSThread isMainThread]) {
+		__block std::string result;
+		dispatch_sync(dispatch_get_main_queue(), ^{ result = apple_input_box(title, message, default_value, secure, readonly); });
+		return result;
+	}
+	@autoreleasepool {
+		NSAlert* alert = [[[NSAlert alloc] init] autorelease];
+		[alert setMessageText:[NSString stringWithUTF8String:tts_valid_utf8(title).c_str()]];
+		[alert setInformativeText:[NSString stringWithUTF8String:tts_valid_utf8(message).c_str()]];
+		[alert addButtonWithTitle:@"OK"];
+		[alert addButtonWithTitle:@"Cancel"];
+		[[alert.buttons objectAtIndex:0] setKeyEquivalent:@"\r"]; // Return
+		[[alert.buttons objectAtIndex:1] setKeyEquivalent:@"\033"]; // Escape
+		NSTextField* input;
+		if (secure) input = [[[NSSecureTextField alloc] initWithFrame:NSMakeRect(0, 0, 200, 24)] autorelease];
+		else input = [[[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 200, 24)] autorelease];
+		[input setStringValue:[NSString stringWithUTF8String:tts_valid_utf8(default_value).c_str()]];
+		input.editable = !readonly;
+		[alert setAccessoryView:input];
+		[[alert window] setInitialFirstResponder:input]; // Focus on text input.
+		NSInteger result = [alert runModal];
+		if (result == NSAlertFirstButtonReturn) {
+			const char* text = [[input stringValue] UTF8String];
+			return text? text : "";
+		}
+		else if (result == NSAlertSecondButtonReturn) return "\xff"; // nvgt value for cancel for the moment.
+		return "\xff"; // Either an error or we can't determine what was pressed.
+	}
 }
 #else
 std::string apple_input_box(const std::string& title, const std::string& message, const std::string& default_value, bool secure, bool readonly) {
