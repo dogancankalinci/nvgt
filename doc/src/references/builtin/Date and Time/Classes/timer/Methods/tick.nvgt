@@ -7,6 +7,8 @@
 		bool: true if at least time_units had elapsed, in which case the timer has been restarted.
 	## Remarks:
 		This is the most convenient way of using the timer object. Usually the goal is to check if a given time has elapsed repeatedly, be it a weapon firing many times over, footsteps several times a second or many other types of repeating events. You can use the `timer::has_elapsed()` method to check if a timer has elapsed the given duration, but then you must manually restart the timer each time which adds an extra line to your code per check. This does both steps in one call.
+
+		A paused timer counts too: its elapsed time stays where it was paused, and once that has reached time_units, tick() returns true and restarts the timer, which also resumes it (see `timer::restart()`). A game that pauses its timers, for a menu say, and goes on calling tick() on them finds them running again; check `timer::paused` before calling tick() to keep a paused timer stopped.
 */
 
 // Example:
