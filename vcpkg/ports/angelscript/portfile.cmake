@@ -174,6 +174,7 @@ vcpkg_from_github(
         fix-alloc-out-of-memory.patch
         fix-asnew-null.patch
         fix-module-set-name-lock.patch
+        fix-function-by-name-parent-namespaces.patch
 )
 
 vcpkg_cmake_configure(

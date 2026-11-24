@@ -1,0 +1,19 @@
+diff --git a/sdk/angelscript/source/as_module.cpp b/sdk/angelscript/source/as_module.cpp
+index dcb867d..a608918 100644
+--- a/sdk/angelscript/source/as_module.cpp
++++ b/sdk/angelscript/source/as_module.cpp
+@@ -911,10 +911,12 @@ asIScriptFunction *asCModule::GetFunctionByName(const char *in_name) const
+ 	while( ns )
+ 	{
+ 		const asCArray<unsigned int> &idxs = m_globalFunctions.GetIndexes(ns, name);
+-		if( idxs.GetLength() != 1 )
++		// ALTERED: only more than one function of the name (overloads) gives null. A name with no function in the namespace gave
++		// null too, so the parent namespaces were never searched, as they are by GetFunctionByDecl and the loop sets out to do.
++		if( idxs.GetLength() > 1 )
+ 			return 0;
+ 
+-		const asIScriptFunction *func = m_globalFunctions.Get(idxs[0]);
++		const asIScriptFunction *func = idxs.GetLength() ? m_globalFunctions.Get(idxs[0]) : 0;
+ 		if( func )
+ 			return const_cast<asIScriptFunction*>(func);
+ 
