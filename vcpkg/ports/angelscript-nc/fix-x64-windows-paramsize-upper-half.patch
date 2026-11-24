@@ -1,0 +1,38 @@
+diff --git a/sdk/angelscript/source/as_callfunc_x64_msvc_asm.asm b/sdk/angelscript/source/as_callfunc_x64_msvc_asm.asm
+index f4cd1ac..d0e3ec9 100644
+--- a/sdk/angelscript/source/as_callfunc_x64_msvc_asm.asm
++++ b/sdk/angelscript/source/as_callfunc_x64_msvc_asm.asm
+@@ -71,7 +71,9 @@ CallX64 PROC FRAME
+ 	; Make room for at least 4 arguments even if there are less. When
+     ; the compiler does optimizations for speed it may use these for 
+ 	; temporary storage.
+-	mov rdi, r8
++	; ALTERED: paramSize is an int, of which only R8D is defined (the Windows x64 convention leaves the upper half of a register
++	; holding a 32-bit argument undefined); taking all of R8 sized the stack area by whatever the upper half held
++	mov edi, r8d
+ 	add rdi, 32
+ 
+ 	; Make sure the stack pointer is 16byte aligned so the
+diff --git a/sdk/angelscript/source/as_callfunc_x64_msvc_clang.S b/sdk/angelscript/source/as_callfunc_x64_msvc_clang.S
+index be0cf70..3b75830 100644
+--- a/sdk/angelscript/source/as_callfunc_x64_msvc_clang.S
++++ b/sdk/angelscript/source/as_callfunc_x64_msvc_clang.S
+@@ -59,7 +59,8 @@ CallX64:
+     movq %r9, %r14   # r14 = function
+ 
+     # Allocate space for arguments on the stack
+-    movq %r8, %rdi
++    # ALTERED: only %r8d of the int paramSize is defined, see as_callfunc_x64_msvc_asm.asm
++    movl %r8d, %edi
+     addq $0x20, %rdi
+ 
+     # Ensure the stack is 16-byte aligned
+@@ -70,7 +71,7 @@ CallX64:
+     subq %rdi, %rsp
+ 
+     # Check if paramSize == 0
+-    cmpq $0, %r8
++    cmpl $0, %r8d
+     je .callfunc
+ 
+     # Move parameters to non-scratch registers
