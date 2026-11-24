@@ -576,14 +576,17 @@ int CScriptAny::Release() const
 {
 	// Decrease the ref counter
 	gcFlag = false;
-	if( asAtomicDec(refCount) == 0 )
+	// ALTERED: the count this release left is returned as the decrement gave it. It was read again from the any afterwards, which
+	// another thread letting go of the last reference in between had deleted.
+	int count = asAtomicDec(refCount);
+	if( count == 0 )
 	{
 		// Delete this object as no more references to it exists
 		delete this;
 		return 0;
 	}
 
-	return refCount;
+	return count;
 }
 
 int CScriptAny::GetRefCount()
