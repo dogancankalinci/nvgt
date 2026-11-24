@@ -1,0 +1,16 @@
+diff --git a/sdk/angelscript/source/as_module.cpp b/sdk/angelscript/source/as_module.cpp
+index 8b35bdb..dcb867d 100644
+--- a/sdk/angelscript/source/as_module.cpp
++++ b/sdk/angelscript/source/as_module.cpp
+@@ -202,7 +202,11 @@ asIScriptEngine *asCModule::GetEngine() const
+ // interface
+ void asCModule::SetName(const char *in_name)
+ {
++	// ALTERED: under the engine's lock, which asCScriptEngine::GetModule holds while it compares every module's name: a name set
++	// while another thread looked a module up was compared while its buffer was replaced and freed.
++	ACQUIREEXCLUSIVE(m_engine->engineRWLock);
+ 	m_name = in_name;
++	RELEASEEXCLUSIVE(m_engine->engineRWLock);
+ }
+ 
+ // interface

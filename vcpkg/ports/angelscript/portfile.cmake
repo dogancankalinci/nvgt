@@ -173,6 +173,7 @@ vcpkg_from_github(
         fix-unchecked-object-allocation.patch
         fix-alloc-out-of-memory.patch
         fix-asnew-null.patch
+        fix-module-set-name-lock.patch
 )
 
 vcpkg_cmake_configure(
