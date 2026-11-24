@@ -343,7 +343,7 @@ static ma_result nvgt_mp3_backend_init(void* user_data, ma_read_proc on_read, ma
 		ma_dr_mp3* mp3 = &opened->dr;
 		// An APE tag: dr_mp3 reads its size from reserved bytes, which are 0, so that it trims the 32-byte footer alone, leaving the tag in the audio, whose last frame then wasn't followed by another and became silence. The file is read as it was left; where the footer is, as it was trimmed, is where its audio ends without the rest of the tag.
 		ma_int64 at = 0;
-		if (mp3->streamLength != MA_UINT64_MAX && mp3->streamLength > mp3->streamStartOffset && on_tell && on_tell(read_user_data, &at) == MA_SUCCESS && on_seek(read_user_data, (ma_int64)mp3->streamLength, ma_seek_origin_start) == MA_SUCCESS) {
+		if (mp3->streamLength != MA_UINT64_MAX && mp3->streamLength > mp3->streamStartOffset && on_tell && on_seek && on_tell(read_user_data, &at) == MA_SUCCESS && on_seek(read_user_data, (ma_int64)mp3->streamLength, ma_seek_origin_start) == MA_SUCCESS) {
 			ma_uint8 footer[32];
 			size_t got = 0;
 			if (on_read(read_user_data, footer, sizeof(footer), &got) == MA_SUCCESS && got == sizeof(footer) && memcmp(footer, "APETAGEX", 8) == 0) {
@@ -431,7 +431,7 @@ static ma_result nvgt_wav_open(ma_wav* opened, ma_read_proc on_read, ma_seek_pro
 	if (wav->dataChunkDataSize || !plain || !wav->fmt.blockAlign) return result;
 	ma_uint64 size = 0;
 	ma_int64 end = 0;
-	if (on_tell && on_seek(read_user_data, 0, ma_seek_origin_end) == MA_SUCCESS) {
+	if (on_tell && on_seek && on_seek(read_user_data, 0, ma_seek_origin_end) == MA_SUCCESS) { // Both may be null, as the wrappers pass them.
 		const bool told = on_tell(read_user_data, &end) == MA_SUCCESS;
 		const bool back = on_seek(read_user_data, (ma_int64)wav->dataChunkDataPos, ma_seek_origin_start) == MA_SUCCESS;
 		if (!back) { // Left at the end, it read nothing while it told the length counted.
