@@ -127,6 +127,15 @@ static void sweep_plugin_engines() {
 		}
 	}
 }
+// Starts the sweeper if an engine that isn't current is kept and none runs, under g_plugin_engines_mutex.
+static void start_sweeper_if_due(audio_engine* current) {
+	std::chrono::steady_clock::time_point due;
+	if (g_plugin_engines_sweeping || g_plugin_engines_sweeper_stopped || !next_lent_engine_due(current, due)) return;
+	try {
+		std::thread(sweep_plugin_engines).detach();
+		g_plugin_engines_sweeping = true;
+	} catch (...) {} // No thread to be had: let go of by a later call, as before there was one.
+}
 static void let_go_of_lent_engines(audio_engine* current, bool sweeper) {
 	std::vector<audio_engine*> let_go;
 	{
@@ -138,13 +147,7 @@ static void let_go_of_lent_engines(audio_engine* current, bool sweeper) {
 			return; // Let go of by a later call.
 		}
 		take_out_lent_engines(current, let_go); // The current default is kept.
-		std::chrono::steady_clock::time_point due;
-		if (!sweeper && !g_plugin_engines_sweeping && !g_plugin_engines_sweeper_stopped && next_lent_engine_due(current, due)) {
-			try {
-				std::thread(sweep_plugin_engines).detach();
-				g_plugin_engines_sweeping = true;
-			} catch (...) {} // No thread to be had: let go of by a later call, as before there was one.
-		}
+		if (!sweeper) start_sweeper_if_due(current);
 	}
 	for (audio_engine* e : let_go) e->release();
 }
@@ -170,6 +173,7 @@ audio_engine* nvgt_get_default_audio_engine() {
 			kept->lent = std::chrono::steady_clock::now();
 			engine->release(); // Kept already, by the reference taken the first time.
 		} else g_plugin_engines.push_back({engine, std::chrono::steady_clock::now()});
+		start_sweeper_if_due(current_default_engine_pointer()); // The engine may have stopped being the default since it was taken, when the default change found nothing kept yet to sweep.
 		return engine;
 	} catch (const std::exception&) { // Not through a plugin, which may not take it; out of memory keeping the engine, the reference just taken let go of.
 		if (engine) engine->release();
