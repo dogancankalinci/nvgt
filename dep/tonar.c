@@ -573,7 +573,7 @@ if(!elz_tonar_is_init(gen)) return 0;
 int start=gen->fade_start;
 int end=gen->fade_end;
 if(start<=0) return 0;
-int total=start+end;
+long long total=(long long)start+(end>0? end: 0); /* In 64 bits, as two long fades overflowed and dropped both. */
 if(ms>total) return start;
 double ratio=(double) start/total;
 double result=ratio*ms;
@@ -585,7 +585,7 @@ if(!elz_tonar_is_init(gen)) return 0;
 int start=gen->fade_start;
 int end=gen->fade_end;
 if(end<=0) return 0;
-int total=start+end;
+long long total=(long long)end+(start>0? start: 0);
 if(ms>total) return end;
 double ratio=(double) end/total;
 double result=ratio*ms;
