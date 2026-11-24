@@ -1,0 +1,66 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+index 03b9d2a..6063bae 100644
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -3500,6 +3500,13 @@ static const void *const dispatch_table[256] = {
+ 
+ 				// Pre-allocate the memory
+ 				asDWORD *mem = (asDWORD*)m_engine->CallAlloc(objType);
++				// ALTERED: with no memory for the object it was initialized and constructed at a null pointer, an access
++				// violation. See AllocFailed.
++				if( mem == 0 )
++				{
++					AllocFailed(m_engine->scriptFunctions[func], l_bc, l_sp, l_fp);
++					return;
++				}
+ 
+ 				// Pre-initialize the memory by calling the constructor for asCScriptObject
+ 				ScriptObject_Construct(objType, (asCScriptObject*)mem);
+@@ -3531,6 +3538,11 @@ static const void *const dispatch_table[256] = {
+ 			{
+ 				// Pre-allocate the memory
+ 				asDWORD *mem = (asDWORD*)m_engine->CallAlloc(objType);
++				if( mem == 0 ) // ALTERED: see above
++				{
++					AllocFailed(func ? m_engine->scriptFunctions[func] : 0, l_bc, l_sp, l_fp);
++					return;
++				}
+ 
+ 				if( func )
+ 				{
+@@ -6006,6 +6018,23 @@ void asCContext::DetermineLiveObjects(asCArray<int> &liveObjects, asUINT stackLe
+ 	}
+ }
+ 
++// ALTERED: asBC_ALLOC had no memory for the object. The arguments pushed for its constructor belong to the call that isn't made
++// (neither the compiled script nor the exception handler cleans the arguments of an asBC_ALLOC), so they are released and
++// popped here with the address of the variable the object was for, which is left null; the script gets an "Out of memory"
++// exception at the instruction.
++void asCContext::AllocFailed(asCScriptFunction *constructor, asDWORD *bc, asDWORD *sp, asDWORD *fp)
++{
++	int argSize = constructor ? CleanArgsOfUnmadeCall(this, constructor, sp) : 0;
++	asDWORD **a = (asDWORD**)*(asPWORD*)(sp + argSize);
++	if( a )
++		*a = 0;
++
++	m_regs.programPointer    = bc;
++	m_regs.stackPointer      = sp + argSize + AS_PTR_SIZE;
++	m_regs.stackFramePointer = fp;
++	SetInternalException("Out of memory");
++}
++
+ void asCContext::CleanArgsOnStack()
+ {
+ 	if( !m_needToCleanupArgs )
+diff --git a/sdk/angelscript/source/as_context.h b/sdk/angelscript/source/as_context.h
+index f2e38fc..a20d024 100644
+--- a/sdk/angelscript/source/as_context.h
++++ b/sdk/angelscript/source/as_context.h
+@@ -167,6 +167,7 @@ public:
+ 	void CleanStack(bool catchException = false);
+ 	bool CleanStackFrame(bool catchException = false);
+ 	void CleanArgsOnStack();
++	void AllocFailed(asCScriptFunction *constructor, asDWORD *bc, asDWORD *sp, asDWORD *fp); // ALTERED: see asBC_ALLOC
+ 	void CleanReturnObject();
+ 	void DetermineLiveObjects(asCArray<int> &liveObjects, asUINT stackLevel, const asUINT *framePos = 0); // ALTERED: framePos, see CleanStackFrame
+ 	bool IsExceptionFrame() const; // ALTERED: see SetInternalException

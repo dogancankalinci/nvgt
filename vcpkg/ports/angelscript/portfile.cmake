@@ -171,6 +171,7 @@ vcpkg_from_github(
         fix-collector-out-of-memory.patch
         fix-init-globals-without-context.patch
         fix-unchecked-object-allocation.patch
+        fix-alloc-out-of-memory.patch
 )
 
 vcpkg_cmake_configure(
