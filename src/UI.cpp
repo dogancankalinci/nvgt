@@ -271,7 +271,8 @@ std::string ClipboardGetText() {
 	video_lock lock;
 	InputInit();
 	char* r = SDL_GetClipboardText();
-	std::string cb_text(r);
+	// SDL gives "" when it can't read the clipboard, and null when even that copy can't be allocated: a std::string made from null is undefined (a crash).
+	std::string cb_text(r ? r : "");
 	SDL_free(r);
 	return cb_text;
 }
