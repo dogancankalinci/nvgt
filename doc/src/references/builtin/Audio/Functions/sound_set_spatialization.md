@@ -7,7 +7,7 @@ Choose the panner and attenuator that sounds use by default, enabling them if th
 * int panner: the panner to use, a value of the audio_panner enum or one provided by a plugin.
 * int attenuator: the attenuator to use, a value of the audio_attenuator enum or one provided by a plugin.
 * bool disable_previous = false: whether to disable the panner and attenuator that were the defaults before, so that mixers using them switch to another. This only applies when set_default is true, as only then are they replaced as the defaults.
-* bool set_default = true: whether to make these the defaults. If false, they are only enabled.
+* bool set_default = true: whether to make these the defaults, which sounds and mixers positioned already with the earlier defaults then use too, as with `set_sound_global_hrtf()`, while those given a panner or attenuator of their own keep it. If false, they are only enabled.
 
 ## Returns:
 bool: true if both the panner and the attenuator exist.

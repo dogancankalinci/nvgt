@@ -6,6 +6,7 @@
 	## Remarks:
 		This is an audio_node with one input and one output bus, and has all of the methods and properties of audio_node as well as the ones listed here. Audio attached to its input comes out of its output with reverb added.
 		Freeverb is cheap and simple to set up, needing little more than a `room_size` and `damping`, but it can sound somewhat metallic, especially on short sharp sounds. audio_fdn_reverb_node is a smoother sounding alternative with more control.
+		The node is made for an engine of 1 or 2 channels at a sample rate from 22050 to 396900 hertz: for another engine the constructor throws.
 		By default the node only outputs the reverb and none of its input, which is what is wanted when it is given to a reverb3d, the usual way to use a reverb in a 3d game, as the sounds sent to it are heard directly as well. To put a sound through the reverb alone, set `dry` so that the sound itself is still heard.
 */
 

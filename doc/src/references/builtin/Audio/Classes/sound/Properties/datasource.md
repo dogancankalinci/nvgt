@@ -1,7 +1,7 @@
 # datasource
 The audio_data_source that the sound is playing from, or null if nothing is loaded.
 
-`audio_data_source@ sound::datasource;`
+`const audio_data_source@ sound::datasource;`
 
 ## Remarks:
 The sound and its data source share the same audio, so reading details from either gives the same answers, and the same object is returned every time.
