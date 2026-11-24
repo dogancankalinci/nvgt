@@ -2193,11 +2193,39 @@ public:
 };
 spatializer_component_node* basic_panner::create(audio_spatializer* spatializer, audio_engine* engine) { return new basic_panner_impl(spatializer, engine); }
 
+// Whether a component processing every block, as spatializer components do so that their tails play out (see spatializer_component_node_impl), can rest: its input silent for longer than its tail, after which it writes silence instead of working on it. A stopped sound positioned with HRTF otherwise cost its convolution, its delay lines and its filters every block, a few hundred of them a whole core. The effect is reset as it starts resting, its state then silence as processing it would have left it.
+class silent_input_rest {
+	unsigned long long silent_frames = 0;
+	const unsigned long long tail_frames;
+	bool resting = false;
+public:
+	explicit silent_input_rest(unsigned int sample_rate) : tail_frames(sample_rate / 10) {} // A tenth of a second, far past the HRTF's few milliseconds of impulse, delay and crossfade and the air absorption's filters.
+	// True if this block of input is silence and the component rests through it, its output silenced here; reset is called as it starts resting.
+	template <class F> bool rest(const float* in, float* out, unsigned int frames, unsigned int channels, F reset) {
+		const size_t samples = (size_t)frames * channels;
+		for (size_t i = 0; i < samples; i++) {
+			if (in[i] != 0.0f) {
+				silent_frames = 0;
+				resting = false;
+				return false;
+			}
+		}
+		if (!resting) {
+			silent_frames += frames;
+			if (silent_frames < tail_frames) return false;
+			reset();
+			resting = true;
+		}
+		memset(out, 0, samples * sizeof(float));
+		return true;
+	}
+};
 class hrtf_panner_impl : public spatializer_component_node_impl, public virtual hrtf_panner {
 	microsynthiser::hrtf_effect hrtf;
 	vector<float> mono;
+	silent_input_rest silence;
 public:
-	hrtf_panner_impl(audio_spatializer* spatializer, audio_engine* e) : spatializer_component_node_impl(spatializer, e, 0, 2), hrtf(e->get_sample_rate()) {
+	hrtf_panner_impl(audio_spatializer* spatializer, audio_engine* e) : spatializer_component_node_impl(spatializer, e, 0, 2), hrtf(e->get_sample_rate()), silence(e->get_sample_rate()) {
 		microsynthiser::distance_params no_attenuation; // The attenuator attenuates.
 		no_attenuation.model = microsynthiser::distance_model::none;
 		hrtf.set_distance_params(no_attenuation);
@@ -2205,6 +2233,7 @@ public:
 	~hrtf_panner_impl() { destroy_node(); }
 	void process(const float** frames_in, unsigned int* frame_count_in, float** frames_out, unsigned int* frame_count_out) override {
 		const unsigned int frames = min(*frame_count_in, *frame_count_out), channels = get_engine()->get_channels();
+		if (silence.rest(frames_in[0], frames_out[0], frames, channels, [this] { hrtf.reset(); })) return;
 		audio_spatialization_parameters params;
 		if (!spatializer || !spatializer->get_parameters(params)) {
 			ma_copy_pcm_frames(frames_out[0], frames_in[0], frames, ma_format_f32, channels);
@@ -2265,10 +2294,12 @@ float hrtf_attenuator::attenuation(const audio_spatialization_parameters& params
 class hrtf_attenuator_impl : public curve_attenuator_impl<hrtf_attenuator, distance_volume> {
 	microsynthiser::air_absorption_effect air;
 	static constexpr float meters_per_unit = 0.3f;
+	silent_input_rest silence;
 public:
-	hrtf_attenuator_impl(audio_spatializer* spatializer, audio_engine* e) : curve_attenuator_impl(spatializer, e), air(e->get_sample_rate(), e->get_channels()) {}
+	hrtf_attenuator_impl(audio_spatializer* spatializer, audio_engine* e) : curve_attenuator_impl(spatializer, e), air(e->get_sample_rate(), e->get_channels()), silence(e->get_sample_rate()) {}
 	~hrtf_attenuator_impl() { destroy_node(); } // Before air is destroyed, so the audio thread can't be using it.
 	void process(const float** frames_in, unsigned int* frame_count_in, float** frames_out, unsigned int* frame_count_out) override {
+		if (silence.rest(frames_in[0], frames_out[0], min(*frame_count_in, *frame_count_out), get_engine()->get_channels(), [this] { air.reset(); })) return;
 		curve_attenuator_impl::process(frames_in, frame_count_in, frames_out, frame_count_out);
 		audio_spatialization_parameters params;
 		if (!spatializer || !spatializer->get_parameters(params)) return;
