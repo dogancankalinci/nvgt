@@ -413,10 +413,12 @@ if(!elz_tonar_is_init(gen)) return 0;
 if(samples<0 || samples>INT_MAX/2-gen->cursor) return 0;
 samples+=gen->cursor;
 if(samples<gen->size) return 1;
-samples*=2;
-double* data=(double*)realloc(gen->data, samples*sizeof(double));
+const size_t limit=((size_t)-1)/sizeof(double); /* In bytes, as a 32-bit size_t holds them: the product wrapped past 2^29 samples, a small block taken for the whole count. */
+if((size_t)samples>limit) return 0;
+if((size_t)samples*2<=limit) samples*=2; /* Room to grow, unless that much can't be had. */
+double* data=(double*)realloc(gen->data, (size_t)samples*sizeof(double));
 if(!data) return 0;
-memset(data+gen->size, 0, (samples-gen->size)*sizeof(double));
+memset(data+gen->size, 0, (size_t)(samples-gen->size)*sizeof(double));
 gen->data=data;
 gen->size=samples;
 return 1;
