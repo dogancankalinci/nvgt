@@ -42,7 +42,7 @@ return gen->waveform;
 int el_tonar_set_volume(el_tonar* gen, double db)
 {
 if(!elz_tonar_is_init(gen)) return 0;
-if((db<el_tonar_min_db)||(db>el_tonar_max_db)) return 0;
+if(!((db>=el_tonar_min_db)&&(db<=el_tonar_max_db))) return 0; /* NaN too, which every comparison is false for. */
 gen->volume=db;
 return 1;
 }
@@ -66,8 +66,7 @@ return 1;
 int el_tonar_set_pan(el_tonar* gen, double pan)
 {
 if(!elz_tonar_is_init(gen)) return 0;
-if(pan<-100) return 0;
-if(pan>100) return 0;
+if(!((pan>=-100)&&(pan<=100))) return 0; /* NaN too. */
 gen->pan=pan;
 return 1;
 }
@@ -88,8 +87,7 @@ return 1;
 int el_tonar_set_tempo(el_tonar* gen, double tempo)
 {
 if(!elz_tonar_is_init(gen)) return 0;
-if(tempo<1) return 0;
-if(tempo>999) return 0;
+if(!((tempo>=1)&&(tempo<=999))) return 0; /* NaN too. */
 gen->tempo=tempo;
 return 1;
 }
@@ -101,6 +99,7 @@ return gen->tempo;
 int el_tonar_set_note_transpose(el_tonar* gen, double note_transpose)
 {
 if(!elz_tonar_is_init(gen)) return 0;
+if(!isfinite(note_transpose)) return 0; /* NaN played every note as full-scale DC. */
 gen->note_transpose=note_transpose;
 return 1;
 }
@@ -112,6 +111,7 @@ return gen->note_transpose;
 int el_tonar_set_freq_transpose(el_tonar* gen, double freq_transpose)
 {
 if(!elz_tonar_is_init(gen)) return 0;
+if(!isfinite(freq_transpose)) return 0;
 gen->freq_transpose=freq_transpose;
 return 1;
 }
@@ -342,13 +342,13 @@ if(!elz_tonar_is_init(gen)) return 0;
 gen->phase=0;
 double start_freq=freq;
 double target_freq=start_freq+bend_amount;
-if(start_freq<20) return 0;
-if(start_freq>20000) return 0;
-if(target_freq<20) return 0;
+if(!((start_freq>=20)&&(start_freq<=20000))) return 0; /* NaN too, which passed and made full-scale DC. */
+if(!(target_freq>=20)) return 0;
 if(target_freq>20000) return 0;
 if(length<=0) return 0;
-int bend_end=bend_start+bend_length;
-if(bend_end>length) bend_end=length;
+if(bend_start==INT_MIN||bend_length==INT_MIN) return 0; /* A bend time in beats that isn't one an int holds, NaN included (see elz_tonar_music_beat_to_ms()), which bent the whole note at once. */
+long long bend_reach=(long long)bend_start+bend_length; /* In 64 bits, as two refused beat times added overflowed. */
+int bend_end=bend_reach>length? length: bend_reach<INT_MIN? INT_MIN: (int)bend_reach;
 int frames=elz_tonar_ms_to_frames(gen, length);
 if(frames<=0 || frames>INT_MAX/gen->channels) return 0;
 int samples=frames*gen->channels;
@@ -648,7 +648,8 @@ return note;
 int elz_tonar_music_beat_to_ms(double tempo, double beat)
 {
 double ms=(double) (beat*60000)/tempo;
-return ms;
+if(!((ms>-2e9)&&(ms<2e9))) return INT_MIN; /* Not a time an int holds, NaN included: as the conversion gave on x86, which every caller refuses. */
+return (int)(ms<0? ms-0.5: ms+0.5); /* To the nearest millisecond: cut down, a note's length in beats came out up to a millisecond short. */
 }
 double elz_tonar_music_ms_to_beat(double tempo, int ms)
 {
