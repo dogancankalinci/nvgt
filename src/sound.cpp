@@ -6864,6 +6864,7 @@ struct default_engine_ref {
 };
 // Stops engines' processing callbacks from calling the script and waits for calls under way, so the script's module can go away while engines, which a script can keep past that, still run.
 void sound_stop_script_callbacks() {
+	stop_plugin_engine_sweeper(); // First: it lets go of engines, which then closed devices once SDL was gone and released callbacks once the module was.
 	g_script_callbacks_stopped = true;
 	while (g_script_callbacks_running) std::this_thread::sleep_for(std::chrono::milliseconds(1));
 	// And for engines and microphones let go of on an audio thread, which could otherwise release a callback once the module is gone, or close a device once SDL is (see delete_detached()).
