@@ -165,16 +165,16 @@ int el_tonar_freq_bend_ms(el_tonar* gen, double freq, double bend_amount, int le
 if(!elz_tonar_is_init(gen)) return 0;
 return elz_tonar_sequence(gen, freq+gen->freq_transpose, bend_amount, length, bend_start, bend_length);
 }
-int el_tonar_rest(el_tonar* gen, double length)
+/* Beats as frames, rounded to the nearest, into *frames; 0 for a time an int of samples can't hold, NaN included. Rests, seeks and rewinds in beats move by these rather than by whole milliseconds, whose rounding added up: 100 beats at 700 bpm came out 30 ms long, cut down 73 ms short. */
+static int elz_tonar_beats_to_frames(el_tonar* gen, double beats, int* frames)
 {
-if(!elz_tonar_is_init(gen)) return 0;
-return el_tonar_rest_ms(gen, elz_tonar_music_beat_to_ms(gen->tempo, length));
+double f=beats*60*gen->sample_rate/gen->tempo;
+if(!((f>-(INT_MAX/gen->channels))&&(f<INT_MAX/gen->channels))) return 0;
+*frames=(int)(f<0? f-0.5: f+0.5);
+return 1;
 }
-int el_tonar_rest_ms(el_tonar* gen, int ms)
+static int elz_tonar_rest_frames(el_tonar* gen, int frames)
 {
-if(!elz_tonar_is_init(gen)) return 0;
-if(ms<=0) return 0;
-int frames=elz_tonar_ms_to_frames(gen, ms);
 if(frames<=0 || frames>INT_MAX/gen->channels) return 0;
 int samples=frames*gen->channels;
 if(!elz_tonar_manage_buffer(gen, samples)) return 0;
@@ -182,52 +182,79 @@ gen->cursor+=samples;
 if(gen->cursor>gen->length) gen->length=gen->cursor;
 return 1;
 }
+int el_tonar_rest(el_tonar* gen, double length)
+{
+if(!elz_tonar_is_init(gen)) return 0;
+int frames;
+if(!elz_tonar_beats_to_frames(gen, length, &frames)) return 0;
+return elz_tonar_rest_frames(gen, frames);
+}
+int el_tonar_rest_ms(el_tonar* gen, int ms)
+{
+if(!elz_tonar_is_init(gen)) return 0;
+if(ms<=0) return 0;
+return elz_tonar_rest_frames(gen, elz_tonar_ms_to_frames(gen, ms));
+}
 double el_tonar_get_length(el_tonar* gen)
 {
 if(!elz_tonar_is_init(gen)) return 0;
-return elz_tonar_music_ms_to_beat(gen->tempo, el_tonar_get_length_ms(gen));
+return ((double) gen->length)/gen->channels/gen->sample_rate*gen->tempo/60; /* From the frames, not the rounded milliseconds, so that seek(length) reaches the end. */
 }
 int el_tonar_get_length_ms(el_tonar* gen)
 {
 if(!elz_tonar_is_init(gen)) return 0;
 double t=((double) gen->length)/(gen->sample_rate*gen->channels)*1000;
-return t;
+return (int)(t+0.5);
 }
 double el_tonar_get_position(el_tonar* gen)
 {
 if(!elz_tonar_is_init(gen)) return 0;
-return elz_tonar_music_ms_to_beat(gen->tempo, el_tonar_get_position_ms(gen));
+return ((double) gen->cursor)/gen->channels/gen->sample_rate*gen->tempo/60;
 }
 int el_tonar_get_position_ms(el_tonar* gen)
 {
 if(!elz_tonar_is_init(gen)) return 0;
 double t=((double) gen->cursor)/(gen->sample_rate*gen->channels)*1000;
-return t;
+return (int)(t+0.5);
+}
+/* The cursor to a frame within the audio written, its end included. */
+static int elz_tonar_seek_frame(el_tonar* gen, int frame)
+{
+if(frame<0 || frame>gen->length/gen->channels) return 0;
+gen->cursor=frame*gen->channels;
+return 1;
 }
 int el_tonar_seek(el_tonar* gen, double position)
 {
 if(!elz_tonar_is_init(gen)) return 0;
-return el_tonar_seek_ms(gen, elz_tonar_music_beat_to_ms(gen->tempo, position));
+int frame;
+if(!elz_tonar_beats_to_frames(gen, position, &frame)) return 0;
+return elz_tonar_seek_frame(gen, frame);
 }
 int el_tonar_seek_ms(el_tonar* gen, int position)
 {
 if(!elz_tonar_is_init(gen)) return 0;
 if(position<0) return 0;
 int l=el_tonar_get_length_ms(gen); /* In milliseconds, as the position: the length in beats refused every seek past a few milliseconds. */
-if(position>=l) return 0;
+if(position>l) return 0; /* The end too, as a rest reaches it, so that writing can go on from there after seeking back. */
 int frame=elz_tonar_ms_to_frames(gen, position);
-int sample=frame*gen->channels;
-gen->cursor=sample;
-return 1;
+if(frame>gen->length/gen->channels) frame=gen->length/gen->channels; /* The end, which the length rounded to the millisecond can be a few frames past. */
+return elz_tonar_seek_frame(gen, frame);
 }
 int el_tonar_rewind(el_tonar* gen, double amount)
 {
 if(!elz_tonar_is_init(gen)) return 0;
-return el_tonar_rewind_ms(gen, elz_tonar_music_beat_to_ms(gen->tempo, amount));
+int frames;
+if(!elz_tonar_beats_to_frames(gen, amount, &frames)) return 0;
+long long frame=(long long)(gen->cursor/gen->channels)-frames;
+if(frame<0||frame>INT_MAX) return 0;
+return elz_tonar_seek_frame(gen, (int)frame);
 }
 int el_tonar_rewind_ms(el_tonar* gen, int amount)
 {
-return el_tonar_seek_ms(gen, el_tonar_get_position_ms(gen)-amount); /* Milliseconds from milliseconds: taken from the position in beats, every rewind went before the start. */
+long long position=(long long)el_tonar_get_position_ms(gen)-amount; /* Milliseconds from milliseconds: taken from the position in beats, every rewind went before the start. In 64 bits, as INT_MIN overflowed. */
+if(position<0||position>INT_MAX) return 0;
+return el_tonar_seek_ms(gen, (int)position);
 }
 int el_tonar_get_sample_rate(el_tonar* gen)
 {
@@ -377,8 +404,8 @@ int elz_tonar_ms_to_frames(el_tonar* gen, int ms)
 if(!elz_tonar_is_init(gen)) return 0;
 double rate_ms=(double) gen->sample_rate/1000;
 rate_ms*=ms;
-if(rate_ms>INT_MAX) return 0;
-return rate_ms;
+if(!((rate_ms>INT_MIN)&&(rate_ms<INT_MAX))) return 0;
+return (int)(rate_ms<0? rate_ms-0.5: rate_ms+0.5); /* To the nearest frame, as the times read back are rounded: cut down, a seek landed a millisecond early, and rewinds walked back two. */
 }
 int elz_tonar_manage_buffer(el_tonar* gen, int samples)
 {
