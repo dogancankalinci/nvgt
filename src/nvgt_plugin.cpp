@@ -14,9 +14,11 @@
 #include <algorithm>
 #include <exception>
 #include <chrono>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 #include <Poco/BinaryReader.h>
@@ -96,6 +98,62 @@ static void take_out_lent_engines(audio_engine* current, std::vector<audio_engin
 		it = g_plugin_engines.erase(it);
 		others--;
 	}
+}
+// A thread letting go of the engines kept once they are due, running while any that isn't the default is kept: the calls that let go of them otherwise, a plugin's next ask, a default change or a sound made, can be long in coming, or never come, a replaced engine kept meanwhile with its device open. Detached, so that a process ending without uninit_sound() isn't ended by a thread object still joinable; stop_plugin_engine_sweeper() waits for it instead.
+static std::condition_variable g_plugin_engines_wake; // Under g_plugin_engines_mutex, as the flags below.
+static bool g_plugin_engines_sweeping = false, g_plugin_engines_sweeper_stopped = false;
+// When the first kept engine that isn't current is due, under g_plugin_engines_mutex; false if none is kept.
+static bool next_lent_engine_due(audio_engine* current, std::chrono::steady_clock::time_point& due) {
+	bool any = false;
+	for (const plugin_lent_engine& lent : g_plugin_engines) {
+		if (lent.engine == current) continue;
+		if (!any || lent.lent < due) due = lent.lent;
+		any = true;
+	}
+	due += std::chrono::seconds(1) + std::chrono::milliseconds(1); // Past the second take_out_lent_engines() keeps it.
+	return any;
+}
+static void let_go_of_lent_engines(audio_engine* current, bool sweeper);
+static void sweep_plugin_engines() {
+	for (;;) {
+		let_go_of_lent_engines(current_default_engine_pointer(), true);
+		std::unique_lock<std::mutex> lock(g_plugin_engines_mutex);
+		std::chrono::steady_clock::time_point due;
+		if (!g_plugin_engines_sweeper_stopped && next_lent_engine_due(current_default_engine_pointer(), due)) g_plugin_engines_wake.wait_until(lock, due, [] { return g_plugin_engines_sweeper_stopped; });
+		if (g_plugin_engines_sweeper_stopped || !next_lent_engine_due(current_default_engine_pointer(), due)) {
+			g_plugin_engines_sweeping = false;
+			g_plugin_engines_wake.notify_all(); // Under the lock, so that nothing of this thread runs once stop_plugin_engine_sweeper() goes on.
+			return;
+		}
+	}
+}
+static void let_go_of_lent_engines(audio_engine* current, bool sweeper) {
+	std::vector<audio_engine*> let_go;
+	{
+		std::lock_guard<std::mutex> lock(g_plugin_engines_mutex);
+		if (g_plugin_engines.empty()) return;
+		try {
+			let_go.reserve(g_plugin_engines.size());
+		} catch (...) {
+			return; // Let go of by a later call.
+		}
+		take_out_lent_engines(current, let_go); // The current default is kept.
+		std::chrono::steady_clock::time_point due;
+		if (!sweeper && !g_plugin_engines_sweeping && !g_plugin_engines_sweeper_stopped && next_lent_engine_due(current, due)) {
+			try {
+				std::thread(sweep_plugin_engines).detach();
+				g_plugin_engines_sweeping = true;
+			} catch (...) {} // No thread to be had: let go of by a later call, as before there was one.
+		}
+	}
+	for (audio_engine* e : let_go) e->release();
+}
+void let_go_of_plugin_lent_engines(audio_engine* current) { let_go_of_lent_engines(current, false); }
+void stop_plugin_engine_sweeper() {
+	std::unique_lock<std::mutex> lock(g_plugin_engines_mutex);
+	g_plugin_engines_sweeper_stopped = true;
+	g_plugin_engines_wake.notify_all();
+	g_plugin_engines_wake.wait(lock, [] { return !g_plugin_engines_sweeping; });
 }
 audio_engine* nvgt_get_default_audio_engine() {
 	audio_engine* engine = nullptr;

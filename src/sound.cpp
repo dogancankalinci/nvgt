@@ -84,6 +84,7 @@ static audio_engine* default_engine_pointer() {
 	std::lock_guard<std::mutex> lock(g_audio_engine_mutex);
 	return g_audio_engine;
 }
+audio_engine* current_default_engine_pointer() { return default_engine_pointer(); }
 static void set_default_engine_pointer(audio_engine* engine) {
 	std::lock_guard<std::mutex> lock(g_audio_engine_mutex);
 	g_audio_engine = engine;
@@ -443,6 +444,7 @@ bool init_sound() {
 void uninit_sound() {
 	if (!g_soundsystem_initialized.test())
 		return;
+	stop_plugin_engine_sweeper(); // First, as it lets go of engines.
 	// Before the garbage collection, which can let go of a script's own engine for the last time, as a finished sound played from it does: once shut down, that engine is left to the process's exit (see audio_engine_impl::release()) rather than destroyed after SDL took down what its device needs.
 	g_soundsystem_shut_down.test_and_set();
 	garbage_collect_inline_sounds();
@@ -749,6 +751,7 @@ void garbage_collect_inline_sounds() {
 		}
 	}
 	for (sound *s : finished) s->release(); // Not under the lock, which closing a sound could need.
+	let_go_of_plugin_lent_engines(default_engine_pointer()); // Those due, as often as sounds are made and loaded.
 }
 
 // Sound shapes let mixer/sound::set_position_3d position the sound as though it was more than one tile wide in each direction.
@@ -7036,6 +7039,7 @@ void set_sound_default_engine(audio_engine* engine) {
 		g_soundsystem_ready.test_and_set(); // The script's engine is the default now, possibly before init_sound() ever built one, which it then doesn't do over it.
 	}
 	if (old) old->release(); // After the lock: destroying the engine waits for its processing callback, which can be asking for the default engine.
+	let_go_of_plugin_lent_engines(engine); // The one a plugin was lent, now or once its second is up (see nvgt_plugin.cpp), rather than only on the plugin's next call, which can be never.
 }
 // Whether PCM of this size fits a RIFF chunk's 32-bit size, as pcm_to_wav() writes it; MA_TOO_BIG otherwise, which the sum of its sizes wrapped to a few bytes in, failing as a bad file.
 static bool pcm_fits_in_wav(unsigned int size, ma_format format, int channels) {

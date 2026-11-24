@@ -61,6 +61,9 @@ void sound_stop_script_callbacks(); // Before the script's module goes away, see
 void uninit_sound();
 bool refresh_audio_devices();
 void garbage_collect_inline_sounds();
+void let_go_of_plugin_lent_engines(audio_engine* current); // Those nvgt_get_default_audio_engine() lent plugins that no longer need keeping, see nvgt_plugin.cpp.
+void stop_plugin_engine_sweeper(); // As the sound system shuts down, see nvgt_plugin.cpp.
+audio_engine* current_default_engine_pointer(); // The default engine without a reference, only to compare with, as another thread can free it.
 float pan_db_to_linear(float db);
 
 class audio_node {
