@@ -2298,7 +2298,7 @@ class nvgt_compilation_output_android : public nvgt_compilation_output_impl {
 		struct archive* res_arc = archive_write_new();
 		archive_write_set_format_zip(res_arc);
 		archive_write_zip_set_compression_deflate(res_arc);
-		archive_write_open_filename(res_arc, res_zip.c_str());
+		archive_write_open_filename(res_arc, res_zip);
 		archive_write_dir(res_arc, res_dir, "", {}, {}, true, true);
 		archive_write_close(res_arc);
 		archive_write_free(res_arc);
@@ -2405,7 +2405,7 @@ protected:
 			struct archive* aab_arc = archive_write_new();
 			archive_write_set_format_zip(aab_arc);
 			archive_write_zip_set_compression_deflate(aab_arc);
-			archive_write_open_filename(aab_arc, output_path.toString().c_str());
+			archive_write_open_filename(aab_arc, output_path.toString());
 			// BundleConfig.pb matching gradle/bundletool 1.18.1 output:
 			//   field 1 (bundletool { version: "1.18.1" }), field 2 (compression defaults),
 			//   field 3 (optimizations with uncompressed-file globs for media types).
@@ -2503,7 +2503,7 @@ protected:
 			struct archive* apk_arc = archive_write_new();
 			archive_write_set_format_zip(apk_arc);
 			archive_write_zip_set_compression_deflate(apk_arc);
-			archive_write_open_filename(apk_arc, zip_out_location.path().c_str());
+			archive_write_open_filename(apk_arc, zip_out_location.path());
 			archive_write_dir(apk_arc, workplace.path(), "", {}, apk_store_arcs, true);
 			archive_write_close(apk_arc);
 			archive_write_free(apk_arc);
