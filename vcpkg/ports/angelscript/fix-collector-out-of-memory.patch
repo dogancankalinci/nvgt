@@ -1,0 +1,127 @@
+diff --git a/sdk/angelscript/source/as_gc.cpp b/sdk/angelscript/source/as_gc.cpp
+index 7618781..00901fe 100644
+--- a/sdk/angelscript/source/as_gc.cpp
++++ b/sdk/angelscript/source/as_gc.cpp
+@@ -58,6 +58,7 @@ asCGarbageCollector::asCGarbageCollector()
+ 	inFullCycle     = false;
+ 	destroyOldPasses = 0;
+ 	gatherReferences = false;
++	liveObjectLost  = false;
+ 	numDestroyed    = 0;
+ 	numNewDestroyed = 0;
+ 	numDetected     = 0;
+@@ -910,7 +911,16 @@ int asCGarbageCollector::IdentifyGarbageWithCyclicRefs()
+ 				{
+ 					asSIntTypePair it = {refCount-1, gcObj.type, refCount+1}; // ALTERED: refCount, see MarkWeakRefsOfGarbageDead
+ 
+-					gcMap.Insert(GetNode(gcObj.obj, it));
++					// ALTERED: an object for which no node could be had, for want of memory, is left out of the map, which takes it
++					// as alive, as one made after the map was built, and with it what it references (its references aren't
++					// counted). The null node was inserted, which crashed in asCMap::Insert.
++					asSMapNode_t *node = GetNode(gcObj.obj, it);
++					if( node == 0 )
++					{
++						detectIdx++;
++						return 1;
++					}
++					gcMap.Insert(node);
+ 
+ 					// Increment the object's reference counter when putting it in the map
+ 					engine->CallObjectMethod(gcObj.obj, gcObj.type->beh.addref);
+@@ -973,6 +983,7 @@ int asCGarbageCollector::IdentifyGarbageWithCyclicRefs()
+ 		{
+ 			gcMap.MoveFirst(&gcMapCursor);
+ 			liveObjects.SetLength(0);
++			liveObjectLost = false;
+ 			detectState = detectGarbage_loop1;
+ 		}
+ 		break;
+@@ -998,7 +1009,7 @@ int asCGarbageCollector::IdentifyGarbageWithCyclicRefs()
+ 				bool gcFlag = engine->CallObjectMethodRetBool(obj, it.type->beh.gcGetFlag);
+ 				if( !gcFlag || it.i > 0 )
+ 				{
+-					liveObjects.PushLast(obj);
++					AddLiveObject(obj);
+ 				}
+ 
+ 				// Allow the application to work a little
+@@ -1037,6 +1048,16 @@ int asCGarbageCollector::IdentifyGarbageWithCyclicRefs()
+ 				// Allow the application to work a little
+ 				return 1;
+ 			}
++			else if( liveObjectLost )
++			{
++				// ALTERED: an object found alive couldn't be listed, for want of memory, so neither it nor what it references
++				// was taken out of the map, and the map can still hold live objects: they were taken for garbage and broken.
++				// Nothing is taken for garbage this time; the map is let go of as at the end of a cycle that found none (the
++				// next cycle's clearCounters releases its references).
++				liveObjectLost = false;
++				detectState = clearCounters_init;
++				return 0;
++			}
+ 			else
+ 				detectState = verifyUnmarked_init;
+ 		}
+@@ -1282,12 +1303,15 @@ asCGarbageCollector::asSMapNode_t *asCGarbageCollector::GetNode(void *obj, asSIn
+ 		node = freeNodes.PopLast();
+ 	else
+ 	{
+-		node = asNEW(asSMapNode_t);
+-		if( !node )
++		// ALTERED: the memory is checked before the node is made in it. asNEW is placement new on userAlloc's result, and with a null
++		// result that is undefined since C++17 (clang constructs the node at address 0), so the check after it came too late.
++		void *mem = userAlloc(sizeof(asSMapNode_t));
++		if( !mem )
+ 		{
+ 			// Out of memory
+ 			return 0;
+ 		}
++		node = new(mem) asSMapNode_t;
+ 	}
+ 	
+ 	node->Init(obj, it);
+@@ -1300,7 +1324,22 @@ void asCGarbageCollector::ReturnNode(asSMapNode_t *node)
+ 	asASSERT(isProcessing);
+ 
+ 	if( node )
++	{
++		// ALTERED: a node the pool can't take, for want of memory, is freed rather than lost
++		asUINT length = freeNodes.GetLength();
+ 		freeNodes.PushLast(node);
++		if( freeNodes.GetLength() == length )
++			asDELETE(node, asSMapNode_t);
++	}
++}
++
++// ALTERED: see detectGarbage_loop2
++void asCGarbageCollector::AddLiveObject(void *obj)
++{
++	asUINT length = liveObjects.GetLength();
++	liveObjects.PushLast(obj);
++	if( liveObjects.GetLength() == length )
++		liveObjectLost = true;
+ }
+ 
+ void asCGarbageCollector::GCEnumCallback(void *reference)
+@@ -1332,7 +1371,7 @@ void asCGarbageCollector::GCEnumCallback(void *reference)
+ 		if( gcMap.MoveTo(&cursor, reference) )
+ 		{
+ 			// Add the object to the list of objects to mark as alive
+-			liveObjects.PushLast(reference);
++			AddLiveObject(reference);
+ 		}
+ 	}
+ }
+diff --git a/sdk/angelscript/source/as_gc.h b/sdk/angelscript/source/as_gc.h
+index c41a30f..d6f5cb6 100644
+--- a/sdk/angelscript/source/as_gc.h
++++ b/sdk/angelscript/source/as_gc.h
+@@ -127,6 +127,8 @@ protected:
+ 
+ 	// This array temporarily holds references to objects known to be live objects
+ 	asCArray<void*>                    liveObjects;
++	bool                               liveObjectLost; // ALTERED: one couldn't be added for want of memory, see detectGarbage_loop2
++	void                               AddLiveObject(void *obj); // ALTERED
+ 
+ 	// This map holds objects currently being searched for cyclic references, it also holds a 
+ 	// counter that gives the number of references to the object that the GC can't reach

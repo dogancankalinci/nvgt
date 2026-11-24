@@ -169,6 +169,7 @@ vcpkg_from_github(
         fix-collector-chains-registered-weak-flags.patch
         fix-abort-before-nested-prepare.patch
         fix-x64-windows-paramsize-upper-half.patch
+        fix-collector-out-of-memory.patch
 )
 
 vcpkg_cmake_configure(
