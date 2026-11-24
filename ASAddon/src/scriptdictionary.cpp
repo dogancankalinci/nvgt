@@ -61,6 +61,31 @@ static std::recursive_mutex &ValueLock(asIScriptEngine *engine, const CScriptDic
 	return DictionaryLocks(engine).value[((address >> 4) ^ (address >> 12)) & 63];
 }
 
+// ALTERED: a value whose Set() is making the copy of an object, on this thread. The copy is script code (a copy constructor,
+// opAssign), which can destroy the value being assigned: d['k'] = c where the copy deletes 'k' (or empties the dictionary, or
+// shrinks the array<dictionaryValue> holding it). Its destructor marks it removed here, and Set() then leaves it alone: the
+// new value was written into the freed node (into another key's value once the node was reused) and what was read there
+// was released as the value it replaced.
+struct SDictValueInAssignment
+{
+	const CScriptDictValue *value;
+	bool removed;
+	SDictValueInAssignment *outer;
+	SDictValueInAssignment(const CScriptDictValue *value) : value(value), removed(false), outer(Innermost()) { Innermost() = this; }
+	~SDictValueInAssignment() { Innermost() = outer; }
+	static SDictValueInAssignment *&Innermost()
+	{
+		static thread_local SDictValueInAssignment *innermost = 0;
+		return innermost;
+	}
+	static void Destroying(const CScriptDictValue *value)
+	{
+		for( SDictValueInAssignment *a = Innermost(); a; a = a->outer )
+			if( a->value == value )
+				a->removed = true;
+	}
+};
+
 // ALTERED: holds a dictionary while script code runs for it (the copy of a value, see CScriptDictionary::Set), which can let go
 // of its last handle. AngelScript doesn't hold the object of a registered method for the call (only when the method returns a
 // reference).
@@ -881,6 +906,7 @@ CScriptDictValue::CScriptDictValue(asIScriptEngine *engine, void *value, int typ
 
 CScriptDictValue::~CScriptDictValue()
 {
+	SDictValueInAssignment::Destroying(this); // ALTERED: see SDictValueInAssignment
 	FreeValue();
 }
 
@@ -949,7 +975,19 @@ void CScriptDictValue::Set(void *value, int typeId)
 	{
 		// Create a copy of the object
 		SDictObjectHold hold(m_engine, value, typeId);
-		made.m_valueObj = m_engine->CreateScriptObjectCopy(value, m_engine->GetTypeInfoById(typeId));
+		{
+			SDictValueInAssignment assigning(this);
+			made.m_valueObj = m_engine->CreateScriptObjectCopy(value, m_engine->GetTypeInfoById(typeId));
+			if( assigning.removed )
+			{
+				// ALTERED: this value was destroyed by the copy, see SDictValueInAssignment. The copy is let go of (by made's
+				// destructor), and an exception says why, as the assignment returns a reference to this value.
+				asIScriptContext *ctx = asGetActiveContext();
+				if( ctx && ctx->GetState() != asEXECUTION_EXCEPTION )
+					ctx->SetException("The dictionary value was removed while it was being assigned");
+				return;
+			}
+		}
 		if( made.m_valueObj == 0 )
 		{
 			// ALTERED: not over an exception the copy raised itself (a script class's copy constructor), whose text and line
