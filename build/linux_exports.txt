@@ -3,11 +3,18 @@
  * unless told to. They are what the inline code of sound.h and sound_nodes.h refers to (GCC can emit a plugin's own copy
  * of audio_node_impl when it speculatively devirtualizes audio_node calls), plus the assertion handler that Jolt's inline
  * math calls in debug builds. Exporting everything with -rdynamic would keep --gc-sections from dropping unused code.
+ * The mangled names are the node graph lock, node holds and rate bridge functions that sound_nodes.h's inline code calls,
+ * as libnvgt_phonon.so lists them undefined.
  */
 {
 	ma_node_*;
 	g_soundsystem_last_error;
 	g_audio_engine;
+	g_node_graph_mutex;
+	_Z15node_holds_lockv;
+	_Z17append_node_holdsPK10audio_nodeRSt6vectorIPS_SaIS3_EE;
+	_Z18rate_bridge_createP12audio_enginejj;
+	_Z19rate_bridge_destroyP8ma_sound;
 	extern "C++" {
 		"init_sound()";
 		"JPH::AssertFailed";
