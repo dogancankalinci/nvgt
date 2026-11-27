@@ -104,6 +104,18 @@ inline size_t ttf_wrapped_text_length(const std::string& text) {
 	size_t nul = text.find('\0');
 	return nul == std::string::npos ? text.size() : nul;
 }
+// Whether FreeType can take a font size of ptsize points at hdpi by vdpi dots per inch (0 for one of them takes the other, 0 for
+// both 72, as SDL_ttf and FreeType do). FreeType keeps the size in pixels per em in 16 bits and works it out in a long (32 bits on
+// Windows), and SDL_ttf hands it the size times 64 as an int: a size past them came out as a wrapped or overflowed scale, and rendering
+// one glyph then ran for minutes with close to a gigabyte (set_size_dpi(400, 96, 2147483647), or set_size() after a large DPI), or
+// was undefined (more than 33554431 points). A size of more than 65535 pixels per em is refused.
+inline bool font_size_fits(float ptsize, int hdpi, int vdpi) {
+	if (!(ptsize > 0) || !std::isfinite(ptsize) || hdpi < 0 || vdpi < 0) return false;
+	if (hdpi == 0) hdpi = vdpi;
+	if (vdpi == 0) vdpi = hdpi;
+	if (hdpi == 0) hdpi = vdpi = 72;
+	return double(ptsize) * double(hdpi > vdpi ? hdpi : vdpi) / 72.0 <= 65535.0;
+}
 class text_font {
 	TTF_Font* _font;
 	std::vector<text_font*> _fallback_fonts;
@@ -119,10 +131,17 @@ public:
 	bool remove_fallback_font(text_font* font);
 	void clear_fallback_fonts();
 	// A size that isn't a finite number above 0 (or a negative DPI) is refused: SDL_ttf took NaN and infinity, and the font then
-	// measured and rendered every text as a few pixels until another size was set.
-	bool set_size(float ptsize) { if (!_font || !(ptsize > 0) || !std::isfinite(ptsize)) return false; return TTF_SetFontSize(_font, ptsize); }
+	// measured and rendered every text as a few pixels until another size was set. So is one too large for FreeType at the DPI it
+	// is used with, see font_size_fits(): set_size() keeps the font's DPI, as set_size_dpi() does when given 0 for both.
+	bool set_size(float ptsize) { return set_size_dpi(ptsize, 0, 0); }
 	float get_size() const { if (!_font) return 0.0f; return TTF_GetFontSize(_font); }
-	bool set_size_dpi(float ptsize, int hdpi, int vdpi) { if (!_font || !(ptsize > 0) || !std::isfinite(ptsize) || hdpi < 0 || vdpi < 0) return false; return TTF_SetFontSizeDPI(_font, ptsize, hdpi, vdpi); }
+	bool set_size_dpi(float ptsize, int hdpi, int vdpi) {
+		if (!_font || !(ptsize > 0) || !std::isfinite(ptsize) || hdpi < 0 || vdpi < 0) return false;
+		int h = hdpi, v = vdpi;
+		if (h == 0 && v == 0 && !TTF_GetFontDPI(_font, &h, &v)) h = v = 0;
+		if (!font_size_fits(ptsize, h, v)) return false;
+		return TTF_SetFontSizeDPI(_font, ptsize, hdpi, vdpi);
+	}
 	bool get_dpi(int& hdpi, int& vdpi) const;
 	void set_style(unsigned int style) { if (!_font) return; TTF_SetFontStyle(_font, (TTF_FontStyleFlags)style); }
 	unsigned int get_style() const { if (!_font) return 0; return TTF_GetFontStyle(_font); }
