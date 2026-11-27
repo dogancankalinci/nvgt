@@ -876,6 +876,18 @@ std::string poco_regular_expression_replace(const std::string& subject, const st
 	}
 }
 
+// Poco parses a reference that starts with "//" and has no scheme (a network-path reference, RFC 3986 section 4.2, as in a page's
+// protocol-relative links "//cdn.example.com/x.js") as a path: resolving "//g" against "http://a/b/c/d;p?q" gave "http://a/g" instead of
+// RFC 3986's "http://g" (the one example of its section 5.4 that differed). It is resolved as the reference with the base's scheme, which
+// section 5.2.2 resolves the same way. A uri parsed from such a string holds it as a path starting with "//", which no other reference has.
+static void uri_resolve(URI& base, const std::string& relative) {
+	if (relative.size() > 2 && relative[0] == '/' && relative[1] == '/' && !base.getScheme().empty()) base.resolve(URI(base.getScheme() + ":" + relative));
+	else base.resolve(relative);
+}
+static void uri_resolve_uri(URI& base, const URI& relative) {
+	if (relative.getScheme().empty() && relative.getHost().empty() && relative.getPath().size() > 2 && relative.getPath().compare(0, 2, "//") == 0) uri_resolve(base, relative.toString());
+	else base.resolve(relative);
+}
 // Scriptarray wrappers for URI class.
 CScriptArray* uri_get_query_parameters(const URI& u, bool plus_as_space) {
 	URI::QueryParameters qp = u.getQueryParameters(plus_as_space);
@@ -1321,8 +1333,8 @@ void RegisterPocostuff(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("uri", _O("string get_path_etc() const property"), asMETHOD(URI, getPathEtc), asCALL_THISCALL);
 	engine->RegisterObjectMethod("uri", _O("void set_path_etc(const string&in path_etc) property"), asMETHOD(URI, setPathEtc), asCALL_THISCALL);
 	engine->RegisterObjectMethod("uri", _O("string get_path_and_query() const property"), asMETHOD(URI, getPathAndQuery), asCALL_THISCALL);
-	engine->RegisterObjectMethod("uri", _O("void resolve(const string&in relative_uri)"), asMETHODPR(URI, resolve, (const std::string&), void), asCALL_THISCALL);
-	engine->RegisterObjectMethod("uri", _O("void resolve(const uri&in relative_uri)"), asMETHODPR(URI, resolve, (const URI&), void), asCALL_THISCALL);
+	engine->RegisterObjectMethod("uri", _O("void resolve(const string&in relative_uri)"), asFUNCTION(uri_resolve), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("uri", _O("void resolve(const uri&in relative_uri)"), asFUNCTION(uri_resolve_uri), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("uri", _O("bool get_is_relative() const property"), asMETHOD(URI, isRelative), asCALL_THISCALL);
 	engine->RegisterObjectMethod("uri", _O("bool get_is_empty() const property"), asMETHOD(URI, empty), asCALL_THISCALL);
 	engine->RegisterObjectMethod("uri", _O("bool normalize()"), asFUNCTION(uri_normalize), asCALL_CDECL_OBJFIRST);
