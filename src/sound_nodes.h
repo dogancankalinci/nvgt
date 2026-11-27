@@ -222,7 +222,14 @@ public:
 		}
 		return (g_soundsystem_last_error = ma_node_set_output_bus_volume(node, bus, volume)) == MA_SUCCESS;
 	}
-	float get_output_bus_volume(unsigned int bus) { return node ? ma_node_get_output_bus_volume(node, bus) : 0; }
+	float get_output_bus_volume(unsigned int bus) {
+		if (!node) return 0;
+		if (bus >= ma_node_get_output_bus_count(node)) { // MiniAudio's 0 for a bus the node lacks, which the setter refuses, read as a silenced bus.
+			g_soundsystem_last_error = MA_INVALID_ARGS;
+			return std::numeric_limits<float>::quiet_NaN();
+		}
+		return ma_node_get_output_bus_volume(node, bus);
+	}
 	bool set_state(ma_node_state state) {
 		if (!node) return (g_soundsystem_last_error = MA_INVALID_OPERATION) == MA_SUCCESS;
 		if (state != ma_node_state_started && state != ma_node_state_stopped) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // As set_state_time() refuses it: MiniAudio kept any value, which it then took as started.

@@ -1264,6 +1264,8 @@ public:
 	int find_closest_listener(float x, float y, float z) const override { return engine ? ma_engine_find_closest_listener(&*engine, x, y, z) : -1; }
 	int find_closest_listener_vector(const vector3 &position) const override { return engine ? ma_engine_find_closest_listener(&*engine, position.GetX(), position.GetY(), position.GetZ()) : -1; }
 	// A listener the engine has, refusing with MA_INVALID_ARGS otherwise: MiniAudio ignores one it doesn't have, so that setting it changed nothing and said nothing.
+	// What a getter gives for a listener the engine doesn't have, which the setters refuse: MiniAudio's fallbacks, a direction along -z and an up along y, read as a real listener facing other axes than NVGT's.
+	static vector3 missing_listener_vector() { const float n = std::numeric_limits<float>::quiet_NaN(); return vector3(n, n, n); }
 	bool has_listener(unsigned int index) const {
 		if (!engine) return false;
 		if (index < ma_engine_get_listener_count(&*engine)) return true;
@@ -1281,7 +1283,7 @@ public:
 		ma_engine_listener_set_position(&*engine, index, position.GetX(), position.GetY(), position.GetZ());
 		place_shaped_mixers(this);
 	}
-	vector3 get_listener_position(unsigned int index) const override { return engine ? ma_vec3_to_vector3(ma_engine_listener_get_position(&*engine, index)) : vector3(); }
+	vector3 get_listener_position(unsigned int index) const override { return has_listener(index) ? ma_vec3_to_vector3(ma_engine_listener_get_position(&*engine, index)) : missing_listener_vector(); }
 	// A direction or world up of no length, which left the listener without a forward or up axis: every sound's place relative to it lost two of its axes, so that sounds anywhere along them were heard at the listener. MA_INVALID_ARGS, as for values that aren't finite.
 	static bool has_length(float x, float y, float z) {
 		const float squared = x * x + y * y + z * z;
@@ -1297,7 +1299,7 @@ public:
 		if (has_listener(index) && finite_values({direction.GetX(), direction.GetY(), direction.GetZ()}) && has_length(direction.GetX(), direction.GetY(), direction.GetZ()))
 			ma_engine_listener_set_direction(&*engine, index, direction.GetX(), direction.GetY(), direction.GetZ());
 	}
-	vector3 get_listener_direction(unsigned int index) const override { return engine ? ma_vec3_to_vector3(ma_engine_listener_get_direction(&*engine, index)) : vector3(); }
+	vector3 get_listener_direction(unsigned int index) const override { return has_listener(index) ? ma_vec3_to_vector3(ma_engine_listener_get_direction(&*engine, index)) : missing_listener_vector(); }
 	void set_listener_velocity(unsigned int index, float x, float y, float z) override {
 		if (has_listener(index) && finite_values({x, y, z}))
 			ma_engine_listener_set_velocity(&*engine, index, x, y, z);
@@ -1306,7 +1308,7 @@ public:
 		if (has_listener(index) && finite_values({velocity.GetX(), velocity.GetY(), velocity.GetZ()}))
 			ma_engine_listener_set_velocity(&*engine, index, velocity.GetX(), velocity.GetY(), velocity.GetZ());
 	}
-	vector3 get_listener_velocity(unsigned int index) const override { return engine ? ma_vec3_to_vector3(ma_engine_listener_get_velocity(&*engine, index)) : vector3(); }
+	vector3 get_listener_velocity(unsigned int index) const override { return has_listener(index) ? ma_vec3_to_vector3(ma_engine_listener_get_velocity(&*engine, index)) : missing_listener_vector(); }
 	// A listener's cone, which NVGT's attenuators apply (see mixer_impl::get_cone_volume()), MiniAudio's own left at its default, which applies nothing.
 	struct listener_cone {
 		std::atomic<float> inner{6.283185f}, outer{6.283185f}, outer_gain{0};
@@ -1319,10 +1321,11 @@ public:
 		}
 	}
 	void get_listener_cone(unsigned int index, float *inner_radians, float *outer_radians, float *outer_gain) const override {
-		bool listening = engine && index < ma_engine_get_listener_count(&*engine); // MiniAudio gave 0 for a listener it doesn't have; every out value is written, as the other getters write theirs.
-		if (inner_radians) *inner_radians = listening? listener_cones[index].inner.load() : 0;
-		if (outer_radians) *outer_radians = listening? listener_cones[index].outer.load() : 0;
-		if (outer_gain) *outer_gain = listening? listener_cones[index].outer_gain.load() : 0;
+		const bool listening = has_listener(index); // MiniAudio gave 0 for a listener it doesn't have, a cone of no width; every out value is written, NaN for one it doesn't have, as the other getters give.
+		const float missing = std::numeric_limits<float>::quiet_NaN();
+		if (inner_radians) *inner_radians = listening? listener_cones[index].inner.load() : missing;
+		if (outer_radians) *outer_radians = listening? listener_cones[index].outer.load() : missing;
+		if (outer_gain) *outer_gain = listening? listener_cones[index].outer_gain.load() : missing;
 	}
 	void set_listener_world_up(unsigned int index, float x, float y, float z) override {
 		if (has_listener(index) && finite_values({x, y, z}) && has_length(x, y, z))
@@ -1332,13 +1335,13 @@ public:
 		if (has_listener(index) && finite_values({world_up.GetX(), world_up.GetY(), world_up.GetZ()}) && has_length(world_up.GetX(), world_up.GetY(), world_up.GetZ()))
 			ma_engine_listener_set_world_up(&*engine, index, world_up.GetX(), world_up.GetY(), world_up.GetZ());
 	}
-	vector3 get_listener_world_up(unsigned int index) const override { return engine ? ma_vec3_to_vector3(ma_engine_listener_get_world_up(&*engine, index)) : vector3(); }
+	vector3 get_listener_world_up(unsigned int index) const override { return has_listener(index) ? ma_vec3_to_vector3(ma_engine_listener_get_world_up(&*engine, index)) : missing_listener_vector(); }
 	void set_listener_enabled(unsigned int index, bool enabled) override {
 		if (!has_listener(index)) return;
 		ma_engine_listener_set_enabled(&*engine, index, enabled);
 		place_shaped_mixers(this); // Sounds that follow the closest enabled listener can follow another now.
 	}
-	bool get_listener_enabled(unsigned int index) const override { return engine && ma_engine_listener_is_enabled(&*engine, index); }
+	bool get_listener_enabled(unsigned int index) const override { return has_listener(index) && ma_engine_listener_is_enabled(&*engine, index); }
 	sound* play(const string& path, const vector3& position, float volume, float pan, float pitch, mixer* mix, const pack_interface* pack_file, bool autoplay) override {
 		garbage_collect_inline_sounds();
 		if (mix && mix->get_engine() != this) { // Another engine's mixer, which set_mixer() refuses: the sound played on the default mixer instead, returned as if placed as asked. Refused before anything loads.
