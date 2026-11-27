@@ -104,6 +104,15 @@ inline size_t ttf_wrapped_text_length(const std::string& text) {
 	size_t nul = text.find('\0');
 	return nul == std::string::npos ? text.size() : nul;
 }
+// Whether a wrapped render of the text can place its lines in an int. SDL_ttf makes the surface rowHeight + lineskip * (lines - 1) high and
+// puts line i at i * lineskip, in ints: when that overflowed, the surface came out a few rows high while the lines lay outside it, where
+// the underline and strikethrough were drawn (an out of bounds write). A text makes at most one line more than it has bytes, so a
+// render whose row height times that many lines passes 2^31 - 1 is refused, as one of no font is (an empty graphic).
+inline bool ttf_wrapped_lines_fit(TTF_Font* font, const std::string& text) {
+	long long skip = TTF_GetFontLineSkip(font), height = TTF_GetFontHeight(font);
+	long long row = (skip > height ? skip : height) + 2LL * TTF_GetFontOutline(font) + 64;
+	return row * (long long)(ttf_wrapped_text_length(text) + 1) <= 2147483647LL;
+}
 // Whether FreeType can take a font size of ptsize points at hdpi by vdpi dots per inch (0 for one of them takes the other, 0 for
 // both 72, as SDL_ttf and FreeType do). FreeType keeps the size in pixels per em in 16 bits and works it out in a long (32 bits on
 // Windows), and SDL_ttf hands it the size times 64 as an int: a size past them came out as a wrapped or overflowed scale, and rendering
@@ -156,7 +165,10 @@ public:
 	int get_height() const { if (!_font) return 0; return TTF_GetFontHeight(_font); }
 	int get_ascent() const { if (!_font) return 0; return TTF_GetFontAscent(_font); }
 	int get_descent() const { if (!_font) return 0; return TTF_GetFontDescent(_font); }
-	void set_line_skip(int skip) { if (!_font) return; TTF_SetFontLineSkip(_font, skip); }
+	// SDL_ttf takes any line skip: a negative one put the lines of a wrapped text above the surface made for them, where the underline and
+	// strikethrough were drawn (line_skip = -2147483648 with FONT_STYLE_UNDERLINE and a text wrapped to 21 lines wrote out of bounds and
+	// crashed). One below 0 or above 65535 is refused, and the font keeps the one it has; see also ttf_wrapped_lines_fit().
+	void set_line_skip(int skip) { if (!_font || skip < 0 || skip > 65535) return; TTF_SetFontLineSkip(_font, skip); }
 	int get_line_skip() const { if (!_font) return 0; return TTF_GetFontLineSkip(_font); }
 	void set_kerning(bool enabled) { if (!_font) return; TTF_SetFontKerning(_font, enabled); }
 	bool get_kerning() const { if (!_font) return false; return TTF_GetFontKerning(_font); }
@@ -171,13 +183,13 @@ public:
 	bool set_language(const std::string& language_bcp47) { if (!_font) return false; return TTF_SetFontLanguage(_font, language_bcp47.c_str()); }
 	bool has_glyph(unsigned int codepoint) { if (!_font) return false; return TTF_FontHasGlyph(_font, codepoint); }
 	graphic* render_text_solid(const std::string& text, unsigned int r, unsigned int g, unsigned int b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderText_Solid(_font, text.c_str(), text.size(), to_sdl_color(r, g, b))); }
-	graphic* render_text_solid_wrapped(const std::string& text, int wrap_width, unsigned int r, unsigned int g, unsigned int b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderText_Solid_Wrapped(_font, text.c_str(), ttf_wrapped_text_length(text), to_sdl_color(r, g, b), wrap_width)); }
+	graphic* render_text_solid_wrapped(const std::string& text, int wrap_width, unsigned int r, unsigned int g, unsigned int b) { if (!_font || !ttf_wrapped_lines_fit(_font, text)) return new graphic(nullptr); return new graphic(TTF_RenderText_Solid_Wrapped(_font, text.c_str(), ttf_wrapped_text_length(text), to_sdl_color(r, g, b), wrap_width)); }
 	graphic* render_text_blended(const std::string& text, unsigned int r, unsigned int g, unsigned int b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderText_Blended(_font, text.c_str(), text.size(), to_sdl_color(r, g, b))); }
-	graphic* render_text_blended_wrapped(const std::string& text, int wrap_width, unsigned int r, unsigned int g, unsigned int b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderText_Blended_Wrapped(_font, text.c_str(), ttf_wrapped_text_length(text), to_sdl_color(r, g, b), wrap_width)); }
+	graphic* render_text_blended_wrapped(const std::string& text, int wrap_width, unsigned int r, unsigned int g, unsigned int b) { if (!_font || !ttf_wrapped_lines_fit(_font, text)) return new graphic(nullptr); return new graphic(TTF_RenderText_Blended_Wrapped(_font, text.c_str(), ttf_wrapped_text_length(text), to_sdl_color(r, g, b), wrap_width)); }
 	graphic* render_text_shaded(const std::string& text, unsigned int fg_r, unsigned int fg_g, unsigned int fg_b, unsigned int bg_r, unsigned int bg_g, unsigned int bg_b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderText_Shaded(_font, text.c_str(), text.size(), to_sdl_color(fg_r, fg_g, fg_b), to_sdl_color(bg_r, bg_g, bg_b))); }
-	graphic* render_text_shaded_wrapped(const std::string& text, int wrap_width, unsigned int fg_r, unsigned int fg_g, unsigned int fg_b, unsigned int bg_r, unsigned int bg_g, unsigned int bg_b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderText_Shaded_Wrapped(_font, text.c_str(), ttf_wrapped_text_length(text), to_sdl_color(fg_r, fg_g, fg_b), to_sdl_color(bg_r, bg_g, bg_b), wrap_width)); }
+	graphic* render_text_shaded_wrapped(const std::string& text, int wrap_width, unsigned int fg_r, unsigned int fg_g, unsigned int fg_b, unsigned int bg_r, unsigned int bg_g, unsigned int bg_b) { if (!_font || !ttf_wrapped_lines_fit(_font, text)) return new graphic(nullptr); return new graphic(TTF_RenderText_Shaded_Wrapped(_font, text.c_str(), ttf_wrapped_text_length(text), to_sdl_color(fg_r, fg_g, fg_b), to_sdl_color(bg_r, bg_g, bg_b), wrap_width)); }
 	graphic* render_text_lcd(const std::string& text, unsigned int fg_r, unsigned int fg_g, unsigned int fg_b, unsigned int bg_r, unsigned int bg_g, unsigned int bg_b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderText_LCD(_font, text.c_str(), text.size(), to_sdl_color(fg_r, fg_g, fg_b), to_sdl_color(bg_r, bg_g, bg_b))); }
-	graphic* render_text_lcd_wrapped(const std::string& text, int wrap_width, unsigned int fg_r, unsigned int fg_g, unsigned int fg_b, unsigned int bg_r, unsigned int bg_g, unsigned int bg_b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderText_LCD_Wrapped(_font, text.c_str(), ttf_wrapped_text_length(text), to_sdl_color(fg_r, fg_g, fg_b), to_sdl_color(bg_r, bg_g, bg_b), wrap_width)); }
+	graphic* render_text_lcd_wrapped(const std::string& text, int wrap_width, unsigned int fg_r, unsigned int fg_g, unsigned int fg_b, unsigned int bg_r, unsigned int bg_g, unsigned int bg_b) { if (!_font || !ttf_wrapped_lines_fit(_font, text)) return new graphic(nullptr); return new graphic(TTF_RenderText_LCD_Wrapped(_font, text.c_str(), ttf_wrapped_text_length(text), to_sdl_color(fg_r, fg_g, fg_b), to_sdl_color(bg_r, bg_g, bg_b), wrap_width)); }
 	graphic* render_glyph_solid(unsigned int ch, unsigned int r, unsigned int g, unsigned int b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderGlyph_Solid(_font, ch, to_sdl_color(r, g, b))); }
 	graphic* render_glyph_blended(unsigned int ch, unsigned int r, unsigned int g, unsigned int b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderGlyph_Blended(_font, ch, to_sdl_color(r, g, b))); }
 	graphic* render_glyph_shaded(unsigned int ch, unsigned int fg_r, unsigned int fg_g, unsigned int fg_b, unsigned int bg_r, unsigned int bg_g, unsigned int bg_b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderGlyph_Shaded(_font, ch, to_sdl_color(fg_r, fg_g, fg_b), to_sdl_color(bg_r, bg_g, bg_b))); }

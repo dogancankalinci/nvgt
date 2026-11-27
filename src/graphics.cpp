@@ -303,6 +303,7 @@ bool text_font::get_string_size(const std::string& text, int& w, int& h) const {
 bool text_font::get_string_size_wrapped(const std::string& text, int wrap_width, int& w, int& h) const {
 	w = h = 0;
 	if (!_font) return false;
+	if (!ttf_wrapped_lines_fit(_font, text)) return false; // see there: the height overflowed
 	return TTF_GetStringSizeWrapped(_font, text.c_str(), ttf_wrapped_text_length(text), wrap_width, &w, &h); // see ttf_wrapped_text_length()
 }
 
