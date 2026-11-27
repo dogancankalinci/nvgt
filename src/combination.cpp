@@ -182,6 +182,9 @@ bool combination_api::next(CScriptArray* list) {
 	if (!gen->advance()) return false;
 	std::vector<int>& temp = gen->data();
 	list->Resize(temp.size());
+	// Resize() raises its exception (out of memory) and leaves the array as it was when it fails; the values written past its end then
+	// raised "Index out of bounds" over it.
+	if (list->GetSize() != temp.size()) return false;
 	for (int i = 0; i < temp.size(); i++)
 		list->SetValue(i, &temp[i]);
 	return true;
