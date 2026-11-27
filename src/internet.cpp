@@ -29,7 +29,8 @@
 #include <Poco/URI.h>
 #include <Poco/URIStreamOpener.h>
 #include <Poco/UUIDGenerator.h>
-#include <Poco/Net/AcceptCertificateHandler.h>
+#include <Poco/Net/InvalidCertificateHandler.h>
+#include <Poco/Net/VerificationErrorArgs.h>
 #include <Poco/Net/Context.h>
 #include <Poco/Net/DNS.h>
 #include <Poco/Net/FTPClientSession.h>
@@ -46,6 +47,9 @@
 #include <Poco/Net/SSLException.h>
 #include <Poco/Net/SSLManager.h>
 #include <Poco/Net/WebSocket.h>
+#ifndef _WIN32
+	#include <openssl/ssl.h> // SSL_CTX_set_default_verify_paths, see set_ssl_verify_certificates
+#endif
 #include <scriptarray.h>
 #include <scriptdictionary.h>
 #include <entities.h>
@@ -1022,12 +1026,42 @@ string url_request(const string& method, const string& url, const string& data, 
 string url_get(const string& url, HTTPResponse* resp) { return url_request(HTTPRequest::HTTP_GET, url, "", resp); }
 string url_post(const string& url, const string& data, HTTPResponse* resp) { return url_request(HTTPRequest::HTTP_POST, url, data, resp); }
 
+// Whether the certificates of TLS servers (https, secure web sockets, SMTP over TLS and every other client connection) are checked. Every
+// certificate was accepted (AcceptCertificateHandler): expired, self-signed, untrusted and revoked ones connected as valid ones do, so anyone
+// between a game and its update, login or download server could stand in for the server. On Windows the TLS layer checks the chain against
+// the system's root certificates, so the check is on by default there. Elsewhere it uses OpenSSL with no certificate store loaded, which
+// would refuse every server, so the default stays off; a script that turns it on gets OpenSSL's default certificate locations loaded.
+static std::atomic<bool> g_ssl_verify_certificates(
+#ifdef _WIN32
+	true
+#else
+	false
+#endif
+);
+static Context::Ptr g_ssl_client_context;
+class nvgt_certificate_handler : public InvalidCertificateHandler {
+public:
+	nvgt_certificate_handler() : InvalidCertificateHandler(false) {}
+	void onInvalidCertificate(const void* sender, VerificationErrorArgs& args) override { args.setIgnoreError(!g_ssl_verify_certificates.load(std::memory_order_relaxed)); }
+};
+static bool get_ssl_verify_certificates() { return g_ssl_verify_certificates.load(std::memory_order_relaxed); }
+static void set_ssl_verify_certificates(bool verify) {
+	#ifndef _WIN32
+		if (verify && g_ssl_client_context) {
+			static std::once_flag default_cas;
+			std::call_once(default_cas, [] { SSL_CTX_set_default_verify_paths(g_ssl_client_context->sslContext()); });
+		}
+	#endif
+	g_ssl_verify_certificates.store(verify, std::memory_order_relaxed);
+}
+
 void RegisterInternet(asIScriptEngine* engine) {
 	Context::Ptr client_context = new Context(Context::TLS_CLIENT_USE, "");
+	g_ssl_client_context = client_context;
 	#ifdef _WIN32
 		client_context->disableProtocols(Context::PROTO_TLSV1_3); // Poco 1.15.4's NetSSL_Win completes TLS 1.3 handshakes but then reads nothing from some servers such as letsencrypt.org and mastodon.social (pocoproject/poco#5452). Its main branch has the fixes, so turn TLS 1.3 back on once a Poco release includes them.
 	#endif
-	SSLManager::instance().initializeClient(NULL, new AcceptCertificateHandler(false), client_context);
+	SSLManager::instance().initializeClient(NULL, new nvgt_certificate_handler(), client_context);
 	FTPStreamFactory::registerFactory();
 	HTTPStreamFactory::registerFactory();
 	HTTPSStreamFactory::registerFactory();
@@ -1088,4 +1122,6 @@ void RegisterInternet(asIScriptEngine* engine) {
 	engine->RegisterGlobalFunction("string url_request(const string&in method, const string&in url, const string&in data = \"\", http_response&out response = void)", asFUNCTION(url_request), asCALL_CDECL);
 	engine->RegisterGlobalFunction("string url_get(const string&in url, http_response&out response = void)", asFUNCTION(url_get), asCALL_CDECL);
 	engine->RegisterGlobalFunction("string url_post(const string&in url, const string&in data, http_response&out response = void)", asFUNCTION(url_post), asCALL_CDECL);
+	engine->RegisterGlobalFunction("bool get_ssl_verify_certificates() property", asFUNCTION(get_ssl_verify_certificates), asCALL_CDECL);
+	engine->RegisterGlobalFunction("void set_ssl_verify_certificates(bool verify) property", asFUNCTION(set_ssl_verify_certificates), asCALL_CDECL);
 }
