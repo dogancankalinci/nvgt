@@ -14,6 +14,7 @@
 
 #include <angelscript.h>
 #include <algorithm>
+#include <atomic>
 #include <Poco/RefCountedObject.h>
 #include <timer-wheel.h>
 #include <unordered_map>
@@ -53,7 +54,7 @@ class timer_queue {
 	uint64_t last_looped;
 	bool open_tick;
 	int RefCount;
-	bool gc_flag = false;
+	std::atomic<bool> gc_flag{false}; // AddRef/release clear it on whichever script thread lets go of the object while the garbage collector sets and reads it on its own thread (garbage_collect_mode 3): atomic, with relaxed order, as the add-ons' flag (a data race as a plain bool).
 	void purge_deleting_timers();
 	// Scripts read failures (get_failures()) on any thread while loop() adds to it on the thread looping the queue, so it has a lock of its own, which nothing holds while script code runs: under mtx, which loop() holds while it runs timer callbacks, a read would wait for every callback of the loop() under way, and never end if one of them waited for the reading thread.
 	std::mutex failures_mtx;
@@ -83,8 +84,8 @@ public:
 	// the queue: a cycle the collector couldn't see while timer_queue wasn't one of its types, so such an object was never freed (its
 	// destructor never ran) once the script let go of it.
 	int get_ref_count() { return RefCount; }
-	void set_gc_flag() { gc_flag = true; }
-	bool get_gc_flag() { return gc_flag; }
+	void set_gc_flag() { gc_flag.store(true, std::memory_order_relaxed); }
+	bool get_gc_flag() { return gc_flag.load(std::memory_order_relaxed); }
 	void enum_references(asIScriptEngine* engine);
 	void release_all_references(asIScriptEngine* engine) { reset(); }
 	void set(const std::string& id, asIScriptFunction* callback, const std::string& user_data, uint64_t timeout, bool repeating = false);

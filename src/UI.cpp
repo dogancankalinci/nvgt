@@ -1243,7 +1243,7 @@ system_tray_menu_item::~system_tray_menu_item() {
 	if (_callback) { _callback->Release(); _callback = nullptr; }
 }
 void system_tray_menu_item::release() {
-	_gc_flag = false;
+	_gc_flag.store(false, std::memory_order_relaxed);
 	{
 		std::lock_guard<std::recursive_mutex> lock(system_tray_gc_mutex());
 		if (_weak_flag) {

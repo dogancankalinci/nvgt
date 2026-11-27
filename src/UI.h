@@ -39,6 +39,7 @@ typedef void* native_window_t;
 #include <angelscript.h>
 #include <scriptarray.h>
 #include <Poco/AutoPtr.h>
+#include <atomic>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -198,18 +199,18 @@ class system_tray_menu_item {
 	asIScriptFunction* _callback;
 	system_tray_menu_item_type _type;
 	mutable int _refcount;
-	bool _gc_flag = false;
+	std::atomic<bool> _gc_flag{false}; // AddRef/release clear it on whichever script thread lets go of the object while the garbage collector sets and reads it on its own thread (garbage_collect_mode 3): atomic, with relaxed order, as the add-ons' flag (a data race as a plain bool).
 	asILockableSharedBool* _weak_flag = nullptr; // see get_weakref_flag()
 public:
 	system_tray_menu_item(SDL_TrayEntry* entry, system_tray_menu_item_type type);
 	~system_tray_menu_item(); // defined in .cpp so that system_tray_menu is complete there
 	bool on_thread() const { return _thread == thread_current_thread_id(); }
-	void duplicate() { _gc_flag = false; asAtomicInc(_refcount); }
+	void duplicate() { _gc_flag.store(false, std::memory_order_relaxed); asAtomicInc(_refcount); }
 	void release(); // see get_weakref_flag()
 	// The garbage collector's behaviours (see system_tray_gc_mutex() in UI.cpp): a tray holds its menu, a menu its items, an item its callback (often a delegate of the object that holds the tray) and its submenu, a cycle the collector couldn't see while these weren't its types, so such an object was never freed (its destructor never ran, its tray stayed in the notification area) once the script let go of it.
 	int get_ref_count() { return _refcount; }
-	void set_gc_flag() { _gc_flag = true; }
-	bool get_gc_flag() { return _gc_flag; }
+	void set_gc_flag() { _gc_flag.store(true, std::memory_order_relaxed); }
+	bool get_gc_flag() { return _gc_flag.load(std::memory_order_relaxed); }
 	void enum_references(asIScriptEngine* engine);
 	void release_all_references(asIScriptEngine* engine);
 	// The entry registry (system_tray_items() in UI.cpp) is a weak link to the item, which a click turns strong. The collector marks this flag dead once it has found the item to be garbage, before it breaks the cycle one object at a time: a click meanwhile ran the item's callback on objects the collector was emptying. Made when first asked for, under system_tray_gc_mutex().
@@ -235,16 +236,16 @@ class system_tray_menu {
 	thread_id_t _thread; // the tray's, see system_tray_menu_item
 	std::vector<Poco::AutoPtr<system_tray_menu_item>> _items;
 	mutable int _refcount;
-	bool _gc_flag = false;
+	std::atomic<bool> _gc_flag{false}; // see system_tray_menu_item::_gc_flag
 	system_tray_menu_item* make_entry(int pos, const char* label, SDL_TrayEntryFlags flags, system_tray_menu_item_type type);
 public:
 	system_tray_menu(SDL_TrayMenu* menu);
 	bool on_thread() const { return _thread == thread_current_thread_id(); }
-	void duplicate() { _gc_flag = false; asAtomicInc(_refcount); }
-	void release() { _gc_flag = false; if (asAtomicDec(_refcount) < 1) delete this; }
+	void duplicate() { _gc_flag.store(false, std::memory_order_relaxed); asAtomicInc(_refcount); }
+	void release() { _gc_flag.store(false, std::memory_order_relaxed); if (asAtomicDec(_refcount) < 1) delete this; }
 	int get_ref_count() { return _refcount; } // the garbage collector's behaviours, see system_tray_menu_item
-	void set_gc_flag() { _gc_flag = true; }
-	bool get_gc_flag() { return _gc_flag; }
+	void set_gc_flag() { _gc_flag.store(true, std::memory_order_relaxed); }
+	bool get_gc_flag() { return _gc_flag.load(std::memory_order_relaxed); }
 	void enum_references(asIScriptEngine* engine);
 	void release_all_references(asIScriptEngine* engine);
 	SDL_TrayMenu* get_sdl_menu() const { return on_thread() ? _menu : nullptr; }
@@ -264,17 +265,17 @@ class system_tray {
 	thread_id_t _thread; // the thread that made it, see system_tray_menu_item
 	Poco::AutoPtr<system_tray_menu> _menu; // lazily created when get_menu() is first called
 	mutable int _refcount;
-	bool _gc_flag = false;
+	std::atomic<bool> _gc_flag{false}; // see system_tray_menu_item::_gc_flag
 	void teardown(); // invalidates the menus and destroys the SDL tray, see ~system_tray
 public:
 	system_tray(const std::string& tooltip, graphic* icon);
 	~system_tray();
 	bool on_thread() const { return _thread == thread_current_thread_id(); }
-	void duplicate() { _gc_flag = false; asAtomicInc(_refcount); }
-	void release() { _gc_flag = false; if (asAtomicDec(_refcount) < 1) delete this; }
+	void duplicate() { _gc_flag.store(false, std::memory_order_relaxed); asAtomicInc(_refcount); }
+	void release() { _gc_flag.store(false, std::memory_order_relaxed); if (asAtomicDec(_refcount) < 1) delete this; }
 	int get_ref_count() { return _refcount; } // the garbage collector's behaviours, see system_tray_menu_item
-	void set_gc_flag() { _gc_flag = true; }
-	bool get_gc_flag() { return _gc_flag; }
+	void set_gc_flag() { _gc_flag.store(true, std::memory_order_relaxed); }
+	bool get_gc_flag() { return _gc_flag.load(std::memory_order_relaxed); }
 	void enum_references(asIScriptEngine* engine);
 	void release_all_references(asIScriptEngine* engine);
 	bool is_valid() const { return _tray && on_thread(); }

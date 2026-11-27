@@ -116,11 +116,11 @@ map_area::map_area(coordinate_map* p, float minx, float maxx, float miny, float 
 	reframe();
 }
 void map_area::add_ref() {
-	gc_flag = false;
+	gc_flag.store(false, std::memory_order_relaxed);
 	asAtomicInc(ref_count);
 }
 void map_area::release() {
-	gc_flag = false;
+	gc_flag.store(false, std::memory_order_relaxed);
 	if (asAtomicDec(ref_count) < 1) {
 		{
 			std::lock_guard<std::recursive_mutex> lock(coordinate_map::links_mutex()); // the map may be going on another thread meanwhile, see links_mutex()
@@ -349,7 +349,7 @@ void map_frame::reset(std::vector<map_area*>& held) {
 }
 
 void coordinate_map::add_ref() {
-	gc_flag = false;
+	gc_flag.store(false, std::memory_order_relaxed);
 	asAtomicInc(ref_count);
 }
 std::recursive_mutex& coordinate_map::links_mutex() {
@@ -358,7 +358,7 @@ std::recursive_mutex& coordinate_map::links_mutex() {
 	return *m;
 }
 void coordinate_map::release() {
-	gc_flag = false;
+	gc_flag.store(false, std::memory_order_relaxed);
 	{
 		std::lock_guard<std::recursive_mutex> lock(links_mutex()); // the count goes down under the lock, so that map_area::get_map() never hands out a map going
 		if (weak_flag) {

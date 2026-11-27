@@ -73,11 +73,11 @@ pathfinder::pathfinder(int size, bool cache) : gc_flag(false) {
 	callback_mode = CALLBACK_SIMPLE;
 }
 int pathfinder::AddRef() {
-	gc_flag = false;
+	gc_flag.store(false, std::memory_order_relaxed);
 	return asAtomicInc(RefCount);
 }
 int pathfinder::Release() {
-	gc_flag = false;
+	gc_flag.store(false, std::memory_order_relaxed);
 	if (asAtomicDec(RefCount) == 0) {
 		release_all_handles(nullptr);
 		reset();
@@ -105,10 +105,10 @@ void pathfinder::release_all_handles(asIScriptEngine* engine) {
 	callback_data = nullptr;
 }
 void pathfinder::set_gc_flag() {
-	gc_flag = true;
+	gc_flag.store(true, std::memory_order_relaxed);
 }
 bool pathfinder::get_gc_flag() {
-	return gc_flag;
+	return gc_flag.load(std::memory_order_relaxed);
 }
 void pathfinder::set_callback_function(asIScriptFunction* func) {
 	if (callback) callback->Release();

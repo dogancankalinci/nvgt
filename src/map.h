@@ -17,6 +17,7 @@
 #include <vector>
 #include <angelscript.h>
 #include <scriptany.h>
+#include <atomic>
 #include <mutex>
 #include "jolt.h"
 #include "pathfinder.h"
@@ -27,7 +28,7 @@ class coordinate_map;
 class map_frame;
 class map_area {
 	int ref_count;
-	bool gc_flag = false;
+	std::atomic<bool> gc_flag{false}; // AddRef/release clear it on whichever script thread lets go of the object while the garbage collector sets and reads it on its own thread (garbage_collect_mode 3): atomic, with relaxed order, as the add-ons' flag (a data race as a plain bool).
 	bool is_unfiltered(asIScriptFunction* filter_callback);
 public:
 	coordinate_map* parent; // not a reference the area holds: read and changed under coordinate_map::links_mutex() only (see get_map())
@@ -54,8 +55,8 @@ public:
 	void release();
 	// The garbage collector's behaviours (see coordinate_map's): primary_data is a reference the area holds, often to the object that holds the map.
 	int get_ref_count() { return ref_count; }
-	void set_gc_flag() { gc_flag = true; }
-	bool get_gc_flag() { return gc_flag; }
+	void set_gc_flag() { gc_flag.store(true, std::memory_order_relaxed); }
+	bool get_gc_flag() { return gc_flag.load(std::memory_order_relaxed); }
 	void enum_references(asIScriptEngine* engine);
 	void release_all_references(asIScriptEngine* engine);
 	void unframe();
@@ -75,7 +76,7 @@ public:
 class coordinate_map {
 	ankerl::unordered_dense::map<hashpoint, map_frame*, hashpoint_hash, hashpoint_equals> frames[total_frame_sizes];
 	int ref_count;
-	bool gc_flag = false;
+	std::atomic<bool> gc_flag{false}; // see map_area::gc_flag
 	bool collected = false; // given to the garbage collector, which then holds a reference of its own
 	asILockableSharedBool* weak_flag = nullptr; // see get_weakref_flag()
 	friend coordinate_map* new_coordinate_map();
@@ -91,8 +92,8 @@ public:
 	int collector_refs() const { return collected ? 1 : 0; }
 	// An area's link to its map is a weak reference (the area holds none), which map_area::get_map() turns strong. The collector marks this flag dead, under its lock, once it has found the map to be garbage and before it breaks it: get_map() handed out a map the collector then emptied (reset() as its RELEASEREFS) between the steps of breaking the cycle, on the collector's thread or between incremental steps on the script's. Made when first asked for, under links_mutex().
 	asILockableSharedBool* get_weakref_flag();
-	void set_gc_flag() { gc_flag = true; }
-	bool get_gc_flag() { return gc_flag; }
+	void set_gc_flag() { gc_flag.store(true, std::memory_order_relaxed); }
+	bool get_gc_flag() { return gc_flag.load(std::memory_order_relaxed); }
 	void enum_references(asIScriptEngine* engine);
 	void release_all_references(asIScriptEngine* engine) { reset(); }
 	vector3 get_frame_coordinates(int x, int y, int z, int size);

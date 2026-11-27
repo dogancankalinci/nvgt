@@ -101,11 +101,11 @@ void timer_queue_item::execute() {
 timer_queue::timer_queue() : RefCount(1), last_looped(ticks()), open_tick(false) {
 }
 void timer_queue::add_ref() {
-	gc_flag = false;
+	gc_flag.store(false, std::memory_order_relaxed);
 	asAtomicInc(RefCount);
 }
 void timer_queue::release() {
-	gc_flag = false;
+	gc_flag.store(false, std::memory_order_relaxed);
 	if (asAtomicDec(RefCount) < 1) {
 		reset();
 		delete this;

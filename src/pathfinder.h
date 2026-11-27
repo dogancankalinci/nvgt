@@ -12,6 +12,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <unordered_map>
 #include <string>
@@ -54,7 +55,7 @@ class pathfinder : public micropather::Graph {
 	CScriptAny* callback_data;
 	bool abort;
 	bool must_reset;
-	bool gc_flag;
+	std::atomic<bool> gc_flag; // AddRef/release clear it on whichever script thread lets go of the object while the garbage collector sets and reads it on its own thread (garbage_collect_mode 3): atomic, with relaxed order, as the add-ons' flag (a data race as a plain bool).
 	bool cache; // Because Micropather doesn't expose a method to determine if path caching is enabled, and disabling of cache should disable our local cache too.
 	callback_modes callback_mode;
 	// Only used where a pointer is narrower than a packed state key (32-bit builds): MicroPather is handed the key's index in state_keys.
