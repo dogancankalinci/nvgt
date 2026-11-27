@@ -426,7 +426,14 @@ void TranslateException(asIScriptContext *ctx, void* /*userParam*/) {
 	try {
 		throw;
 	} catch (Exception &e) {
-		ctx->SetException(e.displayText().c_str());
+		// The text of a Poco exception is made in a std::string, and with no memory for it the bad_alloc left this callback, the catch
+		// block AngelScript calls it from and Execute(), past the script's own try/catch, with the context left active. The exception is
+		// then raised with the name of the exception's class, which needs no memory.
+		try {
+			ctx->SetException(e.displayText().c_str());
+		} catch (...) {
+			ctx->SetException(e.what());
+		}
 	} catch (std::exception &e) {
 		ctx->SetException(e.what());
 	} catch (...) {
