@@ -1,0 +1,19 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+index 6063bae..587ecef 100644
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -1642,9 +1642,13 @@ int asCContext::Execute()
+ 
+ 	asCThreadLocalData *tld = asPushActiveContext((asIScriptContext *)this);
+ 
++	// ALTERED: a thread's local data is made when it first runs a context, and with no memory for it (asNEW gives null) it was
++	// dereferenced here. The function isn't started, as at the nested call limit below, and the execution ends with the exception.
++	if( tld == 0 )
++		SetInternalException("Out of memory");
+ 	// Make sure there are not too many nested calls, as it could crash the application
+ 	// by filling up the thread call stack
+-	if (tld->activeContexts.GetLength() > m_engine->ep.maxNestedCalls)
++	else if (tld->activeContexts.GetLength() > m_engine->ep.maxNestedCalls)
+ 		SetInternalException(TXT_TOO_MANY_NESTED_CALLS);
+ 	else if( m_regs.programPointer == 0 )
+ 		SetProgramPointer();

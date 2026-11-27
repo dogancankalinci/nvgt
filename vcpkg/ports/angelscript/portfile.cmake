@@ -178,6 +178,7 @@ vcpkg_from_github(
         fix-funcdef-conversion-to-var-arg.patch
         fix-script-object-extra-out-of-memory.patch
         fix-gc-flag-atomic.patch
+        fix-thread-data-out-of-memory.patch
 )
 
 vcpkg_cmake_configure(
