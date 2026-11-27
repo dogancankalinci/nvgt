@@ -351,7 +351,7 @@ std::string chacha_ostream::generate_nonce() {
 	unsigned char nonce[24];
 	unsigned long result = rng_get_bytes(nonce, 24);
 	if (result != 24)
-		throw new std::runtime_error("Could not obtain required number of bytes for nonce.");
+		throw std::runtime_error("Could not obtain required number of bytes for nonce."); // By value: a thrown pointer was missed by catch (std::exception&) and the engine's translation, and leaked.
 	return std::string((const char *)nonce, 24);
 }
 chacha_ostream::chacha_ostream(std::ostream &sink, const std::string &key, const std::string &nonce)
