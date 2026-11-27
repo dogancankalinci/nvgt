@@ -55,6 +55,7 @@
 #include "obfuscate.h"
 #include "input.h"
 #include "misc_functions.h"
+#include "threading.h" // script_wait
 #include <fast_float/fast_float.h>
 #include <system_error>
 
@@ -342,16 +343,17 @@ public:
 		drain_both(); // a script polling this would otherwise wait for good on a child stalled writing
 		return !SDL_WaitProcess(_proc, false, nullptr);
 	}
+	// wait() and read() look between their slices whether the script still waits for them (see script_wait in threading.cpp): a child that
+	// never ended (or never closed its output) kept the main thread after exit() was called on a script thread, and a script thread past the
+	// script's end. They return then (-1, or what was read), which the script doesn't see, as its execution is aborted.
 	int wait() {
 		int code = -1;
 		if (!_proc) return code;
-		if (!_out && !_err) {
-			SDL_WaitProcess(_proc, true, &code);
-			return code;
-		}
+		script_wait waiting;
 		for (unsigned delay = 1; !SDL_WaitProcess(_proc, false, &code);) {
 			if (drain_both()) delay = 1;
 			else {
+				if (waiting.ended()) return -1;
 				SDL_Delay(delay);
 				delay = std::min(delay * 2, 20u);
 			}
@@ -365,6 +367,7 @@ public:
 		std::string result;
 		if (_stdout_ds) if (process_output_stream* os = dynamic_cast<process_output_stream*>(_stdout_ds->get_istr())) os->take_unread(result);
 		char buffer[16384];
+		script_wait waiting; // see wait()
 		for (unsigned delay = 1;;) {
 			size_t n = _out->read(buffer, sizeof(buffer));
 			if (n) {
@@ -375,6 +378,7 @@ public:
 			if (_out->done()) break;
 			if (drain(_err)) delay = 1;
 			else {
+				if (waiting.ended()) return result;
 				SDL_Delay(delay);
 				delay = std::min(delay * 2, 20u);
 			}

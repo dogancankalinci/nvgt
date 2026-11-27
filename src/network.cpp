@@ -10,10 +10,12 @@
  * 3. This notice may not be removed or altered from any source distribution.
 */
 
+#include <chrono>
 #include <mutex>
 #include <obfuscate.h>
 #include "nvgt_angelscript.h" // get_array_type
 #include "network.h"
+#include "threading.h" // script_wait
 
 bool g_enet_initialized = false;
 network_event g_enet_none_event; // The none event is static and never changes, why reallocate it every time network::request() doesn't come up with an event?
@@ -144,7 +146,20 @@ const network_event* network::request(uint32_t timeout) {
 			return &g_enet_none_event;
 		}
 	ENetEvent event;
-	int r = enet_host_service(host, &event, timeout);
+	// A long timeout is waited in slices that end when exit() is called or the script is over (see script_wait in threading.cpp): it kept the
+	// main thread after exit() was called on a script thread, and a script thread past the script's end.
+	int r;
+	if (timeout <= 25) r = enet_host_service(host, &event, timeout);
+	else {
+		script_wait waiting;
+		auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout);
+		for (;;) {
+			auto now = std::chrono::steady_clock::now();
+			long long left = now < until ? std::chrono::duration_cast<std::chrono::milliseconds>(until - now).count() : 0;
+			r = enet_host_service(host, &event, enet_uint32(left < 25 ? left : 25));
+			if (r != 0 || left <= 25 || waiting.ended()) break;
+		}
+	}
 	if (r < 1) {
 		g_enet_none_event.addRef();
 			return &g_enet_none_event;

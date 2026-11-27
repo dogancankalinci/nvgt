@@ -58,24 +58,20 @@ bool script_thread_aborting(); // Also wait() in UI.cpp.
 // which the main thread only acts on once a wait it is in ends: while it waited for an event, a thread, an async call or a pool that
 // never came, the program never ended. The same goes for what a script thread executes once the script is over (see
 // script_threads_stop()). ended() is true from then on, and the wait returns; the script doesn't see it return, as its context is
-// aborted. A wait begun after that, by a destructor the abort runs, lasts until what it waits for comes, as before.
-class script_wait {
-	bool main = thread_is_main();
-	asPWORD exits = main ? script_exit_count() : 0;
-	bool aborting = !main && script_thread_aborting();
-public:
-	bool ended() {
-		if (main ? script_exit_count() == exits : aborting || !script_thread_aborting()) return false;
-		if (asIScriptContext* ctx = asGetActiveContext()) ctx->Abort();
-		return true;
-	}
-	long slice() const { // The longest the wait lasts between two looks, in milliseconds.
-		#ifdef __APPLE__
-		if (main) return 10; // See event_wait_main().
-		#endif
-		return main ? 20 : 100;
-	}
-};
+// aborted. A wait begun after that, by a destructor the abort runs, lasts until what it waits for comes, as before. Declared in threading.h,
+// for the waits of other files (a child process, a network request).
+script_wait::script_wait() : main(thread_is_main()), exits(main ? script_exit_count() : 0), aborting(!main && script_thread_aborting()) {}
+bool script_wait::ended() {
+	if (main ? script_exit_count() == exits : aborting || !script_thread_aborting()) return false;
+	if (asIScriptContext* ctx = asGetActiveContext()) ctx->Abort();
+	return true;
+}
+long script_wait::slice() const {
+	#ifdef __APPLE__
+	if (main) return 10; // See event_wait_main().
+	#endif
+	return main ? 20 : 100;
+}
 // Waits up to ms (for ever when ms is negative) for event, returning whether it was set; see script_wait for when it isn't although ms is
 // negative (or that long hasn't passed). On Apple platforms the main thread runs the main run loop between the slices it waits in, see
 // apple_run_main_loop_once(): a script thread's alert() there waits for the main thread to run it.

@@ -19,3 +19,15 @@ void script_threads_ending(); // The script's module is about to be discarded, s
 bool script_threads_stop(); // Ends what script threads run once the script's module is discarded, see threading.cpp.
 bool script_threads_release_engine(); // Whether the script engine can be shut down, which no script thread uses any more then, see threading.cpp.
 long poco_ms(unsigned int ms); // A script's uint milliseconds as the long Poco takes, see threading.cpp.
+// A script's wait that nothing may ever end (a child process, a long network request, an event), for the time it lasts, see threading.cpp.
+// Made on the waiting thread as the wait begins; ended() is asked between the wait's slices, and is true once exit() has been called since
+// (on the main thread) or the script is over (on a script thread).
+class script_wait {
+	bool main;
+	unsigned long long exits;
+	bool aborting;
+public:
+	script_wait();
+	bool ended();
+	long slice() const; // The longest the wait lasts between two looks, in milliseconds.
+};
