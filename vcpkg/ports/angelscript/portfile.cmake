@@ -184,6 +184,7 @@ vcpkg_from_github(
         fix-script-function-data-out-of-memory.patch
         fix-compile-out-of-memory.patch
         fix-funcdef-conversion-to-var-list-element.patch
+        fix-live-objects-out-of-memory.patch
 )
 
 vcpkg_cmake_configure(

@@ -1,0 +1,53 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+index ce9947b..729f3e8 100644
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -5854,8 +5854,11 @@ static bool IsCleanUpBlockTail(asCScriptFunction *func, int end, asUINT pos)
+ 		return false;
+ 
+ 	// Which instruction starts between from and pos are reached from from, moving forward only
++	// ALTERED: with no memory for the array (an exception's clean up, often of an "Out of memory" exception) it was used at its
++	// null address; the block is then taken for an ordinary one, as for a position it can't reach.
+ 	asCArray<bool> reached;
+-	reached.SetLength(pos - from + 1);
++	if( !reached.SetLength(pos - from + 1) )
++		return false;
+ 	memset(reached.AddressOf(), 0, sizeof(bool) * reached.GetLength());
+ 	reached[0] = true;
+ 	for( asUINT p = from; p <= pos && p < length; )
+@@ -5938,7 +5941,14 @@ void asCContext::DetermineLiveObjects(asCArray<int> &liveObjects, asUINT stackLe
+ 	}
+ 
+ 	// Determine which object variables that are really live ones
+-	liveObjects.SetLength(func->scriptData->variables.GetLength());
++	// ALTERED: with no memory for the list (an exception's clean up, often of an "Out of memory" exception, of a function with more
++	// variables than the array's own buffer holds), it was written at its null address below (a crash). It is left empty, and the
++	// callers take every value object of the frame for not alive (it isn't destroyed, which is better than the crash).
++	if( !liveObjects.SetLength(func->scriptData->variables.GetLength()) )
++	{
++		liveObjects.SetLength(0);
++		return;
++	}
+ 	memset(liveObjects.AddressOf(), 0, sizeof(int)*liveObjects.GetLength());
+ 	// ALTERED: also when no info lies after the position (n reaches the end): a frame stopped at its last info, the RET at the
+ 	// function's end (an abort acted on after the last destructor of a return statement's clean up), wasn't walked at all
+@@ -6416,7 +6426,8 @@ bool asCContext::CleanStackFrame(bool catchException)
+ 			else
+ 			{
+ 				// Only destroy the object if it is truly alive
+-				if( liveObjects[n] > 0 )
++				// ALTERED: an empty list when there was no memory for it, see DetermineLiveObjects
++				if( n < liveObjects.GetLength() && liveObjects[n] > 0 )
+ 				{
+ 					asASSERT(m_currentFunction->scriptData->variables[n]->type.GetTypeInfo() && m_currentFunction->scriptData->variables[n]->type.GetTypeInfo()->GetFlags() & asOBJ_VALUE);
+ 
+@@ -6972,7 +6983,8 @@ void *asCContext::GetAddressOfVar(asUINT varIndex, asUINT stackLevel, bool dontD
+ 					asCArray<int> liveObjects;
+ 					DetermineLiveObjects(liveObjects, stackLevel);
+ 
+-					if (liveObjects[varIndex] <= 0)
++					// ALTERED: an empty list when there was no memory for it, see DetermineLiveObjects
++					if (varIndex >= liveObjects.GetLength() || liveObjects[varIndex] <= 0)
+ 						return 0;
+ 				}
+ 			}
