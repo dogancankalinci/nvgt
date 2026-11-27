@@ -546,7 +546,9 @@ if(gen->channels<1) return;
 if(gen->channels>2) return;
 if(gen->channels==1)
 {
+if(frame>=gen->size) return;
 gen->data[frame]+=value;
+if(fabs(gen->data[frame])>gen->peak) gen->peak=fabs(gen->data[frame]); /* As the stereo branch does: a mono buffer otherwise read as silent and was never normalized. */
 return;
 }
 double angle=(gen->pan+100)*M_PI_4/100;
