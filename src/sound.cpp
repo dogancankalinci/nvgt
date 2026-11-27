@@ -5640,8 +5640,16 @@ public:
 		// Nor a URL's stream, which waits for the server's name to be looked up, the connection and its first pages, as long as a network takes, up to Poco's timeout of about a minute.
 		if ((ma_flags & MA_SOUND_FLAG_UNKNOWN_LENGTH) && audio_engine_impl::on_audio_thread()) return (g_soundsystem_last_error = MA_INVALID_OPERATION) == MA_SUCCESS;
 		garbage_collect_inline_sounds();
-		if (snd)
+		if (snd) {
+			// A name the sound service can't make a triplet of, such as an empty one or one that isn't valid UTF-8, refused before the sound loaded goes, as load_pcm() and a decoder's open() refuse theirs: it closed the sound first.
+			const std::string checked = g_sound_service->prepare_triplet(filename, protocol_slot, protocol_directive, filter_slot, filter_directive, whole_in_pages, 0);
+			if (checked.empty()) {
+				g_soundsystem_last_error = MA_INVALID_ARGS;
+				return false;
+			}
+			g_sound_service->cleanup_triplet(checked);
 			close_to_reload();
+		}
 		// This load's, rather than what an earlier one left: a failed load, whose done notification MiniAudio signals at once, left it set, so that the next asynchronous load read complete at once while it still decoded, its length read short.
 		load_completed.clear();
 		complete_if_failed failed{this};
