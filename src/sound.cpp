@@ -7146,25 +7146,33 @@ template < typename A > static void zero_out_result(A arg) {
 		if constexpr (!std::is_const_v<pointed> && (std::is_arithmetic_v<pointed> || std::is_enum_v<pointed>)) if (arg) *arg = pointed{};
 	}
 }
-// What a refused call gives: 0, false or null, but for the enums whose 0 is a real state, the stopped state and the default placement, so that a callback refused on a busy node doesn't read a stopped node as started.
-template < typename R > static R refused_result() {
-	if constexpr (std::is_same_v<R, ma_node_state>) return ma_node_state_stopped;
+// What a refused call gives, none of it a value the call could have given: false or null; for a number NaN, as a sound with nothing loaded reads, rather than 0, which a callback writing back a value it read relative to it took as full volume, centred or the like; for an index (refuse_index) -1, the "none" those getters give, rather than 0, a real device, panner or position; for the enums whose 0 is a real state, the stopped state and the default placement, so that a callback refused on a busy node doesn't read a stopped node as started.
+struct refuse_index {};
+template < typename R, class Refusal = void > static R refused_result() {
+	if constexpr (std::is_same_v<Refusal, refuse_index>) return R(-1);
+	else if constexpr (std::is_same_v<R, ma_node_state>) return ma_node_state_stopped;
 	else if constexpr (std::is_same_v<R, audio_spatializer_reverb3d_placement>) return postpan;
+	else if constexpr (std::is_floating_point_v<R>) return std::numeric_limits<R>::quiet_NaN();
 	else return R{};
 }
 // A script's call on a node, under the node's lock, as virtual_call() makes it for other objects.
-template < class T, auto Function, typename ReturnType, typename... Args >
-ReturnType api_call(T *object, Args... args) {
+template < class Refusal, class T, auto Function, typename ReturnType, typename... Args >
+ReturnType api_call_refusing(T *object, Args... args) {
 	if constexpr (std::is_base_of_v<audio_node, T>) {
 		mixer_api_lock lock = lock_node_api(object);
 		if (!lock.held) {
 			(zero_out_result(args), ...);
 			if constexpr (std::is_void_v<ReturnType>) return;
-			else return refused_result<ReturnType>();
+			else return refused_result<ReturnType, Refusal>();
 		}
 		return (object->*Function)(std::forward < Args > (args)...);
 	} else return (object->*Function)(std::forward < Args > (args)...);
 }
+template < class T, auto Function, typename ReturnType, typename... Args >
+ReturnType api_call(T *object, Args... args) { return api_call_refusing<void, T, Function, ReturnType, Args...>(object, std::forward < Args > (args)...); }
+// For a getter of an index, whose "none" is -1.
+template < class T, auto Function, typename ReturnType, typename... Args >
+ReturnType api_call_index(T *object, Args... args) { return api_call_refusing<refuse_index, T, Function, ReturnType, Args...>(object, std::forward < Args > (args)...); }
 // A property setter whose C++ function returns whether it took the value: registered as AngelScript's void setter, as a property's must be, through this, rather than as the bool function itself, which only worked as the return register was ignored.
 template < class T, auto Function, typename... Args >
 void api_setter(T *object, Args... args) { api_call<T, Function, bool, Args...>(object, args...); }
@@ -7329,7 +7337,7 @@ void RegisterSoundsystemEngine(asIScriptEngine *engine) {
 	engine->RegisterFuncdef("void audio_engine_processing_callback(audio_engine@ engine, memory_buffer<float>& data, uint64 frames)");
 	engine->RegisterObjectBehaviour("audio_engine", asBEHAVE_FACTORY, "audio_engine@ e(int flags, int sample_rate = 0, int channels = 0)", asFUNCTION(new_audio_engine), asCALL_CDECL);
 	engine->RegisterObjectMethod("audio_engine", "int get_flags() const property", asFUNCTION((api_call < audio_engine, &audio_engine::get_flags, int >)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("audio_engine", "int get_device() const", asFUNCTION((api_call < audio_engine, &audio_engine::get_device, int >)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("audio_engine", "int get_device() const", asFUNCTION((api_call_index < audio_engine, &audio_engine::get_device, int >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_engine", "bool set_device(int device)", asFUNCTION((api_call < audio_engine, &audio_engine::set_device, bool, int >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_engine", "audio_node@+ get_endpoint() const property", asFUNCTION((api_call < audio_engine, &audio_engine::get_endpoint, audio_node * >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_engine", "float[]@ read(uint64 frame_count)", asFUNCTION((api_call < audio_engine, &audio_engine::read_script, CScriptArray *, unsigned long long >)), asCALL_CDECL_OBJFIRST);
@@ -7348,8 +7356,8 @@ void RegisterSoundsystemEngine(asIScriptEngine *engine) {
 	engine->RegisterObjectMethod("audio_engine", "bool set_gain(float gain)", asFUNCTION((api_call < audio_engine, &audio_engine::set_gain, bool, float >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_engine", "float get_gain() const property", asFUNCTION((api_call < audio_engine, &audio_engine::get_gain, float >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_engine", "uint get_listener_count() const property", asFUNCTION((api_call < audio_engine, &audio_engine::get_listener_count, unsigned int >)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("audio_engine", "int find_closest_listener(float x, float y, float z) const", asFUNCTION((api_call < audio_engine, &audio_engine::find_closest_listener, int, float, float, float >)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("audio_engine", "int find_closest_listener(const vector&in position) const", asFUNCTION((api_call < audio_engine, &audio_engine::find_closest_listener_vector, int, const vector3 & >)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("audio_engine", "int find_closest_listener(float x, float y, float z) const", asFUNCTION((api_call_index < audio_engine, &audio_engine::find_closest_listener, int, float, float, float >)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("audio_engine", "int find_closest_listener(const vector&in position) const", asFUNCTION((api_call_index < audio_engine, &audio_engine::find_closest_listener_vector, int, const vector3 & >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_engine", "void set_listener_position(int index, float x, float y, float z)", asFUNCTION((api_call < audio_engine, &audio_engine::set_listener_position, void, int, float, float, float >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_engine", "void set_listener_position(int index, const vector&in position)", asFUNCTION((api_call < audio_engine, &audio_engine::set_listener_position_vector, void, int, const vector3 & >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_engine", "vector@ get_listener_position(int index) const", asFUNCTION((sound_vec3<audio_engine, &audio_engine::get_listener_position, unsigned int>)), asCALL_CDECL_OBJFIRST);
@@ -7382,7 +7390,7 @@ void RegisterSoundsystemDataSources(asIScriptEngine* engine) {
 	RegisterSoundsystemRingBuffer<microphone>(engine, "microphone");
 	engine->RegisterObjectBehaviour("microphone", asBEHAVE_FACTORY, "microphone@ m(int device = -1, audio_engine@+ engine = sound_default_engine)", asFUNCTION(microphone::create), asCALL_CDECL);
 	engine->RegisterObjectMethod("microphone", "bool set_device(int device)", asFUNCTION((api_call < microphone, &microphone::set_device, bool, int>)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("microphone", "int get_device() const property", asFUNCTION((api_call < microphone, &microphone::get_device, int>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("microphone", "int get_device() const property", asFUNCTION((api_call_index < microphone, &microphone::get_device, int>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("microphone", "void set_volume(float volume) property", asFUNCTION((api_call < microphone, &microphone::set_volume, void, float>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("microphone", "float get_volume() const property", asFUNCTION((api_call < microphone, &microphone::get_volume, float>)), asCALL_CDECL_OBJFIRST);
 }
@@ -7453,11 +7461,11 @@ template<class T> void RegisterSoundsystemMixer(asIScriptEngine *engine, const s
 	engine->RegisterObjectMethod(type.c_str(), "bool set_mixer(mixer@+ parent_mixer)", asFUNCTION((api_call < T, &T::set_mixer, bool, mixer * >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "mixer@ get_mixer() const", asFUNCTION(mixer_parent_script < T >), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "void set_3d_panner(int panner_id)", asFUNCTION((api_call < T, &T::set_3d_panner, void, int >)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "int get_3d_panner() const", asFUNCTION((api_call < T, &T::get_3d_panner, int >)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "int get_3d_panner() const", asFUNCTION((api_call_index < T, &T::get_3d_panner, int >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "void set_3d_attenuator(int attenuator_id)", asFUNCTION((api_call < T, &T::set_3d_attenuator, void, int >)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "int get_3d_attenuator() const", asFUNCTION((api_call < T, &T::get_3d_attenuator, int >)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "int get_preferred_3d_panner() const property", asFUNCTION((api_call < T, &T::get_preferred_3d_panner, int >)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "int get_preferred_3d_attenuator() const property", asFUNCTION((api_call < T, &T::get_preferred_3d_attenuator, int >)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "int get_3d_attenuator() const", asFUNCTION((api_call_index < T, &T::get_3d_attenuator, int >)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "int get_preferred_3d_panner() const property", asFUNCTION((api_call_index < T, &T::get_preferred_3d_panner, int >)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "int get_preferred_3d_attenuator() const property", asFUNCTION((api_call_index < T, &T::get_preferred_3d_attenuator, int >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "void set_hrtf(bool enabled) property", asFUNCTION((api_call < T, &T::set_hrtf, void, bool >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "bool get_hrtf() const property", asFUNCTION((api_call < T, &T::get_hrtf, bool >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "bool set_shape(ref@ shape)", asFUNCTION((api_call < T, &T::set_shape, bool, CScriptHandle>)), asCALL_CDECL_OBJFIRST);
@@ -7567,7 +7575,7 @@ void RegisterSoundsystemNodes(asIScriptEngine *engine) {
 	engine->RegisterObjectMethod("audio_node_chain", "audio_node@ get_first() const property", asFUNCTION(chain_first_script), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_node_chain", "audio_node@ get_last() const property", asFUNCTION(chain_last_script), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_node_chain", "audio_node@ opIndex(uint index) const", asFUNCTION(chain_at_script), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("audio_node_chain", "int find(audio_node@+ node) const", asFUNCTION((api_call < audio_node_chain, &audio_node_chain::index_of, int, audio_node*>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("audio_node_chain", "int find(audio_node@+ node) const", asFUNCTION((api_call_index < audio_node_chain, &audio_node_chain::index_of, int, audio_node*>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_node_chain", "uint get_node_count() const property", asFUNCTION((api_call < audio_node_chain, &audio_node_chain::get_node_count, unsigned int >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterGlobalFunction("bool set_sound_global_hrtf(bool enabled)", asFUNCTION(set_global_hrtf), asCALL_CDECL);
 	engine->RegisterGlobalFunction("bool get_sound_global_hrtf() property", asFUNCTION(get_global_hrtf), asCALL_CDECL);
