@@ -1,0 +1,277 @@
+diff --git a/sdk/angelscript/source/as_builder.cpp b/sdk/angelscript/source/as_builder.cpp
+index b424ca2..90718cc 100644
+--- a/sdk/angelscript/source/as_builder.cpp
++++ b/sdk/angelscript/source/as_builder.cpp
+@@ -563,6 +563,12 @@ int asCBuilder::CompileFunction(const char *sectionName, const char *code, int l
+ 	asCScriptFunction *func = asNEW(asCScriptFunction)(engine, compileFlags & asCOMP_ADD_TO_MODULE ? module : 0, asFUNC_SCRIPT);
+ 	if( func == 0 )
+ 		return asOUT_OF_MEMORY;
++	// ALTERED: no memory for the function's data (see asCScriptFunction::AllocateScriptFunctionData), written through below
++	if( func->scriptData == 0 )
++	{
++		func->DestroyHalfCreated();
++		return asOUT_OF_MEMORY;
++	}
+ 
+ 	GetParsedFunctionDetails(node, scripts[0], 0, func->name, func->returnType, func->parameterNames, func->parameterTypes, func->inOutFlags, func->defaultArgs, funcTraits, module->m_defaultNamespace);
+ 	func->id                           = engine->GetNextScriptFunctionId();
+@@ -2809,7 +2815,15 @@ void asCBuilder::CompileGlobalVariables()
+ 					asCDataType saveType;
+ 					saveType = gvar->datatype;
+ 					gvar->datatype = enumType->enumType;
+-					r = comp.CompileGlobalVariable(this, gvar->script, gvar->initializationNode, gvar, &func);
++					// ALTERED: with no memory for the function's data (see asCScriptFunction::AllocateScriptFunctionData) the
++					// compiler wrote through it; the value is not compiled, with the error
++					if( func.scriptData == 0 )
++					{
++						WriteError(gvar->script->name, "Out of memory", 0, 0);
++						r = -1;
++					}
++					else
++						r = comp.CompileGlobalVariable(this, gvar->script, gvar->initializationNode, gvar, &func);
+ 					gvar->datatype = saveType;
+ 
+ 					// Make the function a dummy so it doesn't try to release objects while destroying the function
+@@ -2861,24 +2875,32 @@ void asCBuilder::CompileGlobalVariables()
+ 			{
+ 				// Compile the global variable
+ 				initFunc = asNEW(asCScriptFunction)(engine, module, asFUNC_SCRIPT);
+-				if( initFunc == 0 )
++				// ALTERED: with no memory for the function or its data (see asCScriptFunction::AllocateScriptFunctionData) the
++				// variable is not compiled, with the error. The data was written through, and the return taken when asNEW gave
++				// null left the engine's message callback on this function's output buffer, gone once it returned.
++				if( initFunc && initFunc->scriptData == 0 )
+ 				{
+-					// Out of memory
+-					return;
++					initFunc->DestroyHalfCreated();
++					initFunc = 0;
+ 				}
++				int r = -1;
++				if( initFunc == 0 )
++					WriteError(gvar->script->name, "Out of memory", 0, 0);
++				else
++				{
++					// Set the namespace that should be used for this function
++					initFunc->nameSpace = gvar->ns;
+ 
+-				// Set the namespace that should be used for this function
+-				initFunc->nameSpace = gvar->ns;
+-
+-				asCCompiler comp(engine);
+-				int r = comp.CompileGlobalVariable(this, gvar->script, gvar->initializationNode, gvar, initFunc);
++					asCCompiler comp(engine);
++					r = comp.CompileGlobalVariable(this, gvar->script, gvar->initializationNode, gvar, initFunc);
++				}
+ 				if( r >= 0 )
+ 				{
+ 					// Compilation succeeded
+ 					gvar->isCompiled = true;
+ 					compileSucceeded = true;
+ 				}
+-				else
++				else if( initFunc )
+ 				{
+ 					// Compilation failed
+ 					initFunc->funcType = asFUNC_DUMMY;
+@@ -2941,14 +2963,20 @@ void asCBuilder::CompileGlobalVariables()
+ 					if( e == 0 )
+ 					{
+ 						// Out of memory
+-						numErrors++;
+-						return;
++						// ALTERED: the build fails with the error, but this function goes on to its end. Returning here left the
++						// engine's message callback on this function's output buffer, gone once it returned (see initFunc above).
++						WriteError(gvar->script->name, "Out of memory", 0, 0);
++						currNumErrors++;
++						if( msgCallback )
++							outBuffer.SendToCallback(engine, &msgCallbackFunc, msgCallbackObj);
+ 					}
++					else
++					{
++						e->name = gvar->name;
++						e->value = asINT64(gvar->constantValue);
+ 
+-					e->name = gvar->name;
+-					e->value = asINT64(gvar->constantValue);
+-
+-					enumType->enumValues.PushLast(e);
++						enumType->enumValues.PushLast(e);
++					}
+ 				}
+ 			}
+ 			else
+@@ -4614,7 +4642,13 @@ void asCBuilder::AddDefaultCopyConstructor(asCObjectType* objType, asCScriptCode
+ 
+ 	// Add the script function
+ 	// TODO: declaredAt should be set to where the class has been declared
+-	module->AddScriptFunction(file->idx, 0, funcId, objType->name, returnType, parameterTypes, parameterNames, inOutFlags, defaultArgs, false, objType, false, asSFunctionTraits(), objType->nameSpace);
++	// ALTERED: with no memory for it (asCModule::AddScriptFunction gives asOUT_OF_MEMORY) the class was given the id of a function
++	// that didn't exist, read as null below and by the clean up of the build; the build fails with the error instead
++	if( module->AddScriptFunction(file->idx, 0, funcId, objType->name, returnType, parameterTypes, parameterNames, inOutFlags, defaultArgs, false, objType, false, asSFunctionTraits(), objType->nameSpace) < 0 )
++	{
++		WriteError("Out of memory", file, 0);
++		return;
++	}
+ 
+ 	// Add it as constructor
+ 	objType->beh.constructors.PushLast(funcId);
+@@ -4628,6 +4662,8 @@ void asCBuilder::AddDefaultCopyConstructor(asCObjectType* objType, asCScriptCode
+ 	if (func == 0)
+ 	{
+ 		// Out of memory
++		// ALTERED: the build fails with the error: the constructor is the class's but would never be compiled
++		WriteError("Out of memory", file, 0);
+ 		return;
+ 	}
+ 
+@@ -4642,11 +4678,16 @@ void asCBuilder::AddDefaultCopyConstructor(asCObjectType* objType, asCScriptCode
+ 
+ 	// Add a factory as well
+ 	funcId = engine->GetNextScriptFunctionId();
+-	objType->beh.factories.PushLast(funcId);
+-	objType->beh.copyfactory = funcId;
+ 	returnType = asCDataType::CreateObjectHandle(objType, false);
+ 	// TODO: should be the same as the constructor
+-	module->AddScriptFunction(file->idx, 0, funcId, objType->name, returnType, parameterTypes, parameterNames, inOutFlags, defaultArgs, false);
++	// ALTERED: added before the class is given it, see the constructor above
++	if( module->AddScriptFunction(file->idx, 0, funcId, objType->name, returnType, parameterTypes, parameterNames, inOutFlags, defaultArgs, false) < 0 )
++	{
++		WriteError("Out of memory", file, 0);
++		return;
++	}
++	objType->beh.factories.PushLast(funcId);
++	objType->beh.copyfactory = funcId;
+ 	functions.PushLast(0);
+ 	asCCompiler compiler(engine);
+ 	compiler.CompileFactory(this, file, engine->scriptFunctions[funcId]);
+@@ -4673,7 +4714,12 @@ void asCBuilder::AddDefaultConstructor(asCObjectType *objType, asCScriptCode *fi
+ 
+ 	// Add the script function
+ 	// TODO: declaredAt should be set to where the class has been declared
+-	module->AddScriptFunction(file->idx, 0, funcId, objType->name, returnType, parameterTypes, parameterNames, inOutFlags, defaultArgs, false, objType, false, asSFunctionTraits(), objType->nameSpace);
++	// ALTERED: see AddDefaultCopyConstructor
++	if( module->AddScriptFunction(file->idx, 0, funcId, objType->name, returnType, parameterTypes, parameterNames, inOutFlags, defaultArgs, false, objType, false, asSFunctionTraits(), objType->nameSpace) < 0 )
++	{
++		WriteError("Out of memory", file, 0);
++		return;
++	}
+ 
+ 	// Set it as default constructor
+ 	if( objType->beh.construct )
+@@ -4688,6 +4734,8 @@ void asCBuilder::AddDefaultConstructor(asCObjectType *objType, asCScriptCode *fi
+ 	if( func == 0 )
+ 	{
+ 		// Out of memory
++		// ALTERED: see AddDefaultCopyConstructor
++		WriteError("Out of memory", file, 0);
+ 		return;
+ 	}
+ 
+@@ -4702,13 +4750,18 @@ void asCBuilder::AddDefaultConstructor(asCObjectType *objType, asCScriptCode *fi
+ 
+ 	// Add a default factory as well
+ 	funcId = engine->GetNextScriptFunctionId();
++	returnType = asCDataType::CreateObjectHandle(objType, false);
++	// TODO: should be the same as the constructor
++	// ALTERED: added before the class is given it, see AddDefaultCopyConstructor
++	if( module->AddScriptFunction(file->idx, 0, funcId, objType->name, returnType, parameterTypes, parameterNames, inOutFlags, defaultArgs, false) < 0 )
++	{
++		WriteError("Out of memory", file, 0);
++		return;
++	}
+ 	if( objType->beh.factory )
+ 		engine->scriptFunctions[objType->beh.factory]->ReleaseInternal();
+ 	objType->beh.factory = funcId;
+ 	objType->beh.factories[0] = funcId;
+-	returnType = asCDataType::CreateObjectHandle(objType, false);
+-	// TODO: should be the same as the constructor
+-	module->AddScriptFunction(file->idx, 0, funcId, objType->name, returnType, parameterTypes, parameterNames, inOutFlags, defaultArgs, false);
+ 	functions.PushLast(0);
+ 	asCCompiler compiler(engine);
+ 	compiler.CompileFactory(this, file, engine->scriptFunctions[funcId]);
+@@ -5650,7 +5703,21 @@ int asCBuilder::RegisterScriptFunction(asCScriptNode *node, asCScriptCode *file,
+ 		int row = 0, col = 0;
+ 		if( node )
+ 			file->ConvertPosToRowCol(node->tokenPos, &row, &col);
+-		module->AddScriptFunction(file->idx, (row&0xFFFFF)|((col&0xFFF)<<20), funcId, name, returnType, parameterTypes, parameterNames, inOutFlags, defaultArgs, isInterface, objType, isGlobalFunction, funcTraits, ns);
++		// ALTERED: with no memory for the function (asCModule::AddScriptFunction gives asOUT_OF_MEMORY and has freed the default
++		// args) every step below looked it up by its id and read null. Its description is taken back, as for a mixin's duplicate
++		// above, as the later steps look functions up by their descriptions too, and the build fails with the error.
++		if( module->AddScriptFunction(file->idx, (row&0xFFFFF)|((col&0xFFF)<<20), funcId, name, returnType, parameterTypes, parameterNames, inOutFlags, defaultArgs, isInterface, objType, isGlobalFunction, funcTraits, ns) < 0 )
++		{
++			WriteError("Out of memory", file, node);
++			if( !isInterface )
++			{
++				sFunctionDescription *funcDesc = functions.PopLast();
++				asDELETE(funcDesc, sFunctionDescription);
++			}
++			if( node )
++				node->Destroy(engine);
++			return asOUT_OF_MEMORY;
++		}
+ 	}
+ 
+ 	// Make sure the default args are declared correctly
+@@ -5665,6 +5732,23 @@ int asCBuilder::RegisterScriptFunction(asCScriptNode *node, asCScriptCode *file,
+ 		if(funcTraits.GetTrait(asTRAIT_CONSTRUCTOR))
+ 		{
+ 			int factoryId = engine->GetNextScriptFunctionId();
++
++			// ALTERED: the factory is added before the class is given it. Added after, with no memory for it (asCModule::AddScriptFunction
++			// gives asOUT_OF_MEMORY) the class held the id of a function that didn't exist, which the steps below and the clean up of the
++			// failed build read as null. The constructor then keeps no reference of the class's, and the build fails with the error.
++			// We must copy the default arg strings to avoid deleting the same object multiple times
++			for( asUINT n = 0; n < defaultArgs.GetLength(); n++ )
++				if( defaultArgs[n] )
++					defaultArgs[n] = asNEW(asCString)(*defaultArgs[n]);
++
++			asCDataType dt = asCDataType::CreateObjectHandle(objType, false);
++			if( module->AddScriptFunction(file->idx, engine->scriptFunctions[funcId]->scriptData->declaredAt, factoryId, name, dt, parameterTypes, parameterNames, inOutFlags, defaultArgs, false, 0, false, funcTraits, objType->nameSpace) < 0 )
++			{
++				engine->scriptFunctions[funcId]->ReleaseInternal();
++				WriteError("Out of memory", file, node);
++				return asOUT_OF_MEMORY;
++			}
++
+ 			if( parameterTypes.GetLength() == 0 )
+ 			{
+ 				// Overload the default constructor
+@@ -5711,14 +5795,6 @@ int asCBuilder::RegisterScriptFunction(asCScriptNode *node, asCScriptCode *file,
+ 				objType->beh.factories.PushLast(factoryId);
+ 			}
+ 
+-			// We must copy the default arg strings to avoid deleting the same object multiple times
+-			for( asUINT n = 0; n < defaultArgs.GetLength(); n++ )
+-				if( defaultArgs[n] )
+-					defaultArgs[n] = asNEW(asCString)(*defaultArgs[n]);
+-
+-			asCDataType dt = asCDataType::CreateObjectHandle(objType, false);
+-			module->AddScriptFunction(file->idx, engine->scriptFunctions[funcId]->scriptData->declaredAt, factoryId, name, dt, parameterTypes, parameterNames, inOutFlags, defaultArgs, false, 0, false, funcTraits, objType->nameSpace);
+-
+ 			// If the object is shared, then the factory must also be marked as shared
+ 			if( objType->flags & asOBJ_SHARED )
+ 				engine->scriptFunctions[factoryId]->SetShared(true);
+diff --git a/sdk/angelscript/source/as_module.cpp b/sdk/angelscript/source/as_module.cpp
+index a608918..9c88ab0 100644
+--- a/sdk/angelscript/source/as_module.cpp
++++ b/sdk/angelscript/source/as_module.cpp
+@@ -1311,6 +1311,18 @@ int asCModule::AddScriptFunction(int sectionIdx, int declaredAt, int id, const a
+ 		return asOUT_OF_MEMORY;
+ 	}
+ 
++	// ALTERED: with no memory for a script function's data (see asCScriptFunction::AllocateScriptFunctionData) the function is
++	// given up as when asNEW gives null: its section and position were written through the null data below.
++	if( func->funcType == asFUNC_SCRIPT && func->scriptData == 0 )
++	{
++		func->DestroyHalfCreated();
++		for( asUINT n = 0; n < defaultArgs.GetLength(); n++ )
++			if( defaultArgs[n] )
++				asDELETE(defaultArgs[n], asCString);
++
++		return asOUT_OF_MEMORY;
++	}
++
+ 	if( ns == 0 )
+ 		ns = m_engine->nameSpaces[0];
+ 
