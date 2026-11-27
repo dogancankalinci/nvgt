@@ -7168,7 +7168,7 @@ static mixer_api_lock lock_node_api(audio_node* n) {
 	const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(2);
 	while (!lock && std::chrono::steady_clock::now() < until) {
 		std::this_thread::yield();
-		lock.try_lock();
+		if (lock.try_lock()) break; // As in lock_for_audio().
 	}
 	const bool held = lock.owns_lock();
 	if (!held) g_soundsystem_last_error = MA_BUSY;

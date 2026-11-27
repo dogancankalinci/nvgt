@@ -603,7 +603,7 @@ template <class M> std::unique_lock<M> lock_for_audio(M& m) {
 	const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(2);
 	while (!lock && std::chrono::steady_clock::now() < until) {
 		std::this_thread::yield();
-		lock.try_lock();
+		if (lock.try_lock()) break; // Its result read, as MSVC marks try_lock() nodiscard.
 	}
 	if (!lock) g_soundsystem_last_error = MA_BUSY;
 	return lock;
