@@ -4640,7 +4640,7 @@ public:
 		}
 		mixer* old;
 		{
-			std::lock_guard<std::recursive_timed_mutex> topology(g_audio_topology_mutex);
+			std::lock_guard<std::recursive_mutex> topology(g_audio_topology_mutex);
 			if (mix == parent_mixer)
 				return (g_soundsystem_last_error = MA_SUCCESS) == MA_SUCCESS; // Already where it was asked to go.
 			// Not into itself, nor into a mixer that already goes into this one, through parents or a reverb3d's send: that loop never reaches the engine, and its references to each other keep it all alive.
@@ -5537,7 +5537,7 @@ public:
 		audio_spatializer *forgotten = spatializer;
 		forgotten->forget_mixer();
 		{
-			std::lock_guard<std::recursive_timed_mutex> topology(g_audio_topology_mutex); // A loop check walking mixers reads this spatializer (see mixer_reaches()).
+			std::lock_guard<std::recursive_mutex> topology(g_audio_topology_mutex); // A loop check walking mixers reads this spatializer (see mixer_reaches()).
 			unique_lock<mutex> lock(spatialization_params_mutex);
 			spatializer = nullptr;
 		}
@@ -7183,6 +7183,15 @@ ReturnType api_call_refusing(T *object, Args... args) {
 }
 template < class T, auto Function, typename ReturnType, typename... Args >
 ReturnType api_call(T *object, Args... args) { return api_call_refusing<void, T, Function, ReturnType, Args...>(object, std::forward < Args > (args)...); }
+// For a getter reading what a chain or the graph's topology holds: it, and none of the setters, gives the inner lock up after 2 ms on an audio thread (see lock_for_audio()).
+template < class T, auto Function, typename ReturnType, typename... Args >
+ReturnType api_call_read(T *object, Args... args) { refusable_audio_read reading; return api_call<T, Function, ReturnType, Args...>(object, std::forward < Args > (args)...); }
+template < class T, auto Function, class Result >
+Result* api_acquire_read(T *object);
+template < class T, auto Function, typename ReturnType, typename... Args >
+ReturnType api_call_index(T *object, Args... args);
+template < class T, auto Function, typename ReturnType, typename... Args >
+ReturnType api_call_index_read(T *object, Args... args) { refusable_audio_read reading; return api_call_index<T, Function, ReturnType, Args...>(object, std::forward < Args > (args)...); }
 // For a getter of an index, whose "none" is -1.
 template < class T, auto Function, typename ReturnType, typename... Args >
 ReturnType api_call_index(T *object, Args... args) { return api_call_refusing<refuse_index, T, Function, ReturnType, Args...>(object, std::forward < Args > (args)...); }
@@ -7214,6 +7223,8 @@ Result* api_acquire(T *object) {
 	if (got) got->duplicate();
 	return got;
 }
+template < class T, auto Function, class Result >
+Result* api_acquire_read(T *object) { refusable_audio_read reading; return api_acquire<T, Function, Result>(object); }
 // Wrapper for virtual methods returning vector3 by value — returns heap-allocated Vec3* for AS scoped type
 template<class T, auto MemberFn, typename... Args>
 static vector3* sound_vec3(T* obj, Args... args) {
@@ -7249,6 +7260,7 @@ template < class T >
 static mixer* mixer_parent_script(T *object) {
 	mixer_api_lock lock = lock_node_api(object);
 	if (!lock.held) return nullptr;
+	refusable_audio_read reading;
 	auto topology = lock_for_audio(g_audio_topology_mutex);
 	if (!topology) return nullptr; // Refused on an audio thread after 2 ms, MA_BUSY.
 	mixer* parent = object->get_mixer();
@@ -7256,11 +7268,12 @@ static mixer* mixer_parent_script(T *object) {
 	return parent;
 }
 // As api_acquire(), for the nodes of a chain, a reverb3d's reverb and mixer, and an engine's callback, under the locks they are changed under.
-static audio_node* chain_endpoint_script(audio_node_chain* c) { return audio_node_chain_acquire(c, chain_node_endpoint, 0); }
-static audio_node* chain_first_script(audio_node_chain* c) { return audio_node_chain_acquire(c, chain_node_first, 0); }
-static audio_node* chain_last_script(audio_node_chain* c) { return audio_node_chain_acquire(c, chain_node_last, 0); }
-static audio_node* chain_at_script(audio_node_chain* c, unsigned int index) { return audio_node_chain_acquire(c, chain_node_at, index); }
+static audio_node* chain_endpoint_script(audio_node_chain* c) { refusable_audio_read reading; return audio_node_chain_acquire(c, chain_node_endpoint, 0); }
+static audio_node* chain_first_script(audio_node_chain* c) { refusable_audio_read reading; return audio_node_chain_acquire(c, chain_node_first, 0); }
+static audio_node* chain_last_script(audio_node_chain* c) { refusable_audio_read reading; return audio_node_chain_acquire(c, chain_node_last, 0); }
+static audio_node* chain_at_script(audio_node_chain* c, unsigned int index) { refusable_audio_read reading; return audio_node_chain_acquire(c, chain_node_at, index); }
 static audio_node* reverb3d_reverb_script(reverb3d* verb) {
+	refusable_audio_read reading;
 	auto topology = lock_for_audio(g_audio_topology_mutex);
 	if (!topology) return nullptr; // Refused on an audio thread after 2 ms, MA_BUSY.
 	audio_node* reverb = verb->get_reverb();
@@ -7268,6 +7281,7 @@ static audio_node* reverb3d_reverb_script(reverb3d* verb) {
 	return reverb;
 }
 static mixer* reverb3d_mixer_script(reverb3d* verb) {
+	refusable_audio_read reading;
 	auto topology = lock_for_audio(g_audio_topology_mutex);
 	if (!topology) return nullptr; // Refused on an audio thread after 2 ms, MA_BUSY.
 	mixer* destination = verb->get_mixer();
@@ -7488,8 +7502,8 @@ template<class T> void RegisterSoundsystemMixer(asIScriptEngine *engine, const s
 	engine->RegisterObjectMethod(type.c_str(), "ref@ get_shape() const property", asFUNCTION((api_call < T, &T::get_shape, CScriptHandle>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "void set_reverb3d(reverb3d@+ reverb) property", asFUNCTION((api_call < T, &T::set_reverb3d, void, reverb3d*>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "void set_reverb3d_at(reverb3d@+ reverb, reverb3d_placement placement)", asFUNCTION((api_call < T, &T::set_reverb3d_at, void, reverb3d*, audio_spatializer_reverb3d_placement>)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "reverb3d@ get_reverb3d() const property", asFUNCTION((api_acquire < T, &T::get_reverb3d, reverb3d >)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "audio_node@ get_reverb3d_attachment() const property", asFUNCTION((api_acquire < T, &T::get_reverb3d_attachment, audio_node >)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "reverb3d@ get_reverb3d() const property", asFUNCTION((api_acquire_read < T, &T::get_reverb3d, reverb3d >)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "audio_node@ get_reverb3d_attachment() const property", asFUNCTION((api_acquire_read < T, &T::get_reverb3d_attachment, audio_node >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "reverb3d_placement get_reverb3d_placement() const property", asFUNCTION((api_call < T, &T::get_reverb3d_placement, audio_spatializer_reverb3d_placement>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "audio_node_chain@+ get_effects_chain() property", asFUNCTION((api_call < T, &T::get_effects_chain, audio_node_chain*>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "audio_node_chain@+ get_internal_node_chain() property", asFUNCTION((api_call < T, &T::get_internal_node_chain, audio_node_chain*>)), asCALL_CDECL_OBJFIRST);
@@ -7591,8 +7605,8 @@ void RegisterSoundsystemNodes(asIScriptEngine *engine) {
 	engine->RegisterObjectMethod("audio_node_chain", "audio_node@ get_first() const property", asFUNCTION(chain_first_script), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_node_chain", "audio_node@ get_last() const property", asFUNCTION(chain_last_script), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("audio_node_chain", "audio_node@ opIndex(uint index) const", asFUNCTION(chain_at_script), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("audio_node_chain", "int find(audio_node@+ node) const", asFUNCTION((api_call_index < audio_node_chain, &audio_node_chain::index_of, int, audio_node*>)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("audio_node_chain", "uint get_node_count() const property", asFUNCTION((api_call < audio_node_chain, &audio_node_chain::get_node_count, unsigned int >)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("audio_node_chain", "int find(audio_node@+ node) const", asFUNCTION((api_call_index_read < audio_node_chain, &audio_node_chain::index_of, int, audio_node*>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("audio_node_chain", "uint get_node_count() const property", asFUNCTION((api_call_read < audio_node_chain, &audio_node_chain::get_node_count, unsigned int >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterGlobalFunction("bool set_sound_global_hrtf(bool enabled)", asFUNCTION(set_global_hrtf), asCALL_CDECL);
 	engine->RegisterGlobalFunction("bool get_sound_global_hrtf() property", asFUNCTION(get_global_hrtf), asCALL_CDECL);
 	engine->RegisterObjectBehaviour("audio_splitter_node", asBEHAVE_FACTORY, "audio_splitter_node@ n(audio_engine@+ engine = sound_default_engine, int channels = 0)", asFUNCTION(splitter_node::create), asCALL_CDECL);
