@@ -1460,7 +1460,10 @@ static unsigned int fed_depth(ma_node* n, std::unordered_map<ma_node*, unsigned 
 	if (it != known.end()) return it->second;
 	ma_node_base* base = (ma_node_base*)n;
 	unsigned int deepest = 0;
-	if (base->pNodeGraph && n == &base->pNodeGraph->endpoint) deepest = fed_depth(&base->pNodeGraph->base, known, level + 1);
+	if (base->pNodeGraph && n == &base->pNodeGraph->endpoint) {
+		ma_node_base* outer = &base->pNodeGraph->base;
+		if (outer->outputBusCount && outer->pOutputBuses[0].pInputNode) deepest = fed_depth(outer, known, level + 1); // Only for an engine mixed into another: nothing reads the base node of one that isn't, which counted made the bound 63.
+	}
 	else {
 		for (ma_uint32 bus = 0; bus < base->outputBusCount; bus++) {
 			const unsigned int depth = fed_depth(base->pOutputBuses[bus].pInputNode, known, level + 1);
