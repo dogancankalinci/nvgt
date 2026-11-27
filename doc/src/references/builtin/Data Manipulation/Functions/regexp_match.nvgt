@@ -8,6 +8,7 @@
 		bool: true if the text matches the given regular expression, false otherwise.
 	## Remarks:
 		If you would like a lower level interface to regular_expressions in NVGT, check out the regexp class which this function more or less wraps.
+		The text matches when the first match the pattern finds at its start covers all of it, as for regexp::match with options: `regexp_match("ab", "a|ab")` is false, `regexp_match("ab", "(?:a|ab)$")` true. An empty text matches a pattern that matches nothing, such as `a*`. Unless the options set another newline, `.` also matches LF (`\n`), see RE_NEWLINE_CR.
 		To learn more about regular expressions, visit: https://en.wikipedia.org/wiki/Regular_expression
 */
 
