@@ -121,6 +121,9 @@ public:
 	void get_coefficients(double &low, double &mid, double &high) const;
 	// The gains of the three bands at the current distance, before normalization.
 	void get_band_gains(double &low, double &mid, double &high) const;
+	// Whether only the bands' shape is applied, dulling the sound without the overall loss of its loudest band, for a caller whose own distance curve makes it quieter. Off by default.
+	void set_keep_level(bool keep);
+	bool get_keep_level() const;
 
 private:
 	std::unique_ptr<detail::air_absorption_state> state;
@@ -1276,6 +1279,7 @@ struct air_absorption_state {
 	static const unsigned int BANDS = 3;
 	struct params {
 		double distance = 0.0, coefficients[BANDS] = {0.0002, 0.0017, 0.0182};
+		bool keep_level = false;
 	};
 
 	unsigned int sr, channels, active = 0, xfade_len, xfade_pos;
@@ -1302,7 +1306,7 @@ struct air_absorption_state {
 		coefs[set][0] = design_biquad(biquad_type::lowshelf, 800.0, 0.7071067811865476, 20.0 * std::log10(g[0]), sr);
 		coefs[set][1] = design_biquad(biquad_type::peaking, center, center / (8000.0 - 800.0), 20.0 * std::log10(g[1]), sr);
 		coefs[set][2] = design_biquad(biquad_type::highshelf, 8000.0, 0.7071067811865476, 20.0 * std::log10(g[2]), sr);
-		gains[set] = float(loudest);
+		gains[set] = p.keep_level ? 1.0f : float(loudest);
 	}
 	float tick(unsigned int set, unsigned int channel, float x) {
 		double y = x;
@@ -1528,6 +1532,10 @@ void air_absorption_effect::set_distance(double distance) {
 	state->box.write([&](detail::air_absorption_state::params &p) { p.distance = detail::sanitize(distance, 0.0, 1e9); });
 }
 double air_absorption_effect::get_distance() const { return state->box.read().distance; }
+void air_absorption_effect::set_keep_level(bool keep) {
+	state->box.write([&](detail::air_absorption_state::params &p) { p.keep_level = keep; });
+}
+bool air_absorption_effect::get_keep_level() const { return state->box.read().keep_level; }
 void air_absorption_effect::set_coefficients(double low, double mid, double high) {
 	state->box.write([&](detail::air_absorption_state::params &p) {
 		p.coefficients[0] = detail::sanitize(low, 0.0, 1e3);

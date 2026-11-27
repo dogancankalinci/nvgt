@@ -2288,7 +2288,9 @@ class hrtf_attenuator_impl : public curve_attenuator_impl<hrtf_attenuator, dista
 	static constexpr float meters_per_unit = 0.3f;
 	silent_input_rest silence;
 public:
-	hrtf_attenuator_impl(audio_spatializer* spatializer, audio_engine* e) : curve_attenuator_impl(spatializer, e), air(e->get_sample_rate(), e->get_channels()), silence(e->get_sample_rate()) {}
+	hrtf_attenuator_impl(audio_spatializer* spatializer, audio_engine* e) : curve_attenuator_impl(spatializer, e), air(e->get_sample_rate(), e->get_channels()), silence(e->get_sample_rate()) {
+		air.set_keep_level(true); // The distance curve makes the sound quieter, the air only duller: with the air's own overall loss on top, a sound fell below its min_gain far away, to silence past about 1.7 million units of distance.
+	}
 	~hrtf_attenuator_impl() { destroy_node(); } // Before air is destroyed, so the audio thread can't be using it.
 	void process(const float** frames_in, unsigned int* frame_count_in, float** frames_out, unsigned int* frame_count_out) override {
 		if (silence.rest(frames_in[0], frames_out[0], min(*frame_count_in, *frame_count_out), get_engine()->get_channels(), [this] {
