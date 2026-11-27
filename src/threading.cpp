@@ -555,6 +555,17 @@ public:
 						value_args.emplace_back(obj, arg_type);
 					}
 				}
+			} else if (arg_typeid & asTYPEID_MASK_OBJECT && param_is_handle && arg_type && (arg_type->GetFlags() & asOBJ_REF)) {
+				// An object given for a handle parameter (async<int> r(f, obj) for int f(T@ h)) is the object itself, as in a direct call, held until
+				// the call is over. It was a copy: the function changed the copy, not the caller's object, and an object that can't be copied (a
+				// script class whose copy is deleted, a thread_event) was refused although the function only takes a handle to it.
+				void* obj = gen->GetArgAddress(i + 2);
+				if (by_ref) {
+					*(void**)&ref_values[i] = obj;
+					engine->AddRefScriptObject(obj, arg_type);
+					ref_handles.emplace_back((void**)&ref_values[i], param_type);
+					success = ctx->SetArgAddress(i, &ref_values[i]);
+				} else success = ctx->SetArgObject(i, obj); // which holds the reference the handle takes
 			} else if (arg_typeid & asTYPEID_MASK_OBJECT) {
 				void* obj = engine->CreateScriptObjectCopy(gen->GetArgAddress(i + 2), arg_type);
 				if (!obj) {
