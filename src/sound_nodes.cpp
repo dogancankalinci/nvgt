@@ -1170,7 +1170,7 @@ public:
 		const bool verb_mixer = dynamic_cast<mixer*>(verb) != nullptr; // Sent on through its set_mixer(), which its own output stays with: not claimed.
 		if (!verb_mixer && !claim_output_for_reverb(verb)) throw_refusal(MA_ALREADY_IN_USE, "the reverb's output belongs to a chain or another node"); // Whose output a chain or the node itself rewires (see g_output_owners).
 		output_claim owning{verb_mixer? nullptr : verb, nullptr};
-		if (!attach_output_bus(0, verb, 0)) return;
+		if (!attach_output_bus(0, verb, 0)) throw_refusal(g_soundsystem_last_error, "the reverb can't be attached"); // As where the graph is too deep for it: made, the reverb3d sent nowhere.
 		reverb = verb;
 		reverb->duplicate();
 		owning.kept = true; // Dropped by the destructor, or the constructor's catch, from here.
