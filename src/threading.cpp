@@ -1090,9 +1090,56 @@ template <class T> void atomics_destruct(T* obj) {
 template<typename T> bool is_always_lock_free(T* obj) {
 	return obj->is_always_lock_free;
 }
-template<typename T> void atomic_notify_one(T* obj) { obj->notify_one(); }
+// An atomic's wait() waited in std::atomic::wait, which nothing can end but a notify after a change: exit() called on a script thread
+// while the main thread waited there never ended the program (the event, thread, async and pool waits end then, see script_wait), and
+// a script thread waiting there at the end kept the engine. Every atomic waits here instead, on one condition variable they all share, in
+// the slices script_wait looks between; notify_one() and notify_all() wake every waiter, each of which goes on waiting unless its atomic
+// changed. The value is compared by its bytes, as std::atomic::wait does (-0.0 and 0.0 differ, a NaN equals itself).
+static std::mutex& atomic_wait_mutex() {
+	static auto* m = new std::mutex; // Never destroyed, like script_threads_mutex.
+	return *m;
+}
+static std::condition_variable& atomic_wait_changed() {
+	static auto* c = new std::condition_variable;
+	return *c;
+}
+static void atomic_wake() {
+	std::lock_guard<std::mutex> lock(atomic_wait_mutex());
+	atomic_wait_changed().notify_all();
+}
+template <class F> static void atomic_wait_while(F unchanged) {
+	script_wait wait;
+	std::unique_lock<std::mutex> lock(atomic_wait_mutex());
+	while (unchanged()) {
+		if (wait.ended()) return;
+		atomic_wait_changed().wait_for(lock, std::chrono::milliseconds(wait.slice()));
+		#ifdef __APPLE__
+		if (thread_is_main()) { // See event_wait_main().
+			lock.unlock();
+			apple_run_main_loop_once();
+			lock.lock();
+		}
+		#endif
+	}
+}
+template<typename atomic_type, typename T> void atomic_wait(const atomic_type* obj, T old, std::memory_order order) {
+	atomic_wait_while([&] {
+		T value = obj->load(order);
+		return std::memcmp(&value, &old, sizeof(T)) == 0;
+	});
+}
+static void atomic_flag_wait(const std::atomic_flag* obj, bool old, std::memory_order order) {
+	atomic_wait_while([&] { return obj->test(order) == old; });
+}
+template<typename T> void atomic_notify_one(T* obj) {
+	obj->notify_one();
+	atomic_wake();
+}
 // AngelScript compiles a++ and a-- to opPostInc() and opPostDec() without arguments, unlike C++'s operator++(int).
-template<typename T> void atomic_notify_all(T* obj) { obj->notify_all(); }
+template<typename T> void atomic_notify_all(T* obj) {
+	obj->notify_all();
+	atomic_wake();
+}
 template<typename atomic_type, typename T> T atomic_post_inc(atomic_type* obj) { return (*obj)++; }
 template<typename atomic_type, typename T> T atomic_post_dec(atomic_type* obj) { return (*obj)--; }
 template<typename T>
@@ -1139,7 +1186,7 @@ template<typename atomic_type, typename divisible_type> void register_atomic_typ
 	engine->RegisterObjectMethod(type_name.c_str(), Poco::format("bool compare_exchange_weak(%s& expected, %s desired, memory_order order = MEMORY_ORDER_SEQ_CST)", regular_type_name, regular_type_name).c_str(), asMETHODPR(atomic_type, compare_exchange_weak, (divisible_type&, divisible_type, std::memory_order) noexcept, bool), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type_name.c_str(), Poco::format("bool compare_exchange_strong(%s& expected, %s desired, memory_order success, memory_order failure)", regular_type_name, regular_type_name).c_str(), asMETHODPR(atomic_type, compare_exchange_strong, (divisible_type&, divisible_type, std::memory_order, std::memory_order) noexcept, bool), asCALL_THISCALL);
 	engine->RegisterObjectMethod(type_name.c_str(), Poco::format("bool compare_exchange_strong(%s& expected, %s desired, memory_order order = MEMORY_ORDER_SEQ_CST)", regular_type_name, regular_type_name).c_str(), asMETHODPR(atomic_type, compare_exchange_strong, (divisible_type&, divisible_type, std::memory_order) noexcept, bool), asCALL_THISCALL);
-	engine->RegisterObjectMethod(type_name.c_str(), Poco::format("void wait(%s old, memory_order order = MEMORY_ORDER_SEQ_CST) const", regular_type_name).c_str(), asMETHODPR(atomic_type, wait, (divisible_type, std::memory_order) const noexcept, void), asCALL_THISCALL);
+	engine->RegisterObjectMethod(type_name.c_str(), Poco::format("void wait(%s old, memory_order order = MEMORY_ORDER_SEQ_CST) const", regular_type_name).c_str(), asFUNCTION((atomic_wait<atomic_type, divisible_type>)), asCALL_CDECL_OBJFIRST);
 engine->RegisterObjectMethod(type_name.c_str(), "void notify_one()", asFUNCTION(atomic_notify_one<atomic_type>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type_name.c_str(), "void notify_all()", asFUNCTION(atomic_notify_all<atomic_type>), asCALL_CDECL_OBJFIRST);
 	// Begin type-specific atomics
@@ -1189,9 +1236,9 @@ void RegisterAtomics(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("atomic_flag", "void clear(memory_order order = MEMORY_ORDER_SEQ_CST)", asMETHODPR(std::atomic_flag, clear, (std::memory_order), void), asCALL_THISCALL);
 	engine->RegisterObjectMethod("atomic_flag", "bool test(memory_order order = MEMORY_ORDER_SEQ_CST) const", asMETHODPR(std::atomic_flag, test, (std::memory_order) const noexcept, bool), asCALL_THISCALL);
 	engine->RegisterObjectMethod("atomic_flag", "bool test_and_set(memory_order order = MEMORY_ORDER_SEQ_CST)", asMETHODPR(std::atomic_flag, test_and_set, (std::memory_order) noexcept, bool), asCALL_THISCALL);
-	engine->RegisterObjectMethod("atomic_flag", "void wait(bool old, memory_order order = MEMORY_ORDER_SEQ_CST) const", asMETHODPR(std::atomic_flag, wait, (bool, std::memory_order) const noexcept, void), asCALL_THISCALL);
-	engine->RegisterObjectMethod("atomic_flag", "void notify_one()", asMETHOD(std::atomic_flag, notify_one), asCALL_THISCALL);
-	engine->RegisterObjectMethod("atomic_flag", "void notify_all()", asMETHOD(std::atomic_flag, notify_all), asCALL_THISCALL);
+	engine->RegisterObjectMethod("atomic_flag", "void wait(bool old, memory_order order = MEMORY_ORDER_SEQ_CST) const", asFUNCTION(atomic_flag_wait), asCALL_CDECL_OBJFIRST); // See atomic_wait().
+	engine->RegisterObjectMethod("atomic_flag", "void notify_one()", asFUNCTION(atomic_notify_one<std::atomic_flag>), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("atomic_flag", "void notify_all()", asFUNCTION(atomic_notify_all<std::atomic_flag>), asCALL_CDECL_OBJFIRST);
 	register_atomic_type<std::atomic_int, int>(engine, "atomic_int", "int");
 	register_atomic_type<std::atomic_uint, unsigned int>(engine, "atomic_uint", "uint");
 	register_atomic_type<std::atomic_int8_t, std::int8_t>(engine, "atomic_int8", "int8");
