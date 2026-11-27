@@ -135,25 +135,45 @@ public:
 	struct bake_progress {
 		asIScriptFunction* callback;
 		float start, span, last;
+		api::IContext* context;
+		bool stopped; // exit() was called in the callback, see report_progress()
 	};
-	static void IPLCALL report_progress(IPLfloat32 fraction, void* user) { // Steam Audio reports progress on the thread that bakes.
+	// Steam Audio reports progress on the thread that called the bake, the script's, also for the parts its worker threads do.
+	static void IPLCALL report_progress(IPLfloat32 fraction, void* user) {
 		bake_progress* p = static_cast<bake_progress*>(user);
 		float progress = p->start + p->span * clamp(fraction, 0.0f, 1.0f);
-		if (!p->callback || progress < p->last + 0.01f) return;
+		if (!p->callback || p->stopped || progress < p->last + 0.01f) return;
 		p->last = progress;
 		asIScriptContext* ctx = asGetActiveContext();
 		bool nested = ctx && ctx->PushState() >= 0;
 		if (!nested) ctx = p->callback->GetEngine()->RequestContext();
 		if (!ctx) return;
-		if (ctx->Prepare(p->callback) >= 0) {
-			ctx->SetArgFloat(0, progress);
-			ctx->Execute();
+		bool aborted = false;
+		if (ctx->Prepare(p->callback) >= 0 && ctx->SetArgFloat(0, progress) >= 0) {
+			// A nested execution can't be left suspended (a sleep() or yield() of the context manager in the callback): popped while
+			// suspended, the callback's frames stayed where PopState() expects the nested call's marker. It is resumed until it ends, as
+			// NVGT's own callbacks do (execute_nested()).
+			int r;
+			while ((r = ctx->Execute()) == asEXECUTION_SUSPENDED) {}
+			aborted = r == asEXECUTION_ABORTED;
 		}
-		if (nested) ctx->PopState();
-		else p->callback->GetEngine()->ReturnContext(ctx);
+		if (nested) {
+			// exit() in the callback aborts the nested execution, which consumes the abort: it is passed on to the script that called
+			// bake(), which went on running after exit() (NVGT's pop_nested_state()).
+			ctx->PopState();
+			if (aborted) ctx->Abort();
+		} else p->callback->GetEngine()->ReturnContext(ctx);
+		if (aborted) {
+			// The callback was called again for the rest of the bake, and the script ended only once the whole bake was done, which can
+			// take minutes. The bake running stops at its next cancel check (the reverb bake checks after each report); the other one
+			// ignores its cancel, as Steam Audio only takes one while that bake runs.
+			p->stopped = true;
+			p->context->cancelBakeReflections();
+			p->context->cancelBakePaths();
+		}
 	}
 	bool bake(asIScriptFunction* callback, int rays, int bounces) { // Bakes the reverb at every probe and the paths between them, reporting progress from 0 to 1 to the callback if given. This blocks until baking is done. Baking is done once, so it traces the given numbers of rays and bounces, many more than real time simulation can afford, and otherwise uses the environment's reflection settings, which baked data must match.
-		bake_progress progress{callback, 0.0f, 0.75f, -1.0f};
+		bake_progress progress{callback, 0.0f, 0.75f, -1.0f, core->context, false};
 		bool ok = core->provider && !core->probe_spheres.empty();
 		if (ok) {
 			core->wait_until_idle();
@@ -189,11 +209,13 @@ public:
 			paths.numThreads = threads;
 			progress.start = 0.75f;
 			progress.span = 0.25f;
-			core->context->bakePaths(&paths, report_progress, &progress);
-			core->baked_reverb = core->baked_paths = true;
-			core->rebuild_needed = true;
-			progress.last = -1.0f;
-			report_progress(1.0f, &progress);
+			if (!progress.stopped) core->context->bakePaths(&paths, report_progress, &progress);
+			if (!progress.stopped) { // Cancelled by exit() in the callback (see report_progress()): nothing is taken as baked.
+				core->baked_reverb = core->baked_paths = true;
+				core->rebuild_needed = true;
+				progress.last = -1.0f;
+				report_progress(1.0f, &progress);
+			}
 		}
 		if (callback) callback->Release();
 		return ok;
