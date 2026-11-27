@@ -13,6 +13,7 @@ Places the sound in 3d space.
 * const vector&in position: the position of the sound.
 
 ## Remarks:
+Positioning adds a panner and an attenuator to the sound's or mixer's nodes; where the audio graph is too deep for them (see mixer), they aren't added, the sound or mixer keeps what it had, and SOUNDSYSTEM_LAST_ERROR is AUDIO_ERROR_STATE_TOO_BIG.
 The position is in the same space as the listener's, set with sound_set_listener_position(). Setting it turns spatialization on for the sound, which, as turning it on with spatialization_enabled does, applies sound_default_3d_panner unless the sound has a panner of its own, and sound_default_3d_attenuator unless it has an attenuator of its own; loading the sound again lets go of them, so they are applied again then. A panner, attenuator, HRTF, rolloff, directional attenuation factor or reverb3d set while the sound has nothing loaded, before its first load or after close(), is kept for its next load. A sound without anything loaded is left alone by this method.
 
 The sound's effects_chain always runs before its positioning, whichever was made first, so effects such as a reverb or a delay are placed with the sound rather than applied to it after it was panned and attenuated.

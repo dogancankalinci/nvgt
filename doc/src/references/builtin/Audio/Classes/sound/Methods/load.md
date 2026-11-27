@@ -11,6 +11,7 @@ Loads a sound file.
 bool: true if the file was found and could be opened, false otherwise.
 
 ## Remarks:
+A sound put where the audio graph is as deep as it can go, 64 nodes (see mixer), can't take the nodes a loaded sound adds: the load is refused, the sound left closed, with SOUNDSYSTEM_LAST_ERROR set to AUDIO_ERROR_STATE_TOO_BIG.
 A sound already loaded into this object is closed first. When loading fails, SOUNDSYSTEM_LAST_ERROR tells why. A pack open for writing rather than reading can't be loaded from: passing one throws an exception instead, as does load() with sound_default_pack opened for writing since it was assigned. The same goes for stream(), sound_play() and the other functions that load audio from a pack.
 
 A file whose header doesn't give its length, as a FLAC file without its total, has its length known only once it is decoded: until load_complete is true, length reads what has been decoded so far, and a seek past that is refused. The file is decoded in the background after load returns, and the load_complete property tells when that is done: it reads false while a load is decoding and after the sound is closed, and true once the load is done, or at once when the load fails, as nothing is then left to decode. A sound played or sought before then plays what is decoded, and at a point not yet decoded waits for it rather than skipping it, so an engine without a device read faster than the decoding gets silence there, followed by the sound from that point.

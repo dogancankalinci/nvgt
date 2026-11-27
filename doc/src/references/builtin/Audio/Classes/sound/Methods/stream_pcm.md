@@ -13,6 +13,7 @@ Queues raw audio for the sound to play, starting a stream of it on the first cal
 bool: true if the audio was queued, false otherwise.
 
 ## Remarks:
+As for `load()`, a sound where the audio graph is as deep as it can go is refused, left closed, with AUDIO_ERROR_STATE_TOO_BIG.
 Audio at another rate than the engine's is resampled as a sound's pitch is, linearly and without filtering, which dulls and aliases its high frequencies; give it at the engine's rate where they matter.
 
 The first call closes whatever the sound had loaded, makes the queue and starts playing. Later calls must give the same sample type as the first, and any sample rate or channel count they give must be the stream's, or they are refused with AUDIO_ERROR_STATE_INVALID_ARGS.

@@ -8,6 +8,7 @@
 	## Returns:
 		bool: true if the connection was made, false if either bus doesn't exist or the connection would be invalid, such as two nodes whose channel counts can't be matched.
 	## Remarks:
+		Where it would make a path through the audio graph longer than the engine can read, 64 nodes (see mixer), it is refused with SOUNDSYSTEM_LAST_ERROR set to AUDIO_ERROR_STATE_TOO_BIG.
 		If the output bus was already attached somewhere, it is detached from there first. Several output buses can be attached to the same input bus, and their audio is added together.
 		The node keeps a reference to the destination for as long as it is attached.
 */

@@ -14,6 +14,7 @@ Insert a node into the chain.
 bool: true if the node was inserted, false if it is null, if `after` is not in the chain or is out of range, or if the connections could not be made.
 
 ## Remarks:
+Where it would make a path through the audio graph longer than the engine can read, 64 nodes (see mixer), it is refused with SOUNDSYSTEM_LAST_ERROR set to AUDIO_ERROR_STATE_TOO_BIG.
 Calling `add_node(node)` without saying where adds the node to the end of the chain, so nodes added that way are in the order they were added in. Pass -1 as the index to insert a node at the start.
 
 The chain keeps a reference to the node for as long as it is in it.
