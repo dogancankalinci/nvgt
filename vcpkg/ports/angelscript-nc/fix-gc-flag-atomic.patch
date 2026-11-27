@@ -1,0 +1,123 @@
+diff --git a/sdk/angelscript/source/as_scriptfunction.cpp b/sdk/angelscript/source/as_scriptfunction.cpp
+index 28cfe88..83b76d3 100644
+--- a/sdk/angelscript/source/as_scriptfunction.cpp
++++ b/sdk/angelscript/source/as_scriptfunction.cpp
+@@ -372,7 +372,7 @@ asCScriptFunction::asCScriptFunction(asCScriptEngine *engine, asCModule *mod, as
+ 	signatureId            = 0;
+ 	dontCleanUpOnException = false;
+ 	vfTableIdx             = -1;
+-	gcFlag                 = false;
++	gcFlag.store(false, std::memory_order_relaxed); // ALTERED: see gcFlag
+ 	id                     = 0;
+ 	accessMask             = 0xFFFFFFFF;
+ 	nameSpace              = engine->nameSpaces[0];
+@@ -514,7 +514,7 @@ int asCScriptFunction::GetId() const
+ // interface
+ int asCScriptFunction::AddRef() const
+ {
+-	gcFlag = false;
++	gcFlag.store(false, std::memory_order_relaxed); // ALTERED: see gcFlag
+ 	lifetimeRefCount.atomicInc(); // ALTERED: see Release()
+ 	return externalRefCount.atomicInc();
+ }
+@@ -522,7 +522,7 @@ int asCScriptFunction::AddRef() const
+ // interface
+ int asCScriptFunction::Release() const
+ {
+-	gcFlag = false;
++	gcFlag.store(false, std::memory_order_relaxed); // ALTERED: see gcFlag
+ 	int r = externalRefCount.atomicDec();
+ 	// ALTERED: the function (or type) is deleted when lifetimeRefCount, the sum of the external and internal counts, reaches 0, by
+ 	// the one thread that brings it there. Each release decremented its own count and then read the other one to decide: a thread
+@@ -1822,13 +1822,13 @@ int asCScriptFunction::GetRefCount()
+ // internal
+ void asCScriptFunction::SetFlag()
+ {
+-	gcFlag = true;
++	gcFlag.store(true, std::memory_order_relaxed); // ALTERED: see gcFlag
+ }
+ 
+ // internal
+ bool asCScriptFunction::GetFlag()
+ {
+-	return gcFlag;
++	return gcFlag.load(std::memory_order_relaxed);
+ }
+ 
+ // internal
+diff --git a/sdk/angelscript/source/as_scriptfunction.h b/sdk/angelscript/source/as_scriptfunction.h
+index 4baf386..36be796 100644
+--- a/sdk/angelscript/source/as_scriptfunction.h
++++ b/sdk/angelscript/source/as_scriptfunction.h
+@@ -314,7 +314,9 @@ public:
+ 	mutable asCAtomic            externalRefCount; // Used for external referneces
+ 	        asCAtomic            internalRefCount; // Used for internal references
+ 	mutable asCAtomic            lifetimeRefCount; // ALTERED: externalRefCount + internalRefCount, see Release()
+-	mutable bool                 gcFlag;
++	// ALTERED: an atomic read and written with relaxed order: a delegate's AddRef and Release clear it on any script thread while
++	// the garbage collector sets and reads it on its own thread (garbage_collect_mode 3), a data race on a plain bool
++	mutable std::atomic<bool>    gcFlag;
+ 	asCScriptEngine             *engine;
+ 	asCModule                   *module;
+ 
+diff --git a/sdk/angelscript/source/as_scriptobject.cpp b/sdk/angelscript/source/as_scriptobject.cpp
+index 60cce0c..d698400 100644
+--- a/sdk/angelscript/source/as_scriptobject.cpp
++++ b/sdk/angelscript/source/as_scriptobject.cpp
+@@ -632,14 +632,14 @@ int asCScriptObject::AddRef() const
+ 	}
+ 
+ 	// Increase counter and clear flag set by GC
+-	gcFlag = false;
++	gcFlag.store(false, std::memory_order_relaxed); // ALTERED: see gcFlag
+ 	return refCount.atomicInc();
+ }
+ 
+ int asCScriptObject::Release() const
+ {
+ 	// Clear the flag set by the GC
+-	gcFlag = false;
++	gcFlag.store(false, std::memory_order_relaxed); // ALTERED: see gcFlag
+ 
+ 	// If the weak ref flag exists it is because someone held a weak ref
+ 	// and that someone may add a reference to the object at any time. It
+@@ -736,7 +736,7 @@ int asCScriptObject::Release() const
+ // collector keeps its reference and the object stays in its list. Returns 0 when the object was destroyed.
+ int asCScriptObject::ReleaseByCollector()
+ {
+-	gcFlag = false;
++	gcFlag.store(false, std::memory_order_relaxed); // ALTERED: see gcFlag
+ 
+ 	if( asCLockableSharedBool *weakRefFlag = LoadWeakRefFlag() ) // ALTERED: see LoadWeakRefFlag
+ 	{
+@@ -905,12 +905,12 @@ int asCScriptObject::GetRefCount()
+ 
+ void asCScriptObject::SetFlag()
+ {
+-	gcFlag = true;
++	gcFlag.store(true, std::memory_order_relaxed); // ALTERED: see gcFlag
+ }
+ 
+ bool asCScriptObject::GetFlag()
+ {
+-	return gcFlag;
++	return gcFlag.load(std::memory_order_relaxed);
+ }
+ 
+ // interface
+diff --git a/sdk/angelscript/source/as_scriptobject.h b/sdk/angelscript/source/as_scriptobject.h
+index 9125951..b5ab9be 100644
+--- a/sdk/angelscript/source/as_scriptobject.h
++++ b/sdk/angelscript/source/as_scriptobject.h
+@@ -147,7 +147,10 @@ protected:
+ 	// AddRef or SetFlag on its thread (gcFlag, written as a read-modify-write of the byte) and a read of
+ 	// hasRefCountReachedZero on another (GetWeakRefFlag, AddRef) were a data race even though neither changed the other's
+ 	// bit. The size of the object doesn't change: the bytes fit in the padding before extra.
+-	mutable bool      gcFlag;
++	// ALTERED: gcFlag is an atomic read and written with relaxed order: AddRef and Release clear it on any script thread while the
++	// garbage collector sets and reads it on its own thread (garbage_collect_mode 3), and two threads releasing the object at
++	// once both write it, data races on a plain bool. std::atomic<bool> is one byte, so the layout doesn't change.
++	mutable std::atomic<bool> gcFlag;
+ 	mutable bool      hasRefCountReachedZero;
+ 	bool              isDestructCalled;
+ 
