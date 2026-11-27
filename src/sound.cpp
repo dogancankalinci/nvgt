@@ -3559,6 +3559,7 @@ public:
 };
 audio_wav_encoder* audio_wav_encoder::create(audio_engine* e) { return new audio_wav_encoder_impl(e); }
 static bool on_an_audio_thread() { return audio_engine_impl::on_audio_thread(); }
+bool on_sound_audio_thread() { return on_an_audio_thread(); }
 class audio_opus_encoder_impl : public audio_encoder_impl, public virtual audio_opus_encoder {
 	OggOpusEnc* encoder;
 	OggOpusComments* comments;
@@ -4639,7 +4640,7 @@ public:
 		}
 		mixer* old;
 		{
-			std::lock_guard<std::recursive_mutex> topology(g_audio_topology_mutex);
+			std::lock_guard<std::recursive_timed_mutex> topology(g_audio_topology_mutex);
 			if (mix == parent_mixer)
 				return (g_soundsystem_last_error = MA_SUCCESS) == MA_SUCCESS; // Already where it was asked to go.
 			// Not into itself, nor into a mixer that already goes into this one, through parents or a reverb3d's send: that loop never reaches the engine, and its references to each other keep it all alive.
@@ -5536,7 +5537,7 @@ public:
 		audio_spatializer *forgotten = spatializer;
 		forgotten->forget_mixer();
 		{
-			std::lock_guard<std::recursive_mutex> topology(g_audio_topology_mutex); // A loop check walking mixers reads this spatializer (see mixer_reaches()).
+			std::lock_guard<std::recursive_timed_mutex> topology(g_audio_topology_mutex); // A loop check walking mixers reads this spatializer (see mixer_reaches()).
 			unique_lock<mutex> lock(spatialization_params_mutex);
 			spatializer = nullptr;
 		}
@@ -7248,7 +7249,8 @@ template < class T >
 static mixer* mixer_parent_script(T *object) {
 	mixer_api_lock lock = lock_node_api(object);
 	if (!lock.held) return nullptr;
-	std::lock_guard<std::recursive_mutex> topology(g_audio_topology_mutex);
+	auto topology = lock_for_audio(g_audio_topology_mutex);
+	if (!topology) return nullptr; // Refused on an audio thread after 2 ms, MA_BUSY.
 	mixer* parent = object->get_mixer();
 	if (parent) parent->duplicate();
 	return parent;
@@ -7259,13 +7261,15 @@ static audio_node* chain_first_script(audio_node_chain* c) { return audio_node_c
 static audio_node* chain_last_script(audio_node_chain* c) { return audio_node_chain_acquire(c, chain_node_last, 0); }
 static audio_node* chain_at_script(audio_node_chain* c, unsigned int index) { return audio_node_chain_acquire(c, chain_node_at, index); }
 static audio_node* reverb3d_reverb_script(reverb3d* verb) {
-	std::lock_guard<std::recursive_mutex> topology(g_audio_topology_mutex);
+	auto topology = lock_for_audio(g_audio_topology_mutex);
+	if (!topology) return nullptr; // Refused on an audio thread after 2 ms, MA_BUSY.
 	audio_node* reverb = verb->get_reverb();
 	if (reverb) reverb->duplicate();
 	return reverb;
 }
 static mixer* reverb3d_mixer_script(reverb3d* verb) {
-	std::lock_guard<std::recursive_mutex> topology(g_audio_topology_mutex);
+	auto topology = lock_for_audio(g_audio_topology_mutex);
+	if (!topology) return nullptr; // Refused on an audio thread after 2 ms, MA_BUSY.
 	mixer* destination = verb->get_mixer();
 	if (destination) destination->duplicate();
 	return destination;

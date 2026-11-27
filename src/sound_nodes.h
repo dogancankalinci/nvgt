@@ -574,7 +574,15 @@ bool mixer_reaches(mixer* from, const std::function<bool(mixer*)>& is_target);
 // As mixer_reaches(), from where a reverb3d sends: its mixer and a mixer used as its reverb, which it feeds.
 bool reverb3d_reaches(reverb3d* verb, const std::function<bool(mixer*)>& is_target);
 // Held by whatever changes the links mixer_reaches() follows (a mixer's parent, its spatializer and the reverb3d that sends to, a reverb3d's mixer) and by the checks that follow them, and taken before any chain, spatialization or graph lock: each link holds a reference to what it points to, so under this nothing a check reaches can be freed, as it was when another thread let go of a mixer the check had just stepped to.
-extern std::recursive_mutex g_audio_topology_mutex;
+extern std::recursive_timed_mutex g_audio_topology_mutex;
+bool on_sound_audio_thread(); // Whether this thread runs a device's data callback, as a processing callback does; see sound.cpp.
+// Locks m, on an audio thread waiting at most 2 ms, as a node's script calls wait for its api_mutex (see lock_node_api()), and refusing with MA_BUSY when it isn't had: a processing callback reading a chain's nodes or a mixer's parent waited for as long as a script thread's change to the chain or the graph took, a chain of thousands of nodes cleared holding the device up over 100 ms.
+template <class M> std::unique_lock<M> lock_for_audio(M& m) {
+	if (!on_sound_audio_thread()) return std::unique_lock<M>(m);
+	std::unique_lock<M> lock(m, std::defer_lock);
+	if (!lock.try_lock_for(std::chrono::milliseconds(2))) g_soundsystem_last_error = MA_BUSY;
+	return lock;
+}
 bool reverb_fits(audio_node* verb, audio_node* destination, ma_uint32 channels_in);
 // The references nodes hold to one another outside the graph: a chain's nodes and endpoint, a mixer's chains, spatializer and parent, a reverb3d's reverb and mixer, a spatializer's reverb3d. The graph's loop check followed attachments only, which a script can detach by hand, after which a chain could come to hold one that holds it, the two never freed: it follows these too now, and a hold is checked through both. Recorded by pointer, under a leaf lock. A holder records a hold before it calls into the node and drops it after its last call, before letting the node go, and drops all of its own as it is destroyed, so that a node reached through a hold under that lock is alive.
 // Records holder holding held unless held is holder or already reaches it, through holds or attachments (see audio_node_impl::reaches_node()): false, recording nothing, for one that would loop.

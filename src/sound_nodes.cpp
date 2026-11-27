@@ -310,7 +310,7 @@ class audio_node_chain_impl : public passthrough_node_impl, public virtual audio
 	unsigned int bus_at(size_t index) const { return index < nodes.size()? input_buses[index] : endpoint_input_bus_index; }
 protected:
 	// Every change and read of the chain's nodes and endpoint takes this, as one script thread can change a sound's chain while another changes it too, such as a global panner change rewiring every spatializer. Recursive because the changes call one another; never taken on the audio thread, which only reads the MiniAudio graph.
-	mutable std::recursive_mutex chain_mutex;
+	mutable std::recursive_timed_mutex chain_mutex; // Timed, so that a getter on an audio thread waits for it at most 2 ms (see lock_for_audio()).
 	// A chain's rewiring runs under its lock, and what it lets go of is released once the thread's outermost release_scope ends, after every lock it took (see release_scope).
 	struct rewire_scope {
 		audio_node_chain_impl &chain;
@@ -533,44 +533,51 @@ public:
 		return true;
 	}
 	audio_node* get_endpoint() const override {
-		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		std::lock_guard<std::recursive_timed_mutex> chain_lock(chain_mutex);
 		return endpoint;
 	}
 	// The endpoint, with a reference the caller lets go of, or null.
 	audio_node* acquire_endpoint() const {
-		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		auto chain_lock = lock_for_audio(chain_mutex);
+		if (!chain_lock) return nullptr;
 		if (endpoint) endpoint->duplicate();
 		return endpoint;
 	}
 	audio_node* first() const override {
-		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		auto chain_lock = lock_for_audio(chain_mutex);
+		if (!chain_lock) return nullptr;
 		if (nodes.empty()) return nullptr;
 		return nodes[0];
 	}
 	audio_node* last() const override {
-		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		auto chain_lock = lock_for_audio(chain_mutex);
+		if (!chain_lock) return nullptr;
 		if (nodes.empty()) return nullptr;
 		return nodes[nodes.size() -1];
 	}
 	audio_node* operator[](unsigned int index) const override {
-		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		auto chain_lock = lock_for_audio(chain_mutex);
+		if (!chain_lock) return nullptr;
 		if (nodes.size() <= index) return nullptr;
 		return nodes[index];
 	}
 	audio_node* acquire_node(chain_node_which which, unsigned int index) const {
-		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		auto chain_lock = lock_for_audio(chain_mutex);
+		if (!chain_lock) return nullptr;
 		audio_node* found = which == chain_node_endpoint? endpoint : nodes.empty()? nullptr : which == chain_node_first? nodes[0] : which == chain_node_last? nodes.back() : index < nodes.size()? nodes[index] : nullptr;
 		if (found) found->duplicate();
 		return found;
 	}
 	int index_of(audio_node* node) const override {
-		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		auto chain_lock = lock_for_audio(chain_mutex);
+		if (!chain_lock) return -1;
 		auto it = find(nodes.begin(), nodes.end(), node);
 		if (it == nodes.end()) return -1;
 		return distance(nodes.begin(), it);
 	}
 	unsigned int get_node_count() const override {
-		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		auto chain_lock = lock_for_audio(chain_mutex);
+		if (!chain_lock) return 0;
 		return nodes.size();
 	}
 };
@@ -1221,7 +1228,7 @@ public:
 			g_soundsystem_last_error = MA_INVALID_OPERATION;
 			return;
 		}
-		std::lock_guard<std::recursive_mutex> topology(g_audio_topology_mutex);
+		std::lock_guard<std::recursive_timed_mutex> topology(g_audio_topology_mutex);
 		if (verb && !reverb_free_for(verb, output_mixer? static_cast<audio_node*>(output_mixer) : get_engine()->get_endpoint(), 0)) { // Used by other reverb3ds going elsewhere (see reverb_free_for()).
 			g_soundsystem_last_error = MA_INVALID_OPERATION;
 			return;
@@ -1316,7 +1323,7 @@ public:
 		}
 		mixer* old;
 		{
-			std::lock_guard<std::recursive_mutex> topology(g_audio_topology_mutex);
+			std::lock_guard<std::recursive_timed_mutex> topology(g_audio_topology_mutex);
 			if (mix && mixer_reaches(mix, [this](mixer* m) { return m->get_reverb3d_sent_to() == static_cast<reverb3d*>(this); })) { // Not into a mixer that sends to this reverb3d, nor one that goes into such a mixer (see mixer_reaches()).
 				g_soundsystem_last_error = MA_INVALID_ARGS;
 				return;
@@ -1424,7 +1431,7 @@ public:
 	}
 };
 // Without a destination, a new mixer of the reverb3d's own engine, as a reverb3d of the default engine always got one; a mixer of another engine is refused, as both engines' audio threads would read the reverb3d then.
-std::recursive_mutex g_audio_topology_mutex;
+std::recursive_timed_mutex g_audio_topology_mutex;
 // Whether a reverb can sit between a reverb3d giving the given channels and a destination: MiniAudio attaches a node's output only to an input of the same channel count, so a reverb of other channels, or a destination without an input, as a sound given as a mixer, left the reverb going nowhere.
 bool reverb_fits(audio_node* verb, audio_node* destination, ma_uint32 channels_in) {
 	ma_node* v = verb->get_ma_node();
@@ -1460,7 +1467,7 @@ static reverb3d* make_reverb3d(unique_ptr<reverb3d_attachment_handler> handler, 
 	if (reverb && reverb->get_engine() != e) throw_refusal(MA_INVALID_ARGS, "the reverb belongs to another audio engine");
 	audio_node* target = destination? static_cast<audio_node*>(destination) : e->get_endpoint();
 	if (reverb? !reverb_fits(reverb, target, e->get_channels()) : ma_node_get_input_bus_count(target->get_ma_node()) == 0) throw_refusal(MA_INVALID_OPERATION, "the destination takes no input from the reverb"); // A sound given as a mixer, or a reverb of another channel count: the reverb would go nowhere, as reverb3d.mixer and reverb3d.reverb refuse them.
-	std::lock_guard<std::recursive_mutex> topology(g_audio_topology_mutex);
+	std::lock_guard<std::recursive_timed_mutex> topology(g_audio_topology_mutex);
 	// A mixer given as the reverb goes into the destination as a mixer, which a destination going into that mixer would loop: refused, as reverb3d.reverb refuses it, rather than made with the reverb going where the mixer went before.
 	if (mixer* verb_mixer = reverb? dynamic_cast<mixer*>(reverb) : nullptr) {
 		if (destination && mixer_reaches(destination, [verb_mixer](mixer* m) { return m == verb_mixer; })) throw_refusal(MA_INVALID_ARGS, "the destination goes into the reverb mixer");
@@ -1845,7 +1852,7 @@ public:
 			return;
 		}
 		// Not a reverb3d whose mixer is this one, or goes into it (see mixer_reaches()). Asked before this spatializer's chain lock is taken: mixer_reaches() takes other spatializers' chain locks, one at a time, so a thread holding this one while another, holding one of those, set a reverb3d sending back here deadlocked with it. The topology lock is held through the change.
-		std::lock_guard<std::recursive_mutex> topology(g_audio_topology_mutex);
+		std::lock_guard<std::recursive_timed_mutex> topology(g_audio_topology_mutex);
 		mixer* owner = get_mixer();
 		if (new_reverb && owner && new_reverb != get_reverb3d() && reverb3d_reaches(new_reverb, [owner](mixer* m) { return m == owner; })) {
 			g_soundsystem_last_error = MA_INVALID_ARGS;
@@ -1894,24 +1901,29 @@ public:
 		}
 	}
 	spatializer_component_node* get_panner() const override {
-		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		auto chain_lock = lock_for_audio(chain_mutex);
+		if (!chain_lock) return nullptr;
 		return panner;
 	}
 	spatializer_component_node* get_attenuator() const override {
-		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		auto chain_lock = lock_for_audio(chain_mutex);
+		if (!chain_lock) return nullptr;
 		return attenuator;
 	}
 	reverb3d* get_reverb3d() const override {
-		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		auto chain_lock = lock_for_audio(chain_mutex);
+		if (!chain_lock) return nullptr;
 		return reverb;
 	}
 	audio_node* get_reverb3d_attachment() const override {
-		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		auto chain_lock = lock_for_audio(chain_mutex);
+		if (!chain_lock) return nullptr;
 		return reverb_attachment;
 	}
 	audio_spatializer_reverb3d_placement get_reverb3d_placement() const override { return reverb_placement; }
 	mixer* get_mixer() const override {
-		std::lock_guard<std::recursive_mutex> chain_lock(chain_mutex);
+		auto chain_lock = lock_for_audio(chain_mutex);
+		if (!chain_lock) return nullptr;
 		return attached_mixer;
 	}
 	// The update on the audio thread reads attached_mixer under the chain lock, which it only tries, so after this it reads no mixer, as for a spatializer the script kept past its mixer.
@@ -1994,7 +2006,7 @@ public:
 	}
 	void process(const float** frames_in, unsigned int* frame_count_in, float** frames_out, unsigned int* frame_count_out) override {
 		// On the audio thread, which mustn't wait: while a script thread rewires this spatializer, freeing the reverb or its attachment read below, the parameters keep their last values for this block.
-		std::unique_lock<std::recursive_mutex> chain_lock(chain_mutex, std::try_to_lock);
+		std::unique_lock<std::recursive_timed_mutex> chain_lock(chain_mutex, std::try_to_lock);
 		if (!chain_lock.owns_lock()) return;
 		if (attached_mixer && (panner || attenuator || reverb)) {
 			parameters_valid = attached_mixer->get_spatialization_parameters(spatialization_params);
