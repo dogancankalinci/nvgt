@@ -9,6 +9,7 @@
 // Avoid having to inform include path if header is already include before
 #include <angelscript.h>
 #endif
+#include <atomic>
 
 // By default the CScriptDictionary use the std::string for the keys.
 // If the application uses a custom string type, then this typedef
@@ -254,7 +255,9 @@ protected:
 	// Our properties
 	asIScriptEngine *engine;
 	mutable int      refCount;
-	mutable bool     gcFlag;
+	// ALTERED: atomic, read and written with relaxed order: AddRef() and Release() clear it on any script thread while the
+	// garbage collector sets and reads it on its own thread (garbage_collect_mode 3), a data race as a plain bool.
+	mutable std::atomic<bool> gcFlag;
 	dictMap_t        dict;
 	asQWORD          iterGuard;
 };

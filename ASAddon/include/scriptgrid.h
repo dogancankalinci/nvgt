@@ -5,6 +5,7 @@
 // Avoid having to inform include path if header is already include before
 #include <angelscript.h>
 #endif
+#include <atomic>
 
 BEGIN_AS_NAMESPACE
 
@@ -54,7 +55,9 @@ public:
 
 protected:
 	mutable int     refCount;
-	mutable bool    gcFlag;
+	// ALTERED: atomic, read and written with relaxed order: AddRef() and Release() clear it on any script thread while the
+	// garbage collector sets and reads it on its own thread (garbage_collect_mode 3), a data race as a plain bool.
+	mutable std::atomic<bool> gcFlag;
 	asITypeInfo    *objType;
 	SGridBuffer    *buffer;
 	int             elementSize;

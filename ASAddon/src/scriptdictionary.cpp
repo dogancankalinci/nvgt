@@ -234,7 +234,7 @@ void CScriptDictionary::Init(asIScriptEngine *e)
 {
 	// We start with one reference
 	refCount = 1;
-	gcFlag = false;
+	gcFlag.store(false, std::memory_order_relaxed);
 	iterGuard = 0;
 
 	// Keep a reference to the engine for as long as we live
@@ -361,14 +361,14 @@ CScriptDictionary::~CScriptDictionary()
 void CScriptDictionary::AddRef() const
 {
 	// We need to clear the GC flag
-	gcFlag = false;
+	gcFlag.store(false, std::memory_order_relaxed);
 	asAtomicInc(refCount);
 }
 
 void CScriptDictionary::Release() const
 {
 	// We need to clear the GC flag
-	gcFlag = false;
+	gcFlag.store(false, std::memory_order_relaxed);
 	if( asAtomicDec(refCount) == 0 )
 	{
 		this->~CScriptDictionary();
@@ -383,12 +383,12 @@ int CScriptDictionary::GetRefCount()
 
 void CScriptDictionary::SetGCFlag()
 {
-	gcFlag = true;
+	gcFlag.store(true, std::memory_order_relaxed);
 }
 
 bool CScriptDictionary::GetGCFlag()
 {
-	return gcFlag;
+	return gcFlag.load(std::memory_order_relaxed);
 }
 
 void CScriptDictionary::EnumReferences(asIScriptEngine *inEngine)

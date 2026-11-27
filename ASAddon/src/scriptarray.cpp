@@ -595,7 +595,7 @@ CScriptArray::CScriptArray(asITypeInfo *ti, void *buf)
 	assert( ti && string(ti->GetName()) == "array" );
 
 	refCount = 1;
-	gcFlag = false;
+	gcFlag.store(false, std::memory_order_relaxed);
 	objType = ti;
 	objType->AddRef();
 	buffer = 0;
@@ -697,7 +697,7 @@ CScriptArray::CScriptArray(asUINT length, asITypeInfo *ti)
 	assert( ti && string(ti->GetName()) == "array" );
 
 	refCount = 1;
-	gcFlag = false;
+	gcFlag.store(false, std::memory_order_relaxed);
 	objType = ti;
 	objType->AddRef();
 	buffer = 0;
@@ -729,7 +729,7 @@ CScriptArray::CScriptArray(asUINT length, asITypeInfo *ti)
 CScriptArray::CScriptArray(const CScriptArray &other)
 {
 	refCount = 1;
-	gcFlag = false;
+	gcFlag.store(false, std::memory_order_relaxed);
 	objType = other.objType;
 	objType->AddRef();
 	buffer = 0;
@@ -753,7 +753,7 @@ CScriptArray::CScriptArray(asUINT length, void *defVal, asITypeInfo *ti)
 	assert( ti && string(ti->GetName()) == "array" );
 
 	refCount = 1;
-	gcFlag = false;
+	gcFlag.store(false, std::memory_order_relaxed);
 	objType = ti;
 	objType->AddRef();
 	buffer = 0;
@@ -2556,14 +2556,14 @@ void CScriptArray::ReleaseAllHandles(asIScriptEngine *)
 void CScriptArray::AddRef() const
 {
 	// Clear the GC flag then increase the counter
-	gcFlag = false;
+	gcFlag.store(false, std::memory_order_relaxed);
 	asAtomicInc(refCount);
 }
 
 void CScriptArray::Release() const
 {
 	// Clearing the GC flag then descrease the counter
-	gcFlag = false;
+	gcFlag.store(false, std::memory_order_relaxed);
 	if( asAtomicDec(refCount) == 0 )
 	{
 		// When reaching 0 no more references to this instance
@@ -2582,13 +2582,13 @@ int CScriptArray::GetRefCount()
 // GC behaviour
 void CScriptArray::SetFlag()
 {
-	gcFlag = true;
+	gcFlag.store(true, std::memory_order_relaxed);
 }
 
 // GC behaviour
 bool CScriptArray::GetFlag()
 {
-	return gcFlag;
+	return gcFlag.load(std::memory_order_relaxed);
 }
 
 //--------------------------------------------

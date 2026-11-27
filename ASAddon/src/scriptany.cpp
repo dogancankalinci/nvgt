@@ -320,7 +320,7 @@ CScriptAny::CScriptAny(asIScriptEngine *engine)
 {
 	this->engine = engine;
 	refCount = 1;
-	gcFlag = false;
+	gcFlag.store(false, std::memory_order_relaxed);
 
 	value.typeId = 0;
 	value.valueInt = 0;
@@ -333,7 +333,7 @@ CScriptAny::CScriptAny(void *ref, int refTypeId, asIScriptEngine *engine)
 {
 	this->engine = engine;
 	refCount = 1;
-	gcFlag = false;
+	gcFlag.store(false, std::memory_order_relaxed);
 
 	value.typeId = 0;
 	value.valueInt = 0;
@@ -568,14 +568,14 @@ void CScriptAny::ReleaseAllHandles(asIScriptEngine * /*engine*/)
 int CScriptAny::AddRef() const
 {
 	// Increase counter and clear flag set by GC
-	gcFlag = false;
+	gcFlag.store(false, std::memory_order_relaxed);
 	return asAtomicInc(refCount);
 }
 
 int CScriptAny::Release() const
 {
 	// Decrease the ref counter
-	gcFlag = false;
+	gcFlag.store(false, std::memory_order_relaxed);
 	// ALTERED: the count this release left is returned as the decrement gave it. It was read again from the any afterwards, which
 	// another thread letting go of the last reference in between had deleted.
 	int count = asAtomicDec(refCount);
@@ -596,12 +596,12 @@ int CScriptAny::GetRefCount()
 
 void CScriptAny::SetFlag()
 {
-	gcFlag = true;
+	gcFlag.store(true, std::memory_order_relaxed);
 }
 
 bool CScriptAny::GetFlag()
 {
-	return gcFlag;
+	return gcFlag.load(std::memory_order_relaxed);
 }
 
 

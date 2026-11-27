@@ -331,7 +331,7 @@ static bool GridCopyStopped(asIScriptContext *ctx, bool hadException); // see it
 CScriptGrid::CScriptGrid(asITypeInfo *ti, void *buf)
 {
 	refCount = 1;
-	gcFlag = false;
+	gcFlag.store(false, std::memory_order_relaxed);
 	objType = ti;
 	objType->AddRef();
 	buffer = 0;
@@ -494,7 +494,7 @@ CScriptGrid::CScriptGrid(asITypeInfo *ti, void *buf)
 CScriptGrid::CScriptGrid(asUINT width, asUINT height, asITypeInfo *ti)
 {
 	refCount = 1;
-	gcFlag = false;
+	gcFlag.store(false, std::memory_order_relaxed);
 	objType = ti;
 	objType->AddRef();
 	buffer = 0;
@@ -594,7 +594,7 @@ void CScriptGrid::Resize(asUINT width, asUINT height)
 CScriptGrid::CScriptGrid(asUINT width, asUINT height, void *defVal, asITypeInfo *ti)
 {
 	refCount = 1;
-	gcFlag = false;
+	gcFlag.store(false, std::memory_order_relaxed);
 	objType = ti;
 	objType->AddRef();
 	buffer = 0;
@@ -922,14 +922,14 @@ void CScriptGrid::ReleaseAllHandles(asIScriptEngine*)
 void CScriptGrid::AddRef() const
 {
 	// Clear the GC flag then increase the counter
-	gcFlag = false;
+	gcFlag.store(false, std::memory_order_relaxed);
 	asAtomicInc(refCount);
 }
 
 void CScriptGrid::Release() const
 {
 	// Clearing the GC flag then descrease the counter
-	gcFlag = false;
+	gcFlag.store(false, std::memory_order_relaxed);
 	if( asAtomicDec(refCount) == 0 )
 	{
 		// When reaching 0 no more references to this instance
@@ -948,13 +948,13 @@ int CScriptGrid::GetRefCount()
 // GC behaviour
 void CScriptGrid::SetFlag()
 {
-	gcFlag = true;
+	gcFlag.store(true, std::memory_order_relaxed);
 }
 
 // GC behaviour
 bool CScriptGrid::GetFlag()
 {
-	return gcFlag;
+	return gcFlag.load(std::memory_order_relaxed);
 }
 
 END_AS_NAMESPACE
