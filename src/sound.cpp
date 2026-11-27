@@ -1649,11 +1649,26 @@ public:
 			read_whole(buffer, frame_count, ma_get_bytes_per_frame(format, channels), frames_read);
 			return frames_read;
 		}
-		// Another format, such as a 16-bit file the resource manager keeps as it is, is read as it is and converted.
-		std::vector<char> raw(frame_count * ma_get_bytes_per_frame(format, channels));
-		read_whole(raw.data(), frame_count, ma_get_bytes_per_frame(format, channels), frames_read);
-		ma_pcm_convert(buffer, ma_format_f32, raw.data(), format, frames_read * channels, ma_dither_mode_none);
-		return frames_read;
+		// Another format, such as a 16-bit file the resource manager keeps as it is, is read as it is and converted, a bounded chunk at a time: the whole count's buffer, for a plugin's count unbounded, overflowed its size or threw out of here.
+		const ma_uint32 frame_size = ma_get_bytes_per_frame(format, channels);
+		const unsigned long long chunk = 4096;
+		std::vector<char> raw;
+		try {
+			raw.resize((size_t)(frame_count < chunk? frame_count : chunk) * frame_size);
+		} catch (const std::bad_alloc&) {
+			g_soundsystem_last_error = MA_OUT_OF_MEMORY;
+			return 0;
+		}
+		unsigned long long total = 0;
+		while (total < frame_count) {
+			const unsigned long long want = frame_count - total < chunk? frame_count - total : chunk;
+			ma_uint64 got = 0;
+			read_whole(raw.data(), want, frame_size, got);
+			ma_pcm_convert((float*)buffer + total * channels, ma_format_f32, raw.data(), format, got * channels, ma_dither_mode_none);
+			total += got;
+			if (got < want) break;
+		}
+		return total;
 	}
 	CScriptArray* read_script(unsigned long long frame_count) override {
 		auto guard = lock_source();
