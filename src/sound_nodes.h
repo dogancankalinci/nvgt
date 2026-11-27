@@ -37,6 +37,10 @@ audio_node* audio_node_chain_acquire(audio_node_chain* chain, chain_node_which w
 // The references nodes hold to one another outside the graph (see claim_node_hold()), which audio_node_impl::reaches_node() follows with the attachments: appended to out under node_holds_lock(), which is taken after the graph lock and with nothing taken under it.
 std::unique_lock<std::mutex> node_holds_lock();
 void append_node_holds(const audio_node* n, std::vector<audio_node*>& out);
+// The most MiniAudio nodes a path from a sound to the end of the graph may run through: the graph is read recursively, a few kilobytes of stack for each, so that nesting mixers or effects without a bound overflowed the stack of the thread reading it, the device's or a script thread's, and ended the process, at about 120 nested mixers or 250 effects on Windows' 1 megabyte stacks and half that on the 512 kilobytes of Apple's audio threads.
+constexpr unsigned int max_graph_depth = 64;
+// How long the longest path through an attachment from source into destination would be, in MiniAudio nodes; more than max_graph_depth once it is too long, under g_node_graph_mutex, as attachments change.
+unsigned int graph_depth_through(ma_node* source, ma_node* destination);
 class audio_node_impl : public virtual audio_node {
 public:
 	// The script's calls on this node, one thread at a time (see api_call() in sound.cpp): a sound's close(), loads and open() free and replace the MiniAudio sound and what every other call reads of it, its first spatializer, effects chain and data source wrapper are made on first use, a filter's setters reinitialise it, and an encoder's pull session is opened and read, so that two threads using one node at once crashed it, or gave it two of what it makes. MiniAudio's audio thread doesn't take it.
@@ -150,6 +154,11 @@ public:
 			// Nor into itself, or into a node whose output reaches this one, as a chain's endpoint set to the chain or one of its own nodes: each attachment holds the node it goes into, so the loop kept every node on it, and their engine with its device, alive for good.
 			if (reaches_node(destination, this)) {
 				g_soundsystem_last_error = MA_INVALID_ARGS;
+				return false;
+			}
+			// Nor into a graph it would make too deep to read, a rate bridge counted too (see max_graph_depth).
+			if (graph_depth_through(node, destination->get_ma_node()) + (from && to && from != to ? 1 : 0) > max_graph_depth) {
+				g_soundsystem_last_error = MA_TOO_BIG;
 				return false;
 			}
 			// A node's output is read at the rate of the graph it goes into, which doesn't resample, so one of another rate, as a no-device engine of its own rate mixed into another or a decoder's node at its file's rate, played at the ratio of the two rates, too fast or slow and out of tune. It goes through a group of the destination's engine instead, which resamples it from its rate.
