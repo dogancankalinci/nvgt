@@ -1423,7 +1423,14 @@ void ReturnContextCallback(asIScriptEngine *engine, asIScriptContext *ctx, void*
 	ctx->SetUserData(nullptr, 1002); // The context manager's pointer (CONTEXT_MGR in contextmgr.cpp), which it sets each time it takes a context: kept, sleep() or yield() in a later user of the context, such as a destructor run after the manager is deleted, reached the deleted manager.
 	if (g_exit_count) ctx->SetUserData(nullptr, EXIT_COUNT_USER_DATA);
 	ScopedLock<Mutex> l(g_ctxPoolMutex);
-	g_ctxPool.push_back(ctx);
+	// With no memory for a larger pool the bad_alloc left this callback, through the engine's ReturnContext() into whatever gave the
+	// context back (a destructor, a registered function's clean up), and the context was lost. It is let go of instead, as the engine
+	// does with no callback set, unless it is still running (see above), which only the pool can keep.
+	try {
+		g_ctxPool.push_back(ctx);
+	} catch (...) {
+		if (ctx->GetState() != asEXECUTION_ACTIVE) ctx->Release();
+	}
 }
 void ExceptionHandlerCallback(asIScriptContext *ctx, void* obj) {
 	// The call stack of the context raising the exception, not of asGetActiveContext(): a pooled context whose Prepare() fails (a function needing more stack than scripting.max_stack_size allows) raises a stack overflow before it runs, when no context may be active at all (preglobals(), or a destructor run when the module is discarded), and with another context active that context's call stack was recorded instead.
