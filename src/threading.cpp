@@ -53,7 +53,7 @@ bool thread_is_main();
 #ifdef __APPLE__
 void apple_run_main_loop_once(); // apple.mm
 #endif
-static bool script_thread_aborting();
+bool script_thread_aborting(); // Also wait() in UI.cpp.
 // A script's wait that nothing may ever end, for the time it lasts. exit() called on a script thread aborts what the main thread executes,
 // which the main thread only acts on once a wait it is in ends: while it waited for an event, a thread, an async call or a pool that
 // never came, the program never ended. The same goes for what a script thread executes once the script is over (see

@@ -1066,6 +1066,7 @@ void refresh_window() {
 	}
 }
 bool thread_is_main(); // threading.cpp
+bool script_thread_aborting(); // threading.cpp: what this script thread executes is being aborted, as the script is over
 void wait(int ms) {
 	anticheat_check();
 	// exit() called on a script thread meanwhile ends the main thread's wait, after which its abort takes effect: the program went on until a wait(60000) was over.
@@ -1095,7 +1096,16 @@ void wait(int ms) {
 			}
 			return;
 		}
-		Poco::Thread::sleep(ms);
+		// In slices that see exit() on the main thread and the end of the script on a script thread, as the waits in threading.cpp do: the
+		// whole time was slept, so a wait() on the main thread while a script thread's window was open went on for all of it after exit()
+		// had been called, and one on a script thread kept running past the script's end, which script_threads_stop() waits for only a
+		// quarter of a second, and the engine was then kept.
+		while (ms > 0) {
+			int MS = (ms > 25 ? 25 : ms);
+			Poco::Thread::sleep(MS);
+			ms -= MS;
+			if (main ? script_exit_count() != exits : script_thread_aborting()) break;
+		}
 		return;
 	}
 	while (ms >= 0) {
@@ -1112,7 +1122,7 @@ void wait(int ms) {
 			SDL_PumpEvents();
 		}
 		ms -= MS;
-		if (ms < 1 || (main && script_exit_count() != exits)) break;
+		if (ms < 1 || (main ? script_exit_count() != exits : script_thread_aborting())) break; // see above
 	}
 	refresh_window();
 }
