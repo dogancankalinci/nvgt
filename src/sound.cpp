@@ -7151,10 +7151,11 @@ static mixer_api_lock lock_node_api(audio_node* n) {
 template < typename A > static void zero_out_result(A arg) {
 	if constexpr (std::is_pointer_v<A>) {
 		using pointed = std::remove_pointer_t<A>;
-		if constexpr (!std::is_const_v<pointed> && (std::is_arithmetic_v<pointed> || std::is_enum_v<pointed>)) if (arg) *arg = pointed{};
+		if constexpr (!std::is_const_v<pointed> && std::is_floating_point_v<pointed>) { if (arg) *arg = std::numeric_limits<pointed>::quiet_NaN(); } // NaN, as refused_result() gives a number: 0, a cone written back with it put the whole sound at its outer gain.
+		else if constexpr (!std::is_const_v<pointed> && (std::is_arithmetic_v<pointed> || std::is_enum_v<pointed>)) if (arg) *arg = pointed{};
 	}
 }
-// What a refused call gives, none of it a value the call could have given: false or null; for a number NaN, as a sound with nothing loaded reads, rather than 0, which a callback writing back a value it read relative to it took as full volume, centred or the like; for an index (refuse_index) -1, the "none" those getters give, rather than 0, a real device, panner or position; for the enums whose 0 is a real state, the stopped state and the default placement, so that a callback refused on a busy node doesn't read a stopped node as started.
+// What a refused call gives: false or null; for a number NaN, as a sound with nothing loaded reads, rather than 0, which a callback writing back a value it read relative to it took as full volume, centred or the like; for an index (refuse_index) -1, the "none" those getters give, rather than 0, a real device, panner or position; for the enums whose 0 is a real state, the stopped state and the default placement, so that a callback refused on a busy node doesn't read a stopped node as started.
 struct refuse_index {};
 template < typename R, class Refusal = void > static R refused_result() {
 	if constexpr (std::is_same_v<Refusal, refuse_index>) return R(-1);
@@ -7214,7 +7215,7 @@ template<class T, auto MemberFn, typename... Args>
 static vector3* sound_vec3(T* obj, Args... args) {
 	if constexpr (std::is_base_of_v<audio_node, T>) {
 		mixer_api_lock lock = lock_node_api(obj);
-		if (!lock.held) return new_vec3(0.0f, 0.0f, 0.0f);
+		if (!lock.held) return new_vec3(std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::quiet_NaN()); // As refused_result() gives a number: the origin, a position written back relative to it moved the sound there.
 		return new_vec3((obj->*MemberFn)(std::forward<Args>(args)...));
 	} else return new_vec3((obj->*MemberFn)(std::forward<Args>(args)...));
 }
@@ -7499,8 +7500,8 @@ template<class T> void RegisterSoundsystemMixer(asIScriptEngine *engine, const s
 	engine->RegisterObjectMethod(type.c_str(), "void set_spatialization_enabled(bool enabled) property", asFUNCTION((api_call < T, &T::set_spatialization_enabled, void, bool >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "bool get_spatialization_enabled() const property", asFUNCTION((api_call < T, &T::get_spatialization_enabled, bool >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "void set_pinned_listener(uint index) property", asFUNCTION((api_call < T, &T::set_pinned_listener, void, unsigned int >)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "uint get_pinned_listener() const property", asFUNCTION((api_call < T, &T::get_pinned_listener, unsigned int >)), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(type.c_str(), "uint get_listener() const property", asFUNCTION((api_call < T, &T::get_listener, unsigned int >)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "uint get_pinned_listener() const property", asFUNCTION((api_call_index < T, &T::get_pinned_listener, unsigned int >)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(type.c_str(), "uint get_listener() const property", asFUNCTION((api_call_index < T, &T::get_listener, unsigned int >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "vector@ get_direction_to_listener() const", asFUNCTION((sound_vec3<T, &T::get_direction_to_listener>)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "float get_distance_to_listener() const", asFUNCTION((api_call < T, &T::get_distance_to_listener, float >)), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod(type.c_str(), "void set_position_3d(float x, float y, float z)", asFUNCTION((api_call < T, &T::set_position_3d, void, float, float, float >)), asCALL_CDECL_OBJFIRST);
