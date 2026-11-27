@@ -1,0 +1,28 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+index 587ecef..ce9947b 100644
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -1492,9 +1492,20 @@ int asCContext::SetArgObject(asUINT arg, void *obj)
+ 					m_engine->CallObjectMethod(obj, beh->addref);
+ 			}
+ 		}
+-		else
+-		{
+-			obj = m_engine->CreateScriptObjectCopy(obj, dt->GetTypeInfo());
++		else if( obj )
++		{
++			// ALTERED: a copy that couldn't be made (no memory, or its copy constructor or factory raised an exception) fails the
++			// call, as an invalid argument does: the null copy was stored, SetArgObject reported success and the function ran with
++			// a null object for its parameter, whose first use raised "Null pointer access" in the script (the application's
++			// event callback reported a script error for want of memory). The application sees the error here, and Execute
++			// refuses the call.
++			void *copy = m_engine->CreateScriptObjectCopy(obj, dt->GetTypeInfo());
++			if( copy == 0 )
++			{
++				m_status = asEXECUTION_ERROR;
++				return asOUT_OF_MEMORY;
++			}
++			obj = copy;
+ 		}
+ 	}
+ 
