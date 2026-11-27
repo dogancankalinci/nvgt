@@ -907,7 +907,8 @@ public:
 		xplatform_correct_path_to_stubs(stubpath);
 		alter_stub_path(stubpath);
 		stubpath = format("%snvgt_%s%s%s.bin", stubpath.toString(), platform, (stub != "" ? string("_") + stub : ""), (g_script_uses_iap ? string("_iap") : string("")));
-		string outpath_str = config.getString("build.output_basename", format("%s", Path(input_file).setExtension("").makeAbsolute().toString()));
+		string outpath_str = config.getString("build.output_basename", "");
+		if (outpath_str.empty()) outpath_str = Path(input_file).setExtension("").makeAbsolute().toString();
 		replaceInPlace(outpath_str, "$platform"s, platform);
 		outpath_str = Path(outpath_str).makeAbsolute().toString();
 		outpath = outpath_str;

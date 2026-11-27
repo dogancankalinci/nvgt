@@ -1040,9 +1040,13 @@ int LoadCompiledExecutable(asIScriptEngine *engine) {
 	#endif // __ANDROID__
 }
 #endif
-// Shows a script exception that nothing caught, offering to copy it.
+// Shows a script exception that nothing caught, offering to copy it, or prints it to stderr when there is a console to show it.
 static void report_unhandled_exception(asIScriptContext *ctx) {
 	string exc = GetExceptionInfo(ctx, true);
+	if (is_console_available()) {
+		if (!Util::Application::instance().config().hasOption("application.QUIET")) fprintf(stderr, "unhandled exception\n%s\n", exc.c_str());
+		return;
+	}
 	string msg = exc + "\r\nCopy to clipboard?";
 	int c = question("unhandled exception", msg, false, SDL_MESSAGEBOX_ERROR);
 	if (c == 1)
@@ -1154,13 +1158,17 @@ bool ExecuteScript(asIScriptEngine *engine, const string &scriptFile, int &exit_
 	int retcode = 0;
 	bool failed = false;
 	if (r != asEXECUTION_FINISHED) {
+		// Runtime errors go to stderr when there is a console to show them, such as when running nvgt.exe or the binary inside a macOS app bundle from a terminal, so automated runs aren't left waiting on a message box. nvgtw, a windowed game or an app opened from Finder still shows one.
+		bool console = is_console_available(), silent = Util::Application::instance().config().hasOption("application.QUIET");
 		if (r == asEXECUTION_EXCEPTION) {
 			report_unhandled_exception(ctx);
 			failed = true;
 		} else if (r == asEXECUTION_ABORTED || g_exit_called) // exit() from a script thread before main() first ran aborts the context the manager hasn't executed yet, whose state stays prepared.
 			retcode = g_retcode;
 		else {
-			alert("script terminated", "script terminated unexpectedly");
+			if (console) {
+				if (!silent) fputs("script terminated unexpectedly\n", stderr);
+			} else alert("script terminated", "script terminated unexpectedly");
 			failed = true;
 		}
 	} else {
@@ -1225,9 +1233,8 @@ int PragmaCallback(const string &pragmaText, CScriptBuilder &builder, void* /*us
 		builder.DefineWord(Poco::format("plugin_%s", plugin_name).c_str());
 	} else if (cleanText.starts_with("compiled_basename ")) {
 		string bn = cleanText.substr(18);
-		if (bn == "*")
-			bn.clear();
-		config.setString("build.output_basename", bn);
+		if (bn == "*") config.remove("build.output_basename");
+		else config.setString("build.output_basename", bn);
 	} else if (cleanText.starts_with("bytecode_compression ")) {
 		g_bcCompressionLevel = strtol(cleanText.substr(21).c_str(), NULL, 10);
 		if (g_bcCompressionLevel < 0 || g_bcCompressionLevel > 9)

@@ -23,6 +23,7 @@
 #include <Poco/RefCountedObject.h>
 #include <Poco/Runnable.h>
 #include <Poco/StreamCopier.h>
+#include <Poco/String.h>
 #include <Poco/SynchronizedObject.h>
 #include <Poco/Thread.h>
 #include <Poco/URI.h>
@@ -42,6 +43,7 @@
 #include <Poco/Net/HTTPSStreamFactory.h>
 #include <Poco/Net/HTTPStreamFactory.h>
 #include <Poco/Net/MessageHeader.h>
+#include <Poco/Net/SSLException.h>
 #include <Poco/Net/SSLManager.h>
 #include <Poco/Net/WebSocket.h>
 #include <scriptarray.h>
@@ -885,6 +887,7 @@ public:
 				ScopedLock lock(*this);
 				_response_body.clear();
 				_bytes_downloaded = 0;
+				if (dynamic_cast<SSLContextException*>(&e) || (dynamic_cast<SSLException*>(&e) && toLower(e.displayText()).find("certificate") != string::npos)) break; // A rejected certificate or broken TLS setup would only fail the same way again. Poco reports a certificate rejected during the handshake as SSLConnectionUnexpectedlyClosedException, the same as a dropped connection that is worth retrying, so only the message, such as "certificate verify failed", tells them apart.
 			}
 		}
 		if (_session) {
@@ -1004,20 +1007,27 @@ void RegisterHTTP(asIScriptEngine* engine) {
 // NVGT's highest level HTTP.
 string url_request(const string& method, const string& url, const string& data, HTTPResponse* resp) {
 	http h;
-	if (!h.request(method, URI(url), nullptr, data)) return "";
-	h.wait();
+	bool sent = h.request(method, URI(url), nullptr, data);
+	if (sent) h.wait();
 	if (resp) {
-		HTTPResponse* headers = h.get_response_headers();
-		*resp = *headers;
-		angelscript_refcounted_release(headers);
+		if (!sent || h.get_status_code() == 0) resp->setStatusAndReason(HTTPResponse::HTTPStatus(0), ""); // No response arrived, and a default constructed HTTPResponse would otherwise claim 200 OK.
+		else {
+			HTTPResponse* headers = h.get_response_headers();
+			*resp = *headers;
+			angelscript_refcounted_release(headers);
+		}
 	}
-	return h.get_response_body();
+	return sent ? h.get_response_body() : "";
 }
 string url_get(const string& url, HTTPResponse* resp) { return url_request(HTTPRequest::HTTP_GET, url, "", resp); }
 string url_post(const string& url, const string& data, HTTPResponse* resp) { return url_request(HTTPRequest::HTTP_POST, url, data, resp); }
 
 void RegisterInternet(asIScriptEngine* engine) {
-	SSLManager::instance().initializeClient(NULL, new AcceptCertificateHandler(false), new Context(Context::TLS_CLIENT_USE, ""));
+	Context::Ptr client_context = new Context(Context::TLS_CLIENT_USE, "");
+	#ifdef _WIN32
+		client_context->disableProtocols(Context::PROTO_TLSV1_3); // Poco 1.15.4's NetSSL_Win completes TLS 1.3 handshakes but then reads nothing from some servers such as letsencrypt.org and mastodon.social (pocoproject/poco#5452). Its main branch has the fixes, so turn TLS 1.3 back on once a Poco release includes them.
+	#endif
+	SSLManager::instance().initializeClient(NULL, new AcceptCertificateHandler(false), client_context);
 	FTPStreamFactory::registerFactory();
 	HTTPStreamFactory::registerFactory();
 	HTTPSStreamFactory::registerFactory();

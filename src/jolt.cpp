@@ -11,6 +11,8 @@
 */
 
 #include <atomic>
+#include <cfloat>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cmath>
@@ -493,6 +495,12 @@ static Vec3* vec3_opMul_f(const Vec3& self, float s) { return new_vec3(self * s)
 static Vec3* vec3_opDiv_f(const Vec3& self, float s) { return new_vec3(self / s); }
 static Vec3* vec3_opNeg(const Vec3& self) { return new_vec3(-self); }
 static Vec3* vec3_cross(const Vec3& self, const Vec3& other) { return new_vec3(self.Cross(other)); }
+static Vec3* vec3_opDiv_v(const Vec3& self, const Vec3& other) { return new_vec3(self / other); }
+static void vec3_normalize(Vec3& self) { float len = self.Length(); if (len > FLT_EPSILON) self /= len; } // Like the reactphysics3d vector this replaced, a zero length vector is left unchanged rather than turned into NaN.
+static void vec3_set_to_zero(Vec3& self) { self = Vec3::sZero(); }
+static bool vec3_is_zero(const Vec3& self) { return self.LengthSq() < FLT_EPSILON; }
+static bool vec3_is_unit(const Vec3& self) { return std::abs(self.LengthSq() - 1.0f) < FLT_EPSILON; }
+static bool vec3_is_finite(const Vec3& self) { return std::isfinite(self.GetX()) && std::isfinite(self.GetY()) && std::isfinite(self.GetZ()); }
 static string vec3_to_string(const Vec3& v) { return "vector(" + to_string(v.GetX()) + ", " + to_string(v.GetY()) + ", " + to_string(v.GetZ()) + ")"; }
 static Vec3* vec3_sZero() { return new_vec3(Vec3::sZero()); }
 static Vec3* vec3_sOne() { return new_vec3(Vec3::sOne()); }
@@ -501,8 +509,7 @@ static Vec3* vec3_sAxisY() { return new_vec3(Vec3::sAxisY()); }
 static Vec3* vec3_sAxisZ() { return new_vec3(Vec3::sAxisZ()); }
 
 // -- global math helpers (backward compat) --
-static int nvgt_clamp_int(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
-static float nvgt_clamp_float(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
+static double nvgt_clamp(double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
 // -- AABox additional wrappers --
 static void aabb_inflate(AABox& b, float x, float y, float z) { Vec3 e(x, y, z); b.mMin -= e; b.mMax += e; }
@@ -1226,6 +1233,7 @@ static void RegisterJoltMathTypes(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("vector", "vector@ opMul(const vector&in) const", asFUNCTION(vec3_opMul_v), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("vector", "vector@ opMul(float) const", asFUNCTION(vec3_opMul_f), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("vector", "vector@ opDiv(float) const", asFUNCTION(vec3_opDiv_f), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("vector", "vector@ opDiv(const vector&in) const", asFUNCTION(vec3_opDiv_v), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("vector", "vector@ opNeg() const", asFUNCTION(vec3_opNeg), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("vector", "vector& opAddAssign(const vector&in)", asFUNCTION(vec3_add_assign), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("vector", "vector& opSubAssign(const vector&in)", asFUNCTION(vec3_sub_assign), asCALL_CDECL_OBJFIRST);
@@ -1237,6 +1245,12 @@ static void RegisterJoltMathTypes(asIScriptEngine* engine) {
 	engine->RegisterObjectMethod("vector", "float length() const", asMETHOD(Vec3, Length), asCALL_THISCALL);
 	engine->RegisterObjectMethod("vector", "float length_sq() const", asMETHOD(Vec3, LengthSq), asCALL_THISCALL);
 	engine->RegisterObjectMethod("vector", "vector@ normalized() const", asFUNCTION((scoped_ret<Vec3, Vec3, &Vec3::Normalized>)), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("vector", "void normalize()", asFUNCTION(vec3_normalize), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("vector", "void set_to_zero()", asFUNCTION(vec3_set_to_zero), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("vector", "void setToZero()", asFUNCTION(vec3_set_to_zero), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("vector", "bool get_is_zero() const property", asFUNCTION(vec3_is_zero), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("vector", "bool get_is_unit() const property", asFUNCTION(vec3_is_unit), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("vector", "bool get_is_finite() const property", asFUNCTION(vec3_is_finite), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("vector", "bool is_normalized(float tolerance = 1.0e-6f) const", asMETHOD(Vec3, IsNormalized), asCALL_THISCALL);
 	engine->RegisterObjectMethod("vector", "bool is_near_zero(float max_dist_sq = 1.0e-12f) const", asMETHOD(Vec3, IsNearZero), asCALL_THISCALL);
 	engine->RegisterObjectMethod("vector", "float get_min_value() const property", asMETHOD(Vec3, ReduceMin), asCALL_THISCALL);
@@ -1261,8 +1275,7 @@ static void RegisterJoltMathTypes(asIScriptEngine* engine) {
 	engine->RegisterGlobalFunction("vector@ get_VEC3_AXIS_X() property", asFUNCTION(vec3_sAxisX), asCALL_CDECL);
 	engine->RegisterGlobalFunction("vector@ get_VEC3_AXIS_Y() property", asFUNCTION(vec3_sAxisY), asCALL_CDECL);
 	engine->RegisterGlobalFunction("vector@ get_VEC3_AXIS_Z() property", asFUNCTION(vec3_sAxisZ), asCALL_CDECL);
-	engine->RegisterGlobalFunction("int clamp(int value, int min, int max)", asFUNCTION(nvgt_clamp_int), asCALL_CDECL);
-	engine->RegisterGlobalFunction("float clamp(float value, float min, float max)", asFUNCTION(nvgt_clamp_float), asCALL_CDECL);
+	engine->RegisterGlobalFunction("double clamp(double value, double min, double max)", asFUNCTION(nvgt_clamp), asCALL_CDECL); // A single double version, because with int and float overloads AngelScript picks the int one for clamp(0.5, 0, 1) and truncates the value.
 
 	// quaternion (JPH::Quat - 16-byte SIMD aligned; registered as scoped reference type to guarantee alignment)
 	engine->RegisterObjectType("quaternion", 0, asOBJ_REF | asOBJ_SCOPED);
