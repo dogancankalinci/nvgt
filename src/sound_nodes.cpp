@@ -1482,6 +1482,7 @@ unsigned int graph_depth_through(ma_node* source, ma_node* destination) {
 }
 // Whether a reverb can sit between a reverb3d giving the given channels and a destination: MiniAudio attaches a node's output only to an input of the same channel count, so a reverb of other channels, or a destination without an input, as a sound given as a mixer, left the reverb going nowhere.
 bool reverb_fits(audio_node* verb, audio_node* destination, ma_uint32 channels_in) {
+	std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); // As close() lets a sound's node go under it.
 	ma_node* v = verb->get_ma_node();
 	ma_node* d = destination->get_ma_node();
 	return v && d && ma_node_get_input_bus_count(v) > 0 && ma_node_get_output_bus_count(v) > 0 && ma_node_get_input_bus_count(d) > 0 && ma_node_get_input_channels(v, 0) == channels_in && ma_node_get_output_channels(v, 0) == ma_node_get_input_channels(d, 0);

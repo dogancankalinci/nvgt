@@ -102,7 +102,12 @@ static mixer* acquire_default_mixer() {
 mixer* get_sound_default_mixer() { return acquire_default_mixer(); } // The reference goes to the script.
 void set_sound_default_mixer(mixer* mix) { // Takes the script's reference.
 	// Not a sound, which a script can give as a mixer through a cast: it takes no input, so that every sound_play() was refused and every sound made played straight to the engine with that refusal left behind. Refused, the default kept.
-	if (mix && (!mix->get_ma_node() || ma_node_get_input_bus_count(mix->get_ma_node()) == 0)) {
+	bool takes_input;
+	{
+		std::lock_guard<std::recursive_mutex> graph_lock(g_node_graph_mutex); // As close() lets a sound's node go under it.
+		takes_input = !mix || (mix->get_ma_node() && ma_node_get_input_bus_count(mix->get_ma_node()) > 0);
+	}
+	if (!takes_input) {
 		mix->release();
 		g_soundsystem_last_error = MA_INVALID_ARGS;
 		return;
@@ -6171,6 +6176,7 @@ public:
 			ma_node_detach_all_output_buses(&*closing);
 			attached.swap(output_connections);
 			drop_rate_bridges();
+			node = nullptr; // Under the lock attaching reads it under, before the sound is freed: cleared after, an attach into the sound read the freed node.
 		}
 		for (audio_node* n : attached) if (n) n->release();
 		// A wrapper the script got of the sound's own source is emptied before the source is freed with the sound, rather than left pointing at it; this also lets go of sources chained to it. Not under the graph lock, which the wrapper takes after its own.
