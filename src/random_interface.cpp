@@ -618,8 +618,16 @@ void random_array_shuffle(CScriptArray* array, random_interface* rng) {
 	if (default_rng) default_rng->release();
 	asIScriptContext* ACtx = asGetActiveContext();
 	// Use temporary slot for swapping
-	array->Resize(array->GetSize() + 1);
+	asUINT before = array->GetSize();
+	array->Resize(before + 1);
 	asUINT size = array->GetSize();
+	// No memory for the slot (the script has "Out of memory"): the last element was used as the slot, its value lost, and then removed. The
+	// slot's constructor, script code, can change the array too, as range() can below.
+	if (size != before + 1) {
+		if (size != before)
+			if (asIScriptContext* active = asGetActiveContext()) active->SetException("the array was changed while it was being shuffled");
+		return;
+	}
 	for (uint32 i = array->GetSize() - 2; i > 0; i--) {
 		if (script_callbacks_stopped(ACtx)) break; // exit() was called since the shuffle began, in the script's range() of a generator set with set_default_random() or in an element's opAssign: no more calls, see random_script_array_shuffle().
 		int32 j = rng->range(0, i);
@@ -691,8 +699,15 @@ void random_script_array_shuffle(CScriptArray* array, asIScriptObject* scriptRng
 	asIScriptContext* ACtx = asGetActiveContext();
 	if (rangeFunc && ctx) {
 		// Use temporary slot for swapping
-		array->Resize(array->GetSize() + 1);
+		asUINT before = array->GetSize();
+		array->Resize(before + 1);
 		asUINT size = array->GetSize();
+		if (size != before + 1) { // see random_array_shuffle()
+			ctx->Release();
+			if (size != before)
+				if (asIScriptContext* active = asGetActiveContext()) active->SetException("the array was changed while it was being shuffled");
+			return;
+		}
 		for (uint32 i = array->GetSize() - 2; i > 0; i--) {
 			if (script_callbacks_stopped(ACtx)) break; // exit() was called since the shuffle began (in the generator's range(), whose context of its own exit() doesn't abort, or by another thread): no more calls.
 			ctx->Prepare(rangeFunc);

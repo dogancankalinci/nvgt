@@ -991,7 +991,10 @@ void CScriptArray::RemoveRange(asUINT start, asUINT count)
 // removed elements are taken out before they are released (see RemoveRange). Constructors ran into a buffer not yet
 // installed, so the resize then installed it over whatever they had done (an element they added was lost, one they removed
 // was released again) or into a freed array, and destructors ran on elements still in the array.
-void CScriptArray::Resize(int delta, asUINT at)
+// ALTERED: returns false when the elements couldn't be added (the exception is raised), and then leaves the array as it was: an element
+// that couldn't be made was left null in it, where the application code that resized an array to fill it wrote through it, and
+// InsertAt's SetValue() replaced the exception with "Index out of bounds" when no room could be made.
+bool CScriptArray::Resize(int delta, asUINT at)
 {
 	if( delta < 0 )
 	{
@@ -1001,25 +1004,26 @@ void CScriptArray::Resize(int delta, asUINT at)
 			at = buffer->numElements + delta;
 		if( delta < 0 )
 			RemoveRange(at, (asUINT)-delta);
-		return;
+		return true;
 	}
 
-	if( delta == 0 ) return;
+	if( delta == 0 ) return true;
 
 	// Make sure the array size isn't too large for us to handle
 	if( !CheckMaxSize(buffer->numElements + delta) )
-		return;
+		return false;
 
 	SArrayHold hold(this);
 	asIScriptEngine *engine = objType->GetEngine();
 	asITypeInfo *subType = objType->GetSubType();
 
 	// Create an object using the default constructor/factory for each new element of an array of objects. If one fails the
-	// rest are left null, so the destructor won't attempt to destroy invalid objects later. There is no need to set an
-	// exception on the context, as CreateScriptObject has already done that
+	// array isn't changed and the ones made are released below. There is no need to set an exception on the context, as
+	// CreateScriptObject has already done that
 	void *few[8];
 	std::vector<void*> many;
 	void **made = 0;
+	bool allMade = true;
 	if( (subTypeId & asTYPEID_MASK_OBJECT) && !(subTypeId & asTYPEID_OBJHANDLE) )
 	{
 		if( delta > 8 )
@@ -1028,13 +1032,16 @@ void CScriptArray::Resize(int delta, asUINT at)
 		memset(made, 0, delta*sizeof(void*));
 		for( int n = 0; n < delta; n++ )
 			if( (made[n] = engine->CreateScriptObject(subType)) == 0 )
+			{
+				allMade = false;
 				break;
+			}
 	}
 
 	// The constructors may have changed the array
 	if( at > buffer->numElements )
 		at = buffer->numElements;
-	bool fits = CheckMaxSize(buffer->numElements + delta);
+	bool fits = allMade && CheckMaxSize(buffer->numElements + delta);
 	SArrayBuffer *newBuffer = 0;
 	if( fits && buffer->maxElements < buffer->numElements + delta )
 	{
@@ -1059,7 +1066,7 @@ void CScriptArray::Resize(int delta, asUINT at)
 		for( int n = 0; made && n < delta; n++ )
 			if( made[n] )
 				engine->ReleaseScriptObject(made[n], subType);
-		return;
+		return false;
 	}
 
 	// As objects in arrays of objects are not stored inline, it is safe to use memcpy and memmove here
@@ -1096,6 +1103,7 @@ void CScriptArray::Resize(int delta, asUINT at)
 		}
 		userFree(oldBuffer);
 	}
+	return true;
 }
 
 // internal
@@ -1166,7 +1174,9 @@ void CScriptArray::InsertAt(asUINT index, void *value)
 	SElementHold holdValue(objType->GetEngine(), objType->GetSubType(), (subTypeId & asTYPEID_OBJHANDLE) ? handle : ((subTypeId & asTYPEID_MASK_OBJECT) ? value : 0));
 
 	// Make room for the new element
-	Resize(1, index);
+	// ALTERED: nothing more when it couldn't be made (see Resize)
+	if( !Resize(1, index) )
+		return;
 
 	// Set the value of the new element
 	SetValue(index, value);
@@ -1321,6 +1331,16 @@ void CScriptArray::CreateBuffer(SArrayBuffer **buf, asUINT numElements)
 		(*buf)->numElements = numElements;
 		(*buf)->maxElements = numElements;
 		Construct(*buf, 0, numElements);
+		// ALTERED: an element that couldn't be made (no memory, or its constructor raised an exception) fails the buffer, and with it
+		// the array (see ArrayOrNull): Construct leaves it and the elements after it null, which the array then held. The script that
+		// made the array gets the exception either way, but the application code making one, as array<string>(n) for a list it fills,
+		// wrote through the null elements (vector_to_scriptarray and NVGT's other string[] makers, uri's query parameters).
+		if( numElements > 0 && (subTypeId & asTYPEID_MASK_OBJECT) && !(subTypeId & asTYPEID_OBJHANDLE) &&
+			((void**)(*buf)->data)[numElements - 1] == 0 )
+		{
+			DeleteBuffer(*buf);
+			*buf = 0;
+		}
 	}
 	else
 	{

@@ -157,6 +157,11 @@ static bool found_by_short_name_only(const WIN32_FIND_DATAW& ffd, const string& 
 #include <sys/stat.h>
 #include <dirent.h>
 #endif
+// Adds a name found by FindFiles() or FindDirectories(). The array was resized and its last element written, which was null, or the last
+// name found, when there was no memory for the new one (the script has "Out of memory"); InsertLast() adds nothing then.
+static void append_name(CScriptArray* array, const string& name) {
+	array->InsertLast((void*)&name);
+}
 
 CScriptArray* FindFiles(const string& path) {
 	// Obtain a pointer to the engine
@@ -192,8 +197,7 @@ CScriptArray* FindFiles(const string& path) {
 		WideCharToMultiByte(CP_UTF8, 0, ffd.cFileName, -1, bufUTF8, 1024, 0, 0);
 
 		// Add the file to the array
-		array->Resize(array->GetSize() + 1);
-		((string*)(array->At(array->GetSize() - 1)))->assign(bufUTF8);
+		append_name(array, bufUTF8);
 	} while (FindNextFileW(hFind, &ffd) != 0);
 
 	FindClose(hFind);
@@ -231,8 +235,7 @@ CScriptArray* FindFiles(const string& path) {
 			if (!FNMatch(filename, Wildcard)) continue;
 
 			// Add the file to the array
-			array->Resize(array->GetSize() + 1);
-			((string*)(array->At(array->GetSize() - 1)))->assign(filename);
+			append_name(array, filename);
 		}
 		closedir(dir);
 	}
@@ -244,8 +247,7 @@ CScriptArray* FindFiles(const string& path) {
 	if (android_asset_list(currentPath, false, asset_entries)) {
 		for (const string& filename : asset_entries) {
 			if (!FNMatch(filename, Wildcard)) continue;
-			array->Resize(array->GetSize() + 1);
-			((string*)(array->At(array->GetSize() - 1)))->assign(filename);
+			append_name(array, filename);
 		}
 	}
 	#endif
@@ -290,8 +292,7 @@ CScriptArray* FindDirectories(const string& path) {
 			continue;
 
 		// Add the dir to the array
-		array->Resize(array->GetSize() + 1);
-		((string*)(array->At(array->GetSize() - 1)))->assign(bufUTF8);
+		append_name(array, bufUTF8);
 	} while (FindNextFileW(hFind, &ffd) != 0);
 
 	FindClose(hFind);
@@ -329,8 +330,7 @@ CScriptArray* FindDirectories(const string& path) {
 			if (!FNMatch(filename, Wildcard)) continue;
 
 			// Add the dir to the array
-			array->Resize(array->GetSize() + 1);
-			((string*)(array->At(array->GetSize() - 1)))->assign(filename);
+			append_name(array, filename);
 		}
 		closedir(dir);
 	}
@@ -341,8 +341,7 @@ CScriptArray* FindDirectories(const string& path) {
 	if (android_asset_list(currentPath, true, asset_entries)) {
 		for (const string& filename : asset_entries) {
 			if (!FNMatch(filename, Wildcard)) continue;
-			array->Resize(array->GetSize() + 1);
-			((string*)(array->At(array->GetSize() - 1)))->assign(filename);
+			append_name(array, filename);
 		}
 	}
 	#endif

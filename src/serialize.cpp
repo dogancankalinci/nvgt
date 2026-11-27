@@ -549,6 +549,7 @@ static void read_array_body(Poco::BinaryReader& r, asIScriptModule* mod, CScript
 				arr->Reserve(asUINT(room));
 			}
 			arr->Resize(i + 1);
+			if (arr->GetSize() != i + 1) arr = nullptr; // No memory for the element (the script has "Out of memory"): the rest is read without being kept, as SetValue() past the end replaced the exception with "Index out of bounds".
 		}
 		read_value(r, mod, [&](void* v, int t) {
 			if (!arr) return;

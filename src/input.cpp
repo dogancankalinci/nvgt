@@ -365,7 +365,7 @@ CScriptArray* keys_down() {
 		key_code_array_type = get_array_type("array<int>");
 	CScriptArray* array = CScriptArray::Create(key_code_array_type);
 	const bool* keys_down = g_KeysDown; // See g_KeysDown.
-	if (!keys_down)
+	if (!array || !keys_down) // null with no memory for it (the script has "Out of memory"), as keys_pressed() checks
 		return array;
 	for (int i = 0; i < g_KeysDownArrayLen; i++) {
 		if (keys_down[i] == 1 || g_KeysForced[i])

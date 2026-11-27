@@ -266,7 +266,7 @@ CScriptArray* network::list_peers() {
 	std::lock_guard<std::recursive_mutex> lock(mtx);
 	asITypeInfo* arrayType = get_array_type("uint64[]");
 	CScriptArray* array = CScriptArray::Create(arrayType);
-	if (!host) return array;
+	if (!array || !host) return array; // null with no memory for it: the script has "Out of memory".
 	array->Reserve(peers.size());
 	for (std::unordered_map<asQWORD, ENetPeer*>::iterator it = peers.begin(); it != peers.end(); it++) {
 		asQWORD peer = it->first;

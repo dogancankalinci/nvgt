@@ -134,7 +134,7 @@ protected:
 	void  Swap(void *a, void *b);
 	void  Precache();
 	bool  CheckMaxSize(asUINT numElements);
-	void  Resize(int delta, asUINT at);
+	bool  Resize(int delta, asUINT at); // ALTERED: false when the elements couldn't be added, see scriptarray.cpp
 	void  CreateBuffer(SArrayBuffer **buf, asUINT numElements);
 	void  DeleteBuffer(SArrayBuffer *buf);
 	void  CopyElements(const CScriptArray &other); // ALTERED: was CopyBuffer, see scriptarray.cpp

@@ -838,7 +838,7 @@ CScriptArray* poco_regular_expression_split(RegularExpression* exp, const std::s
 		return array;
 	}
 	array->Resize(groups.size());
-	for (asUINT i = 0; i < groups.size(); i++) {
+	for (asUINT i = 0; i < groups.size() && i < array->GetSize(); i++) { // smaller when there was no memory for the strings (the script has "Out of memory"), where At() gave null
 		if (groups[i].offset != std::string::npos) (*(std::string*)array->At(i)) = subject.substr(groups[i].offset, groups[i].length);
 	}
 	return array;
