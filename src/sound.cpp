@@ -4615,7 +4615,13 @@ public:
 			try {
 				record_node_hold(static_cast<const audio_node*>(this), made); // Held by this mixer too, which a script can take out of internal_node_chain.
 				// After the effects chain, which runs first wherever it is made, so that a mixer's effects are positioned with it rather than applied to it once positioned, whichever was made first; a chain the script took out of internal_node_chain leaves the spatializer first.
-				if (!effects_chain || !node_chain->add_node(made, effects_chain)) node_chain->add_node(made);
+				if (!(effects_chain && node_chain->add_node(made, effects_chain)) && !node_chain->add_node(made)) { // Refused, as where the graph is too deep for one more node: not published, rather than a spatializer outside the chain taking components that process nothing.
+					last_error_kept kept;
+					drop_node_hold(static_cast<const audio_node*>(this), made);
+					made->forget_mixer();
+					made->release();
+					return nullptr;
+				}
 			} catch (...) { // As on running out of memory: not kept by this mixer, which forgets it rather than leaving it tracked and its engine held for good.
 				last_error_kept kept;
 				drop_node_hold(static_cast<const audio_node*>(this), made);
@@ -4675,7 +4681,7 @@ public:
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return;
 		}
-		get_spatializer()->set_panner_by_id(panner_id);
+		if (audio_spatializer* s = get_spatializer()) s->set_panner_by_id(panner_id); // None where one can't be made, its refusal set.
 	}
 	int get_3d_panner() const override { audio_spatializer* made = made_spatializer(); return made? made->get_current_panner_id() : -1; }
 	void set_3d_attenuator(int attenuator_id) override {
@@ -4683,18 +4689,20 @@ public:
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return;
 		}
-		get_spatializer()->set_attenuator_by_id(attenuator_id);
+		if (audio_spatializer* s = get_spatializer()) s->set_attenuator_by_id(attenuator_id);
 	}
 	int get_3d_attenuator() const override { audio_spatializer* made = made_spatializer(); return made? made->get_current_attenuator_id() : -1; }
 	int get_preferred_3d_panner() const override { audio_spatializer* made = made_spatializer(); return made? made->get_preferred_panner_id() : -1; }
 	int get_preferred_3d_attenuator() const override { audio_spatializer* made = made_spatializer(); return made? made->get_preferred_attenuator_id() : -1; }
 	void set_hrtf(bool enabled) override {
+		audio_spatializer* s = get_spatializer();
+		if (!s) return;
 		if (enabled) {
-			get_spatializer()->set_panner_by_id(g_audio_hrtf_panner);
-			get_spatializer()->set_attenuator_by_id(g_audio_hrtf_attenuator);
+			s->set_panner_by_id(g_audio_hrtf_panner);
+			s->set_attenuator_by_id(g_audio_hrtf_attenuator);
 		} else {
-			get_spatializer()->set_panner_by_id(g_audio_basic_panner);
-			get_spatializer()->set_attenuator_by_id(g_audio_basic_attenuator);
+			s->set_panner_by_id(g_audio_basic_panner);
+			s->set_attenuator_by_id(g_audio_basic_attenuator);
 		}
 	}
 	bool get_hrtf() const override { return get_3d_panner() == g_audio_hrtf_panner && get_3d_attenuator() == g_audio_hrtf_attenuator; } // The components in use, rather than those asked for: one that couldn't be made, as for an engine that isn't stereo, falls back to the basic one, which read as HRTF though none was heard.
@@ -4765,8 +4773,8 @@ public:
 		g_soundsystem_last_error = MA_INVALID_ARGS;
 		return false;
 	}
-	void set_reverb3d(reverb3d* verb) override { if (reverb3d_takeable(verb, postpan) && (verb || made_spatializer())) get_spatializer()->set_reverb3d(verb); }
-	void set_reverb3d_at(reverb3d* verb, audio_spatializer_reverb3d_placement placement) override { if (reverb3d_takeable(verb, placement) && (verb || made_spatializer())) get_spatializer()->set_reverb3d(verb, placement); }
+	void set_reverb3d(reverb3d* verb) override { if (reverb3d_takeable(verb, postpan) && (verb || made_spatializer())) if (audio_spatializer* s = get_spatializer()) s->set_reverb3d(verb); }
+	void set_reverb3d_at(reverb3d* verb, audio_spatializer_reverb3d_placement placement) override { if (reverb3d_takeable(verb, placement) && (verb || made_spatializer())) if (audio_spatializer* s = get_spatializer()) s->set_reverb3d(verb, placement); }
 	reverb3d* get_reverb3d() const override { audio_spatializer* made = made_spatializer(); return made? made->get_reverb3d() : nullptr; }
 	reverb3d* get_reverb3d_sent_to() const override { // Read by the loop check of another thread, under the topology lock, which close() clears this under (see get_spatializer()).
 		audio_spatializer* sending = reinterpret_cast<std::atomic<audio_spatializer*>&>(spatializer).load(std::memory_order_acquire);
@@ -5012,7 +5020,7 @@ public:
 		ma_sound_set_spatialization_enabled(&*snd, enabled);
 		if (!enabled) return;
 		// With the default panner and attenuator unless the sound has its own, as set_position_3d() gives them: spatialization turned on by hand, as after a load, which lets go of them, left the sound placed but neither panned nor attenuated.
-		get_spatializer()->use_default_components();
+		if (audio_spatializer* s = get_spatializer()) s->use_default_components();
 		place_in_shape(); // A shaped sound isn't placed while not spatialized, as a listener moves or the sound loads anew: placed in its shape once it is, rather than played from where it was last placed or from the origin.
 	}
 	bool get_spatialization_enabled() const override {
@@ -5125,7 +5133,7 @@ public:
 	ma_positioning get_positioning() const override {
 		return snd ? ma_sound_get_positioning(&*snd) : ma_positioning_absolute;
 	}
-	void set_rolloff(float rolloff) override { if (!std::isnan(rolloff)) get_spatializer()->set_rolloff(rolloff); } // A NaN, which the spatializer ignores, ignored before one is made for it.
+	void set_rolloff(float rolloff) override { if (!std::isnan(rolloff)) if (audio_spatializer* s = get_spatializer()) s->set_rolloff(rolloff); } // A NaN, which the spatializer ignores, ignored before one is made for it.
 	float get_rolloff() const override { audio_spatializer* made = made_spatializer(); return made? made->get_rolloff() : default_spatializer_rolloff; }
 	void set_min_gain(float gain) override {
 		if (snd && playable_volumes({gain})) // The attenuators raise the volume to it, so no louder than a volume.
@@ -5183,7 +5191,7 @@ public:
 	float get_doppler_factor() const override {
 		return snd ? ma_sound_get_doppler_factor(&*snd) : NAN;
 	}
-	void set_directional_attenuation_factor(float factor) override { if (!std::isnan(factor)) get_spatializer()->set_directional_attenuation_factor(factor); } // As set_rolloff().
+	void set_directional_attenuation_factor(float factor) override { if (!std::isnan(factor)) if (audio_spatializer* s = get_spatializer()) s->set_directional_attenuation_factor(factor); } // As set_rolloff().
 	float get_directional_attenuation_factor() const override { audio_spatializer* made = made_spatializer(); return made? made->get_directional_attenuation_factor() : 1.0f; }
 	void set_fade(float start_volume, float end_volume, ma_uint64 length) override {
 		if (!snd)

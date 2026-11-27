@@ -1760,24 +1760,32 @@ private:
 	std::atomic<int> current_panner_id, current_attenuator_id; // Read on the audio thread, as the mixer gives its parameters, while the sweeps set them.
 	bool default_panner = false, default_attenuator = false; // Whether the preferred ones are the defaults it was given, which set_global_hrtf() changes, rather than its own.
 	// Its rewiring runs in the chain's rewire_scope, what it lets go of released once the thread's outermost release_scope ends (see release_scope).
-	void position_reverb() {
+	// Whether the attachment went into the chain, which refuses it where the graph is too deep for one more node.
+	bool position_reverb() {
 		rewire_scope scope(*this);
-		if (!reverb_attachment) return;
+		if (!reverb_attachment) return true;
 		remove_node(reverb_attachment);
 		switch (reverb_placement) {
 			case prepan:
-				add_node(reverb_attachment, nullptr, 0);
-				break;
+				return add_node(reverb_attachment, nullptr, 0);
 			case postpan:
-				if (panner) add_node(reverb_attachment, panner, 0);
-				else add_node(reverb_attachment, nullptr, 0);
-				break;
+				if (panner) return add_node(reverb_attachment, panner, 0);
+				return add_node(reverb_attachment, nullptr, 0);
 			case postattenuate:
-				if (attenuator) add_node(reverb_attachment, attenuator, 0);
-				else if (panner) add_node(reverb_attachment, panner, 0);
-				else add_node(reverb_attachment, nullptr, 0);
-				break;
+				if (attenuator) return add_node(reverb_attachment, attenuator, 0);
+				if (panner) return add_node(reverb_attachment, panner, 0);
+				return add_node(reverb_attachment, nullptr, 0);
 		}
+		return true;
+	}
+	// A reverb3d whose attachment the chain refused, let go of: kept, it read as set while nothing was sent to it, and components anchored on it were refused in turn.
+	void drop_unplaced_reverb() {
+		last_error_kept kept;
+		drop_node_hold(static_cast<audio_node*>(this), reverb);
+		release_later(reverb);
+		release_later(reverb_attachment);
+		reverb = nullptr;
+		reverb_attachment = nullptr;
 	}
 	// The reverb's send for the current parameters. Placed before the attenuator, which applies the cones and the gain range, it takes those too, as when MiniAudio's spatializer applied them ahead of the whole chain, so a sound turned away or silenced by max_gain sends none; after it, it has them from the attenuator, and with no attenuator there are none.
 	float reverb_send_volume(reverb3d* verb) const {
@@ -1801,14 +1809,27 @@ private:
 			verb->update_attachment(reverb_attachment, params);
 		} else reverb_attachment->set_output_bus_volume(1, parameters_valid? reverb_send_volume(verb) : std::min(verb->get_volume_at(0), max_volume_gain)); // Spatialization off, the mixer plays unattenuated, as at the listener: its send is the reverb's there too, rather than kept at what it was when spatialization went off, loud or nearly silent.
 	}
+	// Puts a component made for an id in, taking the id as current only once the chain took it: refused, as where the graph is too deep for one more node, the old component and its id stay.
+	bool install_panner(spatializer_component_node* p, int id) {
+		set_panner(p);
+		if (panner != p) return false;
+		current_panner_id = id;
+		return true;
+	}
+	bool install_attenuator(spatializer_component_node* a, int id) {
+		set_attenuator(a);
+		if (attenuator != a) return false;
+		current_attenuator_id = id;
+		return true;
+	}
+	// True once one was tried, taken or refused: another, refused the same way, isn't tried after a refusal.
 	bool set_fallback_panner() {
 		rewire_scope scope(*this);
 		for (const auto& pair : g_audio_panners) {
 			if (!pair.second.enabled) continue;
 			spatializer_component_node* fallback_panner = create_audio_panner(pair.first, this, get_engine());
 			if (!fallback_panner) continue;
-			current_panner_id = pair.first;
-			set_panner(fallback_panner);
+			install_panner(fallback_panner, pair.first);
 			return true;
 		}
 		return false;
@@ -1819,8 +1840,7 @@ private:
 			if (!pair.second.enabled) continue;
 			spatializer_component_node* fallback_attenuator = create_audio_attenuator(pair.first, this, get_engine());
 			if (!fallback_attenuator) continue;
-			current_attenuator_id = pair.first;
-			set_attenuator(fallback_attenuator);
+			install_attenuator(fallback_attenuator, pair.first);
 			return true;
 		}
 		return false;
@@ -1854,37 +1874,63 @@ public:
 		if (reverb_attachment) reverb_attachment->release();
 		if (reverb) reverb->release();
 	}
+	// Where the panner goes, as set_panner() places it.
+	bool place_panner(spatializer_component_node* p) {
+		if (reverb_attachment && reverb_placement == prepan) return add_node(p, reverb_attachment, 0);
+		return add_node(p, nullptr, 0);
+	}
 	void set_panner(spatializer_component_node* new_panner) override {
 		rewire_scope scope(*this);
-		if (panner) {
-			remove_node(panner); // Which takes it off the graph and waits for the audio thread, so it can lose its pointer back here: a replaced component the script kept passes audio through.
-			panner->forget_spatializer();
-			drop_node_hold(static_cast<audio_node*>(this), panner); // This spatializer's own, as below.
-			release_later(panner);
-		}
+		spatializer_component_node* old = panner;
+		if (old) remove_node(old); // Which takes it off the graph and waits for the audio thread, so it can lose its pointer back here: a replaced component the script kept passes audio through.
 		panner = new_panner;
 		if (panner) {
 			// Held by this spatializer as well as by its chain, which a script can take a component out of by hand, the spatializer being reachable through internal_node_chain: with only the chain's hold recorded, a loop closed through the component passed the loop check (see claim_node_hold()), keeping every node on it, and their engine with its device and job threads, for good. As a mixer records its spatializer.
 			record_node_hold(static_cast<audio_node*>(this), panner);
-			if (reverb_attachment && reverb_placement == prepan) add_node(panner, reverb_attachment, 0);
-			else add_node(panner, nullptr, 0);
+			if (!place_panner(panner)) { // Refused, as where the graph is too deep for one more node: the old one kept, rather than a panner outside the chain read as in use while nothing panned.
+				last_error_kept kept;
+				drop_node_hold(static_cast<audio_node*>(this), panner);
+				panner->forget_spatializer();
+				release_later(panner); // Given to this spatializer, which doesn't keep it.
+				panner = old;
+				if (old) place_panner(old); // Where it was, taking no more depth than it did.
+				return;
+			}
 		}
+		if (old) {
+			old->forget_spatializer();
+			drop_node_hold(static_cast<audio_node*>(this), old); // This spatializer's own, as above.
+			release_later(old);
+		}
+	}
+	// Where the attenuator goes, as set_attenuator() places it.
+	bool place_attenuator(spatializer_component_node* a) {
+		if (panner && (!reverb_attachment || reverb_placement != postpan)) return add_node(a, panner, 0);
+		if (reverb_attachment && reverb_placement == postpan) return add_node(a, reverb_attachment, 0);
+		if (!panner && reverb_attachment && reverb_placement == prepan) return add_node(a, reverb_attachment, 0);
+		return add_node(a, nullptr, 0);
 	}
 	void set_attenuator(spatializer_component_node* new_attenuator) override {
 		rewire_scope scope(*this);
-		if (attenuator) {
-			remove_node(attenuator);
-			attenuator->forget_spatializer();
-			drop_node_hold(static_cast<audio_node*>(this), attenuator); // As for the panner.
-			release_later(attenuator);
-		}
+		spatializer_component_node* old = attenuator;
+		if (old) remove_node(old);
 		attenuator = new_attenuator;
 		if (attenuator) {
 			record_node_hold(static_cast<audio_node*>(this), attenuator); // As for the panner.
-			if (panner && (!reverb_attachment || reverb_placement != postpan)) add_node(attenuator, panner, 0);
-			else if (reverb_attachment && reverb_placement == postpan) add_node(attenuator, reverb_attachment, 0);
-			else if (!panner && reverb_attachment && reverb_placement == prepan) add_node(attenuator, reverb_attachment, 0);
-			else add_node(attenuator, nullptr, 0);
+			if (!place_attenuator(attenuator)) { // Refused: the old one kept, as for the panner.
+				last_error_kept kept;
+				drop_node_hold(static_cast<audio_node*>(this), attenuator);
+				attenuator->forget_spatializer();
+				release_later(attenuator);
+				attenuator = old;
+				if (old) place_attenuator(old);
+				return;
+			}
+		}
+		if (old) {
+			old->forget_spatializer();
+			drop_node_hold(static_cast<audio_node*>(this), old); // As for the panner.
+			release_later(old);
 		}
 	}
 	void set_reverb3d(reverb3d* new_reverb, audio_spatializer_reverb3d_placement placement = postpan) override {
@@ -1907,7 +1953,7 @@ public:
 		if (new_reverb == reverb) {
 			if (reverb && placement != reverb_placement) { // Only moved: the same attachment goes to its new place in the chain.
 				reverb_placement = placement;
-				position_reverb();
+				if (!position_reverb()) drop_unplaced_reverb();
 			}
 			return;
 		}
@@ -1942,7 +1988,7 @@ public:
 			reverb_placement = placement;
 			claim.kept = true;
 			if (attached_mixer) update_reverb_send(new_reverb); // The first send, as at the listener before the mixer gives its parameters, rather than at full volume until the audio thread gets to it.
-			position_reverb();
+			if (!position_reverb()) drop_unplaced_reverb(); // Refused: none, which is what it had, as one placed where another was takes no more depth.
 		}
 	}
 	spatializer_component_node* get_panner() const override {
@@ -1983,12 +2029,16 @@ public:
 			return;
 		}
 		rewire_scope scope(*this);
+		const int was_preferred = preferred_panner_id;
+		const bool was_default = default_panner;
 		preferred_panner_id = panner_id;
 		default_panner = false;
 		spatializer_component_node* new_panner = create_audio_panner(panner_id, this, get_engine());
 		if (new_panner) {
-			current_panner_id = panner_id;
-			set_panner(new_panner);
+			if (!install_panner(new_panner, panner_id)) { // Refused: as it was, the panner asked for not read back as preferred.
+				preferred_panner_id = was_preferred;
+				default_panner = was_default;
+			}
 		} else if (!set_fallback_panner()) {
 			current_panner_id = -1;
 			set_panner(nullptr);
@@ -2000,12 +2050,16 @@ public:
 			return;
 		}
 		rewire_scope scope(*this);
+		const int was_preferred = preferred_attenuator_id;
+		const bool was_default = default_attenuator;
 		preferred_attenuator_id = attenuator_id;
 		default_attenuator = false;
 		spatializer_component_node* new_attenuator = create_audio_attenuator(attenuator_id, this, get_engine());
 		if (new_attenuator) {
-			current_attenuator_id = attenuator_id;
-			set_attenuator(new_attenuator);
+			if (!install_attenuator(new_attenuator, attenuator_id)) { // As for the panner.
+				preferred_attenuator_id = was_preferred;
+				default_attenuator = was_default;
+			}
 		} else if (!set_fallback_attenuator()) {
 			current_attenuator_id = -1;
 			set_attenuator(nullptr);
@@ -2067,10 +2121,7 @@ public:
 			// The preferred panner replaces a fallback; and one asked for while none was enabled takes this one, as set_fallback_panner() would have given it, rather than staying without one.
 			if (preferred_panner_id == panner_id && preferred_panner_id != current_panner_id || current_panner_id == -1 && preferred_panner_id >= 0) {
 				spatializer_component_node* new_panner = create_audio_panner(panner_id, this, get_engine());
-				if (new_panner) {
-					current_panner_id = panner_id;
-					set_panner(new_panner);
-				}
+				if (new_panner) install_panner(new_panner, panner_id);
 			}
 		} else {
 			if (current_panner_id == panner_id && !set_fallback_panner()) {
@@ -2085,10 +2136,7 @@ public:
 			// As for panners.
 			if (preferred_attenuator_id == attenuator_id && preferred_attenuator_id != current_attenuator_id || current_attenuator_id == -1 && preferred_attenuator_id >= 0) {
 				spatializer_component_node* new_attenuator = create_audio_attenuator(attenuator_id, this, get_engine());
-				if (new_attenuator) {
-					current_attenuator_id = attenuator_id;
-					set_attenuator(new_attenuator);
-				}
+				if (new_attenuator) install_attenuator(new_attenuator, attenuator_id);
 			}
 		} else {
 			if (current_attenuator_id == attenuator_id && !set_fallback_attenuator()) {
