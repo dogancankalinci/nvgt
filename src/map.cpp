@@ -286,15 +286,30 @@ static std::vector<map_area*> snapshot_areas(const std::vector<map_area*>& areas
 static void release_snapshot(std::vector<map_area*>& copy) {
 	for (map_area* a : copy) a->release();
 }
+// The snapshot of the frame of the given size at a point, empty when there is none. The frame is looked up and its list copied under
+// links_mutex(), as one step: a query read the map's frames and their lists with no lock while another script thread added or moved an
+// area (reframe() inserting into the frames and into a frame's list under the lock) or reset() the map (freeing the frames), and walked
+// a rehashed table or a reallocated list, or a frame that was gone (a heap corruption: one thread adding areas while another called
+// get_area() on the same map). The areas are then checked, and the filter called, without the lock.
+static std::vector<map_area*> frame_snapshot(coordinate_map* m, int x, int y, int z, int size) {
+	std::lock_guard<std::recursive_mutex> lock(coordinate_map::links_mutex());
+	map_frame* f = m->get_frame(x, y, z, size, false);
+	return f ? snapshot_areas(f->areas) : std::vector<map_area*>();
+}
+// Whether the area is still in its map's frames, read under the lock reframe(), unframe() and reset() change it under.
+static bool area_framed(map_area* a) {
+	std::lock_guard<std::recursive_mutex> lock(coordinate_map::links_mutex());
+	return a->framed;
+}
 // raise_priority: only areas of at least the priority of the last one found are taken, which is all get_area() needs for the area on top.
 // Without it every area at the point is: get_areas() and get_area() given a priority went by it too (the reset of p between frames
 // didn't help within a frame), so an area listed after one of a higher priority in its frame was left out: of a priority 1 and then a
 // priority 5 area over a priority 0 one added last, get_areas() gave the first two, and get_area(x, y, z, 1) none at all.
-int map_frame::add_areas_for_point(std::vector<map_area*>& local_areas, float x, float y, float z, float d, int p, asIScriptFunction* filter_callback, asINT64 flags, asINT64 excluded_flags, bool raise_priority) {
-	std::vector<map_area*> snap = snapshot_areas(areas);
+// snap is a frame's snapshot (see frame_snapshot()), let go of here.
+static int add_areas_for_point(std::vector<map_area*>& snap, std::vector<map_area*>& local_areas, float x, float y, float z, float d, int p, asIScriptFunction* filter_callback, asINT64 flags, asINT64 excluded_flags, bool raise_priority) {
 	for (map_area* a : snap) {
 		// framed is checked after the callback, which may have removed this area from the map.
-		if (a->priority >= p && a->is_in_area(x, y, z, d, filter_callback, flags, excluded_flags) && a->framed) {
+		if (a->priority >= p && a->is_in_area(x, y, z, d, filter_callback, flags, excluded_flags) && area_framed(a)) {
 			if (raise_priority) p = a->priority;
 			a->add_ref(); // the result list owns a reference; the callers below release it
 			local_areas.push_back(a);
@@ -304,10 +319,10 @@ int map_frame::add_areas_for_point(std::vector<map_area*>& local_areas, float x,
 	return p;
 }
 // taken holds the areas this query has already put in local_areas, so that an area spanning several frames is put there once. It was a mark on each area, cleared once the query ended, which a query run meanwhile by a filter callback on the same map read too: it skipped every area the outer query had already taken.
-int map_frame::add_areas_for_range(std::vector<map_area*>& local_areas, std::unordered_set<map_area*>& taken, float minx, float maxx, float miny, float maxy, float minz, float maxz, float d, int p, asIScriptFunction* filter_callback, asINT64 flags, asINT64 excluded_flags) {
-	std::vector<map_area*> snap = snapshot_areas(areas);
+// snap is a frame's snapshot (see frame_snapshot()), let go of here.
+static int add_areas_for_range(std::vector<map_area*>& snap, std::vector<map_area*>& local_areas, std::unordered_set<map_area*>& taken, float minx, float maxx, float miny, float maxy, float minz, float maxz, float d, int p, asIScriptFunction* filter_callback, asINT64 flags, asINT64 excluded_flags) {
 	for (map_area* a : snap) {
-		if (!taken.contains(a) && a->priority >= p && a->is_in_area_range(minx, maxx, miny, maxy, minz, maxz, d, 0, filter_callback, flags, excluded_flags) && a->framed) {
+		if (!taken.contains(a) && a->priority >= p && a->is_in_area_range(minx, maxx, miny, maxy, minz, maxz, d, 0, filter_callback, flags, excluded_flags) && area_framed(a)) {
 			//p=a->priority; // Object can be reframed at the end of frame with lower priority than something that is higher in the frame, such item will not be included in list if p keeps getting reset.
 			a->add_ref(); // the result list owns a reference; the callers below release it
 			local_areas.push_back(a);
@@ -425,32 +440,40 @@ void coordinate_map::get_areas(float minx, float maxx, float miny, float maxy, f
 	int p = -1;
 	if (minx == maxx && miny == maxy && minz == maxz && d < 1) {
 		for (int i = total_frame_sizes - 1; i >= 0; i--) {
-			map_frame* f = get_frame(minx, miny, minz, i, false);
-			if (!f) continue;
-			p = f->add_areas_for_point(local_areas, minx, miny, minz, d, p, filter_callback, flags, excluded_flags, priority_check);
+			std::vector<map_area*> snap = frame_snapshot(this, minx, miny, minz, i); // see frame_snapshot()
+			if (snap.empty()) continue;
+			p = add_areas_for_point(snap, local_areas, minx, miny, minz, d, p, filter_callback, flags, excluded_flags, priority_check);
 			if (!priority_check) p = -1;
 		}
 	} else {
-		std::unordered_set<map_area*> taken; // See map_frame::add_areas_for_range.
+		std::unordered_set<map_area*> taken; // See add_areas_for_range().
 		for (int i = total_frame_sizes - 1; i >= 0; i--) {
 			const int size = frame_sizes[i];
 			const double x0 = float(minx - d), x1 = float(maxx + d + size), y0 = float(miny - d), y1 = float(maxy + d + size), z0 = float(minz - d), z1 = float(maxz + d + size);
 			if (!(x0 <= x1 && y0 <= y1 && z0 <= z1)) continue;
 			// A range past what an int holds never ended (the walk below wrapped around), and a wide one took as long as it has positions, however few frames the map has: such a range looks through the frames there are, in the same order. The callback can change the map, so they are looked up one at a time.
 			bool walk = std::max({std::fabs(x0), std::fabs(x1), std::fabs(y0), std::fabs(y1), std::fabs(z0), std::fabs(z1)}) <= 2000000000.0;
-			if (walk) walk = ((x1 - x0) / size + 1) * ((y1 - y0) / size + 1) * ((z1 - z0) / size + 1) <= frames[i].size() + 64.0;
+			size_t frame_count;
+			{
+				std::lock_guard<std::recursive_mutex> lock(links_mutex()); // see frame_snapshot()
+				frame_count = frames[i].size();
+			}
+			if (walk) walk = ((x1 - x0) / size + 1) * ((y1 - y0) / size + 1) * ((z1 - z0) / size + 1) <= frame_count + 64.0;
 			if (!walk) {
 				std::vector<hashpoint> found;
 				const double fx = std::floor(x0 / size) * size, fy = std::floor(y0 / size) * size, fz = std::floor(z0 / size) * size;
-				for (const auto& f : frames[i]) {
-					const hashpoint& h = f.first;
-					if (h.x >= fx && h.x <= x1 && h.y >= fy && h.y <= y1 && h.z >= fz && h.z <= z1) found.push_back(h);
+				{
+					std::lock_guard<std::recursive_mutex> lock(links_mutex()); // see frame_snapshot()
+					for (const auto& f : frames[i]) {
+						const hashpoint& h = f.first;
+						if (h.x >= fx && h.x <= x1 && h.y >= fy && h.y <= y1 && h.z >= fz && h.z <= z1) found.push_back(h);
+					}
 				}
 				std::sort(found.begin(), found.end(), [](const hashpoint& a, const hashpoint& b) { return std::tie(a.x, a.y, a.z) < std::tie(b.x, b.y, b.z); });
 				for (const hashpoint& h : found) {
-					map_frame* f = get_frame(h.x, h.y, h.z, i, false);
-					if (!f) continue;
-					p = f->add_areas_for_range(local_areas, taken, minx, maxx, miny, maxy, minz, maxz, d, p, filter_callback, flags, excluded_flags);
+					std::vector<map_area*> snap = frame_snapshot(this, h.x, h.y, h.z, i);
+					if (snap.empty()) continue;
+					p = add_areas_for_range(snap, local_areas, taken, minx, maxx, miny, maxy, minz, maxz, d, p, filter_callback, flags, excluded_flags);
 					if (!priority_check) p = -1;
 				}
 				continue;
@@ -458,9 +481,9 @@ void coordinate_map::get_areas(float minx, float maxx, float miny, float maxy, f
 			for (int x = x0; x <= x1; x += size) {
 				for (int y = y0; y <= y1; y += size) {
 					for (int z = z0; z <= z1; z += size) {
-						map_frame* f = get_frame(x, y, z, i, false);
-						if (!f) continue;
-						p = f->add_areas_for_range(local_areas, taken, minx, maxx, miny, maxy, minz, maxz, d, p, filter_callback, flags, excluded_flags);
+						std::vector<map_area*> snap = frame_snapshot(this, x, y, z, i);
+						if (snap.empty()) continue;
+						p = add_areas_for_range(snap, local_areas, taken, minx, maxx, miny, maxy, minz, maxz, d, p, filter_callback, flags, excluded_flags);
 						if (!priority_check) p = -1;
 					}
 				}
