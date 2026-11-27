@@ -1360,7 +1360,7 @@ public:
 		sound* snd = new_sound();
 		if (!snd) return nullptr;
 		try { // A load can throw, as for a pack open for writing: the sound is let go of, rather than left holding its engine, and the default mixer, for good.
-			if (!snd->load(path, pack_file) || mix && !snd->set_mixer(mix)) {
+			if (mix && !snd->set_mixer(mix) || !snd->load(path, pack_file)) { // Into the mixer first: loaded on sound_default_mixer, a load that didn't fit there was refused where the mixer given had room.
 				snd->release();
 				return nullptr;
 			}
