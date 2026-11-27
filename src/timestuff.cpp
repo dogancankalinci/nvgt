@@ -562,12 +562,14 @@ template <class t> bool verify_date_time(t &dt) {
 	}
 	return true;
 }
-std::string get_month_name(LocalDateTime &dt) {
+// For both of the types they are registered for (register_date_time_extensions): they took a LocalDateTime&, and were registered for datetime
+// too, whose DateTime was then read as a LocalDateTime (its first member happens to be the DateTime, which is all they read).
+template <class t> std::string get_month_name(t &dt) {
 	if (verify_date_time(dt))
 		return DateTimeFormat::MONTH_NAMES[dt.month() - 1];
 	return "";
 }
-std::string get_weekday_name(LocalDateTime &dt) {
+template <class t> std::string get_weekday_name(t &dt) {
 	if (verify_date_time(dt))
 		return DateTimeFormat::WEEKDAY_NAMES[weekday_index(dt.dayOfWeek())];
 	return "";
@@ -888,8 +890,8 @@ DateTime* parse_datetime_wrapper2(const std::string &str, int& tzd) {
 #define register_diff_units(r, x) engine->RegisterObjectMethod(classname.c_str(), format(#r " diff_" #x "(const %s&in other)", classname).c_str(), asFUNCTION(diff_##x<t>), asCALL_CDECL_OBJFIRST);
 
 template <class t> void register_date_time_extensions(asIScriptEngine *engine, std::string classname) {
-	engine->RegisterObjectMethod(classname.c_str(), "string get_month_name() const property", asFUNCTION(get_month_name), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod(classname.c_str(), "string get_weekday_name() const property", asFUNCTION(get_weekday_name), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(classname.c_str(), "string get_month_name() const property", asFUNCTION(get_month_name<t>), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod(classname.c_str(), "string get_weekday_name() const property", asFUNCTION(get_weekday_name<t>), asCALL_CDECL_OBJFIRST);
 	register_add_units(days);
 	register_add_units(hours);
 	register_add_units(minutes);
