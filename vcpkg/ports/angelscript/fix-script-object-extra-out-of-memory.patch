@@ -1,0 +1,35 @@
+diff --git a/sdk/angelscript/source/as_scriptobject.cpp b/sdk/angelscript/source/as_scriptobject.cpp
+index 60cce0c..5d31c54 100644
+--- a/sdk/angelscript/source/as_scriptobject.cpp
++++ b/sdk/angelscript/source/as_scriptobject.cpp
+@@ -538,12 +538,15 @@ asILockableSharedBool *asCScriptObject::GetWeakRefFlag() const
+ 	// ALTERED: published with release stores, see LoadWeakRefFlag
+ 	if( !extra )
+ 		asStorePointerRelease(reinterpret_cast<void**>(&extra), asNEW(SExtra));
+-	if( !extra->weakRefFlag )
++	// ALTERED: with no memory for the extra data (asNEW gives null) no flag is made and null is returned, as for an object whose
++	// count reached zero. The flag was read through the null pointer: the garbage collector, which asks every script object of
++	// its map for its flag (MarkWeakRefsOfGarbageDead), crashed as memory ran out.
++	if( extra && !extra->weakRefFlag )
+ 		asStorePointerRelease(reinterpret_cast<void**>(&extra->weakRefFlag), asNEW(asCLockableSharedBool));
+ 
+ 	asReleaseExclusiveLock();
+ 
+-	return extra->weakRefFlag;
++	return extra ? extra->weakRefFlag : 0;
+ }
+ 
+ void *asCScriptObject::GetUserData(asPWORD type) const
+@@ -585,6 +588,12 @@ void *asCScriptObject::SetUserData(void *data, asPWORD type)
+ 	// ALTERED: published with a release store, see LoadWeakRefFlag
+ 	if( !extra )
+ 		asStorePointerRelease(reinterpret_cast<void**>(&extra), asNEW(SExtra));
++	// ALTERED: with no memory for the extra data the user data isn't stored and nothing is replaced (see GetWeakRefFlag)
++	if( !extra )
++	{
++		asReleaseExclusiveLock();
++		return 0;
++	}
+ 
+ 	// It is not intended to store a lot of different types of userdata,
+ 	// so a more complex structure like a associative map would just have

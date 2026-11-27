@@ -176,6 +176,7 @@ vcpkg_from_github(
         fix-module-set-name-lock.patch
         fix-function-by-name-parent-namespaces.patch
         fix-funcdef-conversion-to-var-arg.patch
+        fix-script-object-extra-out-of-memory.patch
 )
 
 vcpkg_cmake_configure(
