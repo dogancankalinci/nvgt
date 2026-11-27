@@ -2352,7 +2352,18 @@ void CScriptArray::CopyElements(const CScriptArray &other)
 		hndlAssign = subType->GetMethodByDecl(decl.c_str());
 		// TODO: Reuse active context if existing
 		if( hndlAssign )
+		{
 			ctx = engine->RequestContext();
+			// ALTERED: the engine's pool can't always give a context (no memory to make one), and the elements were then copied by
+			// value (AssignScriptObject below) where the type's handle assignment belongs: a dictionaryValue holding an object copied
+			// the object instead of referring to the same one. Nothing is copied, with the exception, as SetValue does.
+			if( !ctx )
+			{
+				if( asIScriptContext *active = asGetActiveContext() )
+					active->SetException("Out of memory");
+				return;
+			}
+		}
 	}
 
 	// ALTERED: see below; exit() called meanwhile (by an element's opAssign run in a context of its own, or by another thread)
