@@ -6238,7 +6238,7 @@ public:
 		return !(datasource_opened && audio_data_source_impl::live_queue(datasource));
 	}
 	bool play(bool reset_loop_state = true) override {
-		let_go_of_decoded_wav();
+		if (!on_an_audio_thread()) let_go_of_decoded_wav(); // Not on an audio thread, where speech's fallback starts its next utterance: freeing megabytes of WAV there held up the mix; a later play or close lets go of it.
 		const bool resuming = paused; // Paused by pause() or pause_fade().
 		if (fade_paused && snd) clear_stop_for_restart(true); // A pause_fade() still fading out is called off.
 		paused = fade_paused = false;
