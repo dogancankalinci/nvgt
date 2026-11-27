@@ -1,0 +1,32 @@
+diff --git a/sdk/angelscript/source/as_scriptengine.cpp b/sdk/angelscript/source/as_scriptengine.cpp
+index 72c691f..9caff9d 100644
+--- a/sdk/angelscript/source/as_scriptengine.cpp
++++ b/sdk/angelscript/source/as_scriptengine.cpp
+@@ -4360,6 +4360,12 @@ asCScriptFunction *asCScriptEngine::GenerateFactoryStubForTemplateObjectInstance
+ 
+ 	func->funcType = asFUNC_SCRIPT;
+ 	func->AllocateScriptFunctionData();
++	if( func->scriptData == 0 )
++	{
++		// ALTERED: out of memory, see AllocateScriptFunctionData; the stub was written through the null script data
++		func->DestroyHalfCreated();
++		return 0;
++	}
+ 	func->id = GetNextScriptFunctionId();
+ 	AddScriptFunction(func);
+ 
+diff --git a/sdk/angelscript/source/as_scriptfunction.cpp b/sdk/angelscript/source/as_scriptfunction.cpp
+index b996a73..6c31938 100644
+--- a/sdk/angelscript/source/as_scriptfunction.cpp
++++ b/sdk/angelscript/source/as_scriptfunction.cpp
+@@ -402,6 +402,10 @@ void asCScriptFunction::AllocateScriptFunctionData()
+ 	if( scriptData ) return;
+ 
+ 	scriptData = asNEW(ScriptFunctionData);
++	// ALTERED: with no memory (asNEW gives null) scriptData stays null for the caller to check, as as_restore.cpp does; the
++	// fields were written through the null pointer.
++	if( scriptData == 0 )
++		return;
+ 
+ 	scriptData->stackNeeded      = 0;
+ 	scriptData->variableSpace    = 0;
