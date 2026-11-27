@@ -5480,10 +5480,11 @@ class sound_impl final : public mixer_impl, public virtual sound {
 		snd = std::move(made);
 		reset_cone_and_gain_range(); // As a sound loaded anew had MiniAudio's defaults.
 	}
-	// Runs postload() for a sound just adopted, closing it should that throw, as attaching it running out of memory: the sound read as loaded while attached to nothing, playing nothing.
-	template <class F> void loaded_or_closed(F postloading) {
+	// Runs postload() for a sound just adopted, closing it should that throw, as attaching it running out of memory, or refuse, as for a graph too deep (see max_graph_depth): the sound read as loaded while attached to nothing, playing nothing. False when refused, the sound closed and the refusal kept.
+	template <class F> bool loaded_or_closed(F postloading) {
+		bool attached = false;
 		try {
-			postloading();
+			attached = postloading();
 		} catch (...) {
 			last_error_kept kept;
 			try {
@@ -5491,8 +5492,16 @@ class sound_impl final : public mixer_impl, public virtual sound {
 			} catch (...) {}
 			throw;
 		}
+		if (!attached) {
+			last_error_kept kept;
+			try {
+				close();
+			} catch (...) {}
+		}
+		return attached;
 	}
-	inline void postload(const string& filename, bool async_load = false) {
+	// False when the sound can't be attached to its chain, as where the graph is too deep for it: an empty sound's chain counts as one node, so a sound can be put one level deeper than a loaded one fits.
+	inline bool postload(const string& filename, bool async_load = false) {
 		loaded_filename = filename;
 		node = (ma_node_base *)&*snd;
 		set_spatialization_enabled(false);                  // The user must call set_position_3d or manually enable spatialization or else their ambience and UI sounds will be spatialized.
@@ -5500,9 +5509,10 @@ class sound_impl final : public mixer_impl, public virtual sound {
 		ma_sound_set_rolloff(&*snd, 0);
 		ma_sound_set_attenuation_model(&*snd, ma_attenuation_model_linear); // As for a mixer.
 		ma_sound_set_directional_attenuation_factor(&*snd, 0);
-		attach_output_bus(0, node_chain, 0);
+		if (!attach_output_bus(0, node_chain, 0)) return false;
 		// If we didn't load our sound asynchronously or if we streamed it, then we simply mark it as load_completed or we'll end up with a deadlock at destruction time.
 		if (!async_load) load_completed.test_and_set();
+		return true;
 	}
 public:
 	static void async_notification_callback(ma_async_notification *pNotification) {
@@ -5843,7 +5853,7 @@ public:
 			claimed_manager = manager;
 			adopt_sound(std::move(made));
 			try {
-				loaded_or_closed([&]() { postload(filename, (flags & MA_SOUND_FLAG_ASYNC) && !(flags & MA_SOUND_FLAG_STREAM) && !wait_for_load); });
+				loaded_or_closed([&]() { return postload(filename, (flags & MA_SOUND_FLAG_ASYNC) && !(flags & MA_SOUND_FLAG_STREAM) && !wait_for_load); }); // Refused, the sound closed with the refusal kept, which the result below reads.
 			} catch (...) {
 				g_sound_service->cleanup_triplet(triplet); // As below, which the throw skips.
 				throw;
@@ -5952,7 +5962,7 @@ public:
 			}
 			pcm_stream = std::move(made_queue);
 			adopt_sound(std::move(made));
-			loaded_or_closed([&]() { postload(":pcm", false); });
+			if (!loaded_or_closed([&]() { return postload(":pcm", false); })) return false; // Closed: its queue went with it, rather than taking frames nothing reads.
 			play(true);
 		}
 		if (!pcm_stream) { // No sample type to start one with, as for an array of a type that isn't one.
@@ -6084,8 +6094,7 @@ public:
 		datasource_opened = true;
 		audio_data_source_impl::add_user(ds); // So it can't be closed while this sound reads it.
 		if (source_guard.owns_lock()) source_guard.unlock(); // Before the sound is attached, as for close_to_reload() above.
-		loaded_or_closed([&]() { postload(":datasource", false); });
-		return true;
+		return loaded_or_closed([&]() { return postload(":datasource", false); });
 	}
 	bool is_load_completed() const override {
 		return load_completed.test();
