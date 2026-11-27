@@ -1215,6 +1215,10 @@ public:
 		if (!output_attached() && state != ma_node_state_started) return (g_soundsystem_last_error = MA_INVALID_OPERATION) == MA_SUCCESS;
 		return audio_node_impl::set_state(state);
 	}
+	bool set_output_bus_volume(unsigned int bus, float volume) override {
+		if (!output_attached()) return (g_soundsystem_last_error = MA_INVALID_OPERATION) == MA_SUCCESS; // As set_state(): it changed nothing while it read back as set.
+		return audio_node_impl::set_output_bus_volume(bus, volume);
+	}
 	bool set_state_time(ma_node_state state, unsigned long long time) override {
 		if (state != ma_node_state_started && state != ma_node_state_stopped) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS; // As above.
 		if (!output_attached() && time != (state == ma_node_state_started? 0 : ~0ULL)) return (g_soundsystem_last_error = MA_INVALID_OPERATION) == MA_SUCCESS;
