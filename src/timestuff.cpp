@@ -460,8 +460,68 @@ DateTime* calendar_get_utc(const LocalDateTime* obj) {
  * Makes sure the values stored within a LocalDateTime or DateTime object are valid, and raises a script exception if not.
 */
 // The month is checked when a date is set, as Poco's conversion to a julian day looks it up in a table of its own and a month far outside it read from outside the table (a crash). Other invalid values can be stored, and verify_date_time refuses them when they're read.
+// Poco stores the fields of a date as shorts but computes the date's time from the ints it is given, and checks the shorts: a value that
+// doesn't fit in one (hour 65541) was stored as another (hour 5) that passed the check while the time was computed from the int, so the
+// fields and the time disagreed, and with one like -2147483648 the time overflowed and the weekday computed from it indexed the weekday
+// names far out of range (format("%w"): a crash). Every field's valid range fits in a short, so such a value is invalid.
+static bool date_time_fields_fit(int year, int month, int day, int hour, int minute, int second, int millisecond, int microsecond) {
+	for (int v : {year, month, day, hour, minute, second, millisecond, microsecond})
+		if (v != short(v)) return false;
+	return true;
+}
+template <class t> t* date_time_factory(int year, int month, int day, int hour, int minute, int second, int millisecond, int microsecond) {
+	if (!date_time_fields_fit(year, month, day, hour, minute, second, millisecond, microsecond)) {
+		asIScriptContext* ctx = asGetActiveContext();
+		if (ctx) ctx->SetException("Invalid date/time.");
+		return nullptr;
+	}
+	return angelscript_refcounted_factory<t, int, int, int, int, int, int, int, int>(year, month, day, hour, minute, second, millisecond, microsecond);
+}
+// Poco's dayOfWeek() is negative for the valid dates before julian day 0 (-4713-01-01 to -4713-11-23), the remainder of a negative day
+// count: the weekday property gave -6 to 0, weekday_name, format("%w") and format("%W") read the weekday names from before their array (a
+// crash), and week() looked for a first weekday it never found and raised for a valid date.
+static int weekday_index(int day_of_week) {
+	day_of_week %= 7;
+	return day_of_week < 0 ? day_of_week + 7 : day_of_week;
+}
+template <class t> int date_time_weekday(const t& dt) {
+	return weekday_index(dt.dayOfWeek());
+}
+// Poco's week() with the weekday above.
+template <class t> int date_time_week(const t& dt, int first_day_of_week) {
+	if (first_day_of_week < 0 || first_day_of_week > 6) return dt.week(first_day_of_week); // Poco's assertion raises for it
+	int base_day = 1;
+	while (weekday_index(DateTime(dt.year(), 1, base_day).dayOfWeek()) != first_day_of_week) base_day++;
+	int doy = dt.dayOfYear(), offs = base_day <= 4 ? 0 : 1;
+	return doy < base_day ? offs : (doy - base_day) / 7 + 1 + offs;
+}
+// The format with %w and %W written out as the weekday's name for a date whose dayOfWeek() is negative (see weekday_index), which Poco's
+// formatter would index the names with; for any other date it is Poco's own.
+static std::string weekday_safe_format(const std::string& fmt, int day_of_week) {
+	if (day_of_week >= 0 && day_of_week <= 6) return fmt;
+	const std::string& name = DateTimeFormat::WEEKDAY_NAMES[weekday_index(day_of_week)];
+	std::string out;
+	for (size_t i = 0; i < fmt.size(); i++) {
+		if (fmt[i] == '%' && i + 1 < fmt.size()) {
+			char c = fmt[++i];
+			if (c == 'w') out.append(name, 0, 3);
+			else if (c == 'W') out += name;
+			else {
+				out += '%';
+				out += c;
+			}
+		} else out += fmt[i];
+	}
+	return out;
+}
+static std::string datetime_format(const DateTime& dt, const std::string& fmt, int tzd) {
+	return DateTimeFormatter::format(dt, weekday_safe_format(fmt, dt.dayOfWeek()), tzd);
+}
+static std::string calendar_format(const LocalDateTime& dt, const std::string& fmt) {
+	return DateTimeFormatter::format(dt, weekday_safe_format(fmt, dt.dayOfWeek()));
+}
 template <class t> t& date_time_set(t& dt, int year, int month, int day, int hour, int minute, int second, int millisecond, int microsecond) {
-	if (month < 1 || month > 12) {
+	if (month < 1 || month > 12 || !date_time_fields_fit(year, month, day, hour, minute, second, millisecond, microsecond)) { // see date_time_fields_fit
 		asGetActiveContext()->SetException("Invalid date/time.");
 		return dt;
 	}
@@ -481,7 +541,7 @@ std::string get_month_name(LocalDateTime &dt) {
 }
 std::string get_weekday_name(LocalDateTime &dt) {
 	if (verify_date_time(dt))
-		return DateTimeFormat::WEEKDAY_NAMES[dt.dayOfWeek()];
+		return DateTimeFormat::WEEKDAY_NAMES[weekday_index(dt.dayOfWeek())];
 	return "";
 }
 // Raised by the add_ methods below for a date they can't reach, as verify_date_time raises for an invalid date.
@@ -609,7 +669,8 @@ static std::string timestamp_format(const Timestamp* ts, const std::string& fmt,
 		add_out_of_range();
 		return "";
 	}
-	return DateTimeFormatter::format(*ts, fmt, tzd);
+	DateTime dt(*ts);
+	return DateTimeFormatter::format(dt, weekday_safe_format(fmt, dt.dayOfWeek()), tzd); // see weekday_safe_format
 }
 // A span longer than the whole range of valid dates raises, as add_units does; Poco raises for any other span that takes a date out of range.
 static bool span_fits_dates(const Timespan& span) {
@@ -964,7 +1025,7 @@ void RegisterScriptTimestuffCore(asIScriptEngine *engine) {
 	engine->RegisterObjectBehaviour("datetime", asBEHAVE_FACTORY, "datetime@ f()", asFUNCTION(angelscript_refcounted_factory<DateTime>), asCALL_CDECL);
 	engine->RegisterObjectBehaviour("datetime", asBEHAVE_FACTORY, "datetime@ f(const timestamp&in timestamp)", asFUNCTION(datetime_from_timestamp), asCALL_CDECL);
 	engine->RegisterObjectBehaviour("datetime", asBEHAVE_FACTORY, "datetime@ f(double julian_day)", asFUNCTION((angelscript_refcounted_factory<DateTime, double>)), asCALL_CDECL);
-	engine->RegisterObjectBehaviour("datetime", asBEHAVE_FACTORY, "datetime@ f(int year, int month, int day, int hour = 0, int minute = 0, int second = 0, int millisecond = 0, int microsecond = 0)", asFUNCTION((angelscript_refcounted_factory<DateTime, int, int, int, int, int, int, int, int>)), asCALL_CDECL);
+	engine->RegisterObjectBehaviour("datetime", asBEHAVE_FACTORY, "datetime@ f(int year, int month, int day, int hour = 0, int minute = 0, int second = 0, int millisecond = 0, int microsecond = 0)", asFUNCTION(date_time_factory<DateTime>), asCALL_CDECL);
 	engine->RegisterObjectBehaviour("datetime", asBEHAVE_FACTORY, "datetime@ f(const datetime&in other)", asFUNCTION((angelscript_refcounted_factory<DateTime, const DateTime&>)), asCALL_CDECL);
 	engine->RegisterObjectMethod("datetime", "datetime& opAssign(const datetime&in other)", asMETHODPR(DateTime, operator=, (const DateTime&), DateTime&), asCALL_THISCALL);
 	engine->RegisterObjectMethod("datetime", "datetime& opAssign(const timestamp&in value)", asFUNCTION(date_time_assign_timestamp<DateTime>), asCALL_CDECL_OBJFIRST);
@@ -973,8 +1034,8 @@ void RegisterScriptTimestuffCore(asIScriptEngine *engine) {
 	engine->RegisterObjectMethod("datetime", "int get_year() const property", asMETHOD(DateTime, year), asCALL_THISCALL);
 	engine->RegisterObjectMethod("datetime", "int get_yearday() const property", asMETHOD(DateTime, dayOfYear), asCALL_THISCALL);
 	engine->RegisterObjectMethod("datetime", "int get_month() const property", asMETHOD(DateTime, month), asCALL_THISCALL);
-	engine->RegisterObjectMethod("datetime", "int week(int first_day_of_week = 1) const", asMETHOD(DateTime, week), asCALL_THISCALL);
-	engine->RegisterObjectMethod("datetime", "int get_weekday() const property", asMETHOD(DateTime, dayOfWeek), asCALL_THISCALL);
+	engine->RegisterObjectMethod("datetime", "int week(int first_day_of_week = 1) const", asFUNCTION(date_time_week<DateTime>), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("datetime", "int get_weekday() const property", asFUNCTION(date_time_weekday<DateTime>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("datetime", "int get_day() const property", asMETHOD(DateTime, day), asCALL_THISCALL);
 	engine->RegisterObjectMethod("datetime", "int get_hour() const property", asMETHOD(DateTime, hour), asCALL_THISCALL);
 	engine->RegisterObjectMethod("datetime", "int get_hour12() const property", asMETHOD(DateTime, hourAMPM), asCALL_THISCALL);
@@ -1002,7 +1063,7 @@ void RegisterScriptTimestuffCore(asIScriptEngine *engine) {
 	engine->RegisterGlobalFunction("bool datetime_is_valid(int year, int month, int day, int hour = 0, int minute = 0, int second = 0, int millisecond = 0, int microsecond = 0)", asFUNCTION(DateTime::isValid), asCALL_CDECL);
 	engine->RegisterObjectBehaviour("calendar", asBEHAVE_FACTORY, "calendar@ f()", asFUNCTION(angelscript_refcounted_factory<LocalDateTime>), asCALL_CDECL);
 	engine->RegisterObjectBehaviour("calendar", asBEHAVE_FACTORY, "calendar@ f(double julian_day)", asFUNCTION((angelscript_refcounted_factory<LocalDateTime, double>)), asCALL_CDECL);
-	engine->RegisterObjectBehaviour("calendar", asBEHAVE_FACTORY, "calendar@ f(int year, int month, int day, int hour = 0, int minute = 0, int second = 0, int millisecond = 0, int microsecond = 0)", asFUNCTION((angelscript_refcounted_factory<LocalDateTime, int, int, int, int, int, int, int, int>)), asCALL_CDECL);
+	engine->RegisterObjectBehaviour("calendar", asBEHAVE_FACTORY, "calendar@ f(int year, int month, int day, int hour = 0, int minute = 0, int second = 0, int millisecond = 0, int microsecond = 0)", asFUNCTION(date_time_factory<LocalDateTime>), asCALL_CDECL);
 	engine->RegisterObjectBehaviour("calendar", asBEHAVE_FACTORY, "calendar@ f(const datetime&in value)", asFUNCTION((angelscript_refcounted_factory<LocalDateTime, const DateTime&>)), asCALL_CDECL);
 	engine->RegisterObjectBehaviour("calendar", asBEHAVE_FACTORY, "calendar@ f(const calendar&in other)", asFUNCTION((angelscript_refcounted_factory<LocalDateTime, const LocalDateTime&>)), asCALL_CDECL);
 	engine->RegisterObjectMethod("calendar", "calendar& opAssign(const calendar&in other)", asMETHODPR(LocalDateTime, operator=, (const LocalDateTime&), LocalDateTime&), asCALL_THISCALL);
@@ -1012,8 +1073,8 @@ void RegisterScriptTimestuffCore(asIScriptEngine *engine) {
 	engine->RegisterObjectMethod("calendar", "int get_year() const property", asMETHOD(LocalDateTime, year), asCALL_THISCALL);
 	engine->RegisterObjectMethod("calendar", "int get_yearday() const property", asMETHOD(LocalDateTime, dayOfYear), asCALL_THISCALL);
 	engine->RegisterObjectMethod("calendar", "int get_month() const property", asMETHOD(LocalDateTime, month), asCALL_THISCALL);
-	engine->RegisterObjectMethod("calendar", "int week(int first_day_of_week = 1) const", asMETHOD(LocalDateTime, week), asCALL_THISCALL);
-	engine->RegisterObjectMethod("calendar", "int get_weekday() const property", asMETHOD(LocalDateTime, dayOfWeek), asCALL_THISCALL);
+	engine->RegisterObjectMethod("calendar", "int week(int first_day_of_week = 1) const", asFUNCTION(date_time_week<LocalDateTime>), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("calendar", "int get_weekday() const property", asFUNCTION(date_time_weekday<LocalDateTime>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("calendar", "int get_day() const property", asMETHOD(LocalDateTime, day), asCALL_THISCALL);
 	engine->RegisterObjectMethod("calendar", "int get_hour() const property", asMETHOD(LocalDateTime, hour), asCALL_THISCALL);
 	engine->RegisterObjectMethod("calendar", "int get_hour12() const property", asMETHOD(LocalDateTime, hourAMPM), asCALL_THISCALL);
@@ -1039,8 +1100,8 @@ void RegisterScriptTimestuffCore(asIScriptEngine *engine) {
 	register_date_time_extensions<LocalDateTime>(engine, "calendar");
 	register_date_time_extensions<DateTime>(engine, "datetime");
 	engine->RegisterObjectMethod("timestamp", "string format(const string&in fmt, int tzd = 0xffff)", asFUNCTION(timestamp_format), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("datetime", "string format(const string&in fmt, int tzd = 0xffff)", asFUNCTIONPR(DateTimeFormatter::format, (const DateTime&, const std::string&, int), std::string), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("calendar", "string format(const string&in fmt)", asFUNCTIONPR(DateTimeFormatter::format, (const LocalDateTime&, const std::string&), std::string), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("datetime", "string format(const string&in fmt, int tzd = 0xffff)", asFUNCTION(datetime_format), asCALL_CDECL_OBJFIRST);
+	engine->RegisterObjectMethod("calendar", "string format(const string&in fmt)", asFUNCTION(calendar_format), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("timespan", "string format(const string&in fmt = \"%dd %H:%M:%S.%i\")", asFUNCTIONPR(DateTimeFormatter::format, (const Timespan&, const std::string&), std::string), asCALL_CDECL_OBJFIRST);
 	engine->RegisterGlobalFunction("datetime@ parse_datetime(const string&in fmt, const string&in str, int& tzd)", asFUNCTION(parse_datetime_wrapper1), asCALL_CDECL);
 	engine->RegisterGlobalFunction("datetime@ parse_datetime(const string&in str, int& tzd)", asFUNCTION(parse_datetime_wrapper2), asCALL_CDECL);
