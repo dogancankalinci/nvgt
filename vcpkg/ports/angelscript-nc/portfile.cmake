@@ -186,6 +186,7 @@ vcpkg_from_github(
         fix-compile-out-of-memory.patch
         fix-funcdef-conversion-to-var-list-element.patch
         fix-live-objects-out-of-memory.patch
+        fix-delegate-and-copy-out-of-memory.patch
 )
 
 vcpkg_cmake_configure(

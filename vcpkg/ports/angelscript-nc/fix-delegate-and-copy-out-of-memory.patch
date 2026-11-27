@@ -1,0 +1,97 @@
+diff --git a/sdk/angelscript/source/as_scriptfunction.cpp b/sdk/angelscript/source/as_scriptfunction.cpp
+index 6c31938..80f17d7 100644
+--- a/sdk/angelscript/source/as_scriptfunction.cpp
++++ b/sdk/angelscript/source/as_scriptfunction.cpp
+@@ -180,9 +180,14 @@ asCScriptFunction *CreateDelegate(asCScriptFunction *func, void *obj)
+ 	// Create an instance of a asCScriptFunction with the type asFUNC_DELEGATE
+ 	// The delegate shouldn't have a function id and is not added to the engine->scriptFunctions
+ 	asCScriptFunction *delegate = asNEW(asCScriptFunction)(static_cast<asCScriptEngine*>(func->GetEngine()), 0, asFUNC_DELEGATE);
+-	if( delegate )
+-		delegate->MakeDelegate(func, obj);
+-	else
++	// ALTERED: a delegate MakeDelegate couldn't complete is let go of (which releases the object and method it holds) and
++	// raises the exception below
++	if( delegate && !delegate->MakeDelegate(func, obj) )
++	{
++		delegate->Release();
++		delegate = 0;
++	}
++	if( delegate == 0 )
+ 	{
+ 		// ALTERED: with no memory for the delegate the script got a null handle with no exception, and found out only when it
+ 		// called it ("Null pointer access" there, or nothing for a callback a registered function skips when it is null).
+@@ -195,7 +200,7 @@ asCScriptFunction *CreateDelegate(asCScriptFunction *func, void *obj)
+ }
+ 
+ // internal
+-void asCScriptFunction::MakeDelegate(asCScriptFunction *func, void *obj)
++bool asCScriptFunction::MakeDelegate(asCScriptFunction *func, void *obj)
+ {
+ 	// Increase the reference of the function and object
+ 	func->AddRef();
+@@ -210,6 +215,12 @@ void asCScriptFunction::MakeDelegate(asCScriptFunction *func, void *obj)
+ 	returnType     = func->returnType;
+ 	inOutFlags     = func->inOutFlags;
+ 
++	// ALTERED: with no memory for the copies (a method with more than two parameters, beyond the arrays' own room) the delegate
++	// was left without parameters while its method takes them: a context prepared with it reserved no room for the arguments
++	// and refused to set them, and the method read them from past what it was given. The delegate is refused then.
++	if( parameterTypes.GetLength() != func->parameterTypes.GetLength() || inOutFlags.GetLength() != func->inOutFlags.GetLength() )
++		return false;
++
+ 	// The delegate doesn't own the parameters as it will only forward them to the real method
+ 	// so the exception handler must not clean up the parameters for the delegate
+ 	dontCleanUpOnException = true;
+@@ -217,6 +228,7 @@ void asCScriptFunction::MakeDelegate(asCScriptFunction *func, void *obj)
+ 	// ALTERED: notify the GC of the delegate now that it is complete (the GC's lock publishes the writes above to the
+ 	// collecting thread); it was done in the constructor
+ 	engine->gc.AddScriptObjectToGC(this, &engine->functionBehaviours);
++	return true;
+ }
+ 
+ // interface
+diff --git a/sdk/angelscript/source/as_scriptfunction.h b/sdk/angelscript/source/as_scriptfunction.h
+index 36be796..0906cfe 100644
+--- a/sdk/angelscript/source/as_scriptfunction.h
++++ b/sdk/angelscript/source/as_scriptfunction.h
+@@ -276,7 +276,7 @@ public:
+ 
+ 	asCTypeInfo *GetTypeInfoOfLocalVar(short varOffset);
+ 
+-	void      MakeDelegate(asCScriptFunction *func, void *obj);
++	bool      MakeDelegate(asCScriptFunction *func, void *obj); // ALTERED: false when the delegate couldn't be made, see there
+ 
+ 	int       RegisterListPattern(const char *decl, asCScriptNode *listPattern);
+ 	int       ParseListPattern(asSListPatternNode *&target, const char *decl, asCScriptNode *listPattern);
+diff --git a/sdk/angelscript/source/as_scriptobject.cpp b/sdk/angelscript/source/as_scriptobject.cpp
+index 8e3271d..21fd0af 100644
+--- a/sdk/angelscript/source/as_scriptobject.cpp
++++ b/sdk/angelscript/source/as_scriptobject.cpp
+@@ -1183,7 +1183,16 @@ int asCScriptObject::CopyFromAs(const asCScriptObject *other, asCObjectType *in_
+ 				// Request a context from the engine
+ 				ctx = engine->RequestContext();
+ 				if( ctx == 0 )
++				{
++					// ALTERED: the failure is raised on the executing context, as below for a failed Prepare(): the default
++					// opAssign that copies the members of a class here ignores the result, so with no memory for a context the
++					// script's assignment stopped at this member without an exception and the script went on with a half
++					// copied object
++					asIScriptContext *active = asGetActiveContext();
++					if( active )
++						active->SetException("Out of memory");
+ 					return asERROR;
++				}
+ 			}
+ 
+ 			r = ctx->Prepare(engine->scriptFunctions[in_objType->beh.copy]);
+@@ -1193,6 +1202,10 @@ int asCScriptObject::CopyFromAs(const asCScriptObject *other, asCObjectType *in_
+ 					ctx->PopState();
+ 				else
+ 					engine->ReturnContext(ctx);
++				// ALTERED: see above (Prepare() fails when there is no memory for the call)
++				asIScriptContext *active = asGetActiveContext();
++				if( active )
++					active->SetException("Out of memory");
+ 				return r;
+ 			}
+ 
