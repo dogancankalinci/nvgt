@@ -10,6 +10,7 @@
  * 3. This notice may not be removed or altered from any source distribution.
 */
 
+#include <chrono>
 #include <angelscript.h>
 #include "tts.h"
 #include "xplatform.h"
@@ -1072,6 +1073,15 @@ void wait(int ms) {
 	// exit() called on a script thread meanwhile ends the main thread's wait, after which its abort takes effect: the program went on until a wait(60000) was over.
 	bool main = thread_is_main();
 	asPWORD exits = script_exit_count();
+	// The slices below are counted against when the wait ends: subtracting each slice's 25 ms let every sleep's overshoot (a Windows
+	// sleep of 25 ms is often 31) add up, so wait(1000) lasted 1100 to 1300 ms.
+	const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms > 0 ? ms : 0);
+	auto slice = [&until]() { // what is left, rounded up to a whole millisecond: rounded down, wait(1) slept nothing
+		long long left = std::chrono::duration_cast<std::chrono::microseconds>(until - std::chrono::steady_clock::now()).count();
+		if (left <= 0) return 0;
+		left = (left + 999) / 1000;
+		return int(left > 25 ? 25 : left);
+	};
 	bool have_window, mine;
 	{
 		std::lock_guard<std::recursive_mutex> lock(game_windows_mutex());
@@ -1086,30 +1096,25 @@ void wait(int ms) {
 		// wait() only slept, so a console script (or one before show_window()) waiting in a loop never had NVGT's steps run, and
 		// cyclic garbage made before the loop stayed until AngelScript's own steps ran as more objects were made.
 		if (!have_window && main) {
-			while (ms >= 0) {
-				int MS = (ms > 25 ? 25 : ms);
+			if (ms >= 0) do { // a negative time does nothing, as before
 				if (g_GCMode == 2)
 					garbage_collect_action();
-				Poco::Thread::sleep(MS);
-				ms -= MS;
-				if (ms < 1 || script_exit_count() != exits) break;
-			}
+				Poco::Thread::sleep(slice());
+			} while (slice() > 0 && script_exit_count() == exits);
 			return;
 		}
 		// In slices that see exit() on the main thread and the end of the script on a script thread, as the waits in threading.cpp do: the
 		// whole time was slept, so a wait() on the main thread while a script thread's window was open went on for all of it after exit()
 		// had been called, and one on a script thread kept running past the script's end, which script_threads_stop() waits for only a
 		// quarter of a second, and the engine was then kept.
-		while (ms > 0) {
-			int MS = (ms > 25 ? 25 : ms);
+		for (int MS = slice(); MS > 0; MS = slice()) {
 			Poco::Thread::sleep(MS);
-			ms -= MS;
 			if (main ? script_exit_count() != exits : script_thread_aborting()) break;
 		}
 		return;
 	}
-	while (ms >= 0) {
-		int MS = (ms > 25 ? 25 : ms);
+	if (ms >= 0) do { // a negative time only refreshes the window, as before
+		int MS = slice();
 		if (g_GCMode == 2)
 			garbage_collect_action();
 		#ifdef __APPLE__
@@ -1121,9 +1126,7 @@ void wait(int ms) {
 			pump_lock lock; // see ClipboardGetText()
 			SDL_PumpEvents();
 		}
-		ms -= MS;
-		if (ms < 1 || (main ? script_exit_count() != exits : script_thread_aborting())) break; // see above
-	}
+	} while (slice() > 0 && (main ? script_exit_count() == exits : !script_thread_aborting())); // see above
 	refresh_window();
 }
 
