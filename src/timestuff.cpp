@@ -452,6 +452,34 @@ template <class T> void timestuff_reset(T *obj) {
 DateTime* calendar_get_utc(const LocalDateTime* obj) {
 	return new (angelscript_refcounted_create<DateTime>()) DateTime(obj->utc());
 }
+// The calendar (local date and time) of a UTC date. Poco works the time zone differential out with the C library's localtime(), which
+// MSVC's runtime only has for 1970-01-01 to 3000-12-31 (UTC): calendar(datetime), a calendar from a julian day or a timestamp, and a
+// calendar moved by a timespan or add_days/hours/minutes/seconds() raised "System exception: cannot get local time" on Windows for any
+// instant outside that range, while calendar(1965, 5, 3) works there (Poco uses mktime() for it, which fails quietly) and Linux, macOS
+// and Android have every year. Outside the range the offset calendar(year, month, day) takes there is used, the current one without
+// daylight saving time, which Windows can't tell for those years either.
+static LocalDateTime local_from_utc(const DateTime& utc) {
+	try {
+		return LocalDateTime(utc);
+	} catch (const Poco::SystemException&) {
+		return LocalDateTime(Timezone::utcOffset(), utc);
+	}
+}
+// A date moved by a span, and a date set from a timestamp: a calendar is made again from the UTC date, as Poco's operators do, but
+// through local_from_utc.
+static void date_time_shift(DateTime& dt, const Timespan& span) { dt += span; }
+static void date_time_shift(LocalDateTime& dt, const Timespan& span) { dt = local_from_utc(DateTime(dt.utcTime(), span.totalMicroseconds())); }
+static void date_time_set_timestamp(DateTime& dt, const Timestamp& ts) { dt = ts; }
+static void date_time_set_timestamp(LocalDateTime& dt, const Timestamp& ts) { dt = local_from_utc(DateTime(ts)); }
+static LocalDateTime* calendar_from_datetime(const DateTime& utc) {
+	return angelscript_refcounted_factory<LocalDateTime, const LocalDateTime&>(local_from_utc(utc));
+}
+static LocalDateTime* calendar_from_julian(double julian_day) {
+	return angelscript_refcounted_factory<LocalDateTime, const LocalDateTime&>(local_from_utc(DateTime(julian_day)));
+}
+static LocalDateTime& calendar_assign_julian(LocalDateTime* dt, double julian_day) {
+	return *dt = local_from_utc(DateTime(julian_day));
+}
 /**
  * Additional calendar methods and properties for BGT compatibility.
  * This portion contributed by Caturria, Mar 10, 2025.
@@ -561,7 +589,7 @@ template <class t> bool add_units(t &dt, asINT32 amount, Timespan::TimeDiff unit
 	const Timespan::TimeDiff limit = Timespan::TimeDiff(15000) * 366 * Timespan::DAYS / unit; // Its 100-nanosecond intervals added to any valid date's still fit in 64 bits.
 	if (amount > limit || amount < -limit)
 		return add_out_of_range();
-	dt += Timespan(Timespan::TimeDiff(amount) * unit);
+	date_time_shift(dt, Timespan(Timespan::TimeDiff(amount) * unit)); // see local_from_utc
 	return true;
 }
 template <class t> bool add_days(t &dt, asINT32 amount) { return add_units(dt, amount, Timespan::DAYS); }
@@ -662,7 +690,8 @@ template <class t> t& date_time_assign_timestamp(t* dt, const Timestamp& ts) {
 		add_out_of_range();
 		return *dt;
 	}
-	return *dt = ts;
+	date_time_set_timestamp(*dt, ts); // see local_from_utc
+	return *dt;
 }
 static std::string timestamp_format(const Timestamp* ts, const std::string& fmt, int tzd) {
 	if (!timestamp_can_be_date(*ts)) {
@@ -682,28 +711,34 @@ template <class t> t* date_time_add_span(t* dt, const Timespan& span) {
 		add_out_of_range();
 		return nullptr;
 	}
-	return angelscript_refcounted_duplicating_method<t, static_cast<t (t::*)(const Timespan&) const>(&t::operator+), const Timespan&>(dt, span);
+	t moved(*dt);
+	date_time_shift(moved, span); // see local_from_utc
+	return angelscript_refcounted_factory<t, const t&>(moved);
 }
 template <class t> t* date_time_sub_span(t* dt, const Timespan& span) {
 	if (!span_fits_dates(span)) {
 		add_out_of_range();
 		return nullptr;
 	}
-	return angelscript_refcounted_duplicating_method<t, static_cast<t (t::*)(const Timespan&) const>(&t::operator-), const Timespan&>(dt, span);
+	t moved(*dt);
+	date_time_shift(moved, Timespan(-span.totalMicroseconds())); // see local_from_utc; span_fits_dates bounds the span
+	return angelscript_refcounted_factory<t, const t&>(moved);
 }
 template <class t> t& date_time_add_assign_span(t* dt, const Timespan& span) {
 	if (!span_fits_dates(span)) {
 		add_out_of_range();
 		return *dt;
 	}
-	return *dt += span;
+	date_time_shift(*dt, span); // see local_from_utc
+	return *dt;
 }
 template <class t> t& date_time_sub_assign_span(t* dt, const Timespan& span) {
 	if (!span_fits_dates(span)) {
 		add_out_of_range();
 		return *dt;
 	}
-	return *dt -= span;
+	date_time_shift(*dt, Timespan(-span.totalMicroseconds())); // see local_from_utc
+	return *dt;
 }
 static void timespan_construct_parts(void* mem, int days, int hours, int minutes, int seconds, int microseconds) {
 	Int64 rest = Int64(hours) * Timespan::HOURS + Int64(minutes) * Timespan::MINUTES + Int64(seconds) * Timespan::SECONDS + microseconds; // At most about 7.9e18, inside int64.
@@ -1062,13 +1097,13 @@ void RegisterScriptTimestuffCore(asIScriptEngine *engine) {
 	engine->RegisterGlobalFunction("int datetime_days_of_month(int year, int month)", asFUNCTION(DateTime::daysOfMonth), asCALL_CDECL);
 	engine->RegisterGlobalFunction("bool datetime_is_valid(int year, int month, int day, int hour = 0, int minute = 0, int second = 0, int millisecond = 0, int microsecond = 0)", asFUNCTION(DateTime::isValid), asCALL_CDECL);
 	engine->RegisterObjectBehaviour("calendar", asBEHAVE_FACTORY, "calendar@ f()", asFUNCTION(angelscript_refcounted_factory<LocalDateTime>), asCALL_CDECL);
-	engine->RegisterObjectBehaviour("calendar", asBEHAVE_FACTORY, "calendar@ f(double julian_day)", asFUNCTION((angelscript_refcounted_factory<LocalDateTime, double>)), asCALL_CDECL);
+	engine->RegisterObjectBehaviour("calendar", asBEHAVE_FACTORY, "calendar@ f(double julian_day)", asFUNCTION(calendar_from_julian), asCALL_CDECL);
 	engine->RegisterObjectBehaviour("calendar", asBEHAVE_FACTORY, "calendar@ f(int year, int month, int day, int hour = 0, int minute = 0, int second = 0, int millisecond = 0, int microsecond = 0)", asFUNCTION(date_time_factory<LocalDateTime>), asCALL_CDECL);
-	engine->RegisterObjectBehaviour("calendar", asBEHAVE_FACTORY, "calendar@ f(const datetime&in value)", asFUNCTION((angelscript_refcounted_factory<LocalDateTime, const DateTime&>)), asCALL_CDECL);
+	engine->RegisterObjectBehaviour("calendar", asBEHAVE_FACTORY, "calendar@ f(const datetime&in value)", asFUNCTION(calendar_from_datetime), asCALL_CDECL);
 	engine->RegisterObjectBehaviour("calendar", asBEHAVE_FACTORY, "calendar@ f(const calendar&in other)", asFUNCTION((angelscript_refcounted_factory<LocalDateTime, const LocalDateTime&>)), asCALL_CDECL);
 	engine->RegisterObjectMethod("calendar", "calendar& opAssign(const calendar&in other)", asMETHODPR(LocalDateTime, operator=, (const LocalDateTime&), LocalDateTime&), asCALL_THISCALL);
 	engine->RegisterObjectMethod("calendar", "calendar& opAssign(const timestamp&in value)", asFUNCTION(date_time_assign_timestamp<LocalDateTime>), asCALL_CDECL_OBJFIRST);
-	engine->RegisterObjectMethod("calendar", "calendar& opAssign(double julian_day)", asMETHODPR(LocalDateTime, operator=, (double), LocalDateTime&), asCALL_THISCALL);
+	engine->RegisterObjectMethod("calendar", "calendar& opAssign(double julian_day)", asFUNCTION(calendar_assign_julian), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("calendar", "calendar& set(int year, int month, int day, int hour = 0, int minute = 0, int second = 0, int millisecond = 0, int microsecond = 0)", asFUNCTION(date_time_set<LocalDateTime>), asCALL_CDECL_OBJFIRST);
 	engine->RegisterObjectMethod("calendar", "int get_year() const property", asMETHOD(LocalDateTime, year), asCALL_THISCALL);
 	engine->RegisterObjectMethod("calendar", "int get_yearday() const property", asMETHOD(LocalDateTime, dayOfYear), asCALL_THISCALL);
