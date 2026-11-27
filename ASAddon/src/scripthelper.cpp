@@ -50,7 +50,11 @@ int CompareRelation(asIScriptEngine *engine, void *lobj, void *robj, int typeId,
 	if( func )
 	{
 		// Call the method
+		// ALTERED: CreateContext gives null when there is no memory for a context, which was prepared all the same (a crash). The
+		// comparison fails then, as for a type without the method.
 		asIScriptContext *ctx = engine->CreateContext();
+		if( !ctx )
+			return retval;
 		ctx->Prepare(func);
 		ctx->SetObject(lobj);
 		ctx->SetArgAddress(0, robj);
@@ -107,7 +111,11 @@ int CompareEquality(asIScriptEngine *engine, void *lobj, void *robj, int typeId,
 	if( func )
 	{
 		// Call the method
+		// ALTERED: CreateContext gives null when there is no memory for a context, which was prepared all the same (a crash). The
+		// comparison fails then, as for a type without the method.
 		asIScriptContext *ctx = engine->CreateContext();
+		if( !ctx )
+			return retval;
 		ctx->Prepare(func);
 		ctx->SetObject(lobj);
 		ctx->SetArgAddress(0, robj);
@@ -196,6 +204,11 @@ int ExecuteString(asIScriptEngine *engine, const char *code, void *ref, int refT
 	// Now it's ok to release the type
 	if( type )
 		type->Release();
+
+	// ALTERED: GetModule gives null when it can't make the module (no memory), which was compiled into (a crash). Without a module
+	// of the caller's, as for a default argument of a registered function that async<T> evaluates.
+	if( !execMod )
+		return asOUT_OF_MEMORY;
 
 	// Compile the function that can be executed
 	// ALTERED: in the namespace given, if any
