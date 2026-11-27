@@ -1433,7 +1433,7 @@ public:
 // Without a destination, a new mixer of the reverb3d's own engine, as a reverb3d of the default engine always got one; a mixer of another engine is refused, as both engines' audio threads would read the reverb3d then.
 std::recursive_mutex g_audio_topology_mutex;
 thread_local bool g_refusable_audio_read = false;
-// The longest run of nodes feeding n, n included, through MiniAudio's attachments: each input bus lists the output buses attached to it. Stopped past max_graph_depth, which a loop would otherwise never leave.
+// The longest run of nodes feeding n, n included, through MiniAudio's attachments: each input bus lists the output buses attached to it. An engine's node mixed into another, its graph's base node, is fed through that graph, from its endpoint: counted as one node, an engine of 60 effects mixed into another's chain of 60 passed. Stopped past max_graph_depth, which a loop would otherwise never leave.
 static unsigned int feeding_depth(ma_node* n, std::unordered_map<ma_node*, unsigned int>& known, unsigned int level) {
 	if (!n) return 0;
 	if (level > max_graph_depth) return level;
@@ -1441,32 +1441,40 @@ static unsigned int feeding_depth(ma_node* n, std::unordered_map<ma_node*, unsig
 	if (it != known.end()) return it->second;
 	ma_node_base* base = (ma_node_base*)n;
 	unsigned int deepest = 0;
-	for (ma_uint32 bus = 0; bus < base->inputBusCount; bus++) {
-		for (ma_node_output_bus* in = base->pInputBuses[bus].head.pNext; in; in = in->pNext) {
-			const unsigned int depth = feeding_depth(in->pNode, known, level + 1);
+	if (base->pNodeGraph && n == &base->pNodeGraph->base) deepest = feeding_depth(&base->pNodeGraph->endpoint, known, level + 1);
+	else {
+		for (ma_uint32 bus = 0; bus < base->inputBusCount; bus++) {
+			for (ma_node_output_bus* in = base->pInputBuses[bus].head.pNext; in; in = in->pNext) {
+				const unsigned int depth = feeding_depth(in->pNode, known, level + 1);
+				if (depth > deepest) deepest = depth;
+			}
+		}
+	}
+	return known[n] = deepest + 1;
+}
+// The longest run of nodes n's output goes through, n included, to where it ends: from an engine's endpoint, on through its base node into the engine it is mixed into, as the outer engine reads it. Remembered for each node, as a node's depth below doesn't depend on the path to it: followed down every path, outputs that met again, as splitters' into one another, doubled the work at each, 29 of them holding the graph lock for seconds.
+static unsigned int fed_depth(ma_node* n, std::unordered_map<ma_node*, unsigned int>& known, unsigned int level) {
+	if (!n) return 0;
+	if (level > max_graph_depth) return level;
+	auto it = known.find(n);
+	if (it != known.end()) return it->second;
+	ma_node_base* base = (ma_node_base*)n;
+	unsigned int deepest = 0;
+	if (base->pNodeGraph && n == &base->pNodeGraph->endpoint) deepest = fed_depth(&base->pNodeGraph->base, known, level + 1);
+	else {
+		for (ma_uint32 bus = 0; bus < base->outputBusCount; bus++) {
+			const unsigned int depth = fed_depth(base->pOutputBuses[bus].pInputNode, known, level + 1);
 			if (depth > deepest) deepest = depth;
 		}
 	}
 	return known[n] = deepest + 1;
 }
-// The longest run of nodes n's output goes through, n included, to where it ends, as at an engine's endpoint.
-static unsigned int fed_depth(ma_node* n, unsigned int level) {
-	if (!n) return 0;
-	if (level > max_graph_depth) return level;
-	ma_node_base* base = (ma_node_base*)n;
-	unsigned int deepest = 0;
-	for (ma_uint32 bus = 0; bus < base->outputBusCount; bus++) {
-		const unsigned int depth = fed_depth(base->pOutputBuses[bus].pInputNode, level + 1);
-		if (depth > deepest) deepest = depth;
-	}
-	return deepest + 1;
-}
 unsigned int graph_depth_through(ma_node* source, ma_node* destination) {
-	std::unordered_map<ma_node*, unsigned int> known;
 	try {
-		return feeding_depth(source, known, 1) + fed_depth(destination, 1);
+		std::unordered_map<ma_node*, unsigned int> feeding, fed;
+		return feeding_depth(source, feeding, 1) + fed_depth(destination, fed, 1);
 	} catch (const std::bad_alloc&) {
-		return 0; // Not measured, as before there was a bound.
+		return max_graph_depth + 1; // Not measured, so refused, as unchecked the graph could grow past the bound; MA_TOO_BIG, as for a graph too deep.
 	}
 }
 // Whether a reverb can sit between a reverb3d giving the given channels and a destination: MiniAudio attaches a node's output only to an input of the same channel count, so a reverb of other channels, or a destination without an input, as a sound given as a mixer, left the reverb going nowhere.
