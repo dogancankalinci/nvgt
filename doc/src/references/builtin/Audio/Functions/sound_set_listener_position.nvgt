@@ -7,7 +7,7 @@
 		* const vector&in position (2): the new position.
 		* uint listener_index = 0: the listener to move. Most games only use listener 0.
 	## Returns:
-		bool: true if the listener was moved, false if the engine has no such listener, the position isn't finite or the sound system couldn't be started.
+		bool: true if the listener was moved, false if the engine has no such listener, the position isn't finite or the sound system's context couldn't be started; it throws, as `sound()` does, if the default engine can't be built.
 	## Remarks:
 		Call this whenever the player moves, so that sounds are heard from where they are. This is the same as `sound_default_engine.set_listener_position()`, and the direction the listener faces is set with `audio_engine::set_listener_direction()`.
 */

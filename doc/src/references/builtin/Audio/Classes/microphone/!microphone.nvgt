@@ -6,7 +6,7 @@
 		* audio_engine@ engine = sound_default_engine: the engine to create the microphone in, whose sample rate and number of channels the recording uses.
 	## Remarks:
 		A microphone is an audio_ring_buffer, and has all of its methods and properties, and those of audio_data_source and audio_node, as well as the ones listed here. Recording starts as soon as it is created, and an exception is thrown if the device can't be opened.
-		The recorded audio is kept in the buffer until it is read with `read()`, so read regularly or older audio is lost once the buffer is full. Alternatively attach the microphone's output to a node, for example an audio_encoder to save the recording to a file, or give it to `sound::open()` to hear it. Stopping the microphone with `set_state(AUDIO_NODE_STATE_STOPPED)` stops recording, and starting it again empties the buffer first.
+		The recorded audio is kept in the buffer until it is read with `read()`, so read regularly: once the buffer is full, what the microphone records next is dropped until there is room, the older audio kept. Alternatively attach the microphone's output to a node, for example an audio_encoder to save the recording to a file, or give it to `sound::open()` to hear it. Stopping the microphone with `set_state(AUDIO_NODE_STATE_STOPPED)` stops recording, and starting it again empties the buffer first.
 		Recording may need permission from the user on some platforms.
 */
 
