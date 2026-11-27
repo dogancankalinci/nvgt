@@ -7131,6 +7131,12 @@ template < typename A > static void zero_out_result(A arg) {
 		if constexpr (!std::is_const_v<pointed> && (std::is_arithmetic_v<pointed> || std::is_enum_v<pointed>)) if (arg) *arg = pointed{};
 	}
 }
+// What a refused call gives: 0, false or null, but for the enums whose 0 is a real state, the stopped state and the default placement, so that a callback refused on a busy node doesn't read a stopped node as started.
+template < typename R > static R refused_result() {
+	if constexpr (std::is_same_v<R, ma_node_state>) return ma_node_state_stopped;
+	else if constexpr (std::is_same_v<R, audio_spatializer_reverb3d_placement>) return postpan;
+	else return R{};
+}
 // A script's call on a node, under the node's lock, as virtual_call() makes it for other objects.
 template < class T, auto Function, typename ReturnType, typename... Args >
 ReturnType api_call(T *object, Args... args) {
@@ -7139,7 +7145,7 @@ ReturnType api_call(T *object, Args... args) {
 		if (!lock.held) {
 			(zero_out_result(args), ...);
 			if constexpr (std::is_void_v<ReturnType>) return;
-			else return ReturnType{};
+			else return refused_result<ReturnType>();
 		}
 		return (object->*Function)(std::forward < Args > (args)...);
 	} else return (object->*Function)(std::forward < Args > (args)...);
@@ -7159,7 +7165,7 @@ ReturnType api_call_given(T *object, Args... args) {
 	if (!lock.held) {
 		(let_go_of_given(args), ...);
 		if constexpr (std::is_void_v<ReturnType>) return;
-		else return ReturnType{};
+		else return refused_result<ReturnType>();
 	}
 	return (object->*Function)(std::forward < Args > (args)...);
 }
