@@ -1,0 +1,19 @@
+diff --git a/sdk/angelscript/source/as_scriptfunction.cpp b/sdk/angelscript/source/as_scriptfunction.cpp
+index 83b76d3..b996a73 100644
+--- a/sdk/angelscript/source/as_scriptfunction.cpp
++++ b/sdk/angelscript/source/as_scriptfunction.cpp
+@@ -182,6 +182,14 @@ asCScriptFunction *CreateDelegate(asCScriptFunction *func, void *obj)
+ 	asCScriptFunction *delegate = asNEW(asCScriptFunction)(static_cast<asCScriptEngine*>(func->GetEngine()), 0, asFUNC_DELEGATE);
+ 	if( delegate )
+ 		delegate->MakeDelegate(func, obj);
++	else
++	{
++		// ALTERED: with no memory for the delegate the script got a null handle with no exception, and found out only when it
++		// called it ("Null pointer access" there, or nothing for a callback a registered function skips when it is null).
++		asIScriptContext *ctx = asGetActiveContext();
++		if( ctx )
++			ctx->SetException("Out of memory");
++	}
+ 
+ 	return delegate;
+ }

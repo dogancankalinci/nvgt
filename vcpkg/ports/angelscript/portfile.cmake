@@ -180,6 +180,7 @@ vcpkg_from_github(
         fix-gc-flag-atomic.patch
         fix-thread-data-out-of-memory.patch
         fix-setargobject-failed-copy.patch
+        fix-delegate-out-of-memory.patch
 )
 
 vcpkg_cmake_configure(
