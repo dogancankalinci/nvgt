@@ -9,7 +9,7 @@ Place the mixer at a point in 3d space, so that it is heard from that point rela
 * const vector&in position (2): the position.
 
 ## Remarks:
-Positioning adds a panner and an attenuator to the sound's or mixer's nodes; where the audio graph is too deep for them (see mixer), they aren't added, the sound or mixer keeps what it had, and SOUNDSYSTEM_LAST_ERROR is AUDIO_ERROR_STATE_TOO_BIG.
+Positioning adds a panner and an attenuator to the sound's or mixer's nodes; where the audio graph is too deep for them (see mixer), it isn't positioned at all: spatialization stays off, the position isn't changed, and SOUNDSYSTEM_LAST_ERROR is AUDIO_ERROR_STATE_TOO_BIG. The settings that need those nodes, such as `rolloff`, `directional_attenuation_factor`, `hrtf`, `set_3d_panner()` and `reverb3d`, are refused there the same way, without being kept.
 The first call turns on `spatialization_enabled`. Everything in the mixer is then heard from this position, panned to the direction it is in and quieter with distance according to `rolloff`, `min_distance` and `max_distance`. Call this again whenever the object the mixer belongs to moves.
 
 Position the mixer of an object rather than each of the sounds in it, see the remarks of the mixer class. If the mixer has a `shape`, the position is the position of the shape.

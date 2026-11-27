@@ -3,7 +3,7 @@
 	reverb3d(audio_node@ reverb, mixer@ destination = null, audio_engine@ engine = sound_default_engine);
 	## Arguments:
 		* audio_node@ reverb: the reverb effect that the sounds are sent through, usually an audio_freeverb_node or an audio_fdn_reverb_node.
-		* mixer@ destination = null: the mixer that the output of the reverb goes to. If null, a new one is made for it.
+		* mixer@ destination = null: the mixer that the output of the reverb goes to. If null, the mixer of another reverb3d using the same reverb is taken, so that they share it, or else a new one is made for it.
 		* audio_engine@ engine = sound_default_engine: the engine to create the reverb3d in.
 	## Remarks:
 		Where attaching the reverb would make the audio graph too deep (see mixer), the constructor throws with AUDIO_ERROR_STATE_TOO_BIG.

@@ -15,4 +15,4 @@ Open a sound file or stream for decoding.
 bool: true if the audio could be opened, false otherwise.
 
 ## Remarks:
-Anything that was open before is closed first. A stream that can't seek, such as a live connection, can still be decoded.
+Anything that was open before is closed first, unless the decoder is in use, played by a sound or linked from another source with `set_next()`: then the open is refused with AUDIO_ERROR_STATE_INVALID_OPERATION and the decoder keeps what it had. A stream that can't seek, such as a live connection, can still be decoded.
