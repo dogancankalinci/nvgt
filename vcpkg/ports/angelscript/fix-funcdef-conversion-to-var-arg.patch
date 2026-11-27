@@ -1,0 +1,23 @@
+diff --git a/sdk/angelscript/source/as_compiler.cpp b/sdk/angelscript/source/as_compiler.cpp
+index f38601c..8815158 100644
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -1882,6 +1882,18 @@ int asCCompiler::PrepareArgument(asCDataType *paramType, asCExprContext *ctx, as
+ 		// The function is expecting a var type. If the argument is a function name, we must now decide which function it is
+ 		DetermineSingleFunc(ctx, node);
+ 
++		// ALTERED: a function converted to a funcdef (F(func), see ImplicitConvFunction) is typed as a reference to the function
++		// object rather than as a handle, although what it leaves on the stack is the same function pointer a handle holds. It went
++		// on below as an object reference with a handle type id: funcdefs don't support handles as objects do, so it wasn't copied
++		// into a handle variable, and the function received the function object where a ?&in parameter of a handle type gets the
++		// address of a handle (dictionary.set(key, F(func)) stored the object's first bytes as the handle). It is made a handle
++		// value here, as DetermineSingleFunc makes a bare function name, which then takes the same path as @func.
++		if( CastToFuncdefType(ctx->type.dataType.GetTypeInfo()) && !ctx->type.dataType.IsObjectHandle() && !ctx->type.dataType.IsReference() && !ctx->type.isVariable )
++		{
++			ctx->type.dataType.MakeHandle(true);
++			ctx->type.isExplicitHandle = true;
++		}
++
+ 		// Since the function is expecting a var type ?, then we don't want to convert the argument to anything else
+ 		param = ctx->type.dataType;
+ 		param.MakeHandle(ctx->type.isExplicitHandle || ctx->type.IsNullConstant() || CastToFuncdefType(ctx->type.dataType.GetTypeInfo()));

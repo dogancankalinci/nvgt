@@ -175,6 +175,7 @@ vcpkg_from_github(
         fix-asnew-null.patch
         fix-module-set-name-lock.patch
         fix-function-by-name-parent-namespaces.patch
+        fix-funcdef-conversion-to-var-arg.patch
 )
 
 vcpkg_cmake_configure(
