@@ -6271,7 +6271,7 @@ public:
 	}
 	bool play_looped() override {
 		if (pcm_stream || datasource_opened && audio_data_source_impl::live_queue(datasource)) return (g_soundsystem_last_error = MA_INVALID_OPERATION) == MA_SUCCESS; // Fed by stream_pcm(), or a ring buffer or microphone it opened, it has no end to loop from, as play_wait() says.
-		let_go_of_decoded_wav();
+		if (!on_an_audio_thread()) let_go_of_decoded_wav(); // As play() leaves it there.
 		if (fade_paused && snd) clear_stop_for_restart(true);
 		paused = fade_paused = false;
 		wait_out_flush();
