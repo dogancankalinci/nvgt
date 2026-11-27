@@ -4644,6 +4644,36 @@ public:
 		}
 		return spatializer;
 	}
+	// Runs f on the spatializer, made for it if none was: one made for a change the graph was too deep for, as a panner refused, is taken off again, rather than left empty in the chain, taking depth and processing for nothing.
+	template <class F> void with_spatializer(F f) {
+		const bool had = made_spatializer() != nullptr;
+		audio_spatializer* s = get_spatializer();
+		if (!s) return; // None to be made, its refusal set.
+		g_soundsystem_last_error = MA_SUCCESS;
+		f(s);
+		if (!had && g_soundsystem_last_error == MA_TOO_BIG) {
+			last_error_kept kept;
+			let_go_of_spatializer();
+		}
+	}
+	// Takes the spatializer off this mixer or sound, as closing a sound does and a refused positioning does with the one it made.
+	void let_go_of_spatializer() {
+		if (!spatializer) return;
+		// Not under this sound's lock, which no chain's lock is taken inside: forgetting the mixer takes the spatializer's, and taking it out of the chain rewires the chains around it, and each of these, like letting go of the spatializer itself, can let go of the last reference to a mixer, such as one a reverb3d made or one the script pointed a chain at. A mixer's destructor takes g_shaped_mixers_mutex, which a listener's move holds while it waits for this sound's lock.
+		// The spatializer forgets this sound before the sound lets go of it, so that it stops asking the sound for its parameters first.
+		audio_spatializer *forgotten = spatializer;
+		forgotten->forget_mixer();
+		{
+			std::lock_guard<std::recursive_mutex> topology(g_audio_topology_mutex); // A loop check walking mixers reads this spatializer (see mixer_reaches()).
+			unique_lock<mutex> lock(spatialization_params_mutex);
+			spatializer = nullptr;
+		}
+		try {
+			node_chain->remove_node(forgotten);
+		} catch (...) {} // Out of memory rewiring around it: left in the chain, which this sound still holds, rather than thrown out of close() before the sound is off the graph, which a destructor's close() then left attached as its parts were freed.
+		drop_node_hold(static_cast<audio_node*>(this), forgotten);
+		forgotten->release();
+	}
 	// The spatializer if one was made, for reading a setting: get_spatializer() made one, putting a node into the chain to be processed and tracked, for a value a new one starts with anyway.
 	audio_spatializer* made_spatializer() const { return reinterpret_cast<const std::atomic<audio_spatializer*>&>(spatializer).load(std::memory_order_acquire); }
 	inline void duplicate() override { audio_node_impl::duplicate(); }
@@ -4690,7 +4720,7 @@ public:
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return;
 		}
-		if (audio_spatializer* s = get_spatializer()) s->set_panner_by_id(panner_id); // None where one can't be made, its refusal set.
+		with_spatializer([panner_id](audio_spatializer* s) { s->set_panner_by_id(panner_id); });
 	}
 	int get_3d_panner() const override { audio_spatializer* made = made_spatializer(); return made? made->get_current_panner_id() : -1; }
 	void set_3d_attenuator(int attenuator_id) override {
@@ -4698,21 +4728,21 @@ public:
 			g_soundsystem_last_error = MA_INVALID_ARGS;
 			return;
 		}
-		if (audio_spatializer* s = get_spatializer()) s->set_attenuator_by_id(attenuator_id);
+		with_spatializer([attenuator_id](audio_spatializer* s) { s->set_attenuator_by_id(attenuator_id); });
 	}
 	int get_3d_attenuator() const override { audio_spatializer* made = made_spatializer(); return made? made->get_current_attenuator_id() : -1; }
 	int get_preferred_3d_panner() const override { audio_spatializer* made = made_spatializer(); return made? made->get_preferred_panner_id() : -1; }
 	int get_preferred_3d_attenuator() const override { audio_spatializer* made = made_spatializer(); return made? made->get_preferred_attenuator_id() : -1; }
 	void set_hrtf(bool enabled) override {
-		audio_spatializer* s = get_spatializer();
-		if (!s) return;
-		if (enabled) {
-			s->set_panner_by_id(g_audio_hrtf_panner);
-			s->set_attenuator_by_id(g_audio_hrtf_attenuator);
-		} else {
-			s->set_panner_by_id(g_audio_basic_panner);
-			s->set_attenuator_by_id(g_audio_basic_attenuator);
-		}
+		with_spatializer([enabled](audio_spatializer* s) {
+			if (enabled) {
+				s->set_panner_by_id(g_audio_hrtf_panner);
+				s->set_attenuator_by_id(g_audio_hrtf_attenuator);
+			} else {
+				s->set_panner_by_id(g_audio_basic_panner);
+				s->set_attenuator_by_id(g_audio_basic_attenuator);
+			}
+		});
 	}
 	bool get_hrtf() const override { return get_3d_panner() == g_audio_hrtf_panner && get_3d_attenuator() == g_audio_hrtf_attenuator; } // The components in use, rather than those asked for: one that couldn't be made, as for an engine that isn't stereo, falls back to the basic one, which read as HRTF though none was heard.
 	bool set_shape(CScriptHandle new_shape) override {
@@ -4782,8 +4812,8 @@ public:
 		g_soundsystem_last_error = MA_INVALID_ARGS;
 		return false;
 	}
-	void set_reverb3d(reverb3d* verb) override { if (reverb3d_takeable(verb, postpan) && (verb || made_spatializer())) if (audio_spatializer* s = get_spatializer()) s->set_reverb3d(verb); }
-	void set_reverb3d_at(reverb3d* verb, audio_spatializer_reverb3d_placement placement) override { if (reverb3d_takeable(verb, placement) && (verb || made_spatializer())) if (audio_spatializer* s = get_spatializer()) s->set_reverb3d(verb, placement); }
+	void set_reverb3d(reverb3d* verb) override { if (reverb3d_takeable(verb, postpan) && (verb || made_spatializer())) with_spatializer([verb](audio_spatializer* s) { s->set_reverb3d(verb); }); }
+	void set_reverb3d_at(reverb3d* verb, audio_spatializer_reverb3d_placement placement) override { if (reverb3d_takeable(verb, placement) && (verb || made_spatializer())) with_spatializer([verb, placement](audio_spatializer* s) { s->set_reverb3d(verb, placement); }); }
 	reverb3d* get_reverb3d() const override { audio_spatializer* made = made_spatializer(); return made? made->get_reverb3d() : nullptr; }
 	reverb3d* get_reverb3d_sent_to() const override { // Read by the loop check of another thread, under the topology lock, which close() clears this under (see get_spatializer()).
 		audio_spatializer* sending = reinterpret_cast<std::atomic<audio_spatializer*>&>(spatializer).load(std::memory_order_acquire);
@@ -5029,7 +5059,16 @@ public:
 		ma_sound_set_spatialization_enabled(&*snd, enabled);
 		if (!enabled) return;
 		// With the default panner and attenuator unless the sound has its own, as set_position_3d() gives them: spatialization turned on by hand, as after a load, which lets go of them, left the sound placed but neither panned nor attenuated.
-		if (audio_spatializer* s = get_spatializer()) s->use_default_components();
+		const bool had = made_spatializer() != nullptr;
+		g_soundsystem_last_error = MA_SUCCESS;
+		audio_spatializer* s = get_spatializer();
+		if (s) s->use_default_components();
+		if (!s || g_soundsystem_last_error == MA_TOO_BIG) { // Refused where the graph is too deep: positioned all or not at all, rather than panned and never attenuated, playing at full volume however far.
+			last_error_kept kept;
+			if (s && !had) let_go_of_spatializer();
+			ma_sound_set_spatialization_enabled(&*snd, false);
+			return;
+		}
 		place_in_shape(); // A shaped sound isn't placed while not spatialized, as a listener moves or the sound loads anew: placed in its shape once it is, rather than played from where it was last placed or from the origin.
 	}
 	bool get_spatialization_enabled() const override {
@@ -5068,6 +5107,7 @@ public:
 		if (!snd || !finite_values({x, y, z})) // A NaN or infinite position or direction poisons what positions it, for good.
 			return;
 		set_spatialization_enabled(true); // With the default panner and attenuator, the first time.
+		if (!ma_sound_is_spatialization_enabled(&*snd)) return; // Refused, as where the graph is too deep for them: not moved either, keeping what it had.
 		unique_lock<mutex> lock(spatialization_params_mutex); // Which a listener's move places a shaped sound under.
 		if (shape) {
 			shape_anchor = vector3(x, y, z);
@@ -5557,23 +5597,6 @@ public:
 		} catch (...) {} // Out of memory closing it, as reserving its reap: what close() didn't get to is left, rather than the program ended from a destructor.
 	}
 	// Takes the spatializer out of the chain and lets go of it, as close() does for a loaded sound and the destructor for any.
-	void let_go_of_spatializer() {
-		if (!spatializer) return;
-		// Not under this sound's lock, which no chain's lock is taken inside: forgetting the mixer takes the spatializer's, and taking it out of the chain rewires the chains around it, and each of these, like letting go of the spatializer itself, can let go of the last reference to a mixer, such as one a reverb3d made or one the script pointed a chain at. A mixer's destructor takes g_shaped_mixers_mutex, which a listener's move holds while it waits for this sound's lock.
-		// The spatializer forgets this sound before the sound lets go of it, so that it stops asking the sound for its parameters first.
-		audio_spatializer *forgotten = spatializer;
-		forgotten->forget_mixer();
-		{
-			std::lock_guard<std::recursive_mutex> topology(g_audio_topology_mutex); // A loop check walking mixers reads this spatializer (see mixer_reaches()).
-			unique_lock<mutex> lock(spatialization_params_mutex);
-			spatializer = nullptr;
-		}
-		try {
-			node_chain->remove_node(forgotten);
-		} catch (...) {} // Out of memory rewiring around it: left in the chain, which this sound still holds, rather than thrown out of close() before the sound is off the graph, which a destructor's close() then left attached as its parts were freed.
-		drop_node_hold(static_cast<audio_node*>(this), forgotten);
-		forgotten->release();
-	}
 	inline void release() override {
 		if (asAtomicDec(refcount) < 1) {
 			if (!should_autoclose || !still_to_play()) delete this; // Kept while due to start too, its start scheduled ahead: get_playing() reads false until then, and the sound was freed unplayed.
