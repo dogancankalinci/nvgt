@@ -880,13 +880,65 @@ std::string poco_regular_expression_replace(const std::string& subject, const st
 // protocol-relative links "//cdn.example.com/x.js") as a path: resolving "//g" against "http://a/b/c/d;p?q" gave "http://a/g" instead of
 // RFC 3986's "http://g" (the one example of its section 5.4 that differed). It is resolved as the reference with the base's scheme, which
 // section 5.2.2 resolves the same way. A uri parsed from such a string holds it as a path starting with "//", which no other reference has.
-static void uri_resolve(URI& base, const std::string& relative) {
-	if (relative.size() > 2 && relative[0] == '/' && relative[1] == '/' && !base.getScheme().empty()) base.resolve(URI(base.getScheme() + ":" + relative));
-	else base.resolve(relative);
+// RFC 3986 section 5.2.4's remove_dot_segments.
+static std::string uri_remove_dot_segments(std::string in) {
+	std::string out;
+	while (!in.empty()) {
+		if (in.compare(0, 3, "../") == 0) in.erase(0, 3);
+		else if (in.compare(0, 2, "./") == 0) in.erase(0, 2);
+		else if (in.compare(0, 3, "/./") == 0) in.erase(0, 2);
+		else if (in == "/.") in = "/";
+		else if (in.compare(0, 4, "/../") == 0 || in == "/..") {
+			in = in.size() == 3 ? std::string("/") : in.substr(3);
+			size_t last = out.rfind('/');
+			out.erase(last == std::string::npos ? 0 : last);
+		} else if (in == "." || in == "..") in.clear();
+		else {
+			size_t next = in.find('/', 1);
+			if (next == std::string::npos) next = in.size();
+			out.append(in, 0, next);
+			in.erase(0, next);
+		}
+	}
+	return out;
 }
+// A network-path reference is any reference starting with "//": "//" alone (an empty authority) and "//#f" were resolved as paths, which
+// kept the base's host. Against a base without a scheme (which RFC 3986 defines no resolution against) it was resolved as a path too,
+// which took its authority for the first segment of the path ("//cdn.example.com/x.js" against "/page" gave "/cdn.example.com/x.js"); it
+// now gives the reference with the dot segments of its path removed, as section 5.2.2 does for a base with a scheme (Poco holds such a
+// uri as it holds the parsed reference: as a path starting with "//").
+static void uri_resolve(URI& base, const std::string& relative) {
+	if (relative.size() < 2 || relative[0] != '/' || relative[1] != '/') base.resolve(relative);
+	else if (!base.getScheme().empty()) base.resolve(URI(base.getScheme() + ":" + relative));
+	else {
+		size_t path_start = relative.find_first_of("/?#", 2);
+		if (path_start == std::string::npos) path_start = relative.size();
+		size_t path_end = relative.find_first_of("?#", path_start);
+		if (path_end == std::string::npos) path_end = relative.size();
+		base = URI(relative.substr(0, path_start) + uri_remove_dot_segments(relative.substr(path_start, path_end - path_start)) + relative.substr(path_end));
+	}
+}
+// The reference is given to uri_resolve() as text made from its parts: its path as Poco decoded it, with only %, ? and # encoded again (as
+// they would start an escape or end the path), then its raw query and fragment. It was its toString(), which encoded the path again: the
+// brackets of an IPv6 host ("//[::1]:8/x") came back as %5B and %5D, which then failed as a port number while resolve() of the same
+// string worked; and a path of just "//" (from "//" or "//#f") was resolved as a path.
 static void uri_resolve_uri(URI& base, const URI& relative) {
-	if (relative.getScheme().empty() && relative.getHost().empty() && relative.getPath().size() > 2 && relative.getPath().compare(0, 2, "//") == 0) uri_resolve(base, relative.toString());
-	else base.resolve(relative);
+	const std::string& path = relative.getPath();
+	if (!relative.getScheme().empty() || !relative.getHost().empty() || path.size() < 2 || path.compare(0, 2, "//") != 0) {
+		base.resolve(relative);
+		return;
+	}
+	std::string text;
+	for (char c : path) {
+		if (c == '%') text += "%25";
+		else if (c == '?') text += "%3F";
+		else if (c == '#') text += "%23";
+		else text += c;
+	}
+	if (!relative.getRawQuery().empty()) text += "?" + relative.getRawQuery();
+	std::string fragment = relative.getRawFragment();
+	if (!fragment.empty()) text += "#" + fragment;
+	uri_resolve(base, text);
 }
 // Scriptarray wrappers for URI class.
 CScriptArray* uri_get_query_parameters(const URI& u, bool plus_as_space) {
