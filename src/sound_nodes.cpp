@@ -621,7 +621,8 @@ class low_pass_filter_node_impl : public audio_node_impl, public virtual low_pas
 	unique_ptr<ma_lpf_node> fn;
 	ma_lpf_node_config cfg;
 	public:
-	low_pass_filter_node_impl(double cutoff_frequency, int order, audio_engine* e) : fn(make_unique<ma_lpf_node>()), audio_node_impl(nullptr, e) {
+	low_pass_filter_node_impl(double cutoff_frequency, unsigned int order, audio_engine* e) : fn(make_unique<ma_lpf_node>()), audio_node_impl(nullptr, e) {
+		if (order > MA_MAX_FILTER_ORDER) order = MA_MAX_FILTER_ORDER; // As MiniAudio's config takes it, before the checks: as an int, an order of 2^31 or more was negative and refused.
 		if (!finite_node_values({cutoff_frequency}) || !(cutoff_frequency = usable_frequency(cutoff_frequency, get_engine()->get_sample_rate(), [&](double f) { return sections_in_range(pass_filter::low, f, order, get_engine()->get_sample_rate()); }))) throw std::invalid_argument("filter setting out of range");
 		cfg = ma_lpf_node_config_init(get_engine()->get_channels(), get_engine()->get_sample_rate(), cutoff_frequency, order);
 		if ((g_soundsystem_last_error = ma_lpf_node_init(ma_engine_get_node_graph(get_engine()->get_ma_engine()), &cfg, nullptr, &*fn)) != MA_SUCCESS) throw std::runtime_error("ma_low_pass_filter_node was not initialized");
@@ -684,7 +685,8 @@ class high_pass_filter_node_impl : public audio_node_impl, public virtual high_p
 		fn->gain.store((float)(1 / (1 + tangent)), std::memory_order_relaxed);
 	}
 	public:
-	high_pass_filter_node_impl(double cutoff_frequency, int order, audio_engine* e) : fn(make_unique<held_hpf_node>()), audio_node_impl(nullptr, e) {
+	high_pass_filter_node_impl(double cutoff_frequency, unsigned int order, audio_engine* e) : fn(make_unique<held_hpf_node>()), audio_node_impl(nullptr, e) {
+		if (order > MA_MAX_FILTER_ORDER) order = MA_MAX_FILTER_ORDER; // As MiniAudio's config takes it, before the checks: as an int, an order of 2^31 or more was negative and refused.
 		if (!finite_node_values({cutoff_frequency}) || !(cutoff_frequency = usable_frequency(cutoff_frequency, get_engine()->get_sample_rate(), [&](double f) { return sections_in_range(pass_filter::high, f, order, get_engine()->get_sample_rate()); }))) throw std::invalid_argument("filter setting out of range");
 		cfg = ma_hpf_node_config_init(get_engine()->get_channels(), get_engine()->get_sample_rate(), cutoff_frequency, order);
 		fn->last_in.assign(cfg.hpf.channels, 0);
@@ -725,7 +727,8 @@ class band_pass_filter_node_impl : public audio_node_impl, public virtual band_p
 	unique_ptr<ma_bpf_node> fn;
 	ma_bpf_node_config cfg;
 	public:
-	band_pass_filter_node_impl(double cutoff_frequency, int order, audio_engine* e) : fn(make_unique<ma_bpf_node>()), audio_node_impl(nullptr, e) {
+	band_pass_filter_node_impl(double cutoff_frequency, unsigned int order, audio_engine* e) : fn(make_unique<ma_bpf_node>()), audio_node_impl(nullptr, e) {
+		if (order > MA_MAX_FILTER_ORDER) order = MA_MAX_FILTER_ORDER; // As MiniAudio's config takes it, before the checks: as an int, an order of 2^31 or more was negative and refused.
 		if (!finite_node_values({cutoff_frequency}) || !(cutoff_frequency = usable_frequency(cutoff_frequency, get_engine()->get_sample_rate(), [&](double f) { return sections_in_range(pass_filter::band, f, order, get_engine()->get_sample_rate()); }))) throw std::invalid_argument("filter setting out of range");
 		cfg = ma_bpf_node_config_init(get_engine()->get_channels(), get_engine()->get_sample_rate(), cutoff_frequency, order);
 		if ((g_soundsystem_last_error = ma_bpf_node_init(ma_engine_get_node_graph(get_engine()->get_ma_engine()), &cfg, nullptr, &*fn)) != MA_SUCCESS) throw std::runtime_error("ma_band_pass_filter_node was not initialized");
