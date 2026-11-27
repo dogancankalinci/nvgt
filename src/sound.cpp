@@ -7139,15 +7139,21 @@ ReturnType virtual_call(T *object, Args... args) {
 }
 // A node's lock for a script's call (see audio_node_impl::api_mutex), waited for only briefly on an audio thread, as in a processing callback: a script thread's load or open can read a file or the network under it, which would hold that audio up. Not held then, with MA_BUSY. Another thread's ordinary call holds it for microseconds, which the wait covers.
 struct mixer_api_lock {
-	std::unique_lock<std::recursive_timed_mutex> lock;
+	std::unique_lock<std::recursive_mutex> lock;
 	bool held;
 };
 static mixer_api_lock lock_node_api(audio_node* n) {
 	audio_node_impl* impl = n? dynamic_cast<audio_node_impl*>(n) : nullptr;
-	if (!impl) return {std::unique_lock<std::recursive_timed_mutex>(), true};
-	if (!audio_engine_impl::on_audio_thread()) return {std::unique_lock<std::recursive_timed_mutex>(impl->api_mutex), true};
-	std::unique_lock<std::recursive_timed_mutex> lock(impl->api_mutex, std::defer_lock);
-	const bool held = lock.try_lock_for(std::chrono::milliseconds(2));
+	if (!impl) return {std::unique_lock<std::recursive_mutex>(), true};
+	if (!audio_engine_impl::on_audio_thread()) return {std::unique_lock<std::recursive_mutex>(impl->api_mutex), true};
+	// Polled, as lock_for_audio() polls: MSVC's timed mutexes take an internal mutex even to try, which a preempted script thread could keep the audio thread waiting on past the 2 ms.
+	std::unique_lock<std::recursive_mutex> lock(impl->api_mutex, std::try_to_lock);
+	const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(2);
+	while (!lock && std::chrono::steady_clock::now() < until) {
+		std::this_thread::yield();
+		lock.try_lock();
+	}
+	const bool held = lock.owns_lock();
 	if (!held) g_soundsystem_last_error = MA_BUSY;
 	return {std::move(lock), held};
 }

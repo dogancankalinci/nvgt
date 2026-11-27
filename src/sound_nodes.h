@@ -44,7 +44,7 @@ unsigned int graph_depth_through(ma_node* source, ma_node* destination);
 class audio_node_impl : public virtual audio_node {
 public:
 	// The script's calls on this node, one thread at a time (see api_call() in sound.cpp): a sound's close(), loads and open() free and replace the MiniAudio sound and what every other call reads of it, its first spatializer, effects chain and data source wrapper are made on first use, a filter's setters reinitialise it, and an encoder's pull session is opened and read, so that two threads using one node at once crashed it, or gave it two of what it makes. MiniAudio's audio thread doesn't take it.
-	std::recursive_timed_mutex api_mutex;
+	std::recursive_mutex api_mutex; // Polled on an audio thread (see lock_node_api()), not a timed mutex, whose try_lock() MSVC makes take an internal mutex a script thread can hold.
 protected:
 	ma_node_base* node; // Must be set by subclasses
 	audio_engine *engine;
