@@ -543,7 +543,8 @@ public:
 				else {
 					success = ctx->SetArgObject(i, obj);
 					// An object passed by value is copied by SetArgObject(), which leaves the argument null when the copy fails (the copy constructor of a script class raised an exception): the function ran with a null object.
-					if (success >= 0 && !by_ref && !param_is_handle && !*(void**)ctx->GetAddressOfArg(i)) {
+					// With AngelScript's fix-setargobject-failed-copy it fails with asOUT_OF_MEMORY instead, which gave "Angelscript error -27 while setting argument": the same message as before.
+					if (!by_ref && !param_is_handle && (success == asOUT_OF_MEMORY || (success >= 0 && !*(void**)ctx->GetAddressOfArg(i)))) {
 						async_arg_failed(aCtx, format("Cannot copy object for argument %u of async function call", i + 1));
 						engine->ReturnContext(ctx);
 						return false;
@@ -571,7 +572,7 @@ public:
 					if (success >= 0) value_args.emplace_back(obj, arg_type);
 					else engine->ReleaseScriptObject(obj, arg_type);
 					// By value, the function gets a copy SetArgObject() makes of the copy, null if that fails (see above).
-					if (success >= 0 && !by_ref && !*(void**)ctx->GetAddressOfArg(i)) {
+					if (!by_ref && (success == asOUT_OF_MEMORY || (success >= 0 && !*(void**)ctx->GetAddressOfArg(i)))) {
 						async_arg_failed(aCtx, format("Cannot copy object for argument %u of async function call", i + 1));
 						engine->ReturnContext(ctx);
 						return false;

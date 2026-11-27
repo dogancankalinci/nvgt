@@ -628,9 +628,10 @@ CScriptDictionary* script_function_call(asIScriptFunction* func, CScriptDictiona
 							g_ScriptEngine->AddRefScriptObject(obj, value_type);
 							made_objects.emplace_back(obj, value_type);
 						}
-						ctx->SetArgObject(p, obj);
+						int set_result = ctx->SetArgObject(p, obj);
 						// SetArgObject() leaves the argument null when the copy fails (the copy constructor of a script class raised an exception, which is lost), and the function ran with a null object while the call reported no error.
-						if (!(arg_type_id & asTYPEID_OBJHANDLE) && !*(void**)ctx->GetAddressOfArg(p)) {
+						// With AngelScript's fix-setargobject-failed-copy it fails instead, and leaves the context unprepared, for which GetAddressOfArg() gives null: that was read here (a crash on every such copy). Checked first.
+						if (set_result < 0 || (!(arg_type_id & asTYPEID_OBJHANDLE) && !*(void**)ctx->GetAddressOfArg(p))) {
 							failure_reason = "ERROR: Can't copy the value of parameter ";
 							failure_reason += std::to_string(p + 1);
 							add_statement_limit_reason(failure_reason, call_data);
