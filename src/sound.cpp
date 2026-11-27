@@ -6952,7 +6952,7 @@ sound* sound_play(const string& path, const vector3& position, float volume, flo
 }
 vector3* sound_get_listener_position(unsigned int listener_index = 0) {
 	default_engine_ref engine;
-	if (!engine) return new_vec3();
+	if (!engine) return new_vec3(std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::quiet_NaN()); // No default engine, as on an audio thread while another builds it: as for a listener it doesn't have, rather than the origin, a real position.
 	return new_vec3(engine->get_listener_position(listener_index));
 }
 // True only when the position was set: MiniAudio ignores a listener it doesn't have, and the engine a position that isn't finite.
