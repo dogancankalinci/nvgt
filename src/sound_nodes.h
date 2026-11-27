@@ -20,6 +20,7 @@
 #include <atomic>
 #include <vector>
 #include <mutex>
+#include <thread> // std::this_thread::yield in lock_for_audio; MSVC brought it in through another header, gcc and clang don't
 #include "sound.h"
 
 // The loudest gain a volume sets, +100 dB: louder, a few gains in a row took samples past what a float holds, to infinity and then NaN, which a filter after them kept for good, as with a volume that isn't finite.
