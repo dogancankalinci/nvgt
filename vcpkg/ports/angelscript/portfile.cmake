@@ -183,6 +183,7 @@ vcpkg_from_github(
         fix-delegate-out-of-memory.patch
         fix-script-function-data-out-of-memory.patch
         fix-compile-out-of-memory.patch
+        fix-funcdef-conversion-to-var-list-element.patch
 )
 
 vcpkg_cmake_configure(

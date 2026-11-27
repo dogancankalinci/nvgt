@@ -1,0 +1,21 @@
+diff --git a/sdk/angelscript/source/as_compiler.cpp b/sdk/angelscript/source/as_compiler.cpp
+index 8815158..8349016 100644
+--- a/sdk/angelscript/source/as_compiler.cpp
++++ b/sdk/angelscript/source/as_compiler.cpp
+@@ -4414,6 +4414,16 @@ int asCCompiler::CompileInitListElement(asSListPatternNode *&patternNode, asCScr
+ 					// Make sure the type is not ambiguous
+ 					DetermineSingleFunc(&rctx, valueNode);
+ 
++					// ALTERED: a function converted to a funcdef (F(func)) is made a handle value, as PrepareArgument does for a ?
++					// parameter (see there): typed as the function object rather than as a handle, the element was taken for a
++					// funcdef stored by value, and dictionary d = {{"k", F(func)}} didn't compile ("No appropriate opAssign method
++					// found in 'F' for value assignment") although {{"k", @func}}, {{"k", func}} and d.set("k", F(func)) do.
++					if( CastToFuncdefType(rctx.type.dataType.GetTypeInfo()) && !rctx.type.dataType.IsObjectHandle() && !rctx.type.dataType.IsReference() && !rctx.type.isVariable )
++					{
++						rctx.type.dataType.MakeHandle(true);
++						rctx.type.isExplicitHandle = true;
++					}
++
+ 					// We now know the type
+ 					dt = rctx.type.dataType;
+ 					dt.MakeReadOnly(false);
