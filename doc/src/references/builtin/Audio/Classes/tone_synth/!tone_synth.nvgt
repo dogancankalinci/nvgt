@@ -24,7 +24,7 @@
 		* double length, int length_ms: the length written so far.
 		* double position, int position_ms: the current position.
 		### Writing out
-		* sound@ write_wave_sound(): a sound of the default engine holding the audio, or null if there is nothing to write.
+		* sound@ write_wave_sound(): a sound of the default engine holding the audio, or null if there is nothing to write; as `sound()` does, it throws if the sound system can't start.
 		* int16[]@ write_samples(): the samples, interleaved left and right, or null.
 		* bool write_wave_file(const string&in filename): writes a 16-bit WAV file, replacing a file of that name, and returns whether it was written.
 */

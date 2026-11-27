@@ -15,7 +15,7 @@
 void main() {
 	sound fountain;
 	fountain.load("C:/Windows/media/Ring10.wav");
-	fountain.set_shape(physics_sphere_shape_create(3)); // A pool 3 meters across, heard from its edge.
+	fountain.set_shape(physics_sphere_shape_create(3)); // A pool of 3 meters radius, 6 across, heard from its edge.
 	fountain.set_position_3d(0, 10, 0);
 	fountain.play_looped();
 	for (int y = 0; y <= 10; y += 2) {

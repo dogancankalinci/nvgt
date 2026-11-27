@@ -6905,7 +6905,7 @@ sound *new_global_sound_unmixed() {
 	if (!engine) return nullptr; // The sound system couldn't start.
 	return new sound_impl(engine.engine);
 }
-// The script's sound factory, which throws when the sound system can't start, as a mixer's does and sound_system_available says, rather than giving null, which failed later as a null pointer. Speech and the tone synth, which check for null, use new_global_sound() and new_global_sound_unmixed().
+// The script's sound factory, which throws when the sound system can't start, as a mixer's does and sound_system_available says, rather than giving null, which failed later as a null pointer. Speech, which catches what they throw, and the tone synth, which lets it through to the script as this does, use new_global_sound() and new_global_sound_unmixed().
 sound *script_new_global_sound();
 sound *new_global_sound() {
 	sound* s = new_global_sound_unmixed();
