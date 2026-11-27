@@ -6051,6 +6051,7 @@ public:
 	}
 	bool open(audio_data_source* ds) override {
 		if (!ds) return (g_soundsystem_last_error = MA_INVALID_ARGS) == MA_SUCCESS;
+		complete_if_failed failed{this}; // For the whole call, as in load_source(): declared in the try below, a refusal after it, or the sound closed at the depth limit, left load_complete false, as no other failed load does.
 		if (snd && datasource_opened && ds == datasource) close_to_reload(); // The source it plays, which is_used() below counts this sound as reading: closed and opened anew, as open() does with another source, rather than refused.
 		// A reference of this call's own, let go of after the lock below: the script's, which the releases below let go of, can be the last.
 		ds->duplicate();
@@ -6081,7 +6082,6 @@ public:
 		ma_bool32 looped = MA_FALSE;
 		bool looping_read = false;
 		try {
-		complete_if_failed failed{this}; // As in load_source().
 		audio_data_source_impl::prepare_length_of(ds); // Before the sound reads it.
 		looped = ma_data_source_is_looping(ds->get_ma_data_source()); // Before chain_source() sets it aside.
 		looping_read = true;
