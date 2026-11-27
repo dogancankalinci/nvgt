@@ -491,6 +491,32 @@ asIScriptContext *CContextMgr::AddContextForCoRoutine(asIScriptContext *currCtx,
 	return coctx;
 }
 
+// ALTERED: see the declaration. A thread is due once more than its sleep time has passed (see ExecuteScripts).
+asUINT CContextMgr::GetTimeUntilNextWake() const
+{
+	if( m_threads.size() == 0 || m_abortAllRequested )
+		return 0;
+
+	asUINT time = m_getTimeFunc ? m_getTimeFunc() : 0;
+	asUINT wait = asUINT(-1);
+	for( asUINT n = 0; n < m_threads.size(); n++ )
+	{
+		const SContextInfo *thread = m_threads[n];
+		if( !thread->sleeping )
+			return 0;
+		asUINT elapsed = time - thread->sleepStart;
+		if( elapsed > thread->sleepTime )
+			return 0;
+		// Due once more than sleepTime has passed, so one millisecond after; sleep(4294967295) has no millisecond after in 32 bits
+		asUINT left = thread->sleepTime - elapsed;
+		if( left < asUINT(-1) )
+			left++;
+		if( left < wait )
+			wait = left;
+	}
+	return wait;
+}
+
 void CContextMgr::SetSleeping(asIScriptContext *ctx, asUINT milliSeconds)
 {
 	assert( m_getTimeFunc != 0 );

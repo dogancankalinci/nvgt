@@ -1072,6 +1072,14 @@ void release_context_pool() {
 	for (asIScriptContext *pooled : g_ctxPool) pooled->Release();
 	g_ctxPool.clear();
 }
+// The context manager's ExecuteScripts() returns at once while every script it runs is in sleep(), and the loops below called it again
+// straight away: sleep(2000) on the main thread kept a processor core busy for the two seconds. They wait until the first sleeping script
+// is due, a few milliseconds at a time, so that an exit() on a script thread (which the manager acts on in ExecuteScripts()) is still
+// acted on at once.
+static void wait_for_sleeping_scripts() {
+	asUINT idle = g_ctxMgr->GetTimeUntilNextWake();
+	if (idle) Poco::Thread::sleep(idle > 5 ? 5 : idle);
+}
 // Lets the module go once the script ended or failed to start. Engines can outlive it, and their processing callbacks, which run on audio threads, take contexts from the pool, so they are stopped first; the destructors that discarding runs use pooled contexts too, so the pool is emptied after.
 static void discard_module(asIScriptEngine *engine, asIScriptModule *mod) {
 	script_threads_ending();
@@ -1160,7 +1168,7 @@ bool ExecuteScript(asIScriptEngine *engine, const string &scriptFile, int &exit_
 	}
 	#endif
 	while (g_ctxMgr->ExecuteScripts())
-		;
+		wait_for_sleeping_scripts();
 	int r = ctx->GetState();
 	int retcode = 0;
 	bool failed = false;
@@ -1190,7 +1198,7 @@ bool ExecuteScript(asIScriptEngine *engine, const string &scriptFile, int &exit_
 	// Run as main() is, so that sleep() and yield() in it resume rather than leave it suspended for good; the manager gives the context back when it is done, as it is added without being kept.
 	if (outfunc && g_ctxMgr->AddContext(engine, outfunc)) {
 		while (g_ctxMgr->ExecuteScripts())
-			;
+			wait_for_sleeping_scripts();
 	}
 	discard_module(engine, mod);
 	if (g_exit_called) { // Also from on_exit(), a destructor or a thread still running once main() returned.

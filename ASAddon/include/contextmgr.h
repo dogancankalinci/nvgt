@@ -76,6 +76,11 @@ public:
 	// Returns the number of scripts still in execution.
 	int ExecuteScripts();
 
+	// ALTERED: the milliseconds until the next sleeping script is due, 0 when one can run now or there are none. ExecuteScripts
+	// returns at once while every script sleeps, so an application calling it in a loop (NVGT's ExecuteScript) waits this long
+	// in between instead of spinning on a processor core for the whole sleep.
+	asUINT GetTimeUntilNextWake() const;
+
 	// Put a script to sleep for a while
 	void SetSleeping(asIScriptContext *ctx, asUINT milliSeconds);
 
