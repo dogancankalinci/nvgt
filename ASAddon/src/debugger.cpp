@@ -665,7 +665,16 @@ bool CDebugger::InterpretCommand(const string &cmd, asIScriptContext *ctx)
 					typeId |= asTYPEID_OBJHANDLE;
 				}
 			}
-			if (!(typeId & asTYPEID_MASK_OBJECT) || typeId & asTYPEID_OBJHANDLE) ref = malloc(bytes);
+			if (!(typeId & asTYPEID_MASK_OBJECT) || typeId & asTYPEID_OBJHANDLE)
+			{
+				ref = malloc(bytes);
+				// ALTERED: with no memory for the room the null pointer was written through (a handle type) or the value was written to address 0
+				if (!ref)
+				{
+					Output("out of memory while evaluating statement\n");
+					return false;
+				}
+			}
 			if (typeId & asTYPEID_MASK_OBJECT)
 			{
 				if (!(typeId & asTYPEID_OBJHANDLE)) ref = made;
