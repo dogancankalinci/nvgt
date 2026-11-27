@@ -8,3 +8,6 @@ Get a listener's cone.
 * float&out inner_radians: receives the inner angle in radians.
 * float&out outer_radians: receives the outer angle in radians.
 * float&out outer_gain: receives the volume multiplier outside the outer cone.
+
+## Remarks:
+For a listener the engine doesn't have, as every engine has only listener 0, all three receive NaN and SOUNDSYSTEM_LAST_ERROR is set to AUDIO_ERROR_STATE_INVALID_ARGS.

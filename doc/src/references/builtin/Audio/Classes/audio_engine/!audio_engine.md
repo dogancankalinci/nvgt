@@ -29,7 +29,8 @@ void main() {
 	// An engine that renders into memory rather than playing.
 	audio_engine engine(AUDIO_ENGINE_NO_DEVICE, 44100, 2);
 	sound@ s = engine.sound();
-	s.load("music.ogg");
+	if (!s.load("music.ogg")) return;
+	while (!s.load_complete) wait(1); // Loading goes on in the background, and the engine renders whatever has loaded.
 	s.play();
 	float[]@ samples = engine.read(44100); // One second of audio, interleaved left and right.
 	alert("Rendered", samples.length() + " samples were rendered.");

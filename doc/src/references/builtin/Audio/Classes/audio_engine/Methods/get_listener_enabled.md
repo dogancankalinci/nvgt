@@ -7,4 +7,4 @@ Check whether a listener is enabled.
 * int index: the number of the listener, starting at 0. Engines have one listener by default.
 
 ## Returns:
-bool: true if the listener is enabled.
+bool: true if the listener is enabled; false for a listener the engine doesn't have, which sets SOUNDSYSTEM_LAST_ERROR to AUDIO_ERROR_STATE_INVALID_ARGS.

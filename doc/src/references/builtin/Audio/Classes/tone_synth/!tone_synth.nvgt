@@ -7,8 +7,8 @@
 		### Settings
 		* int waveform_type: the shape of the wave, 1 for sawtooth, 2 for square, 3 for sine and 4 for triangle, as BGT numbered them. Other values are ignored. The default is 3, a sine wave.
 		* double volume: in decibels, from -100 to 0, the default. Other values are ignored.
-		* double pan: from -100, fully left, to 100, fully right; 0 by default.
-		* double tempo: in beats per minute, from 1 to 999; 120 by default.
+		* double pan: from -100, fully left, to 100, fully right; 0 by default. Other values are ignored.
+		* double tempo: in beats per minute, from 1 to 999; 120 by default. Other values are ignored.
 		* double note_transpose: semitones added to every note, fractions of one included; 0 by default.
 		* double freq_transpose: hertz added to every frequency given to `freq()` and its variants; 0 by default.
 		* bool allow_silent_output: whether a buffer holding only silence, as after only `rest()`, can be written out; false by default, which makes the write methods fail for it.

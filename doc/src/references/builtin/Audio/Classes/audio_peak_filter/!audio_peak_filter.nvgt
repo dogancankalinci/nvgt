@@ -7,6 +7,7 @@
 		* double q = 0.707: how narrow the affected band is, see `q`. The default gives a smooth, natural response.
 		* audio_engine@ engine = sound_default_engine: the engine to create the node in.
 	## Remarks:
+		A gain, q or frequency the filter can't be stable with, or one that isn't a number, is refused and the constructor throws, with SOUNDSYSTEM_LAST_ERROR set.
 		This is an audio_node with one input and one output bus, and has all of the methods and properties of audio_node as well as the ones listed here. Its settings can be changed while audio is playing.
 		Several peak filters in a chain make a graphic equalizer.
 		To create the filter in another engine while keeping the default q, name the engine argument, as in `audio_peak_filter filter(1000, 6, engine: my_engine);`.

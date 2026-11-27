@@ -6,6 +6,7 @@
 		* uint order: how steeply frequencies below the cutoff are cut, from 1 to 8, see `order`.
 		* audio_engine@ engine = sound_default_engine: the engine to create the node in.
 	## Remarks:
+		A cutoff frequency that isn't above 0, or one the filter can't be stable at, is refused and the constructor throws, with SOUNDSYSTEM_LAST_ERROR set; one above half the sample rate is taken as just below it.
 		This is an audio_node with one input and one output bus, and has all of the methods and properties of audio_node as well as the ones listed here. Its settings can be changed while audio is playing.
 		It is also useful for removing rumble from a recording.
 */

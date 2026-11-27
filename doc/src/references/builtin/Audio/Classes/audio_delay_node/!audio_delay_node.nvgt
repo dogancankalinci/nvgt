@@ -6,6 +6,7 @@
 		* float decay: how much of the audio is heard again in each echo, from nearly 0 for a single faint echo to nearly 1 for echoes that take a long time to fade. A value of 0 makes a plain delay instead of an echo: the audio is heard once, late by the delay.
 		* audio_engine@ engine = sound_default_engine: the engine to create the node in.
 	## Remarks:
+		A delay of 0 frames or a decay that isn't a number is refused and the constructor throws, with SOUNDSYSTEM_LAST_ERROR set.
 		This is an audio_node with one input and one output bus, and has all of the methods and properties of audio_node as well as the ones listed here.
 		The delay can't be changed once the node is created, create a new node for a different delay. The echoes carry on after the audio going into the node stops, until they have faded away.
 */

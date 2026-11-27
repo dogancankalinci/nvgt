@@ -6,6 +6,7 @@
 		* double q = 0.707: how narrow the removed band is, see `q`. The default gives a smooth, natural response.
 		* audio_engine@ engine = sound_default_engine: the engine to create the node in.
 	## Remarks:
+		A q or frequency that isn't above 0, or a filter that can't be stable with them, is refused and the constructor throws, with SOUNDSYSTEM_LAST_ERROR set.
 		This is an audio_node with one input and one output bus, and has all of the methods and properties of audio_node as well as the ones listed here. Its settings can be changed while audio is playing.
 		This is useful for removing a hum or whistle at one frequency, such as mains hum at 50 or 60 hertz.
 		To create the filter in another engine while keeping the default q, name the engine argument, as in `audio_notch_filter filter(60, engine: my_engine);`.
