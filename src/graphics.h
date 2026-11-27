@@ -97,6 +97,13 @@ public:
 	SDL_Texture* get_texture() const { return tex(); }
 };
 
+// The length of text that SDL_ttf's wrapping is given: up to its first NUL character. SDL_ttf 3.2's line wrapping (TTF_GetStringSizeWrapped and
+// the TTF_Render*_Wrapped functions) never got past a NUL inside the length it was given (SDL_StepUTF8 doesn't advance over one), so a string
+// holding one (a substring of binary data, "a\x00b") hung the script for good, whatever the wrap width. The text ends there, as a C string does.
+inline size_t ttf_wrapped_text_length(const std::string& text) {
+	size_t nul = text.find('\0');
+	return nul == std::string::npos ? text.size() : nul;
+}
 class text_font {
 	TTF_Font* _font;
 	std::vector<text_font*> _fallback_fonts;
@@ -145,13 +152,13 @@ public:
 	bool set_language(const std::string& language_bcp47) { if (!_font) return false; return TTF_SetFontLanguage(_font, language_bcp47.c_str()); }
 	bool has_glyph(unsigned int codepoint) { if (!_font) return false; return TTF_FontHasGlyph(_font, codepoint); }
 	graphic* render_text_solid(const std::string& text, unsigned int r, unsigned int g, unsigned int b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderText_Solid(_font, text.c_str(), text.size(), to_sdl_color(r, g, b))); }
-	graphic* render_text_solid_wrapped(const std::string& text, int wrap_width, unsigned int r, unsigned int g, unsigned int b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderText_Solid_Wrapped(_font, text.c_str(), text.size(), to_sdl_color(r, g, b), wrap_width)); }
+	graphic* render_text_solid_wrapped(const std::string& text, int wrap_width, unsigned int r, unsigned int g, unsigned int b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderText_Solid_Wrapped(_font, text.c_str(), ttf_wrapped_text_length(text), to_sdl_color(r, g, b), wrap_width)); }
 	graphic* render_text_blended(const std::string& text, unsigned int r, unsigned int g, unsigned int b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderText_Blended(_font, text.c_str(), text.size(), to_sdl_color(r, g, b))); }
-	graphic* render_text_blended_wrapped(const std::string& text, int wrap_width, unsigned int r, unsigned int g, unsigned int b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderText_Blended_Wrapped(_font, text.c_str(), text.size(), to_sdl_color(r, g, b), wrap_width)); }
+	graphic* render_text_blended_wrapped(const std::string& text, int wrap_width, unsigned int r, unsigned int g, unsigned int b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderText_Blended_Wrapped(_font, text.c_str(), ttf_wrapped_text_length(text), to_sdl_color(r, g, b), wrap_width)); }
 	graphic* render_text_shaded(const std::string& text, unsigned int fg_r, unsigned int fg_g, unsigned int fg_b, unsigned int bg_r, unsigned int bg_g, unsigned int bg_b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderText_Shaded(_font, text.c_str(), text.size(), to_sdl_color(fg_r, fg_g, fg_b), to_sdl_color(bg_r, bg_g, bg_b))); }
-	graphic* render_text_shaded_wrapped(const std::string& text, int wrap_width, unsigned int fg_r, unsigned int fg_g, unsigned int fg_b, unsigned int bg_r, unsigned int bg_g, unsigned int bg_b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderText_Shaded_Wrapped(_font, text.c_str(), text.size(), to_sdl_color(fg_r, fg_g, fg_b), to_sdl_color(bg_r, bg_g, bg_b), wrap_width)); }
+	graphic* render_text_shaded_wrapped(const std::string& text, int wrap_width, unsigned int fg_r, unsigned int fg_g, unsigned int fg_b, unsigned int bg_r, unsigned int bg_g, unsigned int bg_b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderText_Shaded_Wrapped(_font, text.c_str(), ttf_wrapped_text_length(text), to_sdl_color(fg_r, fg_g, fg_b), to_sdl_color(bg_r, bg_g, bg_b), wrap_width)); }
 	graphic* render_text_lcd(const std::string& text, unsigned int fg_r, unsigned int fg_g, unsigned int fg_b, unsigned int bg_r, unsigned int bg_g, unsigned int bg_b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderText_LCD(_font, text.c_str(), text.size(), to_sdl_color(fg_r, fg_g, fg_b), to_sdl_color(bg_r, bg_g, bg_b))); }
-	graphic* render_text_lcd_wrapped(const std::string& text, int wrap_width, unsigned int fg_r, unsigned int fg_g, unsigned int fg_b, unsigned int bg_r, unsigned int bg_g, unsigned int bg_b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderText_LCD_Wrapped(_font, text.c_str(), text.size(), to_sdl_color(fg_r, fg_g, fg_b), to_sdl_color(bg_r, bg_g, bg_b), wrap_width)); }
+	graphic* render_text_lcd_wrapped(const std::string& text, int wrap_width, unsigned int fg_r, unsigned int fg_g, unsigned int fg_b, unsigned int bg_r, unsigned int bg_g, unsigned int bg_b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderText_LCD_Wrapped(_font, text.c_str(), ttf_wrapped_text_length(text), to_sdl_color(fg_r, fg_g, fg_b), to_sdl_color(bg_r, bg_g, bg_b), wrap_width)); }
 	graphic* render_glyph_solid(unsigned int ch, unsigned int r, unsigned int g, unsigned int b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderGlyph_Solid(_font, ch, to_sdl_color(r, g, b))); }
 	graphic* render_glyph_blended(unsigned int ch, unsigned int r, unsigned int g, unsigned int b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderGlyph_Blended(_font, ch, to_sdl_color(r, g, b))); }
 	graphic* render_glyph_shaded(unsigned int ch, unsigned int fg_r, unsigned int fg_g, unsigned int fg_b, unsigned int bg_r, unsigned int bg_g, unsigned int bg_b) { if (!_font) return new graphic(nullptr); return new graphic(TTF_RenderGlyph_Shaded(_font, ch, to_sdl_color(fg_r, fg_g, fg_b), to_sdl_color(bg_r, bg_g, bg_b))); }

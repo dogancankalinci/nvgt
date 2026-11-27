@@ -303,7 +303,7 @@ bool text_font::get_string_size(const std::string& text, int& w, int& h) const {
 bool text_font::get_string_size_wrapped(const std::string& text, int wrap_width, int& w, int& h) const {
 	w = h = 0;
 	if (!_font) return false;
-	return TTF_GetStringSizeWrapped(_font, text.c_str(), text.size(), wrap_width, &w, &h);
+	return TTF_GetStringSizeWrapped(_font, text.c_str(), ttf_wrapped_text_length(text), wrap_width, &w, &h); // see ttf_wrapped_text_length()
 }
 
 bool text_font::measure_string(const std::string& text, int max_width, int& measured_width, int& measured_length) const {

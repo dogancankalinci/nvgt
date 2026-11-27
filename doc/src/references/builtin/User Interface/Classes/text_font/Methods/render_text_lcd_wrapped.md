@@ -15,3 +15,6 @@ Draw text into a new image with subpixel smoothing over a background color, wrap
 
 ## Returns:
 graphic@: the image, or null on failure.
+
+## Remarks:
+The text ends at its first NUL character, if it has one.

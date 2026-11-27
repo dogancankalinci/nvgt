@@ -12,3 +12,6 @@ Draw text into a new image quickly, wrapping it onto further lines when it becom
 
 ## Returns:
 graphic@: the image, or null on failure.
+
+## Remarks:
+The text ends at its first NUL character, if it has one.

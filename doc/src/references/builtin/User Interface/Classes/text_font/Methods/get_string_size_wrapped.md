@@ -11,3 +11,6 @@ Measure text wrapped onto lines no wider than a width.
 
 ## Returns:
 bool: true on success, false otherwise.
+
+## Remarks:
+The text ends at its first NUL character, if it has one.
