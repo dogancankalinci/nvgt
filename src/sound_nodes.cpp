@@ -1759,9 +1759,9 @@ private:
 	// What the script set, copied into spatialization_params by process(): written there by the script too, a rolloff set while the audio thread wrote the parameters back, as the mixer filling them in does, was overwritten with the one before, for good.
 	std::atomic<float> rolloff_set{default_spatializer_rolloff}, directional_attenuation_factor_set{1.0f};
 	bool parameters_valid, parameters_given = false; // The second once they were valid, the listener's position given from then on even while they aren't.
-	int preferred_panner_id, preferred_attenuator_id;
+	std::atomic<int> preferred_panner_id, preferred_attenuator_id; // Read by the mixer's getters under its own lock, while the sweeps set them under the chain's.
 	std::atomic<int> current_panner_id, current_attenuator_id; // Read on the audio thread, as the mixer gives its parameters, while the sweeps set them.
-	bool default_panner = false, default_attenuator = false; // Whether the preferred ones are the defaults it was given, which set_global_hrtf() changes, rather than its own.
+	std::atomic<bool> default_panner{false}, default_attenuator{false}; // Whether the preferred ones are the defaults it was given, which set_global_hrtf() changes, rather than its own.
 	// Its rewiring runs in the chain's rewire_scope, what it lets go of released once the thread's outermost release_scope ends (see release_scope).
 	// Whether the attachment went into the chain, which refuses it where the graph is too deep for one more node.
 	bool position_reverb() {
