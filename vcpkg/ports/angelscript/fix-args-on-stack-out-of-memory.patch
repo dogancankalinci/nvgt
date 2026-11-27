@@ -1,0 +1,64 @@
+diff --git a/sdk/angelscript/source/as_context.cpp b/sdk/angelscript/source/as_context.cpp
+index ce9947b..129b868 100644
+--- a/sdk/angelscript/source/as_context.cpp
++++ b/sdk/angelscript/source/as_context.cpp
+@@ -7310,6 +7310,7 @@ int asCContext::GetArgsOnStackCount(asUINT stackLevel)
+ 	asUINT offset = 0;   // dwords from the stack pointer to the values of the next pending call
+ 	int net = 0;         // dwords pushed since the position or the last pending call, less what the calls made since took
+ 	asCArray<int> pshC4; // the net count before each asBC_PshC4 since then, and its value
++	asUINT cached = 0;   // ALTERED: the arguments put in the cache, three entries each
+ 	bool even = true;
+ 	while( offset < stackPos )
+ 	{
+@@ -7333,8 +7334,11 @@ int asCContext::GetArgsOnStackCount(asUINT stackLevel)
+ 			}
+ 			if( bc == asBC_PshC4 )
+ 			{
++				// ALTERED: with no memory for the list (or the argument lists below) the walk fails, see the end
++				const asUINT pshLength = pshC4.GetLength();
+ 				pshC4.PushLast(net);
+ 				pshC4.PushLast(int(asBC_DWORDARG(&bcBase[n])));
++				if( pshC4.GetLength() != pshLength + 2 ) { even = false; break; }
+ 			}
+ 			net += asBCInfo[bc].stackInc;
+ 			n += asBCTypeSize[asBCInfo[bc].type];
+@@ -7400,6 +7404,7 @@ int asCContext::GetArgsOnStackCount(asUINT stackLevel)
+ 		int at = int(offset) + pushed; // just past the deepest value of the call
+ 		if( objFirst ) { at -= AS_PTR_SIZE; pushed -= AS_PTR_SIZE; }
+ 		asCArray<int> args; // the arguments on the stack, deepest (the last argument) first
++		asUINT added = 0;
+ 		for( int a = int(argCount) - 1; a >= 0 && pushed > 0; a-- )
+ 		{
+ 			asUINT p = (isVariadic && asUINT(a) >= paramCount - 1) ? paramCount - 1 : asUINT(a);
+@@ -7413,9 +7418,13 @@ int asCContext::GetArgsOnStackCount(asUINT stackLevel)
+ 			args.PushLast(typeId);
+ 			args.PushLast(int(flags));
+ 			args.PushLast(at);
++			added++;
+ 		}
+-		if( !even )
++		if( !even || args.GetLength() != added * 3 )
++		{
++			even = false;
+ 			break;
++		}
+ 		// The cache is stored from the top of the stack down
+ 		for( asUINT a = args.GetLength(); a >= 3; a -= 3 )
+ 		{
+@@ -7423,12 +7432,15 @@ int asCContext::GetArgsOnStackCount(asUINT stackLevel)
+ 			m_argsOnStackCache.PushLast(args[a-2]);
+ 			m_argsOnStackCache.PushLast(args[a-1]);
+ 		}
++		cached += added;
+ 		offset += asUINT(total - net);
+ 		net = 0;
+ 		pshC4.SetLength(0);
+ 	}
+ 
+-	if( !even || offset != stackPos )
++	// ALTERED: also when an entry couldn't be added to the cache (no memory): the entries were read three at a time from where
++	// one was missing, so the offsets given for the arguments were type ids or flags, addresses far from the stack
++	if( !even || offset != stackPos || m_argsOnStackCache.GetLength() != cached * 3 )
+ 	{
+ 		m_argsOnStackCache.SetLength(0);
+ 		return asERROR;
