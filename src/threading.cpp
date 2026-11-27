@@ -622,14 +622,16 @@ public:
 			if (ret && returns_reference) ret = *(void**)ret;
 			asUINT size = (subtypeid & asTYPEID_MASK_OBJECT) ? sizeof(asPWORD) : ctx->GetEngine()->GetSizeOfPrimitiveType(subtypeid);
 			value = malloc(size);
-			if ((subtypeid & ~asTYPEID_MASK_SEQNBR) && !(subtypeid & asTYPEID_OBJHANDLE)) *(void**)value = ret ? ctx->GetEngine()->CreateScriptObjectCopy(ret, subtype->GetSubType()) : nullptr;
+			if (!value) exception = "Out of memory"; // No room for the result, which was written through the null pointer; get_value() then raises the exception instead.
+			else if ((subtypeid & ~asTYPEID_MASK_SEQNBR) && !(subtypeid & asTYPEID_OBJHANDLE)) *(void**)value = ret ? ctx->GetEngine()->CreateScriptObjectCopy(ret, subtype->GetSubType()) : nullptr;
 			else if (subtypeid & asTYPEID_OBJHANDLE) {
 				*(void**)value = ret ? *(void**)ret : nullptr;
 				ctx->GetEngine()->AddRefScriptObject(*(void**)value, subtype->GetSubType());
 			} else if (ret) memcpy(value, ret, size);
 			else memset(value, 0, size);
 			// The copy of a returned object is null when it failed (its copy constructor raised an exception).
-			if ((subtypeid & ~asTYPEID_MASK_SEQNBR) && !(subtypeid & asTYPEID_OBJHANDLE) && !*(void**)value) exception = "Cannot copy the return value of async function call";
+			if (!value) {}
+			else if ((subtypeid & ~asTYPEID_MASK_SEQNBR) && !(subtypeid & asTYPEID_OBJHANDLE) && !*(void**)value) exception = "Cannot copy the return value of async function call";
 			else succeeded = true;
 		}
 		ctx->GetEngine()->ReturnContext(ctx);
